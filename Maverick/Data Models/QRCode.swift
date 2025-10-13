@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct QRCode {
+struct QRCode: Identifiable {
     /// Identifier for the public key in the database.
     let id: String
     /// Public key.

@@ -5,9 +5,30 @@
 //  Created by Yura on 10/13/25.
 //
 
+import UIKit
 import Foundation
 import CoreImage.CIFilterBuiltins
 
 extension QRCode {
-    class 
+    @Observable
+    class Generator {
+        private let context: CIContext
+        
+        init() {
+            self.context = CIContext()
+        }
+        
+        func generate(from string: String) -> UIImage {
+            let generator = CIFilter.qrCodeGenerator()
+            
+            generator.message = string.data(using: .utf8) ?? Data()
+            
+            if let image = generator.outputImage, let cgImage = self.context.createCGImage(image, from: image.extent) {
+                return UIImage(cgImage: cgImage)
+            }
+            
+            return UIImage(systemName: "qrcode") ?? UIImage()
+        }
+    }
 }
+
