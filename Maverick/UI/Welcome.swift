@@ -51,7 +51,7 @@ struct Welcome: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.yellow)
                         
-                        Text("Be mindful how you share this piece of information. If you use an untrusted environment, like SMS or email, to share it with another person, a malicious actor can intercept and replace it with another public key and later decrypt messages that were meant for you.")
+                        Text("Be mindful how you share this piece of information. If you use an untrusted environment, like SMS or email, to share it with another person, a malicious actor can intercept and replace it with another public key and later decrypt messages that were meant for you. If you choose to share it this way, we are going to ask you to confirm that you trust the contact.")
                     }
                 }
                 .padding(.bottom, 45)
