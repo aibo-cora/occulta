@@ -61,8 +61,39 @@ struct Welcome: View {
             .padding(.horizontal)
             /// Create trusted contacts
             VStack {
+                Spacer()
                 
+                HStack {
+                    Text("Add a trusted contact")
+                        .bold()
+                    Image(systemName: "plus")
+                        .foregroundStyle(.blue)
+                }
+                .padding()
+                
+                Text("Share your public key with each contact. The private key used to decrypt messages is never shared with anyone. Add your contacts public key by scanning their QR code or pasting the key manually.")
+                    .padding(.bottom)
+                    
+                VStack(alignment: .leading, spacing: 40) {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.green)
+                        
+                        Text("We combine the public key of your contact with your private key to create a secret. This secret is used to encrypt and decrypt all messages with that contact. It is never shared with anyone. The secret is unique for each contact. The same process happens on your contacts device to derive the same secret. Each party's private key stays on the device where it was originally generated.")
+                    }
+                    
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                        
+                        Text("If you manually paste the public key of a contact, you should use some means to confirm the owners identity to avoid the man in the middle (MITM) attack. Use another application or ask the contact in person a control question that only the 2 of you know the answer to.")
+                    }
+                }
+                .padding(.bottom, 45)
+                
+                Spacer()
             }
+            .padding(.horizontal)
             /// Encrypt a message
             VStack {
                 
