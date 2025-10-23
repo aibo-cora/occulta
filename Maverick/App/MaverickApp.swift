@@ -25,7 +25,7 @@ struct MaverickApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Welcome()
+            Contacts()
         }
         .modelContainer(sharedModelContainer)
     }
