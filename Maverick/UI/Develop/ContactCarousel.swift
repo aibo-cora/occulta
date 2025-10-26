@@ -9,41 +9,68 @@ import SwiftUI
 
 struct ContactCarousel: View {
     @State private var thumbnails: [Thumbnail] = [
-        Thumbnail(image: Image("green-lake")),
-        Thumbnail(image: Image("lake-forest")),
-        Thumbnail(image: Image("mountains")),
-        Thumbnail(image: Image("redwood")),
-        Thumbnail(image: Image("white-mountain"))
+        Thumbnail(name: "green-lake"),
+        Thumbnail(name: "lake-forest"),
+        Thumbnail(name: "mountains"),
+        Thumbnail(name: "redwood"),
+        Thumbnail(name: "white-mountain")
     ]
     
+    @State private var selected: Thumbnail? = Thumbnail(name: "green-lake")
+    
     var body: some View {
-        NavigationStack {
+        if let selected {
             VStack {
-                ScrollView(.horizontal) {
-                    HStack {
-                        ForEach(self.thumbnails) { thumbnail in
-                            Button {
-                                
-                            } label: {
-                                thumbnail.image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 50, height: 50)
-                                    .clipShape(Circle())
-                                    .overlay(Circle().stroke(.red.opacity(0.4), lineWidth: 4))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding()
+                Button {
+                    self.selected = nil
+                } label: {
+                    Text("Done")
                 }
-                .scrollIndicators(.hidden)
+                .buttonStyle(.borderedProminent)
                 
-                Text("Select a contact to communicate with")
-                    .padding(.top)
+                selected.image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 50, height: 50)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(.red.opacity(0.4), lineWidth: 4))
                 
-                Spacer()
-                    .navigationTitle("Contacts")
+            }
+        } else {
+            NavigationStack {
+                VStack {
+                    ScrollView(.horizontal) {
+                        HStack {
+                            ForEach(self.thumbnails) { thumbnail in
+                                VStack {
+                                    Button {
+                                        self.selected = thumbnail
+                                    } label: {
+                                        thumbnail.image
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                            .frame(width: 50, height: 50)
+                                            .clipShape(Circle())
+                                            .overlay(Circle().stroke(.red.opacity(0.4), lineWidth: 4))
+                                    }
+                                    .buttonStyle(.plain)
+                                    
+                                    Text(thumbnail.name)
+                                        .frame(width: 100)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .padding()
+                    }
+                    .scrollIndicators(.hidden)
+                    
+                    Text("Select a contact to communicate with")
+                        .padding(.top)
+                    
+                    Spacer()
+                        .navigationTitle("Contacts")
+                }
             }
         }
     }
@@ -55,5 +82,11 @@ struct ContactCarousel: View {
 
 struct Thumbnail: Identifiable {
     let id = UUID()
+    let name: String
     let image: Image
+    
+    init(name: String) {
+        self.name = name
+        self.image = Image(name)
+    }
 }

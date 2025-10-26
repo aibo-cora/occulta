@@ -28,53 +28,51 @@ struct Contacts: View {
     }
 
     var body: some View {
-//        NavigationStack {
-//            VStack {
-//                List(self.filteredContacts) { contact in
-//                    HStack {
-//                        if let thumbnail = contact.thumbnailImageData {
-//                            Image(uiImage: UIImage(data: thumbnail) ?? UIImage())
-//                                .resizable()
-//                                .frame(width: 50, height: 50)
-//                        }
-//                        Text(contact.familyName + " " + contact.givenName)
-//                    }
-//                }
-//                .searchable(text: self.$searchText)
-//
-//                // This will automatically show a contact if one is matched, or a Search button otherwise
-//                ContactAccessButton(queryString: self.searchText) { results in
-//                    self.fetchContacts(with: results)
-//                }
-//                .contactAccessButtonCaption(.phone)
-//                .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
-//                .padding()
-//            }
-//        }
-        HStack {
-            Image("lake-forest")
-                .resizable()
-                .aspectRatio(contentMode: .fill) // or .fill
-                .frame(width: 100, height: 100) // Set desired size
-                .clipShape(Circle())
-                .overlay(Circle().stroke(.green, lineWidth: 4))
+        NavigationStack {
+            VStack {
+                List(self.filteredContacts) { contact in
+                    HStack {
+                        if let thumbnail = contact.thumbnailImageData {
+                            Image(uiImage: UIImage(data: thumbnail) ?? UIImage())
+                                .resizable()
+                                .frame(width: 50, height: 50)
+                        }
+                        Text(contact.familyName + " " + contact.givenName)
+                    }
+                }
+                .searchable(text: self.$searchText)
+
+                // This will automatically show a contact if one is matched, or a Search button otherwise
+                ContactAccessButton(queryString: self.searchText) { results in
+                    self.fetchContacts(with: results)
+                }
+                .contactAccessButtonCaption(.phone)
+                .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
+                .padding()
+            }
         }
     }
+    /// Prepare the Contacts system to return the names of matching people
+    let keys = [
+        CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+        CNContactIdentifierKey as any CNKeyDescriptor,
+        CNContactGivenNameKey as any CNKeyDescriptor,
+        CNContactFamilyNameKey as any CNKeyDescriptor,
+        CNContactMiddleNameKey as any CNKeyDescriptor,
+        CNContactImageDataKey as any CNKeyDescriptor,
+        CNContactImageDataAvailableKey as any CNKeyDescriptor,
+        CNContactThumbnailImageDataKey as any CNKeyDescriptor,
+        CNContactEmailAddressesKey as CNKeyDescriptor,
+        CNContactPhoneNumbersKey as CNKeyDescriptor
+    ]
 
     /// Converts an array of contact identifiers into actual contacts
     func fetchContacts(with identifiers: [String]) {
         Task {
-            // Prepare the Contacts system to return the names of matching people
-            let keys = [
-                CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
-                CNContactImageDataKey as any CNKeyDescriptor,
-                CNContactImageDataAvailableKey as any CNKeyDescriptor,
-                CNContactThumbnailImageDataKey as any CNKeyDescriptor
-            ]
+            let fetchRequest = CNContactFetchRequest(keysToFetch: self.keys)
             
-            let fetchRequest = CNContactFetchRequest(keysToFetch: keys)
             fetchRequest.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
-
+            
             // Store new contacts in this array
             var newContacts = [CNContact]()
 
