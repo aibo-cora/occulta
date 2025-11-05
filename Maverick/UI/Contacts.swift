@@ -29,27 +29,32 @@ struct Contacts: View {
 
     var body: some View {
         NavigationStack {
-            VStack {
+            VStack(spacing: 20) {
                 List(self.filteredContacts) { contact in
                     HStack {
                         if let thumbnail = contact.thumbnailImageData {
-                            Image(uiImage: UIImage(data: thumbnail) ?? UIImage())
+                            Image(uiImage: (UIImage(data: thumbnail) ?? UIImage()))
+                                .resizable()
+                                .frame(width: 50, height: 50)
+                        } else {
+                            Image(systemName: "person.circle.fill")
                                 .resizable()
                                 .frame(width: 50, height: 50)
                         }
                         Text(contact.familyName + " " + contact.givenName)
                     }
                 }
-                .searchable(text: self.$searchText)
+                .searchable(text: self.$searchText, prompt: "Search Contacts")
 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
-                ContactAccessButton(queryString: self.searchText) { results in
-                    self.fetchContacts(with: results)
+                ContactAccessButton(queryString: self.searchText) { identifiers in
+                    self.fetchContacts(with: identifiers)
                 }
                 .contactAccessButtonCaption(.phone)
                 .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                 .padding()
             }
+            .navigationTitle("Contacts")
         }
     }
     /// Prepare the Contacts system to return the names of matching people
