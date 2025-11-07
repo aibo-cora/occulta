@@ -7,20 +7,24 @@
 
 import SwiftUI
 import ContactsUI
+import SwiftData
 
 struct Contacts: View {
-    /// We hold all our loaded contacts here
-    @State private var allContacts = [CNContact]()
-
     /// Whatever the user is currently looking for
     @State private var searchText = ""
+    
+    @Environment(\.modelContext) private var modelContext
+    
+    @State private var contactManager: ContactManager?
+    /// Stored contacts.
+    @Query(sort: \Contact.familyName) var contacts: [Contact]
 
     /// Results from our existing contacts list
-    var filteredContacts: [CNContact] {
+    var filteredContacts: [Contact] {
         if self.searchText.isEmpty {
-            self.allContacts
+            self.contacts
         } else {
-            self.allContacts.filter {
+            self.contacts.filter {
                 $0.givenName.localizedStandardContains(self.searchText)
                 || $0.familyName.localizedStandardContains(self.searchText)
             }
@@ -56,6 +60,9 @@ struct Contacts: View {
             }
             .navigationTitle("Contacts")
         }
+        .task {
+            self.contactManager = ContactManager(modelContainer: self.modelContext.container)
+        }
     }
     /// Prepare the Contacts system to return the names of matching people
     let keys = [
@@ -85,8 +92,8 @@ struct Contacts: View {
                 newContacts.append(contact)
             }
 
-            // Load is completed, so add the new contacts to our existing array
-            self.allContacts += newContacts
+            // Load is completed, so add the new contacts to our existing list
+            try self.contactManager?.createContacts(from: newContacts)
         }
     }
 }

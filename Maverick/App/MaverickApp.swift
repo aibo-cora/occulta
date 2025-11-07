@@ -12,8 +12,10 @@ import SwiftData
 struct MaverickApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Contact.self,
+            LabeledValue.self
         ])
+        
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
@@ -27,6 +29,6 @@ struct MaverickApp: App {
         WindowGroup {
             Contacts()
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(self.sharedModelContainer)
     }
 }
