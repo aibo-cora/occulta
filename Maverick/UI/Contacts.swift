@@ -35,20 +35,25 @@ struct Contacts: View {
         NavigationStack {
             VStack(spacing: 20) {
                 List(self.filteredContacts) { contact in
-                    HStack {
-                        if let thumbnail = contact.thumbnailImageData {
-                            Image(uiImage: (UIImage(data: thumbnail) ?? UIImage()))
-                                .resizable()
-                                .frame(width: 50, height: 50)
-                        } else {
-                            Image(systemName: "person.circle.fill")
-                                .resizable()
-                                .frame(width: 50, height: 50)
+                    NavigationLink(value: contact.identifier) {
+                        HStack {
+                            if let thumbnail = contact.thumbnailImageData {
+                                Image(uiImage: (UIImage(data: thumbnail) ?? UIImage()))
+                                    .resizable()
+                                    .frame(width: 50, height: 50)
+                            } else {
+                                Image(systemName: "person.circle.fill")
+                                    .resizable()
+                                    .frame(width: 50, height: 50)
+                            }
+                            Text(contact.familyName + " " + contact.givenName)
                         }
-                        Text(contact.familyName + " " + contact.givenName)
                     }
                 }
                 .searchable(text: self.$searchText, prompt: "Search Contacts")
+                .navigationDestination(for: String.self) {
+                    ContactDetail(identifier: $0)
+                }
 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
                 ContactAccessButton(queryString: self.searchText) { identifiers in
