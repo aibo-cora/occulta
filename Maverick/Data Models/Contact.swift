@@ -14,6 +14,11 @@ import Contacts
 final class Contact {
     // MARK: Imported contact metadata - encrypted
     
+    /// Identifier assigned by the contact store.
+    ///
+    /// When we share our publish key, this identifier is included so that the recipient can attach it to the message which will make it easier to identify which key needs to be used to decrypt the message without choosing the contact.
+    ///
+    /// The recipient will store it in the `identifierFromOutside` property.
     @Attribute(.unique) var identifier: String
     
     var givenName: String
@@ -28,29 +33,13 @@ final class Contact {
     // MARK: Application specific metadata - encrypted
     
     /// Public key of the trusted contact.
-    var publicKey: Data?
+    var contactPublicKey: Data?
+    /// Identifier for the private key used for this contact - key stored locally in Secure Enclave
+    var privateKeyIdentifier: String?
+    /// Identifier to determine the owner of the public key.
+    var identifierFromOutside: String?
     
-    init(
-        identifier: String,
-        givenName: String = "",
-        familyName: String = "",
-        middleName: String = "",
-        imageData: Data? = nil,
-        imageDataAvailable: Bool = false,
-        thumbnailImageData: Data? = nil,
-        emailAddresses: [LabeledValue] = [],
-        phoneNumbers: [LabeledValue] = []
-    ) {
-        self.identifier = identifier
-        self.givenName = givenName
-        self.familyName = familyName
-        self.middleName = middleName
-        self.imageData = imageData
-        self.imageDataAvailable = imageDataAvailable
-        self.thumbnailImageData = thumbnailImageData
-        self.emailAddresses = emailAddresses
-        self.phoneNumbers = phoneNumbers
-    }
+    // MARK: Initializers
     
     /// Convert from `CNContact` to our contact.
     /// - Parameter cnContact: Contact.
