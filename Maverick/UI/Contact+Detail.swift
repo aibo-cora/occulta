@@ -14,6 +14,23 @@ struct ContactDetail: View {
     @Environment(\.modelContext) var modelContext
     @Query(sort: \Contact.familyName) var contacts: [Contact]
     
+    /// First name of the contact
+    var name: String {
+        "\(self.contacts.first?.givenName ?? "Unknown")"
+    }
+    /// Phone number of the contact
+    var phone: String {
+        self.contacts.first?.phoneNumbers.first?.value ?? "No phone number"
+    }
+    /// Email of the contact
+    var email: String {
+        self.contacts.first?.emailAddresses.first?.value ?? "No email"
+    }
+    /// If we do not have a public key from our contact, we need to start an exchange.
+    var needsExchange: Bool {
+        self.contacts.first?.contactPublicKey == nil
+    }
+    
     init(identifier: String) {
         self.identifier = identifier
         
@@ -25,7 +42,39 @@ struct ContactDetail: View {
     }
     
     var body: some View {
-        Text("Hello, \(self.contacts.first?.givenName ?? "Unknown")!")
+        if self.needsExchange {
+            VStack {
+                Group {
+                    Text(self.name)
+                        .font(.title)
+                        .fontWeight(.bold)
+                    Text(self.email)
+                        .font(.footnote)
+                    Text(self.phone)
+                        .font(.footnote)
+                }
+                
+                if self.contacts.first?.contactPublicKey == nil {
+                    Text("To begin communicating with \(self.name), first, you'll need to exchange keys. To facilitate a secure exchange, bring your phones together after pressing the button below.")
+                        .padding()
+                    
+                    Button {
+                        
+                    } label: {
+                        Text("Exchange Keys")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        } else {
+            
+        }
+    }
+}
+
+struct ExchangeDisclaimer: View {
+    var body: some View {
+        
     }
 }
 
