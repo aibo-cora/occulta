@@ -9,7 +9,9 @@ import Foundation
 import CryptoKit
 
 class KeyGenerator {
-    func generatePrivateKey(tag: String) throws {
+    /// Create a key in the `Secure Enclave`.
+    /// - Parameter tag: Reference tag.
+    func create(using tag: String) throws {
         var error: Unmanaged<CFError>?
         
         if let access = SecAccessControlCreateWithFlags(kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .privateKeyUsage, &error) {
@@ -19,7 +21,7 @@ class KeyGenerator {
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent: true,
-                kSecAttrApplicationTag: tag,
+                kSecAttrApplicationTag: tag.data(using: .utf8)!,
                 kSecAttrAccessControl: access]
             ]
             
@@ -33,7 +35,10 @@ class KeyGenerator {
         }
     }
     
-    func retrievePublicKey(using tag: String) -> Data? {
+    /// Retrieve public key from the `Secure Enclave`.
+    /// - Parameter tag: Reference tag.
+    /// - Returns: Base64 encoded public key in string format.
+    func retrieve(using tag: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: tag.data(using: .utf8)!,
@@ -47,11 +52,19 @@ class KeyGenerator {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         
         if status == errSecSuccess {
-            if let publicKeyData = SecKeyCopyExternalRepresentation(item as! SecKey, nil) as Data? {
-                return publicKeyData
+            if let publicKey = SecKeyCopyPublicKey(item as! SecKey), let publicKeyData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data? {
+                return publicKeyData.base64EncodedString()
             }
         }
         
         return nil
+    }
+    
+    func replace(using tag: String) -> Bool {
+        false
+    }
+    
+    func delete(using tag: String) {
+        
     }
 }
