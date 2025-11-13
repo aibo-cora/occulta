@@ -10,12 +10,12 @@ import Testing
 import Foundation
 
 struct KeyManipulation {
-    let manager = KeyManager()
+    let manager = KeyManager(using: UUID().uuidString)
     
     @Test("Generates private key in Secure Enclave")
     func generatePrivateKey() throws {
         let tag = UUID().uuidString
-        let result = try self.manager.create(using: tag)
+        let result = try self.manager.create()
 
         let deletion = self.manager.delete(using: tag)
         
@@ -27,8 +27,8 @@ struct KeyManipulation {
     func retrievePublicKey() throws {
         let tag = UUID().uuidString
         
-        let _ = try self.manager.create(using: tag)
-        let privateKey = self.manager.retrievePrivateKey(using: tag)
+        let _ = try self.manager.create()
+        let privateKey = self.manager.retrievePrivateKey()
         let publicKey = self.manager.retrivePublicKey(using: privateKey)
         
         self.manager.delete(using: tag)

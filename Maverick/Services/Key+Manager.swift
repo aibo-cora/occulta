@@ -9,10 +9,16 @@ import Foundation
 import CryptoKit
 
 class KeyManager {
+    /// Identifier of our private key in the `Secure Enclave`.
+    let tag: String
+    
+    init(using tag: String) {
+        self.tag = tag
+    }
+    
     /// Create a key in the `Secure Enclave`.
-    /// - Parameter tag: Reference tag.
-    /// - Returns: <#description#>
-    func create(using tag: String) throws -> Bool {
+    /// - Returns: Result of the operation.
+    func create() throws -> Bool {
         var error: Unmanaged<CFError>?
         
         if let access = SecAccessControlCreateWithFlags(kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .privateKeyUsage, &error) {
@@ -22,7 +28,7 @@ class KeyManager {
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent: true,
-                kSecAttrApplicationTag: tag.data(using: .utf8)!,
+                kSecAttrApplicationTag: self.tag.data(using: .utf8)!,
                 kSecAttrAccessControl: access]
             ]
             
@@ -72,12 +78,11 @@ class KeyManager {
     }
     
     /// Retrieve private key from the `Secure Enclave`.
-    /// - Parameter tag: Reference tag.
     /// - Returns: Private key in `SecKey` format.
-    func retrievePrivateKey(using tag: String) -> SecKey? {
+    func retrievePrivateKey() -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: tag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: self.tag.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
@@ -106,6 +111,9 @@ class KeyManager {
     }
     
     func replace(using tag: String) -> Bool {
+        /// 1. Delete old key
+        /// 2. Replace `tag`
+        /// 3. Create new key
         false
     }
     
@@ -123,6 +131,17 @@ class KeyManager {
         } else {
             return false
         }
+    }
+    
+    /// <#Description#>
+    /// - Parameter material: <#material description#>
+    /// - Returns: <#description#>
+    func createSharedSecret(using material: Data?) -> Data? {
+        let peerPublicKey: SecKey? = self.convert(material: material)
+        let ourPrivateKey = self.retrievePrivateKey()
+        
+        return nil
+        
     }
 }
 
