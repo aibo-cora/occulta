@@ -44,39 +44,6 @@ class KeyManager {
         }
     }
     
-    /// <#Description#>
-    /// - Parameter rawData: <#rawData description#>
-    /// - Returns: <#description#>
-    func createPublicKeyFrom(_ rawData: Data) -> SecKey? {
-        // rawData must be 65-byte uncompressed P-256 public key (starts with 0x04)
-        guard
-            rawData.count == 65,
-                rawData[0] == 0x04
-        else {
-            print("Invalid public key format – must be 65-byte uncompressed P-256")
-            return nil
-        }
-
-        let attributes: [String: Any] = [
-            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
-            kSecAttrKeySizeInBits as String: 256,
-            // No access control or tag needed for public keys
-        ]
-
-        var error: Unmanaged<CFError>?
-        let key = SecKeyCreateWithData(rawData as CFData,
-                                       attributes as CFDictionary,
-                                       &error)
-
-        if let error = error {
-            print("Failed to recreate SecKey: \(error.takeRetainedValue())")
-            return nil
-        }
-
-        return key
-    }
-    
     /// Retrieve private key from the `Secure Enclave`.
     /// - Returns: Private key in `SecKey` format.
     func retrievePrivateKey() -> SecKey? {
@@ -136,12 +103,44 @@ class KeyManager {
     /// <#Description#>
     /// - Parameter material: <#material description#>
     /// - Returns: <#description#>
-    func createSharedSecret(using material: Data?) -> Data? {
+    func createSharedSecret(using material: Data?) -> SymmetricKey? {
         let peerPublicKey: SecKey? = self.convert(material: material)
         let ourPrivateKey = self.retrievePrivateKey()
         
-        return nil
+        let algorithm: SecKeyAlgorithm = .ecdhKeyExchangeCofactorX963SHA256
+        var error: Unmanaged<CFError>?
         
+        guard
+            let peerPublicKey,
+            let ourPrivateKey,
+            let rawSharedSecret = SecKeyCopyKeyExchangeResult(ourPrivateKey, algorithm, peerPublicKey, [SecKeyKeyExchangeParameter.requestedSize.rawValue : 32] as CFDictionary, &error) as? Data
+        else {
+            fatalError("ECDH failed: \(error!.takeRetainedValue())")
+        }
+        
+        guard
+            let peerPublicKeyData = self.convert(key: peerPublicKey),
+            let ourPublicKeyData = self.convert(key: self.retrivePublicKey(using: ourPrivateKey))
+        else {
+            return nil
+        }
+        
+        /// Data buffer of peer's public key.
+        let peerBuffer: [UInt8] = peerPublicKeyData.map { $0 }
+        /// Data buffer of our public key.
+        let ourBuffer:[UInt8] = ourPublicKeyData.map { $0 }
+        /// Adding each element from one array with the corresponding element in the other.
+        let addition = zip(peerBuffer, ourBuffer).map { $0 &+ $1 }
+        let salt = Data(addition)
+        
+        let sessionKey = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSharedSecret),
+            salt: salt,
+            info: "Maverick-v1-encryption-key-2025".data(using: .utf8)!,
+            outputByteCount: 32
+        )
+        
+        return sessionKey
     }
 }
 
@@ -157,9 +156,9 @@ extension KeyManager {
         return nil
     }
     
-    /// <#Description#>
-    /// - Parameter data: <#data description#>
-    /// - Returns: <#description#>
+    /// Convert public key material into a sec key.
+    /// - Parameter data: Keying material.
+    /// - Returns: Sec key.
     func convert(material data: Data?) -> SecKey? {
         guard
             let data
@@ -174,6 +173,7 @@ extension KeyManager {
         ]
         
         var error: Unmanaged<CFError>?
+        
         let publicKey = SecKeyCreateWithData(data as CFData, attributes as CFDictionary, &error)
         
         return publicKey
