@@ -66,9 +66,9 @@ class KeyManager {
         return nil
     }
     
-    /// <#Description#>
-    /// - Parameter key: <#key description#>
-    /// - Returns: <#description#>
+    /// Get the public key part from a private key.
+    /// - Parameter key: Private key.
+    /// - Returns: Public key counterpart.
     func retrivePublicKey(using key: SecKey?) -> SecKey? {
         if let key {
             return SecKeyCopyPublicKey(key)
@@ -100,10 +100,12 @@ class KeyManager {
         }
     }
     
-    /// <#Description#>
-    /// - Parameter material: <#material description#>
-    /// - Returns: <#description#>
+    /// Create a shared secret using peer's public key and our private key.
+    /// - Parameter material: Keying material of a public key of the other party.
+    /// - Returns: Shared symmetric key.
     func createSharedSecret(using material: Data?) -> SymmetricKey? {
+        // TODO: - This needs to be changed into a throwing function.
+        
         let peerPublicKey: SecKey? = self.convert(material: material)
         let ourPrivateKey = self.retrievePrivateKey()
         
@@ -111,8 +113,18 @@ class KeyManager {
         var error: Unmanaged<CFError>?
         
         guard
-            let peerPublicKey,
-            let ourPrivateKey,
+            let peerPublicKey
+        else {
+            fatalError("Peer public key is missing")
+        }
+        
+        guard
+            let ourPrivateKey
+        else {
+            fatalError("Our private key is missing")
+        }
+        
+        guard
             let rawSharedSecret = SecKeyCopyKeyExchangeResult(ourPrivateKey, algorithm, peerPublicKey, [SecKeyKeyExchangeParameter.requestedSize.rawValue : 32] as CFDictionary, &error) as? Data
         else {
             fatalError("ECDH failed: \(error!.takeRetainedValue())")
@@ -129,8 +141,8 @@ class KeyManager {
         let peerBuffer: [UInt8] = peerPublicKeyData.map { $0 }
         /// Data buffer of our public key.
         let ourBuffer:[UInt8] = ourPublicKeyData.map { $0 }
-        /// Adding each element from one array with the corresponding element in the other.
-        let addition = zip(peerBuffer, ourBuffer).map { $0 &+ $1 }
+        /// XORing each element from one array with the corresponding element in the other.
+        let addition = zip(peerBuffer, ourBuffer).map { $0 ^ $1 }
         let salt = Data(addition)
         
         let sessionKey = HKDF<SHA256>.deriveKey(
@@ -145,9 +157,9 @@ class KeyManager {
 }
 
 extension KeyManager {
-    /// <#Description#>
-    /// - Parameter key: <#key description#>
-    /// - Returns: <#description#>
+    /// Convert public key, ours or peer's into a data buffer.
+    /// - Parameter key: Public key.
+    /// - Returns: Public keying material.
     func convert(key: SecKey?) -> Data? {
         if let key, let publicKeyData = SecKeyCopyExternalRepresentation(key, nil) as Data? {
             return publicKeyData
