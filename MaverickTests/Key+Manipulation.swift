@@ -13,23 +13,22 @@ struct KeyManipulation {
     @Test("Generates private key in Secure Enclave")
     func generatePrivateKey() throws {
         let tag = UUID().uuidString
-        let manager = KeyManager(using: tag)
+        let manager = KeyManager(testingTag: tag)
         
-        let result = try manager.create()
+        let result = try manager.retrievePrivateKey()
 
         let deletion = manager.delete(using: tag)
         
-        #expect(result == true)
+        #expect(result != nil)
         #expect(deletion == true)
     }
     
     @Test("Retrieve public key material from Secure Enclave")
     func retrievePublicKey() throws {
         let tag = UUID().uuidString
-        let manager = KeyManager(using: tag)
+        let manager = KeyManager(testingTag: tag)
         
-        let _ = try manager.create()
-        let privateKey = manager.retrievePrivateKey()
+        let privateKey = try manager.retrievePrivateKey()
         let publicKey = manager.retrivePublicKey(using: privateKey)
         
         manager.delete(using: tag)
@@ -47,14 +46,11 @@ struct KeyManipulation {
         let tagBob = UUID().uuidString
         let tagAlice = UUID().uuidString
         
-        let managerBob = KeyManager(using: tagBob)
-        let managerAlice = KeyManager(using: tagAlice)
+        let managerBob = KeyManager(testingTag: tagBob)
+        let managerAlice = KeyManager(testingTag: tagAlice)
         
-        let _ = try managerBob.create()
-        let _ = try managerAlice.create()
-        
-        let privateKeyBob = managerBob.retrievePrivateKey()
-        let privateKeyAlice = managerAlice.retrievePrivateKey()
+        let privateKeyBob = try managerBob.retrievePrivateKey()
+        let privateKeyAlice = try managerAlice.retrievePrivateKey()
         
         let publicKeyBob = managerBob.retrivePublicKey(using: privateKeyBob)
         let publicKeyAlice = managerAlice.retrivePublicKey(using: privateKeyAlice)

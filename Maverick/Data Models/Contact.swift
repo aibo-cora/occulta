@@ -34,8 +34,6 @@ final class Contact {
     
     /// Public key of the trusted contact.
     var contactPublicKey: Data?
-    /// Identifier for the private key used for this contact - key stored locally in Secure Enclave
-    var privateKeyIdentifier: String = UUID().uuidString
     /// Identifier to determine the owner of the public key.
     var identifierFromOutside: String?
     
@@ -43,7 +41,7 @@ final class Contact {
     
     /// Convert from `CNContact` to our contact.
     /// - Parameter cnContact: Contact.
-    init?(from cnContact: CNContact) throws {
+    init(from cnContact: CNContact) {
         self.identifier = cnContact.identifier
         self.givenName = cnContact.givenName
         self.familyName = cnContact.familyName

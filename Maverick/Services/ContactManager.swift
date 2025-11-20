@@ -27,11 +27,9 @@ class ContactManager {
     /// - Parameter cnContact: Apple's contact object.
     func createContacts(from cnContacts: [CNContact]) throws {
         for contact in cnContacts {
-            if let newContact = try Contact(from: contact) {
-                _ = try KeyManager(using: newContact.privateKeyIdentifier).create()
-                
-                self.modelContext.insert(newContact)
-            }
+            let newContact = Contact(from: contact)
+            
+            self.modelContext.insert(newContact)
         }
         
         try self.modelContext.save()

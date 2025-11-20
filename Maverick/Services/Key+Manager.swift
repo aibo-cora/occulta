@@ -12,16 +12,27 @@ class KeyManager {
     /// Identifier of our private key in the `Secure Enclave`.
     let tag: String
     
-    init(using tag: String) {
+    /// /// Create a manager with a master key tag.
+    init() {
+        self.tag = "master.key.privacy.turtles.are.cute"
+    }
+    
+    /// Create a manager with a custom tag.
+    /// - Parameter tag: Tag of the master key.
+    ///
+    /// This is for testing purposes only.
+    init(testingTag tag: String) {
         self.tag = tag
     }
     
-    /// Create a key in the `Secure Enclave`.
+    /// Create master key in the `Secure Enclave`.
     /// - Returns: Result of the operation.
-    func create() throws -> Bool {
+    private func create() throws -> Bool {
         var error: Unmanaged<CFError>?
         
-        if let access = SecAccessControlCreateWithFlags(kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .privateKeyUsage, &error) {
+        // TODO: Should we add more flags to ensure user authenticity?
+        
+        if let access = SecAccessControlCreateWithFlags(kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage, .userPresence], &error) {
             let attributes: NSDictionary = [
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits: 256,
@@ -46,7 +57,7 @@ class KeyManager {
     
     /// Retrieve private key from the `Secure Enclave`.
     /// - Returns: Private key in `SecKey` format.
-    func retrievePrivateKey() -> SecKey? {
+    func retrievePrivateKey() throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: self.tag.data(using: .utf8)!,
@@ -59,8 +70,19 @@ class KeyManager {
         
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         
-        if status == errSecSuccess {
+        switch status {
+        case errSecItemNotFound:
+            _ = try self.create()
+            
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            
+            if status == errSecSuccess {
+                return (item as! SecKey)
+            }
+        case errSecSuccess:
             return (item as! SecKey)
+        default:
+            break
         }
         
         return nil
@@ -107,7 +129,7 @@ class KeyManager {
         // TODO: - This needs to be changed into a throwing function.
         
         let peerPublicKey: SecKey? = self.convert(material: material)
-        let ourPrivateKey = self.retrievePrivateKey()
+        let ourPrivateKey = try? self.retrievePrivateKey()
         
         let algorithm: SecKeyAlgorithm = .ecdhKeyExchangeCofactorX963SHA256
         var error: Unmanaged<CFError>?
