@@ -45,37 +45,59 @@ class ExchangeManager: NSObject {
 extension ExchangeManager: MCSessionDelegate {
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         guard
-            state == .connected,
-            let discoveryToken = self.nearbySession?.discoveryToken,
-            let encodedData = try? NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+            state == .connected
         else {
             return
         }
         
-        /// 2. Send the discovery token to ALL the peers in the vicinity.
-        try? session.send(encodedData, toPeers: [peerID], with: .reliable)
-    }
-    
-    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        /// 3. Receive discovery token.
         guard
-            let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data)
+            let discoveryToken = self.nearbySession?.discoveryToken
         else {
+            // TODO: Handle the no token event
             return
         }
         
-        // TODO: -
-        
-        /// There could be multiple contacts in the vicinity willing to exchange keys. Need to create as many `NISession()` objects as there are tokens received. For simplicity, I am creating only one for now.
-        ///
-        self.receivedDiscoveryTokens[token] = peerID
-        /// 4. Run `NearbyInteraction` session.
-        ///
-        
-        /// Nearby configuratuio
-        let configuration = NINearbyPeerConfiguration(peerToken: token)
-        
-        self.nearbySession?.run(configuration)
+        do {
+            let encodedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+            
+            let exchange = Exchange(id: UUID().uuidString, token: encodedToken, version: .v1)
+            let encodedExchange = try JSONEncoder().encode(exchange)
+            
+            /// 2. Send the discovery token to ALL the peers in the vicinity.
+            try session.send(encodedExchange, toPeers: [peerID], with: .reliable)
+        } catch {
+            // TODO: Handle the archiving, encoding and sending exceptions
+        }
+    }
+    /// 3. Receive discovery token.
+    func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
+        do {
+            let decoded = try JSONDecoder().decode(Exchange.self, from: data)
+            let archivedToken = decoded.token
+            let token = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: archivedToken)
+            
+            // TODO: - Multiple peers
+            
+            guard
+                let token
+            else {
+                // TODO: Handle missing token
+                return
+            }
+            
+            /// There could be multiple contacts in the vicinity willing to exchange keys. Need to create as many `NISession()` objects as there are tokens received. For simplicity, I am creating only one for now.
+            ///
+            self.receivedDiscoveryTokens[token] = peerID
+            /// 4. Run `NearbyInteraction` session.
+            ///
+            
+            /// Nearby configuratuio
+            let configuration = NINearbyPeerConfiguration(peerToken: token)
+            
+            self.nearbySession?.run(configuration)
+        } catch {
+            // TODO: Handle decoding error
+        }
     }
     
     func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {
