@@ -8,14 +8,22 @@
 import Foundation
 import NearbyInteraction
 import MultipeerConnectivity
+import Combine
 
 @Observable
 class ExchangeManager: NSObject {
-    var nearbySession: NISession?
-    var multipeerSession: MCSession?
-    var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
+    private var nearbySession: NISession?
+    private var multipeerSession: MCSession?
+    private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
     
-    private let serviceType = "secure-peer-discovery"
+    private let serviceType = "secure-peer-discovery-data-exchange"
+    
+    /// This ID will be matched with the incoming data to make sure that we get a public key from a peer that got our identity - public key.
+    ///
+    /// This will be the peer that we verified through nearby interaction.
+    private var peerReceivingOurIdentity: MCPeerID?
+    /// Passing received identity from a contact that got within range.
+    let receivedIdentity: CurrentValueSubject<Data?, Never> = .init(nil)
     
     override init() {
         super.init()
@@ -58,9 +66,9 @@ extension ExchangeManager: MCSessionDelegate {
         }
         
         do {
-            let encodedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+            let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
             
-            let exchange = Exchange(id: UUID().uuidString, token: encodedToken, version: .v1)
+            let exchange = Exchange(id: UUID().uuidString, token: archivedToken, version: .v1)
             let encodedExchange = try JSONEncoder().encode(exchange)
             
             /// 2. Send the discovery token to ALL the peers in the vicinity.
@@ -83,6 +91,16 @@ extension ExchangeManager: MCSessionDelegate {
             else {
                 // TODO: Handle missing token
                 return
+            }
+            
+            if let peersIdentity = decoded.identity {
+                if peerID == self.peerReceivingOurIdentity {
+                    /// The exchange contains an identity key and we verified that we got it from the same peer that got our own identity.
+                    self.receivedIdentity.send(peersIdentity)
+                } else {
+                    // TODO: MITM? attack
+                    return
+                }
             }
             
             /// There could be multiple contacts in the vicinity willing to exchange keys. Need to create as many `NISession()` objects as there are tokens received. For simplicity, I am creating only one for now.
@@ -136,9 +154,21 @@ extension ExchangeManager: NISessionDelegate {
                 let token = object.discoveryToken
                 
                 if let peer = self.receivedDiscoveryTokens[token] {
-                    /// Send public key to the peer that got close to us.
-                    
-                    try? self.multipeerSession?.send(Data(), toPeers: [peer], with: .reliable)
+                    do {
+                        let keyManager = KeyManager()
+                        let keyingMaterial = try keyManager.retrieveIdentity()
+                        let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+                        let exchange = Exchange(id: UUID().uuidString, token: archivedToken, version: .v1, identity: keyingMaterial)
+                        let encodedExchange = try JSONEncoder().encode(exchange)
+                        /// Peer ID to be matched on receive.
+                        self.peerReceivingOurIdentity = peer
+                        /// Send public key to the peer that got close to us.
+                        try self.multipeerSession?.send(encodedExchange, toPeers: [peer], with: .reliable)
+                        /// Stop the session
+                        session.invalidate()
+                    } catch {
+                        // TODO: Handle errors
+                    }
                 }
             }
         }

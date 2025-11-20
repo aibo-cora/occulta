@@ -212,4 +212,26 @@ extension KeyManager {
         
         return publicKey
     }
+    
+    /// Retrieve public keying material of our master key.
+    /// - Returns: Buffer with our public keying material.
+    func retrieveIdentity() throws -> Data {
+        let master = try self.retrievePrivateKey()
+        let identityKey = self.retrivePublicKey(using: master)
+        let representation = self.convert(key: identityKey)
+        
+        guard
+            let representation
+        else {
+            throw Errors.noIdentityAvailable
+        }
+        
+        return representation
+    }
+}
+
+extension KeyManager {
+    enum Errors: Error {
+        case noIdentityAvailable
+    }
 }
