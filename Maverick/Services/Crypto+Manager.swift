@@ -15,31 +15,42 @@ extension Manager {
     class Crypto: CryptoProtocol {
         let keyManager = KeyManager()
         
-        func encrypt(data: Data?) -> Data? {
+        /// Encrypt data using our local encryption key.
+        /// - Parameter data: Payload.
+        /// - Returns: Encrypted data.
+        func encrypt(data: Data?) throws -> Data? {
             guard
-                let data = data
+                let data = data,
+                let key = try self.keyManager.createLocalEncryptionKey()
             else {
                 return nil
             }
             
-            let nonce = AES.GCM.Nonce()
+            let sealed = try AES.GCM.seal(data, using: key, nonce: AES.GCM.Nonce())
             
-            return nil
+            return sealed.combined
         }
         
-        func decrypt(data: Data?) -> Data? {
+        /// Decrypt data using our local encryption key.
+        /// - Parameter data: Encrypted payload.
+        /// - Returns: Decrypted data.
+        func decrypt(data: Data?) throws -> Data? {
             guard
-                let data = data
+                let data = data,
+                let key = try self.keyManager.createLocalEncryptionKey()
             else {
                 return nil
             }
             
-            return nil
+            let box = try AES.GCM.SealedBox(combined: data)
+            let payload = try AES.GCM.open(box, using: key)
+            
+            return payload
         }
     }
 }
 
 protocol CryptoProtocol {
-    func encrypt(data: Data?) -> Data?
-    func decrypt(data: Data?) -> Data?
+    func encrypt(data: Data?) throws -> Data?
+    func decrypt(data: Data?) throws -> Data?
 }
