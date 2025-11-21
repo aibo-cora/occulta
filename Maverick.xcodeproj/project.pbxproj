@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		DE02DCE72ED0A90D0091D4D9 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE62ED0A90D0091D4D9 /* Crypto */; };
+		DE02DCE92ED0A90D0091D4D9 /* CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */; };
+		DE02DCEB2ED0A90D0091D4D9 /* _CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		DEFFD8652E9D293700CA60F9 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -57,6 +63,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE02DCE92ED0A90D0091D4D9 /* CryptoExtras in Frameworks */,
+				DE02DCE72ED0A90D0091D4D9 /* Crypto in Frameworks */,
+				DE02DCEB2ED0A90D0091D4D9 /* _CryptoExtras in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -119,6 +128,9 @@
 			);
 			name = Maverick;
 			packageProductDependencies = (
+				DE02DCE62ED0A90D0091D4D9 /* Crypto */,
+				DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */,
+				DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */,
 			);
 			productName = Maverick;
 			productReference = DEFFD8552E9D293500CA60F9 /* Maverick.app */;
@@ -202,6 +214,9 @@
 			);
 			mainGroup = DEFFD84C2E9D293500CA60F9;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DEFFD8562E9D293500CA60F9 /* Products */;
 			projectDirPath = "";
@@ -636,6 +651,35 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-crypto.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DE02DCE62ED0A90D0091D4D9 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = CryptoExtras;
+		};
+		DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = _CryptoExtras;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = DEFFD84D2E9D293500CA60F9 /* Project object */;
 }

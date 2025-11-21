@@ -39,18 +39,27 @@ final class Contact {
     
     // MARK: Initializers
     
-    /// Convert from `CNContact` to our contact.
-    /// - Parameter cnContact: Contact.
-    init(from cnContact: CNContact) {
-        self.identifier = cnContact.identifier
-        self.givenName = cnContact.givenName
-        self.familyName = cnContact.familyName
-        self.middleName = cnContact.middleName
-        self.imageData = cnContact.imageData
-        self.imageDataAvailable = cnContact.imageDataAvailable
-        self.thumbnailImageData = cnContact.thumbnailImageData
-        self.emailAddresses = cnContact.emailAddresses.map { LabeledValue(from: $0) }
-        self.phoneNumbers = cnContact.phoneNumbers.map { LabeledValue(from: $0) }
+    /// Create a contact with encrypted properties for storage.
+    /// - Parameters:
+    ///   - identifier: <#identifier description#>
+    ///   - givenName: <#givenName description#>
+    ///   - familyName: <#familyName description#>
+    ///   - middleName: <#middleName description#>
+    ///   - imageData: <#imageData description#>
+    ///   - imageDataAvailable: <#imageDataAvailable description#>
+    ///   - thumbnailImageData: <#thumbnailImageData description#>
+    ///   - emailAddresses: <#emailAddresses description#>
+    ///   - phoneNumbers: <#phoneNumbers description#>
+    init(identifier: String, givenName: String, familyName: String, middleName: String, imageData: Data?, imageDataAvailable: Bool, thumbnailImageData: Data?, emailAddresses: CNLabeledValue<NSString>, phoneNumbers: CNLabeledValue<CNPhoneNumber>) {
+        self.identifier = identifier
+        self.givenName = givenName
+        self.familyName = familyName
+        self.middleName = middleName
+        self.imageData = imageData
+        self.imageDataAvailable = imageDataAvailable
+        self.thumbnailImageData = thumbnailImageData
+        self.emailAddresses = [emailAddresses].map { LabeledValue(from: $0) }
+        self.phoneNumbers = [phoneNumbers].map { LabeledValue(from: $0) }
     }
 }
 
