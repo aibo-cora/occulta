@@ -8,6 +8,7 @@
 import Testing
 @testable import Maverick
 import Foundation
+internal import CryptoKit
 
 struct KeyManipulation {
     @Test("Generates private key in Secure Enclave")
@@ -70,5 +71,18 @@ struct KeyManipulation {
         
         managerBob.delete(using: tagBob)
         managerAlice.delete(using: tagAlice)
+    }
+    
+    @Test("Create local encryption key")
+    func createLocalEncryptionKey() throws {
+        let tag = UUID().uuidString
+        let manager = KeyManager(testingTag: tag)
+        
+        let localEncryptionKey = try manager.createLocalEncryptionKey()
+        
+        #expect(localEncryptionKey != nil)
+        #expect(localEncryptionKey?.bitCount == 256)
+        
+        manager.delete(using: tag)
     }
 }

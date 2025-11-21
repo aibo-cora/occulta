@@ -16,6 +16,8 @@ class ContactManager {
     private let modelContainer: ModelContainer
     private var modelContext: ModelContext { self.modelExecutor.modelContext }
     
+    private let cryptoManager: CryptoProtocol = Manager.Crypto()
+    
     init(modelContainer: ModelContainer) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
@@ -27,9 +29,10 @@ class ContactManager {
     /// - Parameter cnContact: Apple's contact object.
     func createContacts(from cnContacts: [CNContact]) throws {
         for contact in cnContacts {
-            let newContact = Contact(from: contact)
-            
-            self.modelContext.insert(newContact)
+//            let encryptedIdentifier = self.cryptoManager.encrypt(data: contact.identifier.data(using: .utf8))?.base64EncodedString()
+//            let newContact = Contact(identifier: <#T##String#>, givenName: <#T##String#>, familyName: <#T##String#>, middleName: <#T##String#>, imageData: <#T##Data?#>, imageDataAvailable: <#T##Bool#>, thumbnailImageData: <#T##Data?#>, emailAddresses: <#T##CNLabeledValue<NSString>#>, phoneNumbers: <#T##CNLabeledValue<CNPhoneNumber>#>)
+//            
+//            self.modelContext.insert(newContact)
         }
         
         try self.modelContext.save()
