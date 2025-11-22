@@ -25,7 +25,7 @@ final class Contact {
     var familyName: String
     var middleName: String
     var imageData: Data?
-    var imageDataAvailable: Bool
+    var imageDataAvailable: Data?
     var thumbnailImageData: Data?
     var emailAddresses: [LabeledValue]
     var phoneNumbers: [LabeledValue]
@@ -50,7 +50,7 @@ final class Contact {
     ///   - thumbnailImageData: <#thumbnailImageData description#>
     ///   - emailAddresses: <#emailAddresses description#>
     ///   - phoneNumbers: <#phoneNumbers description#>
-    init(identifier: String, givenName: String, familyName: String, middleName: String, imageData: Data?, imageDataAvailable: Bool, thumbnailImageData: Data?, emailAddresses: CNLabeledValue<NSString>, phoneNumbers: CNLabeledValue<CNPhoneNumber>) {
+    init(identifier: String, givenName: String, familyName: String, middleName: String, imageData: Data?, imageDataAvailable: Data?, thumbnailImageData: Data?, emailAddresses: [CNLabeledValue<NSString>], phoneNumbers: [CNLabeledValue<CNPhoneNumber>]) {
         self.identifier = identifier
         self.givenName = givenName
         self.familyName = familyName
@@ -58,8 +58,8 @@ final class Contact {
         self.imageData = imageData
         self.imageDataAvailable = imageDataAvailable
         self.thumbnailImageData = thumbnailImageData
-        self.emailAddresses = [emailAddresses].map { LabeledValue(from: $0) }
-        self.phoneNumbers = [phoneNumbers].map { LabeledValue(from: $0) }
+        self.emailAddresses = emailAddresses.map { LabeledValue(from: $0) }
+        self.phoneNumbers = phoneNumbers.map { LabeledValue(from: $0) }
     }
 }
 

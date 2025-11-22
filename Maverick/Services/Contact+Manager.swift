@@ -26,13 +26,61 @@ class ContactManager {
     // MARK: - Create
     
     /// Creates a contact from a CNContact object.
+    ///
+    /// All properties are encrypted before being stored in the local database.
     /// - Parameter cnContact: Apple's contact object.
     func createContacts(from cnContacts: [CNContact]) throws {
         for contact in cnContacts {
-//            let encryptedIdentifier = self.cryptoManager.encrypt(data: contact.identifier.data(using: .utf8))?.base64EncodedString()
-//            let newContact = Contact(identifier: <#T##String#>, givenName: <#T##String#>, familyName: <#T##String#>, middleName: <#T##String#>, imageData: <#T##Data?#>, imageDataAvailable: <#T##Bool#>, thumbnailImageData: <#T##Data?#>, emailAddresses: <#T##CNLabeledValue<NSString>#>, phoneNumbers: <#T##CNLabeledValue<CNPhoneNumber>#>)
-//            
-//            self.modelContext.insert(newContact)
+            let encryptedIdentifier = try self.cryptoManager.encrypt(data: contact.identifier.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedFamilyName = try self.cryptoManager.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedMiddleName = try self.cryptoManager.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedImageData = try self.cryptoManager.encrypt(data: contact.imageData)
+            
+            let imageDataAvailableFlag: UInt8 = contact.imageDataAvailable ? 1 : 0
+            let encryptedImageDataAvailable = try self.cryptoManager.encrypt(data: Data([imageDataAvailableFlag]))
+            
+            let encryptedThumbnailImageData = try self.cryptoManager.encrypt(data: contact.thumbnailImageData)
+            
+            var encryptedEmailAddresses: [CNLabeledValue<NSString>] = []
+            
+            contact.emailAddresses.forEach { email in
+                do {
+                    let label = try self.cryptoManager.encrypt(data: email.label?.data(using: .utf8))?.base64EncodedString() ?? ""
+                    let value = try self.cryptoManager.encrypt(data: String(email.value).data(using: .utf8))?.base64EncodedString() ?? ""
+                    
+                    encryptedEmailAddresses.append(CNLabeledValue(label: label, value: value as NSString))
+                } catch {
+                    
+                }
+            }
+            
+            var encryptedPhoneNumbers: [CNLabeledValue<CNPhoneNumber>] = []
+            
+            contact.phoneNumbers.forEach { phoneNumber in
+                do {
+                    let label = try self.cryptoManager.encrypt(data: phoneNumber.label?.data(using: .utf8))?.base64EncodedString() ?? ""
+                    let value = try self.cryptoManager.encrypt(data: phoneNumber.value.stringValue.data(using: .utf8))?.base64EncodedString() ?? ""
+                    
+                    encryptedPhoneNumbers.append(CNLabeledValue(label: label, value: CNPhoneNumber(stringValue: value)))
+                } catch {
+                    
+                }
+            }
+            
+            let newContact = Contact(
+                identifier: encryptedIdentifier,
+                givenName: encryptedGivenName,
+                familyName: encryptedFamilyName,
+                middleName: encryptedMiddleName,
+                imageData: encryptedImageData,
+                imageDataAvailable: encryptedImageDataAvailable,
+                thumbnailImageData: encryptedThumbnailImageData,
+                emailAddresses: encryptedEmailAddresses,
+                phoneNumbers: encryptedPhoneNumbers
+            )
+            
+            self.modelContext.insert(newContact)
         }
         
         try self.modelContext.save()
@@ -56,7 +104,9 @@ class ContactManager {
     }
     
     // MARK: - Update
+    
     /// Updates an existing contact with new values.
+    @available(*, unavailable, message: "This function is no longer supported. Need to handle encryption")
     func updateContact(
         identifier: String,
         givenName: String? = nil,
@@ -68,54 +118,22 @@ class ContactManager {
         thumbnailImageData: Data?? = nil
     ) throws {
         guard
-            let contact = try fetchContact(by: identifier)
+            let _ = try fetchContact(by: identifier)
         else {
             throw ContactManagerError.contactNotFound
-        }
-        
-        // Update only provided fields
-        if let givenName = givenName {
-            contact.givenName = givenName
-        }
-        if let familyName = familyName {
-            contact.familyName = familyName
-        }
-        if let middleName = middleName {
-            contact.middleName = middleName
-        }
-        if let emailAddresses = emailAddresses {
-            contact.emailAddresses = emailAddresses
-        }
-        if let phoneNumbers = phoneNumbers {
-            contact.phoneNumbers = phoneNumbers
-        }
-        if let imageData = imageData {
-            contact.imageData = imageData
-            contact.imageDataAvailable = imageData != nil
-        }
-        if let thumbnailImageData = thumbnailImageData {
-            contact.thumbnailImageData = thumbnailImageData
         }
         
         try self.modelContext.save()
     }
     
     /// Updates a contact from a CNContact object.
+    @available(*, unavailable, message: "This function is no longer supported. Need to handle encryption")
     func updateContact(from cnContact: CNContact) throws {
         guard
-            let contact = try fetchContact(by: cnContact.identifier)
+            let _ = try fetchContact(by: cnContact.identifier)
         else {
             throw ContactManagerError.contactNotFound
         }
-        
-        contact.givenName = cnContact.givenName
-        contact.familyName = cnContact.familyName
-        contact.middleName = cnContact.middleName
-        contact.imageData = cnContact.imageData
-        contact.imageDataAvailable = cnContact.imageDataAvailable
-        contact.thumbnailImageData = cnContact.thumbnailImageData
-        contact.emailAddresses = cnContact.emailAddresses.map { LabeledValue(from: $0) }
-        contact.phoneNumbers = cnContact.phoneNumbers.map { LabeledValue(from: $0) }
         
         try self.modelContext.save()
     }
