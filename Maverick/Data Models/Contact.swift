@@ -9,6 +9,8 @@ import Foundation
 import SwiftData
 import Contacts
 
+// TODO: Explore subclassing `CNContact`
+
 /// Local representation of a trusted contact.
 @Model
 final class Contact {
