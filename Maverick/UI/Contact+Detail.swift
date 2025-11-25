@@ -54,16 +54,23 @@ struct ContactDetail: View {
                         .font(.footnote)
                 }
                 
-                if self.contacts.first?.contactPublicKey == nil {
-                    Text("To begin communicating with \(self.name), first, you'll need to exchange keys. To facilitate a secure exchange, bring your phones together after pressing the button below.")
+                if self.needsExchange {
+                    Text("To begin communicating with \(self.name), first, you'll need to exchange keys. To facilitate a secure exchange, bring your phones together after pressing the **Exchange Keys** button on both devices.")
                         .padding()
                     
-                    Button {
+                    HStack {
+                        Button {
+                            
+                        } label: {
+                            HStack {
+                                Text("Exchange Keys")
+                                Image(systemName: "key.horizontal")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
                         
-                    } label: {
-                        Text("Exchange Keys")
+                        Image(systemName: "info.bubble")
                     }
-                    .buttonStyle(.borderedProminent)
                 }
             }
         } else {
