@@ -35,7 +35,7 @@ final class Contact {
     // MARK: Application specific metadata - encrypted
     
     /// Public key of the trusted contact.
-    var contactPublicKey: Data?
+    var contactPublicKeys: [Data?] = []
     /// Identifier to determine the owner of the public key.
     var identifierFromOutside: String?
     

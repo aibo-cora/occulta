@@ -172,7 +172,7 @@ extension ContactManager {
         if let contact = try self.fetchContact(by: identifier) {
             let encrypted = try self.cryptoManager.encrypt(data: key)
             
-            contact.contactPublicKey = encrypted
+            contact.contactPublicKeys.append(encrypted)
             
             try self.modelContext.save()
         }
