@@ -10,13 +10,10 @@ import SwiftData
 import Combine
 
 struct StartingSession: View {
-    @State private var exchangeManager: ExchangeManager = .init()
     @State private var isAnimating: Bool = false
     
     private var timer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
     private let contactIdentifier: String
-    
-    @Environment(ContactManager.self) private var contactManager: ContactManager?
     
     /// Start an exchange session.
     /// - Parameter identifier: Identifier of our contact which is exchanging identities with us.
@@ -27,7 +24,7 @@ struct StartingSession: View {
     /// <#Description#>
     var body: some View {
         VStack {
-            Text("Bring your phones together to exchange identities.")
+            Text("Bring your phones together with your contact to exchange identities.")
                 .padding()
             
             HStack(spacing: 30) {
@@ -35,17 +32,6 @@ struct StartingSession: View {
                     .font(.system(size: 100))
                     .symbolEffect(.variableColor.reversing.iterative, value: self.isAnimating)
                     .foregroundStyle(.blue)
-            }
-        }
-        .onReceive(self.exchangeManager.receivedIdentity) { identity in
-            if let identity {
-                print("Received identity: \(identity)")
-                
-                do {
-                    try self.contactManager?.update(identity: identity, for: self.contactIdentifier)
-                } catch {
-                    
-                }
             }
         }
         .onReceive(self.timer) { _ in

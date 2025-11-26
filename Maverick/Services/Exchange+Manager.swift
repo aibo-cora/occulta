@@ -16,7 +16,7 @@ class ExchangeManager: NSObject {
     private var multipeerSession: MCSession?
     private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
     
-    private let serviceType = "secure-peer-discovery-data-exchange"
+    private let serviceType = "peer-data-ex"
     
     /// This ID will be matched with the incoming data to make sure that we get a public key from a peer that got our identity - public key.
     ///
@@ -25,10 +25,15 @@ class ExchangeManager: NSObject {
     /// Passing received identity from a contact that got within range.
     let receivedIdentity: CurrentValueSubject<Data?, Never> = .init(nil)
     
+    private var advertiser: MCNearbyServiceAdvertiser?
+    private var browser: MCNearbyServiceBrowser?
+    
+    /// Key exchange is in progress?
+    var inProgress: Bool = false
+    
     override init() {
         super.init()
-        /// 1. Create a session and a discovery token.
-        self.nearbySession = NISession()
+        
         
         self.setupMC()
     }
@@ -39,14 +44,22 @@ class ExchangeManager: NSObject {
         self.multipeerSession = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
         self.multipeerSession?.delegate = self
 
-        let advertiser = MCNearbyServiceAdvertiser(peer: peerID, discoveryInfo: nil, serviceType: self.serviceType)
-        let browser = MCNearbyServiceBrowser(peer: peerID, serviceType: self.serviceType)
+        self.advertiser = MCNearbyServiceAdvertiser(peer: peerID, discoveryInfo: nil, serviceType: self.serviceType)
+        self.browser = MCNearbyServiceBrowser(peer: peerID, serviceType: self.serviceType)
 
-        advertiser.delegate = self
-        browser.delegate = self
-
-        advertiser.startAdvertisingPeer()
-        browser.startBrowsingForPeers()
+        self.advertiser?.delegate = self
+        self.browser?.delegate = self
+    }
+    
+    /// Start Nearby Interaction and Multipeer Connectivity to find a peer and exchange keys.
+    func start() {
+        /// 1. Create a session and a discovery token.
+        self.nearbySession = NISession()
+        
+        self.advertiser?.startAdvertisingPeer()
+        self.browser?.startBrowsingForPeers()
+        
+        self.inProgress = true
     }
 }
 

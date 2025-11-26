@@ -10,10 +10,12 @@ import SwiftUI
 
 
 struct KeyExchange: View {
+    @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = false
-    @State private var exchangeInProgress: Bool = false
     
     @Query(sort: \Contact.familyName) var contacts: [Contact]
+    
+    @Environment(ContactManager.self) private var contactManager: ContactManager?
     
     init(identifier: String) {
         let predicate = #Predicate<Contact> {
@@ -33,16 +35,29 @@ struct KeyExchange: View {
     }
     
     var body: some View {
-        if self.exchangeInProgress {
+        if self.exchangeManager.inProgress {
             VStack {
                 StartingSession(withContact: self.identifier)
                 
                 Button {
-                    self.exchangeInProgress.toggle()
+                    self.exchangeManager.inProgress = false
                 } label: {
                     Text("Cancel")
                 }
                 .buttonStyle(.borderedProminent)
+            }
+            .onReceive(self.exchangeManager.receivedIdentity) { identity in
+                if let identity {
+                    print("Received identity: \(identity)")
+                    
+                    do {
+                        try self.contactManager?.update(identity: identity, for: self.identifier)
+                    } catch {
+                        
+                    }
+                    /// We received a key. Stop the exchange.
+                    self.exchangeManager.inProgress = false
+                }
             }
         } else {
             VStack {
@@ -53,7 +68,7 @@ struct KeyExchange: View {
                 
                 HStack {
                     Button {
-                        self.exchangeInProgress.toggle()
+                        self.exchangeManager.inProgress = true
                     } label: {
                         HStack {
                             Text("Exchange Keys")
