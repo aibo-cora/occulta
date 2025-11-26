@@ -25,8 +25,8 @@ struct Contacts: View {
             self.contacts
         } else {
             self.contacts.filter {
-                $0.givenName.localizedStandardContains(self.searchText)
-                || $0.familyName.localizedStandardContains(self.searchText)
+                $0.givenName.decrypt().localizedStandardContains(self.searchText)
+                || $0.familyName.decrypt().localizedStandardContains(self.searchText)
             }
         }
     }
@@ -46,7 +46,8 @@ struct Contacts: View {
                                     .resizable()
                                     .frame(width: 50, height: 50)
                             }
-                            Text(contact.familyName + " " + contact.givenName)
+                            
+                            Text(contact.familyName.decrypt() + " " + contact.givenName.decrypt())
                         }
                     }
                 }
@@ -68,6 +69,7 @@ struct Contacts: View {
         .task {
             self.contactManager = ContactManager(modelContainer: self.modelContext.container)
         }
+        .environment(self.contactManager)
     }
     /// Prepare the Contacts system to return the names of matching people
     let keys = [

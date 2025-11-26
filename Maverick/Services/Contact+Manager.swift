@@ -9,6 +9,7 @@
 import SwiftData
 import Contacts
 import SwiftUI
+import Combine
 
 @Observable
 class ContactManager {
@@ -162,7 +163,25 @@ class ContactManager {
     }
 }
 
+extension ContactManager {
+    /// <#Description#>
+    /// - Parameters:
+    ///   - key: <#key description#>
+    ///   - identifier: <#identifier description#>
+    func update(identity key: Data, for identifier: String) throws {
+        if let contact = try self.fetchContact(by: identifier) {
+            let encrypted = try self.cryptoManager.encrypt(data: key)
+            
+            contact.contactPublicKey = encrypted
+            
+            try self.modelContext.save()
+        }
+    }
+}
+
 // MARK: - Error Handling
+
 enum ContactManagerError: Error {
     case contactNotFound
+    case identityNotSaved
 }

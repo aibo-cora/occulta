@@ -20,7 +20,7 @@ struct Onboarding: View {
                 .tag(0)
             
             VStack {
-                Text("Bring yourphones together to create a life long link.")
+                Text("Bring your phones together to create a life long link.")
                     .padding()
                 
                 HStack(spacing: 30) {

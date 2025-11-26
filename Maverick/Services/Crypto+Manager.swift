@@ -54,3 +54,22 @@ protocol CryptoProtocol {
     func encrypt(data: Data?) throws -> Data?
     func decrypt(data: Data?) throws -> Data?
 }
+
+extension String {
+    func decrypt() -> String {
+        let data = Data(base64Encoded: self)
+        let cryptoOps: CryptoProtocol = Manager.Crypto()
+        
+        do {
+            if let decrypted = try cryptoOps.decrypt(data: data) {
+                let decoded = String(data: decrypted, encoding: .utf8) ?? ""
+                
+                return decoded
+            } else {
+                return ""
+            }
+        } catch {
+            return ""
+        }
+    }
+}

@@ -16,15 +16,15 @@ struct ContactDetail: View {
     
     /// First name of the contact
     var name: String {
-        "\(self.contacts.first?.givenName ?? "Unknown")"
+        self.contacts.first?.givenName.decrypt() ?? "Anonymous"
     }
     /// Phone number of the contact
     var phone: String {
-        self.contacts.first?.phoneNumbers.first?.value ?? "No phone number"
+        self.contacts.first?.phoneNumbers.first?.value.decrypt() ?? "No phone number"
     }
     /// Email of the contact
     var email: String {
-        self.contacts.first?.emailAddresses.first?.value ?? "No email"
+        self.contacts.first?.emailAddresses.first?.value.decrypt() ?? "No email"
     }
     /// If we do not have a public key from our contact, we need to start an exchange.
     var needsExchange: Bool {
@@ -42,39 +42,24 @@ struct ContactDetail: View {
     }
     
     var body: some View {
-        if self.needsExchange {
-            VStack {
-                Group {
-                    Text(self.name)
-                        .font(.title)
-                        .fontWeight(.bold)
-                    Text(self.email)
-                        .font(.footnote)
-                    Text(self.phone)
-                        .font(.footnote)
-                }
-                
-                if self.needsExchange {
-                    Text("To begin communicating with \(self.name), first, you'll need to exchange keys. To facilitate a secure exchange, bring your phones together after pressing the **Exchange Keys** button on both devices.")
-                        .padding()
-                    
-                    HStack {
-                        Button {
-                            
-                        } label: {
-                            HStack {
-                                Text("Exchange Keys")
-                                Image(systemName: "key.horizontal")
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        
-                        Image(systemName: "info.bubble")
-                    }
-                }
+        VStack {
+            Group {
+                Text(self.name)
+                    .font(.title)
+                    .fontWeight(.bold)
+                Text(self.email)
+                    .font(.footnote)
+                Text(self.phone)
+                    .font(.footnote)
             }
-        } else {
             
+            if self.needsExchange {
+                KeyExchange(identifier: self.identifier)
+                
+                Spacer()
+            } else {
+                Text("We have a key, let's start communicating!")
+            }
         }
     }
 }
