@@ -56,7 +56,7 @@ struct KeyExchange: View {
                         
                     }
                     /// We received a key. Stop the exchange.
-                    self.exchangeManager.inProgress = false
+                    self.exchangeManager.finish()
                 }
             }
         } else {
@@ -68,7 +68,7 @@ struct KeyExchange: View {
                 
                 HStack {
                     Button {
-                        self.exchangeManager.inProgress = true
+                        self.exchangeManager.start()
                     } label: {
                         HStack {
                             Text("Exchange Keys")

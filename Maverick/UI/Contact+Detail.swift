@@ -43,15 +43,6 @@ struct ContactDetail: View {
         self._contacts = Query(filter: predicate)
     }
     
-    @State private var textToEncrypt: String = ""
-    @State private var mode = Mode.encrypt
-    
-    @State private var encryptedTextToShare = ""
-    
-    private enum Mode: Int, Hashable {
-        case encrypt = 0, decrypt, sign
-    }
-    
     var body: some View {
         VStack {
             Group {
@@ -67,73 +58,94 @@ struct ContactDetail: View {
             if self.needsExchange {
                 KeyExchange(identifier: self.identifier)
             } else {
-                Picker("Mode", selection: self.$mode) {
-                    Text("Encrypt")
-                        .tag(Mode.encrypt)
-                    Text("Decrypt")
-                        .tag(Mode.decrypt)
-                }
-                .pickerStyle(.segmented)
+                KeyAvailable(identifier: self.identifier)
+            }
+            
+            Spacer()
+        }
+    }
+}
+
+struct KeyAvailable: View {
+    let identifier: String
+    
+    @State private var textToEncrypt: String = ""
+    @State private var mode = Mode.encrypt
+    
+    @State private var encryptedTextToShare = ""
+    
+    @Environment(ContactManager.self) private var contactManager: ContactManager?
+    
+    private enum Mode: Int, Hashable {
+        case encrypt = 0, decrypt, sign
+    }
+    
+    var body: some View {
+        Picker("Mode", selection: self.$mode) {
+            Text("Encrypt")
+                .tag(Mode.encrypt)
+            Text("Decrypt")
+                .tag(Mode.decrypt)
+        }
+        .pickerStyle(.segmented)
+        .padding()
+        
+        switch self.mode {
+        case .encrypt:
+            TextEditor(text: self.$textToEncrypt)
+                .foregroundStyle(.secondary)
+                .frame(height: 200) // Set a minimum height for the editor
+                .border(Color.gray, width: 1) // Add a border for visual clarity
                 .padding()
-                
-                switch self.mode {
-                case .encrypt:
-                    TextEditor(text: self.$textToEncrypt)
-                        .foregroundStyle(.secondary)
-                        .frame(height: 200) // Set a minimum height for the editor
-                        .border(Color.gray, width: 1) // Add a border for visual clarity
-                        .padding()
-                    
-                    if self.textToEncrypt.isEmpty == false {
-                        HStack(alignment: .lastTextBaseline, spacing: 20) {
-                            Button {
-                                
-                            } label: {
-                                ShareLink(item: self.encryptedTextToShare) {
-                                    VStack {
-                                        Image(systemName: "square.and.arrow.up.fill")
-                                            .font(.system(size: 25))
-                                        Text("Share")
-                                    }
-                                }
-                            }
-                            .onChange(of: self.textToEncrypt) { _, newValue in
-                                let encrypted = try? self.contactManager?.encrypt(message: newValue, for: self.identifier)
-                                self.encryptedTextToShare = encrypted ?? ""
-                            }
-                            
-                            Button {
-                                UIPasteboard.general.string = self.textToEncrypt
-                            } label: {
-                                VStack {
-                                    Image(systemName: "doc.on.doc.fill")
-                                        .font(.system(size: 25))
-                                    Text("Copy To Clipboard")
-                                }
-                            }
-                            
-                            Button {
-                                self.textToEncrypt = ""
-                            } label: {
-                                VStack {
-                                    Image(systemName: "trash.fill")
-                                        .font(.system(size: 25))
-                                    
-                                    Text("Delete")
-                                }
-                            }
-                        }
-                    }
-                case .decrypt:
+            
+            if self.textToEncrypt.isEmpty == false {
+                HStack(alignment: .lastTextBaseline, spacing: 20) {
                     Button {
                         
                     } label: {
-                        
+                        ShareLink(item: self.encryptedTextToShare) {
+                            VStack {
+                                Image(systemName: "square.and.arrow.up.fill")
+                                    .font(.system(size: 25))
+                                Text("Share")
+                            }
+                        }
                     }
-                default:
-                    EmptyView()
+                    .onChange(of: self.textToEncrypt) { _, newValue in
+                        let encrypted = try? self.contactManager?.encrypt(message: newValue, for: self.identifier)
+                        self.encryptedTextToShare = encrypted ?? ""
+                    }
+                    
+                    Button {
+                        UIPasteboard.general.string = self.textToEncrypt
+                    } label: {
+                        VStack {
+                            Image(systemName: "doc.on.doc.fill")
+                                .font(.system(size: 25))
+                            Text("Copy To Clipboard")
+                        }
+                    }
+                    
+                    Button {
+                        self.textToEncrypt = ""
+                    } label: {
+                        VStack {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 25))
+                            
+                            Text("Delete")
+                        }
+                    }
                 }
             }
+        case .decrypt:
+            Button {
+                
+            } label: {
+                
+            }
+        default:
+            EmptyView()
         }
     }
 }

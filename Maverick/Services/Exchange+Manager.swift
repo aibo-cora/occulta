@@ -55,11 +55,21 @@ class ExchangeManager: NSObject {
     func start() {
         /// 1. Create a session and a discovery token.
         self.nearbySession = NISession()
+        self.nearbySession?.delegate = self
         
         self.advertiser?.startAdvertisingPeer()
         self.browser?.startBrowsingForPeers()
         
         self.inProgress = true
+    }
+    
+    func finish() {
+        self.nearbySession?.pause()
+        
+        self.advertiser?.stopAdvertisingPeer()
+        self.browser?.stopBrowsingForPeers()
+        
+        self.inProgress = false
     }
 }
 
