@@ -202,6 +202,28 @@ extension ContactManager {
             return nil
         }
     }
+    
+    func decrypt(message: String, for identifier: String) throws -> String? {
+        guard
+            let contact = try self.fetchContact(by: identifier)
+        else {
+            throw ContactManagerError.contactNotFound
+        }
+        
+        guard
+            let publicKeyingMaterial = contact.contactPublicKeys.last?.material
+        else {
+            throw ContactManagerError.contactHasNoKeys
+        }
+        
+        guard
+            let decrypted = try self.cryptoManager.decrypt(message: message, using: publicKeyingMaterial)
+        else {
+            return nil
+        }
+        
+        return String(data: decrypted, encoding: .utf8)
+    }
 }
 
 // MARK: - Error Handling

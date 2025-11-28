@@ -73,6 +73,7 @@ struct KeyAvailable: View {
     @State private var mode = Mode.encrypt
     
     @State private var encryptedTextToShare = ""
+    @State private var decryptedTextToShow: String = ""
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     
@@ -139,10 +140,32 @@ struct KeyAvailable: View {
                 }
             }
         case .decrypt:
-            Button {
+            VStack(spacing: 20) {
+                Button {
+                    do {
+                        let pastedTextToDecrypt = UIPasteboard.general.string ?? ""
+                        let decrypted = try self.contactManager?.decrypt(message: pastedTextToDecrypt, for: self.identifier)
+                        
+                        self.decryptedTextToShow = decrypted ?? "No text was produced after decryption"
+                    } catch {
+                        
+                    }
+                } label: {
+                    Text("Paste From Clipboard")
+                }
+                .buttonStyle(.borderedProminent)
                 
-            } label: {
-                
+                if self.decryptedTextToShow.isEmpty == false {
+                    VStack(spacing: 10) {
+                        Text("Decrypted Message")
+                            .bold()
+                        
+                        Text(self.decryptedTextToShow)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(nil)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         default:
             EmptyView()
@@ -157,5 +180,5 @@ struct ExchangeDisclaimer: View {
 }
 
 #Preview {
-    ContactDetail(identifier: UUID().uuidString)
+    KeyAvailable(identifier: UUID().uuidString)
 }

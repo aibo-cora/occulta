@@ -12,6 +12,9 @@ import Crypto
 enum Manager { }
 
 extension Manager {
+    
+    // TODO: Separate local and transport versions into their own classes for clarity
+    
     class Crypto: CryptoProtocol {
         let keyManager = KeyManager()
         
