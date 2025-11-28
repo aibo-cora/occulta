@@ -169,12 +169,37 @@ extension ContactManager {
     ///   - key: <#key description#>
     ///   - identifier: <#identifier description#>
     func update(identity key: Data, for identifier: String) throws {
-        if let contact = try self.fetchContact(by: identifier) {
+        guard
+            let contact = try self.fetchContact(by: identifier),
             let encrypted = try self.cryptoManager.encrypt(data: key)
+        else {
+            throw ContactManagerError.identityNotSaved
+        }
+        
+        contact.contactPublicKeys.append(Key(material: encrypted))
+        
+        try self.modelContext.save()
+    }
+    
+    func encrypt(message: String, for identifier: String) throws -> String? {
+        guard
+            let contact = try self.fetchContact(by: identifier)
+        else {
+            throw ContactManagerError.contactNotFound
+        }
+        
+        guard
+            let publicKeyingMaterial = contact.contactPublicKeys.last?.material
+        else {
+            throw ContactManagerError.contactHasNoKeys
+        }
+        
+        if let encrypted = try self.cryptoManager.encrypt(message: message, using: publicKeyingMaterial) {
+            let encoded = encrypted.base64EncodedString()
             
-            contact.contactPublicKeys.append(encrypted)
-            
-            try self.modelContext.save()
+            return encoded
+        } else {
+            return nil
         }
     }
 }
@@ -184,4 +209,5 @@ extension ContactManager {
 enum ContactManagerError: Error {
     case contactNotFound
     case identityNotSaved
+    case contactHasNoKeys
 }
