@@ -35,7 +35,7 @@ final class Contact {
     // MARK: Application specific metadata - encrypted
     
     /// Public key of the trusted contact.
-    var contactPublicKeys: [Data?] = []
+    var contactPublicKeys: [Key] = []
     /// Identifier to determine the owner of the public key.
     var identifierFromOutside: String?
     
@@ -83,5 +83,14 @@ class LabeledValue {
     init(from cnLabeledValue: CNLabeledValue<CNPhoneNumber>) {
         self.label = cnLabeledValue.label
         self.value = cnLabeledValue.value.stringValue
+    }
+}
+
+@Model
+class Key {
+    var material: Data?
+    
+    init(material: Data? = nil) {
+        self.material = material
     }
 }
