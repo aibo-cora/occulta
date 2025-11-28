@@ -40,7 +40,7 @@ struct KeyExchange: View {
                 StartingSession(withContact: self.identifier)
                 
                 Button {
-                    self.exchangeManager.inProgress = false
+                    self.exchangeManager.finish()
                 } label: {
                     Text("Cancel")
                 }
