@@ -30,7 +30,7 @@ struct ContactDetail: View {
     }
     /// If we do not have a public key from our contact, we need to start an exchange.
     var needsExchange: Bool {
-        self.contacts.first?.contactPublicKeys.isEmpty ?? true
+        false
     }
     
     init(identifier: String) {
