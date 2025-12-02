@@ -1,96 +1,225 @@
-//
-//  Contact.swift
-//  Maverick
-//
-//  Created by Yura on 10/25/25.
-//
-
-import Foundation
 import SwiftData
 import Contacts
+import Foundation
 
-// TODO: Explore subclassing `CNContact`
+// MARK: - Main Contact Model
 
-/// Local representation of a trusted contact.
 @Model
 final class Contact {
-    // MARK: Imported contact metadata - encrypted
-    
-    /// Identifier assigned by the contact store.
-    ///
-    /// When we share our publish key, this identifier is included so that the recipient can attach it to the message which will make it easier to identify which key needs to be used to decrypt the message without choosing the contact.
-    ///
-    /// The recipient will store it in the `identifierFromOutside` property.
     @Attribute(.unique) var identifier: String
     
-    var givenName: String
-    var familyName: String
-    var middleName: String
-    var imageData: Data?
-    var imageDataAvailable: Data?
-    var thumbnailImageData: Data?
-    var emailAddresses: [LabeledValue]
-    var phoneNumbers: [LabeledValue]
-
-    // MARK: Application specific metadata - encrypted
+    var givenName: String = ""
+    var familyName: String = ""
+    var middleName: String = ""
+    var namePrefix: String = ""
+    var nameSuffix: String = ""
+    var nickname: String = ""
     
+    var organizationName: String = ""
+    var departmentName: String = ""
+    var jobTitle: String = ""
+    
+    var phoneticGivenName: String = ""
+    var phoneticMiddleName: String = ""
+    var phoneticFamilyName: String = ""
+    
+    var birthday: Date?
+    var note: String = ""
+    
+    var thumbnailImageData: Data?
+    var imageData: Data?
+    
+    // Relationships
+    @Relationship(deleteRule: .cascade)
+    var phoneNumbers: [PhoneNumber] = []
+    
+    @Relationship(deleteRule: .cascade)
+    var emailAddresses: [EmailAddress] = []
+    
+    @Relationship(deleteRule: .cascade)
+    var postalAddresses: [PostalAddressEntry] = []
+    
+    @Relationship(deleteRule: .cascade)
+    var urlAddresses: [URLAddress] = []
+    
+    var importedAt: Date = Date()
+    
+    // MARK: Application specific metadata - encrypted
+        
     /// Public key of the trusted contact.
     var contactPublicKeys: [Key] = []
     /// Identifier to determine the owner of the public key.
     var identifierFromOutside: String?
     
-    // MARK: Initializers
+    init(from cnContact: CNContact) {
+        self.identifier = cnContact.identifier
+        
+        self.givenName = cnContact.givenName
+        self.familyName = cnContact.familyName
+        self.middleName = cnContact.middleName
+        self.namePrefix = cnContact.namePrefix
+        self.nameSuffix = cnContact.nameSuffix
+        self.nickname = cnContact.nickname
+        
+        self.organizationName = cnContact.organizationName
+        self.departmentName = cnContact.departmentName
+        self.jobTitle = cnContact.jobTitle
+        
+        self.phoneticGivenName = cnContact.phoneticGivenName
+        self.phoneticMiddleName = cnContact.phoneticMiddleName
+        self.phoneticFamilyName = cnContact.phoneticFamilyName
+        
+        self.birthday = cnContact.birthday?.date
+        self.note = cnContact.note
+        self.imageData = cnContact.imageData
+        self.thumbnailImageData = cnContact.thumbnailImageData
+        
+        self.phoneNumbers = cnContact.phoneNumbers.map { PhoneNumber(from: $0) }
+        self.emailAddresses = cnContact.emailAddresses.map { EmailAddress(from: $0) }
+        self.postalAddresses = cnContact.postalAddresses.map { PostalAddressEntry(from: $0) }
+        self.urlAddresses = cnContact.urlAddresses.map { URLAddress(from: $0) }
+    }
     
-    /// Create a contact with encrypted properties for storage.
-    /// - Parameters:
-    ///   - identifier: <#identifier description#>
-    ///   - givenName: <#givenName description#>
-    ///   - familyName: <#familyName description#>
-    ///   - middleName: <#middleName description#>
-    ///   - imageData: <#imageData description#>
-    ///   - imageDataAvailable: <#imageDataAvailable description#>
-    ///   - thumbnailImageData: <#thumbnailImageData description#>
-    ///   - emailAddresses: <#emailAddresses description#>
-    ///   - phoneNumbers: <#phoneNumbers description#>
-    init(identifier: String, givenName: String, familyName: String, middleName: String, imageData: Data?, imageDataAvailable: Data?, thumbnailImageData: Data?, emailAddresses: [CNLabeledValue<NSString>], phoneNumbers: [CNLabeledValue<CNPhoneNumber>]) {
+    // MARK: - Full Designated Initializer
+    
+    init(
+        identifier: String,
+        givenName: String,
+        familyName: String,
+        middleName: String,
+        nickname: String,
+        organizationName: String,
+        departmentName: String,
+        jobTitle: String,
+        phoneticGivenName: String = "",
+        phoneticMiddleName: String = "",
+        phoneticFamilyName: String = "",
+        birthday: Date? = nil,
+        note: String = "",
+        imageData: Data? = nil,
+        thumbnailImageData: Data? = nil,
+        phoneNumbers: [PhoneNumber] = [],
+        emailAddresses: [EmailAddress] = [],
+        postalAddresses: [PostalAddressEntry] = [],
+        urlAddresses: [URLAddress] = [],
+        importedAt: Date = Date()
+    ) {
         self.identifier = identifier
         self.givenName = givenName
         self.familyName = familyName
         self.middleName = middleName
+        self.namePrefix = namePrefix
+        self.nameSuffix = nameSuffix
+        self.nickname = nickname
+        self.organizationName = organizationName
+        self.departmentName = departmentName
+        self.jobTitle = jobTitle
+        self.phoneticGivenName = phoneticGivenName
+        self.phoneticMiddleName = phoneticMiddleName
+        self.phoneticFamilyName = phoneticFamilyName
+        self.birthday = birthday
+        self.note = note
         self.imageData = imageData
-        self.imageDataAvailable = imageDataAvailable
         self.thumbnailImageData = thumbnailImageData
-        self.emailAddresses = emailAddresses.map { LabeledValue(from: $0) }
-        self.phoneNumbers = phoneNumbers.map { LabeledValue(from: $0) }
+        self.phoneNumbers = phoneNumbers
+        self.emailAddresses = emailAddresses
+        self.postalAddresses = postalAddresses
+        self.urlAddresses = urlAddresses
+        self.importedAt = importedAt
+    }
+    
+    var fullName: String {
+        PersonNameComponents(
+            namePrefix: self.namePrefix,
+            givenName: self.givenName,
+            middleName: self.middleName,
+            familyName: self.familyName,
+            nameSuffix: self.nameSuffix,
+            nickname: self.nickname
+        ).formatted(.name(style: .long))
     }
 }
 
+// MARK: - Supporting Models with Relationships
+
 @Model
-class LabeledValue {
-    var label: String?
-    var value: String
+final class PhoneNumber {
+    var label: String
+    var value: String // e.g., "+1 (555) 123-4567"
     
-    init(label: String?, value: String) {
+    init(label: String = "mobile", value: String = "") {
         self.label = label
         self.value = value
     }
     
-    init(from cnLabeledValue: CNLabeledValue<NSString>) {
-        self.label = cnLabeledValue.label
-        self.value = cnLabeledValue.value as String
-    }
-    
-    init(from cnLabeledValue: CNLabeledValue<CNPhoneNumber>) {
-        self.label = cnLabeledValue.label
-        self.value = cnLabeledValue.value.stringValue
+    convenience init(from labeled: CNLabeledValue<CNPhoneNumber>) {
+        let label = labeled.label ?? "other"
+        let cleanedLabel = CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: label)
+        self.init(label: cleanedLabel, value: labeled.value.stringValue)
     }
 }
 
 @Model
-class Key {
-    var material: Data?
+final class EmailAddress {
+    var label: String
+    var value: String
     
-    init(material: Data? = nil) {
-        self.material = material
+    init(label: String = "work", value: String = "") {
+        self.label = label
+        self.value = value
+    }
+    
+    convenience init(from labeled: CNLabeledValue<NSString>) {
+        let label = labeled.label ?? "other"
+        let cleanedLabel = CNLabeledValue<NSString>.localizedString(forLabel: label)
+        self.init(label: cleanedLabel, value: labeled.value as String)
+    }
+}
+
+@Model
+final class PostalAddressEntry {
+    var label: String
+    
+    var street: String = ""
+    var city: String = ""
+    var state: String = ""
+    var postalCode: String = ""
+    var country: String = ""
+    var isoCountryCode: String = ""
+    
+    init(label: String = "home") {
+        self.label = label
+    }
+    
+    convenience init(from labeled: CNLabeledValue<CNPostalAddress>) {
+        let label = labeled.label ?? "other"
+        let cleanedLabel = CNLabeledValue<CNPostalAddress>.localizedString(forLabel: label)
+        let addr = labeled.value
+        
+        self.init(label: cleanedLabel)
+        self.street = [addr.street, addr.subLocality, addr.subAdministrativeArea]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+        self.city = addr.city
+        self.state = addr.state
+        self.postalCode = addr.postalCode
+        self.country = addr.country
+        self.isoCountryCode = addr.isoCountryCode
+    }
+}
+
+@Model
+final class URLAddress {
+    var label: String
+    var value: String
+    
+    init(label: String = "homepage", value: String = "") {
+        self.label = label
+        self.value = value
+    }
+    
+    convenience init(from labeled: CNLabeledValue<NSString>) {
+        let label = labeled.label ?? "other"
+        let cleanedLabel = CNLabeledValue<NSString>.localizedString(forLabel: label)
+        self.init(label: cleanedLabel, value: labeled.value as String)
     }
 }

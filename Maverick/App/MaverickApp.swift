@@ -13,7 +13,10 @@ struct MaverickApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Contact.self,
-            LabeledValue.self
+            PhoneNumber.self,
+            EmailAddress.self,
+            PostalAddressEntry.self,
+            URLAddress.self
         ])
         
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)

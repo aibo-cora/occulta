@@ -74,11 +74,13 @@ class ContactManager {
                 givenName: encryptedGivenName,
                 familyName: encryptedFamilyName,
                 middleName: encryptedMiddleName,
-                imageData: encryptedImageData,
-                imageDataAvailable: encryptedImageDataAvailable,
-                thumbnailImageData: encryptedThumbnailImageData,
-                emailAddresses: encryptedEmailAddresses,
-                phoneNumbers: encryptedPhoneNumbers
+                nickname: "",
+                organizationName: "",
+                departmentName: "",
+                jobTitle: "",
+                imageData: nil,
+                phoneNumbers: encryptedPhoneNumbers.map { PhoneNumber(from: $0) },
+                emailAddresses: encryptedEmailAddresses.map { EmailAddress(from: $0) }
             )
             
             self.modelContext.insert(newContact)
@@ -102,41 +104,6 @@ class ContactManager {
         let contacts = try self.modelContext.fetch(descriptor)
         
         return contacts.first
-    }
-    
-    // MARK: - Update
-    
-    /// Updates an existing contact with new values.
-    @available(*, unavailable, message: "This function is no longer supported. Need to handle encryption")
-    func updateContact(
-        identifier: String,
-        givenName: String? = nil,
-        familyName: String? = nil,
-        middleName: String? = nil,
-        emailAddresses: [LabeledValue]? = nil,
-        phoneNumbers: [LabeledValue]? = nil,
-        imageData: Data?? = nil,
-        thumbnailImageData: Data?? = nil
-    ) throws {
-        guard
-            let _ = try fetchContact(by: identifier)
-        else {
-            throw ContactManagerError.contactNotFound
-        }
-        
-        try self.modelContext.save()
-    }
-    
-    /// Updates a contact from a CNContact object.
-    @available(*, unavailable, message: "This function is no longer supported. Need to handle encryption")
-    func updateContact(from cnContact: CNContact) throws {
-        guard
-            let _ = try fetchContact(by: cnContact.identifier)
-        else {
-            throw ContactManagerError.contactNotFound
-        }
-        
-        try self.modelContext.save()
     }
     
     // MARK: - Delete
