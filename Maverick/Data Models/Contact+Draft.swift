@@ -137,7 +137,8 @@ extension Contact {
 }
 
 extension Contact.Draft {
-    struct PhoneNumber {
+    struct PhoneNumber: Identifiable {
+        let id: UUID = UUID()
         var label: String
         var value: String
         
@@ -147,10 +148,33 @@ extension Contact.Draft {
         }
         
         init(from labeled: CNLabeledValue<CNPhoneNumber>) {
-            let rawLabel = labeled.label ?? "_$!<Other>!$>_"
+            let rawLabel = labeled.label ?? "Other"
             let localizedLabel = CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: rawLabel)
+            
             self.init(label: localizedLabel, value: labeled.value.stringValue)
         }
+        
+        enum PhoneType: String, CaseIterable {
+            case mobile = "Mobile"
+            case home = "Home"
+            case work = "Work"
+            case other = "Other"
+            
+            var systemImage: String {
+                switch self {
+                case .mobile:
+                    return "phone.fill"
+                case .home:
+                    return "house.fill"
+                case .work:
+                    return "building.2.fill"
+                case .other:
+                    return "phone"
+                }
+            }
+        }
+        
+        var type: PhoneType = .mobile
     }
 
     struct EmailAddress {
@@ -165,6 +189,7 @@ extension Contact.Draft {
         init(from labeled: CNLabeledValue<NSString>) {
             let rawLabel = labeled.label ?? "_$!<Other>!$>_"
             let localizedLabel = CNLabeledValue<NSString>.localizedString(forLabel: rawLabel)
+            
             self.init(label: localizedLabel, value: labeled.value as String)
         }
     }
@@ -228,6 +253,7 @@ extension Contact.Draft {
         init(from labeled: CNLabeledValue<NSString>) {
             let rawLabel = labeled.label ?? "_$!<Other>!$>_"
             let localizedLabel = CNLabeledValue<NSString>.localizedString(forLabel: rawLabel)
+            
             self.init(label: localizedLabel, value: labeled.value as String)
         }
     }
