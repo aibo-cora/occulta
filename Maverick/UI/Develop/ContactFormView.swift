@@ -7,10 +7,10 @@
 
 
 import SwiftUI
-import PhotosUI // For photo picker
+import PhotosUI
 
 struct ContactFormView: View {
-    @Binding var contact: ContactDraft
+    @State var contact: ContactDraft = .init(identifier: UUID().uuidString)
     
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showingAddPhoneSheet = false
@@ -21,11 +21,13 @@ struct ContactFormView: View {
     var body: some View {
         Form {
             // MARK: - Profile Photo & Name
+            
             Section {
                 HStack {
                     Spacer()
+                    
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        if let imageData = contact.imageData,
+                        if let imageData = contact.thumbnailImageData,
                            let uiImage = UIImage(data: imageData) {
                             Image(uiImage: uiImage)
                                 .resizable()
@@ -50,6 +52,7 @@ struct ContactFormView: View {
                             }
                         }
                     }
+                    
                     Spacer()
                 }
                 .listRowBackground(Color.clear)
@@ -296,6 +299,7 @@ struct AddAddressSheet: View {
                 TextField("City", text: $city)
                 TextField("State / Province", text: $state)
                 TextField("ZIP / Postal Code", text: $postalCode)
+                    .keyboardType(.numberPad)
                 TextField("Country", text: $country)
             }
             .navigationTitle("Add Address")
@@ -363,11 +367,6 @@ struct AddURLSheet: View {
 
 #Preview {
     NavigationStack {
-        ContactFormView(contact: .constant(ContactDraft(
-            identifier: UUID().uuidString,
-            givenName: "Taylor",
-            familyName: "Swift",
-            phoneNumbers: [PhoneNumberDraft(label: "mobile", value: "+1 (555) 1989")]
-        )))
+        ContactFormView()
     }
 }

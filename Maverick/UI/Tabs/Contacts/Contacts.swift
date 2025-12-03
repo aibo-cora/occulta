@@ -30,6 +30,8 @@ struct Contacts: View {
             }
         }
     }
+    
+    @State private var creatingNewContact = false
 
     var body: some View {
         NavigationStack {
@@ -55,6 +57,20 @@ struct Contacts: View {
                 .navigationDestination(for: String.self) {
                     ContactDetail(identifier: $0)
                 }
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            self.creatingNewContact = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                    }
+                }
+                .sheet(isPresented: self.$creatingNewContact, onDismiss: {
+                    /// On dismiss
+                }, content: {
+                    ContactFormView()
+                })
 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
                 ContactAccessButton(queryString: self.searchText) { identifiers in
