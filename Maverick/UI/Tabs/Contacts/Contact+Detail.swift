@@ -12,7 +12,7 @@ struct ContactDetail: View {
     let identifier: String
     
     @Environment(\.modelContext) var modelContext
-    @Query(sort: \Contact.familyName) var contacts: [Contact]
+    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     
@@ -36,7 +36,7 @@ struct ContactDetail: View {
     init(identifier: String) {
         self.identifier = identifier
         
-        let predicate = #Predicate<Contact> {
+        let predicate = #Predicate<Contact.Profile> {
             $0.identifier == identifier
         }
         

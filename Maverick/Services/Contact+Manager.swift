@@ -69,7 +69,7 @@ class ContactManager {
                 }
             }
             
-            let newContact = Contact(
+            let newContact = Contact.Profile(
                 identifier: encryptedIdentifier,
                 givenName: encryptedGivenName,
                 familyName: encryptedFamilyName,
@@ -79,8 +79,8 @@ class ContactManager {
                 departmentName: "",
                 jobTitle: "",
                 imageData: nil,
-                phoneNumbers: encryptedPhoneNumbers.map { PhoneNumber(from: $0) },
-                emailAddresses: encryptedEmailAddresses.map { EmailAddress(from: $0) }
+                phoneNumbers: encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) },
+                emailAddresses: encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) }
             )
             
             self.modelContext.insert(newContact)
@@ -91,16 +91,16 @@ class ContactManager {
     
     // MARK: - Read
     /// Fetches all contacts from the SwiftData context.
-    func fetchAllContacts() throws -> [Contact] {
-        let descriptor = FetchDescriptor<Contact>(sortBy: [SortDescriptor(\.familyName)])
+    func fetchAllContacts() throws -> [Contact.Profile] {
+        let descriptor = FetchDescriptor<Contact.Profile>(sortBy: [SortDescriptor(\.familyName)])
         
         return try self.modelContext.fetch(descriptor)
     }
     
     /// Fetches a contact by its identifier.
-    func fetchContact(by identifier: String) throws -> Contact? {
-        let predicate = #Predicate<Contact> { $0.identifier == identifier }
-        let descriptor = FetchDescriptor<Contact>(predicate: predicate)
+    func fetchContact(by identifier: String) throws -> Contact.Profile? {
+        let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
+        let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
         let contacts = try self.modelContext.fetch(descriptor)
         
         return contacts.first

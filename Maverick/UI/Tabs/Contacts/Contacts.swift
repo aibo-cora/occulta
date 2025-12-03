@@ -17,10 +17,10 @@ struct Contacts: View {
     
     @State private var contactManager: ContactManager?
     /// Stored contacts.
-    @Query(sort: \Contact.familyName) var contacts: [Contact]
+    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
 
     /// Results from our existing contacts list
-    var filteredContacts: [Contact] {
+    var filteredContacts: [Contact.Profile] {
         if self.searchText.isEmpty {
             self.contacts
         } else {
@@ -69,7 +69,7 @@ struct Contacts: View {
                 .sheet(isPresented: self.$creatingNewContact, onDismiss: {
                     /// On dismiss
                 }, content: {
-                    ContactFormView()
+                    ContactForm()
                 })
 
                 // This will automatically show a contact if one is matched, or a Search button otherwise

@@ -13,12 +13,12 @@ struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = false
     
-    @Query(sort: \Contact.familyName) var contacts: [Contact]
+    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     
     init(identifier: String) {
-        let predicate = #Predicate<Contact> {
+        let predicate = #Predicate<Contact.Profile> {
             $0.identifier == identifier
         }
         

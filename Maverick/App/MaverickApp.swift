@@ -12,11 +12,11 @@ import SwiftData
 struct MaverickApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Contact.self,
-            PhoneNumber.self,
-            EmailAddress.self,
-            PostalAddressEntry.self,
-            URLAddress.self
+            Contact.Profile.self,
+            Contact.Profile.PhoneNumber.self,
+            Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddressEntry.self,
+            Contact.Profile.URLAddress.self
         ])
         
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
