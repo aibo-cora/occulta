@@ -37,7 +37,7 @@ extension Contact {
         
         var phoneNumbers: [PhoneNumber] = []
         var emailAddresses: [EmailAddress] = []
-        var postalAddresses: [PostalAddressEntry] = []
+        var postalAddresses: [PostalAddress] = []
         var urlAddresses: [URLAddress] = []
         
         var importedAt: Date = Date()
@@ -64,7 +64,7 @@ extension Contact {
             thumbnailImageData: Data? = nil,
             phoneNumbers: [PhoneNumber] = [],
             emailAddresses: [EmailAddress] = [],
-            postalAddresses: [PostalAddressEntry] = [],
+            postalAddresses: [PostalAddress] = [],
             urlAddresses: [URLAddress] = [],
             importedAt: Date = Date()
         ) {
@@ -117,7 +117,7 @@ extension Contact {
             
             self.phoneNumbers = cnContact.phoneNumbers.map { PhoneNumber(from: $0) }
             self.emailAddresses = cnContact.emailAddresses.map { EmailAddress(from: $0) }
-            self.postalAddresses = cnContact.postalAddresses.map { PostalAddressEntry(from: $0) }
+            self.postalAddresses = cnContact.postalAddresses.map { PostalAddress(from: $0) }
             self.urlAddresses = cnContact.urlAddresses.map { URLAddress(from: $0) }
             
             self.importedAt = Date()
@@ -217,50 +217,106 @@ extension Contact.Draft {
         }
     }
 
-    struct PostalAddressEntry {
+    struct PostalAddress: Identifiable {
+        let id: UUID = UUID()
         var label: String
         
         var street: String = ""
         var city: String = ""
         var state: String = ""
         var postalCode: String = ""
-        var country: String = ""
-        var isoCountryCode: String = ""
+        var country: Country = .init(code: "MD")
+        
+        enum AddressType: String, CaseIterable {
+            case home = "Home"
+            case work = "Work"
+            case billing = "Billing"
+            case shipping = "Shipping"
+            case other = "Other"
+            
+            var systemImage: String {
+                switch self {
+                case .home:
+                    return "house.fill"
+                case .work:
+                    return "building.2.fill"
+                case .billing:
+                    return "creditcard.fill"
+                case .shipping:
+                    return "shippingbox.fill"
+                case .other:
+                    return "mappin.and.ellipse"
+                }
+            }
+        }
+        
+        var type: AddressType = .home
         
         init(label: String = "home",
              street: String = "",
              city: String = "",
              state: String = "",
              postalCode: String = "",
-             country: String = "",
-             isoCountryCode: String = "") {
+             country: Country = .init(code: "MD")) {
             self.label = label
             self.street = street
             self.city = city
             self.state = state
             self.postalCode = postalCode
             self.country = country
-            self.isoCountryCode = isoCountryCode
         }
         
         init(from labeled: CNLabeledValue<CNPostalAddress>) {
-            let rawLabel = labeled.label ?? "_$!<Other>!$>_"
+            let rawLabel = labeled.label ?? AddressType.other.rawValue
             let localizedLabel = CNLabeledValue<CNPostalAddress>.localizedString(forLabel: rawLabel)
-            let addr = labeled.value
+            let address = labeled.value
             
-            let streetComponents = [addr.street, addr.subLocality, addr.subAdministrativeArea]
+            let streetComponents = [address.street, address.subLocality, address.subAdministrativeArea]
                 .compactMap { $0 }
                 .filter { !$0.isEmpty }
+            let country = Country(code: address.postalCode)
             
             self.init(
                 label: localizedLabel,
                 street: streetComponents.joined(separator: ", "),
-                city: addr.city,
-                state: addr.state,
-                postalCode: addr.postalCode,
-                country: addr.country,
-                isoCountryCode: addr.isoCountryCode
+                city: address.city,
+                state: address.state,
+                postalCode: address.postalCode,
+                country: country
             )
+        }
+        
+        struct Country: Identifiable, Hashable {
+            let code: String           // "US", "FR", etc.
+            var name: String           // Localized name
+            var flag: String           // Computed flag emoji
+            
+            var id: String { self.code }
+            
+            init(code: String) {
+                self.code = code
+                self.name = Locale.current.localizedString(forRegionCode: code) ?? ""
+                self.flag = Country.flagEmoji(from: code)
+            }
+            
+            static func flagEmoji(from countryCode: String) -> String {
+                countryCode
+                    .unicodeScalars
+                    .map({ 127397 + $0.value })
+                    .compactMap(UnicodeScalar.init)
+                    .map(String.init)
+                    .joined()
+            }
+            
+            static var all: [Country] {
+                let codes = Locale.Region.isoRegions
+                
+                return codes
+                    .compactMap { Country(code: $0.identifier) }
+                    .sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedDescending
+                    }
+            }
         }
     }
 
