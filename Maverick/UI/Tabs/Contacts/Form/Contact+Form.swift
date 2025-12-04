@@ -45,31 +45,7 @@ struct ContactForm: View {
             
             Contact.Phone(contact: self.$contact)
             
-            // MARK: - Email Addresses
-            Section {
-                ForEach(contact.emailAddresses.indices, id: \.self) { i in
-                    HStack {
-                        Text(contact.emailAddresses[i].label)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 100, alignment: .leading)
-                        Text(contact.emailAddresses[i].value)
-                            .foregroundStyle(contact.emailAddresses[i].value.isEmpty ? .secondary : .primary)
-                    }
-                }
-                .onDelete { contact.emailAddresses.remove(atOffsets: $0) }
-                
-                Button("Add email") {
-                    showingAddEmailSheet = true
-                }
-                .foregroundStyle(.blue)
-            } header: {
-                Text("Email")
-            }
-            .sheet(isPresented: $showingAddEmailSheet) {
-                AddEmailSheet { label, email in
-                    contact.emailAddresses.append(Contact.Draft.EmailAddress(label: label, value: email))
-                }
-            }
+            Contact.Email(contact: self.$contact)
             
             // MARK: - Postal Addresses
             Section {

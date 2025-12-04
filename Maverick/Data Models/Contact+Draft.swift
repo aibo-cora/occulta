@@ -142,13 +142,13 @@ extension Contact.Draft {
         var label: String
         var value: String
         
-        init(label: String = "mobile", value: String = "") {
+        init(label: String = PhoneType.mobile.rawValue, value: String = "") {
             self.label = label
             self.value = value
         }
         
         init(from labeled: CNLabeledValue<CNPhoneNumber>) {
-            let rawLabel = labeled.label ?? "Other"
+            let rawLabel = labeled.label ?? PhoneType.other.rawValue
             let localizedLabel = CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: rawLabel)
             
             self.init(label: localizedLabel, value: labeled.value.stringValue)
@@ -177,17 +177,40 @@ extension Contact.Draft {
         var type: PhoneType = .mobile
     }
 
-    struct EmailAddress {
+    struct EmailAddress: Identifiable {
+        let id: UUID = UUID()
         var label: String
         var value: String
         
-        init(label: String = "work", value: String = "") {
+        enum EmailType: String, CaseIterable {
+            case personal = "Personal"
+            case work = "Work"
+            case school = "School"
+            case other = "Other"
+            
+            var systemImage: String {
+                switch self {
+                case .personal:
+                    return "person.fill"
+                case .work:
+                    return "briefcase.fill"
+                case .school:
+                    return "graduationcap.fill"
+                case .other:
+                    return "envelope"
+                }
+            }
+        }
+        
+        var type: EmailType = .personal
+        
+        init(label: String = EmailType.personal.rawValue, value: String = "") {
             self.label = label
             self.value = value
         }
         
         init(from labeled: CNLabeledValue<NSString>) {
-            let rawLabel = labeled.label ?? "_$!<Other>!$>_"
+            let rawLabel = labeled.label ?? EmailType.other.rawValue
             let localizedLabel = CNLabeledValue<NSString>.localizedString(forLabel: rawLabel)
             
             self.init(label: localizedLabel, value: labeled.value as String)
