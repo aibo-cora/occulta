@@ -49,83 +49,51 @@ struct ContactForm: View {
             
             Contact.Address(contact: self.$contact)
             
-            // MARK: - URLs
-            Section {
-                ForEach(contact.urlAddresses.indices, id: \.self) { i in
-                    HStack {
-                        Text(contact.urlAddresses[i].label)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 100, alignment: .leading)
-                        Text(contact.urlAddresses[i].value)
+            Contact.URLAddress(contact: self.$contact)
+            
+            // MARK: - Birthday, Multiple dates - Anniversary, graduation, christening, etc.
+            
+            if self.contact.birthday == nil {
+                Button {
+                    withAnimation {
+                        self.contact.birthday = Date()
                     }
+                } label: {
+                    Label("Add birthday", systemImage: "plus.circle.fill")
+                        .foregroundColor(.blue)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onDelete { contact.urlAddresses.remove(atOffsets: $0) }
-                
-                Button("Add URL") {
-                    showingAddURLSheet = true
-                }
-                .foregroundStyle(.blue)
-            } header: {
-                Text("URL")
-            }
-            .sheet(isPresented: $showingAddURLSheet) {
-                AddURLSheet { label, url in
-                    contact.urlAddresses.append(Contact.Draft.URLAddress(label: label, value: url))
+                .buttonStyle(.plain)
+                .padding()
+            } else {
+                Section {
+                    HStack {
+                        Button {
+                            self.contact.birthday = nil
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundColor(.red)
+                                .font(.title2)
+                        }
+                        .buttonStyle(.plain)
+                        
+                        DatePicker("Birthday", selection: Binding(
+                            get: { self.contact.birthday ?? Date() },
+                            set: { self.contact.birthday = $0 }
+                        ), displayedComponents: .date)
+                        .foregroundStyle(self.contact.birthday == nil ? .secondary : .primary)
+                    }
+                    .padding()
                 }
             }
             
-            // MARK: - Birthday & Notes
-            Section {
-                DatePicker("Birthday", selection: Binding(
-                    get: { contact.birthday ?? Date() },
-                    set: { contact.birthday = $0 }
-                ), displayedComponents: .date)
-                .foregroundStyle(contact.birthday == nil ? .secondary : .primary)
-                
-                TextField("Add note", text: $contact.note, axis: .vertical)
+            Section("Note") {
+                TextField("Add note", text: self.$contact.note, axis: .vertical)
                     .lineLimit(4...)
             }
         }
-        .navigationTitle(contact.fullName.isEmpty ? "New Contact" : contact.fullName)
+        .navigationTitle(self.contact.fullName.isEmpty ? "New Contact" : self.contact.fullName)
         .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-// MARK: - Helper Sheets
-
-struct AddURLSheet: View {
-    @Environment(\.dismiss) var dismiss
-    var onAdd: (String, String) -> Void
-    
-    @State private var label = "homepage"
-    @State private var url = ""
-    
-    let labels = ["homepage", "work", "twitter", "facebook", "other"]
-    
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("Label", selection: $label) {
-                    ForEach(labels, id: \.self) { Text($0).tag($0) }
-                }
-                TextField("URL", text: $url)
-                    .keyboardType(.URL)
-                    .autocapitalization(.none)
-            }
-            .navigationTitle("Add URL")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        onAdd(label, url)
-                        dismiss()
-                    }
-                    .disabled(url.isEmpty)
-                }
-            }
-        }
     }
 }
 

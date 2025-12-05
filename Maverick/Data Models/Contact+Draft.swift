@@ -320,20 +320,87 @@ extension Contact.Draft {
         }
     }
 
-    struct URLAddress {
+    struct URLAddress: Identifiable {
+        let id = UUID()
+        
         var label: String
         var value: String
         
-        init(label: String = "homepage", value: String = "") {
+        enum WebsiteType: String, CaseIterable {
+            case website = "Website"
+            case linkedin = "LinkedIn"
+            case github = "GitHub"
+            case twitter = "Twitter / X"
+            case instagram = "Instagram"
+            case facebook = "Facebook"
+            case youtube = "YouTube"
+            case portfolio = "Portfolio"
+            case blog = "Blog"
+            case other = "Other Link"
+            
+            var systemImage: String {
+                switch self {
+                case .website:
+                    return "globe"
+                case .linkedin:
+                    return "link"
+                case .github:
+                    return "terminal"
+                case .twitter:
+                    return "bird"
+                case .instagram:
+                    return "camera"
+                case .facebook:
+                    return "f.square"
+                case .youtube:
+                    return "play.rectangle"
+                case .portfolio:
+                    return "briefcase.fill"
+                case .blog:
+                    return "pencil"
+                case .other:
+                    return "link"
+                }
+            }
+            
+            var placeholder: String {
+                switch self {
+                case .website:
+                    return "https://example.com"
+                case .linkedin:
+                    return "https://linkedin.com/in/yourname"
+                case .github:
+                    return "https://github.com/yourname"
+                case .twitter:
+                    return "https://x.com/yourname"
+                case .instagram:
+                    return "https://instagram.com/yourname"
+                case .facebook:
+                    return "https://facebook.com/yourname"
+                case .youtube:
+                    return "https://youtube.com/@yourname"
+                case .portfolio:
+                    return "https://yourportfolio.com"
+                case .blog:
+                    return "https://yourblog.com"
+                case .other:
+                    return "https://"
+                }
+            }
+        }
+        
+        init(label: String = WebsiteType.website.rawValue, value: String = "") {
             self.label = label
             self.value = value
         }
         
         init(from labeled: CNLabeledValue<NSString>) {
-            let rawLabel = labeled.label ?? "_$!<Other>!$>_"
+            let rawLabel = labeled.label ?? WebsiteType.other.rawValue
             let localizedLabel = CNLabeledValue<NSString>.localizedString(forLabel: rawLabel)
             
             self.init(label: localizedLabel, value: labeled.value as String)
         }
+        
+        var type: WebsiteType = .website
     }
 }
