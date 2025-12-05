@@ -36,6 +36,13 @@ class ContactManager {
             let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
             let encryptedFamilyName = try self.cryptoManager.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
             let encryptedMiddleName = try self.cryptoManager.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedNamePrefix = try self.cryptoManager.encrypt(data: contact.namePrefix.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedNameSuffix = try self.cryptoManager.encrypt(data: contact.nameSuffix.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedNickname = try self.cryptoManager.encrypt(data: contact.nickname.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedOrganizationName = try self.cryptoManager.encrypt(data: contact.organizationName.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedDepartmentName = try self.cryptoManager.encrypt(data: contact.departmentName.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedJobTitle = try self.cryptoManager.encrypt(data: contact.jobTitle.data(using: .utf8))?.base64EncodedString() ?? ""
+            
             let encryptedImageData = try self.cryptoManager.encrypt(data: contact.imageData)
             
             let imageDataAvailableFlag: UInt8 = contact.imageDataAvailable ? 1 : 0
@@ -69,16 +76,32 @@ class ContactManager {
                 }
             }
             
+            var encryptedBirthday: String = ""
+            
+            if let birthday = contact.birthday {
+                let encoder = JSONEncoder()
+                
+                encoder.dateEncodingStrategy = .iso8601
+                let encoded = try encoder.encode(birthday)
+                
+                encryptedBirthday = try self.cryptoManager.encrypt(data: encoded)?.base64EncodedString() ?? ""
+            }
+            
+            
+            let encryptedNote = try self.cryptoManager.encrypt(data: contact.note.data(using: .utf8))?.base64EncodedString() ?? ""
+            
             let newContact = Contact.Profile(
                 identifier: encryptedIdentifier,
                 givenName: encryptedGivenName,
                 familyName: encryptedFamilyName,
                 middleName: encryptedMiddleName,
-                nickname: "",
-                organizationName: "",
-                departmentName: "",
-                jobTitle: "",
-                imageData: nil,
+                nickname: encryptedNickname,
+                organizationName: encryptedOrganizationName,
+                departmentName: encryptedDepartmentName,
+                jobTitle: encryptedJobTitle,
+                birthday: encryptedBirthday, note: encryptedNote,
+                imageData: encryptedImageData,
+                thumbnailImageData: encryptedThumbnailImageData,
                 phoneNumbers: encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) },
                 emailAddresses: encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) }
             )

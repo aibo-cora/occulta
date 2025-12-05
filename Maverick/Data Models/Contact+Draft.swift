@@ -92,37 +92,6 @@ extension Contact {
             self.importedAt = importedAt
         }
         
-        init(from cnContact: CNContact) {
-            self.identifier = cnContact.identifier
-            
-            self.givenName = cnContact.givenName
-            self.familyName = cnContact.familyName
-            self.middleName = cnContact.middleName
-            self.namePrefix = cnContact.namePrefix
-            self.nameSuffix = cnContact.nameSuffix
-            self.nickname = cnContact.nickname
-            
-            self.organizationName = cnContact.organizationName
-            self.departmentName = cnContact.departmentName
-            self.jobTitle = cnContact.jobTitle
-            
-            self.phoneticGivenName = cnContact.phoneticGivenName
-            self.phoneticMiddleName = cnContact.phoneticMiddleName
-            self.phoneticFamilyName = cnContact.phoneticFamilyName
-            
-            self.birthday = cnContact.birthday?.date
-            self.note = cnContact.note
-            self.imageData = cnContact.imageData
-            self.thumbnailImageData = cnContact.thumbnailImageData
-            
-            self.phoneNumbers = cnContact.phoneNumbers.map { PhoneNumber(from: $0) }
-            self.emailAddresses = cnContact.emailAddresses.map { EmailAddress(from: $0) }
-            self.postalAddresses = cnContact.postalAddresses.map { PostalAddress(from: $0) }
-            self.urlAddresses = cnContact.urlAddresses.map { URLAddress(from: $0) }
-            
-            self.importedAt = Date()
-        }
-        
         var fullName: String {
             PersonNameComponents(
                 namePrefix: self.namePrefix,

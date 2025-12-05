@@ -18,6 +18,8 @@ struct ContactForm: View {
     @State private var showingAddAddressSheet = false
     @State private var showingAddURLSheet = false
     
+    @Environment(\.dismiss) private var dismiss
+    
     var body: some View {
         Form {
             Section {
@@ -94,6 +96,23 @@ struct ContactForm: View {
         }
         .navigationTitle(self.contact.fullName.isEmpty ? "New Contact" : self.contact.fullName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(role: .cancel) {
+                    self.dismiss()
+                } label: {
+                    Text("Cancel")
+                }
+            }
+            
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    
+                } label: {
+                    Text("Save")
+                }
+            }
+        }
     }
 }
 

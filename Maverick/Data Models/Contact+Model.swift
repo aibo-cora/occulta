@@ -26,7 +26,7 @@ extension Contact {
         var phoneticMiddleName: String = ""
         var phoneticFamilyName: String = ""
         
-        var birthday: Date?
+        var birthday: String?
         var note: String = ""
         
         var thumbnailImageData: Data?
@@ -54,35 +54,6 @@ extension Contact {
         /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
         
-        init(from cnContact: CNContact) {
-            self.identifier = cnContact.identifier
-            
-            self.givenName = cnContact.givenName
-            self.familyName = cnContact.familyName
-            self.middleName = cnContact.middleName
-            self.namePrefix = cnContact.namePrefix
-            self.nameSuffix = cnContact.nameSuffix
-            self.nickname = cnContact.nickname
-            
-            self.organizationName = cnContact.organizationName
-            self.departmentName = cnContact.departmentName
-            self.jobTitle = cnContact.jobTitle
-            
-            self.phoneticGivenName = cnContact.phoneticGivenName
-            self.phoneticMiddleName = cnContact.phoneticMiddleName
-            self.phoneticFamilyName = cnContact.phoneticFamilyName
-            
-            self.birthday = cnContact.birthday?.date
-            self.note = cnContact.note
-            self.imageData = cnContact.imageData
-            self.thumbnailImageData = cnContact.thumbnailImageData
-            
-            self.phoneNumbers = cnContact.phoneNumbers.map { PhoneNumber(from: $0) }
-            self.emailAddresses = cnContact.emailAddresses.map { EmailAddress(from: $0) }
-            self.postalAddresses = cnContact.postalAddresses.map { PostalAddressEntry(from: $0) }
-            self.urlAddresses = cnContact.urlAddresses.map { URLAddress(from: $0) }
-        }
-        
         // MARK: - Full Designated Initializer
         
         init(
@@ -90,6 +61,8 @@ extension Contact {
             givenName: String,
             familyName: String,
             middleName: String,
+            namePrefix: String = "",
+            nameSuffix: String = "",
             nickname: String,
             organizationName: String,
             departmentName: String,
@@ -97,7 +70,7 @@ extension Contact {
             phoneticGivenName: String = "",
             phoneticMiddleName: String = "",
             phoneticFamilyName: String = "",
-            birthday: Date? = nil,
+            birthday: String? = nil,
             note: String = "",
             imageData: Data? = nil,
             thumbnailImageData: Data? = nil,
