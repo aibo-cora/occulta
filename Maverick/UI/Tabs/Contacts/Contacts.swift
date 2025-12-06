@@ -14,8 +14,8 @@ struct Contacts: View {
     @State private var searchText = ""
     
     @Environment(\.modelContext) private var modelContext
+    @Environment(ContactManager.self) private var contactManager: ContactManager
     
-    @State private var contactManager: ContactManager?
     /// Stored contacts.
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
 
@@ -66,11 +66,6 @@ struct Contacts: View {
                         }
                     }
                 }
-                .sheet(isPresented: self.$creatingNewContact, onDismiss: {
-                    /// On dismiss
-                }, content: {
-                    ContactForm(mode: .create)
-                })
 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
                 ContactAccessButton(queryString: self.searchText) { identifiers in
@@ -82,10 +77,11 @@ struct Contacts: View {
             }
             .navigationTitle("Contacts")
         }
-        .task {
-            self.contactManager = ContactManager(modelContainer: self.modelContext.container)
-        }
-        .environment(self.contactManager)
+        .sheet(isPresented: self.$creatingNewContact, onDismiss: {
+            /// On dismiss
+        }, content: {
+            ContactForm(mode: .create)
+        })
     }
     /// Prepare the Contacts system to return the names of matching people
     let keys = [
@@ -125,7 +121,7 @@ struct Contacts: View {
             }
 
             // Load is completed, so add the new contacts to our existing list
-            try self.contactManager?.createContacts(from: newContacts)
+            try self.contactManager.createContacts(from: newContacts)
         }
     }
 }

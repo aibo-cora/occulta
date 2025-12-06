@@ -178,7 +178,7 @@ class ContactManager {
                 
                 encryptedEmailAddresses.append(CNLabeledValue(label: label, value: value as NSString))
             } catch {
-                
+                debugPrint("Contact not saved: \(error)")
             }
         }
         
@@ -191,7 +191,7 @@ class ContactManager {
                 
                 encryptedPhoneNumbers.append(CNLabeledValue(label: label, value: CNPhoneNumber(stringValue: value)))
             } catch {
-                
+                debugPrint("Contact not saved: \(error)")
             }
         }
         
@@ -219,7 +219,7 @@ class ContactManager {
                 
                 encryptedPostalAddresses.append(Contact.Profile.PostalAddress(from: CNLabeledValue<CNMutablePostalAddress>(label: encryptedLabel, value: mutable)))
             } catch {
-                
+                debugPrint("Contact not saved: \(error)")
             }
         }
         
@@ -233,7 +233,7 @@ class ContactManager {
                 
                 encryptedURLs.append(Contact.Profile.URLAddress(label: encryptedLabel, value: encryptedURL))
             } catch {
-                
+                debugPrint("Contact not saved: \(error)")
             }
         }
         
@@ -290,6 +290,8 @@ class ContactManager {
             )
             
             self.modelContext.insert(newContact)
+            
+            debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
         }
     
         try self.modelContext.save()
