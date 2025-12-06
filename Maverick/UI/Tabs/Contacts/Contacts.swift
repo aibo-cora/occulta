@@ -83,33 +83,11 @@ struct Contacts: View {
             ContactForm(mode: .create)
         })
     }
-    /// Prepare the Contacts system to return the names of matching people
-    let keys = [
-        CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
-        CNContactIdentifierKey as any CNKeyDescriptor,
-        CNContactGivenNameKey as any CNKeyDescriptor,
-        CNContactFamilyNameKey as any CNKeyDescriptor,
-        CNContactMiddleNameKey as any CNKeyDescriptor,
-        CNContactImageDataKey as any CNKeyDescriptor,
-        CNContactImageDataAvailableKey as any CNKeyDescriptor,
-        CNContactThumbnailImageDataKey as any CNKeyDescriptor,
-        CNContactEmailAddressesKey as CNKeyDescriptor,
-        CNContactPhoneNumbersKey as CNKeyDescriptor,
-        CNContactPostalAddressesKey as CNKeyDescriptor,
-        CNContactUrlAddressesKey as CNKeyDescriptor,
-        CNContactNamePrefixKey as CNKeyDescriptor,
-        CNContactNameSuffixKey as CNKeyDescriptor,
-        CNContactOrganizationNameKey as CNKeyDescriptor,
-        CNContactDepartmentNameKey as CNKeyDescriptor,
-        CNContactJobTitleKey as CNKeyDescriptor,
-        CNContactNicknameKey as CNKeyDescriptor,
-        CNContactBirthdayKey as CNKeyDescriptor,
-    ]
 
     /// Converts an array of contact identifiers into actual contacts
     func fetchContacts(with identifiers: [String]) {
         Task {
-            let fetchRequest = CNContactFetchRequest(keysToFetch: self.keys)
+            let fetchRequest = CNContactFetchRequest(keysToFetch: self.contactManager.keys)
             
             fetchRequest.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
             
