@@ -10,15 +10,27 @@ import SwiftUI
 import PhotosUI
 
 struct ContactForm: View {
-    @State var contact: Contact.Draft = .init(identifier: UUID().uuidString)
-    
+    @State var contact: Contact.Draft
     @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var showingAddPhoneSheet = false
-    @State private var showingAddEmailSheet = false
-    @State private var showingAddAddressSheet = false
-    @State private var showingAddURLSheet = false
     
     @Environment(\.dismiss) private var dismiss
+    @Environment(ContactManager.self) private var contactManager: ContactManager?
+    
+    enum Mode {
+        /// Create a new contact.
+        case create
+        /// We are editing an existing contact. The identifier is decrypted.
+        case edit(identifier: String)
+    }
+    
+    init(mode: Mode) {
+        switch mode {
+        case .create:
+            self.contact = .init(identifier: UUID().uuidString)
+        case .edit(let identifier):
+            self.contact = .init(identifier: identifier)
+        }
+    }
     
     var body: some View {
         Form {
@@ -107,7 +119,11 @@ struct ContactForm: View {
             
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    
+                    do {
+                        try self.contactManager?.save(contact: self.contact)
+                    } catch {
+                        // TODO: Display a warning that a contact could not be saved
+                    }
                 } label: {
                     Text("Save")
                 }
@@ -120,6 +136,6 @@ struct ContactForm: View {
 
 #Preview {
     NavigationStack {
-        ContactForm()
+        ContactForm(mode: .create)
     }
 }

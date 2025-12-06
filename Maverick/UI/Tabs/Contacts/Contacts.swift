@@ -69,7 +69,7 @@ struct Contacts: View {
                 .sheet(isPresented: self.$creatingNewContact, onDismiss: {
                     /// On dismiss
                 }, content: {
-                    ContactForm()
+                    ContactForm(mode: .create)
                 })
 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
@@ -98,7 +98,16 @@ struct Contacts: View {
         CNContactImageDataAvailableKey as any CNKeyDescriptor,
         CNContactThumbnailImageDataKey as any CNKeyDescriptor,
         CNContactEmailAddressesKey as CNKeyDescriptor,
-        CNContactPhoneNumbersKey as CNKeyDescriptor
+        CNContactPhoneNumbersKey as CNKeyDescriptor,
+        CNContactPostalAddressesKey as CNKeyDescriptor,
+        CNContactUrlAddressesKey as CNKeyDescriptor,
+        CNContactNamePrefixKey as CNKeyDescriptor,
+        CNContactNameSuffixKey as CNKeyDescriptor,
+        CNContactOrganizationNameKey as CNKeyDescriptor,
+        CNContactDepartmentNameKey as CNKeyDescriptor,
+        CNContactJobTitleKey as CNKeyDescriptor,
+        CNContactNicknameKey as CNKeyDescriptor,
+        CNContactBirthdayKey as CNKeyDescriptor,
     ]
 
     /// Converts an array of contact identifiers into actual contacts

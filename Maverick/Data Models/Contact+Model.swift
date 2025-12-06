@@ -40,7 +40,7 @@ extension Contact {
         var emailAddresses: [EmailAddress] = []
         
         @Relationship(deleteRule: .cascade)
-        var postalAddresses: [PostalAddressEntry] = []
+        var postalAddresses: [PostalAddress] = []
         
         @Relationship(deleteRule: .cascade)
         var urlAddresses: [URLAddress] = []
@@ -76,7 +76,7 @@ extension Contact {
             thumbnailImageData: Data? = nil,
             phoneNumbers: [PhoneNumber] = [],
             emailAddresses: [EmailAddress] = [],
-            postalAddresses: [PostalAddressEntry] = [],
+            postalAddresses: [PostalAddress] = [],
             urlAddresses: [URLAddress] = [],
             importedAt: Date = Date()
         ) {
@@ -153,7 +153,7 @@ extension Contact.Profile {
     }
 
     @Model
-    final class PostalAddressEntry {
+    final class PostalAddress {
         var label: String
         
         var street: String = ""
@@ -163,23 +163,23 @@ extension Contact.Profile {
         var country: String = ""
         var isoCountryCode: String = ""
         
-        init(label: String = "home") {
+        init(label: String = "home", street: String, city: String, state: String, postalCode: String, country: String, isoCountryCode: String) {
             self.label = label
         }
         
-        convenience init(from labeled: CNLabeledValue<CNPostalAddress>) {
+        convenience init(from labeled: CNLabeledValue<CNMutablePostalAddress>) {
             let label = labeled.label ?? "other"
-            let cleanedLabel = CNLabeledValue<CNPostalAddress>.localizedString(forLabel: label)
-            let addr = labeled.value
+            let address = labeled.value
             
-            self.init(label: cleanedLabel)
-            self.street = [addr.street, addr.subLocality, addr.subAdministrativeArea]
+            let street = [address.street, address.subLocality, address.subAdministrativeArea]
                 .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
-            self.city = addr.city
-            self.state = addr.state
-            self.postalCode = addr.postalCode
-            self.country = addr.country
-            self.isoCountryCode = addr.isoCountryCode
+            let city = address.city
+            let state = address.state
+            let postalCode = address.postalCode
+            let country = address.country
+            let isoCountryCode = address.isoCountryCode
+            
+            self.init(label: label, street: street, city: city, state: state, postalCode: postalCode, country: country, isoCountryCode: isoCountryCode)
         }
     }
 

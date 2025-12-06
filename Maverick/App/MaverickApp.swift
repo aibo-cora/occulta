@@ -15,7 +15,7 @@ struct MaverickApp: App {
             Contact.Profile.self,
             Contact.Profile.PhoneNumber.self,
             Contact.Profile.EmailAddress.self,
-            Contact.Profile.PostalAddressEntry.self,
+            Contact.Profile.PostalAddress.self,
             Contact.Profile.URLAddress.self
         ])
         
