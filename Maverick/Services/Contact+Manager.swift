@@ -443,7 +443,7 @@ extension ContactManager {
                 Contact.Profile.URLAddress.self
             ])
             
-            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
 
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
@@ -453,6 +453,26 @@ extension ContactManager {
         }()
         
         let manager = ContactManager(modelContainer: sharedModelContainer)
+        
+        do {
+            let cryptoManager = manager.cryptoManager
+            
+            let encryptedIdentifier = try cryptoManager.encrypt(data: UUID().uuidString.data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedGivenName = try cryptoManager.encrypt(data: "Alice".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedFamilyName = try cryptoManager.encrypt(data: "Wonderland".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedMiddleName: String = try cryptoManager.encrypt(data: "Elizabeth".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedNickname: String = try cryptoManager.encrypt(data: "AW".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedOrganizationName: String = try cryptoManager.encrypt(data: "Wonderland Enterprises".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedDepartmentName: String = try cryptoManager.encrypt(data: "Engineering".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedJobTitle: String = try cryptoManager.encrypt(data: "Software Engineer".data(using: .utf8))?.base64EncodedString() ?? ""
+            
+            let testing = Contact.Profile(identifier: encryptedIdentifier, givenName: encryptedGivenName, familyName: encryptedFamilyName, middleName: encryptedMiddleName, nickname: encryptedNickname, organizationName: encryptedOrganizationName, departmentName: encryptedDepartmentName, jobTitle: encryptedJobTitle)
+            
+            sharedModelContainer.mainContext.insert(testing)
+            try sharedModelContainer.mainContext.save()
+        } catch {
+            
+        }
         
         return manager
     }
