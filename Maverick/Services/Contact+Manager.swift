@@ -408,3 +408,29 @@ enum ContactManagerError: Error {
     case identityNotSaved
     case contactHasNoKeys
 }
+
+extension ContactManager {
+    static var preview: ContactManager {
+        let sharedModelContainer: ModelContainer = {
+            let schema = Schema([
+                Contact.Profile.self,
+                Contact.Profile.PhoneNumber.self,
+                Contact.Profile.EmailAddress.self,
+                Contact.Profile.PostalAddress.self,
+                Contact.Profile.URLAddress.self
+            ])
+            
+            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+
+            do {
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create ModelContainer: \(error)")
+            }
+        }()
+        
+        let manager = ContactManager(modelContainer: sharedModelContainer)
+        
+        return manager
+    }
+}

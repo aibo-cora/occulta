@@ -71,18 +71,15 @@ extension Contact {
                         Spacer()
                     }
                     
-                    TextField("Street address", text: self.$address.street)
-                    
-                    HStack {
+                    VStack(spacing: 15) {
+                        TextField("Street address", text: self.$address.street)
+                        
                         TextField("City", text: self.$address.city)
-                            .frame(maxWidth: .infinity)
                         
                         TextField("State", text: self.$address.state)
-                            .frame(width: 100)
                         
                         TextField("Postal Code", text: self.$address.postalCode)
                             .keyboardType(.numberPad)
-                            .frame(width: 120)
                     }
                     
                     Menu {

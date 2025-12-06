@@ -142,7 +142,6 @@ struct ContactForm: View {
 // MARK: - Preview
 
 #Preview {
-    NavigationStack {
-        ContactForm(mode: .create)
-    }
+    ContactForm(mode: .create)
+        .environment(ContactManager.preview)
 }

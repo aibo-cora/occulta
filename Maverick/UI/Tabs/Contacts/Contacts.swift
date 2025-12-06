@@ -128,4 +128,5 @@ struct Contacts: View {
 
 #Preview {
     Contacts()
+        .environment(ContactManager.preview)
 }
