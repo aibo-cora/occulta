@@ -111,6 +111,16 @@ extension Contact {
                         TextField("Add note", text: self.$contact.note, axis: .vertical)
                             .lineLimit(4...)
                     }
+                    
+                    switch self.mode {
+                    case .create:
+                        EmptyView()
+                    case .edit(let identifier):
+                        Button("Delete Contact", systemImage: "trash.fill", role: .destructive) {
+                            try? self.contactManager.deleteContact(identifier: identifier)
+                            self.dismiss()
+                        }
+                    }
                 }
                 .navigationTitle(self.contact.fullName.isEmpty ? "New Contact" : self.contact.fullName)
                 .navigationBarTitleDisplayMode(.inline)

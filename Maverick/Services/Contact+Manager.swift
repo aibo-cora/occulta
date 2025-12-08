@@ -342,6 +342,8 @@ class ContactManager {
     
     /// Deletes a contact by its identifier.
     func deleteContact(identifier: String) throws {
+        debugPrint("Deleting contact with identifier: \(identifier)")
+        
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
