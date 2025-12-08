@@ -487,7 +487,6 @@ extension ContactManager {
 }
 
 extension ContactManager {
-    
     /// Returns a fully decrypted, mutable copy of a contact for editing.
     /// - Parameter identifier: The encrypted unique identifier of the contact.
     /// - Returns: Contact with all fields decrypted and ready for UI.
@@ -651,5 +650,66 @@ extension ContactManager {
             urlAddresses: urlAddresses,
             importedAt: storedContact.importedAt
         )
+    }
+    /// Returns a Draft with all properties still encrypted (no decryption performed)
+    /// Use this for locked/preview state or when key is unavailable
+    ///
+    /// This will be using to export our contacts.
+    func convertToEncryptedCopy(using identifier: String) throws -> Contact.Draft {
+        guard
+            let storedContact = try fetchContact(by: identifier)
+        else {
+            throw Errors.contactNotFound
+        }
+        
+        var encrypted = Contact.Draft(identifier: identifier, status: .encrypted)
+        
+        encrypted.givenName = storedContact.givenName
+        encrypted.familyName = storedContact.familyName
+        encrypted.middleName = storedContact.middleName
+        encrypted.namePrefix = storedContact.namePrefix
+        encrypted.nameSuffix = storedContact.nameSuffix
+        encrypted.nickname = storedContact.nickname
+        
+        encrypted.organizationName = storedContact.organizationName
+        encrypted.departmentName = storedContact.departmentName
+        encrypted.jobTitle = storedContact.jobTitle
+        
+        encrypted.phoneticGivenName = storedContact.phoneticGivenName
+        encrypted.phoneticMiddleName = storedContact.phoneticMiddleName
+        encrypted.phoneticFamilyName = storedContact.phoneticFamilyName
+        
+        encrypted.note = storedContact.note
+        encrypted.birthday = nil // Can't show without decryption
+        
+        encrypted.thumbnailImageData = storedContact.thumbnailImageData
+        encrypted.imageData = storedContact.imageData
+        
+        encrypted.phoneNumbers = storedContact.phoneNumbers.map { stored in
+            Contact.Draft.PhoneNumber(label: stored.label, value: stored.value)
+        }
+        
+        encrypted.emailAddresses = storedContact.emailAddresses.map { stored in
+            Contact.Draft.EmailAddress(label: stored.label, value: stored.value)
+        }
+        
+        encrypted.postalAddresses = storedContact.postalAddresses.map { stored in
+            Contact.Draft.PostalAddress(
+                label: stored.label,
+                street: stored.street,
+                city: stored.city,
+                state: stored.state,
+                postalCode: stored.postalCode,
+                country: .init(code: stored.isoCountryCode)
+            )
+        }
+        
+        encrypted.urlAddresses = storedContact.urlAddresses.map { stored in
+            Contact.Draft.URLAddress(label: stored.label, value: stored.value)
+        }
+        
+        encrypted.importedAt = storedContact.importedAt
+        
+        return encrypted
     }
 }
