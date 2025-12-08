@@ -151,6 +151,8 @@ extension Contact {
                     } catch {
                         debugPrint("Error converting to mutable copy, error = \(error)")
                     }
+                    
+                    debugPrint("Editing contact, id = \(identifier)")
                 }
             }
         }

@@ -11,7 +11,7 @@ import Contacts
 // MARK: - Main Contact Struct
 
 extension Contact {
-    struct Draft {
+    struct Draft: Codable {
         let identifier: String
         
         var givenName: String = ""
@@ -42,6 +42,12 @@ extension Contact {
         
         var importedAt: Date = Date()
         
+        enum Status: Codable {
+            case encrypted, decrypted
+        }
+        
+        let status: Status
+        
         // MARK: - Initializers
         
         init(
@@ -66,7 +72,8 @@ extension Contact {
             emailAddresses: [EmailAddress] = [],
             postalAddresses: [PostalAddress] = [],
             urlAddresses: [URLAddress] = [],
-            importedAt: Date = Date()
+            importedAt: Date = Date(),
+            status: Status = .decrypted
         ) {
             self.identifier = identifier
             self.givenName = givenName
@@ -90,6 +97,7 @@ extension Contact {
             self.postalAddresses = postalAddresses
             self.urlAddresses = urlAddresses
             self.importedAt = importedAt
+            self.status = status
         }
         
         var fullName: String {
@@ -106,7 +114,7 @@ extension Contact {
 }
 
 extension Contact.Draft {
-    struct PhoneNumber: Identifiable {
+    struct PhoneNumber: Identifiable, Codable {
         let id: UUID = UUID()
         var label: String
         var value: String
@@ -123,7 +131,7 @@ extension Contact.Draft {
             self.init(label: localizedLabel, value: labeled.value.stringValue)
         }
         
-        enum PhoneType: String, CaseIterable {
+        enum PhoneType: String, CaseIterable, Codable {
             case mobile = "Mobile"
             case home = "Home"
             case work = "Work"
@@ -146,12 +154,12 @@ extension Contact.Draft {
         var type: PhoneType = .mobile
     }
 
-    struct EmailAddress: Identifiable {
+    struct EmailAddress: Identifiable, Codable {
         let id: UUID = UUID()
         var label: String
         var value: String
         
-        enum EmailType: String, CaseIterable {
+        enum EmailType: String, CaseIterable, Codable {
             case personal = "Personal"
             case work = "Work"
             case school = "School"
@@ -186,7 +194,7 @@ extension Contact.Draft {
         }
     }
 
-    struct PostalAddress: Identifiable {
+    struct PostalAddress: Identifiable, Codable {
         let id: UUID = UUID()
         var label: String
         
@@ -196,7 +204,7 @@ extension Contact.Draft {
         var postalCode: String = ""
         var country: Country = .init(code: "MD")
         
-        enum AddressType: String, CaseIterable {
+        enum AddressType: String, CaseIterable, Codable {
             case home = "Home"
             case work = "Work"
             case billing = "Billing"
@@ -255,7 +263,7 @@ extension Contact.Draft {
             )
         }
         
-        struct Country: Identifiable, Hashable {
+        struct Country: Identifiable, Hashable, Codable {
             let code: String           // "US", "FR", etc.
             var name: String           // Localized name
             var flag: String           // Computed flag emoji
@@ -289,13 +297,13 @@ extension Contact.Draft {
         }
     }
 
-    struct URLAddress: Identifiable {
+    struct URLAddress: Identifiable, Codable {
         let id = UUID()
         
         var label: String
         var value: String
         
-        enum WebsiteType: String, CaseIterable {
+        enum WebsiteType: String, CaseIterable, Codable {
             case website = "Website"
             case linkedin = "LinkedIn"
             case github = "GitHub"
