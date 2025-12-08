@@ -77,7 +77,7 @@ struct ContactDetail: View {
         .sheet(isPresented: self.$editing) {
             
         } content: {
-            Contact.Form(mode: .edit(identifier: self.identifier.decrypt()))
+            Contact.Form(mode: .edit(identifier: self.identifier))
         }
     }
 }

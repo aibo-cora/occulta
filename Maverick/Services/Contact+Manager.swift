@@ -49,7 +49,7 @@ class ContactManager {
     
     // MARK: - Create
     
-    /// Creates a contact from a CNContact object when a user imports a contact.
+    /// Creates a contact from a `CNContact` object when a user imports a contact.
     ///
     /// All properties are encrypted before being stored in the local database.
     /// - Parameter cnContact: Apple's contact object.
@@ -174,11 +174,11 @@ class ContactManager {
         try self.modelContext.save()
     }
     
-    /// Create a new or update an existing contact
+    /// Save a new custom contact or update an existing contact.
     /// - Parameter contact: Custom contact. Thread safe.
     ///
     func save(contact: Contact.Draft) throws {
-        let encryptedIdentifier = try self.cryptoManager.encrypt(data: contact.identifier.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedIdentifier = contact.identifier
         let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedFamilyName = try self.cryptoManager.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedMiddleName = try self.cryptoManager.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
@@ -321,6 +321,7 @@ class ContactManager {
     }
     
     // MARK: - Read
+    
     /// Fetches all contacts from the SwiftData context.
     func fetchAllContacts() throws -> [Contact.Profile] {
         let descriptor = FetchDescriptor<Contact.Profile>(sortBy: [SortDescriptor(\.familyName)])
@@ -338,12 +339,13 @@ class ContactManager {
     }
     
     // MARK: - Delete
+    
     /// Deletes a contact by its identifier.
     func deleteContact(identifier: String) throws {
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
-            throw ContactManagerError.contactNotFound
+            throw ContactManager.Errors.contactNotFound
         }
         
         self.modelContext.delete(contact)
@@ -371,7 +373,7 @@ extension ContactManager {
             let contact = try self.fetchContact(by: identifier),
             let encrypted = try self.cryptoManager.encrypt(data: key)
         else {
-            throw ContactManagerError.identityNotSaved
+            throw ContactManager.Errors.identityNotSaved
         }
         
         contact.contactPublicKeys.append(Key(material: encrypted))
@@ -383,13 +385,13 @@ extension ContactManager {
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
-            throw ContactManagerError.contactNotFound
+            throw ContactManager.Errors.contactNotFound
         }
         
         guard
             let publicKeyingMaterial = contact.contactPublicKeys.last?.material
         else {
-            throw ContactManagerError.contactHasNoKeys
+            throw ContactManager.Errors.contactHasNoKeys
         }
         
         if let encrypted = try self.cryptoManager.encrypt(message: message, using: publicKeyingMaterial) {
@@ -405,13 +407,13 @@ extension ContactManager {
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
-            throw ContactManagerError.contactNotFound
+            throw ContactManager.Errors.contactNotFound
         }
         
         guard
             let publicKeyingMaterial = contact.contactPublicKeys.last?.material
         else {
-            throw ContactManagerError.contactHasNoKeys
+            throw ContactManager.Errors.contactHasNoKeys
         }
         
         guard
@@ -426,10 +428,14 @@ extension ContactManager {
 
 // MARK: - Error Handling
 
-enum ContactManagerError: Error {
-    case contactNotFound
-    case identityNotSaved
-    case contactHasNoKeys
+extension ContactManager {
+    enum Errors: Error {
+        case contactNotFound
+        case identityNotSaved
+        case contactHasNoKeys
+        case invalidBase64
+        case decryptionFailed
+    }
 }
 
 extension ContactManager {
@@ -475,5 +481,173 @@ extension ContactManager {
         }
         
         return manager
+    }
+}
+
+extension ContactManager {
+    
+    /// Returns a fully decrypted, mutable copy of a contact for editing.
+    /// - Parameter identifier: The encrypted unique identifier of the contact.
+    /// - Returns: Contact with all fields decrypted and ready for UI.
+    func convertToMutableCopy(using identifier: String) throws -> Contact.Draft {
+        guard
+            let storedContact = try self.fetchContact(by: identifier)
+        else {
+            throw Errors.contactNotFound
+        }
+        
+        func decryptString(_ base64: String) throws -> String {
+            guard
+                let data = Data(base64Encoded: base64)
+            else {
+                throw Errors.invalidBase64
+            }
+            
+            guard
+                !data.isEmpty
+            else {
+                return ""
+            }
+            
+            guard
+                let decryptedData = try self.cryptoManager.decrypt(data: data),
+                let string = String(data: decryptedData, encoding: .utf8)
+            else {
+                throw Errors.decryptionFailed
+            }
+            
+            return string
+        }
+        
+        func decryptImageData(from base64Data: Data?) throws -> Data? {
+            guard
+                let encrypted = base64Data, !encrypted.isEmpty
+            else {
+                return nil
+            }
+            
+            return try self.cryptoManager.decrypt(data: encrypted)
+        }
+        
+        // MARK: - Decrypt scalar fields
+        
+        let givenName           = try decryptString(storedContact.givenName)
+        let familyName          = try decryptString(storedContact.familyName)
+        let middleName          = try decryptString(storedContact.middleName)
+        let namePrefix          = try decryptString(storedContact.namePrefix)
+        let nameSuffix          = try decryptString(storedContact.nameSuffix)
+        let nickname            = try decryptString(storedContact.nickname)
+        
+        let organizationName    = try decryptString(storedContact.organizationName)
+        let departmentName      = try decryptString(storedContact.departmentName)
+        let jobTitle            = try decryptString(storedContact.jobTitle)
+        
+        let phoneticGivenName   = try decryptString(storedContact.phoneticGivenName)
+        let phoneticMiddleName  = try decryptString(storedContact.phoneticMiddleName)
+        let phoneticFamilyName  = try decryptString(storedContact.phoneticFamilyName)
+        
+        let note                = try decryptString(storedContact.note)
+        
+        let birthday: Date? = try {
+            if let encryptedBirthday = storedContact.birthday {
+                let isoString = try decryptString(encryptedBirthday)
+                let formatter = ISO8601DateFormatter()
+                
+                // formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                
+                return formatter.date(from: isoString)
+            }
+            return nil
+        }()
+        
+        let thumbnailImageData = try decryptImageData(from: storedContact.thumbnailImageData)
+        let imageData          = try decryptImageData(from: storedContact.imageData)
+        
+        // MARK: - Decrypt relationships
+        
+        let phoneNumbers: [Contact.Draft.PhoneNumber] = try storedContact.phoneNumbers.map { stored in
+            let label = try decryptString(stored.label)
+            let value = try decryptString(stored.value)
+            
+            var phone = Contact.Draft.PhoneNumber(label: label, value: value)
+            
+            phone.type = Contact.Draft.PhoneNumber.PhoneType.allCases
+                .first { $0.rawValue.localizedCaseInsensitiveCompare(label) == .orderedSame } ?? .other
+            return phone
+        }
+        
+        let emailAddresses: [Contact.Draft.EmailAddress] = try storedContact.emailAddresses.map { stored in
+            let label = try decryptString(stored.label)
+            let value = try decryptString(stored.value)
+            
+            var email = Contact.Draft.EmailAddress(label: label, value: value)
+            
+            email.type = Contact.Draft.EmailAddress.EmailType.allCases
+                .first { $0.rawValue.localizedCaseInsensitiveCompare(label) == .orderedSame } ?? .other
+            
+            return email
+        }
+        
+        let postalAddresses: [Contact.Draft.PostalAddress] = try storedContact.postalAddresses.map { stored in
+            let label       = try decryptString(stored.label)
+            let street      = try decryptString(stored.street)
+            let city        = try decryptString(stored.city)
+            let state       = try decryptString(stored.state)
+            let postalCode  = try decryptString(stored.postalCode)
+            let countryCode = try decryptString(stored.isoCountryCode)
+            let country     = Contact.Draft.PostalAddress.Country(code: countryCode.uppercased())
+            
+            var address = Contact.Draft.PostalAddress(
+                label: label,
+                street: street,
+                city: city,
+                state: state,
+                postalCode: postalCode,
+                country: country
+            )
+            address.type = Contact.Draft.PostalAddress.AddressType.allCases
+                .first { $0.rawValue.localizedCaseInsensitiveCompare(label) == .orderedSame } ?? .other
+            
+            return address
+        }
+        
+        let urlAddresses: [Contact.Draft.URLAddress] = try storedContact.urlAddresses.map { stored in
+            let label = try decryptString(stored.label)
+            let value = try decryptString(stored.value)
+            
+            var url = Contact.Draft.URLAddress(label: label, value: value)
+            
+            url.type = Contact.Draft.URLAddress.WebsiteType.allCases
+                .first { $0.rawValue.localizedCaseInsensitiveCompare(label) == .orderedSame } ?? .other
+            
+            return url
+        }
+        
+        // MARK: - Build final Draft
+        
+        return Contact.Draft(
+            identifier: identifier,
+            givenName: givenName,
+            familyName: familyName,
+            middleName: middleName,
+            namePrefix: namePrefix,
+            nameSuffix: nameSuffix,
+            nickname: nickname,
+            organizationName: organizationName,
+            departmentName: departmentName,
+            jobTitle: jobTitle,
+            phoneticGivenName: phoneticGivenName,
+            phoneticMiddleName: phoneticMiddleName,
+            phoneticFamilyName: phoneticFamilyName,
+            birthday: birthday,
+            note: note,
+            imageData: imageData,
+            thumbnailImageData: thumbnailImageData,
+            phoneNumbers: phoneNumbers,
+            emailAddresses: emailAddresses,
+            postalAddresses: postalAddresses,
+            urlAddresses: urlAddresses,
+            importedAt: storedContact.importedAt
+        )
     }
 }

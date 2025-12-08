@@ -20,9 +20,11 @@ extension Contact {
         enum Mode {
             /// Create a new contact.
             case create
-            /// We are editing an existing contact. The identifier is decrypted.
+            /// We are editing an existing contact. The identifier is encrypted.
             case edit(identifier: String)
         }
+        
+        let mode: Mode
         
         init(mode: Mode) {
             switch mode {
@@ -31,6 +33,8 @@ extension Contact {
             case .edit(let identifier):
                 self.contact = .init(identifier: identifier)
             }
+            
+            self.mode = mode
         }
         
         var body: some View {
@@ -134,6 +138,18 @@ extension Contact {
                         } label: {
                             Text("Save")
                         }
+                    }
+                }
+            }
+            .task {
+                switch self.mode {
+                    case .create:
+                    break
+                case .edit(let identifier):
+                    do {
+                        self.contact = try self.contactManager.convertToMutableCopy(using: identifier)
+                    } catch {
+                        debugPrint("Error converting to mutable copy, error = \(error)")
                     }
                 }
             }
