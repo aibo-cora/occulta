@@ -43,6 +43,8 @@ struct ContactDetail: View {
         self._contacts = Query(filter: predicate)
     }
     
+    @State private var editing: Bool = false
+    
     var body: some View {
         VStack {
             Group {
@@ -62,6 +64,20 @@ struct ContactDetail: View {
             } else {
                 Encrypt(identifier: self.identifier)
             }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    self.editing = true
+                } label: {
+                    Text("Edit")
+                }
+            }
+        }
+        .sheet(isPresented: self.$editing) {
+            
+        } content: {
+            Contact.Form(mode: .edit(identifier: self.identifier.decrypt()))
         }
     }
 }

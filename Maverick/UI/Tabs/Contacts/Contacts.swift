@@ -45,7 +45,7 @@ struct Contacts: View {
         .sheet(isPresented: self.$creatingNewContact, onDismiss: {
             /// On dismiss
         }, content: {
-            ContactForm(mode: .create)
+            Contact.Form(mode: .create)
         })
     }
 
