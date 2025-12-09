@@ -697,3 +697,11 @@ extension ContactManager {
         return encrypted
     }
 }
+
+// MARK: Porting
+
+extension ContactManager {
+    func prepareForPorting() throws -> Data? {
+        let storedContacts = try self.fetchAllContacts()
+    }
+}

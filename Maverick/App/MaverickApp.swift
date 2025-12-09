@@ -36,10 +36,20 @@ struct MaverickApp: App {
         self.sharedModelContainer = sharedModelContainer
         self.contactManager = ContactManager(modelContainer: sharedModelContainer)
     }
+    
+    enum Tabs: Hashable {
+        case contacts, settings
+    }
 
     var body: some Scene {
         WindowGroup {
-            Contacts()
+            TabView {
+                Contacts()
+                    .tag(Tabs.contacts)
+                
+                Settings()
+                    .tag(Tabs.settings)
+            }
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
