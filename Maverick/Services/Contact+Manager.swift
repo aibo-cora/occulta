@@ -47,6 +47,14 @@ class ContactManager {
         self.modelContainer = modelContainer
     }
     
+    var dateFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        
+        formatter.dateStyle = .short
+        
+        return formatter
+    }
+    
     // MARK: - Create
     
     /// Creates a contact from a `CNContact` object when a user imports a contact.
@@ -139,13 +147,8 @@ class ContactManager {
             
             var encryptedBirthday: String = ""
             
-            if let birthday = contact.birthday {
-                let encoder = JSONEncoder()
-                
-                encoder.dateEncodingStrategy = .iso8601
-                let encoded = try encoder.encode(birthday)
-                
-                encryptedBirthday = try self.cryptoManager.encrypt(data: encoded)?.base64EncodedString() ?? ""
+            if let birthday = contact.birthday?.date {
+                encryptedBirthday = try self.cryptoManager.encrypt(data: self.dateFormatter.string(from: birthday).data(using: .utf8))?.base64EncodedString() ?? ""
             }
             
             /// Need to request an entitlement from Apple to retrieve the `note` field.
@@ -260,16 +263,7 @@ class ContactManager {
             }
         }
         
-        var encryptedBirthday: String = ""
-        
-        if let birthday = contact.birthday {
-            let encoder = JSONEncoder()
-            
-            encoder.dateEncodingStrategy = .iso8601
-            let encoded = try encoder.encode(birthday)
-            
-            encryptedBirthday = try self.cryptoManager.encrypt(data: encoded)?.base64EncodedString() ?? ""
-        }
+        let encryptedBirthday: String = try self.cryptoManager.encrypt(data: contact.birthday?.data(using: .utf8))?.base64EncodedString() ?? ""
         
         let encryptedNote = try self.cryptoManager.encrypt(data: contact.note.data(using: .utf8))?.base64EncodedString() ?? ""
         
@@ -549,20 +543,10 @@ extension ContactManager {
         
         let note                = try decryptString(storedContact.note)
         
-        let birthday: Date? = try {
-            if let encryptedBirthday = storedContact.birthday {
-                let isoString = try decryptString(encryptedBirthday)
-                let formatter = ISO8601DateFormatter()
-                
-                // formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                
-                return formatter.date(from: isoString)
-            }
-            return nil
-        }()
+        let birthday            = try decryptString(storedContact.birthday ?? "")
         
-        let thumbnailImageData = try decryptImageData(from: storedContact.thumbnailImageData)
-        let imageData          = try decryptImageData(from: storedContact.imageData)
+        let thumbnailImageData  = try decryptImageData(from: storedContact.thumbnailImageData)
+        let imageData           = try decryptImageData(from: storedContact.imageData)
         
         // MARK: - Decrypt relationships
         

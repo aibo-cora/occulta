@@ -29,7 +29,7 @@ extension Contact {
         var phoneticMiddleName: String = ""
         var phoneticFamilyName: String = ""
         
-        var birthday: Date?
+        var birthday: String?
         var note: String = ""
         
         var thumbnailImageData: Data?
@@ -64,7 +64,7 @@ extension Contact {
             phoneticGivenName: String = "",
             phoneticMiddleName: String = "",
             phoneticFamilyName: String = "",
-            birthday: Date? = nil,
+            birthday: String? = nil,
             note: String = "",
             imageData: Data? = nil,
             thumbnailImageData: Data? = nil,

@@ -76,7 +76,8 @@ extension Contact {
                     if self.contact.birthday == nil {
                         Button {
                             withAnimation {
-                                self.contact.birthday = Date()
+                                let now = self.contactManager.dateFormatter.string(from: Date())
+                                self.contact.birthday = now
                             }
                         } label: {
                             Label("Add birthday", systemImage: "plus.circle.fill")
@@ -98,8 +99,16 @@ extension Contact {
                                 .buttonStyle(.plain)
                                 
                                 DatePicker("Birthday", selection: Binding(
-                                    get: { self.contact.birthday ?? Date() },
-                                    set: { self.contact.birthday = $0 }
+                                    get: {
+                                        let now = self.contactManager.dateFormatter.string(from: Date())
+                                        let date = self.contactManager.dateFormatter.date(from: self.contact.birthday ?? now)
+                                        
+                                        return date ?? Date()
+                                    },
+                                    set: {
+                                        let date = self.contactManager.dateFormatter.string(from: $0)
+                                        self.contact.birthday = date
+                                    }
                                 ), displayedComponents: .date)
                                 .foregroundStyle(self.contact.birthday == nil ? .secondary : .primary)
                             }
