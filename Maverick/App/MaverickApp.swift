@@ -44,11 +44,15 @@ struct MaverickApp: App {
     var body: some Scene {
         WindowGroup {
             TabView {
-                Contacts()
-                    .tag(Tabs.contacts)
+                Tab("Contacts", systemImage: "person.2.fill") {
+                    Contacts()
+                        .tag(Tabs.contacts)
+                }
                 
-                Settings()
-                    .tag(Tabs.settings)
+                Tab("Settings", systemImage: "gearshape.fill") {
+                    Settings()
+                        .tag(Tabs.settings)
+                }
             }
         }
         .modelContainer(self.sharedModelContainer)

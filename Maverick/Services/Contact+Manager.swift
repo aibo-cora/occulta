@@ -641,7 +641,7 @@ extension ContactManager {
     /// This will be using to export our contacts.
     func convertToEncryptedCopy(using identifier: String) throws -> Contact.Draft {
         guard
-            let storedContact = try fetchContact(by: identifier)
+            let storedContact = try self.fetchContact(by: identifier)
         else {
             throw Errors.contactNotFound
         }
@@ -664,7 +664,7 @@ extension ContactManager {
         encrypted.phoneticFamilyName = storedContact.phoneticFamilyName
         
         encrypted.note = storedContact.note
-        encrypted.birthday = nil // Can't show without decryption
+        encrypted.birthday = storedContact.birthday
         
         encrypted.thumbnailImageData = storedContact.thumbnailImageData
         encrypted.imageData = storedContact.imageData
@@ -701,7 +701,14 @@ extension ContactManager {
 // MARK: Porting
 
 extension ContactManager {
+    /// <#Description#>
+    /// - Returns: <#description#>
     func prepareForPorting() throws -> Data? {
+        /// All of our contacts.
         let storedContacts = try self.fetchAllContacts()
+        /// We need to decrypt them so we can encrypt it again with a new key that a new device would understand.
+        let decryptedMutableContacts = storedContacts.compactMap { try? self.convertToMutableCopy(using: $0.identifier)}
+        
+        return nil
     }
 }

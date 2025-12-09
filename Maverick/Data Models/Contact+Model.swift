@@ -53,6 +53,8 @@ extension Contact {
         var contactPublicKeys: [Key] = []
         /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
+        /// Identifier of the user that originally acquired this contact's public key.
+        var identifierAcquirer: String?
         
         // MARK: - Full Designated Initializer
         
