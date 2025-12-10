@@ -70,7 +70,7 @@ struct Encrypt: View {
                     
                     Button {
                         withAnimation {
-                            UIPasteboard.general.string = self.textToEncrypt
+                            UIPasteboard.general.string = self.encryptedTextToShare
                         }
                     } label: {
                         VStack {

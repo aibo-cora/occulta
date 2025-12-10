@@ -390,10 +390,22 @@ extension ContactManager {
             throw ContactManager.Errors.contactHasNoKeys
         }
         
-        if let encrypted = try self.cryptoManager.encrypt(message: message, using: publicKeyingMaterial) {
-            let encoded = encrypted.base64EncodedString()
+        guard
+            let payload = message.data(using: .utf8)
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
+        if let encrypted = try self.cryptoManager.encrypt(message: payload, using: publicKeyingMaterial) {
+            let originPublicKeyHash = try KeyManager().retrieveIdentity().sha256
+            let recipients = publicKeyingMaterial.sha256
             
-            return encoded
+            let message = Message(id: UUID().uuidString, origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
+            let encoded = try JSONEncoder().encode(message)
+            
+            let encodedBase64 = encoded.base64EncodedString()
+            
+            return encodedBase64
         } else {
             return nil
         }
@@ -413,7 +425,22 @@ extension ContactManager {
         }
         
         guard
-            let decrypted = try self.cryptoManager.decrypt(message: message, using: publicKeyingMaterial)
+            let decoded = Data(base64Encoded: message)
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
+        let decoder = JSONDecoder()
+        let message = try decoder.decode(Message.self, from: decoded)
+        
+        guard
+            let payload = message.content
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
+        guard
+            let decrypted = try self.cryptoManager.decrypt(message: payload, using: publicKeyingMaterial)
         else {
             return nil
         }
@@ -431,6 +458,7 @@ extension ContactManager {
         case contactHasNoKeys
         case invalidBase64
         case decryptionFailed
+        case messageHasNoData
     }
 }
 

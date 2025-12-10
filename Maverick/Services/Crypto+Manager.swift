@@ -60,34 +60,32 @@ extension Manager {
         ///   - message: Message to encrypt.
         ///   - material: Public keying material of contact.
         /// - Returns: Encrypted data, combined.
-        func encrypt(message: String, using material: Data?) throws -> Data? {
+        func encrypt(message: Data, using material: Data?) throws -> Data? {
             /// Crypto key derived from our private key and contact's public key. It is a shared secret.
             guard
-                let key = self.keyManager.createSharedSecret(using: material),
-                let encoded = message.data(using: .utf8)
+                let key = self.keyManager.createSharedSecret(using: material)
             else {
                 return nil
             }
             
-            let sealed = try AES.GCM.seal(encoded, using: key, nonce: AES.GCM.Nonce())
+            let sealed = try AES.GCM.seal(message, using: key, nonce: AES.GCM.Nonce())
             
             return sealed.combined
         }
         
         /// Decrypt a sealed box in Base64 format.
         /// - Parameters:
-        ///   - message: Encrypted message in Base64 format.
+        ///   - message: Encrypted message.
         ///   - material: Public keying material of our contact.
         /// - Returns: Decrypted message in encoded form.
-        func decrypt(message: String, using material: Data?) throws -> Data? {
+        func decrypt(message: Data, using material: Data?) throws -> Data? {
             guard
-                let encrypted = Data(base64Encoded: message),
                 let key = self.keyManager.createSharedSecret(using: material)
             else {
                 return nil
             }
             
-            let sealed = try AES.GCM.SealedBox(combined: encrypted)
+            let sealed = try AES.GCM.SealedBox(combined: message)
             let payload = try AES.GCM.open(sealed, using: key)
             
             return payload
@@ -103,13 +101,13 @@ protocol CryptoProtocol {
     ///   - message: Message to encrypt.
     ///   - material: Public keying material of contact.
     /// - Returns: Encrypted data, combined.
-    func encrypt(message: String, using material: Data?) throws -> Data?
+    func encrypt(message: Data, using material: Data?) throws -> Data?
     /// Decrypt a sealed box in Base64 format.
     /// - Parameters:
     ///   - message: Encrypted message in Base64 format.
     ///   - material: Public keying material of our contact.
     /// - Returns: Decrypted message in encoded form.
-    func decrypt(message: String, using material: Data?) throws -> Data?
+    func decrypt(message: Data, using material: Data?) throws -> Data?
 }
 
 extension String {

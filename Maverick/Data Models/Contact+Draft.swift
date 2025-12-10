@@ -115,7 +115,7 @@ extension Contact {
 
 extension Contact.Draft {
     struct PhoneNumber: Identifiable, Codable {
-        let id: UUID = UUID()
+        var id: UUID = UUID()
         var label: String
         var value: String
         
@@ -155,7 +155,7 @@ extension Contact.Draft {
     }
 
     struct EmailAddress: Identifiable, Codable {
-        let id: UUID = UUID()
+        var id: UUID = UUID()
         var label: String
         var value: String
         
@@ -195,7 +195,7 @@ extension Contact.Draft {
     }
 
     struct PostalAddress: Identifiable, Codable {
-        let id: UUID = UUID()
+        var id: UUID = UUID()
         var label: String
         
         var street: String = ""
@@ -298,7 +298,7 @@ extension Contact.Draft {
     }
 
     struct URLAddress: Identifiable, Codable {
-        let id = UUID()
+        var id = UUID()
         
         var label: String
         var value: String
