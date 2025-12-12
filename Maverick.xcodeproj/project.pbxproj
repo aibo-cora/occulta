@@ -35,6 +35,16 @@
 		DEFFD86E2E9D293700CA60F9 /* MaverickUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MaverickUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DE8B24BA2EEB31C500B83B51 /* Exceptions for "Assets" folder in "MaverickTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				eff_large_wordlist.txt,
+			);
+			target = DEFFD8632E9D293600CA60F9 /* MaverickTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DEFFD8572E9D293500CA60F9 /* Maverick */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -53,6 +63,9 @@
 		};
 		DEFFD8812E9D349700CA60F9 /* Assets */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DE8B24BA2EEB31C500B83B51 /* Exceptions for "Assets" folder in "MaverickTests" target */,
+			);
 			path = Assets;
 			sourceTree = "<group>";
 		};
