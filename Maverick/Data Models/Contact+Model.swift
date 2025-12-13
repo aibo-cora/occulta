@@ -9,7 +9,7 @@ enum Contact { }
 extension Contact {
     @Model
     final class Profile {
-        @Attribute(.unique) var identifier: String
+        var identifier: String
         
         var givenName: String = ""
         var familyName: String = ""
