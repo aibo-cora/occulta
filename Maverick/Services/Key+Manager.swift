@@ -30,7 +30,7 @@ class KeyManager {
     private func create() throws -> Bool {
         var error: Unmanaged<CFError>?
         
-        // TODO: Should we add more flags to ensure user authenticity?
+        // TODO: Should we add more flags to ensure user authenticity? - .userPresence
         
         if let access = SecAccessControlCreateWithFlags(kCFAllocatorDefault, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage], &error) {
             let attributes: NSDictionary = [

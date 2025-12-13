@@ -459,6 +459,8 @@ extension ContactManager {
         case invalidBase64
         case decryptionFailed
         case messageHasNoData
+        case noDataToExport
+        case encryptionFailed
     }
 }
 
@@ -729,14 +731,32 @@ extension ContactManager {
 // MARK: Porting
 
 extension ContactManager {
-    /// <#Description#>
-    /// - Returns: <#description#>
-    func prepareForPorting() throws -> Data? {
+    /// Retrieves all of our contacts from the local database. Then, creates mutable copies of `Contact.Draft` decrypting all values. Encrypts these copies with a `SymmetricKey` which is derived from the passphrase.
+    /// - Parameter passphrase: Passphrase generated to derive a `SymmetricKey`.
+    /// - Returns: Encrypted `Contact.Export` object.
+    func prepareForExporting(using passphrase: String) throws -> Data {
+        let cryptoOps: CryptoProtocol = Manager.Crypto()
         /// All of our contacts.
         let storedContacts = try self.fetchAllContacts()
         /// We need to decrypt them so we can encrypt it again with a new key that a new device would understand.
-        let decryptedMutableContacts = storedContacts.compactMap { try? self.convertToMutableCopy(using: $0.identifier)}
+        let decryptedMutableContacts = storedContacts.compactMap { try? self.convertToMutableCopy(using: $0.identifier) }
         
-        return nil
+        let encodedContacts = try JSONEncoder().encode(decryptedMutableContacts)
+        
+        guard
+            let export = Contact.Export(payload: encodedContacts, type: .contacts)
+        else {
+            throw Errors.noDataToExport
+        }
+        
+        let encodedExport = try JSONEncoder().encode(export)
+        
+        guard
+            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedExport, using: passphrase)
+        else {
+            throw Errors.encryptionFailed
+        }
+        
+        return encryptedContacts
     }
 }

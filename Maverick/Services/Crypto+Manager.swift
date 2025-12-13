@@ -90,6 +90,25 @@ extension Manager {
             
             return payload
         }
+        
+        func encrypt(contacts: Data, using passphrase: String) throws -> Data? {
+            guard
+                let material = passphrase.data(using: .utf8)
+            else {
+                return nil
+            }
+            
+            let hash = Data(SHA256.hash(data: material))
+            let key = SymmetricKey(data: hash)
+            
+            let sealed = try AES.GCM.seal(contacts, using: key, nonce: AES.GCM.Nonce())
+            
+            return sealed.combined
+        }
+        
+        func decrypt(contacts: Data, using passphrase: String) throws -> Data? {
+            nil
+        }
     }
 }
 
@@ -108,6 +127,9 @@ protocol CryptoProtocol {
     ///   - material: Public keying material of our contact.
     /// - Returns: Decrypted message in encoded form.
     func decrypt(message: Data, using material: Data?) throws -> Data?
+    
+    func encrypt(contacts: Data, using passphrase: String) throws -> Data?
+    func decrypt(contacts: Data, using passphrase: String) throws -> Data?
 }
 
 extension String {

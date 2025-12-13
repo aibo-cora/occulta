@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+internal import UniformTypeIdentifiers
 
 struct Settings: View {
     @State private var showingExportOptions = false
@@ -44,12 +45,13 @@ struct Settings: View {
 }
 
 struct Export: View {
-    @State private var porter = Manager.Porter()
     @State private var generator: Manager.PassphraseGenerator = .init()
     
     @State private var passphrase: String = ""
+    @State private var exportedFile: URL?
+    @State private var exporting = false
     
-    @State private var buttonStyle: any PrimitiveButtonStyle = .borderedProminent
+    @Environment(ContactManager.self) private var contactManager: ContactManager
     
     var body: some View {
         VStack {
@@ -98,28 +100,116 @@ struct Export: View {
                         
                         Divider()
                         
-                        VStack(spacing: 20) {
-                            Toggle("iCloud", systemImage: "icloud.fill", isOn: .constant(true))
-                            Toggle("File", systemImage: "doc.fill", isOn: .constant(true))
-                        }
-                        .padding()
                         
-                        Button {
-                            /// Encrypt
-                        } label: {
-                            Text("Encrypt & Export")
-                        }
-                        .prominentButtonStyle()
                     }
                 } header: {
                     Text("Encryption Passphrase")
                 } footer: {
                     Text("Remember this passphrase or store it in a Password Manager.")
                 }
+                
+                Options(exportedFile: self.$exportedFile, passphrase: self.passphrase)
+                
+                if let exportedFile {
+                    Section("Save to Files") {
+                        HStack {
+                            Spacer()
+                            
+                            VStack() {
+                                Button {
+                                    self.exporting = true
+                                } label: {
+                                    HStack {
+                                        Text("Export")
+                                        
+                                        Image(systemName: "square.and.arrow.up.fill")
+                                    }
+                                }
+                                .fileExporter(isPresented: self.$exporting, item: exportedFile, contentTypes: [.data], defaultFilename: "contacts.maverick", onCompletion: { result in
+                                    switch result {
+                                    case .success(let url):
+                                        let accessing = url.startAccessingSecurityScopedResource()
+                                        defer {
+                                            if accessing {
+                                                url.stopAccessingSecurityScopedResource()
+                                            }
+                                        }
+                                        
+                                        if let contents = try? Data(contentsOf: url) {
+                                            print("Exported successfully, contents = \(contents), url = \(url.absoluteString)")
+                                        } else {
+                                            debugPrint("No contents..., url = \(url)")
+                                        }
+                                    case .failure(let error):
+                                        print("Failed to export: \(error)")
+                                    }
+                                    
+                                }, onCancellation: {
+                                    
+                                })
+                                .prominentButtonStyle()
+                                
+                                Text("Created on \(self.contactManager.dateFormatter.string(from: Date()))")
+                                    .font(.footnote)
+                            }
+                            .padding()
+                            
+                            Spacer()
+                        }
+                    }
+                }
             }
             .task {
                 self.passphrase = self.generator.generate()
             }
+        }
+    }
+    
+    private struct Options: View {
+        @State private var useCloud = false
+        @State private var useFile = false
+        
+        @Environment(ContactManager.self) private var contactManager: ContactManager
+        
+        @State private var porter = Manager.Porter()
+        @Binding private var exportedFile: URL?
+        
+        let passphrase: String
+        
+        init(exportedFile: Binding<URL?>, passphrase: String) {
+            self._exportedFile = exportedFile
+            self.passphrase = passphrase
+        }
+        
+        var body: some View {
+            Section("Options") {
+                Toggle("iCloud", systemImage: "icloud.fill", isOn: self.$useCloud)
+                    .disabled(true)
+                Toggle("File", systemImage: "doc.fill", isOn: self.$useFile)
+                    .padding(.bottom)
+            }
+            
+            HStack(spacing: 20) {
+                Spacer()
+                
+                Button {
+                    do {
+                        let encryptedContactExport = try self.contactManager.prepareForExporting(using: self.passphrase)
+                        let url = try self.porter.export(data: encryptedContactExport)
+                        
+                        self.exportedFile = url
+                    } catch {
+                        debugPrint("Could not export contacts: \(error)")
+                    }
+                } label: {
+                    Text("Encrypt")
+                }
+                .prominentButtonStyle()
+                .disabled(self.useFile == false)
+                
+                Spacer()
+            }
+            .padding()
         }
     }
 }
