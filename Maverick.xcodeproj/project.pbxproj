@@ -43,11 +43,21 @@
 			);
 			target = DEFFD8632E9D293600CA60F9 /* MaverickTests */;
 		};
+		DE8B24C72EEEBB4300B83B51 /* Exceptions for "Maverick" folder in "Maverick" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = DEFFD8542E9D293500CA60F9 /* Maverick */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DEFFD8572E9D293500CA60F9 /* Maverick */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DE8B24C72EEEBB4300B83B51 /* Exceptions for "Maverick" folder in "Maverick" target */,
+			);
 			path = Maverick;
 			sourceTree = "<group>";
 		};
@@ -438,6 +448,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Maverick/Info.plist;
 				INFOPLIST_KEY_NSContactsUsageDescription = "Allow access to encrypt messages to people in your Contact list.";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "We use Ultra Wideband to securely share keys when devices are brought together";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -485,6 +496,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Maverick/Info.plist;
 				INFOPLIST_KEY_NSContactsUsageDescription = "Allow access to encrypt messages to people in your Contact list.";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "We use Ultra Wideband to securely share keys when devices are brought together";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

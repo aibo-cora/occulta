@@ -48,7 +48,7 @@ struct Export: View {
     @State private var generator: Manager.PassphraseGenerator = .init()
     
     @State private var passphrase: String = ""
-    @State private var exportedFile: URL?
+    @State private var exportedDocument: MaverickDocument?
     @State private var exporting = false
     
     @Environment(ContactManager.self) private var contactManager: ContactManager
@@ -108,9 +108,9 @@ struct Export: View {
                     Text("Remember this passphrase or store it in a Password Manager.")
                 }
                 
-                Options(exportedFile: self.$exportedFile, passphrase: self.passphrase)
+                Options(exportedDocument: self.$exportedDocument, passphrase: self.passphrase)
                 
-                if let exportedFile {
+                if let exportedDocument {
                     Section("Save to Files") {
                         HStack {
                             Spacer()
@@ -125,7 +125,7 @@ struct Export: View {
                                         Image(systemName: "square.and.arrow.up.fill")
                                     }
                                 }
-                                .fileExporter(isPresented: self.$exporting, item: exportedFile, contentTypes: [.data], defaultFilename: "contacts.maverick", onCompletion: { result in
+                                .fileExporter(isPresented: self.$exporting, document: exportedDocument, contentTypes: [.maverick], defaultFilename: "contacts.maverick", onCompletion: { result in
                                     switch result {
                                     case .success(let url):
                                         let accessing = url.startAccessingSecurityScopedResource()
@@ -172,12 +172,12 @@ struct Export: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager
         
         @State private var porter = Manager.Porter()
-        @Binding private var exportedFile: URL?
+        @Binding private var exportedDocument: MaverickDocument?
         
         let passphrase: String
         
-        init(exportedFile: Binding<URL?>, passphrase: String) {
-            self._exportedFile = exportedFile
+        init(exportedDocument: Binding<MaverickDocument?>, passphrase: String) {
+            self._exportedDocument = exportedDocument
             self.passphrase = passphrase
         }
         
@@ -197,7 +197,7 @@ struct Export: View {
                         let encryptedContactExport = try self.contactManager.prepareForExporting(using: self.passphrase)
                         let url = try self.porter.export(data: encryptedContactExport)
                         
-                        self.exportedFile = url
+                        self.exportedDocument = MaverickDocument(fileURL: url)
                     } catch {
                         debugPrint("Could not export contacts: \(error)")
                     }
