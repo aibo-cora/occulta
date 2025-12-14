@@ -54,6 +54,16 @@ struct MaverickApp: App {
                         .tag(Tabs.settings)
                 }
             }
+            .onOpenURL { url in
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                
+                if let data = try? Data(contentsOf: url) {
+                    print("Opened file with \(data.count) bytes")
+                } else {
+                    debugPrint("No data after opening file, url = \(url.absoluteString)")
+                }
+            }
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
