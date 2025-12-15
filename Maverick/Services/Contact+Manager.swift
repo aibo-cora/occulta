@@ -372,7 +372,7 @@ extension ContactManager {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys.append(Key(material: encrypted))
+        contact.contactPublicKeys.append(Contact.Profile.Key(material: encrypted))
         
         try self.modelContext.save()
     }
@@ -513,7 +513,7 @@ extension ContactManager {
 extension ContactManager {
     /// Returns a fully decrypted, mutable copy of a contact for editing.
     /// - Parameter identifier: The encrypted unique identifier of the contact.
-    /// - Returns: Contact with all fields decrypted and ready for UI.
+    /// - Returns: Contact with all fields decrypted and ready for UI or encryption with a new key.
     func convertToMutableCopy(using identifier: String) throws -> Contact.Draft {
         guard
             let storedContact = try self.fetchContact(by: identifier)
@@ -638,6 +638,9 @@ extension ContactManager {
             return url
         }
         
+        let encryptedPublicKeys = storedContact.contactPublicKeys
+        let plaintextPublicKeys = encryptedPublicKeys.map { Contact.Draft.Key(material: try? self.cryptoManager.decrypt(data: $0.material)) }
+        
         // MARK: - Build final Draft
         
         return Contact.Draft(
@@ -662,13 +665,15 @@ extension ContactManager {
             emailAddresses: emailAddresses,
             postalAddresses: postalAddresses,
             urlAddresses: urlAddresses,
-            importedAt: storedContact.importedAt
+            importedAt: storedContact.importedAt,
+            contactPublicKeys: plaintextPublicKeys
         )
     }
     /// Returns a Draft with all properties still encrypted (no decryption performed)
     /// Use this for locked/preview state or when key is unavailable
     ///
     /// This will be using to export our contacts.
+    @available(*, unavailable, message: "This function is no longer supported. We cannot export contacts encrypted with out private key, because the destination device does not have a way to decrypt them.")
     func convertToEncryptedCopy(using identifier: String) throws -> Contact.Draft {
         guard
             let storedContact = try self.fetchContact(by: identifier)

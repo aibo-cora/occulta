@@ -21,7 +21,8 @@ struct MaverickApp: App {
                 Contact.Profile.PhoneNumber.self,
                 Contact.Profile.EmailAddress.self,
                 Contact.Profile.PostalAddress.self,
-                Contact.Profile.URLAddress.self
+                Contact.Profile.URLAddress.self,
+                Contact.Profile.Key.self
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)

@@ -41,6 +41,7 @@ extension Contact {
         var urlAddresses: [URLAddress] = []
         
         var importedAt: Date = Date()
+        var contactPublicKeys: [Key] = []
         
         enum Status: Codable {
             case encrypted, decrypted
@@ -73,6 +74,7 @@ extension Contact {
             postalAddresses: [PostalAddress] = [],
             urlAddresses: [URLAddress] = [],
             importedAt: Date = Date(),
+            contactPublicKeys: [Key] = [],
             status: Status = .decrypted
         ) {
             self.identifier = identifier
@@ -97,6 +99,7 @@ extension Contact {
             self.postalAddresses = postalAddresses
             self.urlAddresses = urlAddresses
             self.importedAt = importedAt
+            self.contactPublicKeys = contactPublicKeys
             self.status = status
         }
         
@@ -379,5 +382,15 @@ extension Contact.Draft {
         }
         
         var type: WebsiteType = .website
+    }
+}
+
+extension Contact.Draft {
+    struct Key: Codable {
+        var material: Data?
+        
+        init(material: Data? = nil) {
+            self.material = material
+        }
     }
 }

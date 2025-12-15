@@ -48,7 +48,8 @@ extension Contact {
         var importedAt: Date = Date()
         
         // MARK: Application specific metadata - encrypted
-            
+        
+        @Relationship(deleteRule: .cascade)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key] = []
         /// Identifier to determine the owner of the public key.
@@ -199,6 +200,17 @@ extension Contact.Profile {
             let label = labeled.label ?? "other"
             let cleanedLabel = CNLabeledValue<NSString>.localizedString(forLabel: label)
             self.init(label: cleanedLabel, value: labeled.value as String)
+        }
+    }
+}
+
+extension Contact.Profile {
+    @Model
+    class Key {
+        var material: Data?
+        
+        init(material: Data? = nil) {
+            self.material = material
         }
     }
 }
