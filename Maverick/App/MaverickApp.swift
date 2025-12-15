@@ -41,6 +41,8 @@ struct MaverickApp: App {
     enum Tabs: Hashable {
         case contacts, settings
     }
+    
+    @State private var openedEncryptedFileContents: Contact.Import?
 
     var body: some Scene {
         WindowGroup {
@@ -56,14 +58,19 @@ struct MaverickApp: App {
                 }
             }
             .onOpenURL { url in
-                let accessing = url.startAccessingSecurityScopedResource()
-                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                
-                if let data = try? Data(contentsOf: url) {
-                    print("Opened file with \(data.count) bytes")
-                } else {
-                    debugPrint("No data after opening file, url = \(url.absoluteString)")
+                do {
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    
+                    self.openedEncryptedFileContents = Contact.Import(content: try Data(contentsOf: url))
+                } catch {
+                    debugPrint("Error reading data, error = \(error)")
                 }
+            }
+            .sheet(item: self.$openedEncryptedFileContents) {
+                /// Dismiss
+            } content: { data in
+                Import(document: data)
             }
         }
         .modelContainer(self.sharedModelContainer)

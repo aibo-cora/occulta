@@ -107,7 +107,20 @@ extension Manager {
         }
         
         func decrypt(contacts: Data, using passphrase: String) throws -> Data? {
-            nil
+            guard
+                contacts.isEmpty == false,
+                let material = passphrase.data(using: .utf8)
+            else {
+                return nil
+            }
+            
+            let hash = Data(SHA256.hash(data: material))
+            let key = SymmetricKey(data: hash)
+            
+            let box = try AES.GCM.SealedBox(combined: contacts)
+            let decrypted = try AES.GCM.open(box, using: key)
+            
+            return decrypted
         }
     }
 }

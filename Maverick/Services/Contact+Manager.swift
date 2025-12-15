@@ -764,4 +764,22 @@ extension ContactManager {
         
         return encryptedContacts
     }
+    
+    func `import`(data: Data, using passphrase: String) throws {
+        let cryptoOps: CryptoProtocol = Manager.Crypto()
+        
+        guard
+            let encodedExport = try cryptoOps.decrypt(contacts: data, using: passphrase)
+        else {
+            return
+        }
+        
+        let export = try JSONDecoder().decode(Contact.Export.self, from: encodedExport)
+        let decryptedContacts = try JSONDecoder().decode([Contact.Draft].self, from: export.payload)
+        
+        /// Delete current contacts.
+        try self.deleteAllContacts()
+        /// Store imported contacts.
+        decryptedContacts.forEach { try? self.save(contact: $0) }
+    }
 }
