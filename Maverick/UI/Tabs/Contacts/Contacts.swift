@@ -34,12 +34,16 @@ struct Contacts: View {
                     }
                 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
-                ContactAccessButton(queryString: self.searchText) { identifiers in
-                    self.fetchContacts(with: identifiers)
+                if #available(iOS 18.0, *) {
+                    ContactAccessButton(queryString: self.searchText) { identifiers in
+                        self.fetchContacts(with: identifiers)
+                    }
+                    .contactAccessButtonCaption(.phone)
+                    .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
+                    .padding()
+                } else {
+                    // Fallback on earlier versions
                 }
-                .contactAccessButtonCaption(.phone)
-                .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
-                .padding()
             }
         }
         .sheet(isPresented: self.$creatingNewContact, onDismiss: {

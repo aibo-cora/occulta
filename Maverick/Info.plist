@@ -17,6 +17,11 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_peer-data-ex._tcp</string>
+		<string>_peer-data-ex._udp</string>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

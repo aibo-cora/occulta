@@ -9,6 +9,7 @@ import Foundation
 import NearbyInteraction
 import MultipeerConnectivity
 import Combine
+import os
 
 @Observable
 class ExchangeManager: NSObject {
@@ -17,6 +18,7 @@ class ExchangeManager: NSObject {
     private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
     
     private let serviceType = "peer-data-ex"
+    private let log = Logger(subsystem: "com.maverick.multipeer", category: "multipeer")
     
     /// This ID will be matched with the incoming data to make sure that we get a public key from a peer that got our identity - public key.
     ///
@@ -34,12 +36,11 @@ class ExchangeManager: NSObject {
     override init() {
         super.init()
         
-        
         self.setupMC()
     }
     
     private func setupMC() {
-        let peerID = MCPeerID(displayName: UIDevice.current.name)
+        let peerID = MCPeerID(displayName: UUID().uuidString)
         
         self.multipeerSession = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
         self.multipeerSession?.delegate = self
@@ -61,6 +62,7 @@ class ExchangeManager: NSObject {
         self.browser?.startBrowsingForPeers()
         
         self.inProgress = true
+        debugPrint("Starting exchange...")
     }
     
     func finish() {
@@ -70,16 +72,20 @@ class ExchangeManager: NSObject {
         self.browser?.stopBrowsingForPeers()
         
         self.inProgress = false
+        debugPrint("Exchange finished")
     }
 }
 
 extension ExchangeManager: MCSessionDelegate {
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        debugPrint("Changed state for peer \(peerID): \(state.rawValue)")
         guard
             state == .connected
         else {
             return
         }
+        
+        debugPrint("Connected to a peer, id = \(peerID)")
         
         guard
             let discoveryToken = self.nearbySession?.discoveryToken
@@ -87,6 +93,8 @@ extension ExchangeManager: MCSessionDelegate {
             // TODO: Handle the no token event
             return
         }
+        
+        debugPrint("My discovery token, \(discoveryToken)")
         
         do {
             let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
@@ -96,8 +104,11 @@ extension ExchangeManager: MCSessionDelegate {
             
             /// 2. Send the discovery token to ALL the peers in the vicinity.
             try session.send(encodedExchange, toPeers: [peerID], with: .reliable)
+            
+            debugPrint("Exchange sent")
         } catch {
             // TODO: Handle the archiving, encoding and sending exceptions
+            debugPrint("Archiving or sending failed")
         }
     }
     /// 3. Receive discovery token.
@@ -109,10 +120,13 @@ extension ExchangeManager: MCSessionDelegate {
             
             // TODO: - Multiple peers
             
+            debugPrint("Received data from peer, \(peerID): \(decoded)")
+            
             guard
                 let token
             else {
                 // TODO: Handle missing token
+                debugPrint("No token found")
                 return
             }
             
@@ -124,6 +138,8 @@ extension ExchangeManager: MCSessionDelegate {
                     // TODO: MITM? attack
                     return
                 }
+            } else {
+                debugPrint("No identity key found in the received data")
             }
             
             /// There could be multiple contacts in the vicinity willing to exchange keys. Need to create as many `NISession()` objects as there are tokens received. For simplicity, I am creating only one for now.
@@ -134,7 +150,7 @@ extension ExchangeManager: MCSessionDelegate {
             
             /// Nearby configuratuio
             let configuration = NINearbyPeerConfiguration(peerToken: token)
-            
+            debugPrint("Running nearby session")
             self.nearbySession?.run(configuration)
         } catch {
             // TODO: Handle decoding error
@@ -156,23 +172,32 @@ extension ExchangeManager: MCSessionDelegate {
 
 extension ExchangeManager: MCNearbyServiceBrowserDelegate {
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?) {
+        self.log.info("Found peer: \(peerID.displayName)")
         
+        if self.multipeerSession?.connectedPeers.contains(peerID) == false, let session = self.multipeerSession {
+            browser.invitePeer(peerID, to: session, withContext: nil, timeout: 30)
+        }
     }
     
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-        
+        self.log.info("Lost peer: \(peerID.displayName)")
     }
 }
 
 extension ExchangeManager: MCNearbyServiceAdvertiserDelegate {
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        self.log.info("Received invitation from \(peerID.displayName) - Auto-accepting")
         
+        invitationHandler(true, self.multipeerSession)
     }
 }
 
 extension ExchangeManager: NISessionDelegate {
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
+        debugPrint("Detected nearby objects")
         for object in nearbyObjects {
+            debugPrint("Object distance: \(object.distance ?? 0.0), token: \(object.discoveryToken.debugDescription)")
+            
             if let distance = object.distance, distance.isLessThanOrEqualTo(0.25) {
                 let token = object.discoveryToken
                 

@@ -47,15 +47,19 @@ struct MaverickApp: App {
     var body: some Scene {
         WindowGroup {
             TabView {
-                Tab("Contacts", systemImage: "person.2.fill") {
-                    Contacts()
-                        .tag(Tabs.contacts)
-                }
+                Contacts()
+                    .tag(Tabs.contacts)
+                    .tabItem {
+                        Image(systemName: "person.2.fill")
+                        Text("Contacts")
+                    }
                 
-                Tab("Settings", systemImage: "gearshape.fill") {
-                    Settings()
-                        .tag(Tabs.settings)
-                }
+                Settings()
+                    .tag(Tabs.settings)
+                    .tabItem {
+                        Image(systemName: "gearshape.fill")
+                        Text("Settings")
+                    }
             }
             .onOpenURL { url in
                 do {

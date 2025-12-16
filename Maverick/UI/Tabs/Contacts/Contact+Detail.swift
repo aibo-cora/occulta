@@ -46,7 +46,7 @@ struct ContactDetail: View {
     @State private var editing: Bool = false
     
     var body: some View {
-        VStack {
+        VStack(spacing: 20) {
             Group {
                 Text(self.name)
                     .font(.title)
