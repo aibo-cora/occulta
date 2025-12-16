@@ -132,8 +132,10 @@ extension ExchangeManager: MCSessionDelegate {
             
             if let peersIdentity = decoded.identity {
                 if peerID == self.peerReceivingOurIdentity {
-                    /// The exchange contains an identity key and we verified that we got it from the same peer that got our own identity.
-                    self.receivedIdentity.send(peersIdentity)
+                    Task { @MainActor in
+                        /// The exchange contains an identity key and we verified that we got it from the same peer that got our own identity.
+                        self.receivedIdentity.send(peersIdentity)
+                    }
                 } else {
                     // TODO: MITM? attack
                     return
