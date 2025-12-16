@@ -385,7 +385,8 @@ extension ContactManager {
         }
         
         guard
-            let publicKeyingMaterial = contact.contactPublicKeys.last?.material
+            let encrypted = contact.contactPublicKeys.last?.material,
+            let publicKeyingMaterial = try? self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
         }

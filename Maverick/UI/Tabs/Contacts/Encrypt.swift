@@ -64,8 +64,10 @@ struct Encrypt: View {
                         }
                     }
                     .onChange(of: self.textToEncrypt) { _, newValue in
-                        let encrypted = try? self.contactManager?.encrypt(message: newValue, for: self.identifier)
-                        self.encryptedTextToShare = encrypted ?? ""
+                        if newValue.isEmpty == false {
+                            let encrypted = try? self.contactManager?.encrypt(message: newValue, for: self.identifier)
+                            self.encryptedTextToShare = encrypted ?? ""
+                        }
                     }
                     
                     Button {
