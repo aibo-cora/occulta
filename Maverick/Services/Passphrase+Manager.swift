@@ -38,13 +38,32 @@ extension Manager {
         }
         
         /// Generates a 5-word passphrase using cryptographically secure randomness
-        func generate(words: Int = 5, separator: String = "-", capitalize: Bool = false) -> String {
-            
+        /// - Parameters:
+        ///   - words: <#words description#>
+        ///   - separator: <#separator description#>
+        ///   - capitalize: <#capitalize description#>
+        ///   - sharedKey: <#sharedKey description#>
+        /// - Returns: <#description#>
+        func generate(words: Int = 5, separator: String = "-", capitalize: Bool = false, sharedKey: Data? = nil) -> String {
             var result: [String] = []
             result.reserveCapacity(words)
             
+            let data: Data
+            
+            if let sharedKey {
+                guard
+                    sharedKey.count == 32
+                else {
+                    fatalError("Shared key must be exactly 32 bytes long")
+                }
+                
+                data = sharedKey
+            } else {
+                data = Data.randomBytes(32)
+            }
+            
             for _ in 0..<words {
-                let randomIndex = Int(CryptoKit.SHA256.hash(data: Data.randomBytes(32)).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } % 7776)
+                let randomIndex = Int(CryptoKit.SHA256.hash(data: data).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } % 7776)
                 
                 var word = self.wordlist[randomIndex]
                 

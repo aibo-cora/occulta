@@ -84,4 +84,5 @@ struct ContactDetail: View {
 
 #Preview {
     ContactDetail(identifier: UUID().uuidString)
+        .environment(ContactManager.preview)
 }
