@@ -48,22 +48,31 @@ extension Manager {
             var result: [String] = []
             result.reserveCapacity(words)
             
-            let data: Data
+            let baseData: Data
             
-            if let sharedKey {
-                guard
-                    sharedKey.count == 32
-                else {
+            if let sharedKey = sharedKey {
+                guard sharedKey.count == 32 else {
                     fatalError("Shared key must be exactly 32 bytes long")
                 }
-                
-                data = sharedKey
+                baseData = sharedKey
             } else {
-                data = Data.randomBytes(32)
+                baseData = Data.randomBytes(32)  // Or use a secure random source
             }
             
+            // Sequentially derive "random" data for each word using HMAC-SHA256 as a PRNG
+            var counter: UInt32 = 0
+            
             for _ in 0..<words {
-                let randomIndex = Int(CryptoKit.SHA256.hash(data: Data.randomBytes(32)).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } % 7776)
+                // Use counter to make each derivation unique
+                let counterData = withUnsafeBytes(of: counter.littleEndian) { Data($0) }
+                let input = counterData + baseData  // counter || sharedKey
+                
+                let hash = HMAC<SHA256>.authenticationCode(for: input, using: SymmetricKey(data: baseData))
+                let hashData = Data(hash)
+                
+                // Take first 4 bytes as UInt32, reduce mod 7776
+                let randomValue = hashData.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+                let randomIndex = Int(randomValue % 7776)
                 
                 var word = self.wordlist[randomIndex]
                 
@@ -71,6 +80,8 @@ extension Manager {
                     word = word.capitalized
                 }
                 result.append(word)
+                
+                counter += 1
             }
             
             return result.joined(separator: separator)
