@@ -225,10 +225,10 @@ extension ExchangeManager: NISessionDelegate {
     }
     
     func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
-        
+        debugPrint("Did remove objects, \(nearbyObjects), reason - \(reason)")
     }
     
     func session(_ session: NISession, didInvalidateWith error: any Error) {
-        
+        debugPrint("Did invalidate with error = \(error)")
     }
 }

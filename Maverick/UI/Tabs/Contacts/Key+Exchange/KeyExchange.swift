@@ -7,7 +7,7 @@
 
 import SwiftData
 import SwiftUI
-
+import Combine
 
 struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
@@ -34,6 +34,9 @@ struct KeyExchange: View {
         self.contacts.first?.identifier ?? ""
     }
     
+    @State private var receivedIdentityKey: Contact.Draft.Key?
+    @State var wordsMatch = false
+    
     var body: some View {
         if self.exchangeManager.inProgress {
             VStack {
@@ -50,14 +53,13 @@ struct KeyExchange: View {
                 if let identity {
                     print("Received identity: \(identity)")
                     
-                    do {
-                        try self.contactManager?.update(identity: identity, for: self.identifier)
-                    } catch {
-                        
-                    }
+                    self.receivedIdentityKey = Contact.Draft.Key(material: identity)
                     /// We received a key. Stop the exchange.
                     self.exchangeManager.finish()
                 }
+            }
+            .sheet(item: self.$receivedIdentityKey) { key in
+                ExchangeResult(identifier: self.identifier, receivedKeyingMaterial: key.material!)
             }
         } else {
             VStack {

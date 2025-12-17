@@ -1,9 +1,8 @@
 import SwiftUI
+import CryptoKit
 
 struct ExchangeResult: View {
-    @State private var showingVerification = false
-    @State var wordsMatch = false
-    
+    let identifier: String
     let receivedKeyingMaterial: Data
     
     private let testingData: Data = Data([
@@ -14,56 +13,51 @@ struct ExchangeResult: View {
     ])
     
     var body: some View {
-        VStack(spacing: 20) {
-            
-        }
-        .task {
-            withAnimation(.easeInOut(duration: 1).delay(5.0)) {
-                self.showingVerification = true
+        VStack {
+            VStack(spacing: 20) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.title)
+                Text("Congrats, you successfully exchanged keys with your contact.")
+                    .multilineTextAlignment(.center)
             }
-        }
-        .sheet(isPresented: self.$showingVerification) {
-            VStack {
-                VStack(spacing: 20) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                        .font(.title)
-                    Text("Congrats, you successfully exchanged keys with your contact.")
+            .padding(.horizontal)
+            
+            Divider()
+            
+            VStack(spacing: 20) {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text("Please confirm bad guys did not swap your keys with their own. Verify with your contact that the words you are seeing match and are in the correct order.")
+                        .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                .padding(.horizontal)
+                .padding()
                 
-                Divider()
-                
-                VStack(spacing: 20) {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
-                        Text("Please confirm bad guys did not swap your keys with their own. Verify with your contact that the words you are seeing match and are in the correct order.")
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding()
-                    
-                    VerifyExchangeWords(keyingMaterial: self.receivedKeyingMaterial)
-                }
+                VerifyExchangeWords(identifier: self.identifier, keyingMaterial: self.receivedKeyingMaterial)
             }
-            .presentationDetents([.large])
         }
+        .presentationDetents([.large])
     }
 }
 
 struct VerifyExchangeWords: View {
     let passphraseGenerator = Manager.PassphraseGenerator()
     let keyManager = Manager.Key()
+    
+    let identifier: String
     let keyingMaterial: Data
     
     @State private var beginAnimation = false
     
+    @Environment(ContactManager.self) private var contactManager: ContactManager?
+    
     var body: some View {
         VStack() {
+            let sharedKeyingMaterial = self.keyManager.createSharedSecret(using: self.keyingMaterial)?.withUnsafeBytes { Data($0) }
             let separator = "-"
-            let passphrase = self.passphraseGenerator.generate(separator: separator, sharedKey: self.keyingMaterial)
+            let passphrase = self.passphraseGenerator.generate(separator: separator, sharedKey: sharedKeyingMaterial)
             let components = passphrase.components(separatedBy: separator)
             
             VStack(spacing: 20) {
@@ -89,7 +83,11 @@ struct VerifyExchangeWords: View {
                 Spacer()
                 
                 Button {
-                    
+                    do {
+                        try self.contactManager?.update(identity: self.keyingMaterial, for: self.identifier)
+                    } catch {
+                        
+                    }
                 } label: {
                     Text("Confirm")
                 }
@@ -106,5 +104,5 @@ struct VerifyExchangeWords: View {
 }
 
 #Preview {
-    ExchangeResult(receivedKeyingMaterial: Data.randomBytes(32))
+    ExchangeResult(identifier: UUID().uuidString, receivedKeyingMaterial: Data.randomBytes(32))
 }

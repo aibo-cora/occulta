@@ -377,6 +377,18 @@ extension ContactManager {
         try self.modelContext.save()
     }
     
+    func reset(identity identifier: String) throws {
+        guard
+            let contact = try self.fetchContact(by: identifier)
+        else {
+            throw ContactManager.Errors.contactNotFound
+        }
+        
+        contact.contactPublicKeys.removeAll()
+        
+        try self.modelContext.save()
+    }
+    
     func encrypt(message: String, for identifier: String) throws -> String? {
         guard
             let contact = try self.fetchContact(by: identifier)

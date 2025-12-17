@@ -386,7 +386,8 @@ extension Contact.Draft {
 }
 
 extension Contact.Draft {
-    struct Key: Codable {
+    struct Key: Codable, Identifiable {
+        var id = UUID()
         var material: Data?
         
         init(material: Data? = nil) {
