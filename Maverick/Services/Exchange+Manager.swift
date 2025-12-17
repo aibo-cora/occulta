@@ -205,7 +205,7 @@ extension ExchangeManager: NISessionDelegate {
                 
                 if let peer = self.receivedDiscoveryTokens[token] {
                     do {
-                        let keyManager = KeyManager()
+                        let keyManager = Manager.Key()
                         let keyingMaterial = try keyManager.retrieveIdentity()
                         let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
                         let exchange = Exchange(id: UUID().uuidString, token: archivedToken, version: .v1, identity: keyingMaterial)

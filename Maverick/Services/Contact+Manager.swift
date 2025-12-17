@@ -398,7 +398,7 @@ extension ContactManager {
         }
         
         if let encrypted = try self.cryptoManager.encrypt(message: payload, using: publicKeyingMaterial) {
-            let originPublicKeyHash = try KeyManager().retrieveIdentity().sha256
+            let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
             let recipients = publicKeyingMaterial.sha256
             
             let message = Message(id: UUID().uuidString, origin: originPublicKeyHash, recipients: [recipients], content: encrypted)

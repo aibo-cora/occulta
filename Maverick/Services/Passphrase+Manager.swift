@@ -63,7 +63,7 @@ extension Manager {
             }
             
             for _ in 0..<words {
-                let randomIndex = Int(CryptoKit.SHA256.hash(data: data).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } % 7776)
+                let randomIndex = Int(CryptoKit.SHA256.hash(data: Data.randomBytes(32)).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian } % 7776)
                 
                 var word = self.wordlist[randomIndex]
                 
