@@ -227,6 +227,6 @@ enum Scopes: Codable {
     case none
 }
 
-enum KeyAcquisitionMethod {
+enum KeyAcquisitionMethod: Codable {
     case secure, insecure
 }

@@ -413,7 +413,7 @@ extension ContactManager {
             let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
             let recipients = publicKeyingMaterial.sha256
             
-            let message = Message(id: UUID().uuidString, origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
+            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
             let encoded = try JSONEncoder().encode(message)
             
             let encodedBase64 = encoded.base64EncodedString()
