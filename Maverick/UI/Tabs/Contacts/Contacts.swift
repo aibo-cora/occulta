@@ -159,7 +159,7 @@ struct BusinessCardContactsView: View {
             .navigationBarTitleDisplayMode(.large)
             .background(Color(.systemGroupedBackground))
             .navigationDestination(for: String.self) { identifier in
-                ContactDetail(identifier: identifier)
+                Contact.Details(identifier: identifier)
             }
         }
     }
