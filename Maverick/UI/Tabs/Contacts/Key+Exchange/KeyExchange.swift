@@ -58,7 +58,9 @@ struct KeyExchange: View {
                     self.exchangeManager.finish()
                 }
             }
-            .sheet(item: self.$receivedIdentityKey) { key in
+            .sheet(item: self.$receivedIdentityKey, onDismiss: {
+                
+            }) { key in
                 ExchangeResult(identifier: self.identifier, receivedKeyingMaterial: key.material!)
             }
         } else {

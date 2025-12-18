@@ -52,6 +52,7 @@ struct VerifyExchangeWords: View {
     @State private var beginAnimation = false
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
+    @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         VStack() {
@@ -75,7 +76,7 @@ struct VerifyExchangeWords: View {
             
             HStack {
                 Button("Cancel", role: .destructive) {
-                    
+                    self.dismiss()
                 }
                 .prominentButtonStyle()
                 .padding(.leading)
@@ -85,6 +86,7 @@ struct VerifyExchangeWords: View {
                 Button {
                     do {
                         try self.contactManager?.update(identity: self.keyingMaterial, for: self.identifier)
+                        self.dismiss()
                     } catch {
                         
                     }

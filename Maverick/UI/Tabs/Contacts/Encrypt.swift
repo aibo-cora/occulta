@@ -20,7 +20,6 @@ struct Encrypt: View {
     }
     
     @State private var mode: Mode = .message
-    @State private var displayingInfo: Bool = false
     
     var body: some View {
         VStack {
@@ -92,34 +91,6 @@ struct Encrypt: View {
                             Text("Reset")
                         }
                     }
-                }
-            }
-            
-            Spacer()
-            
-            VStack {
-                Button("Delete Key", role: .destructive) {
-                    try? self.contactManager?.reset(identity: self.identifier)
-                }
-                .prominentButtonStyle()
-                
-                HStack(alignment: .firstTextBaseline) {
-                    Button {
-                        self.displayingInfo.toggle()
-                    } label: {
-                        Image(systemName: "info.bubble")
-                    }
-                    
-                    Text("Data we encrypt here is only visible to you and this contact.")
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-                
-                if self.displayingInfo {
-                    Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
-                        .font(.caption)
-                        .padding()
                 }
             }
         }
