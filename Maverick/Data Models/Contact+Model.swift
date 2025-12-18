@@ -208,9 +208,25 @@ extension Contact.Profile {
     @Model
     class Key {
         var material: Data?
+        var acquiredAt: String?
+        var scopes: [Scopes] = []
+        var method: KeyAcquisitionMethod?
         
         init(material: Data? = nil) {
+            // TODO: Determine scopes based on the acquisition method
             self.material = material
         }
     }
+}
+
+enum Scopes: Codable {
+    /// Key can encrypt and decrypt.
+    case crypto
+    /// Key was acquired through `Nearby Interaction` and we have full confidence who it belongs to.
+    case sign
+    case none
+}
+
+enum KeyAcquisitionMethod {
+    case secure, insecure
 }
