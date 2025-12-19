@@ -9,13 +9,12 @@ import SwiftUI
 import SwiftData
 
 extension Contact {
-    struct Details: View {
+    struct Info: View {
         let identifier: String
         
         @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
         
         @Environment(\.modelContext) var modelContext
-        @Environment(ContactManager.self) private var contactManager: ContactManager?
         
         /// First name of the contact
         var name: String {
@@ -29,6 +28,39 @@ extension Contact {
         var email: String {
             self.contacts.first?.emailAddresses.first?.value.decrypt() ?? "No email"
         }
+        
+        init(identifier: String) {
+            self.identifier = identifier
+            
+            let predicate = #Predicate<Contact.Profile> {
+                $0.identifier == identifier
+            }
+            
+            self._contacts = Query(filter: predicate)
+        }
+        
+        var body: some View {
+            VStack {
+                Text(self.name)
+                    .font(.title)
+                    .fontWeight(.bold)
+                Text(self.email)
+                    .font(.footnote)
+                Text(self.phone)
+                    .font(.footnote)
+            }
+        }
+    }
+}
+
+extension Contact {
+    struct Details: View {
+        let identifier: String
+        
+        @Environment(ContactManager.self) private var contactManager: ContactManager?
+        
+        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+        
         /// If we do not have a public key from our contact, we need to start an exchange.
         var needsExchange: Bool {
             self.contacts.first?.contactPublicKeys.isEmpty ?? true
@@ -49,15 +81,7 @@ extension Contact {
         
         var body: some View {
             VStack(spacing: 20) {
-                Group {
-                    Text(self.name)
-                        .font(.title)
-                        .fontWeight(.bold)
-                    Text(self.email)
-                        .font(.footnote)
-                    Text(self.phone)
-                        .font(.footnote)
-                }
+                Contact.Info(identifier: self.identifier)
                 
                 if self.needsExchange {
                     KeyExchange(identifier: self.identifier)

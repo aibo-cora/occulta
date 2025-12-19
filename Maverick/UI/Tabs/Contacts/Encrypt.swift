@@ -87,7 +87,7 @@ struct Encrypt: View {
                     let fileContents = File(content: message, format: .text)
                     
                     if let encodedFileContents = try? JSONEncoder().encode(fileContents) {
-                        ShareLink(item: EncryptedFile(data: encodedFileContents), subject: Text("Message"), message: Text("Message for you"), preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
+                        ShareLink(item: EncryptedFile(data: encodedFileContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
                             VStack {
                                 Image(systemName: "square.and.arrow.up.fill")
                                     .font(.system(size: 25))

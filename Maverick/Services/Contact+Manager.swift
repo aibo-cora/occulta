@@ -422,7 +422,7 @@ extension ContactManager {
         }
     }
     
-    func decrypt(message: String, for identifier: String) throws -> String? {
+    private func decrypt(message: Data, for identifier: String) throws -> String? {
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
@@ -430,19 +430,14 @@ extension ContactManager {
         }
         
         guard
-            let publicKeyingMaterial = contact.contactPublicKeys.last?.material
+            let encrypted = contact.contactPublicKeys.last?.material,
+            let publicKeyingMaterial = try? self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
         }
         
-        guard
-            let decoded = Data(base64Encoded: message)
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
         let decoder = JSONDecoder()
-        let message = try decoder.decode(Message.self, from: decoded)
+        let message = try decoder.decode(Message.self, from: message)
         
         guard
             let decrypted = try self.cryptoManager.decrypt(message: message.content, using: publicKeyingMaterial)
@@ -466,6 +461,7 @@ extension ContactManager {
         case messageHasNoData
         case noDataToExport
         case encryptionFailed
+        case noPublicKeyToEncryptWith
     }
 }
 
@@ -787,5 +783,30 @@ extension ContactManager {
         try self.deleteAllContacts()
         /// Store imported contacts.
         decryptedContacts.forEach { try? self.save(contact: $0) }
+    }
+    
+    /// Find the rightful owner of the message, the originator, and decrypt it using the right key.
+    /// - Parameter message: Encrypted `Message`
+    /// - Returns: Plaintext message.
+    func decrypt(message: Data?) throws -> (plaintext: String, ownerID: String) {
+        guard
+            let message
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
+        let contacts = try self.fetchAllContacts()
+        
+        for contact in contacts {
+            do {
+                if let decrypted = try self.decrypt(message: message, for: contact.identifier) {
+                    return (decrypted, contact.identifier)
+                }
+            } catch {
+                /// Keep iterating.
+            }
+        }
+        
+        throw ContactManager.Errors.noPublicKeyToEncryptWith
     }
 }
