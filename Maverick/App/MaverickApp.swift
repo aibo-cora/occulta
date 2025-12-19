@@ -66,7 +66,10 @@ struct MaverickApp: App {
                     let accessing = url.startAccessingSecurityScopedResource()
                     defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                     
-                    self.openedEncryptedFileContents = File(content: try Data(contentsOf: url))
+                    let contents = try Data(contentsOf: url)
+                    let fileContents = try JSONDecoder().decode(File.self, from: contents)
+                    
+                    self.openedEncryptedFileContents = fileContents
                 } catch {
                     debugPrint("Error reading data, error = \(error)")
                 }
@@ -74,19 +77,10 @@ struct MaverickApp: App {
             .sheet(item: self.$openedEncryptedFileContents) {
                 /// Dismiss
             } content: { data in
-                if let message = try? JSONDecoder().decode(Message.self, from: data.content) {
-                    Import(message: message)
-                } else {
-                    Text("Something went wrong reading file contents. Try again.")
-                }
+                Import(fileContents: data)
             }
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
     }
-}
-
-struct File: Identifiable {
-    let id = UUID()
-    let content: Data
 }

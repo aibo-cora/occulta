@@ -163,8 +163,8 @@ struct Export: View {
                 
                 Button {
                     do {
-                        let encryptedContactExport = try self.contactManager.prepareForExporting(using: self.passphrase)
-                        let url = try self.porter.export(data: encryptedContactExport)
+                        let encryptedFileContents = try self.contactManager.prepareForExporting(using: self.passphrase)
+                        let url = try self.porter.export(data: encryptedFileContents)
                         
                         self.exportedDocument = MaverickDocument(fileURL: url)
                     } catch {

@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct Import: View {
-    let message: Message
+    let fileContents: File
     
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
@@ -19,7 +19,7 @@ struct Import: View {
     
     var body: some View {
         NavigationStack {
-            switch self.message.format {
+            switch self.fileContents.format {
             case .contacts:
                 VStack {
                     VStack {
@@ -33,7 +33,7 @@ struct Import: View {
                     
                     Button {
                         do {
-                            try self.contactManager.import(data: self.message.content, using: self.passphrase)
+                            try self.contactManager.import(data: self.fileContents.content, using: self.passphrase)
                             
                             self.dismiss()
                         } catch {
@@ -51,12 +51,14 @@ struct Import: View {
                 EmptyView()
             case .link:
                 EmptyView()
+            case .none:
+                EmptyView()
             }
         }
     }
 }
 
 #Preview {
-    Import(message: Message(origin: nil, recipients: nil, content: Data(), format: .text))
+    Import(fileContents: File(content: Data(), format: .contacts))
         .environment(ContactManager.preview)
 }

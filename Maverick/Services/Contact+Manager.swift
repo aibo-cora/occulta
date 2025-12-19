@@ -413,7 +413,7 @@ extension ContactManager {
             let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
             let recipients = publicKeyingMaterial.sha256
             
-            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted, format: .text)
+            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
             let encoded = try JSONEncoder().encode(message)
             
             return encoded
@@ -759,22 +759,26 @@ extension ContactManager {
             throw Errors.encryptionFailed
         }
         
-        let message = Message(origin: nil, recipients: nil, content: encryptedContacts, format: .contacts)
+        let fileContents = File(content: encryptedContacts, format: .contacts)
         
-        let encodedMessage = try JSONEncoder().encode(message)
+        let encodedFileContents = try JSONEncoder().encode(fileContents)
         
-        return encodedMessage
+        return encodedFileContents
     }
     
-    func `import`(data: Data, using passphrase: String) throws {
+    func `import`(data: Data?, using passphrase: String) throws {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
         
-        let message = try JSONDecoder().decode(Message.self, from: data)
+        guard
+            let data
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
         
         guard
-            let encodedContacts = try cryptoOps.decrypt(contacts: message.content, using: passphrase)
+            let encodedContacts = try cryptoOps.decrypt(contacts: data, using: passphrase)
         else {
-            return
+            throw ContactManager.Errors.decryptionFailed
         }
         
         let decryptedContacts = try JSONDecoder().decode([Contact.Draft].self, from: encodedContacts)

@@ -17,22 +17,26 @@ class Message: Identifiable, Codable {
     /// Encrypted payload.
     var content: Data
     
-    let format: Format
-    
-    enum Format: Codable {
-        case contacts, text, file, link
-    }
-    
     /// Create a message for transport.
     /// - Parameters:
     ///   - id: Identifier.
     ///   - origin: Sender's hash.
     ///   - recipients: Recipients' hashes.
     ///   - content: Encrypted payload.
-    init(origin: Data?, recipients: [Data]?, content: Data, format: Format) {
+    init(origin: Data?, recipients: [Data]?, content: Data) {
         self.origin = origin
         self.recipients = recipients
         self.content = content
-        self.format = format
+    }
+}
+
+struct File: Identifiable, Codable {
+    var id = UUID()
+    
+    let content: Data?
+    let format: Format?
+
+    enum Format: Codable {
+        case contacts, text, file, link
     }
 }
