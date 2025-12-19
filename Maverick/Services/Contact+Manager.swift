@@ -413,7 +413,7 @@ extension ContactManager {
             let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
             let recipients = publicKeyingMaterial.sha256
             
-            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
+            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted, type: .text)
             let encoded = try JSONEncoder().encode(message)
             
             return encoded
@@ -445,13 +445,7 @@ extension ContactManager {
         let message = try decoder.decode(Message.self, from: decoded)
         
         guard
-            let payload = message.content
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        guard
-            let decrypted = try self.cryptoManager.decrypt(message: payload, using: publicKeyingMaterial)
+            let decrypted = try self.cryptoManager.decrypt(message: message.content, using: publicKeyingMaterial)
         else {
             return nil
         }
@@ -760,33 +754,30 @@ extension ContactManager {
         let encodedContacts = try JSONEncoder().encode(decryptedMutableContacts)
         
         guard
-            let export = Contact.Export(payload: encodedContacts, type: .contacts)
-        else {
-            throw Errors.noDataToExport
-        }
-        
-        let encodedExport = try JSONEncoder().encode(export)
-        
-        guard
-            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedExport, using: passphrase)
+            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedContacts, using: passphrase)
         else {
             throw Errors.encryptionFailed
         }
         
-        return encryptedContacts
+        let message = Message(origin: nil, recipients: nil, content: encryptedContacts, type: .contacts)
+        
+        let encodedMessage = try JSONEncoder().encode(message)
+        
+        return encodedMessage
     }
     
     func `import`(data: Data, using passphrase: String) throws {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
         
+        let message = try JSONDecoder().decode(Message.self, from: data)
+        
         guard
-            let encodedExport = try cryptoOps.decrypt(contacts: data, using: passphrase)
+            let encodedContacts = try cryptoOps.decrypt(contacts: message.content, using: passphrase)
         else {
             return
         }
         
-        let export = try JSONDecoder().decode(Contact.Export.self, from: encodedExport)
-        let decryptedContacts = try JSONDecoder().decode([Contact.Draft].self, from: export.payload)
+        let decryptedContacts = try JSONDecoder().decode([Contact.Draft].self, from: encodedContacts)
         
         /// Delete current contacts.
         try self.deleteAllContacts()

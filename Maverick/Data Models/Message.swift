@@ -11,11 +11,17 @@ import SwiftData
 class Message: Identifiable, Codable {
     var id = UUID()
     /// Hash of the sender's public key, to match contact when user taps on file or link to opens the app.
-    var origin: Data
+    var origin: Data?
     /// Indended recipients. Hash of their public key.
-    var recipients: [Data]
+    var recipients: [Data]?
     /// Encrypted payload.
-    var content: Data?
+    var content: Data
+    
+    let type: `Type`
+    
+    enum `Type`: Codable {
+        case contacts, text, file, link
+    }
     
     /// Create a message for transport.
     /// - Parameters:
@@ -23,9 +29,10 @@ class Message: Identifiable, Codable {
     ///   - origin: Sender's hash.
     ///   - recipients: Recipients' hashes.
     ///   - content: Encrypted payload.
-    init(origin: Data, recipients: [Data], content: Data) {
+    init(origin: Data?, recipients: [Data]?, content: Data, type: `Type`) {
         self.origin = origin
         self.recipients = recipients
         self.content = content
+        self.type = type
     }
 }

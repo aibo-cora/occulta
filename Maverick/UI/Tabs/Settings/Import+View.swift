@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct Import: View {
-    var document: Contact.Import
+    var document: Data
     
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
@@ -16,6 +16,10 @@ struct Import: View {
     @State private var porter = Manager.Porter()
     
     @Environment(\.dismiss) private var dismiss
+    
+    init(document: Data) {
+        self.document = document
+    }
     
     var body: some View {
         NavigationStack {
@@ -31,7 +35,7 @@ struct Import: View {
                 
                 Button {
                     do {
-                        try self.contactManager.import(data: self.document.content, using: self.passphrase)
+                        try self.contactManager.import(data: self.document, using: self.passphrase)
                         
                         self.dismiss()
                     } catch {
@@ -48,6 +52,6 @@ struct Import: View {
 }
 
 #Preview {
-    Import(document: Contact.Import(content: "Preview".data(using: .utf8)!))
+    Import(document: "Preview".data(using: .utf8)!)
         .environment(ContactManager.preview)
 }
