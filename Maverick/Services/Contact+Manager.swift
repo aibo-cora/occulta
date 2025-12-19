@@ -389,7 +389,7 @@ extension ContactManager {
         try self.modelContext.save()
     }
     
-    func encrypt(message: String, for identifier: String) throws -> String? {
+    func encrypt(message: String, for identifier: String) throws -> Data? {
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
@@ -416,9 +416,7 @@ extension ContactManager {
             let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
             let encoded = try JSONEncoder().encode(message)
             
-            let encodedBase64 = encoded.base64EncodedString()
-            
-            return encodedBase64
+            return encoded
         } else {
             return nil
         }

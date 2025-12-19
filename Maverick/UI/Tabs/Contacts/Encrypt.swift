@@ -6,20 +6,52 @@
 //
 
 import SwiftUI
+import SwiftData
+internal import UniformTypeIdentifiers
 
 struct Encrypt: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     
-    @State private var encryptedTextToShare = ""
     @State private var textToEncrypt: String = ""
     
     let identifier: String
+    let filename = "message.maverick"
     
     private enum Mode: Hashable {
         case message, document
     }
     
     @State private var mode: Mode = .message
+    /// Encrypted document with metdata
+    @State private var document: MaverickDocument?
+    @State private var exportEncryptedMessage = false
+    
+    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    
+    init(identifier: String) {
+        self.identifier = identifier
+        
+        let predicate = #Predicate<Contact.Profile> {
+            $0.identifier == identifier
+        }
+        
+        self._contacts = Query(filter: predicate)
+    }
+    
+    struct EncryptedFile: Transferable {
+        let data: Data
+        
+        static var transferRepresentation: some TransferRepresentation {
+            FileRepresentation(exportedContentType: .data) { file in
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("message.maverick")
+                
+                try file.data.write(to: tempURL)
+                
+                return SentTransferredFile(tempURL)
+            }
+        }
+    }
     
     var body: some View {
         VStack {
@@ -51,33 +83,14 @@ struct Encrypt: View {
             
             if self.textToEncrypt.isEmpty == false {
                 HStack(alignment: .lastTextBaseline, spacing: 20) {
-                    Button {
-                        
-                    } label: {
-                        ShareLink(item: self.encryptedTextToShare) {
-                            VStack {
-                                Image(systemName: "square.and.arrow.up.fill")
-                                    .font(.system(size: 25))
-                                Text("Share")
-                            }
-                        }
-                    }
-                    .onChange(of: self.textToEncrypt) { _, newValue in
-                        if newValue.isEmpty == false {
-                            let encrypted = try? self.contactManager?.encrypt(message: newValue, for: self.identifier)
-                            self.encryptedTextToShare = encrypted ?? ""
-                        }
-                    }
+                    let message = (try? self.contactManager?.encrypt(message: self.textToEncrypt, for: self.identifier)) ?? Data()
                     
-                    Button {
-                        withAnimation {
-                            UIPasteboard.general.string = self.encryptedTextToShare
-                        }
-                    } label: {
+                    ShareLink(item: EncryptedFile(data: message), subject: Text("Message"), message: Text("Message for you"), preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
                         VStack {
-                            Image(systemName: "doc.on.doc.fill")
+                            Image(systemName: "square.and.arrow.up.fill")
                                 .font(.system(size: 25))
-                            Text("Copy To Clipboard")
+                            
+                            Text("Share")
                         }
                     }
                     
