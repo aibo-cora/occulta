@@ -137,6 +137,7 @@ extension ExchangeManager: MCSessionDelegate {
                         self.receivedIdentity.send(peersIdentity)
                     }
                 } else {
+                    debugPrint("MITM attack?")
                     // TODO: MITM? attack
                     return
                 }
@@ -206,7 +207,13 @@ extension ExchangeManager: NISessionDelegate {
                 if let peer = self.receivedDiscoveryTokens[token] {
                     do {
                         let keyManager = Manager.Key()
+                        
+                        #if targetEnvironment(simulator)
+                        let keyingMaterial = keyManager.fixedX963
+                        #else
                         let keyingMaterial = try keyManager.retrieveIdentity()
+                        #endif
+                        
                         let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
                         let exchange = Exchange(id: UUID().uuidString, token: archivedToken, version: .v1, identity: keyingMaterial)
                         let encodedExchange = try JSONEncoder().encode(exchange)
