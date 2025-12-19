@@ -84,13 +84,16 @@ struct Encrypt: View {
             if self.textToEncrypt.isEmpty == false {
                 HStack(alignment: .lastTextBaseline, spacing: 20) {
                     let message = (try? self.contactManager?.encrypt(message: self.textToEncrypt, for: self.identifier)) ?? Data()
+                    let fileContents = File(content: message, format: .text)
                     
-                    ShareLink(item: EncryptedFile(data: message), subject: Text("Message"), message: Text("Message for you"), preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
-                        VStack {
-                            Image(systemName: "square.and.arrow.up.fill")
-                                .font(.system(size: 25))
-                            
-                            Text("Share")
+                    if let encodedFileContents = try? JSONEncoder().encode(fileContents) {
+                        ShareLink(item: EncryptedFile(data: encodedFileContents), subject: Text("Message"), message: Text("Message for you"), preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
+                            VStack {
+                                Image(systemName: "square.and.arrow.up.fill")
+                                    .font(.system(size: 25))
+                                
+                                Text("Share")
+                            }
                         }
                     }
                     
