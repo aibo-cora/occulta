@@ -413,7 +413,7 @@ extension ContactManager {
             let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
             let recipients = publicKeyingMaterial.sha256
             
-            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted, type: .text)
+            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted, format: .text)
             let encoded = try JSONEncoder().encode(message)
             
             return encoded
@@ -759,7 +759,7 @@ extension ContactManager {
             throw Errors.encryptionFailed
         }
         
-        let message = Message(origin: nil, recipients: nil, content: encryptedContacts, type: .contacts)
+        let message = Message(origin: nil, recipients: nil, content: encryptedContacts, format: .contacts)
         
         let encodedMessage = try JSONEncoder().encode(message)
         

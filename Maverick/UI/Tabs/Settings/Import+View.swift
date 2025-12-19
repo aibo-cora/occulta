@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct Import: View {
-    var document: Data
+    let message: Message
     
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
@@ -17,41 +17,46 @@ struct Import: View {
     
     @Environment(\.dismiss) private var dismiss
     
-    init(document: Data) {
-        self.document = document
-    }
-    
     var body: some View {
         NavigationStack {
-            VStack {
+            switch self.message.format {
+            case .contacts:
                 VStack {
-                    Text("Enter the passphrase that was used to encrypt this file")
-                    
-                    TextField("Passphrase", text: self.$passphrase, prompt: Text("Required"))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.custom("Courier", size: 20))
-                }
-                .padding()
-                
-                Button {
-                    do {
-                        try self.contactManager.import(data: self.document, using: self.passphrase)
+                    VStack {
+                        Text("Enter the passphrase that was used to encrypt this file")
                         
-                        self.dismiss()
-                    } catch {
-                        debugPrint("Could not import data.")
+                        TextField("Passphrase", text: self.$passphrase, prompt: Text("Required"))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.custom("Courier", size: 20))
                     }
-                } label: {
-                    Text("Import Contacts")
+                    .padding()
+                    
+                    Button {
+                        do {
+                            try self.contactManager.import(data: self.message.content, using: self.passphrase)
+                            
+                            self.dismiss()
+                        } catch {
+                            debugPrint("Could not import contacts: \(error).")
+                        }
+                    } label: {
+                        Text("Import Contacts")
+                    }
+                    .prominentButtonStyle()
+                    .disabled(self.passphrase.isEmpty)
                 }
-                .prominentButtonStyle()
-                .disabled(self.passphrase.isEmpty)
+            case .text:
+                EmptyView()
+            case .file:
+                EmptyView()
+            case .link:
+                EmptyView()
             }
         }
     }
 }
 
 #Preview {
-    Import(document: "Preview".data(using: .utf8)!)
+    Import(message: Message(origin: nil, recipients: nil, content: Data(), format: .text))
         .environment(ContactManager.preview)
 }

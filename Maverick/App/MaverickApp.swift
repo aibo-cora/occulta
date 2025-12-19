@@ -73,8 +73,12 @@ struct MaverickApp: App {
             }
             .sheet(item: self.$openedEncryptedFileContents) {
                 /// Dismiss
-            } content: { message in
-                Import(document: message.content)
+            } content: { data in
+                if let message = try? JSONDecoder().decode(Message.self, from: data.content) {
+                    Import(message: message)
+                } else {
+                    Text("Something went wrong reading file contents. Try again.")
+                }
             }
         }
         .modelContainer(self.sharedModelContainer)

@@ -17,9 +17,9 @@ class Message: Identifiable, Codable {
     /// Encrypted payload.
     var content: Data
     
-    let type: `Type`
+    let format: Format
     
-    enum `Type`: Codable {
+    enum Format: Codable {
         case contacts, text, file, link
     }
     
@@ -29,10 +29,10 @@ class Message: Identifiable, Codable {
     ///   - origin: Sender's hash.
     ///   - recipients: Recipients' hashes.
     ///   - content: Encrypted payload.
-    init(origin: Data?, recipients: [Data]?, content: Data, type: `Type`) {
+    init(origin: Data?, recipients: [Data]?, content: Data, format: Format) {
         self.origin = origin
         self.recipients = recipients
         self.content = content
-        self.type = type
+        self.format = format
     }
 }
