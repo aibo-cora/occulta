@@ -13,6 +13,8 @@ class Message: Identifiable, Codable {
     /// Hash of the sender's public key, to match contact when user taps on file or link to opens the app.
     var origin: Data?
     /// Indended recipients. Hash of their public key.
+    ///
+    /// I am sending this message to you, but you can only decrypt it if you have all the recipients added.
     var recipients: [Data]?
     /// Encrypted payload.
     var content: Data

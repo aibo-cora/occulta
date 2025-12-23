@@ -65,7 +65,7 @@ struct KeyExchange: View {
         } else {
             VStack {
                 if self.displayingInfo {
-                    Text("To begin communicating with \(self.name), first, you'll need to exchange keys. To facilitate a secure exchange, bring your phones together after pressing the **Exchange Keys** button on both devices.")
+                    Text("To begin communicating with \(self.name), first, you'll need to exchange **public** keys. To facilitate a secure exchange, bring your phones together after pressing the **Exchange Keys** button on both devices.")
                         .padding()
                 }
                 

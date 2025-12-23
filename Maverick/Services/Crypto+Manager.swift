@@ -122,6 +122,40 @@ extension Manager {
             
             return decrypted
         }
+        
+        func sign(data: Data?) -> String {
+            do {
+                let key = try self.keyManager.retrievePrivateKey()
+                let algorithm: SecKeyAlgorithm = .ecdsaSignatureMessageX962SHA256
+                
+                var error: Unmanaged<CFError>?
+                
+                guard
+                    let key,
+                    let data
+                else {
+                    return "Key or data is missing"
+                }
+                
+                guard
+                    SecKeyIsAlgorithmSupported(key, .sign, algorithm)
+                else {
+                    return "Algorithm is not supported"
+                }
+                
+                guard
+                    let signature = SecKeyCreateSignature(key, algorithm, data as CFData, &error) as Data?
+                else {
+                    return "Error creating signature: \(error!.takeRetainedValue() as Error)"
+                }
+                
+                debugPrint("Signature size = \(signature.count)")
+                
+                return signature.hexEncodedString()
+            } catch {
+                return "Signature could not be created, try again."
+            }
+        }
     }
 }
 
@@ -143,6 +177,8 @@ protocol CryptoProtocol {
     
     func encrypt(contacts: Data, using passphrase: String) throws -> Data?
     func decrypt(contacts: Data, using passphrase: String) throws -> Data?
+    
+    func sign(data: Data?) -> String
 }
 
 extension String {
@@ -161,5 +197,11 @@ extension String {
         } catch {
             return ""
         }
+    }
+}
+
+extension Data {
+    func hexEncodedString() -> String {
+        return self.map { String(format: "%02x", $0) }.joined()
     }
 }

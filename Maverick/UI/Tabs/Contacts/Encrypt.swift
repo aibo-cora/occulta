@@ -78,7 +78,8 @@ struct Encrypt: View {
                     .border(Color.gray, width: 1)
                     .padding()
             case .document:
-                Image(systemName: "document")
+                Text("Coming Soon...")
+                    .padding()
             }
             
             if self.textToEncrypt.isEmpty == false {

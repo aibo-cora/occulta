@@ -38,8 +38,8 @@ struct MaverickApp: App {
         self.contactManager = ContactManager(modelContainer: sharedModelContainer)
     }
     
-    enum Tabs: Hashable {
-        case contacts, settings
+    enum Tabs: String, Hashable {
+        case contacts, sign, verify, settings
     }
     
     @State private var openedEncryptedFileContents: File?
@@ -52,6 +52,13 @@ struct MaverickApp: App {
                     .tabItem {
                         Image(systemName: "person.2.fill")
                         Text("Contacts")
+                    }
+                
+                Sign()
+                    .tag(Tabs.sign)
+                    .tabItem {
+                        Image(systemName: "signature")
+                        Text(Tabs.sign.rawValue.capitalized)
                     }
                 
                 Settings()
