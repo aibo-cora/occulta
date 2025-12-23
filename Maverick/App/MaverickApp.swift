@@ -40,6 +40,32 @@ struct MaverickApp: App {
     
     enum Tabs: String, Hashable {
         case contacts, sign, verify, settings
+        
+        var image: Image {
+            switch self {
+            case .contacts:
+                .init(systemName: "person.2.fill")
+            case .sign:
+                .init(systemName: "signature")
+            case .settings:
+                .init(systemName: "gearshape.fill")
+            case .verify:
+                .init(systemName: "checkmark.bubble")
+            }
+        }
+        
+        var name: some View {
+            switch self {
+            case .contacts:
+                Text("Contacts")
+            case .sign:
+                Text("Sign")
+            case .settings:
+                Text("Settings")
+            case .verify:
+                Text("Verify")
+            }
+        }
     }
     
     @State private var openedEncryptedFileContents: File?
@@ -50,22 +76,29 @@ struct MaverickApp: App {
                 Contacts()
                     .tag(Tabs.contacts)
                     .tabItem {
-                        Image(systemName: "person.2.fill")
-                        Text("Contacts")
+                        Tabs.contacts.image
+                        Tabs.contacts.name
                     }
                 
                 Sign()
                     .tag(Tabs.sign)
                     .tabItem {
-                        Image(systemName: "signature")
-                        Text(Tabs.sign.rawValue.capitalized)
+                        Tabs.sign.image
+                        Tabs.sign.name
+                    }
+                
+                Verify()
+                    .tag(Tabs.verify)
+                    .tabItem {
+                        Tabs.verify.image
+                        Tabs.verify.name
                     }
                 
                 Settings()
                     .tag(Tabs.settings)
                     .tabItem {
-                        Image(systemName: "gearshape.fill")
-                        Text("Settings")
+                        Tabs.settings.image
+                        Tabs.settings.name
                     }
             }
             .onOpenURL { url in
