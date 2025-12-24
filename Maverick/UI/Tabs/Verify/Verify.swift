@@ -9,7 +9,22 @@ import SwiftUI
 
 struct Verify: View {
     var body: some View {
-        Text(/*@START_MENU_TOKEN@*/"Hello, World!"/*@END_MENU_TOKEN@*/)
+        NavigationStack {
+            VStack {
+                VStack(spacing: 20) {
+                    Text("Copy the message containing a signature to the clipboard and press **Verify**.")
+                }
+                .padding()
+                
+                Spacer()
+                
+                Button("Verify", systemImage: "checkmark.bubble", role: .cancel) {
+                    
+                }
+                .prominentButtonStyle()
+            }
+            .navigationTitle(MaverickApp.Tabs.verify.rawValue.capitalized)
+        }
     }
 }
 
