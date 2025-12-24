@@ -80,19 +80,21 @@ struct MaverickApp: App {
                         Tabs.contacts.name
                     }
                 
-                Sign()
-                    .tag(Tabs.sign)
-                    .tabItem {
-                        Tabs.sign.image
-                        Tabs.sign.name
-                    }
-                
-                Verify()
-                    .tag(Tabs.verify)
-                    .tabItem {
-                        Tabs.verify.image
-                        Tabs.verify.name
-                    }
+                if FeatureFlags.isEnabled(.signature) {
+                    Sign()
+                        .tag(Tabs.sign)
+                        .tabItem {
+                            Tabs.sign.image
+                            Tabs.sign.name
+                        }
+                    
+                    Verify()
+                        .tag(Tabs.verify)
+                        .tabItem {
+                            Tabs.verify.image
+                            Tabs.verify.name
+                        }
+                }
                 
                 Settings()
                     .tag(Tabs.settings)
