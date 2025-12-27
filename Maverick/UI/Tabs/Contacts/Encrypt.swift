@@ -55,60 +55,30 @@ struct Encrypt: View {
     
     var body: some View {
         VStack {
-            Picker(selection: self.$mode) {
+            Picker("What would you like to encrypt?", selection: self.$mode) {
                 Text("Message")
                     .tag(Mode.message)
                 
                 Text("Document")
                     .tag(Mode.file)
-            } label: {
-                Label {
-                    Text("Encryption Mode")
-                } icon: {
-                    Image(systemName: "lock")
-                }
             }
             .pickerStyle(.segmented)
             
             switch self.mode {
             case .message:
-                Message(textToEncrypt: self.$textToEncrypt)
+                Message(textToEncrypt: self.$textToEncrypt, identifier: self.identifier)
             case .file:
                 Encrypt.File(identifier: self.identifier)
-            }
-            
-            if self.textToEncrypt.isEmpty == false {
-                HStack(alignment: .lastTextBaseline, spacing: 20) {
-                    let message = (try? self.contactManager?.encrypt(message: self.textToEncrypt, for: self.identifier))
-                    let fileContents = Maverick.File(content: message, format: .text)
-                    
-                    if let encodedFileContents = try? JSONEncoder().encode(fileContents) {
-                        ShareLink(item: EncryptedFile(data: encodedFileContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
-                            VStack {
-                                Image(systemName: "square.and.arrow.up.fill")
-                                
-                                Text("Share")
-                            }
-                        }
-                    }
-                    
-                    Button {
-                        self.textToEncrypt = ""
-                    } label: {
-                        VStack {
-                            Image(systemName: "trash.fill")
-                            
-                            Text("Reset")
-                        }
-                    }
-                }
-                .font(.system(size: 25))
+                    .padding(.top)
             }
         }
     }
     
     struct Message: View {
+        @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Binding var textToEncrypt: String
+        
+        let identifier: String
         
         var body: some View {
             VStack {
@@ -117,6 +87,35 @@ struct Encrypt: View {
                     .frame(height: 200)
                     .border(Color.gray, width: 1)
                     .padding()
+                
+                if self.textToEncrypt.isEmpty == false {
+                    HStack(alignment: .lastTextBaseline, spacing: 20) {
+                        let message = (try? self.contactManager?.encrypt(message: self.textToEncrypt, for: self.identifier))
+                        let fileContents = Maverick.File(content: message, format: .text)
+                        
+                        if let encodedFileContents = try? JSONEncoder().encode(fileContents) {
+                            ShareLink(item: EncryptedFile(data: encodedFileContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
+                                VStack {
+                                    Image(systemName: "square.and.arrow.up")
+                                }
+                            }
+                        }
+                        
+                        Button {
+                            self.textToEncrypt = ""
+                        } label: {
+                            VStack {
+                                Image(systemName: "trash")
+                            }
+                        }
+                    }
+                    .font(.system(size: 25))
+                    
+                    Text("Share this encrypted file with your contact.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding()
+                }
             }
         }
     }
@@ -133,7 +132,7 @@ struct Encrypt: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         
         var body: some View {
-            VStack(spacing: 50) {
+            VStack(spacing: 20) {
                 HStack {
                     Button {
                         self.isImporting = true
@@ -156,11 +155,36 @@ struct Encrypt: View {
                 .font(.system(size: 25))
                 
                 if let name = self.name, let encryptedFile {
-                    Text(name)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("Selected File")
+                            .bold()
+                        Text(name)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     
-                    ShareLink(item: encryptedFile, preview: SharePreview("Encrypted File", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link")))
+                    HStack(alignment: .lastTextBaseline, spacing: 20) {
+                        ShareLink(item: encryptedFile, preview: SharePreview("Encrypted File", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
+                            VStack {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                        }
+                        
+                        Button {
+                            self.selection = nil
+                            self.name = nil
+                            self.encryptedFile = nil
+                        } label: {
+                            VStack {
+                                Image(systemName: "trash")
+                            }
+                        }
+                    }
+                    .font(.system(size: 25))
+                    
+                    Text("Share this encrypted file with your contact.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
             .fileImporter(isPresented: self.$isImporting, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
