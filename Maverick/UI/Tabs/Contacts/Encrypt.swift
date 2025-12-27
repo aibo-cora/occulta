@@ -235,11 +235,15 @@ struct Encrypt: View {
             
             Task {
                 if let data = try await photo.loadTransferable(type: Data.self) {
-                    let name = photo.itemIdentifier?.components(separatedBy: ".").first ?? "image"
-                    let fileExtension = photo.itemIdentifier?.components(separatedBy: ".").last ?? "png"
-                    
-                    self.encryptedFile = try self.encrypt(data: data, name: name, fileExtension: fileExtension)
-                    self.name = photo.itemIdentifier ?? "image.png"
+                    if let utType = photo.supportedContentTypes.first {
+                        let fileExtension = utType.preferredFilenameExtension ?? "unknown"
+                        let _ = utType.preferredMIMEType
+                        
+                        let name = UUID().uuidString.components(separatedBy: "-").last ?? "library.asset"
+                        
+                        self.encryptedFile = try self.encrypt(data: data, name: name, fileExtension: fileExtension)
+                        self.name = name + "." + fileExtension
+                    }
                 }
             }
         }
