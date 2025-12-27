@@ -56,7 +56,7 @@ struct Import: View {
                 } else {
                     Text("This message is not meant for you.")
                 }
-            case .file:
+            case .document(_):
                 EmptyView()
             case .link:
                 EmptyView()

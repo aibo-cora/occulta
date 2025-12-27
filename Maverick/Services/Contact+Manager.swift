@@ -391,6 +391,18 @@ extension ContactManager {
     
     func encrypt(message: String, for identifier: String) throws -> Data? {
         guard
+            let payload = message.data(using: .utf8)
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
+        let encrypted = try self.encrypt(data: payload, for: identifier)
+        
+        return encrypted
+    }
+    
+    func encrypt(data: Data, for identifier: String) throws -> Data? {
+        guard
             let contact = try self.fetchContact(by: identifier)
         else {
             throw ContactManager.Errors.contactNotFound
@@ -398,22 +410,28 @@ extension ContactManager {
         
         guard
             let encrypted = contact.contactPublicKeys.last?.material,
-            let publicKeyingMaterial = try? self.cryptoManager.decrypt(data: encrypted)
+            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
         }
         
         guard
-            let payload = message.data(using: .utf8)
+            data.isEmpty == false
         else {
             throw ContactManager.Errors.messageHasNoData
         }
         
-        if let encrypted = try self.cryptoManager.encrypt(message: payload, using: publicKeyingMaterial) {
+        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
+        
+        return encryptedData
+    }
+    
+    private func encrypt(data: Data, using material: Data) throws -> Data? {
+        if let encrypted = try self.cryptoManager.encrypt(message: data, using: material) {
             let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
-            let recipients = publicKeyingMaterial.sha256
+            let recipients = [material.sha256]
             
-            let message = Message(origin: originPublicKeyHash, recipients: [recipients], content: encrypted)
+            let message = Message(origin: originPublicKeyHash, recipients: recipients, content: encrypted)
             let encoded = try JSONEncoder().encode(message)
             
             return encoded

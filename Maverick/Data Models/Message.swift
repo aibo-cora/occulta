@@ -37,8 +37,15 @@ struct File: Identifiable, Codable {
     
     let content: Data?
     let format: Format?
+    
+    var date: String?
+    
+    struct Metadata: Codable {
+        var name: String?
+        var `extension`: String?
+    }
 
     enum Format: Codable {
-        case contacts, text, file, link
+        case contacts, text, document(Metadata), link
     }
 }
