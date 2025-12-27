@@ -269,7 +269,7 @@ struct Encrypt: View {
                             
                             self.status = .encrypting(filename)
                             
-                            let encryptedFile = try self.encrypt(data: data, name: filename, fileExtension: fileExtension)
+                            let encryptedFile = try self.encrypt(data: data, name: name, fileExtension: fileExtension)
                             
                             self.status = .encrypted(filename, encryptedFile)
                         }
@@ -291,7 +291,7 @@ struct Encrypt: View {
             let date = self.contactManager?.dateFormatter.string(from: .now) ?? ""
             let encryptedDate = try self.contactManager?.encrypt(message: date, for: self.identifier)?.base64EncodedString()
             
-            let fileContents = Maverick.File(content: encryptedContent, format: .document(Maverick.File.Metadata(name: encryptedName, extension: encryptedFileExtension)), date: encryptedDate)
+            let fileContents = Maverick.File(content: encryptedContent, format: .file(Maverick.File.Metadata(name: encryptedName, extension: encryptedFileExtension)), date: encryptedDate)
             
             let encoded = try JSONEncoder().encode(fileContents)
             let encryptedFile = EncryptedFile(data: encoded)

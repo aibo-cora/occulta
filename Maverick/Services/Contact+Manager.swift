@@ -440,7 +440,13 @@ extension ContactManager {
         }
     }
     
-    private func decrypt(message: Data, for identifier: String) throws -> String? {
+    private func decrypt(message: Data?, for identifier: String) throws -> Data? {
+        guard
+            let payload = message, payload.isEmpty == false
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
         guard
             let contact = try self.fetchContact(by: identifier)
         else {
@@ -449,21 +455,17 @@ extension ContactManager {
         
         guard
             let encrypted = contact.contactPublicKeys.last?.material,
-            let publicKeyingMaterial = try? self.cryptoManager.decrypt(data: encrypted)
+            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
         }
         
         let decoder = JSONDecoder()
-        let message = try decoder.decode(Message.self, from: message)
+        let message = try decoder.decode(Message.self, from: payload)
         
-        guard
-            let decrypted = try self.cryptoManager.decrypt(message: message.content, using: publicKeyingMaterial)
-        else {
-            return nil
-        }
+        let decrypted = try self.cryptoManager.decrypt(message: message.content, using: publicKeyingMaterial)
         
-        return String(data: decrypted, encoding: .utf8)
+        return decrypted
     }
 }
 
@@ -804,11 +806,11 @@ extension ContactManager {
     }
     
     /// Find the rightful owner of the message, the originator, and decrypt it using the right key.
-    /// - Parameter message: Encrypted `Message`
-    /// - Returns: Plaintext message.
-    func decrypt(message: Data?) throws -> (plaintext: String, ownerID: String) {
+    /// - Parameter text: Encrypted text.
+    /// - Returns: Plaintext.
+    func decrypt(text: Data?) throws -> (plaintext: String, ownerID: String) {
         guard
-            let message
+            let text
         else {
             throw ContactManager.Errors.messageHasNoData
         }
@@ -817,8 +819,36 @@ extension ContactManager {
         
         for contact in contacts {
             do {
-                if let decrypted = try self.decrypt(message: message, for: contact.identifier) {
-                    return (decrypted, contact.identifier)
+                if let decrypted = try self.decrypt(message: text, for: contact.identifier), let plaintext = String(data: decrypted, encoding: .utf8) {
+                    return (plaintext, contact.identifier)
+                }
+            } catch {
+                /// Keep iterating.
+            }
+        }
+        
+        throw ContactManager.Errors.noPublicKeyToEncryptWith
+    }
+    
+    func decrypt(payload: Data?, metadata: File.Metadata) throws -> (contents: Data, ownerID: String, filename: String) {
+        guard
+            let content = payload
+        else {
+            throw ContactManager.Errors.messageHasNoData
+        }
+        
+        let contacts = try self.fetchAllContacts()
+        
+        for contact in contacts {
+            do {
+                let decryptedFileContent = try self.decrypt(message: content, for: contact.identifier)
+                let decryptedFilename = try self.decrypt(message: Data(base64Encoded: metadata.name ?? ""), for: contact.identifier) ?? Data()
+                let decryptedFileExtension = try self.decrypt(message: Data(base64Encoded: metadata.extension ?? ""), for: contact.identifier) ?? Data()
+                
+                let filename = "\(String(data: decryptedFilename, encoding: .utf8) ?? "").\(String(data: decryptedFileExtension, encoding: .utf8) ?? "")"
+                
+                if let decryptedFileContent {
+                    return (decryptedFileContent, contact.identifier, filename)
                 }
             } catch {
                 /// Keep iterating.

@@ -46,6 +46,6 @@ struct File: Identifiable, Codable {
     }
 
     enum Format: Codable {
-        case contacts, text, document(Metadata), link
+        case contacts, text, file(Metadata), link
     }
 }

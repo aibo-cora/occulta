@@ -47,8 +47,8 @@ struct Import: View {
                 }
             case .text:
                 /// We do not know at this point who the sender of the message is. We need to go through our contacts and try finding the right owner.
-                if let result = try? self.contactManager.decrypt(message: self.fileContents.content) {
-                    VStack {
+                if let result = try? self.contactManager.decrypt(text: self.fileContents.content) {
+                    VStack(spacing: 20) {
                         Contact.Info(identifier: result.ownerID)
                         
                         Text(result.plaintext)
@@ -56,8 +56,23 @@ struct Import: View {
                 } else {
                     Text("This message is not meant for you.")
                 }
-            case .document(_):
-                EmptyView()
+            case .file(let metadata):
+                if let result = try? self.contactManager.decrypt(payload: self.fileContents.content, metadata: metadata) {
+                    VStack(spacing: 20) {
+                        Contact.Info(identifier: result.ownerID)
+                     
+                        HStack {
+                            Text("Received File")
+                                .bold()
+                            
+                            Text(result.filename)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } else {
+                    EmptyView()
+                }
             case .link:
                 EmptyView()
             case .none:
