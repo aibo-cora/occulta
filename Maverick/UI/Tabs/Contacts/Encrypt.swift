@@ -124,44 +124,61 @@ struct Encrypt: View {
         @State private var isImporting = false
         @State private var name: String?
         
-        @State private var encryptedFile: EncryptedFile?
         @State private var selection: PhotosPickerItem? = nil
         
         let identifier: String
         
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         
+        private enum Status {
+            case initial, importing, encrypting(String), encrypted(String, EncryptedFile), failure(Error)
+        }
+        
+        @State private var status: Status = .initial
+        
         var body: some View {
             VStack(spacing: 20) {
-                HStack {
-                    Button {
-                        self.isImporting = true
-                    } label: {
-                        Image(systemName: "doc")
-                    }
-                    
-                    PhotosPicker(selection: self.$selection) {
-                        Image(systemName: "photo")
-                    }
-                    .pickerStyle(.inline)
-                    .onChange(of: self.selection) { _, newValue in
-                        do {
-                            try self.handleImport(photo: newValue)
-                        } catch {
-                            debugPrint("Could not handle photo selection, error: \(error)")
+                switch self.status {
+                case .initial:
+                    HStack {
+                        Button {
+                            self.isImporting = true
+                        } label: {
+                            Image(systemName: "doc")
+                        }
+                        
+                        PhotosPicker(selection: self.$selection) {
+                            Image(systemName: "photo")
+                        }
+                        .pickerStyle(.inline)
+                        .onChange(of: self.selection) { _, newValue in
+                            self.handleImport(photo: newValue)
                         }
                     }
-                }
-                .font(.system(size: 25))
-                
-                if let name = self.name, let encryptedFile {
+                    .font(.system(size: 25))
+                case .importing:
+                    ProgressView("Importing file...This might take a while for large files.")
+                case .encrypting(let filename):
                     HStack {
-                        Text("Selected File")
+                        Text("Imported File")
                             .bold()
-                        Text(name)
+                        Text(filename)
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                    
+                    ProgressView("Encrypting file...")
+                case .encrypted(let filename, let encryptedFile):
+                    HStack {
+                        Text("Imported File")
+                            .bold()
+                        Text(filename)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Text("We created an encrypted file with contents of the file you imported.")
+                        .multilineTextAlignment(.center)
                     
                     HStack(alignment: .lastTextBaseline, spacing: 20) {
                         ShareLink(item: encryptedFile, preview: SharePreview("Encrypted File", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
@@ -171,9 +188,7 @@ struct Encrypt: View {
                         }
                         
                         Button {
-                            self.selection = nil
-                            self.name = nil
-                            self.encryptedFile = nil
+                            self.status = .initial
                         } label: {
                             VStack {
                                 Image(systemName: "trash")
@@ -185,6 +200,8 @@ struct Encrypt: View {
                     Text("Share this encrypted file with your contact.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                case .failure(let error):
+                    Text("Something went wrong. Error: \(error.localizedDescription)")
                 }
             }
             .fileImporter(isPresented: self.$isImporting, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
@@ -193,10 +210,12 @@ struct Encrypt: View {
                     do {
                         try self.handleImport(urls: urls)
                     } catch {
-                        
+                        self.status = .failure(error)
                     }
                 case .failure(let failure):
                     debugPrint("Error importing file, \(failure)")
+                    
+                    self.status = .failure(failure)
                 }
             }
         }
@@ -211,6 +230,8 @@ struct Encrypt: View {
                 return
             }
             
+            self.status = .importing
+            
             defer { url.stopAccessingSecurityScopedResource() }
             
             let data = try Data(contentsOf: url)
@@ -218,13 +239,14 @@ struct Encrypt: View {
             let name = url.deletingPathExtension().lastPathComponent
             let fileExtension = url.pathExtension
             
+            self.status = .encrypting(url.lastPathComponent)
+            
             let file = try self.encrypt(data: data, name: name, fileExtension: fileExtension)
             
-            self.encryptedFile = file
-            self.name = url.lastPathComponent
+            self.status = .encrypted(url.lastPathComponent, file)
         }
         
-        private func handleImport(photo: PhotosPickerItem?) throws {
+        private func handleImport(photo: PhotosPickerItem?) {
             guard
                 let photo
             else {
@@ -234,21 +256,33 @@ struct Encrypt: View {
             }
             
             Task {
-                if let data = try await photo.loadTransferable(type: Data.self) {
-                    if let utType = photo.supportedContentTypes.first {
-                        let fileExtension = utType.preferredFilenameExtension ?? "unknown"
-                        let _ = utType.preferredMIMEType
+                do {
+                    self.status = .importing
+                    
+                    if let data = try await photo.loadTransferable(type: Data.self) {
+                        if let utType = photo.supportedContentTypes.first {
+                            let fileExtension = utType.preferredFilenameExtension ?? "unknown"
+                            let _ = utType.preferredMIMEType
+                            
+                            let name = UUID().uuidString.components(separatedBy: "-").last ?? "library.asset"
+                            let filename = "\(name).\(fileExtension)"
+                            
+                            self.status = .encrypting(filename)
+                            
+                            let encryptedFile = try self.encrypt(data: data, name: filename, fileExtension: fileExtension)
+                            
+                            self.status = .encrypted(filename, encryptedFile)
+                        }
+                    } else {
                         
-                        let name = UUID().uuidString.components(separatedBy: "-").last ?? "library.asset"
-                        
-                        self.encryptedFile = try self.encrypt(data: data, name: name, fileExtension: fileExtension)
-                        self.name = name + "." + fileExtension
                     }
+                } catch {
+                    self.status = .failure(error)
                 }
             }
         }
         
-        private func encrypt(data: Data, name: String, fileExtension: String) throws -> EncryptedFile? {
+        private func encrypt(data: Data, name: String, fileExtension: String) throws -> EncryptedFile {
             let encryptedContent = try self.contactManager?.encrypt(data: data, for: self.identifier)
             
             let encryptedName = try self.contactManager?.encrypt(message: name, for: self.identifier)?.base64EncodedString()
