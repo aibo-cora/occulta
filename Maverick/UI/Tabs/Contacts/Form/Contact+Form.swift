@@ -159,6 +159,7 @@ extension Contact {
                         }
                     }
                 }
+                .scrollIndicators(.hidden)
             }
             .task {
                 switch self.mode {
