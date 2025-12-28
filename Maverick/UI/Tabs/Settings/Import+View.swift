@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+internal import UniformTypeIdentifiers
 
 struct Import: View {
     let fileContents: File
@@ -13,7 +14,6 @@ struct Import: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
     @State private var passphrase: String = ""
-    @State private var porter = Manager.Porter()
     
     @Environment(\.dismiss) private var dismiss
     
@@ -69,6 +69,10 @@ struct Import: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
+                        
+                        ShareLink(item: FileTransferable(data: result.contents, fileName: result.filename), preview: SharePreview(Text(result.filename), image: Image(systemName: "doc.fill"))) {
+                            Label("Export File", systemImage: "square.and.arrow.up")
+                        }
                     }
                 } else {
                     EmptyView()
@@ -82,10 +86,16 @@ struct Import: View {
     }
 }
 
-extension Message {
-    struct Decrypt: View {
-        var body: some View {
-            
+struct FileTransferable: Transferable {
+    let data: Data
+    let fileName: String
+    
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .data) { file in
+            file.data
+        }
+        .suggestedFileName { file in
+            file.fileName
         }
     }
 }
