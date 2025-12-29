@@ -37,22 +37,6 @@ struct Encrypt: View {
         self._contacts = Query(filter: predicate)
     }
     
-    struct EncryptedFile: Transferable {
-        let data: Data
-        
-        static var transferRepresentation: some TransferRepresentation {
-            FileRepresentation(exportedContentType: .data) { file in
-                let id = UUID().uuidString.components(separatedBy: "-").last ?? "encrypted.file"
-                let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(id).maverick")
-                
-                try file.data.write(to: tempURL)
-                
-                return SentTransferredFile(tempURL)
-            }
-        }
-    }
-    
     var body: some View {
         VStack {
             Picker("What would you like to encrypt?", selection: self.$mode) {
