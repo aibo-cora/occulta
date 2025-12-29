@@ -427,17 +427,7 @@ extension ContactManager {
     }
     
     private func encrypt(data: Data, using material: Data) throws -> Data? {
-        if let encrypted = try self.cryptoManager.encrypt(message: data, using: material) {
-            let originPublicKeyHash = try Manager.Key().retrieveIdentity().sha256
-            let recipients = [material.sha256]
-            
-            let message = Message(origin: originPublicKeyHash, recipients: recipients, content: encrypted)
-            let encoded = try JSONEncoder().encode(message)
-            
-            return encoded
-        } else {
-            return nil
-        }
+        try self.cryptoManager.encrypt(message: data, using: material)
     }
     
     private func decrypt(message: Data?, for identifier: String) throws -> Data? {
@@ -460,10 +450,7 @@ extension ContactManager {
             throw ContactManager.Errors.contactHasNoKeys
         }
         
-        let decoder = JSONDecoder()
-        let message = try decoder.decode(Message.self, from: payload)
-        
-        let decrypted = try self.cryptoManager.decrypt(message: message.content, using: publicKeyingMaterial)
+        let decrypted = try self.cryptoManager.decrypt(message: payload, using: publicKeyingMaterial)
         
         return decrypted
     }

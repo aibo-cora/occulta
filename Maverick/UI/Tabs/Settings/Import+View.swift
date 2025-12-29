@@ -86,20 +86,6 @@ struct Import: View {
     }
 }
 
-struct FileTransferable: Transferable {
-    let data: Data
-    let fileName: String
-    
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .data) { file in
-            file.data
-        }
-        .suggestedFileName { file in
-            file.fileName
-        }
-    }
-}
-
 #Preview {
     Import(fileContents: File(content: Data(), format: .contacts))
         .environment(ContactManager.preview)
