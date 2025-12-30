@@ -68,8 +68,10 @@ struct MaverickApp: App {
             }
         }
     }
-    
-    @State private var openedEncryptedFileContents: File?
+    /// Container with plaintext message or file.
+    @State private var openedFileContents: ImportedFile?
+    /// Encrypted contacts database.
+    @State private var openedEncryptedFileContents: EncryptedFile?
 
     var body: some Scene {
         WindowGroup {
@@ -105,22 +107,41 @@ struct MaverickApp: App {
                     }
             }
             .onOpenURL { url in
-                do {
-                    let accessing = url.startAccessingSecurityScopedResource()
-                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                    
-                    let contents = try Data(contentsOf: url)
-                    let fileContents = try JSONDecoder().decode(File.self, from: contents)
-                    
-                    self.openedEncryptedFileContents = fileContents
-                } catch {
-                    debugPrint("Error reading data, error = \(error)")
+                let accessing = url.startAccessingSecurityScopedResource()
+                
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                
+                if accessing {
+                    do {
+                        let data = try Data(contentsOf: url)
+                        let decrypted = try self.contactManager.decrypt(data: data)
+                        let file = try JSONDecoder().decode(Maverick.File.self, from: decrypted.plaintext)
+                        let importedFile = ImportedFile(file: file, owner: decrypted.ownerID)
+                        
+                        self.openedFileContents = importedFile
+                    } catch ContactManager.Errors.messageHasNoData {
+                        debugPrint("Error reading data, no data.")
+                    } catch ContactManager.Errors.noPublicKeyToEncryptWith {
+                        /// This file contains contacts or we don't have the owner's public key to decrypt the file of the file is corrupted.
+                        let data = (try? Data(contentsOf: url)) ?? Data()
+                        
+                        self.openedEncryptedFileContents = EncryptedFile(data: data)
+                        
+                        debugPrint("Could not find this file's owner's public key, it must contain contacts or is corrupted.")
+                    } catch {
+                        debugPrint("Error reading data, error = \(error)")
+                    }
+                } else {
+                    debugPrint("Could not access file data. Try saving the file in Files first and thentry opening it.")
                 }
             }
-            .sheet(item: self.$openedEncryptedFileContents) {
+            .sheet(item: self.$openedFileContents) {
                 /// Dismiss
             } content: { data in
-                Import(fileContents: data)
+                Import(imported: data)
+            }
+            .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
+                
             }
         }
         .modelContainer(self.sharedModelContainer)

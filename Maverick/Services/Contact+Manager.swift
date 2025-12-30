@@ -756,17 +756,17 @@ extension ContactManager {
         
         let encodedContacts = try JSONEncoder().encode(decryptedMutableContacts)
         
+        let fileContents = File(content: encodedContacts, format: .contacts)
+        
+        let encodedFileContents = try JSONEncoder().encode(fileContents)
+        
         guard
-            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedContacts, using: passphrase)
+            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedFileContents, using: passphrase)
         else {
             throw Errors.encryptionFailed
         }
         
-        let fileContents = File(content: encryptedContacts, format: .contacts)
-        
-        let encodedFileContents = try JSONEncoder().encode(fileContents)
-        
-        return encodedFileContents
+        return encryptedContacts
     }
     
     func `import`(data: Data?, using passphrase: String) throws {
@@ -795,9 +795,9 @@ extension ContactManager {
     /// Find the rightful owner of the message, the originator, and decrypt it using the right key.
     /// - Parameter text: Encrypted text.
     /// - Returns: Plaintext.
-    func decrypt(text: Data?) throws -> (plaintext: String, ownerID: String) {
+    func decrypt(data: Data?) throws -> (plaintext: Data, ownerID: String) {
         guard
-            let text
+            let data
         else {
             throw ContactManager.Errors.messageHasNoData
         }
@@ -806,8 +806,8 @@ extension ContactManager {
         
         for contact in contacts {
             do {
-                if let decrypted = try self.decrypt(message: text, for: contact.identifier), let plaintext = String(data: decrypted, encoding: .utf8) {
-                    return (plaintext, contact.identifier)
+                if let decrypted = try self.decrypt(message: data, for: contact.identifier) {
+                    return (decrypted, contact.identifier)
                 }
             } catch {
                 /// Keep iterating.

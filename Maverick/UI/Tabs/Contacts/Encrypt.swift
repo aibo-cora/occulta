@@ -72,13 +72,14 @@ struct Encrypt: View {
                     .border(Color.gray, width: 1)
                     .padding()
                 
-                if self.textToEncrypt.isEmpty == false {
+                if self.textToEncrypt.isEmpty == false, let payload = self.textToEncrypt.data(using: .utf8) {
                     HStack(alignment: .lastTextBaseline, spacing: 20) {
-                        let message = (try? self.contactManager?.encrypt(message: self.textToEncrypt, for: self.identifier))
-                        let fileContents = Maverick.File(content: message, format: .text)
+                        let fileContents = Maverick.File(content: payload, format: .text)
+                        let encodedFileContents = (try? JSONEncoder().encode(fileContents)) ?? Data()
+                        let encryptedFileContents = try? self.contactManager?.encrypt(data: encodedFileContents, for: self.identifier)
                         
-                        if let encodedFileContents = try? JSONEncoder().encode(fileContents) {
-                            ShareLink(item: EncryptedFile(data: encodedFileContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
+                        if let encryptedFileContents {
+                            ShareLink(item: EncryptedFile(data: encryptedFileContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
                                 VStack {
                                     Image(systemName: "square.and.arrow.up")
                                 }
@@ -267,18 +268,13 @@ struct Encrypt: View {
         }
         
         private func encrypt(data: Data, name: String, fileExtension: String) throws -> EncryptedFile {
-            let encryptedContent = try self.contactManager?.encrypt(data: data, for: self.identifier)
-            
-            let encryptedName = try self.contactManager?.encrypt(message: name, for: self.identifier)?.base64EncodedString()
-            let encryptedFileExtension = try self.contactManager?.encrypt(message: fileExtension, for: self.identifier)?.base64EncodedString()
-            
-            let date = self.contactManager?.dateFormatter.string(from: .now) ?? ""
-            let encryptedDate = try self.contactManager?.encrypt(message: date, for: self.identifier)?.base64EncodedString()
-            
-            let fileContents = Maverick.File(content: encryptedContent, format: .file(Maverick.File.Metadata(name: encryptedName, extension: encryptedFileExtension)), date: encryptedDate)
+            let timeInterval = String(Date.timeIntervalSinceReferenceDate)
+            let fileContents = Maverick.File(content: data, format: .file(Maverick.File.Metadata(name: name, extension: fileExtension)), date: timeInterval)
             
             let encoded = try JSONEncoder().encode(fileContents)
-            let encryptedFile = EncryptedFile(data: encoded)
+            let encrypted = try self.contactManager?.encrypt(data: encoded, for: self.identifier) ?? Data()
+            
+            let encryptedFile = EncryptedFile(data: encrypted)
             
             return encryptedFile
         }

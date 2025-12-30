@@ -38,18 +38,7 @@ struct Export: View {
                                 .fileExporter(isPresented: self.$exporting, document: exportedDocument, contentTypes: [.maverick], defaultFilename: "contacts.maverick", onCompletion: { result in
                                     switch result {
                                     case .success(let url):
-                                        let accessing = url.startAccessingSecurityScopedResource()
-                                        defer {
-                                            if accessing {
-                                                url.stopAccessingSecurityScopedResource()
-                                            }
-                                        }
-                                        
-                                        if let contents = try? Data(contentsOf: url) {
-                                            print("Exported successfully, contents = \(contents), url = \(url.absoluteString)")
-                                        } else {
-                                            debugPrint("No contents..., url = \(url)")
-                                        }
+                                        debugPrint("Contacts exported..., url = \(url)")
                                     case .failure(let error):
                                         print("Failed to export: \(error)")
                                     }

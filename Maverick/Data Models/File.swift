@@ -9,6 +9,13 @@ import Foundation
 import SwiftUI
 internal import UniformTypeIdentifiers
 
+struct ImportedFile: Identifiable {
+    var id: UUID = UUID()
+    
+    let file: File
+    let owner: String
+}
+
 
 struct File: Identifiable, Codable {
     var id = UUID()
@@ -42,7 +49,8 @@ struct FileTransferable: Transferable {
     }
 }
 
-struct EncryptedFile: Transferable {
+struct EncryptedFile: Transferable, Identifiable {
+    var id: UUID = UUID()
     let data: Data
     
     static var transferRepresentation: some TransferRepresentation {

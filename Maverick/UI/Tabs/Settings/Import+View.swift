@@ -9,7 +9,7 @@ import SwiftUI
 internal import UniformTypeIdentifiers
 
 struct Import: View {
-    let fileContents: File
+    let imported: ImportedFile
     
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
@@ -19,7 +19,7 @@ struct Import: View {
     
     var body: some View {
         NavigationStack {
-            switch self.fileContents.format {
+            switch self.imported.file.format {
             case .contacts:
                 VStack {
                     VStack {
@@ -33,7 +33,7 @@ struct Import: View {
                     
                     Button {
                         do {
-                            try self.contactManager.import(data: self.fileContents.content, using: self.passphrase)
+                            try self.contactManager.import(data: self.imported.file.content, using: self.passphrase)
                             
                             self.dismiss()
                         } catch {
@@ -46,36 +46,40 @@ struct Import: View {
                     .disabled(self.passphrase.isEmpty)
                 }
             case .text:
-                /// We do not know at this point who the sender of the message is. We need to go through our contacts and try finding the right owner.
-                if let result = try? self.contactManager.decrypt(text: self.fileContents.content) {
+                let message = String(data: self.imported.file.content ?? Data(), encoding: .utf8)
+                
+                if let message {
                     VStack(spacing: 20) {
-                        Contact.Info(identifier: result.ownerID)
+                        Contact.Info(identifier: self.imported.owner)
                         
-                        Text(result.plaintext)
+                        Text(message)
                     }
                 } else {
                     Text("This message is not meant for you.")
+                        .task {
+                            debugPrint("Owner: \(self.imported.owner)")
+                        }
                 }
             case .file(let metadata):
-                if let result = try? self.contactManager.decrypt(payload: self.fileContents.content, metadata: metadata) {
+                let filename = [metadata.name, metadata.extension].compactMap { $0 }.joined(separator: ".")
+                
+                if let fileContents = self.imported.file.content {
                     VStack(spacing: 20) {
-                        Contact.Info(identifier: result.ownerID)
+                        Contact.Info(identifier: self.imported.owner)
                      
                         HStack {
                             Text("Received File")
                                 .bold()
                             
-                            Text(result.filename)
+                            Text(filename)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         
-                        ShareLink(item: FileTransferable(data: result.contents, fileName: result.filename), preview: SharePreview(Text(result.filename), image: Image(systemName: "doc.fill"))) {
+                        ShareLink(item: FileTransferable(data: fileContents, fileName: filename), preview: SharePreview(Text(filename), image: Image(systemName: "doc.fill"))) {
                             Label("Export File", systemImage: "square.and.arrow.up")
                         }
                     }
-                } else {
-                    EmptyView()
                 }
             case .link:
                 EmptyView()
@@ -87,6 +91,6 @@ struct Import: View {
 }
 
 #Preview {
-    Import(fileContents: File(content: Data(), format: .contacts))
+    Import(imported: ImportedFile(file: File(content: Data(), format: .contacts), owner: UUID().uuidString))
         .environment(ContactManager.preview)
 }
