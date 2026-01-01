@@ -110,11 +110,6 @@ extension Contact {
                 .scrollDismissesKeyboard(.interactively)
                 
                 VStack {
-                    Button("Revoke Key", role: .destructive) {
-                        try? self.contactManager?.reset(identity: self.identifier)
-                    }
-                    .prominentButtonStyle()
-                    
                     HStack(alignment: .firstTextBaseline) {
                         Button {
                             self.displayingInfo.toggle()
