@@ -80,63 +80,61 @@ extension Contact {
         @State private var displayingInfo: Bool = false
         
         var body: some View {
-            ScrollView {
-                VStack(spacing: 20) {
-                    Contact.Info(identifier: self.identifier)
-                    
-                    if self.needsExchange {
-                        KeyExchange(identifier: self.identifier)
+            VStack {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        Contact.Info(identifier: self.identifier)
                         
-                        Spacer()
-                    } else {
-                        Encrypt(identifier: self.identifier)
-                        
-                        Spacer()
-                        
-                        VStack {
-                            Button("Revoke Key", role: .destructive) {
-                                try? self.contactManager?.reset(identity: self.identifier)
-                            }
-                            .prominentButtonStyle()
-                            
-                            HStack(alignment: .firstTextBaseline) {
-                                Button {
-                                    self.displayingInfo.toggle()
-                                } label: {
-                                    Image(systemName: "info.bubble")
-                                }
-                                
-                                Text("Data we encrypt here is only visible to you and this contact.")
-                                    .font(.footnote)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .padding()
-                            
-                            if self.displayingInfo {
-                                Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
-                                    .font(.caption)
-                                    .padding()
+                        if self.needsExchange {
+                            KeyExchange(identifier: self.identifier)
+                        } else {
+                            Encrypt(identifier: self.identifier)
+                        }
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                self.editing = true
+                            } label: {
+                                Text("Edit")
                             }
                         }
                     }
+                    .sheet(isPresented: self.$editing) {
+                        
+                    } content: {
+                        Contact.Form(mode: .edit(identifier: self.identifier))
+                    }
                 }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+                
+                VStack {
+                    Button("Revoke Key", role: .destructive) {
+                        try? self.contactManager?.reset(identity: self.identifier)
+                    }
+                    .prominentButtonStyle()
+                    
+                    HStack(alignment: .firstTextBaseline) {
                         Button {
-                            self.editing = true
+                            self.displayingInfo.toggle()
                         } label: {
-                            Text("Edit")
+                            Image(systemName: "info.bubble")
                         }
+                        
+                        Text("Data we encrypt here is only visible to you and this contact.")
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
                     }
-                }
-                .sheet(isPresented: self.$editing) {
+                    .padding()
                     
-                } content: {
-                    Contact.Form(mode: .edit(identifier: self.identifier))
+                    if self.displayingInfo {
+                        Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
+                            .font(.caption)
+                            .padding()
+                    }
                 }
             }
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
         }
     }
 }

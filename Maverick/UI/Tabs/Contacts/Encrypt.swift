@@ -38,7 +38,7 @@ struct Encrypt: View {
     }
     
     var body: some View {
-        VStack {
+        VStack(spacing: 20) {
             Picker("What would you like to encrypt?", selection: self.$mode) {
                 Text("Message")
                     .tag(Mode.message)
@@ -56,6 +56,7 @@ struct Encrypt: View {
                     .padding(.top)
             }
         }
+        .padding(.horizontal)
     }
     
     struct Message: View {
@@ -66,11 +67,10 @@ struct Encrypt: View {
         
         var body: some View {
             VStack {
-                TextEditor(text: self.$textToEncrypt)
-                    .foregroundStyle(.secondary)
-                    .frame(height: 200)
-                    .border(Color.gray, width: 1)
+                TextField("Message to Encrypt", text: self.$textToEncrypt, axis: .vertical)
+                    .lineLimit(1...6)
                     .padding()
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 
                 if self.textToEncrypt.isEmpty == false, let payload = self.textToEncrypt.data(using: .utf8) {
                     HStack(alignment: .lastTextBaseline, spacing: 20) {
