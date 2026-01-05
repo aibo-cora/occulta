@@ -141,7 +141,7 @@ struct MaverickApp: App {
                 Import(imported: data)
             }
             .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
-                
+                Import.Contacts(encryptedFile: encryptedContactsFile)
             }
         }
         .modelContainer(self.sharedModelContainer)

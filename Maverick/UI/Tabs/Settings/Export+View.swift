@@ -105,8 +105,6 @@ struct Export: View {
                                 .foregroundStyle(Color.accentColor)
                             }
                             .padding(.bottom)
-                            
-                            Divider()
                         }
                     } header: {
                         Text("Encryption Passphrase")

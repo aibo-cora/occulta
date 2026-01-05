@@ -9,7 +9,11 @@ import Foundation
 import SwiftUI
 internal import UniformTypeIdentifiers
 
-struct ImportedFile: Identifiable {
+struct ImportedFile: Identifiable, Equatable {
+    static func == (lhs: ImportedFile, rhs: ImportedFile) -> Bool {
+        lhs.id == rhs.id
+    }
+    
     var id: UUID = UUID()
     
     let file: File

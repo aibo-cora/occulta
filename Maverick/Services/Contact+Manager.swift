@@ -177,6 +177,12 @@ class ContactManager {
         try self.modelContext.save()
     }
     
+    func save(contacts: [Contact.Draft]) throws {
+        for contact in contacts {
+            try self.save(contact: contact)
+        }
+    }
+    
     /// Save a new custom contact or update an existing contact.
     /// - Parameter contact: Custom contact. Thread safe.
     ///
@@ -286,6 +292,8 @@ class ContactManager {
             existing.namePrefix = encryptedNamePrefix
             existing.nameSuffix = encryptedNameSuffix
             existing.note = encryptedNote
+            
+            debugPrint("Updated existing contact")
         } else {
             let newContact = Contact.Profile(
                 identifier: encryptedIdentifier,
@@ -768,8 +776,8 @@ extension ContactManager {
         
         return encryptedContacts
     }
-    
-    func `import`(data: Data?, using passphrase: String) throws {
+
+    func decrypt(data: Data?, using passphrase: String) throws -> Data {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
         
         guard
@@ -784,12 +792,7 @@ extension ContactManager {
             throw ContactManager.Errors.decryptionFailed
         }
         
-        let decryptedContacts = try JSONDecoder().decode([Contact.Draft].self, from: encodedContacts)
-        
-        /// Delete current contacts.
-        try self.deleteAllContacts()
-        /// Store imported contacts.
-        decryptedContacts.forEach { try? self.save(contact: $0) }
+        return encodedContacts
     }
     
     /// Find the rightful owner of the message, the originator, and decrypt it using the right key.
