@@ -27,7 +27,7 @@ struct File: Identifiable, Codable {
     let content: Data?
     let format: Format?
     
-    var date: String?
+    var date: Date?
     
     struct Metadata: Codable {
         var name: String?

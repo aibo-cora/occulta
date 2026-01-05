@@ -268,8 +268,7 @@ struct Encrypt: View {
         }
         
         private func encrypt(data: Data, name: String, fileExtension: String) throws -> EncryptedFile {
-            let timeInterval = String(Date.timeIntervalSinceReferenceDate)
-            let fileContents = Maverick.File(content: data, format: .file(Maverick.File.Metadata(name: name, extension: fileExtension)), date: timeInterval)
+            let fileContents = Maverick.File(content: data, format: .file(Maverick.File.Metadata(name: name, extension: fileExtension)), date: .now)
             
             let encoded = try JSONEncoder().encode(fileContents)
             let encrypted = try self.contactManager?.encrypt(data: encoded, for: self.identifier) ?? Data()
