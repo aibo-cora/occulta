@@ -254,6 +254,10 @@ struct Import: View {
         return formatter
     }
     
+    @State private var isContactListExpanded: Bool = true
+    @State private var isMessageListExpanded: Bool = true
+    @State private var isDocumentListExpanded: Bool = true
+    
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -288,15 +292,30 @@ struct Import: View {
                         
                         Text("This basket was created on:")
                         Text(date)
+                        
                         Divider()
-
                     }
                     
-                    DisplayImportedContactList(files: filesContainingContacts)
-                    
-                    DisplayImportedDocumentList(files: filesContainingDocuments)
-                    
-                    DisplayImportedMessageList(files: filesContainingMessages)
+                    Group {
+                        if filesContainingContacts.isEmpty == false {
+                            DisclosureGroup("Contacts", isExpanded: self.$isContactListExpanded) {
+                                DisplayImportedContactList(files: filesContainingContacts)
+                            }
+                        }
+                        
+                        if filesContainingDocuments.isEmpty == false {
+                            DisclosureGroup("Documents", isExpanded: self.$isDocumentListExpanded) {
+                                DisplayImportedDocumentList(files: filesContainingDocuments)
+                            }
+                        }
+                        
+                        if filesContainingMessages.isEmpty == false {
+                            DisclosureGroup("Messages", isExpanded: self.$isMessageListExpanded) {
+                                DisplayImportedMessageList(files: filesContainingMessages)
+                            }
+                        }
+                    }
+                    .padding()
                 }
             }
             .scrollIndicators(.hidden)
@@ -317,7 +336,7 @@ struct Import: View {
     ]
     let encoded = try? JSONEncoder().encode(contacts)
     let file = File(content: encoded, format: .contacts)
-    let messageFile = File(content: "I will think about it tomorrow, Rhett".data(using: .utf8), format: .text)
+    let messageFile = File(content: "I will think about it tomorrow, Rhett. There is nothing more important that this. ".data(using: .utf8), format: .text)
     let basket = Basket(files: [file, messageFile])
     
     Import(imported: OwnedBasket(basket: basket, owner: ""))
