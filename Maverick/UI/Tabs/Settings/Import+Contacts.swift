@@ -15,15 +15,14 @@ extension Import {
         let encryptedFile: EncryptedFile
         
         @State private var passphrase: String = ""
-        @State private var imported: ImportedFile?
+        @State private var imported: OwnedBasket?
         @State private var displayingErrorDecryptingFile: Bool = false
         
         var body: some View {
             VStack {
                 if let imported {
-                    SelectContacts(imported: imported)
+                    Import.DisplayImportedContactList(files: imported.basket.files)
                         .transition(.move(edge: .bottom))
-                        .animation(.easeInOut(duration: 0.5), value: imported)
                 } else {
                     VStack(spacing: 20) {
                         Text("Enter the passphrase that was used to encrypt this file")
@@ -34,8 +33,13 @@ extension Import {
                         
                         Button {
                             withAnimation {
-                                if let decrypted = try? self.contactManager.decrypt(data: self.encryptedFile.data, using: self.passphrase) {
-                                    self.imported = ImportedFile(file: File(content: decrypted, format: .contacts), owner: "")
+                                if let decrypted = try? self.contactManager.decrypt(data: self.encryptedFile.content, using: self.passphrase) {
+                                    let file = File(content: decrypted, format: .contacts)
+                                    let basket = OwnedBasket(basket: Basket(files: [file]), owner: "")
+                                    
+                                    self.imported = basket
+                                } else {
+                                    self.displayingErrorDecryptingFile = true
                                 }
                             }
                         } label: {
@@ -51,6 +55,7 @@ extension Import {
                     }
                     .padding()
                     .transition(.asymmetric(insertion: .move(edge: .bottom), removal: .move(edge: .top)))
+                    .animation(.easeInOut(duration: 1.0), value: self.imported)
                 }
             }
         }
@@ -58,6 +63,6 @@ extension Import {
 }
 
 #Preview {
-    Import.Contacts(encryptedFile: EncryptedFile(id: UUID(), data: Data()))
+    Import.Contacts(encryptedFile: EncryptedFile(id: UUID(), content: Data()))
         .environment(ContactManager.preview)
 }

@@ -69,7 +69,7 @@ struct MaverickApp: App {
         }
     }
     /// Container with plaintext message or file.
-    @State private var openedFileContents: ImportedFile?
+    @State private var openedFileContents: OwnedBasket?
     /// Encrypted contacts database.
     @State private var openedEncryptedFileContents: EncryptedFile?
 
@@ -115,8 +115,8 @@ struct MaverickApp: App {
                     do {
                         let data = try Data(contentsOf: url)
                         let decrypted = try self.contactManager.decrypt(data: data)
-                        let file = try JSONDecoder().decode(Maverick.File.self, from: decrypted.plaintext)
-                        let importedFile = ImportedFile(file: file, owner: decrypted.ownerID)
+                        let basket = try JSONDecoder().decode(OwnedBasket.self, from: decrypted.plaintext)
+                        let importedFile = basket
                         
                         self.openedFileContents = importedFile
                     } catch ContactManager.Errors.messageHasNoData {
@@ -125,7 +125,7 @@ struct MaverickApp: App {
                         /// This file contains contacts or we don't have the owner's public key to decrypt the file of the file is corrupted.
                         let data = (try? Data(contentsOf: url)) ?? Data()
                         
-                        self.openedEncryptedFileContents = EncryptedFile(data: data)
+                        self.openedEncryptedFileContents = EncryptedFile(content: data)
                         
                         debugPrint("Could not find this file's owner's public key, it must contain contacts or is corrupted.")
                     } catch {

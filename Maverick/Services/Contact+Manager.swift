@@ -765,11 +765,12 @@ extension ContactManager {
         let encodedContacts = try JSONEncoder().encode(decryptedMutableContacts)
         
         let fileContents = File(content: encodedContacts, format: .contacts)
+        let basket = Basket(files: [fileContents])
         
-        let encodedFileContents = try JSONEncoder().encode(fileContents)
+        let encodedBasketContents = try JSONEncoder().encode(basket)
         
         guard
-            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedFileContents, using: passphrase)
+            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedBasketContents, using: passphrase)
         else {
             throw Errors.encryptionFailed
         }
