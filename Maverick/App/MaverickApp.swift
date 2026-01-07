@@ -115,10 +115,9 @@ struct MaverickApp: App {
                     do {
                         let data = try Data(contentsOf: url)
                         let decrypted = try self.contactManager.decrypt(data: data)
-                        let basket = try JSONDecoder().decode(OwnedBasket.self, from: decrypted.plaintext)
-                        let importedFile = basket
+                        let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
                         
-                        self.openedFileContents = importedFile
+                        self.openedFileContents = OwnedBasket(basket: basket, owner: decrypted.ownerID)
                     } catch ContactManager.Errors.messageHasNoData {
                         debugPrint("Error reading data, no data.")
                     } catch ContactManager.Errors.noPublicKeyToEncryptWith {
