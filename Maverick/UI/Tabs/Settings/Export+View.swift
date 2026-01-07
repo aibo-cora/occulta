@@ -123,7 +123,7 @@ struct Export: View {
     
     private struct Options: View {
         @State private var useCloud = false
-        @State private var useFile = false
+        @State private var useFile = true
         
         @Environment(ContactManager.self) private var contactManager: ContactManager
         

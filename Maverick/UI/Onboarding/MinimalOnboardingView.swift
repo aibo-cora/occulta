@@ -99,7 +99,7 @@ struct OnboardingPage1: View {
                     Image(systemName: "arrow.right.circle")
                         .font(.title3)
                         .foregroundStyle(Color.accentColor)
-                    Text("Let me show you how to become their only owner.")
+                    Text("Let's see you how to become their only owner.")
                         .padding(.top, 20)
                         .font(.title3)
                         .multilineTextAlignment(.center)
@@ -219,7 +219,7 @@ struct OnboardingPage2: View {
 struct OnboardingPage3: View {
     let moments = [
         ("paperplane.fill", "Send encrypted messages and files any way you want"),
-        ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
+        // ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
         ("clock.fill", "Still works in 2045, agnostic to delivery method"),
         ("arrow.down.doc.fill", "30-second restore. Every contact intact and verified"),
     ]
