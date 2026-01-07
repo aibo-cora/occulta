@@ -125,11 +125,23 @@ struct BusinessCardContactsView: View {
     /// Results from our existing contacts list
     var filteredContacts: [Contact.Profile] {
         if self.searchText.isEmpty {
-            self.contacts
+            self.contacts.sorted {
+                if $0.familyName.decrypt().isEmpty == false || $1.familyName.decrypt().isEmpty == false {
+                    return $0.familyName.decrypt() < $1.familyName.decrypt()
+                } else {
+                    return $0.givenName.decrypt() < $1.givenName.decrypt()
+                }
+            }
         } else {
             self.contacts.filter {
                 $0.givenName.decrypt().localizedStandardContains(self.searchText)
                 || $0.familyName.decrypt().localizedStandardContains(self.searchText)
+            }.sorted {
+                if $0.familyName.decrypt().isEmpty == false || $1.familyName.decrypt().isEmpty == false {
+                    return $0.familyName.decrypt() < $1.familyName.decrypt()
+                } else {
+                    return $0.givenName.decrypt() < $1.givenName.decrypt()
+                }
             }
         }
     }
@@ -154,7 +166,7 @@ struct BusinessCardContactsView: View {
                 }
                 .padding(.vertical)
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
+            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
             .navigationTitle("Contacts")
             .navigationBarTitleDisplayMode(.large)
             .background(Color(.systemGroupedBackground))
