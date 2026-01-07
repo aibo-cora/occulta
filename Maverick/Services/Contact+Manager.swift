@@ -289,6 +289,8 @@ class ContactManager {
             existing.thumbnailImageData = encryptedThumbnailImageData
             existing.phoneNumbers = encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) }
             existing.emailAddresses = encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) }
+            existing.postalAddresses = encryptedPostalAddresses
+            existing.urlAddresses = encryptedURLs
             existing.namePrefix = encryptedNamePrefix
             existing.nameSuffix = encryptedNameSuffix
             existing.note = encryptedNote
@@ -311,7 +313,9 @@ class ContactManager {
                 imageData: encryptedImageData,
                 thumbnailImageData: encryptedThumbnailImageData,
                 phoneNumbers: encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) },
-                emailAddresses: encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) }
+                emailAddresses: encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) },
+                postalAddresses: encryptedPostalAddresses,
+                urlAddresses: encryptedURLs
             )
             
             self.modelContext.insert(newContact)

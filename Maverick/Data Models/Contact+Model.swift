@@ -199,6 +199,7 @@ extension Contact.Profile {
         convenience init(from labeled: CNLabeledValue<NSString>) {
             let label = labeled.label ?? "other"
             let cleanedLabel = CNLabeledValue<NSString>.localizedString(forLabel: label)
+            
             self.init(label: cleanedLabel, value: labeled.value as String)
         }
     }
