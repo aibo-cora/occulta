@@ -232,7 +232,7 @@ struct BusinessCard: View {
             
             VStack(alignment: .leading, spacing: 8) {
                 Text(self.fullName)
-                    .font(.title2)
+                    .font(.headline)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
                 
