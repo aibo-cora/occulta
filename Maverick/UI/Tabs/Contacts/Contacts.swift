@@ -171,6 +171,8 @@ struct BusinessCard: View {
     /// Stored contacts.
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
+    @Environment(ContactManager.self) private var contactManager: ContactManager
+    
     init(identifier: String) {
         let predicate = #Predicate<Contact.Profile> {
             $0.identifier == identifier
@@ -188,9 +190,13 @@ struct BusinessCard: View {
         return ""
     }
     
+    var thumbnail: Data? {
+        self.contacts.first?.imageData?.decrypt() ?? self.contacts.first?.thumbnailImageData?.decrypt()
+    }
+    
     var body: some View {
         HStack(spacing: 20) {
-            if let data = self.contacts.first?.thumbnailImageData,
+            if let data = self.thumbnail,
                let uiImage = UIImage(data: data) {
                 Image(uiImage: uiImage)
                     .resizable()
