@@ -33,12 +33,15 @@ extension Import {
                         
                         Button {
                             withAnimation {
-                                if let decrypted = try? self.contactManager.decrypt(data: self.encryptedFile.content, using: self.passphrase) {
-                                    let file = File(content: decrypted, format: .contacts)
-                                    let basket = OwnedBasket(basket: Basket(files: [file]), owner: "")
+                                do {
+                                    let decrypted = try self.contactManager.decrypt(data: self.encryptedFile.content, using: self.passphrase)
+                                    let basket = try JSONDecoder().decode(Basket.self, from: decrypted)
+                                    let owned = OwnedBasket(basket: basket, owner: "")
                                     
-                                    self.imported = basket
-                                } else {
+                                    self.imported = owned
+                                } catch {
+                                    debugPrint("Error decrypting basket or decoding = \(error)")
+                                    
                                     self.displayingErrorDecryptingFile = true
                                 }
                             }
