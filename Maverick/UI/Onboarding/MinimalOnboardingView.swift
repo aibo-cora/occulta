@@ -6,9 +6,10 @@ struct ForeverOnboardingView: View {
     
     var body: some View {
         ZStack {
-            Color(.systemBackground).ignoresSafeArea()
+            Color(.systemBackground)
+                .ignoresSafeArea()
             
-            TabView(selection: $pageIndex) {
+            TabView(selection: self.$pageIndex) {
                 // MARK: Screen 1 – The fear
                 OnboardingPage1()
                     .tag(0)
@@ -28,13 +29,13 @@ struct ForeverOnboardingView: View {
                 // MARK: Screen 5 – Invitation
                 OnboardingPage5 {
                     withAnimation {
-                        hasCompleted = true
+                        self.hasCompleted = true
                     }
                 }
                 .tag(4)
             }
             .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-            .animation(.easeInOut, value: pageIndex)
+            .animation(.easeInOut, value: self.pageIndex)
             
             // Custom dots + skip button
             VStack {
@@ -42,12 +43,12 @@ struct ForeverOnboardingView: View {
                     Spacer()
                     Button("Skip") {
                         withAnimation {
-                            hasCompleted = true
+                            self.hasCompleted = true
                         }
                     }
                     .foregroundColor(.secondary)
                     .padding()
-                    .opacity(pageIndex < 4 ? 1 : 0)
+                    .opacity(self.pageIndex < 4 ? 1 : 0)
                 }
                 
                 Spacer()
@@ -56,9 +57,9 @@ struct ForeverOnboardingView: View {
                     ForEach(0..<5) { i in
                         Circle()
                             .frame(width: 8, height: 8)
-                            .foregroundColor(pageIndex == i ? .primary : .secondary)
-                            .scaleEffect(pageIndex == i ? 1.2 : 1)
-                            .animation(.spring(response: 0.3), value: pageIndex)
+                            .foregroundColor(self.pageIndex == i ? .primary : .secondary)
+                            .scaleEffect(self.pageIndex == i ? 1.2 : 1)
+                            .animation(.spring(response: 0.3), value: self.pageIndex)
                     }
                 }
                 .padding(.bottom, 50)
@@ -83,23 +84,18 @@ struct OnboardingPage1: View {
             }
             
             VStack(spacing: 20) {
-                Text("Your contacts are locked inside someone else’s app.")
+                Text("Build a cryptographic address book that only you can access.")
                     .font(.largeTitle)
                     .fontWeight(.semibold)
                     .multilineTextAlignment(.center)
                     .opacity(self.showText ? 1 : 0)
                     .offset(y: self.showText ? 0 : 20)
                 
-                Text("You don’t really own them.")
-                    .font(.title2)
-                    .foregroundColor(.secondary)
-                    .opacity(self.showText ? 1 : 0)
-                
                 HStack(alignment: .firstTextBaseline) {
                     Image(systemName: "arrow.right.circle")
                         .font(.title3)
                         .foregroundStyle(Color.accentColor)
-                    Text("Let's see you how to become their only owner.")
+                    Text("Let's see how to secure your data.")
                         .padding(.top, 20)
                         .font(.title3)
                         .multilineTextAlignment(.center)
@@ -201,7 +197,7 @@ struct OnboardingPage2: View {
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
                 
-                Text("After this moment, nothing can take this person away from you — not time, not companies, not broken phones.")
+                Text("After exchanging keys, nothing can take this person away from you — not time, not companies, not broken phones.")
                     .font(.title3)
                     .multilineTextAlignment(.center)
                     .foregroundColor(.secondary)
@@ -251,7 +247,7 @@ struct OnboardingPage3: View {
     
     var body: some View {
         VStack(spacing: 50) {
-            Text("Main Features")
+            Text("Features")
                 .font(.title)
                 .fontWeight(.bold)
             
@@ -360,15 +356,10 @@ struct OnboardingPage5: View {
             
             VStack(spacing: 16) {
                 Button("I’m ready") {
-                    onComplete()
+                    self.onComplete()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                
-                Button("Show me how it works") {
-                    // open short silent demo
-                }
-                .foregroundColor(.secondary)
             }
             .padding(.bottom, 100)
         }

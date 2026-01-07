@@ -356,7 +356,6 @@ struct Import: View {
     ]
     let encoded = try? JSONEncoder().encode(contacts)
     let file = File(content: encoded, format: .contacts)
-    let basket = Basket(files: [file])
     
     Import.DisplayImportedContactList(files: [file])
         .environment(ContactManager.preview)
