@@ -16,29 +16,40 @@ struct Settings: View {
     
     var body: some View {
         NavigationStack {
-            List {
+            VStack {
                 if self.contacts.isEmpty {
-                    
+                    Text("You will be able to export contacts here once you have added some.")
                 } else {
-                    Section {
+                    VStack(spacing: 20) {
+                        Text("Create a file with your contacts encrypted using a passphrase.")
+                            .multilineTextAlignment(.center)
+                            .font(.headline)
+                        
                         Button {
                             self.showingExportOptions = true
                         } label: {
                             Text("Export Contacts")
-                                .frame(maxWidth: .infinity)
                         }
-                    } header: {
-                        Text("Backup")
-                    } footer: {
-                        Text("Create a file with your contacts encrypted using a passphrase.")
+                        .navigationTitle("Settings")
+                        .sheet(isPresented: self.$showingExportOptions) {
+                            
+                        } content: {
+                            Export()
+                        }
+                        .prominentButtonStyle()
                     }
+                    .padding()
                 }
-            }
-            .navigationTitle("Settings")
-            .sheet(isPresented: self.$showingExportOptions) {
                 
-            } content: {
-                Export()
+                #if DEBUG || targetEnvironment(simulator)
+                Spacer()
+
+                Button("Reset Master Key", role: .destructive) {
+                    
+                }
+                .padding()
+                .prominentButtonStyle()
+                #endif
             }
         }
     }
