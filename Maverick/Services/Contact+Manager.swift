@@ -372,10 +372,16 @@ class ContactManager {
 }
 
 extension ContactManager {
-    /// <#Description#>
+    /// Rotate private key.
+    func rotate() throws {
+        
+    }
+    
+    /// Store public keying material of the contact.
     /// - Parameters:
-    ///   - key: <#key description#>
-    ///   - identifier: <#identifier description#>
+    ///   - key: Keying material.
+    ///   - identifier: Identifier of the owner.
+    ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
     func update(identity key: Data, for identifier: String, method: KeyAcquisitionMethod) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
@@ -389,6 +395,8 @@ extension ContactManager {
         try self.modelContext.save()
     }
     
+    /// Remove all keys of a contact.
+    /// - Parameter identifier: Contact's ID.
     func reset(identity identifier: String) throws {
         guard
             let contact = try self.fetchContact(by: identifier)
