@@ -17,21 +17,33 @@ struct Contacts: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
     @State private var creatingNewContact = false
+    
+    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
 
     var body: some View {
         NavigationStack {
             VStack {
-                BusinessCardContactsView(searchText: self.$searchText)
-                    .navigationTitle("Contacts")
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Button {
-                                self.creatingNewContact = true
-                            } label: {
+                if self.contacts.isEmpty {
+                    VStack(spacing: 20) {
+                        Text("Use **Search** to import contacts you already have or create new ones.")
+                        Button {
+                            self.creatingNewContact = true
+                        } label: {
+                            VStack {
+                                Text("Create")
                                 Image(systemName: "plus")
                             }
                         }
+                        .padding()
+                        .border(Color(.secondarySystemBackground))
                     }
+                    .padding()
+                    
+                    
+                    Spacer()
+                } else {
+                    BusinessCardContactsView(searchText: self.$searchText)
+                }
                 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
                 if #available(iOS 18.0, *) {
@@ -43,6 +55,18 @@ struct Contacts: View {
                     .padding()
                 } else {
                     // Fallback on earlier versions
+                }
+            }
+            .navigationTitle("Contacts")
+            .toolbar {
+                if self.contacts.isEmpty == false {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            self.creatingNewContact = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                    }
                 }
             }
         }
