@@ -17,6 +17,8 @@ struct Export: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager
     @Environment(\.dismiss) private var dismiss
     
+    @State private var isCopied = false
+    
     var body: some View {
         VStack {
             List {
@@ -93,16 +95,34 @@ struct Export: View {
                                 
                                 Spacer()
                                 
-                                Button {
-                                    UIPasteboard.general.string = self.passphrase
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "doc.on.doc")
-                                        Text("Copy")
+                                Group {
+                                    if self.isCopied {
+                                        HStack {
+                                            Image(systemName: "checkmark")
+                                                .foregroundColor(.green)
+                                            Text("Copied!")
+                                        }
+                                    } else {
+                                        Button {
+                                            UIPasteboard.general.string = self.passphrase
+                                            self.isCopied = true
+                                            
+                                            // Reset back to "Copy" after 2 seconds
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                                self.isCopied = false
+                                            }
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "doc.on.doc")
+                                                Text("Copy")
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(Color.accentColor)
                                     }
                                 }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Color.accentColor)
+                                .transition(.opacity)
+                                .animation(.easeInOut(duration: 0.2), value: self.isCopied)
                             }
                             .padding(.bottom)
                         }
