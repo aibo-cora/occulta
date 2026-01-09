@@ -216,8 +216,8 @@ struct OnboardingPage3: View {
     let moments = [
         ("lock.shield.fill", "Confidentiality - Encrypted contact database"),
         // ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
+        ("message.fill", "Encrypt messages, photos, documents, and more. End-to-end encryption."),
         ("hand.raised.fill", "Data Integrity, Source Authenticity - No data loss or theft"),
-        ("arrow.down.doc.fill", "No analytics, no servers - Privacy mindset."),
         ("box.truck.fill", "Use a varierty of delivery methods - SMS, email, and more."),
         ("infinity.circle.fill", "Apps come and go, your contacts stay trusted and secure."),
     ]
