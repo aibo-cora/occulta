@@ -214,10 +214,10 @@ struct OnboardingPage2: View {
 
 struct OnboardingPage3: View {
     let moments = [
-        ("paperplane.fill", "Send encrypted messages and files any way you want."),
+        ("paperplane.fill", "Send encrypted messages, files and contacts any way you want."),
         // ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
         ("message.fill", "Chat apps come and go, your contacts stay with you forever."),
-        ("box.truck.fill", "Variety of delivery methods: SMS, email, chat apps."),
+        ("box.truck.fill", "Use a varierty of delivery methods: SMS, email, chat apps."),
         ("arrow.down.doc.fill", "30-second restore. Every contact intact and verified."),
     ]
     
