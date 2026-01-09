@@ -214,11 +214,12 @@ struct OnboardingPage2: View {
 
 struct OnboardingPage3: View {
     let moments = [
-        ("paperplane.fill", "Send encrypted messages, files and contacts any way you want."),
+        ("lock.shield.fill", "Confidentiality - Encrypted contact database"),
         // ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
-        ("message.fill", "Chat apps come and go, your contacts stay with you forever."),
-        ("box.truck.fill", "Use a varierty of delivery methods: SMS, email, chat apps."),
-        ("arrow.down.doc.fill", "30-second restore. Every contact intact and verified."),
+        ("hand.raised.fill", "Data Integrity, Source Authenticity - No data loss or theft"),
+        ("arrow.down.doc.fill", "No analytics, no servers - Privacy mindset."),
+        ("box.truck.fill", "Use a varierty of delivery methods - SMS, email, and more."),
+        ("infinity.circle.fill", "Apps come and go, your contacts stay trusted and secure."),
     ]
     
     @State private var currentMoment = -1
@@ -231,8 +232,6 @@ struct OnboardingPage3: View {
         var body: some View {
             HStack(spacing: 20) {
                 Image(systemName: self.icon)
-                    .font(.system(size: 44))
-                    .frame(width: 60)
                     .foregroundColor(.accentColor)
                 
                 Text(self.text)
@@ -252,7 +251,7 @@ struct OnboardingPage3: View {
                 .font(.title)
                 .fontWeight(.bold)
             
-            VStack(spacing: 32) {
+            VStack(alignment: .listRowSeparatorLeading, spacing: 32) {
                 ForEach(self.moments.indices, id: \.self) { index in
                     MomentRow(
                         icon: self.moments[index].0,
