@@ -58,6 +58,7 @@ extension Contact {
         let identifier: String
         
         @Environment(ContactManager.self) private var contactManager: ContactManager?
+        @Environment(\.dismiss) private var dismiss
         
         @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
         
@@ -103,7 +104,9 @@ extension Contact {
                     .sheet(isPresented: self.$editing) {
                         
                     } content: {
-                        Contact.Form(mode: .edit(identifier: self.identifier))
+                        Contact.Form(mode: .edit(identifier: self.identifier)) {
+                            self.dismiss()
+                        }
                     }
                 }
                 .scrollIndicators(.hidden)

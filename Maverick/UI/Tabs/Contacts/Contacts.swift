@@ -25,7 +25,8 @@ struct Contacts: View {
             VStack {
                 if self.contacts.isEmpty {
                     VStack(spacing: 20) {
-                        Text("Use **Search** to import contacts you already have or create new ones.")
+                        Text("Use Search to import contacts you already have or create new ones.")
+                            .font(.caption)
                         Button {
                             self.creatingNewContact = true
                         } label: {

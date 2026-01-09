@@ -19,11 +19,13 @@ struct Settings: View {
             VStack {
                 if self.contacts.isEmpty {
                     Text("You will be able to export contacts here once you have added some.")
+                        .font(.caption)
+                        .padding()
                 } else {
                     VStack(spacing: 20) {
                         Text("Create a file with your contacts encrypted using a passphrase.")
                             .multilineTextAlignment(.center)
-                            .font(.headline)
+                            .font(.caption)
                         
                         Button {
                             self.showingExportOptions = true

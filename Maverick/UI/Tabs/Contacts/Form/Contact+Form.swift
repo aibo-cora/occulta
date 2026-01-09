@@ -25,8 +25,9 @@ extension Contact {
         }
         
         let mode: Mode
+        var onDismiss: (() -> Void)?
         
-        init(mode: Mode) {
+        init(mode: Mode, onDismiss: (() -> Void)? = nil) {
             switch mode {
             case .create:
                 self.contact = .init(identifier: UUID().uuidString)
@@ -35,6 +36,7 @@ extension Contact {
             }
             
             self.mode = mode
+            self.onDismiss = onDismiss
         }
         
         @State private var displayingRevokeKeyWarning: Bool = false
@@ -147,6 +149,7 @@ extension Contact {
                                 try? self.contactManager.deleteContact(identifier: identifier)
                                 
                                 self.dismiss()
+                                self.onDismiss?()
                             }
                         } message: {
                             Text("Deleting all information for this contact is irreversible. Are you sure?")
