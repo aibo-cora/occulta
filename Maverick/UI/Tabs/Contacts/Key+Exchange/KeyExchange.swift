@@ -11,7 +11,7 @@ import Combine
 
 struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
-    @State private var displayingInfo: Bool = false
+    @State private var displayingInfo: Bool = true
     
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
@@ -65,8 +65,14 @@ struct KeyExchange: View {
         } else {
             VStack {
                 if self.displayingInfo {
-                    Text("To begin communicating with \(self.name), first, you'll need to exchange **public** keys. To facilitate a secure exchange, bring your phones together after pressing the **Exchange Keys** button on both devices.")
-                        .padding()
+                    VStack {
+                        Text("To begin communicating with **\(self.name)**, first, you'll need to exchange **public** keys.")
+                            
+                        Divider()
+                        
+                        Text("Press **Exchange Keys** to start a secure session.")
+                    }
+                    .padding()
                 }
                 
                 HStack {
