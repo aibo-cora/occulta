@@ -213,9 +213,10 @@ extension Contact.Profile {
         var scopes: [Scopes] = []
         var method: KeyAcquisitionMethod?
         
-        init(material: Data? = nil) {
+        init(material: Data? = nil, method: KeyAcquisitionMethod) {
             // TODO: Determine scopes based on the acquisition method
             self.material = material
+            self.method = method
         }
     }
 }

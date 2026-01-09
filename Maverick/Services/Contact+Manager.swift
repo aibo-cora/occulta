@@ -376,7 +376,7 @@ extension ContactManager {
     /// - Parameters:
     ///   - key: <#key description#>
     ///   - identifier: <#identifier description#>
-    func update(identity key: Data, for identifier: String) throws {
+    func update(identity key: Data, for identifier: String, method: KeyAcquisitionMethod) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
             let encrypted = try self.cryptoManager.encrypt(data: key)
@@ -384,7 +384,7 @@ extension ContactManager {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys.append(Contact.Profile.Key(material: encrypted))
+        contact.contactPublicKeys.append(Contact.Profile.Key(material: encrypted, method: method))
         
         try self.modelContext.save()
     }

@@ -197,7 +197,7 @@ struct OnboardingPage2: View {
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
                 
-                Text("After exchanging keys, nothing can take this person away from you — not time, not companies, not broken phones.")
+                Text("After exchanging keys with someone, nothing can take this person away from you — not time, not companies, not broken phones.")
                     .font(.title3)
                     .multilineTextAlignment(.center)
                     .foregroundColor(.secondary)
@@ -214,10 +214,11 @@ struct OnboardingPage2: View {
 
 struct OnboardingPage3: View {
     let moments = [
-        ("paperplane.fill", "Send encrypted messages and files any way you want"),
+        ("paperplane.fill", "Send encrypted messages and files any way you want."),
         // ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
-        ("clock.fill", "Still works in 2045, agnostic to delivery method"),
-        ("arrow.down.doc.fill", "30-second restore. Every contact intact and verified"),
+        ("message.fill", "Chat apps come and go, your contacts stay with you forever."),
+        ("box.truck.fill", "Variety of delivery methods: SMS, email, chat apps."),
+        ("arrow.down.doc.fill", "30-second restore. Every contact intact and verified."),
     ]
     
     @State private var currentMoment = -1

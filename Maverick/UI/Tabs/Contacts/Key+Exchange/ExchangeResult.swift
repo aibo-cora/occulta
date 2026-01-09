@@ -85,7 +85,7 @@ struct VerifyExchangeWords: View {
                 
                 Button {
                     do {
-                        try self.contactManager?.update(identity: self.keyingMaterial, for: self.identifier)
+                        try self.contactManager?.update(identity: self.keyingMaterial, for: self.identifier, method: .secure)
                         self.dismiss()
                     } catch {
                         
