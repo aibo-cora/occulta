@@ -44,6 +44,8 @@ struct File: Identifiable, Codable, Hashable {
     struct Metadata: Codable, Equatable, Hashable {
         var name: String?
         var `extension`: String?
+        /// Message accompanying the file.
+        var note: String?
     }
 
     enum Format: Codable, Equatable, Hashable {
