@@ -54,8 +54,18 @@ struct Contacts: View {
                     .contactAccessButtonCaption(.phone)
                     .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                     .padding()
+                    .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact to import...")
                 } else {
-                    // Fallback on earlier versions
+                    Button("Pick Contact(s)") {
+                        self.showContactPicker = true
+                    }
+                    .padding()
+                    .sheet(isPresented: $showContactPicker) {
+                        ContactPicker { identifiers in
+                            self.fetchContacts(with: identifiers)
+                            self.showContactPicker = false
+                        }
+                    }
                 }
             }
             .navigationTitle("Contacts")
@@ -70,7 +80,6 @@ struct Contacts: View {
                     }
                 }
             }
-            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact to import...")
         }
         .sheet(isPresented: self.$creatingNewContact, onDismiss: {
             /// On dismiss
@@ -78,6 +87,8 @@ struct Contacts: View {
             Contact.Form(mode: .create)
         })
     }
+    
+    @State private var showContactPicker = false
 
     /// Converts an array of contact identifiers into actual contacts
     func fetchContacts(with identifiers: [String]) {
