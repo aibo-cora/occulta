@@ -70,6 +70,7 @@ struct Contacts: View {
                     }
                 }
             }
+            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact to import...")
         }
         .sheet(isPresented: self.$creatingNewContact, onDismiss: {
             /// On dismiss
@@ -191,8 +192,6 @@ struct BusinessCardContactsView: View {
                 }
                 .padding(.vertical)
             }
-            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
-            .navigationTitle("Contacts")
             .navigationBarTitleDisplayMode(.large)
             .background(Color(.systemGroupedBackground))
             .navigationDestination(for: String.self) { identifier in
