@@ -8,6 +8,30 @@
 import SwiftUI
 import ContactsUI
 import SwiftData
+import TipKit
+
+struct AddMenuTip: Tip {
+    var title: Text {
+        Text("Create something new")
+    }
+    
+    var message: Text? {
+        Text("Tap here to add a new project, file, folder, or more.")
+    }
+    
+    var image: Image? {
+        Image(systemName: "plus.circle.fill")
+            .symbolRenderingMode(.multicolor)
+    }
+    
+    // Optional: show only once (or few times), then never again
+    var options: [Option] {
+        [MaxDisplayCount(1)]
+    }
+    
+    // Optional: more advanced rule (e.g. show only first 5 app launches)
+    // var rules: [Rule] { [ #UserDefaults(key: "launchCount") { $0 < 5 } ] }
+}
 
 struct Contacts: View {
     /// Whatever the user is currently looking for
@@ -19,34 +43,22 @@ struct Contacts: View {
     @State private var creatingNewContact = false
     
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    
+    private let addTip = AddMenuTip()
 
     var body: some View {
         NavigationStack {
             VStack {
                 if self.contacts.isEmpty {
-                    VStack(spacing: 20) {
-                        Text("Use Search to import contacts you already have or create new ones.")
-                            .font(.caption)
-                        Button {
-                            self.creatingNewContact = true
-                        } label: {
-                            VStack {
-                                Text("Create")
-                                Image(systemName: "plus")
-                            }
-                        }
+                    Text("Start adding contacts using the '+' button above.")
                         .padding()
-                        .border(Color(.secondarySystemBackground))
-                    }
-                    .padding()
-                    
-                    
-                    Spacer()
+                        .multilineTextAlignment(.center)
                 } else {
-                    BusinessCardContactsView(searchText: self.$searchText)
+                    
                 }
                 
                 // This will automatically show a contact if one is matched, or a Search button otherwise
+                /*
                 if #available(iOS 18.0, *) {
                     ContactAccessButton(queryString: self.searchText) { identifiers in
                         self.fetchContacts(with: identifiers)
@@ -56,43 +68,50 @@ struct Contacts: View {
                     .padding()
                     .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact to import...")
                 } else {
-                    Button("Pick Contact(s)") {
-                        self.showContactPicker = true
+                    
+                }*/
+            }
+            .navigationTitle("Contacts")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu("", systemImage: "plus") {
+                        Button("Import Contact(s)") {
+                            self.showContactPicker = true
+                        }
+                        
+                        Button {
+                            self.creatingNewContact = true
+                        } label: {
+                            Text("Create New")
+                        }
                     }
-                    .padding()
-                    .sheet(isPresented: $showContactPicker) {
+                    .sheet(isPresented: self.$showContactPicker) {
                         ContactPicker { identifiers in
                             self.fetchContacts(with: identifiers)
                             self.showContactPicker = false
                         }
                     }
-                }
-            }
-            .navigationTitle("Contacts")
-            .toolbar {
-                if self.contacts.isEmpty == false {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            self.creatingNewContact = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                    }
+                    .sheet(isPresented: self.$creatingNewContact, onDismiss: {
+                        /// On dismiss
+                    }, content: {
+                        Contact.Form(mode: .create)
+                    })
                 }
             }
         }
-        .sheet(isPresented: self.$creatingNewContact, onDismiss: {
-            /// On dismiss
-        }, content: {
-            Contact.Form(mode: .create)
-        })
+        .task {
+            try? Tips.configure([
+                .displayFrequency(.immediate),
+                .datastoreLocation(.applicationDefault)
+            ])
+        }
     }
     
     @State private var showContactPicker = false
 
     /// Converts an array of contact identifiers into actual contacts
     func fetchContacts(with identifiers: [String]) {
-        Task {
+        do {
             let fetchRequest = CNContactFetchRequest(keysToFetch: self.contactManager.keys)
             
             fetchRequest.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
@@ -106,6 +125,8 @@ struct Contacts: View {
 
             // Load is completed, so add the new contacts to our existing list
             try self.contactManager.createContacts(from: newContacts)
+        } catch {
+            debugPrint("Could not store contacts: \(error.localizedDescription)", separator: "")
         }
     }
 }

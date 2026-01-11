@@ -531,7 +531,7 @@ extension ContactManager {
             sharedModelContainer.mainContext.insert(testing)
             try sharedModelContainer.mainContext.save()
         } catch {
-            
+            debugPrint("Could not create a test contact, error: \(error)")
         }
         
         return manager
