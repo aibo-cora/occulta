@@ -66,7 +66,7 @@ struct KeyExchange: View {
             VStack {
                 if self.displayingInfo {
                     VStack {
-                        Text("To begin communicating with **\(self.name)**, first, you'll need to exchange **public** keys.")
+                        Text("To begin communicating with **\(self.name)**, first, we need to exchange **public** keys.")
                             
                         Divider()
                         

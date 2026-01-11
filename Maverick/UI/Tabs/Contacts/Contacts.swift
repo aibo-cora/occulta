@@ -50,15 +50,20 @@ struct Contacts: View {
         NavigationStack {
             VStack {
                 if self.contacts.isEmpty {
-                    Text("Start adding contacts using the '+' button above.")
-                        .padding()
-                        .multilineTextAlignment(.center)
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("There are a couple of ways to add contacts:")
+                            .font(.headline)
+                        Text("1. Use the search field to find a contact that is already in your **Contacts** app.")
+                        Text("2. Use the '+' button above to add a new contact.")
+                    }
+                    .padding()
                 } else {
-                    
+                    BusinessCardContactsView(searchText: self.$searchText)
                 }
                 
+                Spacer()
+                
                 // This will automatically show a contact if one is matched, or a Search button otherwise
-                /*
                 if #available(iOS 18.0, *) {
                     ContactAccessButton(queryString: self.searchText) { identifiers in
                         self.fetchContacts(with: identifiers)
@@ -66,30 +71,18 @@ struct Contacts: View {
                     .contactAccessButtonCaption(.phone)
                     .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                     .padding()
-                    .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact to import...")
+                    .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact...")
                 } else {
-                    
-                }*/
+                    EmptyView()
+                }
             }
             .navigationTitle("Contacts")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu("", systemImage: "plus") {
-                        Button("Import Contact(s)") {
-                            self.showContactPicker = true
-                        }
-                        
-                        Button {
-                            self.creatingNewContact = true
-                        } label: {
-                            Text("Create New")
-                        }
-                    }
-                    .sheet(isPresented: self.$showContactPicker) {
-                        ContactPicker { identifiers in
-                            self.fetchContacts(with: identifiers)
-                            self.showContactPicker = false
-                        }
+                    Button {
+                        self.creatingNewContact = true
+                    } label: {
+                        Image(systemName: "plus")
                     }
                     .sheet(isPresented: self.$creatingNewContact, onDismiss: {
                         /// On dismiss
@@ -107,10 +100,39 @@ struct Contacts: View {
         }
     }
     
-    @State private var showContactPicker = false
+    
+    
+    /// iOS 17 and below fallback.
+    ///
+    /// Not liking how it behaves for now.
+    private struct Fallback: View {
+        @State private var showContactPicker = false
+        @State private var creatingNewContact = false
+        
+        var body: some View {
+            
+            Menu("", systemImage: "plus") {
+                Button("Import Contact(s)") {
+                    self.showContactPicker = true
+                }
+                
+                Button {
+                    self.creatingNewContact = true
+                } label: {
+                    Text("Create New")
+                }
+            }
+            .sheet(isPresented: self.$showContactPicker) {
+                ContactPicker { identifiers in
+                    // self.fetchContacts(with: identifiers)
+                    self.showContactPicker = false
+                }
+            }
+        }
+    }
 
     /// Converts an array of contact identifiers into actual contacts
-    func fetchContacts(with identifiers: [String]) {
+    private func fetchContacts(with identifiers: [String]) {
         do {
             let fetchRequest = CNContactFetchRequest(keysToFetch: self.contactManager.keys)
             
