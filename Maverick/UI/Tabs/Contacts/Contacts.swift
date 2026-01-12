@@ -63,7 +63,6 @@ struct Contacts: View {
                 
                 Spacer()
                 
-                // This will automatically show a contact if one is matched, or a Search button otherwise
                 if #available(iOS 18.0, *) {
                     ContactAccessButton(queryString: self.searchText) { identifiers in
                         self.fetchContacts(with: identifiers)
