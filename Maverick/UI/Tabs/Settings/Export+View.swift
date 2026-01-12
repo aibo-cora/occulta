@@ -98,9 +98,10 @@ struct Export: View {
                                 Group {
                                     if self.isCopied {
                                         HStack {
+                                            Image(systemName: "doc.on.doc")
+                                            Text("Copied!")
                                             Image(systemName: "checkmark")
                                                 .foregroundColor(.green)
-                                            Text("Copied!")
                                         }
                                     } else {
                                         Button {

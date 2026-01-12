@@ -313,12 +313,6 @@ struct BusinessCard: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
                 
-                if let job = self.contacts.first?.jobTitle.decrypt(), !job.isEmpty {
-                    Text(job)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                
                 if let company = self.contacts.first?.organizationName.decrypt(), !company.isEmpty {
                     Text(company)
                         .font(.subheadline)
@@ -326,7 +320,7 @@ struct BusinessCard: View {
                         .foregroundColor(.accentColor)
                 }
                 
-                HStack(spacing: 16) {
+                VStack(alignment: .leading) {
                     if let phone = self.contacts.first?.phoneNumbers.first?.value.decrypt() {
                         Label(phone, systemImage: "phone.fill")
                             .font(.caption)
