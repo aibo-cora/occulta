@@ -184,6 +184,7 @@ struct Import: View {
                             } catch {
                                 debugPrint("Could not import contacts: \(error)")
                             }
+                            self.dismiss()
                         } label: {
                             Text("Import")
                         }
