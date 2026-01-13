@@ -389,9 +389,13 @@ extension Contact.Draft {
     struct Key: Codable, Identifiable {
         var id = UUID()
         var material: Data?
+        var acquiredAt: String?
+        var scopes: [Scopes] = []
+        var method: KeyAcquisitionMethod?
         
-        init(material: Data? = nil) {
+        init(material: Data? = nil, method: KeyAcquisitionMethod) {
             self.material = material
+            self.method = method
         }
     }
 }

@@ -320,6 +320,10 @@ class ContactManager {
             
             self.modelContext.insert(newContact)
             
+            for key in contact.contactPublicKeys {
+                try? self.update(key: key, for: newContact.identifier)
+            }
+            
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
         }
     
@@ -382,10 +386,13 @@ extension ContactManager {
     ///   - key: Keying material.
     ///   - identifier: Identifier of the owner.
     ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
-    func update(identity key: Data, for identifier: String, method: KeyAcquisitionMethod) throws {
+    func update(key: Contact.Draft.Key, for identifier: String) throws {
+        let encoded = try JSONEncoder().encode(key.method)
+        
         guard
             let contact = try self.fetchContact(by: identifier),
-            let encrypted = try self.cryptoManager.encrypt(data: key)
+            let encrypted = try self.cryptoManager.encrypt(data: key.material),
+            let method = try self.cryptoManager.encrypt(data: encoded)
         else {
             throw ContactManager.Errors.identityNotSaved
         }
@@ -529,6 +536,7 @@ extension ContactManager {
             let testing = Contact.Profile(identifier: encryptedIdentifier, givenName: encryptedGivenName, familyName: encryptedFamilyName, middleName: encryptedMiddleName, nickname: encryptedNickname, organizationName: encryptedOrganizationName, departmentName: encryptedDepartmentName, jobTitle: encryptedJobTitle)
             
             sharedModelContainer.mainContext.insert(testing)
+            
             try sharedModelContainer.mainContext.save()
         } catch {
             debugPrint("Could not create a test contact, error: \(error)")
@@ -667,7 +675,13 @@ extension ContactManager {
         }
         
         let encryptedPublicKeys = storedContact.contactPublicKeys
-        let plaintextPublicKeys = encryptedPublicKeys.map { Contact.Draft.Key(material: try? self.cryptoManager.decrypt(data: $0.material)) }
+        let plaintextPublicKeys = encryptedPublicKeys.map {
+            let material = try? self.cryptoManager.decrypt(data: $0.material)
+            let method = (try? self.cryptoManager.decrypt(data: $0.method)) ?? Data()
+            let decoded = (try? JSONDecoder().decode(KeyAcquisitionMethod.self, from: method)) ?? .insecure
+            
+            return Contact.Draft.Key(material: material, method: decoded)
+        }
         
         // MARK: - Build final Draft
         

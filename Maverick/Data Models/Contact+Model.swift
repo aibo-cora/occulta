@@ -209,11 +209,11 @@ extension Contact.Profile {
     @Model
     class Key {
         var material: Data?
-        var acquiredAt: String?
-        var scopes: [Scopes] = []
-        var method: KeyAcquisitionMethod?
+        var acquiredAt: Data?
+        var scopes: [Data] = []
+        var method: Data?
         
-        init(material: Data? = nil, method: KeyAcquisitionMethod) {
+        init(material: Data? = nil, method: Data) {
             // TODO: Determine scopes based on the acquisition method
             self.material = material
             self.method = method

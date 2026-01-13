@@ -53,14 +53,14 @@ struct KeyExchange: View {
                 if let identity {
                     print("Received identity: \(identity), displaying result...")
                     
-                    self.receivedIdentityKey = Contact.Draft.Key(material: identity)
+                    self.receivedIdentityKey = Contact.Draft.Key(material: identity, method: .secure)
                     /// We received a key. Stop the exchange.
                 }
             }
             .sheet(item: self.$receivedIdentityKey, onDismiss: {
                 self.exchangeManager.finish()
             }) { key in
-                ExchangeResult(identifier: self.identifier, receivedKeyingMaterial: key.material!)
+                ExchangeResult(identifier: self.identifier, receivedKey: key)
             }
         } else {
             if self.exchangeManager.isExchangePossible {

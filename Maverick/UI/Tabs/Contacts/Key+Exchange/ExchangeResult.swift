@@ -3,7 +3,7 @@ import CryptoKit
 
 struct ExchangeResult: View {
     let identifier: String
-    let receivedKeyingMaterial: Data
+    let receivedKey: Contact.Draft.Key
     
     private let testingData: Data = Data([
         0x9A, 0xF3, 0x4B, 0x2D, 0xE7, 0xC1, 0x88, 0x56,
@@ -35,7 +35,7 @@ struct ExchangeResult: View {
                 }
                 .padding()
                 
-                VerifyExchangeWords(identifier: self.identifier, keyingMaterial: self.receivedKeyingMaterial)
+                VerifyExchangeWords(identifier: self.identifier, key: self.receivedKey)
             }
         }
         .presentationDetents([.large])
@@ -47,7 +47,7 @@ struct VerifyExchangeWords: View {
     let keyManager = Manager.Key()
     
     let identifier: String
-    let keyingMaterial: Data
+    let key: Contact.Draft.Key
     
     @State private var beginAnimation = false
     
@@ -56,7 +56,7 @@ struct VerifyExchangeWords: View {
     
     var body: some View {
         VStack() {
-            let sharedKeyingMaterial = self.keyManager.createSharedSecret(using: self.keyingMaterial)?.withUnsafeBytes { Data($0) }
+            let sharedKeyingMaterial = self.keyManager.createSharedSecret(using: self.key.material)?.withUnsafeBytes { Data($0) }
             let separator = "-"
             let passphrase = self.passphraseGenerator.generate(separator: separator, sharedKey: sharedKeyingMaterial)
             let components = passphrase.components(separatedBy: separator)
@@ -85,7 +85,7 @@ struct VerifyExchangeWords: View {
                 
                 Button {
                     do {
-                        try self.contactManager?.update(identity: self.keyingMaterial, for: self.identifier, method: .secure)
+                        try self.contactManager?.update(key: self.key, for: self.identifier)
                         self.dismiss()
                     } catch {
                         
@@ -106,5 +106,5 @@ struct VerifyExchangeWords: View {
 }
 
 #Preview {
-    ExchangeResult(identifier: UUID().uuidString, receivedKeyingMaterial: Data.randomBytes(32))
+    ExchangeResult(identifier: UUID().uuidString, receivedKey: Contact.Draft.Key(material: Data.randomBytes(32), method: .secure))
 }
