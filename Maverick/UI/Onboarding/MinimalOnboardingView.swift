@@ -214,12 +214,12 @@ struct OnboardingPage2: View {
 
 struct OnboardingPage3: View {
     let moments = [
-        ("lock.shield.fill", "Confidentiality - Encrypted contact database"),
+        ("lock.shield.fill", "Confidentiality - Encrypted database of your contacts"),
         // ("signature", "Sign posts, documents, contracts, and more. Phishing is no longer a threat."),
-        ("message.fill", "Encrypt messages, photos, documents, and more. End-to-end encryption."),
+        ("square.and.arrow.up.fill", "Share encrypted messages, photos, documents, and more."),
         ("hand.raised.fill", "Data Integrity, Source Authenticity - No data loss or theft"),
-        ("box.truck.fill", "Use a varierty of delivery methods - SMS, email, and more."),
-        ("infinity.circle.fill", "Apps come and go, your contacts stay trusted and secure."),
+        ("box.truck.fill", "Use a varierty of delivery methods - SMS, email, and more"),
+        ("infinity.circle.fill", "Apps come and go, your contacts stay trusted and secure"),
     ]
     
     @State private var currentMoment = -1
@@ -232,10 +232,9 @@ struct OnboardingPage3: View {
         var body: some View {
             HStack(spacing: 20) {
                 Image(systemName: self.icon)
-                    .foregroundColor(.accentColor)
+                    .foregroundStyle(Color.accentColor)
                 
                 Text(self.text)
-                    .font(.title3)
                 
                 Spacer()
             }
