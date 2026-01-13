@@ -63,36 +63,42 @@ struct KeyExchange: View {
                 ExchangeResult(identifier: self.identifier, receivedKeyingMaterial: key.material!)
             }
         } else {
-            VStack {
-                if self.displayingInfo {
-                    VStack {
-                        Text("To begin communicating with **\(self.name)**, first, we need to exchange **public** keys.")
+            if self.exchangeManager.isExchangePossible {
+                VStack {
+                    if self.displayingInfo {
+                        VStack {
+                            Text("To begin communicating with **\(self.name)**, first, we need to exchange **public** keys.")
+                                
+                            Divider()
                             
-                        Divider()
-                        
-                        Text("Press **Exchange Keys** to start a secure session.")
-                    }
-                    .padding()
-                }
-                
-                HStack {
-                    Button {
-                        self.exchangeManager.start()
-                    } label: {
-                        HStack {
-                            Text("Exchange Keys")
-                            Image(systemName: "key.horizontal")
+                            Text("Press **Exchange Keys** to start a secure session.")
                         }
+                        .padding()
                     }
-                    .buttonStyle(.borderedProminent)
                     
-                    Button {
-                        self.displayingInfo.toggle()
-                    } label: {
-                        Image(systemName: "info.bubble")
+                    HStack {
+                        Button {
+                            self.exchangeManager.start()
+                        } label: {
+                            HStack {
+                                Text("Exchange Keys")
+                                Image(systemName: "key.horizontal")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        
+                        Button {
+                            self.displayingInfo.toggle()
+                        } label: {
+                            Image(systemName: "info.bubble")
+                        }
+                        .padding(.leading, 20)
                     }
-                    .padding(.leading, 20)
                 }
+            } else {
+                Text("Key exchange is not supported by your device's hardware capabilities. Device must have U1 chip.")
+                    .padding()
+                    .foregroundStyle(.red)
             }
         }
     }

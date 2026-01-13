@@ -33,6 +33,10 @@ class ExchangeManager: NSObject {
     /// Key exchange is in progress?
     var inProgress: Bool = false
     
+    var isExchangePossible: Bool {
+        NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
+    }
+    
     override init() {
         super.init()
         
