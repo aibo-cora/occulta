@@ -127,55 +127,58 @@ struct Import: View {
                 if self.sharedContacts.isEmpty {
                     EmptyView()
                 } else {
-                    VStack(spacing: 20) {
-                        Text("Select the ones you want to import.")
-                            .foregroundStyle(.secondary)
-                        
-                        HStack {
-                            Text("")
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            Text("Select the ones you want to import.")
+                                .foregroundStyle(.secondary)
                             
-                            Spacer()
+                            HStack {
+                                Text("")
+                                
+                                Spacer()
+                                
+                                Group {
+                                    if self.sharedContacts.count == self.selectedContacts.count {
+                                        Button {
+                                            self.selectedContacts.removeAll()
+                                        } label: {
+                                            Text("Reset")
+                                        }
+                                    } else {
+                                        Button {
+                                            self.selectedContacts.append(contentsOf: self.sharedContacts)
+                                        } label: {
+                                            Text("Select All")
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal)
+                            }
                             
-                            Group {
-                                if self.sharedContacts.count == self.selectedContacts.count {
+                            VStack(spacing: 20) {
+                                ForEach(self.sharedContacts, id: \.identifier) { contact in
+                                    let _ = self.selectedContacts.contains(where: { $0.identifier == contact.identifier })
+                                    
                                     Button {
-                                        self.selectedContacts.removeAll()
+                                        self.toggleSelection(contact: contact)
                                     } label: {
-                                        Text("Reset")
+                                        HStack {
+                                            Info(contact: contact)
+                                            
+                                            Spacer()
+                                            
+                                            Checkmark(contact: contact, selectedContacts: self.$selectedContacts)
+                                        }
+                                        .contentShape(Rectangle())
+                                        .padding(10)
                                     }
-                                } else {
-                                    Button {
-                                        self.selectedContacts.append(contentsOf: self.sharedContacts)
-                                    } label: {
-                                        Text("Select All")
-                                    }
+                                    .buttonStyle(.bordered)
                                 }
                             }
                             .padding(.horizontal)
                         }
-                        
-                        VStack(spacing: 20) {
-                            ForEach(self.sharedContacts, id: \.identifier) { contact in
-                                let _ = self.selectedContacts.contains(where: { $0.identifier == contact.identifier })
-                                
-                                Button {
-                                    self.toggleSelection(contact: contact)
-                                } label: {
-                                    HStack {
-                                        Info(contact: contact)
-                                        
-                                        Spacer()
-                                        
-                                        Checkmark(contact: contact, selectedContacts: self.$selectedContacts)
-                                    }
-                                    .contentShape(Rectangle())
-                                    .padding(10)
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
-                        .padding(.horizontal)
                     }
+                    .scrollIndicators(.hidden)
                     
                     if self.sharedContacts.isEmpty == false {
                         Button {

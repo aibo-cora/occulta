@@ -22,7 +22,6 @@ extension Import {
             VStack {
                 if let imported {
                     Import.DisplayImportedContactList(files: imported.basket.files)
-                        .transition(.move(edge: .bottom))
                 } else {
                     VStack(spacing: 20) {
                         Text("Enter the passphrase that was used to encrypt this file")
@@ -57,10 +56,10 @@ extension Import {
                         }
                     }
                     .padding()
-                    .transition(.asymmetric(insertion: .move(edge: .bottom), removal: .move(edge: .top)))
-                    .animation(.easeInOut(duration: 1.0), value: self.imported)
                 }
             }
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 1.0), value: self.imported)
         }
     }
 }
