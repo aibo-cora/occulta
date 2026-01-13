@@ -51,10 +51,13 @@ struct Contacts: View {
             VStack {
                 if self.contacts.isEmpty {
                     VStack(alignment: .leading, spacing: 20) {
-                        Text("There are a couple of ways to add contacts:")
-                            .font(.headline)
-                        Text("1. Use the search field to find a contact that is already in your **Contacts** app.")
-                        Text("2. Use the '+' button above to add a new contact.")
+                        if #available(iOS 18.0, *) {
+                            Text("There are a couple of ways to add contacts:")
+                                .font(.headline)
+                            Text("- Use the search field to find a contact that is already in your **Contacts** app.")
+                        }
+                        
+                        Text("- Use the '+' button above to add a new contact.")
                     }
                     .padding()
                 } else {
