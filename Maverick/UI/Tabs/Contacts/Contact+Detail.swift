@@ -66,6 +66,22 @@ extension Contact {
         var needsExchange: Bool {
             self.contacts.first?.contactPublicKeys.isEmpty ?? true
         }
+        /// Was this contact verified by this device?
+        var verified: Bool {
+            let encryptedOwner = self.contacts.first?.contactPublicKeys.first?.owner
+            let decryptedOwnerHash = try? self.contactManager?.decrypt(data: encryptedOwner, using: self.identifier)
+            let ourIdentity = try? Manager.Key().retrieveIdentity()
+            let ourIdentityHash = ourIdentity?.sha256
+            
+            guard
+                let decryptedOwnerHash, let ourIdentityHash,
+                decryptedOwnerHash.isEmpty == false, ourIdentityHash.isEmpty == false
+            else {
+                return false
+            }
+            
+            return ourIdentityHash == decryptedOwnerHash
+        }
         
         init(identifier: String) {
             self.identifier = identifier
@@ -79,6 +95,7 @@ extension Contact {
         
         @State private var editing: Bool = false
         @State private var displayingInfo: Bool = false
+        @State private var displayingVerificationInfo : Bool = false
         
         var body: some View {
             VStack {
@@ -111,6 +128,29 @@ extension Contact {
                 }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                
+                if self.verified == false && self.needsExchange == false {
+                    VStack {
+                        HStack(alignment: .firstTextBaseline) {
+                            Button {
+                                self.displayingVerificationInfo.toggle()
+                            } label: {
+                                Image(systemName: "info.bubble")
+                            }
+                            
+                            Text("This contact's key is not verified.")
+                                .font(.footnote)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding()
+                        
+                        if self.displayingVerificationInfo {
+                            Text("Not being verified means that this contact was shared with you or transferred from another device. You can encrypt data for the contact, but since we did not do the key exchange on this device, we cannot guarantee who the owner of the key is. In the future, when this contact is in vicinity, revoke this key and do another key exchange to verify.")
+                                .font(.caption)
+                                .padding()
+                        }
+                    }
+                }
                 
                 VStack {
                     HStack(alignment: .firstTextBaseline) {
