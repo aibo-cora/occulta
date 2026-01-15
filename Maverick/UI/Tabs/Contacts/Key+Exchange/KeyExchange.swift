@@ -52,9 +52,10 @@ struct KeyExchange: View {
             .onReceive(self.exchangeManager.receivedIdentity) { identity in
                 if let identity {
                     print("Received identity: \(identity), displaying result...")
+                    /// I am the owner of this key.
+                    let identity = (try? Manager.Key().retrieveIdentity()) ?? Data()
                     
-                    self.receivedIdentityKey = Contact.Draft.Key(material: identity)
-                    /// We received a key. Stop the exchange.
+                    self.receivedIdentityKey = Contact.Draft.Key(material: identity, owner: identity)
                 }
             }
             .sheet(item: self.$receivedIdentityKey, onDismiss: {

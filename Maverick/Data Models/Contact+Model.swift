@@ -210,16 +210,17 @@ extension Contact.Profile {
     class Key {
         var material: Data?
         var acquiredAt: Data?
-        /// Hash of public key belonging to the user who acquired it through exchange.
-        var owner: Data?
+        /// Encrypted hash of public key belonging to the user who acquired it through exchange.
+        var owner: Data
         
         /// List of possible operations.
         var scopes: [Data] {
             []
         }
         
-        init(material: Data? = nil) {
+        init(material: Data? = nil, owner: Data) {
             self.material = material
+            self.owner = owner
         }
     }
 }

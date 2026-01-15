@@ -389,12 +389,13 @@ extension ContactManager {
     func update(key: Contact.Draft.Key, for identifier: String) throws {
         guard
             let contact = try self.fetchContact(by: identifier),
-            let encrypted = try self.cryptoManager.encrypt(data: key.material)
+            let encryptedMaterial = try self.cryptoManager.encrypt(data: key.material),
+            let encryptedOwner = try self.cryptoManager.encrypt(data: key.owner)
         else {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys.append(Contact.Profile.Key(material: encrypted))
+        contact.contactPublicKeys.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner))
         
         try self.modelContext.save()
     }
@@ -672,10 +673,11 @@ extension ContactManager {
         }
         
         let encryptedPublicKeys = storedContact.contactPublicKeys
-        let plaintextPublicKeys = encryptedPublicKeys.map {
+        let plaintextPublicKeys = encryptedPublicKeys.compactMap {
             let material = try? self.cryptoManager.decrypt(data: $0.material)
+            let owner = (try? self.cryptoManager.decrypt(data: $0.owner)) ?? Data()
             
-            return Contact.Draft.Key(material: material)
+            return Contact.Draft.Key(material: material, owner: owner)
         }
         
         // MARK: - Build final Draft

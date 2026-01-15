@@ -391,14 +391,21 @@ extension Contact.Draft {
         var material: Data?
         var acquiredAt: String?
         /// Hash of public key belonging to the user who acquired it through exchange.
-        var owner: Data?
+        var owner: Data
         
         var scopes: [Scopes] {
             []
         }
         
-        init(material: Data? = nil) {
+        init?(material: Data?, owner: Data) {
+            guard
+                owner.isEmpty == false
+            else {
+                return nil
+            }
+            
             self.material = material
+            self.owner = owner.sha256
         }
     }
 }
