@@ -96,7 +96,7 @@ struct KeyExchange: View {
                     }
                 }
             } else {
-                Text("Key exchange is not supported by your device's hardware capabilities. Device must have U1 chip.")
+                Text("Key exchange is not supported by your device's hardware capabilities. Device must have UWB chip.")
                     .padding()
                     .foregroundStyle(.red)
             }
