@@ -387,17 +387,14 @@ extension ContactManager {
     ///   - identifier: Identifier of the owner.
     ///   - method: Acquisition method. Nearby Interaction - secure, or something else.
     func update(key: Contact.Draft.Key, for identifier: String) throws {
-        let encoded = try JSONEncoder().encode(key.method)
-        
         guard
             let contact = try self.fetchContact(by: identifier),
-            let encrypted = try self.cryptoManager.encrypt(data: key.material),
-            let method = try self.cryptoManager.encrypt(data: encoded)
+            let encrypted = try self.cryptoManager.encrypt(data: key.material)
         else {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys.append(Contact.Profile.Key(material: encrypted, method: method))
+        contact.contactPublicKeys.append(Contact.Profile.Key(material: encrypted))
         
         try self.modelContext.save()
     }
@@ -677,10 +674,8 @@ extension ContactManager {
         let encryptedPublicKeys = storedContact.contactPublicKeys
         let plaintextPublicKeys = encryptedPublicKeys.map {
             let material = try? self.cryptoManager.decrypt(data: $0.material)
-            let method = (try? self.cryptoManager.decrypt(data: $0.method)) ?? Data()
-            let decoded = (try? JSONDecoder().decode(KeyAcquisitionMethod.self, from: method)) ?? .insecure
             
-            return Contact.Draft.Key(material: material, method: decoded)
+            return Contact.Draft.Key(material: material)
         }
         
         // MARK: - Build final Draft

@@ -53,7 +53,7 @@ struct KeyExchange: View {
                 if let identity {
                     print("Received identity: \(identity), displaying result...")
                     
-                    self.receivedIdentityKey = Contact.Draft.Key(material: identity, method: .secure)
+                    self.receivedIdentityKey = Contact.Draft.Key(material: identity)
                     /// We received a key. Stop the exchange.
                 }
             }

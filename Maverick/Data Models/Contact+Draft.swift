@@ -390,12 +390,13 @@ extension Contact.Draft {
         var id = UUID()
         var material: Data?
         var acquiredAt: String?
-        var scopes: [Scopes] = []
-        var method: KeyAcquisitionMethod?
         
-        init(material: Data? = nil, method: KeyAcquisitionMethod) {
+        var scopes: [Scopes] {
+            []
+        }
+        
+        init(material: Data? = nil) {
             self.material = material
-            self.method = method
         }
     }
 }

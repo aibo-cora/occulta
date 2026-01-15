@@ -210,13 +210,14 @@ extension Contact.Profile {
     class Key {
         var material: Data?
         var acquiredAt: Data?
-        var scopes: [Data] = []
-        var method: Data?
         
-        init(material: Data? = nil, method: Data) {
-            // TODO: Determine scopes based on the acquisition method
+        /// List of possible operations.
+        var scopes: [Data] {
+            []
+        }
+        
+        init(material: Data? = nil) {
             self.material = material
-            self.method = method
         }
     }
 }
@@ -227,8 +228,4 @@ enum Scopes: Codable {
     /// Key was acquired through `Nearby Interaction` and we have full confidence who it belongs to.
     case sign
     case none
-}
-
-enum KeyAcquisitionMethod: Codable {
-    case secure, insecure
 }

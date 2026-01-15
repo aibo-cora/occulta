@@ -106,5 +106,5 @@ struct VerifyExchangeWords: View {
 }
 
 #Preview {
-    ExchangeResult(identifier: UUID().uuidString, receivedKey: Contact.Draft.Key(material: Data.randomBytes(32), method: .secure))
+    ExchangeResult(identifier: UUID().uuidString, receivedKey: Contact.Draft.Key(material: Data.randomBytes(32)))
 }
