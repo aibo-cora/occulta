@@ -69,7 +69,7 @@ extension Contact {
         /// Was this contact verified by this device?
         var verified: Bool {
             let encryptedOwner = self.contacts.first?.contactPublicKeys.first?.owner
-            let decryptedOwnerHash = try? self.contactManager?.decrypt(data: encryptedOwner, using: self.identifier)
+            let decryptedOwnerHash = try? Manager.Crypto().decrypt(data: encryptedOwner)
             let ourIdentity = try? Manager.Key().retrieveIdentity()
             let ourIdentityHash = ourIdentity?.sha256
             
@@ -141,6 +141,7 @@ extension Contact {
                             Text("This contact's key is not verified.")
                                 .font(.footnote)
                                 .multilineTextAlignment(.center)
+                                .foregroundStyle(.yellow)
                         }
                         .padding()
                         
