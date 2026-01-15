@@ -59,6 +59,8 @@ struct KeyExchange: View {
                 }
             }
             .sheet(item: self.$receivedIdentityKey, onDismiss: {
+                /// The session was already invalidated.
+                self.exchangeManager.receivedIdentity.send(nil)
                 self.exchangeManager.finish()
             }) { key in
                 ExchangeResult(identifier: self.identifier, receivedKey: key)

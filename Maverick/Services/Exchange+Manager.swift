@@ -39,8 +39,6 @@ class ExchangeManager: NSObject {
     
     override init() {
         super.init()
-        
-        self.setupMC()
     }
     
     private func setupMC() {
@@ -61,6 +59,8 @@ class ExchangeManager: NSObject {
         /// 1. Create a session and a discovery token.
         self.nearbySession = NISession()
         self.nearbySession?.delegate = self
+        
+        self.setupMC()
         
         self.advertiser?.startAdvertisingPeer()
         self.browser?.startBrowsingForPeers()
