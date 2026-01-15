@@ -86,6 +86,7 @@ struct VerifyExchangeWords: View {
                 Button {
                     do {
                         try self.contactManager?.update(key: self.key, for: self.identifier)
+                        
                         self.dismiss()
                     } catch {
                         
