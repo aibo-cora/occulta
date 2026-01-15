@@ -390,6 +390,8 @@ extension Contact.Draft {
         var id = UUID()
         var material: Data?
         var acquiredAt: String?
+        /// Hash of public key belonging to the user who acquired it through exchange.
+        var owner: Data?
         
         var scopes: [Scopes] {
             []

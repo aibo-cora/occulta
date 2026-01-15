@@ -31,6 +31,8 @@ struct Basket: Identifiable, Codable {
     var files: [File] = []
     /// Creation date.
     var date: Date?
+    /// Owner of this basket. Hash of public key.
+    var owner: Data?
 }
 
 

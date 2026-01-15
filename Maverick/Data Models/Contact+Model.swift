@@ -210,6 +210,8 @@ extension Contact.Profile {
     class Key {
         var material: Data?
         var acquiredAt: Data?
+        /// Hash of public key belonging to the user who acquired it through exchange.
+        var owner: Data?
         
         /// List of possible operations.
         var scopes: [Data] {
