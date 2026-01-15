@@ -146,7 +146,7 @@ extension Contact {
                         .padding()
                         
                         if self.displayingVerificationInfo {
-                            Text("Not being verified means that this contact was shared with you or transferred from another device. You can encrypt data for the contact, but since we did not do the key exchange on this device, we cannot guarantee who the owner of the key is. In the future, when this contact is in vicinity, revoke this key and do another key exchange to verify.")
+                            Text("Not being verified means that this contact was shared with you or transferred from another device. You can encrypt data for the contact, but since we did not do the key exchange on this device, we cannot guarantee who the owner of the key is. In the future, when this contact is in vicinity, revoke this key in the **Edit** mode and do another key exchange to verify identity.")
                                 .font(.caption)
                                 .padding()
                         }
