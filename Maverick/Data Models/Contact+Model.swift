@@ -218,6 +218,8 @@ extension Contact.Profile {
             []
         }
         
+        var expiredOn: Data?
+        
         init(material: Data? = nil, owner: Data) {
             self.material = material
             self.owner = owner

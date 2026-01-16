@@ -35,7 +35,6 @@ struct KeyExchange: View {
     }
     
     @State private var receivedIdentityKey: Contact.Draft.Key?
-    @State var wordsMatch = false
     
     var body: some View {
         if self.exchangeManager.inProgress {

@@ -409,7 +409,10 @@ extension ContactManager {
             throw ContactManager.Errors.contactNotFound
         }
         
-        contact.contactPublicKeys.removeAll()
+        let expiration = String(Date.now.timeIntervalSinceReferenceDate).data(using: .utf8)
+        let encrypted = try self.cryptoManager.encrypt(data: expiration)
+        
+        contact.contactPublicKeys.last?.expiredOn = encrypted
         
         try self.modelContext.save()
     }

@@ -397,6 +397,8 @@ extension Contact.Draft {
             []
         }
         
+        var expiredOn: String?
+        
         init?(material: Data?, owner: Data) {
             guard
                 owner.isEmpty == false

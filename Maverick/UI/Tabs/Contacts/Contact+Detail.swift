@@ -64,11 +64,15 @@ extension Contact {
         
         /// If we do not have a public key from our contact, we need to start an exchange.
         var needsExchange: Bool {
-            self.contacts.first?.contactPublicKeys.isEmpty ?? true
+            let keys = self.contacts.first?.contactPublicKeys
+            let contactHasNoKeys = keys?.isEmpty ?? true
+            let currentKeyRevoked = keys?.last?.expiredOn != nil
+            
+            return contactHasNoKeys || currentKeyRevoked
         }
         /// Was this contact verified by this device?
         var verified: Bool {
-            let encryptedOwner = self.contacts.first?.contactPublicKeys.first?.owner
+            let encryptedOwner = self.contacts.first?.contactPublicKeys.last?.owner
             let decryptedOwnerHash = try? Manager.Crypto().decrypt(data: encryptedOwner)
             let ourIdentity = try? Manager.Key().retrieveIdentity()
             let ourIdentityHash = ourIdentity?.sha256
