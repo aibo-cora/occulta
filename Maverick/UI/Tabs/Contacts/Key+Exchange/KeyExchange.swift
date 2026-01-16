@@ -74,6 +74,22 @@ struct KeyExchange: View {
                                 
                             Divider()
                             
+                            VStack(alignment: .leading, spacing: 20) {
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.yellow)
+                                    Text("Allow **Nearby Interaction** if prompted.")
+                                }
+                                
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.yellow)
+                                    Text("Allow **Finding and Connecting** to devices on local network if prompted.")
+                                }
+                            }
+                            
+                            Divider()
+                            
                             Text("Press **Exchange Keys** to start a secure session.")
                         }
                         .padding()
