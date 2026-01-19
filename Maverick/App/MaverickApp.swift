@@ -125,10 +125,14 @@ struct MaverickApp: App {
                         } catch ContactManager.Errors.messageHasNoData {
                             debugPrint("Error reading data, no data.")
                         } catch ContactManager.Errors.noPublicKeyToEncryptWith {
-                            /// This file contains contacts or we don't have the owner's public key to decrypt the file of the file is corrupted.
-                            let data = (try? Data(contentsOf: url)) ?? Data()
-                            
-                            self.openedEncryptedFileContents = EncryptedFile(content: data)
+                            if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
+                                /// This file contains contacts or we don't have the owner's public key to decrypt the file of the file is corrupted.
+                                let data = (try? Data(contentsOf: url)) ?? Data()
+                                
+                                self.openedEncryptedFileContents = EncryptedFile(content: data)
+                            } else {
+                                debugPrint("Importing a file encrypted with a passphrase is not enabled.")
+                            }
                             
                             debugPrint("Could not find this file's owner's public key, it must contain contacts or is corrupted.")
                         } catch {

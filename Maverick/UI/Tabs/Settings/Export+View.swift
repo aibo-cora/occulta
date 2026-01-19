@@ -64,76 +64,80 @@ struct Export: View {
                         Text("Encrypted file created")
                     }
                 } else {
-                    Section {
-                        VStack(spacing: 20) {
-                            Text("To store a backup, we first need to decrypt all your contacts that are encrypted with your private key. Another key, derived from the passphrase below, will be used to encrypt the backup.")
-                                .font(.footnote)
-                            
-                            Divider()
-                            
-                            HStack {
-                                Text(self.passphrase)
-                                    .font(.custom("Courier", size: 20))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.5)
-                                    .bold()
-                            }
-                            .padding(.top)
-                            
-                            
-                            HStack(spacing: 20) {
-                                Button {
-                                    self.passphrase = self.generator.generate()
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "arrow.clockwise")
-                                        Text("Refresh")
-                                    }
+                    if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
+                        Section {
+                            VStack(spacing: 20) {
+                                Text("To store a backup, we first need to decrypt all your contacts that are encrypted with your private key. Another key, derived from the passphrase below, will be used to encrypt the backup.")
+                                    .font(.footnote)
+                                
+                                Divider()
+                                
+                                HStack {
+                                    Text(self.passphrase)
+                                        .font(.custom("Courier", size: 20))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.5)
+                                        .bold()
                                 }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Color.accentColor)
+                                .padding(.top)
                                 
-                                Spacer()
                                 
-                                Group {
-                                    if self.isCopied {
+                                HStack(spacing: 20) {
+                                    Button {
+                                        self.passphrase = self.generator.generate()
+                                    } label: {
                                         HStack {
-                                            Image(systemName: "doc.on.doc")
-                                            Text("Copied!")
-                                            Image(systemName: "checkmark")
-                                                .foregroundColor(.green)
+                                            Image(systemName: "arrow.clockwise")
+                                            Text("Refresh")
                                         }
-                                    } else {
-                                        Button {
-                                            UIPasteboard.general.string = self.passphrase
-                                            self.isCopied = true
-                                            
-                                            // Reset back to "Copy" after 2 seconds
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                                self.isCopied = false
-                                            }
-                                        } label: {
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Color.accentColor)
+                                    
+                                    Spacer()
+                                    
+                                    Group {
+                                        if self.isCopied {
                                             HStack {
                                                 Image(systemName: "doc.on.doc")
-                                                Text("Copy")
+                                                Text("Copied!")
+                                                Image(systemName: "checkmark")
+                                                    .foregroundColor(.green)
                                             }
+                                        } else {
+                                            Button {
+                                                UIPasteboard.general.string = self.passphrase
+                                                self.isCopied = true
+                                                
+                                                // Reset back to "Copy" after 2 seconds
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                                    self.isCopied = false
+                                                }
+                                            } label: {
+                                                HStack {
+                                                    Image(systemName: "doc.on.doc")
+                                                    Text("Copy")
+                                                }
+                                            }
+                                            .buttonStyle(.plain)
+                                            .foregroundStyle(Color.accentColor)
                                         }
-                                        .buttonStyle(.plain)
-                                        .foregroundStyle(Color.accentColor)
                                     }
+                                    .transition(.opacity)
+                                    .animation(.easeInOut(duration: 0.2), value: self.isCopied)
                                 }
-                                .transition(.opacity)
-                                .animation(.easeInOut(duration: 0.2), value: self.isCopied)
+                                .padding(.bottom)
                             }
-                            .padding(.bottom)
+                        } header: {
+                            Text("Encryption Passphrase")
+                        } footer: {
+                            Text("Remember this passphrase or store it in a Password Manager.")
                         }
-                    } header: {
-                        Text("Encryption Passphrase")
-                    } footer: {
-                        Text("Remember this passphrase or store it in a Password Manager.")
+                        
+                        Options(exportedDocument: self.$exportedDocument, passphrase: self.passphrase)
+                    } else {
+                        
                     }
-                    
-                    Options(exportedDocument: self.$exportedDocument, passphrase: self.passphrase)
                 }
             }
             .task {

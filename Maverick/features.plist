@@ -4,5 +4,7 @@
 <dict>
 	<key>signature</key>
 	<false/>
+	<key>usePassphraseToExportContacts</key>
+	<false/>
 </dict>
 </plist>
