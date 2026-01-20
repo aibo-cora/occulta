@@ -17,41 +17,47 @@ struct Settings: View {
     var body: some View {
         NavigationStack {
             VStack {
-                if self.contacts.isEmpty {
-                    Text("You will be able to export contacts here once you have added some.")
-                        .font(.caption)
-                        .padding()
-                } else {
-                    VStack(spacing: 20) {
-                        Text("Create a file with your contacts encrypted using a passphrase.")
-                            .multilineTextAlignment(.center)
+                if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
+                    if self.contacts.isEmpty {
+                        Text("You will be able to export contacts here once you have added some.")
                             .font(.caption)
-                        
-                        Button {
-                            self.showingExportOptions = true
-                        } label: {
-                            Text("Export Contacts")
-                        }
-                        .navigationTitle("Settings")
-                        .sheet(isPresented: self.$showingExportOptions) {
+                            .padding()
+                    } else {
+                        VStack(spacing: 20) {
+                            Text("Create a file with your contacts encrypted using a passphrase.")
+                                .multilineTextAlignment(.center)
+                                .font(.caption)
                             
-                        } content: {
-                            Export()
+                            Button {
+                                self.showingExportOptions = true
+                            } label: {
+                                Text("Export Contacts")
+                            }
+                            .navigationTitle("Settings")
+                            .sheet(isPresented: self.$showingExportOptions) {
+                                
+                            } content: {
+                                Export()
+                            }
+                            .prominentButtonStyle()
                         }
-                        .prominentButtonStyle()
+                        .padding()
+                    }
+                    
+                    #if DEBUG || targetEnvironment(simulator)
+                    Spacer()
+
+                    Button("Reset Master Key", role: .destructive) {
+                        
                     }
                     .padding()
-                }
-                
-                #if DEBUG || targetEnvironment(simulator)
-                Spacer()
-
-                Button("Reset Master Key", role: .destructive) {
+                    .prominentButtonStyle()
+                    #endif
+                } else {
                     
                 }
-                .padding()
-                .prominentButtonStyle()
-                #endif
+                
+                
             }
         }
     }
