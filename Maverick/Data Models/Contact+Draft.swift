@@ -389,7 +389,8 @@ extension Contact.Draft {
     struct Key: Codable, Identifiable {
         var id = UUID()
         var material: Data?
-        var acquiredAt: String?
+        /// Date when this key was acquired through an exchange.
+        var acquiredAt: String
         /// Hash of public key belonging to the user who acquired it through exchange.
         var owner: Data
         
@@ -399,7 +400,7 @@ extension Contact.Draft {
         
         var expiredOn: String?
         
-        init?(material: Data?, owner: Data) {
+        init?(material: Data?, owner: Data, date: String) {
             guard
                 owner.isEmpty == false
             else {
@@ -408,6 +409,7 @@ extension Contact.Draft {
             
             self.material = material
             self.owner = owner.sha256
+            self.acquiredAt = date
         }
     }
 }

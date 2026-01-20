@@ -390,12 +390,13 @@ extension ContactManager {
         guard
             let contact = try self.fetchContact(by: identifier),
             let encryptedMaterial = try self.cryptoManager.encrypt(data: key.material),
-            let encryptedOwner = try self.cryptoManager.encrypt(data: key.owner)
+            let encryptedOwner = try self.cryptoManager.encrypt(data: key.owner),
+            let encryptedCreationDate = try self.cryptoManager.encrypt(data: key.acquiredAt.data(using: .utf8))
         else {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner))
+        contact.contactPublicKeys.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate))
         
         try self.modelContext.save()
     }
@@ -409,7 +410,7 @@ extension ContactManager {
             throw ContactManager.Errors.contactNotFound
         }
         
-        let expiration = String(Date.now.timeIntervalSinceReferenceDate).data(using: .utf8)
+        let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
         
         contact.contactPublicKeys.last?.expiredOn = encrypted
@@ -679,8 +680,9 @@ extension ContactManager {
         let plaintextPublicKeys = encryptedPublicKeys.compactMap {
             let material = try? self.cryptoManager.decrypt(data: $0.material)
             let owner = (try? self.cryptoManager.decrypt(data: $0.owner)) ?? Data()
+            let date = String(data: (try? self.cryptoManager.decrypt(data: $0.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
             
-            return Contact.Draft.Key(material: material, owner: owner)
+            return Contact.Draft.Key(material: material, owner: owner, date: date)
         }
         
         // MARK: - Build final Draft

@@ -53,8 +53,9 @@ struct KeyExchange: View {
                     print("Received identity: \(received), displaying result...")
                     /// I am the owner of this key.
                     let identity = (try? Manager.Key().retrieveIdentity()) ?? Data()
+                    let date = String(Date.now.timeIntervalSince1970)
                     
-                    self.receivedIdentityKey = Contact.Draft.Key(material: received, owner: identity)
+                    self.receivedIdentityKey = Contact.Draft.Key(material: received, owner: identity, date: date)
                 }
             }
             .sheet(item: self.$receivedIdentityKey, onDismiss: {

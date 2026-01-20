@@ -220,9 +220,10 @@ extension Contact.Profile {
         
         var expiredOn: Data?
         
-        init(material: Data? = nil, owner: Data) {
+        init(material: Data? = nil, owner: Data, date: Data) {
             self.material = material
             self.owner = owner
+            self.acquiredAt = date
         }
     }
 }

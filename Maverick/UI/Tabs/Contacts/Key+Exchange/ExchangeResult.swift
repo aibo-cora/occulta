@@ -107,5 +107,5 @@ struct VerifyExchangeWords: View {
 }
 
 #Preview {
-    ExchangeResult(identifier: UUID().uuidString, receivedKey: Contact.Draft.Key(material: Data.randomBytes(32), owner: Data.randomBytes(32))!)
+    ExchangeResult(identifier: UUID().uuidString, receivedKey: Contact.Draft.Key(material: Data.randomBytes(32), owner: Data.randomBytes(32), date: String(Date.now.timeIntervalSince1970))!)
 }
