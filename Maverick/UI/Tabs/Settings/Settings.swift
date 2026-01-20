@@ -14,6 +14,15 @@ struct Settings: View {
     /// Stored contacts.
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
+    var identityHash: String {
+        let identity = try? Manager.Key().retrieveIdentity()
+        let hash = identity?.sha256.hexEncodedString() ?? "Undefined"
+        
+        return hash
+    }
+    
+    @State private var displayingIdentityInfo: Bool = false
+    
     var body: some View {
         NavigationStack {
             VStack {
@@ -43,21 +52,38 @@ struct Settings: View {
                         }
                         .padding()
                     }
-                    
-                    #if DEBUG || targetEnvironment(simulator)
-                    Spacer()
-
-                    Button("Reset Master Key", role: .destructive) {
-                        
-                    }
-                    .padding()
-                    .prominentButtonStyle()
-                    #endif
-                } else {
-                    
                 }
                 
+                VStack(spacing: 20) {
+                    HStack {
+                        Text("My identity")
+                        
+                        Button {
+                            self.displayingIdentityInfo.toggle()
+                        } label: {
+                            Image(systemName: "info.bubble")
+                        }
+                    }
+                    
+                    if self.displayingIdentityInfo {
+                        Text("This is **SHA256** hash of your public key. It is used to uniquely identify you.")
+                    }
+                    
+                    Text(self.identityHash.uppercased())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
                 
+                #if DEBUG || targetEnvironment(simulator)
+                Spacer()
+
+                Button("Reset Master Key", role: .destructive) {
+                    
+                }
+                .padding()
+                .prominentButtonStyle()
+                #endif
             }
         }
     }
