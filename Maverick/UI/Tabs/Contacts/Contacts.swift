@@ -324,12 +324,12 @@ struct BusinessCard: View {
                 }
                 
                 VStack(alignment: .leading) {
-                    if let phone = self.contacts.first?.phoneNumbers.first?.value.decrypt() {
+                    if let phone = self.contacts.first?.phoneNumbers?.first?.value.decrypt() {
                         Label(phone, systemImage: "phone.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    if let email = self.contacts.first?.emailAddresses.first?.value.decrypt() as? String {
+                    if let email = self.contacts.first?.emailAddresses?.first?.value.decrypt() as? String {
                         Label(email, systemImage: "envelope.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)

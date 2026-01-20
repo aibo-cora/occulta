@@ -396,7 +396,7 @@ extension ContactManager {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate))
+        contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate))
         
         try self.modelContext.save()
     }
@@ -413,7 +413,7 @@ extension ContactManager {
         let expiration = String(Date.now.timeIntervalSince1970).data(using: .utf8)
         let encrypted = try self.cryptoManager.encrypt(data: expiration)
         
-        contact.contactPublicKeys.last?.expiredOn = encrypted
+        contact.contactPublicKeys?.last?.expiredOn = encrypted
         
         try self.modelContext.save()
     }
@@ -438,7 +438,7 @@ extension ContactManager {
         }
         
         guard
-            let encrypted = contact.contactPublicKeys.last?.material,
+            let encrypted = contact.contactPublicKeys?.last?.material,
             let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
@@ -473,7 +473,7 @@ extension ContactManager {
         }
         
         guard
-            let encrypted = contact.contactPublicKeys.last?.material,
+            let encrypted = contact.contactPublicKeys?.last?.material,
             let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
         else {
             throw ContactManager.Errors.contactHasNoKeys
@@ -618,7 +618,7 @@ extension ContactManager {
         
         // MARK: - Decrypt relationships
         
-        let phoneNumbers: [Contact.Draft.PhoneNumber] = try storedContact.phoneNumbers.map { stored in
+        let phoneNumbers: [Contact.Draft.PhoneNumber]? = try storedContact.phoneNumbers?.map { stored in
             let label = try decryptString(stored.label)
             let value = try decryptString(stored.value)
             
@@ -629,7 +629,7 @@ extension ContactManager {
             return phone
         }
         
-        let emailAddresses: [Contact.Draft.EmailAddress] = try storedContact.emailAddresses.map { stored in
+        let emailAddresses: [Contact.Draft.EmailAddress]? = try storedContact.emailAddresses?.map { stored in
             let label = try decryptString(stored.label)
             let value = try decryptString(stored.value)
             
@@ -641,7 +641,7 @@ extension ContactManager {
             return email
         }
         
-        let postalAddresses: [Contact.Draft.PostalAddress] = try storedContact.postalAddresses.map { stored in
+        let postalAddresses: [Contact.Draft.PostalAddress]? = try storedContact.postalAddresses?.map { stored in
             let label       = try decryptString(stored.label)
             let street      = try decryptString(stored.street)
             let city        = try decryptString(stored.city)
@@ -664,7 +664,7 @@ extension ContactManager {
             return address
         }
         
-        let urlAddresses: [Contact.Draft.URLAddress] = try storedContact.urlAddresses.map { stored in
+        let urlAddresses: [Contact.Draft.URLAddress]? = try storedContact.urlAddresses?.map { stored in
             let label = try decryptString(stored.label)
             let value = try decryptString(stored.value)
             
@@ -677,7 +677,7 @@ extension ContactManager {
         }
         
         let encryptedPublicKeys = storedContact.contactPublicKeys
-        let plaintextPublicKeys = encryptedPublicKeys.compactMap {
+        let plaintextPublicKeys = encryptedPublicKeys?.compactMap {
             let material = try? self.cryptoManager.decrypt(data: $0.material)
             let owner = (try? self.cryptoManager.decrypt(data: $0.owner)) ?? Data()
             let date = String(data: (try? self.cryptoManager.decrypt(data: $0.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
@@ -705,75 +705,13 @@ extension ContactManager {
             note: note,
             imageData: imageData,
             thumbnailImageData: thumbnailImageData,
-            phoneNumbers: phoneNumbers,
-            emailAddresses: emailAddresses,
-            postalAddresses: postalAddresses,
-            urlAddresses: urlAddresses,
+            phoneNumbers: phoneNumbers ?? [],
+            emailAddresses: emailAddresses ?? [],
+            postalAddresses: postalAddresses ?? [],
+            urlAddresses: urlAddresses ?? [],
             importedAt: storedContact.importedAt,
-            contactPublicKeys: plaintextPublicKeys
+            contactPublicKeys: plaintextPublicKeys ?? []
         )
-    }
-    /// Returns a Draft with all properties still encrypted (no decryption performed)
-    /// Use this for locked/preview state or when key is unavailable
-    ///
-    /// This will be using to export our contacts.
-    @available(*, unavailable, message: "This function is no longer supported. We cannot export contacts encrypted with out private key, because the destination device does not have a way to decrypt them.")
-    func convertToEncryptedCopy(using identifier: String) throws -> Contact.Draft {
-        guard
-            let storedContact = try self.fetchContact(by: identifier)
-        else {
-            throw Errors.contactNotFound
-        }
-        
-        var encrypted = Contact.Draft(identifier: identifier, status: .encrypted)
-        
-        encrypted.givenName = storedContact.givenName
-        encrypted.familyName = storedContact.familyName
-        encrypted.middleName = storedContact.middleName
-        encrypted.namePrefix = storedContact.namePrefix
-        encrypted.nameSuffix = storedContact.nameSuffix
-        encrypted.nickname = storedContact.nickname
-        
-        encrypted.organizationName = storedContact.organizationName
-        encrypted.departmentName = storedContact.departmentName
-        encrypted.jobTitle = storedContact.jobTitle
-        
-        encrypted.phoneticGivenName = storedContact.phoneticGivenName
-        encrypted.phoneticMiddleName = storedContact.phoneticMiddleName
-        encrypted.phoneticFamilyName = storedContact.phoneticFamilyName
-        
-        encrypted.note = storedContact.note
-        encrypted.birthday = storedContact.birthday
-        
-        encrypted.thumbnailImageData = storedContact.thumbnailImageData
-        encrypted.imageData = storedContact.imageData
-        
-        encrypted.phoneNumbers = storedContact.phoneNumbers.map { stored in
-            Contact.Draft.PhoneNumber(label: stored.label, value: stored.value)
-        }
-        
-        encrypted.emailAddresses = storedContact.emailAddresses.map { stored in
-            Contact.Draft.EmailAddress(label: stored.label, value: stored.value)
-        }
-        
-        encrypted.postalAddresses = storedContact.postalAddresses.map { stored in
-            Contact.Draft.PostalAddress(
-                label: stored.label,
-                street: stored.street,
-                city: stored.city,
-                state: stored.state,
-                postalCode: stored.postalCode,
-                country: .init(code: stored.isoCountryCode)
-            )
-        }
-        
-        encrypted.urlAddresses = storedContact.urlAddresses.map { stored in
-            Contact.Draft.URLAddress(label: stored.label, value: stored.value)
-        }
-        
-        encrypted.importedAt = storedContact.importedAt
-        
-        return encrypted
     }
 }
 

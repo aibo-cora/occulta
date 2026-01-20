@@ -22,11 +22,11 @@ extension Contact {
         }
         /// Phone number of the contact
         var phone: String {
-            self.contacts.first?.phoneNumbers.first?.value.decrypt() ?? "No phone number"
+            self.contacts.first?.phoneNumbers?.first?.value.decrypt() ?? "No phone number"
         }
         /// Email of the contact
         var email: String {
-            self.contacts.first?.emailAddresses.first?.value.decrypt() ?? "No email"
+            self.contacts.first?.emailAddresses?.first?.value.decrypt() ?? "No email"
         }
         
         init(identifier: String) {
@@ -72,7 +72,7 @@ extension Contact {
         }
         /// Was this contact verified by this device?
         var verified: Bool {
-            let encryptedOwner = self.contacts.first?.contactPublicKeys.last?.owner
+            let encryptedOwner = self.contacts.first?.contactPublicKeys?.last?.owner
             let decryptedOwnerHash = try? Manager.Crypto().decrypt(data: encryptedOwner)
             let ourIdentity = try? Manager.Key().retrieveIdentity()
             let ourIdentityHash = ourIdentity?.sha256
