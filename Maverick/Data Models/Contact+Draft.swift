@@ -389,9 +389,27 @@ extension Contact.Draft {
     struct Key: Codable, Identifiable {
         var id = UUID()
         var material: Data?
+        /// Date when this key was acquired through an exchange.
+        var acquiredAt: String
+        /// Hash of public key belonging to the user who acquired it through exchange.
+        var owner: Data
         
-        init(material: Data? = nil) {
+        var scopes: [Scopes] {
+            []
+        }
+        
+        var expiredOn: String?
+        
+        init?(material: Data?, owner: Data, date: String) {
+            guard
+                owner.isEmpty == false
+            else {
+                return nil
+            }
+            
             self.material = material
+            self.owner = owner.sha256
+            self.acquiredAt = date
         }
     }
 }

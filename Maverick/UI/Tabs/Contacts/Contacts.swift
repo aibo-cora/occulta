@@ -8,6 +8,30 @@
 import SwiftUI
 import ContactsUI
 import SwiftData
+import TipKit
+
+struct AddMenuTip: Tip {
+    var title: Text {
+        Text("Create something new")
+    }
+    
+    var message: Text? {
+        Text("Tap here to add a new project, file, folder, or more.")
+    }
+    
+    var image: Image? {
+        Image(systemName: "plus.circle.fill")
+            .symbolRenderingMode(.multicolor)
+    }
+    
+    // Optional: show only once (or few times), then never again
+    var options: [Option] {
+        [MaxDisplayCount(1)]
+    }
+    
+    // Optional: more advanced rule (e.g. show only first 5 app launches)
+    // var rules: [Rule] { [ #UserDefaults(key: "launchCount") { $0 < 5 } ] }
+}
 
 struct Contacts: View {
     /// Whatever the user is currently looking for
@@ -17,23 +41,31 @@ struct Contacts: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager
     
     @State private var creatingNewContact = false
+    
+    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    
+    private let addTip = AddMenuTip()
 
     var body: some View {
         NavigationStack {
             VStack {
-                BusinessCardContactsView(searchText: self.$searchText)
-                    .navigationTitle("Contacts")
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Button {
-                                self.creatingNewContact = true
-                            } label: {
-                                Image(systemName: "plus")
-                            }
+                if self.contacts.isEmpty {
+                    VStack(alignment: .leading, spacing: 20) {
+                        if #available(iOS 18.0, *) {
+                            Text("There are a couple of ways to add contacts:")
+                                .font(.headline)
+                            Text("- Use the search field to find a contact that is already in your **Contacts** app.")
                         }
+                        
+                        Text("- Use the '+' button above to add a new contact.")
                     }
+                    .padding()
+                } else {
+                    BusinessCardContactsView(searchText: self.$searchText)
+                }
                 
-                // This will automatically show a contact if one is matched, or a Search button otherwise
+                Spacer()
+                
                 if #available(iOS 18.0, *) {
                     ContactAccessButton(queryString: self.searchText) { identifiers in
                         self.fetchContacts(with: identifiers)
@@ -41,21 +73,69 @@ struct Contacts: View {
                     .contactAccessButtonCaption(.phone)
                     .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                     .padding()
+                    .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a contact...")
                 } else {
-                    // Fallback on earlier versions
+                    EmptyView()
+                }
+            }
+            .navigationTitle("Contacts")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        self.creatingNewContact = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .sheet(isPresented: self.$creatingNewContact, onDismiss: {
+                        /// On dismiss
+                    }, content: {
+                        Contact.Form(mode: .create)
+                    })
                 }
             }
         }
-        .sheet(isPresented: self.$creatingNewContact, onDismiss: {
-            /// On dismiss
-        }, content: {
-            Contact.Form(mode: .create)
-        })
+        .task {
+            try? Tips.configure([
+                .displayFrequency(.immediate),
+                .datastoreLocation(.applicationDefault)
+            ])
+        }
+    }
+    
+    
+    
+    /// iOS 17 and below fallback.
+    ///
+    /// Not liking how it behaves for now.
+    private struct Fallback: View {
+        @State private var showContactPicker = false
+        @State private var creatingNewContact = false
+        
+        var body: some View {
+            
+            Menu("", systemImage: "plus") {
+                Button("Import Contact(s)") {
+                    self.showContactPicker = true
+                }
+                
+                Button {
+                    self.creatingNewContact = true
+                } label: {
+                    Text("Create New")
+                }
+            }
+            .sheet(isPresented: self.$showContactPicker) {
+                ContactPicker { identifiers in
+                    // self.fetchContacts(with: identifiers)
+                    self.showContactPicker = false
+                }
+            }
+        }
     }
 
     /// Converts an array of contact identifiers into actual contacts
-    func fetchContacts(with identifiers: [String]) {
-        Task {
+    private func fetchContacts(with identifiers: [String]) {
+        do {
             let fetchRequest = CNContactFetchRequest(keysToFetch: self.contactManager.keys)
             
             fetchRequest.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
@@ -69,6 +149,8 @@ struct Contacts: View {
 
             // Load is completed, so add the new contacts to our existing list
             try self.contactManager.createContacts(from: newContacts)
+        } catch {
+            debugPrint("Could not store contacts: \(error.localizedDescription)", separator: "")
         }
     }
 }
@@ -125,11 +207,23 @@ struct BusinessCardContactsView: View {
     /// Results from our existing contacts list
     var filteredContacts: [Contact.Profile] {
         if self.searchText.isEmpty {
-            self.contacts
+            self.contacts.sorted {
+                if $0.familyName.decrypt().isEmpty == false || $1.familyName.decrypt().isEmpty == false {
+                    return $0.familyName.decrypt() < $1.familyName.decrypt()
+                } else {
+                    return $0.givenName.decrypt() < $1.givenName.decrypt()
+                }
+            }
         } else {
             self.contacts.filter {
                 $0.givenName.decrypt().localizedStandardContains(self.searchText)
                 || $0.familyName.decrypt().localizedStandardContains(self.searchText)
+            }.sorted {
+                if $0.familyName.decrypt().isEmpty == false || $1.familyName.decrypt().isEmpty == false {
+                    return $0.familyName.decrypt() < $1.familyName.decrypt()
+                } else {
+                    return $0.givenName.decrypt() < $1.givenName.decrypt()
+                }
             }
         }
     }
@@ -154,8 +248,6 @@ struct BusinessCardContactsView: View {
                 }
                 .padding(.vertical)
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
-            .navigationTitle("Contacts")
             .navigationBarTitleDisplayMode(.large)
             .background(Color(.systemGroupedBackground))
             .navigationDestination(for: String.self) { identifier in
@@ -170,6 +262,8 @@ struct BusinessCardContactsView: View {
 struct BusinessCard: View {
     /// Stored contacts.
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    
+    @Environment(ContactManager.self) private var contactManager: ContactManager
     
     init(identifier: String) {
         let predicate = #Predicate<Contact.Profile> {
@@ -188,9 +282,13 @@ struct BusinessCard: View {
         return ""
     }
     
+    var thumbnail: Data? {
+        self.contacts.first?.imageData?.decrypt() ?? self.contacts.first?.thumbnailImageData?.decrypt()
+    }
+    
     var body: some View {
         HStack(spacing: 20) {
-            if let data = self.contacts.first?.thumbnailImageData,
+            if let data = self.thumbnail,
                let uiImage = UIImage(data: data) {
                 Image(uiImage: uiImage)
                     .resizable()
@@ -214,15 +312,9 @@ struct BusinessCard: View {
             
             VStack(alignment: .leading, spacing: 8) {
                 Text(self.fullName)
-                    .font(.title2)
+                    .font(.headline)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
-                
-                if let job = self.contacts.first?.jobTitle.decrypt(), !job.isEmpty {
-                    Text(job)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
                 
                 if let company = self.contacts.first?.organizationName.decrypt(), !company.isEmpty {
                     Text(company)
@@ -231,13 +323,13 @@ struct BusinessCard: View {
                         .foregroundColor(.accentColor)
                 }
                 
-                HStack(spacing: 16) {
-                    if let phone = self.contacts.first?.phoneNumbers.first?.value.decrypt() {
+                VStack(alignment: .leading) {
+                    if let phone = self.contacts.first?.phoneNumbers?.first?.value.decrypt() {
                         Label(phone, systemImage: "phone.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    if let email = self.contacts.first?.emailAddresses.first?.value.decrypt() as? String {
+                    if let email = self.contacts.first?.emailAddresses?.first?.value.decrypt() as? String {
                         Label(email, systemImage: "envelope.fill")
                             .font(.caption)
                             .foregroundColor(.secondary)

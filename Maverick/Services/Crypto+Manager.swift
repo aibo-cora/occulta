@@ -204,4 +204,10 @@ extension Data {
     func hexEncodedString() -> String {
         return self.map { String(format: "%02x", $0) }.joined()
     }
+    
+    func decrypt() -> Data? {
+        let cryptoOps: CryptoProtocol = Manager.Crypto()
+        
+        return try? cryptoOps.decrypt(data: self)
+    }
 }

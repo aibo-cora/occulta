@@ -33,10 +33,12 @@ class ExchangeManager: NSObject {
     /// Key exchange is in progress?
     var inProgress: Bool = false
     
+    var isExchangePossible: Bool {
+        NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
+    }
+    
     override init() {
         super.init()
-        
-        self.setupMC()
     }
     
     private func setupMC() {
@@ -57,6 +59,8 @@ class ExchangeManager: NSObject {
         /// 1. Create a session and a discovery token.
         self.nearbySession = NISession()
         self.nearbySession?.delegate = self
+        
+        self.setupMC()
         
         self.advertiser?.startAdvertisingPeer()
         self.browser?.startBrowsingForPeers()

@@ -9,7 +9,7 @@ enum Contact { }
 extension Contact {
     @Model
     final class Profile {
-        var identifier: String
+        var identifier: String = ""
         
         var givenName: String = ""
         var familyName: String = ""
@@ -32,18 +32,17 @@ extension Contact {
         var thumbnailImageData: Data?
         var imageData: Data?
         
-        // Relationships
         @Relationship(deleteRule: .cascade)
-        var phoneNumbers: [PhoneNumber] = []
+        var phoneNumbers: [PhoneNumber]? = []
         
         @Relationship(deleteRule: .cascade)
-        var emailAddresses: [EmailAddress] = []
+        var emailAddresses: [EmailAddress]? = []
         
         @Relationship(deleteRule: .cascade)
-        var postalAddresses: [PostalAddress] = []
+        var postalAddresses: [PostalAddress]? = []
         
         @Relationship(deleteRule: .cascade)
-        var urlAddresses: [URLAddress] = []
+        var urlAddresses: [URLAddress]? = []
         
         var importedAt: Date = Date()
         
@@ -51,7 +50,7 @@ extension Contact {
         
         @Relationship(deleteRule: .cascade)
         /// Public key of the trusted contact.
-        var contactPublicKeys: [Key] = []
+        var contactPublicKeys: [Key]? = []
         /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
         /// Identifier of the user that originally acquired this contact's public key.
@@ -123,8 +122,8 @@ extension Contact {
 extension Contact.Profile {
     @Model
     final class PhoneNumber {
-        var label: String
-        var value: String // e.g., "+1 (555) 123-4567"
+        var label: String = ""
+        var value: String = "" // e.g., "+1 (555) 123-4567"
         
         init(label: String = "mobile", value: String = "") {
             self.label = label
@@ -140,8 +139,8 @@ extension Contact.Profile {
 
     @Model
     final class EmailAddress {
-        var label: String
-        var value: String
+        var label: String = ""
+        var value: String = ""
         
         init(label: String = "work", value: String = "") {
             self.label = label
@@ -157,7 +156,7 @@ extension Contact.Profile {
 
     @Model
     final class PostalAddress {
-        var label: String
+        var label: String = ""
         
         var street: String = ""
         var city: String = ""
@@ -188,8 +187,8 @@ extension Contact.Profile {
 
     @Model
     final class URLAddress {
-        var label: String
-        var value: String
+        var label: String = ""
+        var value: String = ""
         
         init(label: String = "homepage", value: String = "") {
             self.label = label
@@ -199,6 +198,7 @@ extension Contact.Profile {
         convenience init(from labeled: CNLabeledValue<NSString>) {
             let label = labeled.label ?? "other"
             let cleanedLabel = CNLabeledValue<NSString>.localizedString(forLabel: label)
+            
             self.init(label: cleanedLabel, value: labeled.value as String)
         }
     }
@@ -208,13 +208,21 @@ extension Contact.Profile {
     @Model
     class Key {
         var material: Data?
-        var acquiredAt: String?
-        var scopes: [Scopes] = []
-        var method: KeyAcquisitionMethod?
+        var acquiredAt: Data?
+        /// Encrypted hash of public key belonging to the user who acquired it through exchange.
+        var owner: Data = Data()
         
-        init(material: Data? = nil) {
-            // TODO: Determine scopes based on the acquisition method
+        /// List of possible operations.
+        var scopes: [Data]? {
+            []
+        }
+        
+        var expiredOn: Data?
+        
+        init(material: Data? = nil, owner: Data, date: Data) {
             self.material = material
+            self.owner = owner
+            self.acquiredAt = date
         }
     }
 }
@@ -225,8 +233,4 @@ enum Scopes: Codable {
     /// Key was acquired through `Nearby Interaction` and we have full confidence who it belongs to.
     case sign
     case none
-}
-
-enum KeyAcquisitionMethod: Codable {
-    case secure, insecure
 }

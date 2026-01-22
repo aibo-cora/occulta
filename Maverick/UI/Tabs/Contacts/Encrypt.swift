@@ -75,11 +75,12 @@ struct Encrypt: View {
                 if self.textToEncrypt.isEmpty == false, let payload = self.textToEncrypt.data(using: .utf8) {
                     HStack(alignment: .lastTextBaseline, spacing: 20) {
                         let fileContents = Maverick.File(content: payload, format: .text)
-                        let encodedFileContents = (try? JSONEncoder().encode(fileContents)) ?? Data()
-                        let encryptedFileContents = try? self.contactManager?.encrypt(data: encodedFileContents, for: self.identifier)
+                        let basket = Basket(files: [fileContents])
+                        let encodedBasketContents = (try? JSONEncoder().encode(basket)) ?? Data()
+                        let encryptedBasketContents = try? self.contactManager?.encrypt(data: encodedBasketContents, for: self.identifier)
                         
-                        if let encryptedFileContents {
-                            ShareLink(item: EncryptedFile(data: encryptedFileContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
+                        if let encryptedBasketContents {
+                            ShareLink(item: EncryptedFile(content: encryptedBasketContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
                                 VStack {
                                     Image(systemName: "square.and.arrow.up")
                                 }
@@ -268,13 +269,13 @@ struct Encrypt: View {
         }
         
         private func encrypt(data: Data, name: String, fileExtension: String) throws -> EncryptedFile {
-            let timeInterval = String(Date.timeIntervalSinceReferenceDate)
-            let fileContents = Maverick.File(content: data, format: .file(Maverick.File.Metadata(name: name, extension: fileExtension)), date: timeInterval)
+            let fileContents = Maverick.File(content: data, format: .file(Maverick.File.Metadata(name: name, extension: fileExtension)))
+            let basket = Basket(files: [fileContents])
             
-            let encoded = try JSONEncoder().encode(fileContents)
+            let encoded = try JSONEncoder().encode(basket)
             let encrypted = try self.contactManager?.encrypt(data: encoded, for: self.identifier) ?? Data()
             
-            let encryptedFile = EncryptedFile(data: encrypted)
+            let encryptedFile = EncryptedFile(content: encrypted)
             
             return encryptedFile
         }
