@@ -57,6 +57,19 @@ struct Settings: View {
                     ProjectInfo()
                 }
             }
+            
+            VStack {
+                Image(systemName: "info.circle")
+                    .font(.largeTitle)
+                    .padding()
+                    
+                Text("App Version: \(Bundle.main.appVersion)")
+                    .font(.headline)
+                
+                Text("Build Number: \(Bundle.main.buildNumber)")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
         }
     }
     
@@ -145,5 +158,15 @@ struct AdaptiveProminentButtonModifier: ViewModifier {
             content
                 .buttonStyle(.borderedProminent)
         }
+    }
+}
+
+extension Bundle {
+    var appVersion: String {
+        return infoDictionary?["CFBundleShortVersionString"] as? String ?? "N/A"
+    }
+    
+    var buildNumber: String {
+        return infoDictionary?["CFBundleVersion"] as? String ?? "N/A"
     }
 }
