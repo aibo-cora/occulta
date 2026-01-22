@@ -10,42 +10,6 @@ import SwiftData
 internal import UniformTypeIdentifiers
 
 struct Settings: View {
-    private struct Export: View {
-        @State private var showingExportOptions = false
-        /// Stored contacts.
-        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-        
-        var body: some View {
-            if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
-                if self.contacts.isEmpty {
-                    Text("You will be able to export contacts here once you have added some.")
-                        .font(.caption)
-                        .padding()
-                } else {
-                    VStack(spacing: 20) {
-                        Text("Create a file with your contacts encrypted using a passphrase.")
-                            .multilineTextAlignment(.center)
-                            .font(.caption)
-                        
-                        Button {
-                            self.showingExportOptions = true
-                        } label: {
-                            Text("Export Contacts")
-                        }
-                        .navigationTitle("Settings")
-                        .sheet(isPresented: self.$showingExportOptions) {
-                            
-                        } content: {
-                            Export()
-                        }
-                        .prominentButtonStyle()
-                    }
-                    .padding()
-                }
-            }
-        }
-    }
-    
     var body: some View {
         NavigationStack {
             List {
@@ -55,6 +19,10 @@ struct Settings: View {
                 
                 NavigationLink("Project Info") {
                     ProjectInfo()
+                }
+                
+                NavigationLink("Manage Contacts") {
+                    ManageContacts()
                 }
             }
             
@@ -105,6 +73,7 @@ struct Settings: View {
                     Text(self.identityHash.uppercased())
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal)
                 }
                 
                 Spacer()
@@ -123,6 +92,26 @@ struct Settings: View {
         }
     }
     
+    private struct ManageContacts: View {
+        @Environment(ContactManager.self) private var contactManager: ContactManager
+        
+        var body: some View {
+            VStack(spacing: 20) {
+                Text("Delete **entire** contact database, private keys and stored messages.")
+                Text("This cannot be undone.").italic()
+                
+                Button("Delete", role: .destructive) {
+                    /// Delete contacts and all metadata.
+                    try? self.contactManager.deleteAllContacts()
+                    /// Delete identity key.
+                    Manager.Key().deleteIdentity()
+                }
+                .prominentButtonStyle()
+            }
+            .padding()
+        }
+    }
+    
     private struct ResetMasterKey: View {
         var body: some View {
             #if DEBUG || targetEnvironment(simulator)
@@ -132,6 +121,42 @@ struct Settings: View {
             .padding()
             .prominentButtonStyle()
             #endif
+        }
+    }
+    
+    private struct Export: View {
+        @State private var showingExportOptions = false
+        /// Stored contacts.
+        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+        
+        var body: some View {
+            if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
+                if self.contacts.isEmpty {
+                    Text("You will be able to export contacts here once you have added some.")
+                        .font(.caption)
+                        .padding()
+                } else {
+                    VStack(spacing: 20) {
+                        Text("Create a file with your contacts encrypted using a passphrase.")
+                            .multilineTextAlignment(.center)
+                            .font(.caption)
+                        
+                        Button {
+                            self.showingExportOptions = true
+                        } label: {
+                            Text("Export Contacts")
+                        }
+                        .navigationTitle("Settings")
+                        .sheet(isPresented: self.$showingExportOptions) {
+                            
+                        } content: {
+                            Export()
+                        }
+                        .prominentButtonStyle()
+                    }
+                    .padding()
+                }
+            }
         }
     }
 }
