@@ -145,6 +145,15 @@ extension Manager {
             }
         }
         
+        /// Removes our private key from the Secure Enclave.
+        ///
+        /// This means that we no longer will be able to encrypt or decrypt using this key.
+        /// - Returns: Result of deletion.
+        @discardableResult
+        func deleteIdentity() -> Bool {
+            self.delete(using: self.tag)
+        }
+        
         /// Create a shared secret using peer's public key and our private key.
         /// - Parameter material: Keying material of a public key of the other party.
         /// - Returns: Shared symmetric key.

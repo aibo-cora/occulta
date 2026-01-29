@@ -369,8 +369,11 @@ class ContactManager {
         let contacts = try self.fetchAllContacts()
         
         for contact in contacts {
+            debugPrint("Deleting contact with identifier: \(contact.identifier)")
+            
             self.modelContext.delete(contact)
         }
+        
         try self.modelContext.save()
     }
 }

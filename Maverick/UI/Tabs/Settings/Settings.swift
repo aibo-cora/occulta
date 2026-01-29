@@ -10,53 +10,53 @@ import SwiftData
 internal import UniformTypeIdentifiers
 
 struct Settings: View {
-    @State private var showingExportOptions = false
-    /// Stored contacts.
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-    
-    var identityHash: String {
-        let identity = try? Manager.Key().retrieveIdentity()
-        let hash = identity?.sha256.hexEncodedString() ?? "Undefined"
-        
-        return hash
-    }
-    
-    @State private var displayingIdentityInfo: Bool = false
-    
     var body: some View {
         NavigationStack {
-            VStack {
-                if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
-                    if self.contacts.isEmpty {
-                        Text("You will be able to export contacts here once you have added some.")
-                            .font(.caption)
-                            .padding()
-                    } else {
-                        VStack(spacing: 20) {
-                            Text("Create a file with your contacts encrypted using a passphrase.")
-                                .multilineTextAlignment(.center)
-                                .font(.caption)
-                            
-                            Button {
-                                self.showingExportOptions = true
-                            } label: {
-                                Text("Export Contacts")
-                            }
-                            .navigationTitle("Settings")
-                            .sheet(isPresented: self.$showingExportOptions) {
-                                
-                            } content: {
-                                Export()
-                            }
-                            .prominentButtonStyle()
-                        }
-                        .padding()
-                    }
+            List {
+                NavigationLink("My Identity") {
+                    MyIdentity()
                 }
                 
+                NavigationLink("Project Info") {
+                    ProjectInfo()
+                }
+                
+                NavigationLink("Manage Contacts") {
+                    ManageContacts()
+                }
+            }
+            
+            VStack {
+                Image(systemName: "info.circle")
+                    .font(.largeTitle)
+                    .padding()
+                    
+                Text("App Version: \(Bundle.main.appVersion)")
+                    .font(.headline)
+                
+                Text("Build Number: \(Bundle.main.buildNumber)")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+    
+    private struct MyIdentity: View {
+        @State private var displayingIdentityInfo: Bool = false
+        
+        var identityHash: String {
+            let identity = try? Manager.Key().retrieveIdentity()
+            let hash = identity?.sha256.hexEncodedString() ?? "Undefined"
+            
+            return hash
+        }
+        
+        var body: some View {
+            VStack {
                 VStack(spacing: 20) {
                     HStack {
                         Text("My identity")
+                            .font(.headline)
                         
                         Button {
                             self.displayingIdentityInfo.toggle()
@@ -67,23 +67,95 @@ struct Settings: View {
                     
                     if self.displayingIdentityInfo {
                         Text("This is **SHA256** hash of your public key. It is used to uniquely identify you.")
+                            .padding(.horizontal)
                     }
                     
                     Text(self.identityHash.uppercased())
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal)
                 }
-                .padding()
                 
-                #if DEBUG || targetEnvironment(simulator)
                 Spacer()
-
-                Button("Reset Master Key", role: .destructive) {
-                    
+                
+                ResetMasterKey()
+            }
+        }
+    }
+    
+    private struct ProjectInfo: View {
+        var body: some View {
+            VStack(spacing: 20) {
+                Text("This application is **open-source**. Check out the code on [GitHub](https://github.com/aibo-cora/maverick). Make suggestions, help us improve and even contribute!")
+            }
+            .padding()
+        }
+    }
+    
+    private struct ManageContacts: View {
+        @Environment(ContactManager.self) private var contactManager: ContactManager
+        
+        var body: some View {
+            VStack(spacing: 20) {
+                Text("Delete **entire** contact database, private keys and stored messages.")
+                Text("This cannot be undone.").italic()
+                
+                Button("Delete", role: .destructive) {
+                    /// Delete contacts and all metadata.
+                    try? self.contactManager.deleteAllContacts()
+                    /// Delete identity key.
+                    Manager.Key().deleteIdentity()
                 }
-                .padding()
                 .prominentButtonStyle()
-                #endif
+            }
+            .padding()
+        }
+    }
+    
+    private struct ResetMasterKey: View {
+        var body: some View {
+            #if DEBUG || targetEnvironment(simulator)
+            Button("Reset Identity Key", role: .destructive) {
+                
+            }
+            .padding()
+            .prominentButtonStyle()
+            #endif
+        }
+    }
+    
+    private struct Export: View {
+        @State private var showingExportOptions = false
+        /// Stored contacts.
+        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+        
+        var body: some View {
+            if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
+                if self.contacts.isEmpty {
+                    Text("You will be able to export contacts here once you have added some.")
+                        .font(.caption)
+                        .padding()
+                } else {
+                    VStack(spacing: 20) {
+                        Text("Create a file with your contacts encrypted using a passphrase.")
+                            .multilineTextAlignment(.center)
+                            .font(.caption)
+                        
+                        Button {
+                            self.showingExportOptions = true
+                        } label: {
+                            Text("Export Contacts")
+                        }
+                        .navigationTitle("Settings")
+                        .sheet(isPresented: self.$showingExportOptions) {
+                            
+                        } content: {
+                            Export()
+                        }
+                        .prominentButtonStyle()
+                    }
+                    .padding()
+                }
             }
         }
     }
@@ -111,5 +183,15 @@ struct AdaptiveProminentButtonModifier: ViewModifier {
             content
                 .buttonStyle(.borderedProminent)
         }
+    }
+}
+
+extension Bundle {
+    var appVersion: String {
+        return infoDictionary?["CFBundleShortVersionString"] as? String ?? "N/A"
+    }
+    
+    var buildNumber: String {
+        return infoDictionary?["CFBundleVersion"] as? String ?? "N/A"
     }
 }
