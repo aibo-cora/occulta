@@ -6,5 +6,7 @@
 	<false/>
 	<key>usePassphraseToExportContacts</key>
 	<false/>
+	<key>allowSynchingBetweenDevices</key>
+	<true/>
 </dict>
 </plist>

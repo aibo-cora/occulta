@@ -30,4 +30,6 @@ enum Feature: String {
     case signature
     /// I don't feel like using a passphrase to move contacts to a new phone is very secure. There are a lot of ways to attack, including social engineering.
     case usePassphraseToExportContacts
+    /// Option to sync between user devices.
+    case allowSynchingBetweenDevices
 }
