@@ -22,6 +22,10 @@
 		<string>_peer-data-ex._tcp</string>
 		<string>_peer-data-ex._udp</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
