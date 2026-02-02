@@ -32,23 +32,23 @@ extension Contact {
         var thumbnailImageData: Data?
         var imageData: Data?
         
-        @Relationship(deleteRule: .cascade)
+        @Relationship(deleteRule: .cascade, inverse: \PhoneNumber.profile)
         var phoneNumbers: [PhoneNumber]? = []
         
-        @Relationship(deleteRule: .cascade)
+        @Relationship(deleteRule: .cascade, inverse: \EmailAddress.profile)
         var emailAddresses: [EmailAddress]? = []
         
-        @Relationship(deleteRule: .cascade)
+        @Relationship(deleteRule: .cascade, inverse: \PostalAddress.profile)
         var postalAddresses: [PostalAddress]? = []
         
-        @Relationship(deleteRule: .cascade)
+        @Relationship(deleteRule: .cascade, inverse: \URLAddress.profile)
         var urlAddresses: [URLAddress]? = []
         
         var importedAt: Date = Date()
         
         // MARK: Application specific metadata - encrypted
         
-        @Relationship(deleteRule: .cascade)
+        @Relationship(deleteRule: .cascade, inverse: \Key.profile)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
         /// Identifier to determine the owner of the public key.
@@ -135,6 +135,8 @@ extension Contact.Profile {
             let cleanedLabel = CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: label)
             self.init(label: cleanedLabel, value: labeled.value.stringValue)
         }
+        
+        var profile: Contact.Profile?
     }
 
     @Model
@@ -152,6 +154,8 @@ extension Contact.Profile {
             let cleanedLabel = CNLabeledValue<NSString>.localizedString(forLabel: label)
             self.init(label: cleanedLabel, value: labeled.value as String)
         }
+        
+        var profile: Contact.Profile?
     }
 
     @Model
@@ -183,6 +187,8 @@ extension Contact.Profile {
             
             self.init(label: label, street: street, city: city, state: state, postalCode: postalCode, country: country, isoCountryCode: isoCountryCode)
         }
+        
+        var profile: Contact.Profile?
     }
 
     @Model
@@ -201,6 +207,8 @@ extension Contact.Profile {
             
             self.init(label: cleanedLabel, value: labeled.value as String)
         }
+        
+        var profile: Contact.Profile?
     }
 }
 
@@ -224,6 +232,8 @@ extension Contact.Profile {
             self.owner = owner
             self.acquiredAt = date
         }
+        
+        var profile: Contact.Profile?
     }
 }
 

@@ -19,7 +19,7 @@ extension Contact {
         /// I am sending this message to you, but you can only decrypt it if you have all the recipients added.
         var recipients: [Data]?
         /// Encrypted payload.
-        var content: Data
+        var content: Data?
         
         /// Create a message for transport.
         /// - Parameters:
