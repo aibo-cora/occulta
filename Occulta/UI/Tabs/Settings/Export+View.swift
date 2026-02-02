@@ -37,7 +37,7 @@ struct Export: View {
                                         Image(systemName: "square.and.arrow.up.fill")
                                     }
                                 }
-                                .fileExporter(isPresented: self.$exporting, document: exportedDocument, contentTypes: [.maverick], defaultFilename: "contacts.maverick", onCompletion: { result in
+                                .fileExporter(isPresented: self.$exporting, document: exportedDocument, contentTypes: [.occ], defaultFilename: "contacts.occ", onCompletion: { result in
                                     switch result {
                                     case .success(let url):
                                         debugPrint("Contacts exported..., url = \(url)")

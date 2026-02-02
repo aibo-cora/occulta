@@ -16,7 +16,7 @@ struct Encrypt: View {
     @State private var textToEncrypt: String = ""
     
     let identifier: String
-    let filename = "message.maverick"
+    let filename = "message.occulta"
     
     private enum Mode: Hashable {
         case message, file

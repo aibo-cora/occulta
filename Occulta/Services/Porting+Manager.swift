@@ -22,7 +22,7 @@ extension Manager {
                 throw Errors.documentsDirectoryCouldNotBeAccessed
             }
             
-            let filename = "export.\(UUID().uuidString).maverick"
+            let filename = "export.\(UUID().uuidString).occulta"
             let fileURL = documentsURL.appendingPathComponent(filename)
             
             debugPrint("Writing file...")

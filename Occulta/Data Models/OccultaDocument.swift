@@ -10,7 +10,7 @@ import SwiftUI
 internal import UniformTypeIdentifiers
 
 struct OccultaDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.maverick] }  // Optional: only needed if you ever want to import
+    static var readableContentTypes: [UTType] { [.occ] }  // Optional: only needed if you ever want to import
     
     var fileURL: URL  // Points to your temporary file with the full data
     
@@ -31,5 +31,5 @@ struct OccultaDocument: FileDocument {
 }
 
 extension UTType {
-    static let maverick = UTType(exportedAs: "com.ghafla.aibo-cora.maverick")
+    static let occ = UTType(exportedAs: "com.ghafla.aibo-cora.occulta")
 }

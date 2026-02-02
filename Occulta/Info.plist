@@ -13,7 +13,7 @@
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.ghafla.aibo-cora.maverick</string>
+				<string>com.ghafla.aibo-cora.occulta</string>
 			</array>
 		</dict>
 	</array>
@@ -35,12 +35,12 @@
 			<key>UTTypeIcons</key>
 			<dict/>
 			<key>UTTypeIdentifier</key>
-			<string>com.ghafla.aibo-cora.maverick</string>
+			<string>com.ghafla.aibo-cora.occulta</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
 				<array>
-					<string>maverick</string>
+					<string>occ</string>
 				</array>
 				<key>public.mime-type</key>
 				<array>

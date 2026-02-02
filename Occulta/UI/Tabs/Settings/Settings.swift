@@ -86,7 +86,7 @@ struct Settings: View {
     private struct ProjectInfo: View {
         var body: some View {
             VStack(spacing: 20) {
-                Text("This application is **open-source**. Check out the code on [GitHub](https://github.com/aibo-cora/maverick). Make suggestions, help us improve and even contribute!")
+                Text("This application is **open-source**. Check out the code on [GitHub](https://github.com/aibo-cora/occulta). Make suggestions, help us improve and even contribute!")
             }
             .padding()
         }

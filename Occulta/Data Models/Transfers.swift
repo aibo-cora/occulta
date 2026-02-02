@@ -79,7 +79,7 @@ struct EncryptedFile: Transferable, Identifiable {
         FileRepresentation(exportedContentType: .data) { file in
             let id = UUID().uuidString.components(separatedBy: "-").last ?? "encrypted.file"
             let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(id).maverick")
+                .appendingPathComponent("\(id).occulta")
             
             try file.content.write(to: tempURL)
             

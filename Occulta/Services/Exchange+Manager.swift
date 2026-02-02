@@ -18,7 +18,7 @@ class ExchangeManager: NSObject {
     private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
     
     private let serviceType = "peer-data-ex"
-    private let log = Logger(subsystem: "com.maverick.multipeer", category: "multipeer")
+    private let log = Logger(subsystem: "com.occulta.multipeer", category: "multipeer")
     
     /// This ID will be matched with the incoming data to make sure that we get a public key from a peer that got our identity - public key.
     ///
