@@ -13,7 +13,7 @@
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
-				<string>com.ghafla.aibo-cora.occulta</string>
+				<string>com.github.aibo-cora.occulta</string>
 			</array>
 		</dict>
 	</array>
@@ -39,7 +39,7 @@
 			<key>UTTypeIcons</key>
 			<dict/>
 			<key>UTTypeIdentifier</key>
-			<string>com.ghafla.aibo-cora.occulta</string>
+			<string>com.github.aibo-cora.occulta</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
