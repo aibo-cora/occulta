@@ -789,32 +789,4 @@ extension ContactManager {
         
         throw ContactManager.Errors.noPublicKeyToEncryptWith
     }
-    
-    func decrypt(payload: Data?, metadata: File.Metadata) throws -> (contents: Data, ownerID: String, filename: String) {
-        guard
-            let content = payload
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        let contacts = try self.fetchAllContacts()
-        
-        for contact in contacts {
-            do {
-                let decryptedFileContent = try self.decrypt(message: content, for: contact.identifier)
-                let decryptedFilename = try self.decrypt(message: Data(base64Encoded: metadata.name ?? ""), for: contact.identifier) ?? Data()
-                let decryptedFileExtension = try self.decrypt(message: Data(base64Encoded: metadata.extension ?? ""), for: contact.identifier) ?? Data()
-                
-                let filename = "\(String(data: decryptedFilename, encoding: .utf8) ?? "").\(String(data: decryptedFileExtension, encoding: .utf8) ?? "")"
-                
-                if let decryptedFileContent {
-                    return (decryptedFileContent, contact.identifier, filename)
-                }
-            } catch {
-                /// Keep iterating.
-            }
-        }
-        
-        throw ContactManager.Errors.noPublicKeyToEncryptWith
-    }
 }

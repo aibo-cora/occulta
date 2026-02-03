@@ -52,7 +52,7 @@ struct KeyExchange: View {
                 if let contactsIdentity = received, let myIdentity = try? Manager.Key().retrieveIdentity() {
                     /// I am the owner of this key.
                     ///
-                    print("Received identity: \(received), displaying result...")
+                    print("Received identity: \(contactsIdentity), displaying result...")
                     
                     let date = String(Date.now.timeIntervalSince1970)
                     
