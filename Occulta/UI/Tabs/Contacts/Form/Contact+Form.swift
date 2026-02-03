@@ -42,6 +42,21 @@ extension Contact {
         @State private var displayingRevokeKeyWarning: Bool = false
         @State private var displayingDeleteWarning: Bool = false
         
+        var keyIsRevocable: Bool {
+            switch mode {
+            case .create:
+                return false
+            case .edit:
+                if let key = self.contact.contactPublicKeys.last {
+                    if key.expiredOn == nil {
+                        return true
+                    }
+                }
+                
+                return false
+            }
+        }
+        
         var body: some View {
             NavigationStack {
                 SwiftUI.Form {
@@ -130,15 +145,17 @@ extension Contact {
                     case .create:
                         EmptyView()
                     case .edit(let identifier):
-                        Button("Revoke Key", systemImage: "key.horizontal.fill", role: .destructive) {
-                            self.displayingRevokeKeyWarning.toggle()
-                        }
-                        .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
-                            Button("Revoke", role: .destructive) {
-                                try? self.contactManager.reset(identity: identifier)
+                        if self.keyIsRevocable {
+                            Button("Revoke Key", systemImage: "key.horizontal.fill", role: .destructive) {
+                                self.displayingRevokeKeyWarning.toggle()
                             }
-                        } message: {
-                            Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
+                            .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
+                                Button("Revoke", role: .destructive) {
+                                    try? self.contactManager.reset(identity: identifier)
+                                }
+                            } message: {
+                                Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
+                            }
                         }
                         
                         Button("Delete Contact", systemImage: "trash.fill", role: .destructive) {
