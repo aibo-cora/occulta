@@ -64,7 +64,13 @@ struct KeyExchange: View {
                 self.exchangeManager.receivedIdentity.send(nil)
                 self.exchangeManager.finish()
             }) { key in
-                ExchangeResult(identifier: self.identifier, receivedKey: key)
+                let (isDuplicate, owner) = self.checkDuplicate(key: key)
+                
+                if isDuplicate == false {
+                    ExchangeResult(identifier: self.identifier, receivedKey: key)
+                } else {
+                    DuplicateKey(identifier: owner)
+                }
             }
         } else {
             if self.exchangeManager.isExchangePossible {
@@ -121,6 +127,68 @@ struct KeyExchange: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+    
+    private struct DuplicateKey: View {
+        let owner: String
+        
+        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+        
+        @Environment(ContactManager.self) private var contactManager: ContactManager?
+        
+        init(identifier: String?) {
+            let contactID = identifier ?? ""
+            
+            let predicate = #Predicate<Contact.Profile> {
+                $0.identifier == contactID
+            }
+            
+            self.owner = contactID
+            self._contacts = Query(filter: predicate)
+        }
+        
+        var body: some View {
+            VStack(spacing: 20) {
+                Text("A contact with this public key already exists. Only one key per contact is supported.")
+                
+                VStack(spacing: 20) {
+                    Text("Contact with a matching key")
+                    
+                    Contact.Info(identifier: self.owner)
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+    
+    /// Check the last active key of each contact against the key that we just go through exchange to make sure that we don't already have it to avoid confusion.
+    ///
+    /// Confusion can happen if multilpe contacts are added with the same public key.
+    /// - Parameter key: Key from the exchange session.
+    /// - Returns: Do we already have it?
+    private func checkDuplicate(key: Contact.Draft.Key) -> (Bool, String?) {
+        let cryptoOps = Manager.Crypto()
+        let contacts = (try? self.contactManager?.fetchAllContacts()) ?? []
+        
+        for contact in contacts {
+            if let publicKey = contact.contactPublicKeys?.last {
+                /// We have a key.
+                debugPrint("We found a contact with a key, contact = \(contact.givenName.decrypt())")
+                
+                if contact.contactPublicKeys?.last?.expiredOn == nil {
+                    /// the key is active.
+                    debugPrint("The last key is not expired")
+                    
+                    if let decrypted = try? cryptoOps.decrypt(data: publicKey.material), decrypted == key.material {
+                        return (true, contact.identifier)
+                    }
+                }
+            }
+        }
+        
+        debugPrint("No duplicates found...")
+        
+        return (false, nil)
     }
 }
 
