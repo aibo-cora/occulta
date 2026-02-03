@@ -49,13 +49,14 @@ struct KeyExchange: View {
                 .buttonStyle(.borderedProminent)
             }
             .onReceive(self.exchangeManager.receivedIdentity) { received in
-                if let received {
-                    print("Received identity: \(received), displaying result...")
+                if let contactsIdentity = received, let myIdentity = try? Manager.Key().retrieveIdentity() {
                     /// I am the owner of this key.
-                    let identity = (try? Manager.Key().retrieveIdentity()) ?? Data()
+                    ///
+                    print("Received identity: \(received), displaying result...")
+                    
                     let date = String(Date.now.timeIntervalSince1970)
                     
-                    self.receivedIdentityKey = Contact.Draft.Key(material: received, owner: identity, date: date)
+                    self.receivedIdentityKey = Contact.Draft.Key(material: contactsIdentity, owner: myIdentity, date: date)
                 }
             }
             .sheet(item: self.$receivedIdentityKey, onDismiss: {
