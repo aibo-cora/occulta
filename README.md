@@ -1,4 +1,5 @@
 **Occulta**
+
 In a world where your contacts and trust are locked inside messaging apps, Occulta gives you true control.
 
 Collect verified public keys from friends, family, and colleagues through secure, in-person exchanges using Nearby Interaction — no servers, no phone numbers, no intermediaries.
