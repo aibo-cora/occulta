@@ -421,16 +421,27 @@ extension ContactManager {
         try self.modelContext.save()
     }
     
-    func encrypt(message: String, for identifier: String) throws -> Data? {
+    /// Encrypt data for a contact using their public key, which is encrypted.
+    /// - Parameters:
+    ///   - data: Data to encrypt.
+    ///   - encrypted: Encrypt public keying material.
+    /// - Returns: Encrypted result.
+    func encrypt(data: Data, using encrypted: Data?) throws -> Data? {
         guard
-            let payload = message.data(using: .utf8)
+            data.isEmpty == false
         else {
             throw ContactManager.Errors.messageHasNoData
         }
         
-        let encrypted = try self.encrypt(data: payload, for: identifier)
+        guard
+            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
+        else {
+            throw ContactManager.Errors.contactHasNoKeys
+        }
         
-        return encrypted
+        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
+        
+        return encryptedData
     }
     
     func encrypt(data: Data, for identifier: String) throws -> Data? {
