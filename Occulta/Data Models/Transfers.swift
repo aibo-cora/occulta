@@ -42,6 +42,7 @@ struct File: Identifiable, Codable, Hashable {
     
     let content: Data?
     let format: Format?
+    var date: Date? = .now
     
     struct Metadata: Codable, Equatable, Hashable {
         var name: String?
