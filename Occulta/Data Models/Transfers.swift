@@ -7,7 +7,7 @@
 
 import Foundation
 import SwiftUI
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 
 /// `Basket` with an identified owner.
 struct OwnedBasket: Identifiable, Equatable, Codable {

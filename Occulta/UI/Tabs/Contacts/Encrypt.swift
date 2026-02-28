@@ -7,7 +7,7 @@
 
 import SwiftUI
 import SwiftData
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 import PhotosUI
 
 struct Encrypt: View {

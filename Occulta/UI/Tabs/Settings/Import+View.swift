@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 
 struct Import: View {
     let imported: OwnedBasket
