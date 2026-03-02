@@ -123,7 +123,7 @@ struct ComposableMessage: View {
                         .foregroundStyle(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                 }
-                .padding(.horizontal)
+                .padding()
             }
         }
         .background(Color(.systemGroupedBackground))
