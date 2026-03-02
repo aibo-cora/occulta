@@ -62,6 +62,11 @@ extension Contact {
         
         @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
         
+        /// First name of the contact
+        var name: String {
+            self.contacts.first?.givenName.decrypt() ?? "Anonymous"
+        }
+        
         /// If we do not have a public key from our contact, we need to start an exchange.
         var needsExchange: Bool {
             let keys = self.contacts.first?.contactPublicKeys
@@ -103,35 +108,56 @@ extension Contact {
         
         var body: some View {
             VStack {
-                ScrollView {
-                    VStack(spacing: 20) {
-                        Contact.Info(identifier: self.identifier)
-                        
-                        if self.needsExchange {
-                            KeyExchange(identifier: self.identifier)
+                VStack(spacing: 20) {
+                    if self.needsExchange {
+                        KeyExchange(identifier: self.identifier)
+                    } else {
+                        if FeatureFlags.isEnabled(.useComposableMessage) {
+                            ComposableMessage(identifier: self.identifier)
                         } else {
                             Encrypt(identifier: self.identifier)
                         }
-                    }
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                self.editing = true
-                            } label: {
-                                Text("Edit")
+                        
+                        VStack {
+                            HStack(alignment: .firstTextBaseline) {
+                                Button {
+                                    self.displayingInfo.toggle()
+                                } label: {
+                                    Image(systemName: "info.bubble")
+                                }
+                                
+                                Text("Data we encrypt here is only visible to you and this contact.")
+                                    .font(.footnote)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding()
+                            
+                            if self.displayingInfo {
+                                Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
+                                    .font(.caption)
+                                    .padding()
                             }
                         }
                     }
-                    .sheet(isPresented: self.$editing) {
-                        
-                    } content: {
-                        Contact.Form(mode: .edit(identifier: self.identifier)) {
-                            self.dismiss()
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            self.editing = true
+                        } label: {
+                            Text("Edit")
                         }
                     }
                 }
-                .scrollIndicators(.hidden)
-                .scrollDismissesKeyboard(.interactively)
+                .sheet(isPresented: self.$editing) {
+                    
+                } content: {
+                    Contact.Form(mode: .edit(identifier: self.identifier)) {
+                        self.dismiss()
+                    }
+                }
+                .navigationTitle(self.name)
+                .navigationBarTitleDisplayMode(.inline)
                 
                 if self.verified == false && self.needsExchange == false {
                     VStack {
@@ -156,33 +182,10 @@ extension Contact {
                         }
                     }
                 }
-                
-                VStack {
-                    HStack(alignment: .firstTextBaseline) {
-                        Button {
-                            self.displayingInfo.toggle()
-                        } label: {
-                            Image(systemName: "info.bubble")
-                        }
-                        
-                        Text("Data we encrypt here is only visible to you and this contact.")
-                            .font(.footnote)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding()
-                    
-                    if self.displayingInfo {
-                        Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
-                            .font(.caption)
-                            .padding()
-                    }
-                }
             }
         }
     }
 }
-
-
 
 #Preview {
     Contact.Details(identifier: UUID().uuidString)
