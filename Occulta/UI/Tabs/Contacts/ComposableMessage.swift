@@ -45,34 +45,7 @@ struct ComposableMessage: View {
                         .multilineTextAlignment(.center)
                 }
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .trailing, spacing: 24) {
-                            ContactEncryptionDisclaimer()
-                            
-                            ForEach(Array(self.draftFiles.enumerated()), id: \.element.id) { index, file in
-                                VStack(spacing: 6) {
-                                    if index == 0 || self.shouldShowDateSeparator(before: self.draftFiles[index - 1], current: file) {
-                                        DateHeader(date: file.date ?? Date())
-                                    }
-                                    
-                                    DraftBubble(file: file)
-                                }
-                                .id(file.id)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 20)
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onChange(of: self.draftFiles) { _, latest in
-                        withAnimation(.easeOut(duration: 0.3)) {
-                            if let last = latest.last {
-                                proxy.scrollTo(last.id, anchor: .bottom)
-                            }
-                        }
-                    }
-                }
+                Conversation(mode: .write, messages: self.$draftFiles)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -169,30 +142,188 @@ struct ComposableMessage: View {
         }
     }
     
-    private struct ContactEncryptionDisclaimer: View {
-        @State private var displayingInfo: Bool = false
+    struct Conversation: View {
+        let mode: Modes
+        
+        @Binding var messages: [Occulta.File]
+        
+        enum Modes {
+            case read, write
+        }
         
         var body: some View {
-            VStack {
-                HStack(alignment: .firstTextBaseline) {
-                    Button {
-                        self.displayingInfo.toggle()
-                    } label: {
-                        Image(systemName: "info.bubble")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .trailing, spacing: 24) {
+                        if self.mode == .write {
+                            ContactEncryptionDisclaimer()
+                        }
+                        
+                        ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
+                            VStack(spacing: 6) {
+                                if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
+                                    DateHeader(date: file.date ?? Date())
+                                }
+                                
+                                MessageBubble(file: file)
+                            }
+                            .id(file.id)
+                        }
                     }
-                    
-                    Text("Data we encrypt here is only visible to you and this contact.")
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 20)
                 }
-                .padding()
-                
-                if self.displayingInfo {
-                    Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
-                        .font(.caption)
-                        .padding()
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: self.messages) { _, latest in
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        if let last = latest.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
                 }
             }
+        }
+        
+        private struct ContactEncryptionDisclaimer: View {
+            @State private var displayingInfo: Bool = false
+            
+            var body: some View {
+                VStack {
+                    HStack(alignment: .firstTextBaseline) {
+                        Button {
+                            self.displayingInfo.toggle()
+                        } label: {
+                            Image(systemName: "info.bubble")
+                        }
+                        
+                        Text("Data we encrypt here is only visible to you and this contact.")
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                    
+                    if self.displayingInfo {
+                        Text("We use **AES GCM 256** encryption, with a key derived from your private key and this contacts public key, to secure data. The key is **never** stored or transmitted anywhere.")
+                            .font(.caption)
+                            .padding()
+                    }
+                }
+            }
+        }
+        
+        struct MessageBubble: View {
+            let file: Occulta.File
+            
+            var body: some View {
+                HStack(alignment: .bottom) {
+                    Spacer()
+                    
+                    VStack(alignment: .trailing, spacing: 6) {
+                        self.contentPreview
+                        
+                        if let date = self.file.date {
+                            Text(date, format: .dateTime.hour().minute())
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            
+            @ViewBuilder
+            private var contentPreview: some View {
+                switch self.file.format {
+                case .text:
+                    if let data = self.file.content, let text = String(data: data, encoding: .utf8) {
+                        Text(text)
+                            .padding(14)
+                            .background(Color.blue)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                    }
+                case .file(let metadata):
+                    if let data = self.file.content, let uiImage = UIImage(data: data) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: 260, maxHeight: 320)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                    } else {
+                        let name = metadata.name ?? "file"
+                        let isVideoFile = VideoExtensions().supported.contains(metadata.extension ?? "")
+                        
+                        if isVideoFile {
+                            VStack(spacing: 8) {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 60))
+                                    .foregroundStyle(.white)
+                                Text(name)
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                            }
+                            .padding(40)
+                            .background(Color.blue)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                        } else {
+                            HStack {
+                                Image(systemName: "doc.fill")
+                                    .font(.title2)
+                                Text(name)
+                                    .lineLimit(1)
+                            }
+                            .padding(14)
+                            .background(Color.blue)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                        }
+                    }
+                default:
+                    Text("Unsupported content")
+                        .padding(14)
+                        .background(Color.blue)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                }
+            }
+        }
+        
+        struct DateHeader: View {
+            let date: Date
+            
+            var body: some View {
+                Text(self.decideHeader(for: self.date))
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 16)
+                    .background(Color(.systemGray5))
+                    .clipShape(Capsule())
+                    .frame(maxWidth: .infinity)
+            }
+            
+            private func decideHeader(for date: Date) -> String {
+                let calendar = Calendar.current
+                let formatter = DateFormatter()
+                
+                if calendar.isDateInToday(date) { return "Today" }
+                if calendar.isDateInYesterday(date) { return "Yesterday" }
+                
+                formatter.dateStyle = .medium
+                
+                return formatter.string(from: date)
+            }
+        }
+        
+        private func shouldShowDateSeparator(before: Occulta.File, current: Occulta.File) -> Bool {
+            guard
+                let d1 = before.date,
+                let d2 = current.date
+            else {
+                return false
+            }
+            
+            return !Calendar.current.isDate(d1, inSameDayAs: d2)
         }
     }
     
@@ -278,128 +409,10 @@ struct ComposableMessage: View {
         self.errorMessage = message
         self.showError = true
     }
-    
-    private func shouldShowDateSeparator(before: Occulta.File, current: Occulta.File) -> Bool {
-        guard
-            let d1 = before.date,
-            let d2 = current.date
-        else {
-            return false
-        }
-        
-        return !Calendar.current.isDate(d1, inSameDayAs: d2)
-    }
-}
-
-
-struct DraftBubble: View {
-    let file: Occulta.File
-    
-    var body: some View {
-        HStack(alignment: .bottom) {
-            Spacer()
-            
-            VStack(alignment: .trailing, spacing: 6) {
-                self.contentPreview
-                
-                if let date = self.file.date {
-                    Text(date, format: .dateTime.hour().minute())
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-    
-    @ViewBuilder
-    private var contentPreview: some View {
-        switch self.file.format {
-        case .text:
-            if let data = self.file.content, let text = String(data: data, encoding: .utf8) {
-                Text(text)
-                    .padding(14)
-                    .background(Color.blue)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-            }
-        case .file(let metadata):
-            if let data = self.file.content, let uiImage = UIImage(data: data) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 260, maxHeight: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-            } else {
-                let name = metadata.name ?? "file"
-                let isVideoFile = VideoExtensions().supported.contains(metadata.extension ?? "")
-                
-                if isVideoFile {
-                    VStack(spacing: 8) {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 60))
-                            .foregroundStyle(.white)
-                        Text(name)
-                            .font(.caption)
-                            .foregroundStyle(.white)
-                    }
-                    .padding(40)
-                    .background(Color.blue)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                } else {
-                    HStack {
-                        Image(systemName: "doc.fill")
-                            .font(.title2)
-                        Text(name)
-                            .lineLimit(1)
-                    }
-                    .padding(14)
-                    .background(Color.blue)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                }
-            }
-        default:
-            Text("Unsupported content")
-                .padding(14)
-                .background(Color.blue)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-        }
-    }
 }
 
 struct VideoExtensions {
     let supported: [String] = ["mp4", "mov", "m4v"]
-}
-
-// MARK: - Date Header
-
-struct DateHeader: View {
-    let date: Date
-    
-    var body: some View {
-        Text(self.decideHeader(for: self.date))
-            .font(.caption.bold())
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 16)
-            .background(Color(.systemGray5))
-            .clipShape(Capsule())
-            .frame(maxWidth: .infinity)
-    }
-    
-    private func decideHeader(for date: Date) -> String {
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInYesterday(date) { return "Yesterday" }
-        
-        formatter.dateStyle = .medium
-        
-        return formatter.string(from: date)
-    }
 }
 
 // MARK: - Preview
