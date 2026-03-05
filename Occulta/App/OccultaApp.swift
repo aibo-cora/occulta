@@ -141,7 +141,11 @@ struct OccultaApp: App {
                 .sheet(item: self.$openedFileContents) {
                     /// Dismiss
                 } content: { data in
-                    Import(imported: data)
+                    if FeatureFlags.isEnabled(.useComposableMessage) {
+                        ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
+                    } else {
+                        Import(imported: data)
+                    }
                 }
                 .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
                     Import.Contacts(encryptedFile: encryptedContactsFile)

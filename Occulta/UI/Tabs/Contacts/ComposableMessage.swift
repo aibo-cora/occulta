@@ -148,17 +148,20 @@ struct ComposableMessage: View {
         @Binding var messages: [Occulta.File]
         
         enum Modes {
-            case read, write
+            case read(messageOwner: String), write
         }
         
         var body: some View {
+            switch self.mode {
+            case .write:
+                ContactEncryptionDisclaimer()
+            case .read(let owner):
+                Contact.Info(identifier: owner)
+            }
+            
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .trailing, spacing: 24) {
-                        if self.mode == .write {
-                            ContactEncryptionDisclaimer()
-                        }
-                        
                         ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
                             VStack(spacing: 6) {
                                 if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
