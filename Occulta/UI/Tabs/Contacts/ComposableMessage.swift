@@ -239,9 +239,9 @@ struct ComposableMessage: View {
                 switch self.file.format {
                 case .text:
                     if let data = self.file.content, let text = String(data: data, encoding: .utf8) {
-                        Text(text)
+                        Text(text.withDetectedLinks())
                             .padding(14)
-                            .background(Color.blue)
+                            .background(Color.blue.opacity(0.2))
                             .foregroundStyle(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                     }
