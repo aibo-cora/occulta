@@ -46,9 +46,6 @@ struct ComposableMessage: View {
                     Text("Type messages or attach photos, videos, or files. Everything will be encrypted together at the end.")
                         .multilineTextAlignment(.center)
                 }
-                .task {
-                    FileManager.default.clearTemporaryDirectory()
-                }
             } else {
                 Conversation(mode: .write, messages: self.$messages)
             }
