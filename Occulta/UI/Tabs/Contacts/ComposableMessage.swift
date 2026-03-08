@@ -176,7 +176,7 @@ struct ComposableMessage: View {
                                     DateHeader(date: file.date ?? Date())
                                 }
                                 
-                                MessageBubble(file: file)
+                                MessageBubble(file: file, mode: self.mode)
                             }
                             .id(file.id)
                         }
@@ -225,9 +225,10 @@ struct ComposableMessage: View {
         
         struct MessageBubble: View {
             let file: Occulta.File
+            let mode: Conversation.Modes
             
             var body: some View {
-                HStack(alignment: .bottom) {
+                HStack(alignment: .center) {
                     Spacer()
                     
                     VStack(alignment: .trailing, spacing: 6) {
@@ -238,6 +239,22 @@ struct ComposableMessage: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                    }
+                    
+                    switch self.mode {
+                    case .read(_):
+                        if let url = self.file.url {
+                            switch self.file.format {
+                            case .file(_):
+                                ShareLink(item: url) {
+                                    Image(systemName: "square.and.arrow.up")
+                                }
+                            default:
+                                EmptyView()
+                            }
+                        }
+                    case .write:
+                        EmptyView()
                     }
                 }
                 .padding(.horizontal, 16)
@@ -272,6 +289,12 @@ struct ComposableMessage: View {
                             Text(name)
                                 .font(.caption)
                                 .foregroundStyle(.white)
+                        }
+                        .onAppear {
+                            let resources = try? self.file.url?.resourceValues(forKeys: [.fileSizeKey])
+                            let size = UInt64(resources?.fileSize ?? 0)
+                            
+                            debugPrint("Showing async image..., url=\(String(describing: self.file.url)), size=\(size), file=\(self.file)")
                         }
                     } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
                         /// Display video
@@ -476,6 +499,6 @@ struct FileExtensions {
 
 #Preview {
     NavigationStack {
-        ComposableMessage.Conversation.MessageBubble(file: File(content: "Hi".data(using: .utf8), format: .text))
+        ComposableMessage.Conversation.MessageBubble(file: File(content: "Hi".data(using: .utf8), format: .text), mode: .write)
     }
 }
