@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import PhotosUI
+import AVKit
 
 struct ComposableMessage: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager?
@@ -21,14 +22,15 @@ struct ComposableMessage: View {
         self._contacts = Query(filter: predicate)
     }
     
-    @State private var draftFiles: [Occulta.File] = []
+    @State private var messages: [Occulta.File] = []
+    
     @State private var messageText: String = ""
     
     // Picker states
     @State private var showMediaPicker = false
     @State private var showFileImporter = false
     @State private var selectedMediaItems: [PhotosPickerItem] = []
-    
+    /// Encrypted conversation
     @State private var encryptedResult: EncryptedFile?
     
     // Error feedback
@@ -37,15 +39,18 @@ struct ComposableMessage: View {
     
     var body: some View {
         VStack {
-            if self.draftFiles.isEmpty {
+            if self.messages.isEmpty {
                 ContentUnavailableView {
                     Label("Add content", systemImage: "plus.circle")
                 } description: {
                     Text("Type messages or attach photos, videos, or files. Everything will be encrypted together at the end.")
                         .multilineTextAlignment(.center)
                 }
+                .task {
+                    FileManager.default.clearTemporaryDirectory()
+                }
             } else {
-                Conversation(mode: .write, messages: self.$draftFiles)
+                Conversation(mode: .write, messages: self.$messages)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -86,7 +91,7 @@ struct ComposableMessage: View {
             .padding()
             .background(Color(.systemBackground))
             
-            if self.draftFiles.isEmpty == false {
+            if self.messages.isEmpty == false {
                 Button(action: self.encrypt) {
                     Label("Encrypt", systemImage: "lock.shield.fill")
                         .font(.headline)
@@ -140,6 +145,9 @@ struct ComposableMessage: View {
         } message: {
             Text(self.errorMessage)
         }
+        .onDisappear {
+            FileManager.default.clearTemporaryDirectory()
+        }
     }
     
     struct Conversation: View {
@@ -176,6 +184,7 @@ struct ComposableMessage: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 20)
                 }
+                .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: self.messages) { _, latest in
                     withAnimation(.easeOut(duration: 0.3)) {
@@ -241,45 +250,56 @@ struct ComposableMessage: View {
                     if let data = self.file.content, let text = String(data: data, encoding: .utf8) {
                         Text(text.withDetectedLinks())
                             .padding(14)
-                            .background(Color.blue.opacity(0.2))
+                            .background(Color.green)
                             .foregroundStyle(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                     }
                 case .file(let metadata):
-                    if let data = self.file.content, let uiImage = UIImage(data: data) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .scaledToFit()
+                    let name = metadata.name ?? "file"
+                    /// Display image.
+                    if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
+                        VStack(spacing: 8) {
+                            AsyncImage(url: self.file.url) { image in
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } placeholder: {
+                                ProgressView()
+                            }
                             .frame(maxWidth: 260, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                    } else {
-                        let name = metadata.name ?? "file"
-                        let isVideoFile = VideoExtensions().supported.contains(metadata.extension ?? "")
-                        
-                        if isVideoFile {
-                            VStack(spacing: 8) {
-                                Image(systemName: "play.circle.fill")
-                                    .font(.system(size: 60))
-                                    .foregroundStyle(.white)
-                                Text(name)
-                                    .font(.caption)
-                                    .foregroundStyle(.white)
-                            }
-                            .padding(40)
-                            .background(Color.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 18))
-                        } else {
-                            HStack {
-                                Image(systemName: "doc.fill")
-                                    .font(.title2)
-                                Text(name)
-                                    .lineLimit(1)
-                            }
-                            .padding(14)
-                            .background(Color.blue)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            
+                            Text(name)
+                                .font(.caption)
+                                .foregroundStyle(.white)
                         }
+                    } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
+                        /// Display video
+                        let player = AVPlayer(url: url)
+                        
+                        VStack(spacing: 8) {
+                            VideoPlayer(player: player)
+                                .frame(width: 260, height: 200)
+                                .clipShape(RoundedRectangle(cornerRadius: 18))
+                                .onDisappear {
+                                    player.pause()
+                                }
+                            Text(name)
+                                .font(.caption)
+                                .foregroundStyle(.white)
+                        }
+                    } else {
+                        /// The content is neither image or video, must be a document
+                        HStack {
+                            Image(systemName: "doc.fill")
+                                .font(.title2)
+                            Text(name)
+                                .lineLimit(1)
+                        }
+                        .padding(14)
+                        .background(Color.blue)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
                     }
                 default:
                     Text("Unsupported content")
@@ -337,7 +357,7 @@ struct ComposableMessage: View {
         
         let newFile = Occulta.File(content: trimmed.data(using: .utf8), format: .text, date: Date())
         
-        self.draftFiles.append(newFile)
+        self.messages.append(newFile)
         self.messageText = ""
     }
     
@@ -351,10 +371,15 @@ struct ComposableMessage: View {
             let ext = contentType.preferredFilenameExtension ?? "bin"
             let filename = "media_\(UUID().uuidString.prefix(8))"
             
-            let metadata = Occulta.File.Metadata(name: filename, extension: ext)
-            let newFile = Occulta.File(content: data, format: .file(metadata), date: Date())
+            let tempDir = FileManager.default.temporaryDirectory
+            let fileURL = tempDir.appendingPathComponent(filename + ".\(ext)")
+            /// We are creating a temp file so that the file data does not stay in memory
+            try data.write(to: fileURL)
             
-            self.draftFiles.append(newFile)
+            let metadata = Occulta.File.Metadata(name: filename, extension: ext)
+            let newFile = Occulta.File(url: fileURL, format: .file(metadata), date: Date())
+            
+            self.messages.append(newFile)
         } catch {
             self.showErrorAlert(error.localizedDescription)
         }
@@ -369,13 +394,11 @@ struct ComposableMessage: View {
             
             defer { url.stopAccessingSecurityScopedResource() }
             
-            let data = try Data(contentsOf: url)
             let filename = url.lastPathComponent
-            
             let metadata = Occulta.File.Metadata(name: filename, extension: url.pathExtension)
-            let newFile = Occulta.File(content: data, format: .file(metadata), date: Date())
+            let newFile = Occulta.File(url: url, format: .file(metadata), date: Date())
             
-            self.draftFiles.append(newFile)
+            self.messages.append(newFile)
         } catch {
             self.showErrorAlert(error.localizedDescription)
         }
@@ -384,7 +407,25 @@ struct ComposableMessage: View {
     private func encrypt() {
         Task {
             do {
-                let basket = Basket(files: self.draftFiles)
+                // Process files to convert the ones that contain only urls to files to files with actual content
+                
+                var processed: [Occulta.File] = []
+                
+                for file in self.messages {
+                    if let url = file.url {
+                        /// Messages that only have URLs to the content user imported: photos, videos or other files
+                        /// Using `URLSession` instead of `resourceBytes` because we might need it for brackground processing.
+                        let (data, _) = try await URLSession.shared.data(from: url)
+                        let newFile = Occulta.File(content: data, format: file.format, date: file.date)
+                        processed.append(newFile)
+                    } else {
+                        processed.append(file)
+                    }
+                }
+                
+                // Encode & Encrypt
+                
+                let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
                 let encryptedData = try self.contactManager?.encrypt(data: encoded, for: identifier)
                 
@@ -414,8 +455,14 @@ struct ComposableMessage: View {
     }
 }
 
-struct VideoExtensions {
-    let supported: [String] = ["mp4", "mov", "m4v"]
+struct FileExtensions {
+    enum Video: String {
+        case mov, mp4, m4v
+    }
+    
+    enum Image: String {
+        case jpg, jpeg, png, heic
+    }
 }
 
 // MARK: - Preview
@@ -424,5 +471,11 @@ struct VideoExtensions {
     NavigationStack {
         ComposableMessage(identifier: UUID().uuidString)
             .environment(ContactManager.preview)
+    }
+}
+
+#Preview {
+    NavigationStack {
+        ComposableMessage.Conversation.MessageBubble(file: File(content: "Hi".data(using: .utf8), format: .text))
     }
 }
