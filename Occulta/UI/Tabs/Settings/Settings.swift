@@ -7,7 +7,7 @@
 
 import SwiftUI
 import SwiftData
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 
 struct Settings: View {
     var body: some View {

@@ -7,7 +7,7 @@
 
 
 import SwiftUI
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 
 struct OccultaDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.occ] }  // Optional: only needed if you ever want to import

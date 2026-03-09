@@ -421,16 +421,27 @@ extension ContactManager {
         try self.modelContext.save()
     }
     
-    func encrypt(message: String, for identifier: String) throws -> Data? {
+    /// Encrypt data for a contact using their public key, which is encrypted.
+    /// - Parameters:
+    ///   - data: Data to encrypt.
+    ///   - encrypted: Encrypt public keying material.
+    /// - Returns: Encrypted result.
+    func encrypt(data: Data, using encrypted: Data?) throws -> Data? {
         guard
-            let payload = message.data(using: .utf8)
+            data.isEmpty == false
         else {
             throw ContactManager.Errors.messageHasNoData
         }
         
-        let encrypted = try self.encrypt(data: payload, for: identifier)
+        guard
+            let publicKeyingMaterial = try self.cryptoManager.decrypt(data: encrypted)
+        else {
+            throw ContactManager.Errors.contactHasNoKeys
+        }
         
-        return encrypted
+        let encryptedData = try self.encrypt(data: data, using: publicKeyingMaterial)
+        
+        return encryptedData
     }
     
     func encrypt(data: Data, for identifier: String) throws -> Data? {
@@ -537,8 +548,10 @@ extension ContactManager {
             let encryptedOrganizationName: String = try cryptoManager.encrypt(data: "Wonderland Enterprises".data(using: .utf8))?.base64EncodedString() ?? ""
             let encryptedDepartmentName: String = try cryptoManager.encrypt(data: "Engineering".data(using: .utf8))?.base64EncodedString() ?? ""
             let encryptedJobTitle: String = try cryptoManager.encrypt(data: "Software Engineer".data(using: .utf8))?.base64EncodedString() ?? ""
+            let encryptedKey = try cryptoManager.encrypt(data: Data.randomBytes(32))
             
             let testing = Contact.Profile(identifier: encryptedIdentifier, givenName: encryptedGivenName, familyName: encryptedFamilyName, middleName: encryptedMiddleName, nickname: encryptedNickname, organizationName: encryptedOrganizationName, departmentName: encryptedDepartmentName, jobTitle: encryptedJobTitle)
+            testing.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedKey, owner: try Manager.Key().retrieveIdentity(), date: Data()))
             
             sharedModelContainer.mainContext.insert(testing)
             

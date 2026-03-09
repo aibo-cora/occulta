@@ -8,5 +8,7 @@
 	<false/>
 	<key>allowSynchingBetweenDevices</key>
 	<true/>
+	<key>useComposableMessage</key>
+	<true/>
 </dict>
 </plist>
