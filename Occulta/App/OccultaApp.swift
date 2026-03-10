@@ -113,35 +113,77 @@ struct OccultaApp: App {
                 .onOpenURL { url in
                     let accessing = url.startAccessingSecurityScopedResource()
                     
-                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                    
-                    do {
-                        let data = try Data(contentsOf: url)
-                        let decrypted = try self.contactManager.decrypt(data: data)
-                        let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+                    Task {
+                        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                        /// Contents of the enrypted file we opened.
+                        let (data, _) = try await URLSession.shared.data(from: url)
                         
-                        self.openedFileContents = OwnedBasket(basket: basket, owner: decrypted.ownerID)
-                    } catch ContactManager.Errors.messageHasNoData {
-                        debugPrint("Error reading data, no data.")
-                    } catch ContactManager.Errors.noPublicKeyToEncryptWith {
-                        if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
-                            /// This file contains contacts or we don't have the owner's public key to decrypt the file of the file is corrupted.
-                            let data = (try? Data(contentsOf: url)) ?? Data()
+                        do {
+                            let ownedBasket = try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+                                let decrypted = try self.contactManager.decrypt(data: data)
+                                let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+                                
+                                var processed: [Occulta.File] = []
+                                
+                                let tempDir = FileManager.default.temporaryDirectory
+                                
+                                for file in basket.files {
+                                    /// Store photos, videos and documents in temp folder if the file's content is a file
+                                    switch file.format {
+                                    case .file(let metadata):
+                                        let fileURL = tempDir.appendingPathComponent(metadata.name ?? UUID().uuidString).appendingPathExtension(metadata.extension ?? "bin")
+                                        let content = file.content ?? Data()
+                                        
+                                        group.addTask {
+                                            try content.write(to: fileURL)
+                                            
+                                            let newFile = Occulta.File(url: fileURL, format: file.format, date: file.date)
+                                            
+                                            return newFile
+                                        }
+                                    default:
+                                        processed.append(file)
+                                    }
+                                }
+                                
+                                for try await file in group {
+                                    processed.append(file)
+                                }
+                                
+                                let sorted = processed.sorted(by: { $0.date ?? .now < $1.date ?? .now })
+                                let modifiedBasket = Basket(id: basket.id, files: sorted, date: basket.date, owner: basket.owner)
+                                let ownedBasket = OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
+                                
+                                return ownedBasket
+                            }
                             
-                            self.openedEncryptedFileContents = EncryptedFile(content: data)
-                        } else {
-                            debugPrint("Importing a file encrypted with a passphrase is not enabled.")
+                            self.openedFileContents = ownedBasket
+                        } catch ContactManager.Errors.messageHasNoData {
+                            debugPrint("Error reading data, no data.")
+                        } catch ContactManager.Errors.noPublicKeyToEncryptWith {
+                            if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
+                                /// This file contains contacts or we don't have the owner's public key to decrypt the file of the file is corrupted.
+                                let data = (try? Data(contentsOf: url)) ?? Data()
+                                
+                                self.openedEncryptedFileContents = EncryptedFile(content: data)
+                            } else {
+                                debugPrint("Importing a file encrypted with a passphrase is not enabled.")
+                            }
+                            
+                            debugPrint("Could not find this file's owner's public key, it must contain contacts or is corrupted.")
+                        } catch {
+                            debugPrint("Error decoding data, error = \(error)")
                         }
-                        
-                        debugPrint("Could not find this file's owner's public key, it must contain contacts or is corrupted.")
-                    } catch {
-                        debugPrint("Error reading data, error = \(error)")
                     }
                 }
                 .sheet(item: self.$openedFileContents) {
                     /// Dismiss
                 } content: { data in
-                    Import(imported: data)
+                    if FeatureFlags.isEnabled(.useComposableMessage) {
+                        ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
+                    } else {
+                        Import(imported: data)
+                    }
                 }
                 .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
                     Import.Contacts(encryptedFile: encryptedContactsFile)

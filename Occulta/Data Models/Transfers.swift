@@ -7,7 +7,7 @@
 
 import Foundation
 import SwiftUI
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 
 /// `Basket` with an identified owner.
 struct OwnedBasket: Identifiable, Equatable, Codable {
@@ -40,8 +40,10 @@ struct Basket: Identifiable, Codable {
 struct File: Identifiable, Codable, Hashable {
     var id = UUID()
     
-    let content: Data?
+    var url: URL?
+    var content: Data?
     let format: Format?
+    var date: Date? = .now
     
     struct Metadata: Codable, Equatable, Hashable {
         var name: String?
@@ -52,6 +54,18 @@ struct File: Identifiable, Codable, Hashable {
 
     enum Format: Codable, Equatable, Hashable {
         case contacts, text, file(Metadata), link
+    }
+}
+
+struct FileURL: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .data) { data in
+            SentTransferredFile(data.url)
+        } importing: { received in
+            Self(url: received.file)
+        }
     }
 }
 

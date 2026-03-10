@@ -32,4 +32,6 @@ enum Feature: String {
     case usePassphraseToExportContacts
     /// Option to sync between user devices.
     case allowSynchingBetweenDevices
+    /// Advanced messaging with different content types in a single message
+    case useComposableMessage
 }

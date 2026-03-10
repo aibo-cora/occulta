@@ -7,7 +7,7 @@
 
 import SwiftUI
 import SwiftData
-internal import UniformTypeIdentifiers
+import UniformTypeIdentifiers
 import PhotosUI
 
 struct Encrypt: View {
@@ -72,13 +72,14 @@ struct Encrypt: View {
                     .padding()
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 
-                if self.textToEncrypt.isEmpty == false, let payload = self.textToEncrypt.data(using: .utf8) {
+                let payload = self.textToEncrypt.data(using: .utf8)
+                let fileContents = Occulta.File(content: payload, format: .text)
+                let basket = Basket(files: [fileContents])
+                let encodedBasketContents = (try? JSONEncoder().encode(basket)) ?? Data()
+                let encryptedBasketContents = try? self.contactManager?.encrypt(data: encodedBasketContents, for: self.identifier)
+                
+                if self.textToEncrypt.isEmpty == false {
                     HStack(alignment: .lastTextBaseline, spacing: 20) {
-                        let fileContents = Occulta.File(content: payload, format: .text)
-                        let basket = Basket(files: [fileContents])
-                        let encodedBasketContents = (try? JSONEncoder().encode(basket)) ?? Data()
-                        let encryptedBasketContents = try? self.contactManager?.encrypt(data: encodedBasketContents, for: self.identifier)
-                        
                         if let encryptedBasketContents {
                             ShareLink(item: EncryptedFile(content: encryptedBasketContents), subject: nil, message: nil, preview: SharePreview("Encrypted Message", image: Image(systemName: "doc.text.fill"), icon: Image(systemName: "link"))) {
                                 VStack {
