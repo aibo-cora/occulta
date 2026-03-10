@@ -34,7 +34,10 @@ That proximity event — measured by Apple's UWB (Ultra-Wideband) chip — is wh
 
 ---
 
-## Cryptographic Protocol
+## Cryptographic Protocol 
+
+[Security Analysis](https://github.com/user-attachments/files/25865710/occulta_crypto_protocol.docx)
+
 
 ### Key Generation
 
