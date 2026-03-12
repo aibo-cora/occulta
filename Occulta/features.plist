@@ -10,5 +10,7 @@
 	<true/>
 	<key>useComposableMessage</key>
 	<true/>
+	<key>useMultipleRecipientMessageFormat</key>
+	<true/>
 </dict>
 </plist>
