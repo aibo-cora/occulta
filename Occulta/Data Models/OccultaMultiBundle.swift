@@ -1,5 +1,5 @@
 //
-//  OccultaMultiBundle.swift
+//  MultiRecipientBundle.swift
 //  Occulta
 //
 //  Created by Yura on 3/12/26.
@@ -25,7 +25,7 @@ import Foundation
 ///
 /// Decryption: trial-open every capsule with every candidate shared key.
 /// A 128-bit GCM tag makes false positives astronomically unlikely (p ≈ 2⁻¹²⁸).
-struct OccultaMultiBundle: Codable {
+struct MultiRecipientBundle: Codable {
 
     // MARK: - Fields
 
@@ -53,8 +53,8 @@ struct OccultaMultiBundle: Codable {
     }
 
     /// Deserialise a bundle received from a contact.
-    static func decode(from data: Data) throws -> OccultaMultiBundle {
-        try JSONDecoder().decode(OccultaMultiBundle.self, from: data)
+    static func decode(from data: Data) throws -> MultiRecipientBundle {
+        try JSONDecoder().decode(MultiRecipientBundle.self, from: data)
     }
     
     enum Version: String, Codable {

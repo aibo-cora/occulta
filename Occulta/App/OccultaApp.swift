@@ -119,43 +119,7 @@ struct OccultaApp: App {
                         let (data, _) = try await URLSession.shared.data(from: url)
                         
                         do {
-                            let ownedBasket = try await withThrowingTaskGroup(of: Occulta.File.self) { group in
-                                let decrypted = try self.contactManager.decrypt(data: data)
-                                let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
-                                
-                                var processed: [Occulta.File] = []
-                                
-                                let tempDir = FileManager.default.temporaryDirectory
-                                
-                                for file in basket.files {
-                                    /// Store photos, videos and documents in temp folder if the file's content is a file
-                                    switch file.format {
-                                    case .file(let metadata):
-                                        let fileURL = tempDir.appendingPathComponent(metadata.name ?? UUID().uuidString).appendingPathExtension(metadata.extension ?? "bin")
-                                        let content = file.content ?? Data()
-                                        
-                                        group.addTask {
-                                            try content.write(to: fileURL)
-                                            
-                                            let newFile = Occulta.File(url: fileURL, format: file.format, date: file.date)
-                                            
-                                            return newFile
-                                        }
-                                    default:
-                                        processed.append(file)
-                                    }
-                                }
-                                
-                                for try await file in group {
-                                    processed.append(file)
-                                }
-                                
-                                let sorted = processed.sorted(by: { $0.date ?? .now < $1.date ?? .now })
-                                let modifiedBasket = Basket(id: basket.id, files: sorted, date: basket.date, owner: basket.owner)
-                                let ownedBasket = OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
-                                
-                                return ownedBasket
-                            }
+                            let ownedBasket = try await self.buildOwnedBasket(from: data)
                             
                             self.openedFileContents = ownedBasket
                         } catch ContactManager.Errors.messageHasNoData {
@@ -192,5 +156,83 @@ struct OccultaApp: App {
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
+    }
+    
+    private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket {
+        try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+            let multipleBundle = try? MultiRecipientBundle.decode(from: fileContents)
+            
+            debugPrint("Building basket for version: \(multipleBundle?.version.rawValue ?? "none")")
+            
+            var decrypted: (plaintext: Data, ownerID: String)
+            
+            switch multipleBundle?.version {
+            case .v1, .none:
+                decrypted = try self.contactManager.decrypt(data: fileContents)
+            case .v2:
+                // The message was composed for multiple recipients, version `v2`
+                
+                /// Capsuled containging session keys. Each element is a session key encrypted with the shared key of a contact.
+                let capsules = multipleBundle?.capsules ?? []
+                var found: (sessionKey: Data, messageOwner: String)?
+                
+                for capsule in capsules {
+                    if let decryptable = try? self.contactManager.decrypt(data: capsule) {
+                        found = (decryptable.plaintext, decryptable.ownerID)
+                        
+                        break
+                    }
+                }
+                
+                if let found = found {
+                    let sessionKey = found.sessionKey
+                    let messageOwner = found.messageOwner
+                    
+                    // We found the owner of the message and successfully decrypted the session key. Now we need to decrypt the playload using this session key.
+                    
+                    /// Decrypted payload of the message.
+                    let plainText = try Manager.Crypto().decrypt(message: multipleBundle?.ciphertext, sessionKey: sessionKey)
+                    
+                    decrypted = (plainText, messageOwner)
+                } else {
+                    throw ContactManager.Errors.noPublicKeyToEncryptWith
+                }
+            }
+            
+            let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+            
+            var processed: [Occulta.File] = []
+            
+            let tempDir = FileManager.default.temporaryDirectory
+            
+            for file in basket.files {
+                /// Store photos, videos and documents in temp folder if the file's content is a file
+                switch file.format {
+                case .file(let metadata):
+                    let fileURL = tempDir.appendingPathComponent(metadata.name ?? UUID().uuidString).appendingPathExtension(metadata.extension ?? "bin")
+                    let content = file.content ?? Data()
+                    
+                    group.addTask {
+                        try content.write(to: fileURL)
+                        
+                        let newFile = Occulta.File(url: fileURL, format: file.format, date: file.date)
+                        
+                        return newFile
+                    }
+                default:
+                    processed.append(file)
+                }
+            }
+            
+            for try await file in group {
+                processed.append(file)
+            }
+            
+            let sorted = processed.sorted(by: { $0.date ?? .now < $1.date ?? .now })
+            let modifiedBasket = Basket(id: basket.id, files: sorted, date: basket.date, owner: basket.owner)
+            let ownedBasket = OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
+            
+            return ownedBasket
+        }
     }
 }

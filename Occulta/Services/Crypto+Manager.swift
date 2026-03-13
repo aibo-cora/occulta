@@ -91,6 +91,20 @@ extension Manager {
             return payload
         }
         
+        /// Decrypt a message using a session key.
+        /// - Parameters:
+        ///   - message: Encrypted message.
+        ///   - sessionKey: Session key. Used in a multi recipient message format.
+        /// - Returns: Decrypted payload.
+        func decrypt(message: Data?, sessionKey: Data) throws -> Data {
+            let key = SymmetricKey(data: sessionKey)
+            
+            let sealed = try AES.GCM.SealedBox(combined: message ?? Data())
+            let payload = try AES.GCM.open(sealed, using: key)
+            
+            return payload
+        }
+        
         func encrypt(contacts: Data, using passphrase: String) throws -> Data? {
             guard
                 let material = passphrase.data(using: .utf8)
