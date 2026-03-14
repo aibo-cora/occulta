@@ -257,6 +257,8 @@ struct ComposableMessage: View {
                 .padding(.horizontal, 16)
             }
             
+            @Environment(\.colorScheme) private var colorScheme
+            
             @ViewBuilder
             private var contentPreview: some View {
                 switch self.file.format {
@@ -264,8 +266,8 @@ struct ComposableMessage: View {
                     if let data = self.file.content, let text = String(data: data, encoding: .utf8) {
                         Text(text.withDetectedLinks())
                             .padding(14)
-                            .background(Color.green)
-                            .foregroundStyle(.white)
+                            .background(Color.green.opacity(0.2))
+                            .foregroundStyle(self.colorScheme == .dark ? .white : .black)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                     }
                 case .file(let metadata):
@@ -496,6 +498,6 @@ struct FileExtensions {
 
 #Preview {
     NavigationStack {
-        ComposableMessage.Conversation.MessageBubble(file: File(content: "Hi".data(using: .utf8), format: .text), mode: .write)
+        ComposableMessage.Conversation(mode: .write, messages: .constant([File(content: "https://www.apple.com".data(using: .utf8), format: .text), File(content: "Hi".data(using: .utf8), format: .text)]))
     }
 }

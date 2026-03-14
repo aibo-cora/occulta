@@ -7,9 +7,19 @@
 		<key>Occulta.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>1</integer>
+			<integer>2</integer>
 		</dict>
 		<key>OccultaPreview.xcscheme_^#shared#^_</key>
+		<dict>
+			<key>orderHint</key>
+			<integer>0</integer>
+		</dict>
+		<key>OccultaTests.xcscheme_^#shared#^_</key>
+		<dict>
+			<key>orderHint</key>
+			<integer>1</integer>
+		</dict>
+		<key>OccultaUITests.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
 			<integer>0</integer>
@@ -23,6 +33,16 @@
 			<true/>
 		</dict>
 		<key>DEFFD8542E9D293500CA60F9</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>DEFFD8632E9D293600CA60F9</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>DEFFD86D2E9D293700CA60F9</key>
 		<dict>
 			<key>primary</key>
 			<true/>
