@@ -157,36 +157,41 @@ struct ComposableMessage: View {
         }
         
         var body: some View {
-            switch self.mode {
-            case .write:
-                ContactEncryptionDisclaimer()
-            case .read(let owner):
-                Contact.Info(identifier: owner)
-            }
-            
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .trailing, spacing: 24) {
-                        ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
-                            VStack(spacing: 6) {
-                                if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
-                                    DateHeader(date: file.date ?? Date())
-                                }
-                                
-                                MessageBubble(file: file, mode: self.mode)
-                            }
-                            .id(file.id)
-                        }
+            VStack {
+                Group {
+                    switch self.mode {
+                    case .write:
+                        ContactEncryptionDisclaimer()
+                    case .read(let owner):
+                        Contact.Info(identifier: owner)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 20)
                 }
-                .scrollIndicators(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: self.messages) { _, latest in
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        if let last = latest.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
+                .padding(.top)
+                
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .trailing, spacing: 24) {
+                            ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
+                                VStack(spacing: 6) {
+                                    if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
+                                        DateHeader(date: file.date ?? Date())
+                                    }
+                                    
+                                    MessageBubble(file: file, mode: self.mode)
+                                }
+                                .id(file.id)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 20)
+                    }
+                    .scrollIndicators(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
+                    .onChange(of: self.messages) { _, latest in
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            if let last = latest.last {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
                         }
                     }
                 }
