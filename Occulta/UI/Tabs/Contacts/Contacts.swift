@@ -253,6 +253,7 @@ struct BusinessCardContactsView: View {
             .navigationDestination(for: String.self) { identifier in
                 Contact.Details(identifier: identifier)
             }
+            .scrollIndicators(.hidden)
         }
     }
 }
