@@ -73,7 +73,7 @@ extension Manager {
             return sealed.combined
         }
         
-        /// Decrypt a sealed box in Base64 format.
+        /// Decrypt a sealed box using publoic keying material to derive the decryption key.
         /// - Parameters:
         ///   - message: Encrypted message.
         ///   - material: Public keying material of our contact.

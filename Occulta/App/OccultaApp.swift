@@ -162,43 +162,34 @@ struct OccultaApp: App {
     
     private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket {
         try await withThrowingTaskGroup(of: Occulta.File.self) { group in
-            let multipleBundle = try? MultiRecipientBundle.decode(from: fileContents)
+            let messageContainer = try? EncryptedMessageContainer.decode(from: fileContents)
             
-            debugPrint("Building basket for version: \(multipleBundle?.version.rawValue ?? "none")")
+            debugPrint("Building basket for version: \(messageContainer?.version.rawValue ?? "none")")
             
             var decrypted: (plaintext: Data, ownerID: String)
             
-            switch multipleBundle?.version {
+            switch messageContainer?.version {
             case .v1, .none:
                 decrypted = try self.contactManager.decrypt(data: fileContents)
             case .v2:
-                // The message was composed for multiple recipients, version `v2`
-                
-                /// Capsuled containging session keys. Each element is a session key encrypted with the shared key of a contact.
-                let capsules = multipleBundle?.capsules ?? []
-                var found: (sessionKey: Data, messageOwner: String)?
-                
-                for capsule in capsules {
-                    if let decryptable = try? self.contactManager.decrypt(data: capsule) {
-                        found = (decryptable.plaintext, decryptable.ownerID)
-                        
-                        break
-                    }
+                guard
+                    let cipherText = messageContainer?.ciphertext, cipherText.isEmpty == false,
+                    let ephemeral = messageContainer?.ephemeral, ephemeral.isEmpty == false,
+                    let encryptedOwnerID = messageContainer?.encryptedOwnerID
+                else {
+                    debugPrint("The encrypted message does not contain enough information to be decrypted.")
+                    
+                    return OwnedBasket(basket: Basket(), owner: "")
                 }
+                /// Plain text files.
+                let plainText = try Manager.Crypto().decrypt(message: cipherText, using: ephemeral) ?? Data()
                 
-                if let found = found {
-                    let sessionKey = found.sessionKey
-                    let messageOwner = found.messageOwner
-                    
-                    // We found the owner of the message and successfully decrypted the session key. Now we need to decrypt the playload using this session key.
-                    
-                    /// Decrypted payload of the message.
-                    let plainText = try Manager.Crypto().decrypt(message: multipleBundle?.ciphertext, sessionKey: sessionKey)
-                    
-                    decrypted = (plainText, messageOwner)
-                } else {
-                    throw ContactManager.Errors.noPublicKeyToEncryptWith
-                }
+                // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
+                
+                /// Plain text owner ID.
+                let ownerID = try Manager.Crypto().decrypt(message: encryptedOwnerID, using: ephemeral) ?? Data()
+                
+                decrypted = (plainText, String(data: ownerID, encoding: .utf8) ?? "")
             }
             
             let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
