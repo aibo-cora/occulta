@@ -9,52 +9,66 @@ import Foundation
 
 /// The public half of a prekey pair — what gets sent to contacts inside message bundles.
 ///
-/// The private half lives in the Secure Enclave tagged `"prekey.<id>"` and is managed
-/// exclusively by ``Prekey.Manager``. This struct is a value type and is never
-/// persisted directly — it is JSON-encoded and AES-GCM encrypted before storage in
-/// `Contact.Profile.contactPrekeys`.
+/// The private half lives in the Secure Enclave tagged `"prekey.<sequence>.<id>"`.
+/// The `sequence` field groups all prekeys generated in the same batch together,
+/// enabling sequence-based pruning of orphaned SE keys.
+///
+/// ## SE tag format
+/// ```
+/// "prekey.<sequence>.<uuid>"
+///
+/// e.g. "prekey.3.550e8400-e29b-41d4-a716-446655440000"
+/// ```
 ///
 /// ## Lifecycle
 /// ```
-/// Generated    →  private key in SE, public Prekey sent in outbound bundle
-/// Stored       →  recipient stores [Prekey] on the sender's Contact.Profile
+/// Generated    →  private key in SE tagged "prekey.<seq>.<id>"
+///                 public Prekey (with sequence) sent in outbound PrekeySyncBatch
+/// Stored       →  recipient stores [Prekey] on sender's Contact.Profile
 /// Consumed     →  recipient picks oldest Prekey, uses publicKey for ECDH,
 ///                 removes from local store
-/// Deleted      →  sender's private key deleted from SE immediately after
-///                 successful decryption by the other side
+/// SE pruned    →  when a newer batch (seq+1) arrives, recipient deletes all
+///                 SE private keys from the old sequence
 /// ```
 nonisolated
 struct Prekey: Codable, Equatable {
 
     // MARK: - Fields
 
-    /// Unique identifier for this prekey.
+    /// Unique identifier for this prekey within its batch.
     ///
-    /// Also serves as the Secure Enclave keychain tag suffix: `"prekey.<id>"`.
-    /// Included in outbound bundles as `OccultaBundle.prekeyID` so the recipient
-    /// can tell the sender which SE key to delete after successful decryption.
+    /// Combined with `sequence` to form the SE tag: `"prekey.<sequence>.<id>"`.
     let id: String
+
+    /// The batch generation this prekey belongs to.
+    ///
+    /// Monotonically increasing per device. Incremented each time a new batch
+    /// is generated. Used to prune orphaned SE private keys when a newer batch
+    /// supersedes an older one.
+    let sequence: Int
 
     /// x963 uncompressed public key (04 || X || Y, 65 bytes).
     ///
-    /// Safe to transmit unencrypted. Knowledge of the public key alone does not
-    /// help an attacker — forward secrecy comes from deleting the private half.
+    /// Safe to transmit unencrypted. Forward secrecy comes from deleting the
+    /// corresponding private key after use — not from hiding the public key.
     let publicKey: Data
 
-    // MARK: - Init
+    // MARK: - SE tag
 
-    /// Create a new prekey with a random UUID identifier.
-    init(publicKey: Data) {
-        self.id = UUID().uuidString
-        self.publicKey = publicKey
+    /// The keychain application tag for this prekey's private key.
+    ///
+    /// Format: `"prekey.<sequence>.<id>"`
+    var seTag: String {
+        Prekey.seTag(for: id, sequence: sequence)
     }
 
-    // MARK: - Secure Enclave tag
+    static func seTag(for id: String, sequence: Int) -> String {
+        "prekey.\(sequence).\(id)"
+    }
 
-    /// The keychain application tag used to store and retrieve the private key.
-    var seTag: String { Prekey.seTag(for: self.id) }
-
-    static func seTag(for id: String) -> String {
-        "prekey.\(id)"
+    /// Tag prefix for all prekeys in a given sequence.
+    /// Used for batch pruning: `SecItemCopyMatching` by tag prefix.
+    static func seTagPrefix(for sequence: Int) -> String {
+        "prekey.\(sequence)."
     }
 }

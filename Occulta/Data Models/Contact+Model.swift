@@ -54,6 +54,9 @@ extension Contact {
         /// Encrypted prekey public keys received from this contact.
         /// Each entry: AES-GCM encrypted JSON-encoded Prekey struct.
         var contactPrekeys: [Data]? = []
+        /// Sequence number of the last prekey batch received from this contact.
+        /// Used to decide whether to replace or ignore an incoming PrekeySyncBatch.
+        var contactPrekeySequence: Int = -1
         
         /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
