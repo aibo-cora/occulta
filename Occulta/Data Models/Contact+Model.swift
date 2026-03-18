@@ -51,6 +51,10 @@ extension Contact {
         @Relationship(deleteRule: .cascade, inverse: \Key.profile)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
+        /// Encrypted prekey public keys received from this contact.
+        /// Each entry: AES-GCM encrypted JSON-encoded Prekey struct.
+        var contactPrekeys: [Data]? = []
+        
         /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
         /// Identifier of the user that originally acquired this contact's public key.
