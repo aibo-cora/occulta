@@ -447,7 +447,7 @@ struct ComposableMessage: View {
                 
                 let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
-                let encryptedData = try self.contactManager?.encrypt(data: encoded, for: identifier)
+                let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: self.identifier)
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false
