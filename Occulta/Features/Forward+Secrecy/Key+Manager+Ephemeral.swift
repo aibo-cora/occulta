@@ -3,7 +3,6 @@
 //  Occulta
 //
 //  Created by Yura on 3/14/26.
-//  Updated for prekey forward secrecy on 3/17/26.
 //
 
 import Foundation
@@ -20,7 +19,7 @@ extension Manager.Key {
     /// `kSecAttrIsPermanent: false` means the key is never written to the keychain.
     /// The private key reference is valid only for the lifetime of the returned `SecKey`
     /// object. Once that reference is released, the key material is gone with no way
-    /// to recover it. This property is what makes the forward secret path work.
+    /// to recover it.
     ///
     /// - Returns: `(privateKey, publicKeyData)` where `publicKeyData` is x963 (65 bytes),
     ///   or `nil` if key generation fails.
@@ -36,9 +35,9 @@ extension Manager.Key {
         ]
 
         guard
-            let privateKey     = SecKeyCreateRandomKey(attributes, &error),
-            let publicKey      = SecKeyCopyPublicKey(privateKey),
-            let publicKeyData  = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
+            let privateKey    = SecKeyCreateRandomKey(attributes, &error),
+            let publicKey     = SecKeyCopyPublicKey(privateKey),
+            let publicKeyData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
         else {
             return nil
         }
@@ -46,28 +45,26 @@ extension Manager.Key {
         return (privateKey, publicKeyData)
     }
 
-    // MARK: - Shared secret derivation (ephemeral sender or prekey recipient)
+    // MARK: - Shared secret derivation (ephemeral or prekey private key)
 
-    /// Derive a session key using a given private key and a peer's public key material.
+    /// Derive a session key using any in-memory private key and a peer's public key.
     ///
-    /// Used on both sides of the FS exchange:
+    /// Used on both sides of the forward-secret exchange:
     ///
-    /// **Encryption side** (ephemeral private key + recipient prekey public):
+    /// **Encryption (sender):**
     /// ```
     /// sessionKey = HKDF(ECDH(ephemeralPriv, recipientPrekeyPub))
     /// ```
     ///
-    /// **Decryption side** (our prekey private key + sender ephemeral public):
+    /// **Decryption (recipient):**
     /// ```
     /// sessionKey = HKDF(ECDH(ourPrekeyPriv, senderEphemeralPub))
     /// ```
     ///
     /// ECDH commutativity guarantees both sides arrive at the same raw shared secret.
     /// The XOR salt is also commutative, so HKDF output is identical on both sides.
-    /// This means no new decrypt-side HKDF logic is needed — the same derivation
-    /// function works for both roles.
     ///
-    /// Uses identical HKDF parameters to the existing `createSharedSecret(using:)`:
+    /// Uses identical parameters to the existing `createSharedSecret(using:)`:
     /// - Algorithm: `.ecdhKeyExchangeCofactorX963SHA256`
     /// - Salt: XOR(peerPublicKey, ourPublicKey) — 65 bytes
     /// - Info: `"Occulta-v1-encryption-key-2025"` (UTF-8)
@@ -77,7 +74,11 @@ extension Manager.Key {
     ///   - ephemeralPrivateKey: Any in-memory `SecKey` — throwaway or prekey private.
     ///   - recipientMaterial:   Peer's public key in x963 format.
     /// - Returns: 256-bit `SymmetricKey`, or `nil` on failure.
-    func createSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
+    func createSharedSecret(
+        ephemeralPrivateKey: SecKey,
+        recipientMaterial: Data
+    ) -> SymmetricKey? {
+
         guard
             let recipientPublicKey = self.convert(material: recipientMaterial)
         else { return nil }
@@ -100,11 +101,10 @@ extension Manager.Key {
             ) as? Data
         else { return nil }
 
-        // Build XOR salt from both public keys.
-        // XOR is commutative: XOR(A, B) == XOR(B, A).
+        // XOR salt — commutative: XOR(A, B) == XOR(B, A)
         // Encryption: XOR(recipientPub, ephemeralPub)
         // Decryption: XOR(ephemeralPub,  recipientPub)
-        // Both produce identical salt. ✓
+        // Both produce the same salt. ✓
         guard
             let ephemeralPublicKey     = SecKeyCopyPublicKey(ephemeralPrivateKey),
             let ephemeralPublicKeyData = self.convert(key: ephemeralPublicKey),
@@ -115,7 +115,6 @@ extension Manager.Key {
         let ourBuffer:  [UInt8] = ephemeralPublicKeyData.map { $0 }
         let salt = Data(zip(peerBuffer, ourBuffer).map { $0 ^ $1 })
 
-        // Identical HKDF parameters to createSharedSecret(using:) — intentional.
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSharedSecret),
             salt: salt,

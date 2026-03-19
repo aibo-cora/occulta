@@ -23,7 +23,7 @@ import CryptoKit
 ///
 /// All forward secrecy concerns — mode, ephemeral key, prekey ID, fingerprint,
 /// replenishment batch — are grouped in ``SecrecyContext``. If the bundle format
-/// evolves again, `ciphertext` and `version` remain untouched.
+/// evolves, `ciphertext` and `version` remain untouched; only `SecrecyContext` grows.
 struct OccultaBundle: Codable {
 
     // MARK: - Version
@@ -35,7 +35,7 @@ struct OccultaBundle: Codable {
         case v1
         /// Ephemeral key used to encrypt messages. Never shipped.
         case v2
-        /// Complete forward secrecy via consumed prekey batches.
+        /// Complete forward secrecy via per-contact consumed prekey batches.
         case v3fs
     }
 
@@ -59,39 +59,32 @@ struct OccultaBundle: Codable {
 
     // MARK: - PrekeySyncBatch
 
-    /// A versioned batch of prekey public keys for replenishment.
+    /// A versioned batch of prekey public keys for a specific contact.
     ///
-    /// Carries a monotonically increasing `sequence` number so the recipient
-    /// can decide whether to replace their stored prekeys or ignore the batch:
+    /// Carries a monotonically increasing `sequence` so the recipient can
+    /// decide whether to replace their stored prekeys or ignore the batch:
     ///
     /// ```
     /// incoming.sequence > stored.sequence  →  replace entirely, prune old SE keys
     /// incoming.sequence <= stored.sequence →  ignore (duplicate delivery)
     /// ```
     ///
-    /// Grouping sequence + prekeys together avoids having them drift apart
-    /// across encoding/decoding boundaries.
+    /// Each `Prekey` inside carries `contactID` — the recipient's identifier as
+    /// known to the sender. This ensures SE tags on the sender's side remain
+    /// scoped to this contact's pool.
     struct PrekeySyncBatch: Codable {
 
-        /// Monotonically increasing batch generation number.
-        ///
-        /// Incremented each time `PrekeyManager.generateBatch()` is called.
-        /// Persisted in `UserDefaults` across launches.
+        /// Monotonically increasing batch generation number, per contact.
         let sequence: Int
 
         /// The prekey public keys in this batch.
-        ///
-        /// Each `Prekey` carries the same `sequence` as this batch — they are
-        /// redundant but make each `Prekey` self-contained for SE tag construction.
+        /// Each `Prekey` carries the same `contactID` and `sequence` as this batch.
         let prekeys: [Prekey]
     }
 
     // MARK: - SecrecyContext
 
     /// All key-exchange and forward-secrecy fields for a single bundle.
-    ///
-    /// Grouping these here means `OccultaBundle` stays uncluttered as the
-    /// secrecy mechanism evolves.
     ///
     /// ## Sender identification
     /// The recipient iterates contacts computing:
@@ -119,15 +112,17 @@ struct OccultaBundle: Codable {
 
         /// Sequence number of the recipient's prekey that was consumed.
         ///
-        /// Combined with `prekeyID`, allows the recipient to construct the exact
-        /// SE tag `"prekey.<prekeySequence>.<prekeyID>"` to look up their private key.
+        /// Combined with `prekeyID` and the sender's `contactID` (which the
+        /// recipient knows as their own identifier), the recipient reconstructs
+        /// the exact SE tag: `"prekey.<contactID>.<prekeySequence>.<prekeyID>"`.
         /// Non-nil only when `mode == .forwardSecret`.
         let prekeySequence: Int?
 
         /// 16 random bytes, unique per bundle.
         ///
-        /// Binds `senderFingerprint` to this bundle — two bundles from the same
-        /// sender produce different fingerprints, preventing cross-bundle linkability.
+        /// Binds `senderFingerprint` to this bundle. Two bundles from the same
+        /// sender produce different fingerprints — no cross-bundle linkability
+        /// without already possessing the sender's long-term public key.
         let fingerprintNonce: Data
 
         /// SHA-256(senderLongTermPublicKey || fingerprintNonce).
@@ -136,11 +131,10 @@ struct OccultaBundle: Codable {
         /// observer who intercepts the bundle.
         let senderFingerprint: Data
 
-        /// Sender's fresh prekey batch for the recipient to store.
+        /// Sender's fresh prekeys for the recipient to store.
         ///
         /// Always included — even on the fallback path — so the next message
         /// can use the forward secret path.
-        /// `nil` only if prekey generation failed entirely (should not occur).
         let prekeyBatch: PrekeySyncBatch?
 
         // MARK: - Fingerprint helpers
@@ -178,7 +172,9 @@ struct OccultaBundle: Codable {
 
     // MARK: - Serialisation
 
-    func encoded() throws -> Data { try JSONEncoder().encode(self) }
+    func encoded() throws -> Data {
+        try JSONEncoder().encode(self)
+    }
 
     static func decoded(from data: Data) throws -> OccultaBundle {
         try JSONDecoder().decode(OccultaBundle.self, from: data)
@@ -186,12 +182,14 @@ struct OccultaBundle: Codable {
 
     // MARK: - UI helpers
 
-    var isForwardSecret: Bool { secrecy.mode == .forwardSecret }
+    var isForwardSecret: Bool { self.secrecy.mode == .forwardSecret }
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    return "Forward Secret"
-        case .longTermFallback: return "Standard Encryption"
+        case .forwardSecret:    
+            return "Forward Secret"
+        case .longTermFallback: 
+            return "Standard Encryption"
         }
     }
 }

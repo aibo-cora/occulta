@@ -7,89 +7,88 @@
 
 import Foundation
 import SwiftData
-
-// MARK: - Prekey storage and sender identification on Contact.Profile
+import CryptoKit
 
 extension Contact.Profile {
 
-    // MARK: - Prekey sync (replace, not append)
+    // MARK: - Raw prekey store access
 
-    /// Sync an inbound ``PrekeySyncBatch`` onto this contact's prekey store.
+    /// Remove and return the oldest raw encrypted prekey blob from the store.
     ///
-    /// ## Replace semantics
-    /// If `batch.sequence > contactPrekeySequence`:
-    /// - Replace `contactPrekeys` entirely with the new batch
-    /// - Update `contactPrekeySequence` to `batch.sequence`
-    /// - Prune our own SE private keys from the old sequence (see below)
-    ///
-    /// If `batch.sequence <= contactPrekeySequence`:
-    /// - Ignore — duplicate delivery or stale batch
-    ///
-    /// ## Why we prune our own SE keys here
-    /// When this contact sends us a new prekey batch (seq N), it means they
-    /// have discarded their old prekeys (seq N-1). Any of our SE private keys
-    /// corresponding to that contact's old public keys will never be used to
-    /// decrypt a bundle. We prune them to avoid accumulation.
-    ///
-    /// We keep seq N-1 as a one-step safety buffer in case a bundle encrypted
-    /// with the old batch arrives out of order.
-    ///
-    /// - Parameters:
-    ///   - batch:         The ``PrekeySyncBatch`` from `bundle.secrecy.prekeyBatch`.
-    ///   - cryptoOps:     Crypto manager for encrypting each `Prekey` before storage.
-    ///   - prekeyManager: Used to prune our own SE keys from old sequences.
-    func syncPrekeyBatch(
-        _ batch: OccultaBundle.PrekeySyncBatch,
-        using cryptoOps: Manager.Crypto,
-        prekeyManager: Manager.PrekeyManager
-    ) throws {
-        let storedSequence = self.contactPrekeySequence
-
-        // Ignore stale or duplicate batches.
-        guard batch.sequence > storedSequence else { return }
-
-        // Encrypt each Prekey before storage — consistent with how all key
-        // material is handled in the app.
-        let encrypted: [Data] = try batch.prekeys.compactMap { prekey in
-            let encoded = try JSONEncoder().encode(prekey)
-            return try cryptoOps.encrypt(data: encoded)
-        }
-
-        // Replace entirely — do not append.
-        self.contactPrekeys      = encrypted
-        self.contactPrekeySequence = batch.sequence
-
-        // Prune our own SE private keys from sequences older than storedSequence.
-        // storedSequence was the last batch this contact had — keys from that
-        // batch are still valid as a one-step buffer. Anything older is orphaned.
-        if storedSequence > 0 {
-            prekeyManager.pruneSequences(olderThan: storedSequence)
-        }
-    }
-
-    // MARK: - Prekey consumption
-
-    /// Remove and return the oldest prekey from this contact's store, decrypted.
-    ///
-    /// Returns `nil` if the store is empty — caller should trigger the fallback path.
-    ///
-    /// - Parameter cryptoOps: Crypto manager for decrypting stored key material.
-    /// - Returns: The oldest ``Prekey``, or `nil` if the store is empty.
-    func popOldestPrekey(using cryptoOps: Manager.Crypto) throws -> Prekey? {
+    /// Returns the encrypted `Data` blob — the caller decrypts it.
+    /// Returns `nil` if the store is empty.
+    func popOldestPrekeyData() -> Data? {
         guard
             var current = self.contactPrekeys,
             !current.isEmpty
         else { return nil }
 
-        let encryptedEntry = current.removeFirst()
+        let oldest = current.removeFirst()
         self.contactPrekeys = current
+        
+        return oldest
+    }
 
-        guard let decrypted = try cryptoOps.decrypt(data: encryptedEntry) else {
-            return nil
+    /// Replace the contact's prekey store entirely with new encrypted blobs.
+    ///
+    /// Only replaces if `sequence > contactPrekeySequence` (newer batch).
+    /// Ignores stale or duplicate batches silently.
+    ///
+    /// The caller is responsible for:
+    /// - Encrypting each `Prekey` before building `blobs`.
+    /// - Calling `PrekeyManager.pruneSequences(olderThan:contactID:)` after
+    ///   this call to clean up old SE keys.
+    ///
+    /// - Parameters:
+    ///   - blobs:    Encrypted `Prekey` blobs to store. Must match the `prekeys`
+    ///               array from a ``PrekeySyncBatch``, each AES-GCM encrypted.
+    ///   - sequence: The `PrekeySyncBatch.sequence` of the incoming batch.
+    func syncPrekeyData(_ blobs: [Data], sequence: Int) {
+        guard
+            sequence > self.contactPrekeySequence
+        else { return }
+        
+        self.contactPrekeys        = blobs
+        self.contactPrekeySequence = sequence
+    }
+
+    /// Find and return the raw encrypted blob whose decrypted Prekey.id matches `id`.
+    ///
+    /// Does NOT remove the blob from the store. The caller removes it separately
+    /// via `removePrekeyData(id:decryptedBlobs:)` after successful decryption.
+    ///
+    /// The caller decrypts each blob to check the id — this method returns the
+    /// raw blob so the caller can decode the full `Prekey` with correct `contactID`.
+    ///
+    /// - Parameter id: The `prekeyID` from `bundle.secrecy.prekeyID`.
+    /// - Returns: The matching encrypted blob, or `nil` if not found.
+    func findPrekeyData(id: String, decryptor: (Data) throws -> Data?) rethrows -> Data? {
+        guard let entries = self.contactPrekeys else { return nil }
+
+        for entry in entries {
+            guard
+                let decrypted = try decryptor(entry),
+                let prekey    = try? JSONDecoder().decode(Prekey.self, from: decrypted),
+                prekey.id == id
+            else { continue }
+
+            return entry
         }
 
-        return try JSONDecoder().decode(Prekey.self, from: decrypted)
+        return nil
     }
+
+    /// Remove a specific encrypted prekey blob from the store.
+    ///
+    /// Called by ContactManager after a successful decrypt to clean up the
+    /// consumed prekey from local storage.
+    ///
+    /// - Parameter blob: The exact encrypted blob to remove (identity comparison).
+    func removePrekeyData(_ blob: Data) {
+        self.contactPrekeys?.removeAll { $0 == blob }
+    }
+
+    // MARK: - Stock
 
     /// Number of prekeys currently stored for this contact.
     var storedPrekeyCount: Int {
@@ -105,31 +104,21 @@ extension Contact.Profile {
 
     /// Check whether this contact is the sender of a given bundle.
     ///
-    /// Computes SHA-256(contact.longTermPublicKey || bundle.secrecy.fingerprintNonce)
-    /// and compares against `bundle.secrecy.senderFingerprint`.
+    /// Computes SHA-256(contactPublicKey || bundle.secrecy.fingerprintNonce)
+    /// and compares it against `bundle.secrecy.senderFingerprint`.
     ///
-    /// O(1) per contact — caller iterates contacts until a match (O(n) total).
-    /// Called before decryption — no trial ECDH required.
+    /// O(1) per contact. `Data ==` is constant-time — safe against timing side-channels.
     ///
     /// - Parameters:
-    ///   - bundle:     The received ``OccultaBundle``.
-    ///   - cryptoOps:  Crypto manager for decrypting stored key material.
-    /// - Returns: `true` if this contact's fingerprint matches the bundle's.
-    func isLikelySender(
-        of bundle: OccultaBundle,
-        using cryptoOps: Manager.Crypto
-    ) -> Bool {
-        guard
-            let keyRecord        = self.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
-            let contactPublicKey = try? cryptoOps.decrypt(data: keyRecord.material)
-        else { return false }
-
+    ///   - bundle:           The received ``OccultaBundle``.
+    ///   - contactPublicKey: The contact's long-term public key in x963 format,
+    ///                       already decrypted by the caller.
+    /// - Returns: `true` if the fingerprint matches.
+    func isLikelySender(of bundle: OccultaBundle, contactPublicKey: Data) -> Bool {
         let candidate = OccultaBundle.SecrecyContext.fingerprint(
             for: contactPublicKey,
             nonce: bundle.secrecy.fingerprintNonce
         )
-
-        // Data == is constant-time in Swift — safe against timing side-channels.
         return candidate == bundle.secrecy.senderFingerprint
     }
 }
