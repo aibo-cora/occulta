@@ -8,6 +8,8 @@
 import SwiftUI
 import SwiftData
 
+// TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
+
 @main
 struct OccultaApp: App {
     @State private var contactManager: ContactManager
@@ -160,72 +162,81 @@ struct OccultaApp: App {
         .environment(self.contactManager)
     }
     
+    /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
+    ///
+    /// Dispatches to the correct decryption path based on the bundle version:
+    /// - `.v3fs` — forward-secret path via ``ContactManager/decrypt(bundle:)``
+    /// - `default` — legacy path via ``ContactManager/decrypt(data:)``
+    ///
+    /// After decryption, file-type attachments are written to a temporary directory
+    /// so `AsyncImage` and `AVPlayer` can load them by URL.
     private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket {
         try await withThrowingTaskGroup(of: Occulta.File.self) { group in
-            let messageContainer = try? EncryptedMessageContainer.decode(from: fileContents)
-            
-            debugPrint("Building basket for version: \(messageContainer?.version.rawValue ?? "none")")
-            
-            var decrypted: (plaintext: Data, ownerID: String)
-            
-            switch messageContainer?.version {
-            case .v1, .none:
-                decrypted = try self.contactManager.decrypt(data: fileContents)
-            case .v2:
-                guard
-                    let cipherText = messageContainer?.ciphertext, cipherText.isEmpty == false,
-                    let ephemeral = messageContainer?.ephemeral, ephemeral.isEmpty == false,
-                    let encryptedOwnerID = messageContainer?.encryptedOwnerID
-                else {
-                    debugPrint("The encrypted message does not contain enough information to be decrypted.")
-                    
-                    return OwnedBasket(basket: Basket(), owner: "")
+ 
+            // ── Decode bundle to read version ────────────────────────────
+            let bundle = try? OccultaBundle.decode(from: fileContents)
+ 
+            debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
+ 
+            // ── Decrypt according to version ─────────────────────────────
+            let decrypted: (plaintext: Data, ownerID: String)
+ 
+            switch bundle?.version {
+            case .v3fs:
+                guard let bundle else {
+                    throw ContactManager.Errors.messageHasNoData
                 }
-                /// Plain text files.
-                let plainText = try Manager.Crypto().decrypt(message: cipherText, using: ephemeral) ?? Data()
                 
-                // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
+                // ContactManager owns sender identification, prekey resolution,
+                // consumed-key cleanup, inbound batch sync, and model persistence.
                 
-                /// Plain text owner ID.
-                let ownerID = try Manager.Crypto().decrypt(message: encryptedOwnerID, using: ephemeral) ?? Data()
-                
-                decrypted = (plainText, String(data: ownerID, encoding: .utf8) ?? "")
+                decrypted = try self.contactManager.decrypt(bundle: bundle)
+ 
+            default:
+                // Legacy path — v1, v2, or pre-versioned files.
+                // Falls back to long-term ECDH trial decryption across all contacts.
+                decrypted = try self.contactManager.decrypt(data: fileContents)
             }
-            
+ 
+            // ── Decode basket from plaintext ─────────────────────────────
             let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
-            
+ 
+            // ── Write file attachments to temp directory ─────────────────
             var processed: [Occulta.File] = []
-            
             let tempDir = FileManager.default.temporaryDirectory
-            
+ 
             for file in basket.files {
-                /// Store photos, videos and documents in temp folder if the file's content is a file
                 switch file.format {
                 case .file(let metadata):
-                    let fileURL = tempDir.appendingPathComponent(metadata.name ?? UUID().uuidString).appendingPathExtension(metadata.extension ?? "bin")
+                    /// Store photos, videos and documents in temp folder if the file's content is a file
+                    let fileURL = tempDir
+                        .appendingPathComponent(metadata.name ?? UUID().uuidString)
+                        .appendingPathExtension(metadata.extension ?? "bin")
                     let content = file.content ?? Data()
-                    
+ 
                     group.addTask {
                         try content.write(to: fileURL)
-                        
-                        let newFile = Occulta.File(url: fileURL, format: file.format, date: file.date)
-                        
-                        return newFile
+                        return Occulta.File(url: fileURL, format: file.format, date: file.date)
                     }
+ 
                 default:
                     processed.append(file)
                 }
             }
-            
+ 
             for try await file in group {
                 processed.append(file)
             }
-            
-            let sorted = processed.sorted(by: { $0.date ?? .now < $1.date ?? .now })
-            let modifiedBasket = Basket(id: basket.id, files: sorted, date: basket.date, owner: basket.owner)
-            let ownedBasket = OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
-            
-            return ownedBasket
+ 
+            let sorted = processed.sorted { ($0.date ?? .now) < ($1.date ?? .now) }
+            let modifiedBasket = Basket(
+                id:    basket.id,
+                files: sorted,
+                date:  basket.date,
+                owner: basket.owner
+            )
+ 
+            return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
         }
     }
 }

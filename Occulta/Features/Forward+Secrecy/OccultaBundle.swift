@@ -172,11 +172,11 @@ struct OccultaBundle: Codable {
 
     // MARK: - Serialisation
 
-    func encoded() throws -> Data {
+    func encode() throws -> Data {
         try JSONEncoder().encode(self)
     }
 
-    static func decoded(from data: Data) throws -> OccultaBundle {
+    static func decode(from data: Data) throws -> OccultaBundle {
         try JSONDecoder().decode(OccultaBundle.self, from: data)
     }
 
