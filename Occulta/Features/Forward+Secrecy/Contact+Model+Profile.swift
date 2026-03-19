@@ -55,19 +55,21 @@ extension Contact.Profile {
     /// Find and return the raw encrypted blob whose decrypted Prekey.id matches `id`.
     ///
     /// Does NOT remove the blob from the store. The caller removes it separately
-    /// via `removePrekeyData(id:decryptedBlobs:)` after successful decryption.
+    /// via `removePrekeyData(_:)` after successful decryption.
     ///
-    /// The caller decrypts each blob to check the id — this method returns the
-    /// raw blob so the caller can decode the full `Prekey` with correct `contactID`.
+    /// Decrypt errors for individual entries are silently skipped — a failed
+    /// decrypt means "not this entry," not "abort the search."
     ///
-    /// - Parameter id: The `prekeyID` from `bundle.secrecy.prekeyID`.
+    /// - Parameters:
+    ///   - id:        The `prekeyID` from `bundle.secrecy.prekeyID`.
+    ///   - decryptor: Closure that decrypts a raw blob. May throw — errors are swallowed.
     /// - Returns: The matching encrypted blob, or `nil` if not found.
-    func findPrekeyData(id: String, decryptor: (Data) throws -> Data?) rethrows -> Data? {
+    func findPrekeyData(id: String, decryptor: (Data) throws -> Data?) -> Data? {
         guard let entries = self.contactPrekeys else { return nil }
 
         for entry in entries {
             guard
-                let decrypted = try decryptor(entry),
+                let decrypted = try? decryptor(entry),
                 let prekey    = try? JSONDecoder().decode(Prekey.self, from: decrypted),
                 prekey.id == id
             else { continue }

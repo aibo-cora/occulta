@@ -957,7 +957,7 @@ extension ContactManager {
             bundle.secrecy.mode == .forwardSecret,
             let prekeyID = bundle.secrecy.prekeyID
         {
-            let blob = try sender.findPrekeyData(id: prekeyID) { encryptedEntry in
+            let blob = sender.findPrekeyData(id: prekeyID) { encryptedEntry in
                 try cryptoOps.decrypt(data: encryptedEntry)
             }
  

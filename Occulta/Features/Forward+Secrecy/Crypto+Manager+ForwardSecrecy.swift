@@ -213,15 +213,18 @@ extension Manager.Crypto {
         switch bundle.secrecy.mode {
         case .forwardSecret:
             guard let prekey else {
-                // No prekey provided — attempt long-term fallback.
-                plaintext = try? self.decryptLongTerm(bundle: bundle)
-                return (plaintext, bundle.secrecy.prekeyBatch)
+                // No prekey provided for a .forwardSecret bundle.
+                // Cannot decrypt — the long-term key was not used to seal this bundle.
+                return (nil, bundle.secrecy.prekeyBatch)
             }
 
             guard let prekeyPrivateKey = prekeyManager.retrievePrivateKey(for: prekey) else {
-                // Prekey already consumed or pruned — attempt long-term fallback.
-                plaintext = try? self.decryptLongTerm(bundle: bundle)
-                return (plaintext, bundle.secrecy.prekeyBatch)
+                // Prekey already consumed or pruned.
+                // A .forwardSecret bundle was encrypted with a specific prekey — the
+                // long-term key cannot decrypt it (GCM tag will never verify).
+                // Return nil immediately; attempting ECDH with the wrong key is
+                // both pointless and the source of the malloc crash in test/simulator.
+                return (nil, bundle.secrecy.prekeyBatch)
             }
 
             guard
@@ -287,10 +290,7 @@ extension Manager.Crypto {
         )
 
         return (
-            OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext),
-            outboundBatch,
-            currentSequence
-        )
+            OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext), outboundBatch, currentSequence)
     }
 
     private func decryptLongTerm(bundle: OccultaBundle) throws -> Data? {
