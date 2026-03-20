@@ -14,126 +14,78 @@ extension Manager.Crypto {
 
     // MARK: - Encryption
 
-    /// Encrypt a message or file for a single recipient with forward secrecy where possible.
+    /// Encrypt a message for a single recipient.
     ///
-    /// ## What the caller (ContactManager) does before this call:
-    /// - Fetch and decrypt `contactPrekey` from the contact's stored prekeys.
-    ///   Pass `nil` if the store is empty (triggers fallback path).
-    /// - Provide `contactID` and `outboundPrekeySequence` from the contact model.
+    /// ## Responsibilities of this function
+    /// - Crypto operations only: ECDH, HKDF, AES-GCM, fingerprint.
+    /// - No SE side effects. No replenishment. No SwiftData.
     ///
-    /// ## What the caller does after this call:
-    /// - Remove the consumed prekey from the contact's local store.
-    /// - If `outboundBatch` is non-nil, encrypt each `Prekey` and replace the
-    ///   contact's prekey store via `syncPrekeyData(_:sequence:)`.
-    /// - Write `nextOutboundSequence` back to `Contact.Profile.outboundPrekeySequence`.
-    /// - Save the model context.
+    /// ## Caller (ContactManager) is responsible for
+    /// - Deciding whether to replenish prekeys BEFORE calling this method.
+    /// - Passing the pre-computed `outboundBatch` (or nil).
+    /// - Updating `outboundPrekeySequence` on the contact model after.
+    /// - Persisting all model changes.
     ///
-    /// ## Forward secret path (`contactPrekey` is non-nil)
+    /// ## Forward secret path (`contactPrekey` non-nil)
     /// ```
     /// sessionKey = HKDF(ECDH(ephemeralPriv, contactPrekey.publicKey))
     /// ```
     ///
-    /// ## Fallback path (`contactPrekey` is nil)
+    /// ## Fallback path (`contactPrekey` nil)
     /// ```
-    /// sessionKey = HKDF(ECDH(ourLongTermSEKey, recipientMaterial))
+    /// sessionKey = HKDF(ECDH(ourLongTermSEKey, recipientPublicIdentityKey))
     /// ```
-    /// Always generates a fresh batch so the next message can use FS.
     ///
     /// - Parameters:
-    ///   - message:                Plaintext payload.
-    ///   - contactPrekey:          Oldest ``Prekey`` for this contact, or `nil` for fallback.
-    ///   - recipientMaterial:      Recipient's long-term public key in x963 format.
-    ///   - contactID:              `Contact.Profile.identifier` of the recipient.
-    ///   - outboundPrekeySequence: `Contact.Profile.outboundPrekeySequence` for this contact.
+    ///   - message:           Plaintext payload.
+    ///   - contactPrekey:     Oldest prekey from contact's store, or nil for fallback.
+    ///   - recipientMaterial: Recipient's long-term public key in x963 format.
+    ///   - outboundBatch:     Pre-computed replenishment batch, or nil if not needed.
+    ///                        Caller generates this via PrekeyManager BEFORE calling here.
     /// - Returns:
-    ///   - `bundle`:               Sealed ``OccultaBundle`` ready for transmission.
-    ///   - `outboundBatch`:        Fresh ``PrekeySyncBatch`` or `nil` if no replenishment needed.
-    ///   - `nextOutboundSequence`: New sequence value. Caller writes to contact model.
+    ///   - `bundle`: The sealed ``OccultaBundle``.
     /// - Throws: `EncryptionError` or `CryptoKit` errors.
-    func encryptForwardSecret(
-        message: Data,
-        contactPrekey: Prekey?,
-        recipientMaterial: Data,
-        contactID: String,
-        outboundPrekeySequence: Int
-    ) throws -> (
-        bundle: OccultaBundle,
-        outboundBatch: OccultaBundle.PrekeySyncBatch?,
-        nextOutboundSequence: Int
-    ) {
-        let prekeyManager = Manager.PrekeyManager()
-
+    func encryptForwardSecret(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
         let ourPublicKey = try self.keyManager.retrieveIdentity()
 
         let fingerprintNonce  = OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(
-            for: ourPublicKey,
-            nonce: fingerprintNonce
-        )
-
-        // Proactively replenish if stock is low for this contact.
-        var nextSequence = outboundPrekeySequence
-        var outboundBatch: OccultaBundle.PrekeySyncBatch? = nil
-
-        if prekeyManager.needsReplenishment(for: contactID) {
-            let result = try prekeyManager.generateBatch(
-                contactID: contactID,
-                currentSequence: nextSequence
-            )
-            outboundBatch = OccultaBundle.PrekeySyncBatch(
-                sequence: nextSequence,
-                prekeys:  result.prekeys
-            )
-            nextSequence = result.nextSequence
-        }
+        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
 
         // ── Forward secret path ──────────────────────────────────────────
         if let contactPrekey {
             guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) =
-                    self.keyManager.generateEphemeralKeyPair()
+                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
             else {
                 return try self.fallback(
-                    message: message,
+                    message:           message,
                     recipientMaterial: recipientMaterial,
-                    ourPublicKey: ourPublicKey,
-                    fingerprintNonce: fingerprintNonce,
+                    ourPublicKey:      ourPublicKey,
+                    fingerprintNonce:  fingerprintNonce,
                     senderFingerprint: senderFingerprint,
-                    contactID: contactID,
-                    currentSequence: nextSequence,
-                    outboundBatch: outboundBatch
+                    outboundBatch:     outboundBatch
                 )
             }
 
             guard
-                let sessionKey = self.keyManager.createSharedSecret(
-                    ephemeralPrivateKey: ephemeralPrivateKey,
-                    recipientMaterial: contactPrekey.publicKey
-                )
+                let sessionKey = self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey)
             else {
                 return try self.fallback(
-                    message: message,
+                    message:           message,
                     recipientMaterial: recipientMaterial,
-                    ourPublicKey: ourPublicKey,
-                    fingerprintNonce: fingerprintNonce,
+                    ourPublicKey:      ourPublicKey,
+                    fingerprintNonce:  fingerprintNonce,
                     senderFingerprint: senderFingerprint,
-                    contactID: contactID,
-                    currentSequence: nextSequence,
-                    outboundBatch: outboundBatch
+                    outboundBatch:     outboundBatch
                 )
             }
 
             guard
-                let ciphertext = try AES.GCM.seal(
-                    message,
-                    using: sessionKey,
-                    nonce: AES.GCM.Nonce()
-                ).combined
+                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce()).combined
             else {
                 throw EncryptionError.sealFailed
             }
 
-            // ephemeralPrivateKey goes out of scope here — forward secrecy established.
+            // ephemeralPrivateKey released here — forward secrecy established.
 
             let secrecy = OccultaBundle.SecrecyContext(
                 mode:               .forwardSecret,
@@ -145,136 +97,70 @@ extension Manager.Crypto {
                 prekeyBatch:        outboundBatch
             )
 
-            return (
-                OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext),
-                outboundBatch,
-                nextSequence
-            )
+            return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext)
         }
 
         // ── Long-term fallback path ──────────────────────────────────────
-        // Generate a full fresh batch unconditionally — breaks the exhaustion cycle.
-        let result       = try prekeyManager.generateBatch(
-            contactID: contactID,
-            currentSequence: nextSequence
-        )
-        let freshBatch   = OccultaBundle.PrekeySyncBatch(
-            sequence: nextSequence,
-            prekeys:  result.prekeys
-        )
-        nextSequence = result.nextSequence
-
         return try self.fallback(
-            message: message,
+            message:           message,
             recipientMaterial: recipientMaterial,
-            ourPublicKey: ourPublicKey,
-            fingerprintNonce: fingerprintNonce,
+            ourPublicKey:      ourPublicKey,
+            fingerprintNonce:  fingerprintNonce,
             senderFingerprint: senderFingerprint,
-            contactID: contactID,
-            currentSequence: nextSequence,
-            outboundBatch: freshBatch
+            outboundBatch:     outboundBatch
         )
     }
 
     // MARK: - Decryption
 
-    /// Decrypt a bundle using a specific prekey resolved by the caller.
+    /// Derive a session key using an ephemeral private key and recipient material.
+    /// 
+    /// Used by ContactManager to compute the session key for the FS path
+    /// - Parameters:
+    ///   - ephemeralPrivateKey: <#ephemeralPrivateKey description#>
+    ///   - recipientMaterial: <#recipientMaterial description#>
+    /// - Returns: <#description#>
+    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
+        self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial:   recipientMaterial)
+    }
+
+    /// Derive a session key using the long-term identity key and peer material.
+    /// 
+    /// Used by ContactManager for the fallback path.
+    /// - Parameter material: <#material description#>
+    /// - Returns: <#description#>
+    func deriveSessionKey(using material: Data) -> SymmetricKey? {
+        self.keyManager.createSharedSecret(using: material)
+    }
+
+    /// Open a sealed AES-GCM bundle with a pre-derived session key.
     ///
-    /// ## What the caller (ContactManager) does before this call:
-    /// - Identify the sender via `isLikelySender(of:contactPublicKey:)`.
-    /// - Fetch the matching stored `Prekey` from the sender's contact profile
-    ///   using the raw prekey data (decrypt blob → decode Prekey → match by id).
+    /// ## This function is purely AES-GCM. Zero SE access.
     ///
-    /// ## What the caller does after this call:
-    /// - Remove the consumed prekey from the sender's local store.
-    /// - If `inboundBatch` is non-nil: encrypt each prekey, call
-    ///   `syncPrekeyData(_:sequence:)` on the sender's profile.
-    /// - Persist plaintext to local SwiftData store immediately — the bundle
-    ///   is now disposable; forward secrecy means it cannot be re-decrypted.
-    /// - Save the model context.
+    /// All key derivation (SE operations) must be complete and all SecKey
+    /// references must be released before calling this function.
+    /// ContactManager is responsible for:
+    /// - Deriving the session key via deriveSessionKey(...)
+    /// - Releasing the SecKey (goes out of scope before this call)
+    /// - Calling PrekeyManager.consume() AFTER this call returns
     ///
     /// - Parameters:
-    ///   - bundle: The ``OccultaBundle`` to decrypt.
-    ///   - prekey: The stored ``Prekey`` matching `bundle.secrecy.prekeyID`.
-    ///             Must carry the correct `contactID` for SE tag construction.
-    ///             Pass `nil` to attempt long-term fallback only.
-    /// - Returns:
-    ///   - `plaintext`:    Decrypted payload, or `nil` if decryption fails.
-    ///   - `inboundBatch`: Sender's fresh prekeys. Caller stores on sender's profile.
-    /// - Throws: `CryptoKit` if GCM tag verification fails (tampering / corruption).
-    func decryptForwardSecret(
-        bundle: OccultaBundle,
-        prekey: Prekey?
-    ) throws -> (plaintext: Data?, inboundBatch: OccultaBundle.PrekeySyncBatch?) {
-
-        let prekeyManager = Manager.PrekeyManager()
-        let plaintext: Data?
-
-        switch bundle.secrecy.mode {
-        case .forwardSecret:
-            guard let prekey else {
-                // No prekey provided for a .forwardSecret bundle.
-                // Cannot decrypt — the long-term key was not used to seal this bundle.
-                return (nil, bundle.secrecy.prekeyBatch)
-            }
-
-            guard let prekeyPrivateKey = prekeyManager.retrievePrivateKey(for: prekey) else {
-                // Prekey already consumed or pruned.
-                // A .forwardSecret bundle was encrypted with a specific prekey — the
-                // long-term key cannot decrypt it (GCM tag will never verify).
-                // Return nil immediately; attempting ECDH with the wrong key is
-                // both pointless and the source of the malloc crash in test/simulator.
-                return (nil, bundle.secrecy.prekeyBatch)
-            }
-
-            guard
-                let sessionKey = self.keyManager.createSharedSecret(
-                    ephemeralPrivateKey: prekeyPrivateKey,
-                    recipientMaterial: bundle.secrecy.ephemeralPublicKey
-                )
-            else {
-                return (nil, nil)
-            }
-
-            let box       = try AES.GCM.SealedBox(combined: bundle.ciphertext)
-            let decrypted = try AES.GCM.open(box, using: sessionKey)
-
-            // Delete prekey private key from SE immediately after successful open.
-            // This is the moment forward secrecy is established for this message.
-            // The session key can never be reconstructed — the private half is gone.
-            prekeyManager.consume(prekey: prekey)
-
-            plaintext = decrypted
-        case .longTermFallback:
-            plaintext = try self.decryptLongTerm(bundle: bundle)
-        }
-
-        return (plaintext, bundle.secrecy.prekeyBatch)
+    ///   - bundle:     The received ``OccultaBundle``.
+    ///   - sessionKey: Pre-derived symmetric key. Caller owns derivation.
+    /// - Returns: Decrypted plaintext.
+    /// - Throws: CryptoKit if GCM tag verification fails.
+    func open(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
+        let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
+        
+        return try AES.GCM.open(box, using: sessionKey)
     }
 
     // MARK: - Private helpers
 
-    private func fallback(
-        message: Data,
-        recipientMaterial: Data,
-        ourPublicKey: Data,
-        fingerprintNonce: Data,
-        senderFingerprint: Data,
-        contactID: String,
-        currentSequence: Int,
-        outboundBatch: OccultaBundle.PrekeySyncBatch?
-    ) throws -> (
-        bundle: OccultaBundle,
-        outboundBatch: OccultaBundle.PrekeySyncBatch?,
-        nextOutboundSequence: Int
-    ) {
+    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
         guard
             let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial),
-            let ciphertext = try AES.GCM.seal(
-                message,
-                using: sessionKey,
-                nonce: AES.GCM.Nonce()
-            ).combined
+            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce()).combined
         else {
             throw EncryptionError.keyDerivationFailed
         }
@@ -289,19 +175,7 @@ extension Manager.Crypto {
             prekeyBatch:        outboundBatch
         )
 
-        return (
-            OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext), outboundBatch, currentSequence)
-    }
-
-    private func decryptLongTerm(bundle: OccultaBundle) throws -> Data? {
-        guard
-            let sessionKey = self.keyManager.createSharedSecret(
-                using: bundle.secrecy.ephemeralPublicKey
-            )
-        else { return nil }
-
-        let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
-        return try AES.GCM.open(box, using: sessionKey)
+        return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext)
     }
 }
 

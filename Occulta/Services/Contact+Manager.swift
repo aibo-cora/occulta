@@ -807,74 +807,78 @@ extension ContactManager {
 // MARK: - v3fs bundle encryption
  
 extension ContactManager {
-    /// Encrypt a message or file for a contact using the forward-secret v3fs path.
+ 
+    /// Encrypt a message for a contact using the forward-secret v3fs path.
     ///
-    /// This method owns the full send-side orchestration:
-    /// 1. Fetch the contact and decrypt their active long-term public key.
-    /// 2. Pop the oldest prekey from the contact's stored pool.
-    /// 3. Delegate cryptographic encryption to `Manager.Crypto` (raw Data only).
-    /// 4. Remove the consumed prekey from the contact's local store.
-    /// 5. Sync the outbound prekey batch onto the contact's profile.
-    /// 6. Write the incremented sequence back to `contact.outboundPrekeySequence`.
-    /// 7. Persist all model changes.
-    /// 8. Return the encoded bundle as `Data` for wrapping in `EncryptedFile`.
-    ///
-    /// - Parameters:
-    ///   - data:       Plaintext payload (encoded `Basket`).
-    ///   - identifier: `Contact.Profile.identifier` of the recipient.
-    /// - Returns: `OccultaBundle.encoded()` as `Data`.
-    /// - Throws:
-    ///   - `ContactManager.Errors.contactNotFound` if no contact matches identifier.
-    ///   - `ContactManager.Errors.contactHasNoKeys` if the contact has no active key.
-    ///   - `ContactManager.Errors.messageHasNoData` if `data` is empty.
-    ///   - Any `CryptoKit` or encoding error.
+    /// Steps — all SE writes precede all ECDH operations:
+    /// 1. Fetch contact, resolve long-term public key.
+    /// 2. Pop oldest prekey from contact's store.
+    /// 3. SE WRITES: replenish prekey pool via PrekeyManager if needed.
+    /// 4. ECDH + AES-GCM: call encryptForwardSecret (zero SE side effects).
+    /// 5. Remove consumed prekey blob from model.
+    /// 6. Sync outbound batch onto contact profile.
+    /// 7. Update sequence. Persist. Return encoded bundle.
     func encryptBundle(data: Data, for identifier: String) throws -> Data {
         guard data.isEmpty == false else {
-            throw ContactManager.Errors.messageHasNoData
+            throw Errors.messageHasNoData
+        }
+        guard let contact = try fetchContact(by: identifier) else {
+            throw Errors.contactNotFound
         }
  
-        guard let contact = try self.fetchContact(by: identifier) else {
-            throw ContactManager.Errors.contactNotFound
-        }
+        let cryptoOps     = Manager.Crypto()
+        let prekeyManager = Manager.PrekeyManager()
  
-        let cryptoOps = Manager.Crypto()
- 
-        // ── Step 1: Resolve recipient's long-term public key ─────────────
+        // ── 1. Recipient's long-term public key ──────────────────────────
         guard
             let keyRecord         = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
             let recipientMaterial = try? cryptoOps.decrypt(data: keyRecord.material),
             recipientMaterial.isEmpty == false
         else {
-            throw ContactManager.Errors.contactHasNoKeys
+            throw Errors.contactHasNoKeys
         }
  
-        // ── Step 2: Pop oldest prekey from contact's store ───────────────
-        // Returns nil if store is empty — triggers fallback path in crypto layer.
-        var consumedPrekeyBlob: Data?   = nil
-        var contactPrekey:      Prekey? = nil
+        // ── 2. Pop oldest prekey ─────────────────────────────────────────
+        var consumedBlob:  Data?   = nil
+        var contactPrekey: Prekey? = nil
  
         if let blob = contact.popOldestPrekeyData() {
-            consumedPrekeyBlob = blob
+            consumedBlob  = blob
             contactPrekey = (try? cryptoOps.decrypt(data: blob))
                 .flatMap { try? JSONDecoder().decode(Prekey.self, from: $0) }
         }
  
-        // ── Step 3: Encrypt ──────────────────────────────────────────────
-        let (bundle, outboundBatch, nextSequence) = try cryptoOps.encryptForwardSecret(
-            message:                data,
-            contactPrekey:          contactPrekey,
-            recipientMaterial:      recipientMaterial,
-            contactID:              contact.identifier,
-            outboundPrekeySequence: contact.outboundPrekeySequence
+        // ── 3. SE WRITES — must finish before step 4 ────────────────────
+        var outboundBatch: OccultaBundle.PrekeySyncBatch? = nil
+        var nextSeq = contact.outboundPrekeySequence
+ 
+        if prekeyManager.needsReplenishment(for: contact.identifier) || contactPrekey == nil {
+            let seq    = contact.outboundPrekeySequence
+            let result = try prekeyManager.generateBatch(
+                contactID:       contact.identifier,
+                currentSequence: seq
+            )
+            outboundBatch = OccultaBundle.PrekeySyncBatch(
+                sequence: seq,
+                prekeys:  result.prekeys
+            )
+            nextSeq = result.nextSequence
+        }
+        // SE is now idle. No more SE writes until this function returns.
+ 
+        // ── 4. ECDH + AES-GCM — zero SE side effects ────────────────────
+        let bundle = try cryptoOps.encryptForwardSecret(
+            message:           data,
+            contactPrekey:     contactPrekey,
+            recipientMaterial: recipientMaterial,
+            outboundBatch:     outboundBatch
         )
  
-        // ── Step 4: Remove consumed prekey from local store ──────────────
-        // Only reached if encryption succeeded — past all throw points.
-        if let blob = consumedPrekeyBlob {
+        // ── 5–7. Model updates ───────────────────────────────────────────
+        if let blob = consumedBlob {
             contact.removePrekeyData(blob)
         }
  
-        // ── Step 5 & 6: Sync outbound batch and update sequence ──────────
         if let batch = outboundBatch {
             let blobs: [Data] = batch.prekeys.compactMap { prekey in
                 guard
@@ -883,16 +887,12 @@ extension ContactManager {
                 else { return nil }
                 return encrypted
             }
- 
             contact.syncPrekeyData(blobs, sequence: batch.sequence)
         }
  
-        contact.outboundPrekeySequence = nextSequence
+        contact.outboundPrekeySequence = nextSeq
+        try modelContext.save()
  
-        // ── Step 7: Persist ──────────────────────────────────────────────
-        try self.modelContext.save()
- 
-        // ── Step 8: Return encoded bundle ────────────────────────────────
         return try bundle.encode()
     }
 }
@@ -901,36 +901,23 @@ extension ContactManager {
  
 extension ContactManager {
  
-    /// Decrypt a forward-secret ``OccultaBundle`` (version `.v3fs`).
+    /// Decrypt a v3fs bundle.
     ///
-    /// This method owns the full receive-side orchestration:
-    /// 1. Identify the sender via nonce-bound fingerprint (O(n) hash comparisons).
-    /// 2. Resolve the matching prekey from the sender's stored pool.
-    /// 3. Delegate cryptographic decryption to `Manager.Crypto` (raw Data only).
-    /// 4. Remove the consumed prekey from the sender's local store.
-    /// 5. Sync the inbound prekey batch onto the sender's profile (replace semantics).
-    /// 6. Prune the sender's old SE keys for the superseded sequence.
-    /// 7. Persist all model changes.
+    /// All SecKey lifetime is managed here via the closure pattern:
+    ///   1. Retrieve SecKey inside closure.
+    ///   2. Derive session key inside closure.
+    ///   3. Closure returns — SecKey released by ARC.
+    ///   4. consume() calls SecItemDelete AFTER SecKey is gone.
     ///
-    /// Returns the decrypted plaintext and the sender's contact identifier,
-    /// matching the `(plaintext: Data, ownerID: String)` contract used by
-    /// `buildOwnedBasket` for all bundle versions.
-    ///
-    /// - Parameter bundle: A decoded `.v3fs` ``OccultaBundle``.
-    /// - Returns: `(plaintext, ownerID)` where `ownerID` is `Contact.Profile.identifier`.
-    /// - Throws:
-    ///   - `ContactManager.Errors.noPublicKeyToEncryptWith` if no contact matches
-    ///     the sender fingerprint.
-    ///   - `ContactManager.Errors.decryptionFailed` if decryption produces no plaintext.
-    ///   - Any `CryptoKit` error from GCM tag verification failure.
+    /// The fallback path (no prekey) calls deriveSessionKey(using:) on the
+    /// SE master key. There is no consume on the master key — it is permanent.
+    /// The ECDH result is a SymmetricKey (heap data). Releasing it is safe.
     func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
         let cryptoOps     = Manager.Crypto()
         let prekeyManager = Manager.PrekeyManager()
  
-        // ── Step 1: Identify sender ──────────────────────────────────────
-        // O(n) SHA-256 comparisons — no trial ECDH.
-        let contacts = try self.fetchAllContacts()
- 
+        // ── 1. Identify sender by fingerprint ───────────────────────────
+        let contacts = try fetchAllContacts()
         var sender: Contact.Profile?
  
         for contact in contacts {
@@ -941,53 +928,88 @@ extension ContactManager {
  
             if contact.isLikelySender(of: bundle, contactPublicKey: pubKey) {
                 sender = contact
+                
                 break
             }
         }
  
         guard let sender else {
-            throw ContactManager.Errors.noPublicKeyToEncryptWith
+            throw Errors.noPublicKeyToEncryptWith
         }
  
-        // ── Step 2: Resolve prekey (forward secret path only) ────────────
-        var resolvedPrekey:     Prekey? = nil
-        var consumedPrekeyBlob: Data?   = nil
+        // ── 2. Resolve prekey (FS path only) ─────────────────────────────
+        var resolvedPrekey: Prekey? = nil
+        var consumedBlob:   Data?   = nil
  
-        if
-            bundle.secrecy.mode == .forwardSecret,
-            let prekeyID = bundle.secrecy.prekeyID
-        {
-            let blob = sender.findPrekeyData(id: prekeyID) { encryptedEntry in
-                try cryptoOps.decrypt(data: encryptedEntry)
-            }
- 
+        if bundle.secrecy.mode == .forwardSecret, let prekeyID = bundle.secrecy.prekeyID {
+            let blob = sender.findPrekeyData(id: prekeyID) { try cryptoOps.decrypt(data: $0) }
+            
             if let blob {
-                consumedPrekeyBlob = blob
+                consumedBlob   = blob
                 resolvedPrekey = (try? cryptoOps.decrypt(data: blob))
                     .flatMap { try? JSONDecoder().decode(Prekey.self, from: $0) }
             }
         }
  
-        // ── Step 3: Decrypt ──────────────────────────────────────────────
-        let (plaintext, inboundBatch) = try cryptoOps.decryptForwardSecret(
-            bundle: bundle,
-            prekey: resolvedPrekey
-        )
+        // ── 3. Decrypt ───────────────────────────────────────────────────
+        let plaintext: Data?
  
-        guard let plaintext else {
-            throw ContactManager.Errors.decryptionFailed
+        switch bundle.secrecy.mode {
+        case .forwardSecret:
+            // ⚠️ CRASH PROTECTION: SecKey must be released before consume().
+            //
+            // SecItemDelete (inside consume) invalidates the SE item that backs
+            // the SecKey. If ARC releases the SecKey after SecItemDelete, it
+            // calls CFRelease on a stale SE object → malloc crash.
+            //
+            // The closure guarantees the SecKey goes out of scope at its closing
+            // brace. consume() is called only after the closure returns.
+            let decrypted: Data? = try {
+                guard
+                    let prekey          = resolvedPrekey,
+                    let prekeyPrivKey   = prekeyManager.retrievePrivateKey(for: prekey),
+                    let sessionKey      = cryptoOps.deriveSessionKey(ephemeralPrivateKey: prekeyPrivKey, recipientMaterial:   bundle.secrecy.ephemeralPublicKey)
+                else {
+                    return nil
+                }
+                return try cryptoOps.open(bundle, using: sessionKey)
+                // ← prekeyPrivKey released here, BEFORE consume() below
+            }()
+ 
+            if decrypted != nil, let prekey = resolvedPrekey {
+                // Safe: SecKey reference above is gone.
+                prekeyManager.consume(prekey: prekey)
+            }
+ 
+            plaintext = decrypted
+        case .longTermFallback:
+            // Master SE key is permanent — no consume, no SecKey lifetime concern.
+            // deriveSessionKey(using:) does ECDH and returns a SymmetricKey.
+            // The SymmetricKey is heap data — safe to hold and release normally.
+            guard
+                let sessionKey = cryptoOps.deriveSessionKey(
+                    using: bundle.secrecy.ephemeralPublicKey
+                )
+            else {
+                plaintext = nil
+                break
+            }
+            plaintext = try cryptoOps.open(bundle, using: sessionKey)
         }
  
-        // ── Step 4: Remove consumed prekey from local store ──────────────
-        if let blob = consumedPrekeyBlob {
+        guard let plaintext else {
+            throw Errors.decryptionFailed
+        }
+ 
+        // ── 4. Model updates ─────────────────────────────────────────────
+        if let blob = consumedBlob {
             sender.removePrekeyData(blob)
         }
  
-        // ── Step 5 & 6: Sync inbound prekey batch ───────────────────────
-        if let batch = inboundBatch {
-            let oldSequence = sender.contactPrekeySequence
+        if let inboundBatch = bundle.secrecy.prekeyBatch {
+            let oldSeq = sender.contactPrekeySequence
  
-            let blobs: [Data] = batch.prekeys.compactMap { prekey in
+            let blobs: [Data] = inboundBatch.prekeys.compactMap { prekey in
                 guard
                     let encoded   = try? JSONEncoder().encode(prekey),
                     let encrypted = try? cryptoOps.encrypt(data: encoded)
@@ -995,18 +1017,17 @@ extension ContactManager {
                 return encrypted
             }
  
-            sender.syncPrekeyData(blobs, sequence: batch.sequence)
+            sender.syncPrekeyData(blobs, sequence: inboundBatch.sequence)
  
-            if batch.sequence > oldSequence {
+            if inboundBatch.sequence > oldSeq {
                 prekeyManager.pruneSequences(
-                    olderThan: oldSequence,
+                    olderThan: oldSeq,
                     contactID: sender.identifier
                 )
             }
         }
  
-        // ── Step 7: Persist ──────────────────────────────────────────────
-        try self.modelContext.save()
+        try modelContext.save()
  
         return (plaintext, sender.identifier)
     }

@@ -72,6 +72,7 @@ struct OccultaBundle: Codable {
     /// Each `Prekey` inside carries `contactID` — the recipient's identifier as
     /// known to the sender. This ensures SE tags on the sender's side remain
     /// scoped to this contact's pool.
+    nonisolated
     struct PrekeySyncBatch: Codable {
 
         /// Monotonically increasing batch generation number, per contact.
