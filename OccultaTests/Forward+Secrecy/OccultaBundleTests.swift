@@ -29,15 +29,10 @@ final class OccultaBundleTests: XCTestCase {
             ephemeralPublicKey: Data(count: 65),
             prekeyID:           prekeyID,
             prekeySequence:     prekeySeq,
-            fingerprintNonce:   nonce,
-            senderFingerprint:  fingerprint,
             prekeyBatch:        prekeyBatch
         )
-        return OccultaBundle(
-            version:    OccultaBundle.currentVersion,
-            secrecy:    secrecy,
-            ciphertext: ciphertext
-        )
+        
+        return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: nonce, senderFingerprint: fingerprint)
     }
 
     // MARK: - Version
@@ -84,6 +79,7 @@ final class OccultaBundleTests: XCTestCase {
     func test_encodeDecode_preservesVersion() throws {
         let original = makeBundle()
         let decoded  = try OccultaBundle.decode(from: original.encode())
+        
         XCTAssertEqual(decoded.version, original.version)
     }
 
@@ -91,6 +87,7 @@ final class OccultaBundleTests: XCTestCase {
         for mode in [OccultaBundle.Mode.forwardSecret, .longTermFallback] {
             let original = makeBundle(mode: mode)
             let decoded  = try OccultaBundle.decode(from: original.encode())
+            
             XCTAssertEqual(decoded.secrecy.mode, original.secrecy.mode)
         }
     }
@@ -98,6 +95,7 @@ final class OccultaBundleTests: XCTestCase {
     func test_encodeDecode_preservesPrekeyIDAndSequence() throws {
         let original = makeBundle(prekeyID: "xyz", prekeySeq: 7)
         let decoded  = try OccultaBundle.decode(from: original.encode())
+        
         XCTAssertEqual(decoded.secrecy.prekeyID,       "xyz")
         XCTAssertEqual(decoded.secrecy.prekeySequence, 7)
     }
@@ -105,6 +103,7 @@ final class OccultaBundleTests: XCTestCase {
     func test_encodeDecode_nilPrekeyIDOnFallback() throws {
         let original = makeBundle(mode: .longTermFallback, prekeyID: nil, prekeySeq: nil)
         let decoded  = try OccultaBundle.decode(from: original.encode())
+        
         XCTAssertNil(decoded.secrecy.prekeyID)
         XCTAssertNil(decoded.secrecy.prekeySequence)
     }
@@ -114,14 +113,16 @@ final class OccultaBundleTests: XCTestCase {
         let fingerprint = Data((0..<32).map { UInt8($0 &+ 100) })
         let original    = makeBundle(nonce: nonce, fingerprint: fingerprint)
         let decoded     = try OccultaBundle.decode(from: original.encode())
-        XCTAssertEqual(decoded.secrecy.fingerprintNonce,  nonce)
-        XCTAssertEqual(decoded.secrecy.senderFingerprint, fingerprint)
+        
+        XCTAssertEqual(decoded.fingerprintNonce,  nonce)
+        XCTAssertEqual(decoded.senderFingerprint, fingerprint)
     }
 
     func test_encodeDecode_preservesCiphertext() throws {
         let ciphertext = Data((0..<128).map { UInt8($0) })
         let original   = makeBundle(ciphertext: ciphertext)
         let decoded    = try OccultaBundle.decode(from: original.encode())
+        
         XCTAssertEqual(decoded.ciphertext, original.ciphertext)
     }
 
@@ -151,6 +152,7 @@ final class OccultaBundleTests: XCTestCase {
     func test_fingerprint_isSHA256OfPublicKeyPlusNonce() {
         let publicKey = Data(repeating: 0x42, count: 65)
         let nonce     = Data(repeating: 0x11, count: 16)
+        
         var input     = publicKey
         input.append(nonce)
 
@@ -168,8 +170,7 @@ final class OccultaBundleTests: XCTestCase {
         let fp1 = OccultaBundle.SecrecyContext.fingerprint(for: publicKey, nonce: nonce1)
         let fp2 = OccultaBundle.SecrecyContext.fingerprint(for: publicKey, nonce: nonce2)
 
-        XCTAssertNotEqual(fp1, fp2,
-                          "Different nonces must produce different fingerprints for the same key")
+        XCTAssertNotEqual(fp1, fp2, "Different nonces must produce different fingerprints for the same key")
     }
 
     func test_fingerprint_differentKey_producesDifferentResult() {
@@ -184,23 +185,22 @@ final class OccultaBundleTests: XCTestCase {
     }
 
     func test_fingerprint_is32Bytes() {
-        let result = OccultaBundle.SecrecyContext.fingerprint(
-            for: Data(count: 65),
-            nonce: Data(count: 16)
+        let result = OccultaBundle.SecrecyContext.fingerprint(for: Data(count: 65), nonce: Data(count: 16)
         )
         XCTAssertEqual(result.count, 32)
     }
 
     func test_generateNonce_is16Bytes() {
         let nonce = OccultaBundle.SecrecyContext.generateNonce()
+        
         XCTAssertEqual(nonce.count, 16)
     }
 
     func test_generateNonce_isRandomEachCall() {
         let n1 = OccultaBundle.SecrecyContext.generateNonce()
         let n2 = OccultaBundle.SecrecyContext.generateNonce()
-        XCTAssertNotEqual(n1, n2,
-                          "Consecutive nonces must not be equal (astronomically unlikely if truly random)")
+        
+        XCTAssertNotEqual(n1, n2, "Consecutive nonces must not be equal (astronomically unlikely if truly random)")
     }
 
     // MARK: - PrekeySyncBatch

@@ -31,6 +31,7 @@ final class ContactModelPrekeyTests: XCTestCase {
 
     private func decrypt(_ data: Data) throws -> Data {
         let box = try AES.GCM.SealedBox(combined: data)
+        
         return try AES.GCM.open(box, using: Self.blobKey)
     }
 
@@ -317,14 +318,9 @@ final class ContactModelPrekeyTests: XCTestCase {
             ephemeralPublicKey: Data(count: 65),
             prekeyID:           nil,
             prekeySequence:     nil,
-            fingerprintNonce:   nonce,
-            senderFingerprint:  fingerprint,
             prekeyBatch:        nil
         )
-        return OccultaBundle(
-            version:    .v3fs,
-            secrecy:    secrecy,
-            ciphertext: Data(count: 28)
-        )
+        
+        return OccultaBundle(version: .v3fs, secrecy: secrecy, ciphertext: Data(count: 28), fingerprintNonce: nonce, senderFingerprint: fingerprint)
     }
 }

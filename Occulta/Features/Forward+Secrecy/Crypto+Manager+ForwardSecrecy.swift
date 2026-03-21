@@ -33,7 +33,7 @@ extension Manager.Crypto {
     ///
     /// ## Fallback path (`contactPrekey` nil)
     /// ```
-    /// sessionKey = HKDF(ECDH(ourLongTermSEKey, recipientPublicIdentityKey))
+    /// sessionKey = HKDF(ECDH(ourLongTermSEKey, recipientMaterial))
     /// ```
     ///
     /// - Parameters:
@@ -45,16 +45,26 @@ extension Manager.Crypto {
     /// - Returns:
     ///   - `bundle`: The sealed ``OccultaBundle``.
     /// - Throws: `EncryptionError` or `CryptoKit` errors.
-    func encryptForwardSecret(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
+    func encryptForwardSecret(
+        message: Data,
+        contactPrekey: Prekey?,
+        recipientMaterial: Data,
+        outboundBatch: OccultaBundle.PrekeySyncBatch?
+    ) throws -> OccultaBundle {
+
         let ourPublicKey = try self.keyManager.retrieveIdentity()
 
         let fingerprintNonce  = OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
+        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(
+            for: ourPublicKey,
+            nonce: fingerprintNonce
+        )
 
         // ── Forward secret path ──────────────────────────────────────────
         if let contactPrekey {
             guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
+                let (ephemeralPrivateKey, ephemeralPublicKeyData) =
+                    self.keyManager.generateEphemeralKeyPair()
             else {
                 return try self.fallback(
                     message:           message,
@@ -67,7 +77,7 @@ extension Manager.Crypto {
             }
 
             guard
-                let sessionKey = self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey)
+                let sessionKey = self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial:   contactPrekey.publicKey)
             else {
                 return try self.fallback(
                     message:           message,
@@ -77,12 +87,6 @@ extension Manager.Crypto {
                     senderFingerprint: senderFingerprint,
                     outboundBatch:     outboundBatch
                 )
-            }
-
-            guard
-                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce()).combined
-            else {
-                throw EncryptionError.sealFailed
             }
 
             // ephemeralPrivateKey released here — forward secrecy established.
@@ -92,12 +96,24 @@ extension Manager.Crypto {
                 ephemeralPublicKey: ephemeralPublicKeyData,
                 prekeyID:           contactPrekey.id,
                 prekeySequence:     contactPrekey.sequence,
-                fingerprintNonce:   fingerprintNonce,
-                senderFingerprint:  senderFingerprint,
                 prekeyBatch:        outboundBatch
             )
 
-            return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext)
+            let aad = try Self.encodeAAD(secrecy)
+
+            guard
+                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
+            else {
+                throw EncryptionError.sealFailed
+            }
+
+            return OccultaBundle(
+                version:           OccultaBundle.currentVersion,
+                secrecy:           secrecy,
+                ciphertext:        ciphertext,
+                fingerprintNonce:  fingerprintNonce,
+                senderFingerprint: senderFingerprint
+            )
         }
 
         // ── Long-term fallback path ──────────────────────────────────────
@@ -114,21 +130,17 @@ extension Manager.Crypto {
     // MARK: - Decryption
 
     /// Derive a session key using an ephemeral private key and recipient material.
-    /// 
+    ///
     /// Used by ContactManager to compute the session key for the FS path
-    /// - Parameters:
-    ///   - ephemeralPrivateKey: <#ephemeralPrivateKey description#>
-    ///   - recipientMaterial: <#recipientMaterial description#>
-    /// - Returns: <#description#>
+    /// BEFORE calling openBundle. The SecKey must be released by the caller
+    /// before any SecItemDelete is called.
     func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
-        self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial:   recipientMaterial)
+        self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial)
     }
 
     /// Derive a session key using the long-term identity key and peer material.
-    /// 
+    ///
     /// Used by ContactManager for the fallback path.
-    /// - Parameter material: <#material description#>
-    /// - Returns: <#description#>
     func deriveSessionKey(using material: Data) -> SymmetricKey? {
         self.keyManager.createSharedSecret(using: material)
     }
@@ -150,17 +162,17 @@ extension Manager.Crypto {
     /// - Returns: Decrypted plaintext.
     /// - Throws: CryptoKit if GCM tag verification fails.
     func open(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
+        let aad = try Self.encodeAAD(bundle.secrecy)
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
         
-        return try AES.GCM.open(box, using: sessionKey)
+        return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
     }
 
     // MARK: - Private helpers
 
     private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
         guard
-            let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial),
-            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce()).combined
+            let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial)
         else {
             throw EncryptionError.keyDerivationFailed
         }
@@ -170,12 +182,40 @@ extension Manager.Crypto {
             ephemeralPublicKey: ourPublicKey,
             prekeyID:           nil,
             prekeySequence:     nil,
-            fingerprintNonce:   fingerprintNonce,
-            senderFingerprint:  senderFingerprint,
             prekeyBatch:        outboundBatch
         )
 
-        return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext)
+        let aad = try Self.encodeAAD(secrecy)
+
+        guard
+            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
+        else {
+            throw EncryptionError.keyDerivationFailed
+        }
+
+        return OccultaBundle(
+            version:           OccultaBundle.currentVersion,
+            secrecy:           secrecy,
+            ciphertext:        ciphertext,
+            fingerprintNonce:  fingerprintNonce,
+            senderFingerprint: senderFingerprint
+        )
+    }
+
+}
+
+// MARK: - AAD helper
+
+extension Manager.Crypto {
+    /// Encode a `SecrecyContext` as AAD with sorted keys.
+    ///
+    /// `.sortedKeys` guarantees identical byte output on both seal and open,
+    /// regardless of Swift runtime version or `JSONEncoder` instance state.
+    private static func encodeAAD(_ secrecy: OccultaBundle.SecrecyContext) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        
+        return try encoder.encode(secrecy)
     }
 }
 

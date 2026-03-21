@@ -308,8 +308,8 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         XCTAssertEqual(decoded.secrecy.ephemeralPublicKey, original.secrecy.ephemeralPublicKey)
         XCTAssertEqual(decoded.secrecy.prekeyID,           original.secrecy.prekeyID)
         XCTAssertEqual(decoded.secrecy.prekeySequence,     original.secrecy.prekeySequence)
-        XCTAssertEqual(decoded.secrecy.fingerprintNonce,   original.secrecy.fingerprintNonce)
-        XCTAssertEqual(decoded.secrecy.senderFingerprint,  original.secrecy.senderFingerprint)
+        XCTAssertEqual(decoded.fingerprintNonce,           original.fingerprintNonce)
+        XCTAssertEqual(decoded.senderFingerprint,          original.senderFingerprint)
         XCTAssertEqual(decoded.ciphertext,                 original.ciphertext)
     }
 

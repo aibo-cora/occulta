@@ -17,7 +17,6 @@ internal import CryptoKit
 @testable import Occulta
 
 final class CryptoForwardSecrecyTests: XCTestCase {
-
     var crypto:        Manager.Crypto!
     var prekeyManager: Manager.PrekeyManager!
     var testKeyMgr:    TestKeyManager!
@@ -61,12 +60,8 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     /// Decrypt a bundle using deriveSessionKey + openBundle.
     /// The SecKey (for FS) is scoped inside the closure — released before consume.
-    private func decrypt(
-        bundle: OccultaBundle,
-        prekey: Prekey?
-    ) throws -> Data? {
+    private func decrypt(bundle: OccultaBundle, prekey: Prekey?) throws -> Data? {
         switch bundle.secrecy.mode {
-
         case .forwardSecret:
             let result: Data? = try {
                 guard
@@ -77,21 +72,22 @@ final class CryptoForwardSecrecyTests: XCTestCase {
                         recipientMaterial:   bundle.secrecy.ephemeralPublicKey
                     )
                 else { return nil }
+                
                 return try crypto.open(bundle, using: sessionKey)
                 // ← privKey released here
             }()
 
             if result != nil, let pk = prekey {
-                prekeyManager.consume(prekey: pk)
+                self.prekeyManager.consume(prekey: pk)
             }
             return result
-
         case .longTermFallback:
             guard
                 let sessionKey = crypto.deriveSessionKey(
                     using: bundle.secrecy.ephemeralPublicKey
                 )
             else { return nil }
+            
             return try crypto.open(bundle, using: sessionKey)
         }
     }
@@ -152,7 +148,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             message: Data("test".utf8), contactPrekey: try onePrekey(for: c),
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
-        XCTAssertEqual(bundle.secrecy.fingerprintNonce.count, 16)
+        XCTAssertEqual(bundle.fingerprintNonce.count, 16)
     }
 
     func test_encrypt_FS_fingerprintMatchesOurKey() throws {
@@ -165,9 +161,9 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         )
         let expected = OccultaBundle.SecrecyContext.fingerprint(
             for:   try testKeyMgr.retrieveIdentity(),
-            nonce: bundle.secrecy.fingerprintNonce
+            nonce: bundle.fingerprintNonce
         )
-        XCTAssertEqual(bundle.secrecy.senderFingerprint, expected)
+        XCTAssertEqual(bundle.senderFingerprint, expected)
     }
 
     func test_encrypt_FS_eachBundleUniqueNonce() throws {
@@ -184,8 +180,8 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             message: Data("b".utf8), contactPrekey: keys[1],
             recipientMaterial: recip, outboundBatch: nil
         )
-        XCTAssertNotEqual(b1.secrecy.fingerprintNonce,  b2.secrecy.fingerprintNonce)
-        XCTAssertNotEqual(b1.secrecy.senderFingerprint, b2.secrecy.senderFingerprint)
+        XCTAssertNotEqual(b1.fingerprintNonce,  b2.fingerprintNonce)
+        XCTAssertNotEqual(b1.senderFingerprint, b2.senderFingerprint)
     }
 
     func test_encrypt_FS_outboundBatchEmbedded() throws {
@@ -265,10 +261,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         let prekey = try onePrekey(for: c)
         let recip  = recipientPub()
 
-        let bundle = try crypto.encryptForwardSecret(
-            message: Data("round trip".utf8), contactPrekey: prekey,
-            recipientMaterial: recip, outboundBatch: nil
-        )
+        let bundle = try crypto.encryptForwardSecret(message: Data("round trip".utf8), contactPrekey: prekey, recipientMaterial: recip, outboundBatch: nil)
 
         // TestKeyManager used the same in-memory key for encrypt and decrypt,
         // so the ECDH result is consistent and the roundtrip succeeds.
@@ -285,13 +278,12 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
 
-        let bundle = try crypto.encryptForwardSecret(
-            message: Data("secret".utf8), contactPrekey: prekey,
-            recipientMaterial: recipientPub(), outboundBatch: nil
-        )
+        let bundle = try crypto.encryptForwardSecret(message: Data("secret".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil)
 
         XCTAssertNotNil(prekeyManager.retrievePrivateKey(for: prekey))
+        
         _ = try decrypt(bundle: bundle, prekey: prekey)
+        
         XCTAssertNil(prekeyManager.retrievePrivateKey(for: prekey),
                      "Key must be deleted after successful decrypt")
     }
@@ -303,10 +295,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
 
-        let bundle = try crypto.encryptForwardSecret(
-            message: Data("once".utf8), contactPrekey: prekey,
-            recipientMaterial: recipientPub(), outboundBatch: nil
-        )
+        let bundle = try crypto.encryptForwardSecret(message: Data("once".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil)
 
         let first  = try decrypt(bundle: bundle, prekey: prekey)
         XCTAssertNotNil(first)
@@ -320,11 +309,9 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
 
-        let bundle = try crypto.encryptForwardSecret(
-            message: Data("test".utf8), contactPrekey: prekey,
-            recipientMaterial: recipientPub(), outboundBatch: nil
-        )
+        let bundle = try crypto.encryptForwardSecret(message: Data("test".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil)
         let result = try decrypt(bundle: bundle, prekey: nil)
+        
         XCTAssertNil(result)
     }
 
@@ -352,36 +339,159 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
 
-        let bundle = try crypto.encryptForwardSecret(
-            message: Data("tamper".utf8), contactPrekey: prekey,
-            recipientMaterial: recipientPub(), outboundBatch: nil
-        )
+        let bundle = try crypto.encryptForwardSecret(message: Data("tamper".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil)
 
         var tampered = bundle.ciphertext
         tampered[tampered.count / 2] ^= 0xFF
-
-        let tamperedBundle = OccultaBundle(
-            version:    bundle.version,
-            secrecy:    bundle.secrecy,
-            ciphertext: tampered
-        )
+        
+        let tamperedBundle = OccultaBundle(version: bundle.version, secrecy: bundle.secrecy, ciphertext: tampered, fingerprintNonce: bundle.fingerprintNonce, senderFingerprint: bundle.senderFingerprint)
 
         // Need a session key to call openBundle
         guard
             let privKey    = prekeyManager.retrievePrivateKey(for: prekey),
-            let sessionKey = crypto.deriveSessionKey(
-                ephemeralPrivateKey: privKey,
-                recipientMaterial:   bundle.secrecy.ephemeralPublicKey
-            )
+            let sessionKey = crypto.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey)
         else {
             XCTFail("Could not derive session key for tamper test")
+            
             return
         }
         prekeyManager.consume(prekey: prekey)   // privKey already out of guard scope
 
+        XCTAssertThrowsError(try crypto.open(tamperedBundle, using: sessionKey), "Tampered ciphertext must fail GCM tag verification")
+    }
+
+    // MARK: - AAD tamper protection
+
+    /// Flip `mode` inside SecrecyContext — AAD mismatch must make openBundle throw.
+    func test_openBundle_tamperedMode_throws() throws {
+        let c      = cid()
+        defer { prekeyManager.deleteAllKeys(for: c) }
+        let prekey = try onePrekey(for: c)
+
+        let bundle = try crypto.encryptForwardSecret(
+            message: Data("test".utf8), contactPrekey: prekey,
+            recipientMaterial: recipientPub(), outboundBatch: nil
+        )
+
+        let tamperedSecrecy = OccultaBundle.SecrecyContext(
+            mode:               .longTermFallback,   // changed
+            ephemeralPublicKey: bundle.secrecy.ephemeralPublicKey,
+            prekeyID:           bundle.secrecy.prekeyID,
+            prekeySequence:     bundle.secrecy.prekeySequence,
+            prekeyBatch:        bundle.secrecy.prekeyBatch
+        )
+        let tampered = OccultaBundle(
+            version:           bundle.version,
+            secrecy:           tamperedSecrecy,
+            ciphertext:        bundle.ciphertext,
+            fingerprintNonce:  bundle.fingerprintNonce,
+            senderFingerprint: bundle.senderFingerprint
+        )
+
+        guard
+            let priv = prekeyManager.retrievePrivateKey(for: prekey),
+            let key  = crypto.deriveSessionKey(
+                ephemeralPrivateKey: priv,
+                recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+            )
+        else { XCTFail("Key derivation failed"); return }
+        prekeyManager.consume(prekey: prekey)
+
         XCTAssertThrowsError(
-            try crypto.open(tamperedBundle, using: sessionKey),
-            "Tampered ciphertext must fail GCM tag verification"
+            try crypto.open(tampered, using: key),
+            "Tampered mode must fail GCM AAD verification"
+        )
+    }
+
+    /// Replace prekeyBatch with attacker-controlled keys — this is the exact
+    /// attack AAD was introduced to prevent. Must throw on open.
+    func test_openBundle_tamperedPrekeyBatch_throws() throws {
+        let c      = cid()
+        defer { prekeyManager.deleteAllKeys(for: c) }
+        let prekey = try onePrekey(for: c)
+
+        let legitBatch = OccultaBundle.PrekeySyncBatch(
+            sequence: 1,
+            prekeys: [Prekey(id: "legit", contactID: c, sequence: 1, publicKey: Data(count: 65))]
+        )
+        let bundle = try crypto.encryptForwardSecret(
+            message: Data("test".utf8), contactPrekey: prekey,
+            recipientMaterial: recipientPub(), outboundBatch: legitBatch
+        )
+
+        // Attacker substitutes the batch with their own controlled prekeys
+        let attackerBatch = OccultaBundle.PrekeySyncBatch(
+            sequence: 1,
+            prekeys: [Prekey(id: "attacker", contactID: c, sequence: 1, publicKey: Data(repeating: 0xAA, count: 65))]
+        )
+        let tamperedSecrecy = OccultaBundle.SecrecyContext(
+            mode:               bundle.secrecy.mode,
+            ephemeralPublicKey: bundle.secrecy.ephemeralPublicKey,
+            prekeyID:           bundle.secrecy.prekeyID,
+            prekeySequence:     bundle.secrecy.prekeySequence,
+            prekeyBatch:        attackerBatch   // substituted
+        )
+        let tampered = OccultaBundle(
+            version:           bundle.version,
+            secrecy:           tamperedSecrecy,
+            ciphertext:        bundle.ciphertext,
+            fingerprintNonce:  bundle.fingerprintNonce,
+            senderFingerprint: bundle.senderFingerprint
+        )
+
+        guard
+            let priv = prekeyManager.retrievePrivateKey(for: prekey),
+            let key  = crypto.deriveSessionKey(
+                ephemeralPrivateKey: priv,
+                recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+            )
+        else { XCTFail("Key derivation failed"); return }
+        prekeyManager.consume(prekey: prekey)
+
+        XCTAssertThrowsError(
+            try crypto.open(tampered, using: key),
+            "Substituted prekeyBatch must fail GCM AAD verification"
+        )
+    }
+
+    /// Tamper ephemeralPublicKey — wrong session key AND AAD mismatch. Must throw.
+    func test_openBundle_tamperedEphemeralKey_throws() throws {
+        let c      = cid()
+        defer { prekeyManager.deleteAllKeys(for: c) }
+        let prekey = try onePrekey(for: c)
+
+        let bundle = try crypto.encryptForwardSecret(
+            message: Data("test".utf8), contactPrekey: prekey,
+            recipientMaterial: recipientPub(), outboundBatch: nil
+        )
+
+        let tamperedSecrecy = OccultaBundle.SecrecyContext(
+            mode:               bundle.secrecy.mode,
+            ephemeralPublicKey: Data(repeating: 0x00, count: 65),  // replaced
+            prekeyID:           bundle.secrecy.prekeyID,
+            prekeySequence:     bundle.secrecy.prekeySequence,
+            prekeyBatch:        bundle.secrecy.prekeyBatch
+        )
+        let tampered = OccultaBundle(
+            version:           bundle.version,
+            secrecy:           tamperedSecrecy,
+            ciphertext:        bundle.ciphertext,
+            fingerprintNonce:  bundle.fingerprintNonce,
+            senderFingerprint: bundle.senderFingerprint
+        )
+
+        guard
+            let priv = prekeyManager.retrievePrivateKey(for: prekey),
+            let key  = crypto.deriveSessionKey(
+                ephemeralPrivateKey: priv,
+                recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+            )
+        else { XCTFail("Key derivation failed"); return }
+        prekeyManager.consume(prekey: prekey)
+
+        XCTAssertThrowsError(
+            try crypto.open(tampered, using: key),
+            "Tampered ephemeralPublicKey must fail GCM AAD verification"
         )
     }
 
@@ -398,8 +508,8 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         )
         let candidate = OccultaBundle.SecrecyContext.fingerprint(
             for:   Data(repeating: 0x00, count: 65),
-            nonce: bundle.secrecy.fingerprintNonce
+            nonce: bundle.fingerprintNonce
         )
-        XCTAssertNotEqual(candidate, bundle.secrecy.senderFingerprint)
+        XCTAssertNotEqual(candidate, bundle.senderFingerprint)
     }
 }

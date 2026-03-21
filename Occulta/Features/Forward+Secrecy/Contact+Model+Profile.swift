@@ -23,7 +23,7 @@ extension Contact.Profile {
             !current.isEmpty
         else { return nil }
 
-        let oldest = current.removeFirst()
+        let oldest      = current.removeFirst()
         self.contactPrekeys = current
         
         return oldest
@@ -44,9 +44,7 @@ extension Contact.Profile {
     ///               array from a ``PrekeySyncBatch``, each AES-GCM encrypted.
     ///   - sequence: The `PrekeySyncBatch.sequence` of the incoming batch.
     func syncPrekeyData(_ blobs: [Data], sequence: Int) {
-        guard
-            sequence > self.contactPrekeySequence
-        else { return }
+        guard sequence > self.contactPrekeySequence else { return }
         
         self.contactPrekeys        = blobs
         self.contactPrekeySequence = sequence
@@ -106,8 +104,11 @@ extension Contact.Profile {
 
     /// Check whether this contact is the sender of a given bundle.
     ///
-    /// Computes SHA-256(contactPublicKey || bundle.secrecy.fingerprintNonce)
-    /// and compares it against `bundle.secrecy.senderFingerprint`.
+    /// Computes SHA-256(contactPublicKey || bundle.fingerprintNonce)
+    /// and compares it against `bundle.senderFingerprint`.
+    ///
+    /// The caller (ContactManager) decrypts the stored key material and passes
+    /// the raw public key here — no manager reference needed on the model.
     ///
     /// O(1) per contact. `Data ==` is constant-time — safe against timing side-channels.
     ///
@@ -117,10 +118,8 @@ extension Contact.Profile {
     ///                       already decrypted by the caller.
     /// - Returns: `true` if the fingerprint matches.
     func isLikelySender(of bundle: OccultaBundle, contactPublicKey: Data) -> Bool {
-        let candidate = OccultaBundle.SecrecyContext.fingerprint(
-            for: contactPublicKey,
-            nonce: bundle.secrecy.fingerprintNonce
-        )
-        return candidate == bundle.secrecy.senderFingerprint
+        let candidate = OccultaBundle.SecrecyContext.fingerprint(for: contactPublicKey, nonce: bundle.fingerprintNonce)
+        
+        return candidate == bundle.senderFingerprint
     }
 }
