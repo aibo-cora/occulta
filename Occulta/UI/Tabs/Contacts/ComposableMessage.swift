@@ -437,6 +437,7 @@ struct ComposableMessage: View {
                         /// Using `URLSession` instead of `resourceBytes` because we might need it for brackground processing.
                         let (data, _) = try await URLSession.shared.data(from: url)
                         let newFile = Occulta.File(content: data, format: file.format, date: file.date)
+                        
                         processed.append(newFile)
                     } else {
                         processed.append(file)

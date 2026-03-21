@@ -854,14 +854,9 @@ extension ContactManager {
  
         if prekeyManager.needsReplenishment(for: contact.identifier) || contactPrekey == nil {
             let seq    = contact.outboundPrekeySequence
-            let result = try prekeyManager.generateBatch(
-                contactID:       contact.identifier,
-                currentSequence: seq
-            )
-            outboundBatch = OccultaBundle.PrekeySyncBatch(
-                sequence: seq,
-                prekeys:  result.prekeys
-            )
+            let result = try prekeyManager.generateBatch(contactID: contact.identifier, currentSequence: seq)
+            
+            outboundBatch = OccultaBundle.PrekeySyncBatch(sequence: seq, prekeys:  result.prekeys)
             nextSeq = result.nextSequence
         }
         // SE is now idle. No more SE writes until this function returns.
@@ -891,6 +886,7 @@ extension ContactManager {
         }
  
         contact.outboundPrekeySequence = nextSeq
+        
         try modelContext.save()
  
         return try bundle.encode()
@@ -956,14 +952,6 @@ extension ContactManager {
  
         switch bundle.secrecy.mode {
         case .forwardSecret:
-            // ⚠️ CRASH PROTECTION: SecKey must be released before consume().
-            //
-            // SecItemDelete (inside consume) invalidates the SE item that backs
-            // the SecKey. If ARC releases the SecKey after SecItemDelete, it
-            // calls CFRelease on a stale SE object → malloc crash.
-            //
-            // The closure guarantees the SecKey goes out of scope at its closing
-            // brace. consume() is called only after the closure returns.
             let decrypted: Data? = try {
                 guard
                     let prekey          = resolvedPrekey,
@@ -973,25 +961,19 @@ extension ContactManager {
                     return nil
                 }
                 return try cryptoOps.open(bundle, using: sessionKey)
-                // ← prekeyPrivKey released here, BEFORE consume() below
             }()
  
             if decrypted != nil, let prekey = resolvedPrekey {
-                // Safe: SecKey reference above is gone.
                 prekeyManager.consume(prekey: prekey)
             }
  
             plaintext = decrypted
         case .longTermFallback:
-            // Master SE key is permanent — no consume, no SecKey lifetime concern.
-            // deriveSessionKey(using:) does ECDH and returns a SymmetricKey.
-            // The SymmetricKey is heap data — safe to hold and release normally.
             guard
-                let sessionKey = cryptoOps.deriveSessionKey(
-                    using: bundle.secrecy.ephemeralPublicKey
-                )
+                let sessionKey = cryptoOps.deriveSessionKey(using: bundle.secrecy.ephemeralPublicKey)
             else {
                 plaintext = nil
+                
                 break
             }
             plaintext = try cryptoOps.open(bundle, using: sessionKey)

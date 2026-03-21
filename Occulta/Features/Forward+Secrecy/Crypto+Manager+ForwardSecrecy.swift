@@ -45,26 +45,16 @@ extension Manager.Crypto {
     /// - Returns:
     ///   - `bundle`: The sealed ``OccultaBundle``.
     /// - Throws: `EncryptionError` or `CryptoKit` errors.
-    func encryptForwardSecret(
-        message: Data,
-        contactPrekey: Prekey?,
-        recipientMaterial: Data,
-        outboundBatch: OccultaBundle.PrekeySyncBatch?
-    ) throws -> OccultaBundle {
-
+    func encryptForwardSecret(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
         let ourPublicKey = try self.keyManager.retrieveIdentity()
 
         let fingerprintNonce  = OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(
-            for: ourPublicKey,
-            nonce: fingerprintNonce
-        )
+        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
 
         // ── Forward secret path ──────────────────────────────────────────
         if let contactPrekey {
             guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) =
-                    self.keyManager.generateEphemeralKeyPair()
+                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
             else {
                 return try self.fallback(
                     message:           message,
