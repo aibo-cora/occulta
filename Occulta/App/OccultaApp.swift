@@ -148,7 +148,7 @@ struct OccultaApp: App {
                     /// Dismiss
                 } content: { data in
                     if FeatureFlags.isEnabled(.useComposableMessage) {
-                        ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
+                        ComposableMessage.Conversation(mode: .read, identifier: data.owner, messages: .constant(data.basket.files))
                     } else {
                         Import(imported: data)
                     }
