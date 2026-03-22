@@ -10,18 +10,13 @@ import CryptoKit
 
 // MARK: - KeyManagerProtocol
 
-/// Abstracts Secure Enclave operations so Manager.Crypto can be tested
-/// without a real SE. Production code uses Manager.Key; tests use TestKeyManager.
 protocol KeyManagerProtocol {
-    /// Retrieve our long-term identity public key in x963 format.
     func retrieveIdentity() throws -> Data
-    /// Create a symmetric key for local database encryption.
     func createLocalEncryptionKey() throws -> SymmetricKey?
-    /// Derive a shared symmetric key from a peer's public key material.
+    /// Transport path — uses `kTransportKeyInfo`.
     func createSharedSecret(using material: Data?) -> SymmetricKey?
-    /// Derive a shared symmetric key using a given private key (ephemeral or prekey).
+    /// Transport path (ephemeral/prekey) — uses `kTransportKeyInfo`.
     func createSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey?
-    /// Generate an in-memory throwaway P-256 key pair.
     func generateEphemeralKeyPair() -> (privateKey: SecKey, publicKeyData: Data)?
 }
 
@@ -32,41 +27,31 @@ extension Manager.Key: KeyManagerProtocol { }
 // MARK: - TestKeyManager
 
 /// In-memory P-256 key manager for unit tests.
-///
-/// Generates a fresh key pair on init and holds the private key in memory only.
-/// No Secure Enclave — safe to use in the test process.
-///
-/// All operations are deterministic within a single test run:
-/// the same `TestKeyManager` instance always produces the same identity
-/// and the same shared secrets.
-nonisolated
+/// No Secure Enclave — safe to run in the test process.
+/// Uses the same HKDF info strings as production.
+@MainActor
 final class TestKeyManager: KeyManagerProtocol {
-
-    private let privateKey: SecKey
+    private let privateKey:    SecKey
     private let publicKeyData: Data
 
     init() {
-        let attributes: NSDictionary = [
+        let attrs: NSDictionary = [
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits: 256,
             kSecPrivateKeyAttrs: [kSecAttrIsPermanent: false]
         ]
-        var error: Unmanaged<CFError>?
-        let priv = SecKeyCreateRandomKey(attributes, &error)!
+        var err: Unmanaged<CFError>?
+        let priv = SecKeyCreateRandomKey(attrs, &err)!
         let pub  = SecKeyCopyPublicKey(priv)!
-        let data = SecKeyCopyExternalRepresentation(pub, nil)! as Data
-
+        
         self.privateKey    = priv
-        self.publicKeyData = data
+        self.publicKeyData = SecKeyCopyExternalRepresentation(pub, nil)! as Data
     }
 
-    func retrieveIdentity() throws -> Data {
-        publicKeyData
-    }
+    func retrieveIdentity() throws -> Data { self.publicKeyData }
 
+    /// Local DB key — uses `kLocalDBKeyInfo` to match production Key+Manager.
     func createLocalEncryptionKey() throws -> SymmetricKey? {
-        // Derive a fixed local key from a well-known point — same as production
-        // but using the in-memory private key instead of SE.
         let fixedX963 = Data([
             0x04,
             0x6B, 0x17, 0xD1, 0xF2, 0xE1, 0x2C, 0x42, 0x47,
@@ -78,80 +63,67 @@ final class TestKeyManager: KeyManagerProtocol {
             0x2B, 0xCE, 0x33, 0x57, 0x6B, 0x31, 0x5E, 0xCE,
             0xCB, 0xB6, 0x40, 0x68, 0x37, 0xBF, 0x51, 0xF5
         ])
-        return createSharedSecret(using: fixedX963)
+        return self.deriveKey(privateKey: self.privateKey, ourPublicKeyData: self.publicKeyData, peerMaterial: fixedX963, info: SaltInfo.kLocalDBKeyInfo)
     }
 
+    /// Transport — uses `kTransportKeyInfo`.
     func createSharedSecret(using material: Data?) -> SymmetricKey? {
         guard let material else { return nil }
         
-        return deriveKey(privateKey: privateKey, ourPublicKeyData: publicKeyData, peerMaterial: material)
+        return self.deriveKey(privateKey: self.privateKey, ourPublicKeyData: self.publicKeyData, peerMaterial: material, info: SaltInfo.kTransportKeyInfo)
     }
 
-    func createSharedSecret(
-        ephemeralPrivateKey: SecKey,
-        recipientMaterial: Data
-    ) -> SymmetricKey? {
+    /// Transport (ephemeral/prekey) — uses `kTransportKeyInfo`.
+    func createSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
         guard
-            let ephPub     = SecKeyCopyPublicKey(ephemeralPrivateKey),
-            let ephPubData = SecKeyCopyExternalRepresentation(ephPub, nil) as Data?
+            let pub  = SecKeyCopyPublicKey(ephemeralPrivateKey),
+            let data = SecKeyCopyExternalRepresentation(pub, nil) as Data?
         else { return nil }
-
-        return deriveKey(
-            privateKey:       ephemeralPrivateKey,
-            ourPublicKeyData: ephPubData,
-            peerMaterial:     recipientMaterial
-        )
+        
+        return self.deriveKey(privateKey: ephemeralPrivateKey, ourPublicKeyData: data, peerMaterial: recipientMaterial, info: SaltInfo.kTransportKeyInfo)
     }
 
     func generateEphemeralKeyPair() -> (privateKey: SecKey, publicKeyData: Data)? {
-        let attributes: NSDictionary = [
+        let attrs: NSDictionary = [
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits: 256,
             kSecPrivateKeyAttrs: [kSecAttrIsPermanent: false]
         ]
-        var error: Unmanaged<CFError>?
+        var err: Unmanaged<CFError>?
         guard
-            let priv     = SecKeyCreateRandomKey(attributes, &error),
-            let pub      = SecKeyCopyPublicKey(priv),
-            let pubData  = SecKeyCopyExternalRepresentation(pub, nil) as Data?
+            let priv = SecKeyCreateRandomKey(attrs, &err),
+            let pub  = SecKeyCopyPublicKey(priv),
+            let data = SecKeyCopyExternalRepresentation(pub, nil) as Data?
         else { return nil }
-        return (priv, pubData)
+        
+        return (priv, data)
     }
 
     // MARK: - Private
 
-    private func deriveKey(
-        privateKey:       SecKey,
-        ourPublicKeyData: Data,
-        peerMaterial:     Data
-    ) -> SymmetricKey? {
-        let attributes: [String: Any] = [
-            kSecAttrKeyType as String:     kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass as String:    kSecAttrKeyClassPublic,
+    private func deriveKey(privateKey: SecKey, ourPublicKeyData: Data, peerMaterial: Data, info: Data) -> SymmetricKey? {
+        guard peerMaterial.count == 65 else { return nil }
+
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
             kSecAttrKeySizeInBits as String: 256
         ]
-        var error: Unmanaged<CFError>?
+        var err: Unmanaged<CFError>?
         guard
-            let peerKey = SecKeyCreateWithData(peerMaterial as CFData, attributes as CFDictionary, &error)
+            let peerKey = SecKeyCreateWithData(peerMaterial as CFData, attrs as CFDictionary, &err)
         else { return nil }
 
-        let algorithm: SecKeyAlgorithm = .ecdhKeyExchangeCofactorX963SHA256
         guard
-            let rawSecret = SecKeyCopyKeyExchangeResult(
-                privateKey, algorithm, peerKey,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-                &error
-            ) as? Data
+            let rawSecret = SecKeyCopyKeyExchangeResult(privateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey, [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary, &err) as? Data
         else { return nil }
 
-        let peerBuf: [UInt8] = peerMaterial.map { $0 }
-        let ourBuf:  [UInt8] = ourPublicKeyData.map { $0 }
-        let salt = Data(zip(peerBuf, ourBuf).map { $0 ^ $1 })
+        let salt = Data(zip(peerMaterial.map { $0 }, ourPublicKeyData.map { $0 }).map { $0 ^ $1 })
 
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: salt,
-            info: "Occulta-v1-encryption-key-2025".data(using: .utf8)!,
+            info: info,
             outputByteCount: 32
         )
     }

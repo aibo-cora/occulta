@@ -8,78 +8,77 @@
 import Foundation
 import CryptoKit
 
-// MARK: - Forward-secret encryption / decryption
+// MARK: - Forward-secret encryption
 
 extension Manager.Crypto {
 
-    // MARK: - Encryption
-
     /// Encrypt a message for a single recipient.
     ///
-    /// ## Responsibilities of this function
-    /// - Crypto operations only: ECDH, HKDF, AES-GCM, fingerprint.
-    /// - No SE side effects. No replenishment. No SwiftData.
+    /// ## Invariant: no silent security degradation
+    /// If `contactPrekey` is non-nil, the caller explicitly requested the FS path.
+    /// Any failure in that path (ephemeral key generation, ECDH with the prekey)
+    /// throws `EncryptionError` rather than silently falling back to the long-term
+    /// key path. Silent fallback would mean the caller believes they sent FS when
+    /// they actually sent with the long-term key.
     ///
-    /// ## Caller (ContactManager) is responsible for
-    /// - Deciding whether to replenish prekeys BEFORE calling this method.
-    /// - Passing the pre-computed `outboundBatch` (or nil).
-    /// - Updating `outboundPrekeySequence` on the contact model after.
-    /// - Persisting all model changes.
+    /// The fallback path is entered ONLY when `contactPrekey` is nil — meaning the
+    /// caller explicitly chose the fallback (exhausted prekeys).
     ///
-    /// ## Forward secret path (`contactPrekey` non-nil)
-    /// ```
-    /// sessionKey = HKDF(ECDH(ephemeralPriv, contactPrekey.publicKey))
-    /// ```
-    ///
-    /// ## Fallback path (`contactPrekey` nil)
-    /// ```
-    /// sessionKey = HKDF(ECDH(ourLongTermSEKey, recipientMaterial))
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - message:           Plaintext payload.
-    ///   - contactPrekey:     Oldest prekey from contact's store, or nil for fallback.
-    ///   - recipientMaterial: Recipient's long-term public key in x963 format.
-    ///   - outboundBatch:     Pre-computed replenishment batch, or nil if not needed.
-    ///                        Caller generates this via PrekeyManager BEFORE calling here.
-    /// - Returns:
-    ///   - `bundle`: The sealed ``OccultaBundle``.
-    /// - Throws: `EncryptionError` or `CryptoKit` errors.
-    func encryptForwardSecret(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
+    /// ## SE ordering
+    /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
+    /// (generateBatch) are done by the caller (ContactManager) before this call.
+    func encryptForwardSecret(
+        message:           Data,
+        contactPrekey:     Prekey?,
+        recipientMaterial: Data,
+        outboundBatch:     OccultaBundle.PrekeySyncBatch?
+    ) throws -> OccultaBundle {
+
+        // Validate long-term public key length (Finding 6)
+        guard recipientMaterial.count == 65 else {
+            throw EncryptionError.invalidRecipientMaterial
+        }
+
         let ourPublicKey = try self.keyManager.retrieveIdentity()
 
-        let fingerprintNonce  = OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
+        // Finding 3: throws on entropy failure — never produce a static nonce
+        let fingerprintNonce  = try OccultaBundle.SecrecyContext.generateNonce()
+        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(
+            for: ourPublicKey, nonce: fingerprintNonce
+        )
 
-        // ── Forward secret path ──────────────────────────────────────────
+        // ── Forward secret path (contactPrekey non-nil) ──────────────────
         if let contactPrekey {
-            guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
-            else {
-                return try self.fallback(
-                    message:           message,
-                    recipientMaterial: recipientMaterial,
-                    ourPublicKey:      ourPublicKey,
-                    fingerprintNonce:  fingerprintNonce,
-                    senderFingerprint: senderFingerprint,
-                    outboundBatch:     outboundBatch
-                )
+
+            // Validate the prekey's public key before ECDH.
+            // contactPrekey.publicKey comes from a received PrekeySyncBatch —
+            // attacker-influenced data. Reject invalid material explicitly
+            // rather than letting it fail silently two layers down.
+            guard contactPrekey.publicKey.count == 65 else {
+                throw EncryptionError.invalidPrekeyMaterial
             }
 
+            // Ephemeral key generation failure with a valid prekey is unexpected —
+            // throw instead of silently degrading to the long-term path.
             guard
-                let sessionKey = self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial:   contactPrekey.publicKey)
+                let (ephemeralPrivateKey, ephemeralPublicKeyData) =
+                    self.keyManager.generateEphemeralKeyPair()
             else {
-                return try self.fallback(
-                    message:           message,
-                    recipientMaterial: recipientMaterial,
-                    ourPublicKey:      ourPublicKey,
-                    fingerprintNonce:  fingerprintNonce,
-                    senderFingerprint: senderFingerprint,
-                    outboundBatch:     outboundBatch
-                )
+                throw EncryptionError.ephemeralKeyGenerationFailed
             }
 
-            // ephemeralPrivateKey released here — forward secrecy established.
+            // ECDH failure with a valid 65-byte prekey public key is unexpected —
+            // throw instead of silently degrading to the long-term path.
+            guard
+                let sessionKey = self.keyManager.createSharedSecret(
+                    ephemeralPrivateKey: ephemeralPrivateKey,
+                    recipientMaterial:   contactPrekey.publicKey
+                )
+            else {
+                throw EncryptionError.keyDerivationFailed
+            }
+
+            // ephemeralPrivateKey goes out of scope here — never persisted.
 
             let secrecy = OccultaBundle.SecrecyContext(
                 mode:               .forwardSecret,
@@ -89,13 +88,14 @@ extension Manager.Crypto {
                 prekeyBatch:        outboundBatch
             )
 
-            let aad = try Self.encodeAAD(secrecy)
+            let aad = try Self.computeAAD(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
             guard
-                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-            else {
-                throw EncryptionError.sealFailed
-            }
+                let ciphertext = try AES.GCM.seal(
+                    message, using: sessionKey, nonce: AES.GCM.Nonce(),
+                    authenticating: aad
+                ).combined
+            else { throw EncryptionError.sealFailed }
 
             return OccultaBundle(
                 version:           OccultaBundle.currentVersion,
@@ -106,64 +106,67 @@ extension Manager.Crypto {
             )
         }
 
-        // ── Long-term fallback path ──────────────────────────────────────
+        // ── Long-term fallback path (contactPrekey nil) ──────────────────
+        // Caller explicitly chose this path because prekeys are exhausted.
         return try self.fallback(
-            message:           message,
-            recipientMaterial: recipientMaterial,
-            ourPublicKey:      ourPublicKey,
-            fingerprintNonce:  fingerprintNonce,
-            senderFingerprint: senderFingerprint,
-            outboundBatch:     outboundBatch
+            message: message, recipientMaterial: recipientMaterial,
+            ourPublicKey: ourPublicKey,
+            fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint,
+            outboundBatch: outboundBatch
+        )
+    }
+}
+
+// MARK: - Session key derivation
+
+extension Manager.Crypto {
+
+    /// Derive a session key from an ephemeral or prekey private key.
+    /// Called by ContactManager. SecKey must be released by caller before consume().
+    func deriveSessionKey(
+        ephemeralPrivateKey: SecKey,
+        recipientMaterial: Data
+    ) -> SymmetricKey? {
+        self.keyManager.createSharedSecret(
+            ephemeralPrivateKey: ephemeralPrivateKey,
+            recipientMaterial:   recipientMaterial
         )
     }
 
-    // MARK: - Decryption
-
-    /// Derive a session key using an ephemeral private key and recipient material.
-    ///
-    /// Used by ContactManager to compute the session key for the FS path
-    /// BEFORE calling openBundle. The SecKey must be released by the caller
-    /// before any SecItemDelete is called.
-    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
-        self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial)
-    }
-
-    /// Derive a session key using the long-term identity key and peer material.
-    ///
-    /// Used by ContactManager for the fallback path.
+    /// Derive a session key using the long-term identity key.
     func deriveSessionKey(using material: Data) -> SymmetricKey? {
         self.keyManager.createSharedSecret(using: material)
     }
+}
 
-    /// Open a sealed AES-GCM bundle with a pre-derived session key.
+// MARK: - Bundle open
+
+extension Manager.Crypto {
+
+    /// Open a sealed bundle with a pre-derived session key. Pure AES-GCM, zero SE.
     ///
-    /// ## This function is purely AES-GCM. Zero SE access.
-    ///
-    /// All key derivation (SE operations) must be complete and all SecKey
-    /// references must be released before calling this function.
-    /// ContactManager is responsible for:
-    /// - Deriving the session key via deriveSessionKey(...)
-    /// - Releasing the SecKey (goes out of scope before this call)
-    /// - Calling PrekeyManager.consume() AFTER this call returns
-    ///
-    /// - Parameters:
-    ///   - bundle:     The received ``OccultaBundle``.
-    ///   - sessionKey: Pre-derived symmetric key. Caller owns derivation.
-    /// - Returns: Decrypted plaintext.
-    /// - Throws: CryptoKit if GCM tag verification fails.
-    func open(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
-        let aad = try Self.encodeAAD(bundle.secrecy)
+    /// `fullAAD()` includes `version` + `SecrecyContext` — any tampered field throws.
+    /// SecKey must be released and consume() must not yet be called when this is invoked.
+    func openBundle(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
+        let aad = try bundle.fullAAD()
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
-        
         return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
     }
+}
 
-    // MARK: - Private helpers
+// MARK: - Private helpers
 
-    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
-        guard
-            let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial)
-        else {
+extension Manager.Crypto {
+
+    private func fallback(
+        message:           Data,
+        recipientMaterial: Data,
+        ourPublicKey:      Data,
+        fingerprintNonce:  Data,
+        senderFingerprint: Data,
+        outboundBatch:     OccultaBundle.PrekeySyncBatch?
+    ) throws -> OccultaBundle {
+        guard let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial) else {
             throw EncryptionError.keyDerivationFailed
         }
 
@@ -175,13 +178,14 @@ extension Manager.Crypto {
             prekeyBatch:        outboundBatch
         )
 
-        let aad = try Self.encodeAAD(secrecy)
+        let aad = try Self.computeAAD(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
         guard
-            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-        else {
-            throw EncryptionError.keyDerivationFailed
-        }
+            let ciphertext = try AES.GCM.seal(
+                message, using: sessionKey, nonce: AES.GCM.Nonce(),
+                authenticating: aad
+            ).combined
+        else { throw EncryptionError.keyDerivationFailed }
 
         return OccultaBundle(
             version:           OccultaBundle.currentVersion,
@@ -192,20 +196,18 @@ extension Manager.Crypto {
         )
     }
 
-}
-
-// MARK: - AAD helper
-
-extension Manager.Crypto {
-    /// Encode a `SecrecyContext` as AAD with sorted keys.
-    ///
-    /// `.sortedKeys` guarantees identical byte output on both seal and open,
-    /// regardless of Swift runtime version or `JSONEncoder` instance state.
-    private static func encodeAAD(_ secrecy: OccultaBundle.SecrecyContext) throws -> Data {
+    /// Compute AAD: `version.rawValue || sortedKeys(SecrecyContext)`.
+    /// `.sortedKeys` is mandatory — without it encoder instances can produce
+    /// different key orderings, causing spurious authenticationFailure.
+    static func computeAAD(
+        version: OccultaBundle.Version,
+        secrecy: OccultaBundle.SecrecyContext
+    ) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        
-        return try encoder.encode(secrecy)
+        var aad = version.rawValue.data(using: .utf8)!
+        aad.append(contentsOf: try encoder.encode(secrecy))
+        return aad
     }
 }
 
@@ -215,5 +217,10 @@ extension Manager.Crypto {
     enum EncryptionError: Error {
         case sealFailed
         case keyDerivationFailed
+        case ephemeralKeyGenerationFailed
+        /// `recipientMaterial` (long-term key) is not a valid 65-byte P-256 x963 key.
+        case invalidRecipientMaterial
+        /// `contactPrekey.publicKey` from an inbound batch is not a valid 65-byte key.
+        case invalidPrekeyMaterial
     }
 }

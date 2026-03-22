@@ -172,13 +172,10 @@ struct OccultaApp: App {
     /// so `AsyncImage` and `AVPlayer` can load them by URL.
     private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket {
         try await withThrowingTaskGroup(of: Occulta.File.self) { group in
- 
-            // ── Decode bundle to read version ────────────────────────────
-            let bundle = try? OccultaBundle.decode(from: fileContents)
+            let bundle = try? OccultaBundle.decoded(from: fileContents)
  
             debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
  
-            // ── Decrypt according to version ─────────────────────────────
             let decrypted: (plaintext: Data, ownerID: String)
  
             switch bundle?.version {
@@ -191,17 +188,16 @@ struct OccultaApp: App {
                 // consumed-key cleanup, inbound batch sync, and model persistence.
                 
                 decrypted = try self.contactManager.decrypt(bundle: bundle)
- 
             default:
                 // Legacy path — v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
                 decrypted = try self.contactManager.decrypt(data: fileContents)
             }
  
-            // ── Decode basket from plaintext ─────────────────────────────
             let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
  
-            // ── Write file attachments to temp directory ─────────────────
+            // ── Write file attachments, photos, videos to temp directory ─────────────────
+            
             var processed: [Occulta.File] = []
             let tempDir = FileManager.default.temporaryDirectory
  

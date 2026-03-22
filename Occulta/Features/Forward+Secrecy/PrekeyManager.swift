@@ -88,7 +88,13 @@ extension Manager {
                     let publicKey     = SecKeyCopyPublicKey(privateKey),
                     let publicKeyData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
                 else {
-                    continue
+                    // SE key creation failed for this iteration.
+                    // Throw immediately — do not silently truncate the batch.
+                    // A partial batch would prune old SE keys and increment the sequence
+                    // while only providing the contact a fraction of the expected prekeys,
+                    // potentially leaving them with zero keys after their existing store
+                    // is replaced.
+                    throw PrekeyError.seKeyCreationFailed
                 }
 
                 prekeys.append(Prekey(
@@ -267,5 +273,15 @@ extension Manager {
             let status = SecItemDelete(query as CFDictionary)
             return status == errSecSuccess || status == errSecItemNotFound
         }
+    }
+}
+
+// MARK: - Errors
+
+extension Manager.PrekeyManager {
+    enum PrekeyError: Error {
+        /// `SecKeyCreateRandomKey` returned nil during batch generation.
+        /// The SE may be temporarily unavailable or under resource pressure.
+        case seKeyCreationFailed
     }
 }

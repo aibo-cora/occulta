@@ -10,113 +10,121 @@ import SwiftData
 import CryptoKit
 
 extension Contact.Profile {
+    // MARK: - Inbound prekeys (their keys, for encrypting TO them)
 
-    // MARK: - Raw prekey store access
-
-    /// Remove and return the oldest raw encrypted prekey blob from the store.
+    /// Remove and return the oldest inbound prekey blob (FIFO).
     ///
-    /// Returns the encrypted `Data` blob — the caller decrypts it.
-    /// Returns `nil` if the store is empty.
+    /// Returns nil when the inbound store is exhausted — caller falls back to
+    /// the long-term key path and should attach a fresh batch in the bundle.
     func popOldestPrekeyData() -> Data? {
-        guard
-            var current = self.contactPrekeys,
-            !current.isEmpty
-        else { return nil }
-
-        let oldest      = current.removeFirst()
+        guard var current = self.contactPrekeys, !current.isEmpty else { return nil }
+        
+        let oldest          = current.removeFirst()
         self.contactPrekeys = current
         
         return oldest
     }
 
-    /// Replace the contact's prekey store entirely with new encrypted blobs.
+    /// Replace the inbound prekey store with a new batch.
     ///
-    /// Only replaces if `sequence > contactPrekeySequence` (newer batch).
-    /// Ignores stale or duplicate batches silently.
+    /// Accepted only when `sequence > contactPrekeySequence` — prevents stale
+    /// or duplicate batch replay.
     ///
-    /// The caller is responsible for:
-    /// - Encrypting each `Prekey` before building `blobs`.
-    /// - Calling `PrekeyManager.pruneSequences(olderThan:contactID:)` after
-    ///   this call to clean up old SE keys.
-    ///
-    /// - Parameters:
-    ///   - blobs:    Encrypted `Prekey` blobs to store. Must match the `prekeys`
-    ///               array from a ``PrekeySyncBatch``, each AES-GCM encrypted.
-    ///   - sequence: The `PrekeySyncBatch.sequence` of the incoming batch.
-    func syncPrekeyData(_ blobs: [Data], sequence: Int) {
+    /// Replace semantics are intentional: when a higher-sequence batch arrives,
+    /// the older keys will soon be pruned from the sender's SE anyway.
+    func syncInboundPrekeys(_ blobs: [Data], sequence: Int) {
         guard sequence > self.contactPrekeySequence else { return }
         
         self.contactPrekeys        = blobs
         self.contactPrekeySequence = sequence
     }
 
-    /// Find and return the raw encrypted blob whose decrypted Prekey.id matches `id`.
-    ///
-    /// Does NOT remove the blob from the store. The caller removes it separately
-    /// via `removePrekeyData(_:)` after successful decryption.
-    ///
-    /// Decrypt errors for individual entries are silently skipped — a failed
-    /// decrypt means "not this entry," not "abort the search."
-    ///
-    /// - Parameters:
-    ///   - id:        The `prekeyID` from `bundle.secrecy.prekeyID`.
-    ///   - decryptor: Closure that decrypts a raw blob. May throw — errors are swallowed.
-    /// - Returns: The matching encrypted blob, or `nil` if not found.
-    func findPrekeyData(id: String, decryptor: (Data) throws -> Data?) -> Data? {
-        guard let entries = self.contactPrekeys else { return nil }
+    // MARK: - Outbound prekeys (our keys, for lookup when they encrypt back to us)
 
+    /// Append freshly generated own-prekey blobs.
+    ///
+    /// Uses append (not replace) because multiple batches may be in flight:
+    /// they might use a key from batch N while we have already generated batch N+1.
+    /// All own prekeys must remain findable until individually consumed.
+    func appendOwnPrekeys(_ blobs: [Data]) {
+        if self.ownPrekeys == nil { self.ownPrekeys = [] }
+        
+        self.ownPrekeys?.append(contentsOf: blobs)
+    }
+
+    /// Find the own-prekey blob whose decrypted `Prekey.id` matches `id`.
+    ///
+    /// This is how we find our SE private key when they encrypt to us:
+    /// their bundle contains the prekey ID; we search our own store to
+    /// reconstruct the SE tag.
+    ///
+    /// Does NOT remove the blob — call `removeOwnPrekeyData` only after successful open.
+    /// Decrypt errors per-entry are swallowed silently.
+    func findOwnPrekeyData(id: String, decryptor: (Data) throws -> Data?) -> Data? {
+        guard let entries = self.ownPrekeys else { return nil }
+        
         for entry in entries {
             guard
                 let decrypted = try? decryptor(entry),
                 let prekey    = try? JSONDecoder().decode(Prekey.self, from: decrypted),
                 prekey.id == id
             else { continue }
-
+            
             return entry
         }
-
         return nil
     }
 
-    /// Remove a specific encrypted prekey blob from the store.
+    /// Remove a specific own-prekey blob after successful decryption.
     ///
-    /// Called by ContactManager after a successful decrypt to clean up the
-    /// consumed prekey from local storage.
+    /// Never called on decryption failure — leaving the blob in place allows
+    /// retry on legitimate duplicate delivery.
+    func removeOwnPrekeyData(_ blob: Data) {
+        self.ownPrekeys?.removeAll { $0 == blob }
+    }
+
+    /// Remove own-prekey blobs whose sequence is strictly less than `threshold`.
     ///
-    /// - Parameter blob: The exact encrypted blob to remove (identity comparison).
-    func removePrekeyData(_ blob: Data) {
-        self.contactPrekeys?.removeAll { $0 == blob }
+    /// Must be called after `PrekeyManager.generateBatch` with the same threshold
+    /// the SE uses for pruning (`currentSequence - 1`).
+    ///
+    /// Without this, ownPrekeys accumulates dead blobs indefinitely: the SE private
+    /// keys for old sequences are pruned, making those blobs permanently unusable,
+    /// but they remain in SwiftData growing the array on every new batch.
+    ///
+    /// Blobs that cannot be decrypted are kept defensively — do not remove what
+    /// we cannot read, in case the local encryption key state is temporarily
+    /// inconsistent.
+    func pruneOwnPrekeys(olderThan threshold: Int, decryptor: (Data) throws -> Data?) {
+        guard threshold > 0, var entries = self.ownPrekeys, !entries.isEmpty else { return }
+        
+        entries = entries.filter { blob in
+            guard
+                let decrypted = try? decryptor(blob),
+                let prekey    = try? JSONDecoder().decode(Prekey.self, from: decrypted)
+            else { return true }     // keep if unreadable — defensive
+            
+            return prekey.sequence >= threshold
+        }
+        
+        self.ownPrekeys = entries
     }
 
     // MARK: - Stock
 
-    /// Number of prekeys currently stored for this contact.
-    var storedPrekeyCount: Int {
-        self.contactPrekeys?.count ?? 0
-    }
+    var availableInboundPrekeyCount: Int { self.contactPrekeys?.count ?? 0 }
 
-    /// Whether this contact has prekeys available for forward-secret encryption.
-    var hasPrekeyAvailable: Bool {
-        self.storedPrekeyCount > 0
-    }
+    /// Whether we have their prekeys available for forward-secret encryption.
+    var hasPrekeyAvailable: Bool { self.availableInboundPrekeyCount > 0 }
+
+    var ownPrekeysCount: Int { self.ownPrekeys?.count ?? 0 }
 
     // MARK: - Sender identification
 
-    /// Check whether this contact is the sender of a given bundle.
+    /// Check whether this contact is the sender of `bundle`.
     ///
-    /// Computes SHA-256(contactPublicKey || bundle.fingerprintNonce)
-    /// and compares it against `bundle.senderFingerprint`.
-    ///
-    /// The caller (ContactManager) decrypts the stored key material and passes
-    /// the raw public key here — no manager reference needed on the model.
-    ///
-    /// O(1) per contact. `Data ==` is constant-time — safe against timing side-channels.
-    ///
-    /// - Parameters:
-    ///   - bundle:           The received ``OccultaBundle``.
-    ///   - contactPublicKey: The contact's long-term public key in x963 format,
-    ///                       already decrypted by the caller.
-    /// - Returns: `true` if the fingerprint matches.
+    /// SHA-256(contactPublicKey || bundle.fingerprintNonce) compared against
+    /// bundle.senderFingerprint. O(1) per contact — no trial ECDH.
     func isLikelySender(of bundle: OccultaBundle, contactPublicKey: Data) -> Bool {
         let candidate = OccultaBundle.SecrecyContext.fingerprint(for: contactPublicKey, nonce: bundle.fingerprintNonce)
         

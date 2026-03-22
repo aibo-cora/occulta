@@ -8,7 +8,7 @@
 import Testing
 @testable import Occulta
 import Foundation
-internal import CryptoKit
+import CryptoKit
 
 struct KeyManipulation {
     @Test("Generates private key in Secure Enclave")
