@@ -8,13 +8,13 @@
 import Testing
 @testable import Occulta
 import Foundation
-internal import CryptoKit
+import CryptoKit
 
 struct KeyManipulation {
     @Test("Generates private key in Secure Enclave")
     func generatePrivateKey() throws {
         let tag = UUID().uuidString
-        let manager = KeyManager(testingTag: tag)
+        let manager = Manager.Key(testingTag: tag)
         
         let result = try manager.retrievePrivateKey()
 
@@ -27,7 +27,7 @@ struct KeyManipulation {
     @Test("Retrieve public key material from Secure Enclave")
     func retrievePublicKey() throws {
         let tag = UUID().uuidString
-        let manager = KeyManager(testingTag: tag)
+        let manager = Manager.Key(testingTag: tag)
         
         let privateKey = try manager.retrievePrivateKey()
         let publicKey = manager.retrivePublicKey(using: privateKey)
@@ -47,8 +47,8 @@ struct KeyManipulation {
         let tagBob = UUID().uuidString
         let tagAlice = UUID().uuidString
         
-        let managerBob = KeyManager(testingTag: tagBob)
-        let managerAlice = KeyManager(testingTag: tagAlice)
+        let managerBob = Manager.Key(testingTag: tagBob)
+        let managerAlice = Manager.Key(testingTag: tagAlice)
         
         let privateKeyBob = try managerBob.retrievePrivateKey()
         let privateKeyAlice = try managerAlice.retrievePrivateKey()
@@ -76,7 +76,7 @@ struct KeyManipulation {
     @Test("Create local encryption key")
     func createLocalEncryptionKey() throws {
         let tag = UUID().uuidString
-        let manager = KeyManager(testingTag: tag)
+        let manager = Manager.Key(testingTag: tag)
         
         let localEncryptionKey = try manager.createLocalEncryptionKey()
         

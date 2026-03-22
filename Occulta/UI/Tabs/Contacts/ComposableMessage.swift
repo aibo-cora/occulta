@@ -47,7 +47,7 @@ struct ComposableMessage: View {
                         .multilineTextAlignment(.center)
                 }
             } else {
-                Conversation(mode: .write, messages: self.$messages)
+                Conversation(mode: .write, identifier: self.identifier, messages: self.$messages)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -149,19 +149,40 @@ struct ComposableMessage: View {
     
     struct Conversation: View {
         let mode: Modes
+        let identifier: String
         
         @Binding var messages: [Occulta.File]
         
         enum Modes {
-            case read(messageOwner: String), write
+            case read, write
+        }
+        
+        private struct Badges: View {
+            @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+            
+            init(identifier: String) {
+                let predicate = #Predicate<Contact.Profile> {
+                    $0.identifier == identifier
+                }
+                
+                self._contacts = Query(filter: predicate)
+            }
+            
+            var body: some View {
+                EmptyView()
+            }
         }
         
         var body: some View {
             switch self.mode {
             case .write:
-                ContactEncryptionDisclaimer()
-            case .read(let owner):
-                Contact.Info(identifier: owner)
+                VStack {
+                    ContactEncryptionDisclaimer()
+                    
+                    Badges(identifier: self.identifier)
+                }
+            case .read:
+                Contact.Info(identifier: self.identifier)
             }
             
             ScrollViewReader { proxy in
@@ -239,7 +260,7 @@ struct ComposableMessage: View {
                     }
                     
                     switch self.mode {
-                    case .read(_):
+                    case .read:
                         if let url = self.file.url {
                             switch self.file.format {
                             case .file(_):
@@ -437,6 +458,7 @@ struct ComposableMessage: View {
                         /// Using `URLSession` instead of `resourceBytes` because we might need it for brackground processing.
                         let (data, _) = try await URLSession.shared.data(from: url)
                         let newFile = Occulta.File(content: data, format: file.format, date: file.date)
+                        
                         processed.append(newFile)
                     } else {
                         processed.append(file)
@@ -447,7 +469,7 @@ struct ComposableMessage: View {
                 
                 let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
-                let encryptedData = try self.contactManager?.encrypt(data: encoded, for: identifier)
+                let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: self.identifier)
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false

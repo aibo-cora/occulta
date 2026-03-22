@@ -51,7 +51,25 @@ extension Contact {
         @Relationship(deleteRule: .cascade, inverse: \Key.profile)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
+        /// Encrypted prekey public keys received from this contact.
+        /// Each entry: AES-GCM encrypted JSON-encoded Prekey struct.
+        
+        // MARK: Prekeys to ensure Forward Secrecy
+        var contactPrekeys: [Data]? = []
+        /// Sequence number of the last prekey batch received FROM this contact.
+        /// Replace incoming batch only when sequence > this value.
+        var contactPrekeySequence: Int = -1
+        /// Our own public prekeys we generated and sent to this contact.
+        /// When they encrypt to us using one of these prekeys, we search here by
+        /// Prekey.id to reconstruct the SE tag and find our private key.
+        /// Append-only; entries are removed individually as they are consumed.
+        var ownPrekeys: [Data]? = []
+        /// Sequence number of the last prekey batch generated FOR this contact.
+        /// Read and incremented by PrekeyManager.generateBatch(contactID:currentSequence:).
+        /// Caller writes the returned nextSequence back here after each encrypt call.
+        var outboundPrekeySequence: Int = 0
         /// Identifier to determine the owner of the public key.
+        
         var identifierFromOutside: String?
         /// Identifier of the user that originally acquired this contact's public key.
         var identifierAcquirer: String?
