@@ -874,7 +874,7 @@ extension ContactManager {
         // ── 4. ECDH + AES-GCM ────────────────────────────────────────────
         // encryptForwardSecret throws if it has a contactPrekey but key operations fail.
         // It never silently degrades from FS to long-term when FS was intended.
-        let bundle = try cryptoOps.encryptForwardSecret(
+        let bundle = try cryptoOps.seal(
             message:           data,
             contactPrekey:     contactPrekey,
             recipientMaterial: recipientMaterial,
@@ -988,7 +988,7 @@ extension ContactManager {
                                        recipientMaterial:   bundle.secrecy.ephemeralPublicKey
                                    )
                 else { return nil }
-                return try cryptoOps.openBundle(bundle, using: sessKey)
+                return try cryptoOps.open(bundle, using: sessKey)
                 // ← privKey released here — BEFORE consume()
             }()
  
@@ -1001,7 +1001,7 @@ extension ContactManager {
             guard let sessKey = cryptoOps.deriveSessionKey(
                 using: bundle.secrecy.ephemeralPublicKey
             ) else { plaintext = nil; break }
-            plaintext = try cryptoOps.openBundle(bundle, using: sessKey)
+            plaintext = try cryptoOps.open(bundle, using: sessKey)
         }
  
         guard let plaintext else { throw Errors.decryptionFailed }

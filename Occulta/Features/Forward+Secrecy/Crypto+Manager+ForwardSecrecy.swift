@@ -27,29 +27,19 @@ extension Manager.Crypto {
     /// ## SE ordering
     /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
     /// (generateBatch) are done by the caller (ContactManager) before this call.
-    func encryptForwardSecret(
-        message:           Data,
-        contactPrekey:     Prekey?,
-        recipientMaterial: Data,
-        outboundBatch:     OccultaBundle.PrekeySyncBatch?
-    ) throws -> OccultaBundle {
-
-        // Validate long-term public key length (Finding 6)
+    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
         guard recipientMaterial.count == 65 else {
             throw EncryptionError.invalidRecipientMaterial
         }
 
         let ourPublicKey = try self.keyManager.retrieveIdentity()
 
-        // Finding 3: throws on entropy failure — never produce a static nonce
         let fingerprintNonce  = try OccultaBundle.SecrecyContext.generateNonce()
-        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(
-            for: ourPublicKey, nonce: fingerprintNonce
-        )
-
-        // ── Forward secret path (contactPrekey non-nil) ──────────────────
+        let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
+        
         if let contactPrekey {
-
+            // ── Forward secret path
+            
             // Validate the prekey's public key before ECDH.
             // contactPrekey.publicKey comes from a received PrekeySyncBatch —
             // attacker-influenced data. Reject invalid material explicitly
@@ -61,8 +51,7 @@ extension Manager.Crypto {
             // Ephemeral key generation failure with a valid prekey is unexpected —
             // throw instead of silently degrading to the long-term path.
             guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) =
-                    self.keyManager.generateEphemeralKeyPair()
+                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
             else {
                 throw EncryptionError.ephemeralKeyGenerationFailed
             }
@@ -70,10 +59,7 @@ extension Manager.Crypto {
             // ECDH failure with a valid 65-byte prekey public key is unexpected —
             // throw instead of silently degrading to the long-term path.
             guard
-                let sessionKey = self.keyManager.createSharedSecret(
-                    ephemeralPrivateKey: ephemeralPrivateKey,
-                    recipientMaterial:   contactPrekey.publicKey
-                )
+                let sessionKey = self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey)
             else {
                 throw EncryptionError.keyDerivationFailed
             }
@@ -91,10 +77,7 @@ extension Manager.Crypto {
             let aad = try Self.computeAAD(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
             guard
-                let ciphertext = try AES.GCM.seal(
-                    message, using: sessionKey, nonce: AES.GCM.Nonce(),
-                    authenticating: aad
-                ).combined
+                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
             else { throw EncryptionError.sealFailed }
 
             return OccultaBundle(
@@ -120,17 +103,10 @@ extension Manager.Crypto {
 // MARK: - Session key derivation
 
 extension Manager.Crypto {
-
     /// Derive a session key from an ephemeral or prekey private key.
     /// Called by ContactManager. SecKey must be released by caller before consume().
-    func deriveSessionKey(
-        ephemeralPrivateKey: SecKey,
-        recipientMaterial: Data
-    ) -> SymmetricKey? {
-        self.keyManager.createSharedSecret(
-            ephemeralPrivateKey: ephemeralPrivateKey,
-            recipientMaterial:   recipientMaterial
-        )
+    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
+        self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial)
     }
 
     /// Derive a session key using the long-term identity key.
@@ -142,14 +118,14 @@ extension Manager.Crypto {
 // MARK: - Bundle open
 
 extension Manager.Crypto {
-
     /// Open a sealed bundle with a pre-derived session key. Pure AES-GCM, zero SE.
     ///
     /// `fullAAD()` includes `version` + `SecrecyContext` — any tampered field throws.
     /// SecKey must be released and consume() must not yet be called when this is invoked.
-    func openBundle(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
+    func open(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
         let aad = try bundle.fullAAD()
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
+        
         return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
     }
 }
@@ -157,7 +133,6 @@ extension Manager.Crypto {
 // MARK: - Private helpers
 
 extension Manager.Crypto {
-
     private func fallback(
         message:           Data,
         recipientMaterial: Data,
@@ -181,10 +156,7 @@ extension Manager.Crypto {
         let aad = try Self.computeAAD(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
         guard
-            let ciphertext = try AES.GCM.seal(
-                message, using: sessionKey, nonce: AES.GCM.Nonce(),
-                authenticating: aad
-            ).combined
+            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
         else { throw EncryptionError.keyDerivationFailed }
 
         return OccultaBundle(
@@ -199,14 +171,13 @@ extension Manager.Crypto {
     /// Compute AAD: `version.rawValue || sortedKeys(SecrecyContext)`.
     /// `.sortedKeys` is mandatory — without it encoder instances can produce
     /// different key orderings, causing spurious authenticationFailure.
-    static func computeAAD(
-        version: OccultaBundle.Version,
-        secrecy: OccultaBundle.SecrecyContext
-    ) throws -> Data {
+    static func computeAAD(version: OccultaBundle.Version, secrecy: OccultaBundle.SecrecyContext) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
+        
         var aad = version.rawValue.data(using: .utf8)!
         aad.append(contentsOf: try encoder.encode(secrecy))
+        
         return aad
     }
 }

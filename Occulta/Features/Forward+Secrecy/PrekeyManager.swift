@@ -14,11 +14,6 @@ extension Manager {
     ///
     /// All private keys are stored in the Secure Enclave tagged
     /// `"prekey.<contactID>.<sequence>.<uuid>"`.
-    ///
-    /// This manager has no knowledge of SwiftData, Contact.Profile, or any
-    /// persistent store. All inputs and outputs are raw primitives.
-    /// The caller (ContactManager) is responsible for reading and writing
-    /// model state before and after calling these methods.
     class PrekeyManager {
 
         // MARK: - Constants
@@ -47,12 +42,7 @@ extension Manager {
         ///   - `nextSequence`: The incremented sequence. Caller writes this back
         ///                     to `Contact.Profile.outboundPrekeySequence`.
         /// - Throws: If SE key creation fails.
-        func generateBatch(
-            contactID: String,
-            currentSequence: Int,
-            count: Int = defaultBatchSize
-        ) throws -> (prekeys: [Prekey], nextSequence: Int) {
-
+        func generateBatch(contactID: String, currentSequence: Int, count: Int = defaultBatchSize) throws -> (prekeys: [Prekey], nextSequence: Int) {
             var prekeys: [Prekey] = []
 
             for _ in 0..<count {

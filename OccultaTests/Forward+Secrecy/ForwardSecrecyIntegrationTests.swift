@@ -57,7 +57,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
                                    recipientMaterial:   bundle.secrecy.ephemeralPublicKey
                                )
                 else { return nil }
-                return try crypto.openBundle(bundle, using: key)
+                return try crypto.open(bundle, using: key)
                 // ← priv released here
             }()
             if result != nil, let pk = prekey { prekeyManager.consume(prekey: pk) }
@@ -65,7 +65,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         case .longTermFallback:
             guard let key = crypto.deriveSessionKey(using: bundle.secrecy.ephemeralPublicKey)
             else { return nil }
-            return try crypto.openBundle(bundle, using: key)
+            return try crypto.open(bundle, using: key)
         }
     }
 
@@ -78,7 +78,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         let (_, recip) = inMemoryKeyPair()
         let message    = Data("Integration roundtrip".utf8)
 
-        let bundle    = try crypto.encryptForwardSecret(
+        let bundle    = try crypto.seal(
             message: message, contactPrekey: keys[0],
             recipientMaterial: recip, outboundBatch: nil
         )
@@ -93,7 +93,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
 
         for (i, prekey) in keys.enumerated() {
             let message = Data("Message \(i)".utf8)
-            let bundle  = try crypto.encryptForwardSecret(
+            let bundle  = try crypto.seal(
                 message: message, contactPrekey: prekey, recipientMaterial: recip, outboundBatch: nil
             )
             XCTAssertEqual(try decrypt(bundle: bundle, prekey: prekey), message)
@@ -133,7 +133,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         )
 
         // Alice → Bob: uses Bob's prekey (bobKeys[0]) to encrypt
-        let aliceToBobBundle = try crypto.encryptForwardSecret(
+        let aliceToBobBundle = try crypto.seal(
             message:           Data("Hello Bob".utf8),
             contactPrekey:     bobKeys[0],       // Bob's prekey
             recipientMaterial: bobPub,
@@ -143,7 +143,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         )
 
         // Bob → Alice: uses Alice's prekey (aliceKeys[0]) to encrypt
-        let bobToAliceBundle = try crypto.encryptForwardSecret(
+        let bobToAliceBundle = try crypto.seal(
             message:           Data("Hello Alice".utf8),
             contactPrekey:     aliceKeys[0],     // Alice's prekey
             recipientMaterial: alicePub,
@@ -194,10 +194,10 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         let (_, bobPub)   = inMemoryKeyPair()
         let (_, jakePub)  = inMemoryKeyPair()
 
-        let bobBundle  = try crypto.encryptForwardSecret(
+        let bobBundle  = try crypto.seal(
             message: Data("For Bob".utf8),  contactPrekey: bobKeys[0],  recipientMaterial: bobPub,  outboundBatch: nil
         )
-        let jakeBundle = try crypto.encryptForwardSecret(
+        let jakeBundle = try crypto.seal(
             message: Data("For Jake".utf8), contactPrekey: jakeKeys[0], recipientMaterial: jakePub, outboundBatch: nil
         )
 
@@ -217,7 +217,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         let c          = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let (keys, _)  = try prekeyManager.generateBatch(contactID: c, currentSequence: 0, count: 1)
         let (_, recip) = inMemoryKeyPair()
-        let bundle     = try crypto.encryptForwardSecret(
+        let bundle     = try crypto.seal(
             message: Data("once only".utf8), contactPrekey: keys[0],
             recipientMaterial: recip, outboundBatch: nil
         )
@@ -231,7 +231,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
 
     func test_fallback_bundleMode() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("fallback".utf8), contactPrekey: nil,
             recipientMaterial: inMemoryKeyPair().1, outboundBatch: nil
         )
@@ -307,7 +307,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         let c          = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let (keys, _)  = try prekeyManager.generateBatch(contactID: c, currentSequence: 5, count: 1)
         let (_, recip) = inMemoryKeyPair()
-        let original   = try crypto.encryptForwardSecret(
+        let original   = try crypto.seal(
             message: Data("serialise".utf8), contactPrekey: keys[0],
             recipientMaterial: recip, outboundBatch: nil
         )
@@ -339,7 +339,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         let c          = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let (keys, _)  = try prekeyManager.generateBatch(contactID: c, currentSequence: 0, count: 1)
         let (_, recip) = inMemoryKeyPair()
-        let bundle     = try crypto.encryptForwardSecret(
+        let bundle     = try crypto.seal(
             message: Data("test".utf8), contactPrekey: keys[0],
             recipientMaterial: recip, outboundBatch: nil
         )
@@ -355,7 +355,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         // In unit test context we call the crypto layer directly — confirm fullAAD fails
         let sessKey = SymmetricKey(size: .bits256)
         XCTAssertThrowsError(
-            try crypto.openBundle(wrongVersion, using: sessKey),
+            try crypto.open(wrongVersion, using: sessKey),
             "Wrong version must produce different AAD and fail GCM"
         )
     }
@@ -364,7 +364,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         let c          = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let (keys, _)  = try prekeyManager.generateBatch(contactID: c, currentSequence: 0, count: 1)
         let (_, recip) = inMemoryKeyPair()
-        let bundle     = try crypto.encryptForwardSecret(
+        let bundle     = try crypto.seal(
             message: Data("test".utf8), contactPrekey: keys[0],
             recipientMaterial: recip, outboundBatch: nil
         )
@@ -388,7 +388,7 @@ final class ForwardSecrecyIntegrationTests: XCTestCase {
         // and openBundle will fail AAD (tampered SecrecyContext)
         let sessKey = SymmetricKey(size: .bits256)
         XCTAssertThrowsError(
-            try crypto.openBundle(tampered, using: sessKey),
+            try crypto.open(tampered, using: sessKey),
             "Tampered ephemeralPublicKey must fail GCM AAD verification"
         )
     }

@@ -60,14 +60,14 @@ final class CryptoForwardSecrecyTests: XCTestCase {
                         recipientMaterial:   bundle.secrecy.ephemeralPublicKey
                     )
                 else { return nil }
-                return try crypto.openBundle(bundle, using: key)
+                return try crypto.open(bundle, using: key)
             }()
             if result != nil, let pk = prekey { prekeyManager.consume(prekey: pk) }
             return result
         case .longTermFallback:
             guard let key = crypto.deriveSessionKey(using: bundle.secrecy.ephemeralPublicKey)
             else { return nil }
-            return try crypto.openBundle(bundle, using: key)
+            return try crypto.open(bundle, using: key)
         }
     }
 
@@ -76,7 +76,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_encrypt_invalidRecipientMaterial_throws() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         XCTAssertThrowsError(
-            try crypto.encryptForwardSecret(
+            try crypto.seal(
                 message: Data("test".utf8), contactPrekey: nil,
                 recipientMaterial: Data(count: 32),   // wrong length: 32 not 65
                 outboundBatch: nil
@@ -88,7 +88,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_encrypt_emptyRecipientMaterial_throws() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         XCTAssertThrowsError(
-            try crypto.encryptForwardSecret(
+            try crypto.seal(
                 message: Data("test".utf8), contactPrekey: nil,
                 recipientMaterial: Data(),
                 outboundBatch: nil
@@ -102,7 +102,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         // This simulates a malformed inbound batch entry.
         let badPrekey = Prekey(id: "bad", contactID: c, sequence: 0, publicKey: Data(count: 32))
         XCTAssertThrowsError(
-            try crypto.encryptForwardSecret(
+            try crypto.seal(
                 message: Data("test".utf8), contactPrekey: badPrekey,
                 recipientMaterial: recipientPub(), outboundBatch: nil
             ),
@@ -122,7 +122,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             publicKey: Data(count: 65)   // all zeros — not a valid P-256 point
         )
         XCTAssertThrowsError(
-            try crypto.encryptForwardSecret(
+            try crypto.seal(
                 message: Data("test".utf8), contactPrekey: invalidPrekey,
                 recipientMaterial: recipientPub(), outboundBatch: nil
             ),
@@ -134,7 +134,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     func test_encrypt_FS_modeIsForwardSecret() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: try onePrekey(for: c),
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -143,7 +143,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     func test_encrypt_FS_versionIsV3fs() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: try onePrekey(for: c),
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -153,7 +153,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_encrypt_FS_prekeyIDMatchesInput() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: prekey,
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -163,7 +163,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     func test_encrypt_FS_ciphertextNonEmpty() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("hello".utf8), contactPrekey: try onePrekey(for: c),
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -172,7 +172,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     func test_encrypt_FS_fingerprintNonceIs16Bytes() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: try onePrekey(for: c),
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -181,7 +181,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     func test_encrypt_FS_fingerprintMatchesOurKey() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: try onePrekey(for: c),
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -195,10 +195,10 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let (keys, _) = try prekeyManager.generateBatch(contactID: c, currentSequence: 0, count: 2)
         let recip     = recipientPub()
-        let b1 = try crypto.encryptForwardSecret(
+        let b1 = try crypto.seal(
             message: Data("m1".utf8), contactPrekey: keys[0], recipientMaterial: recip, outboundBatch: nil
         )
-        let b2 = try crypto.encryptForwardSecret(
+        let b2 = try crypto.seal(
             message: Data("m2".utf8), contactPrekey: keys[1], recipientMaterial: recip, outboundBatch: nil
         )
         XCTAssertNotEqual(b1.fingerprintNonce,  b2.fingerprintNonce)
@@ -209,7 +209,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     func test_encrypt_fallback_modeIsLongTermFallback() throws {
         let c = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("fb".utf8), contactPrekey: nil,
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -224,7 +224,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             sequence: 5,
             prekeys: [Prekey(id: "P", contactID: c, sequence: 5, publicKey: Data(count: 65))]
         )
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("fb".utf8), contactPrekey: nil,
             recipientMaterial: recipientPub(), outboundBatch: batch
         )
@@ -237,7 +237,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
         let msg    = Data("round trip".utf8)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: msg, contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil
         )
         XCTAssertEqual(try decrypt(bundle: bundle, prekey: prekey), msg)
@@ -246,7 +246,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_decrypt_FS_consumesKeyAfterSuccessfulDecrypt() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("secret".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil
         )
         XCTAssertNotNil(prekeyManager.retrievePrivateKey(for: prekey))
@@ -258,7 +258,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_decrypt_FS_duplicateDelivery_returnsNil() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("once".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil
         )
         let first  = try decrypt(bundle: bundle, prekey: prekey)
@@ -270,7 +270,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_decrypt_FS_nilPrekeyReturnsNil() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil
         )
         XCTAssertNil(try decrypt(bundle: bundle, prekey: nil))
@@ -282,7 +282,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_openBundle_tamperedVersion_throws() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: prekey, recipientMaterial: recipientPub(), outboundBatch: nil
         )
         let tampered = OccultaBundle(
@@ -300,7 +300,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             )
         else { XCTFail("Key derivation failed"); return }
         prekeyManager.consume(prekey: prekey)
-        XCTAssertThrowsError(try crypto.openBundle(tampered, using: key),
+        XCTAssertThrowsError(try crypto.open(tampered, using: key),
                              "Tampered version must fail GCM AAD verification")
     }
 
@@ -312,7 +312,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             sequence: 1,
             prekeys: [Prekey(id: "legit", contactID: c, sequence: 1, publicKey: Data(count: 65))]
         )
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: prekey,
             recipientMaterial: recipientPub(), outboundBatch: legitBatch
         )
@@ -340,14 +340,14 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             )
         else { XCTFail("Key derivation failed"); return }
         prekeyManager.consume(prekey: prekey)
-        XCTAssertThrowsError(try crypto.openBundle(tampered, using: key),
+        XCTAssertThrowsError(try crypto.open(tampered, using: key),
                              "Substituted prekeyBatch must fail GCM AAD verification")
     }
 
     func test_openBundle_tamperedMode_throws() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: prekey,
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -370,13 +370,13 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             )
         else { XCTFail("Key derivation failed"); return }
         prekeyManager.consume(prekey: prekey)
-        XCTAssertThrowsError(try crypto.openBundle(tampered, using: key))
+        XCTAssertThrowsError(try crypto.open(tampered, using: key))
     }
 
     func test_openBundle_tamperedCiphertext_throws() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("tamper".utf8), contactPrekey: prekey,
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
@@ -394,7 +394,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
             )
         else { XCTFail("Key derivation failed"); return }
         prekeyManager.consume(prekey: prekey)
-        XCTAssertThrowsError(try crypto.openBundle(tamperedBundle, using: key))
+        XCTAssertThrowsError(try crypto.open(tamperedBundle, using: key))
     }
 
     // MARK: - Sender fingerprint
@@ -402,7 +402,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
     func test_fingerprint_wrongKeyDoesNotMatch() throws {
         let c     = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
         let prekey = try onePrekey(for: c)
-        let bundle = try crypto.encryptForwardSecret(
+        let bundle = try crypto.seal(
             message: Data("test".utf8), contactPrekey: prekey,
             recipientMaterial: recipientPub(), outboundBatch: nil
         )
