@@ -12,7 +12,7 @@ import CryptoKit
 
 struct SaltInfo {
     static let kTransportKeyInfo = "Occulta-v1-transport-2025".data(using: .utf8)!
-    static let kLocalDBKeyInfo   = "Occulta-v1-local-db-2025".data(using: .utf8)!
+    static let kLocalDBKeyInfo   = "Occulta-v1-encryption-key-2025".data(using: .utf8)!
 }
 
 extension Manager {
