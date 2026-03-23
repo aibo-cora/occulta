@@ -80,6 +80,8 @@ extension Manager.Crypto {
                 let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
             else { throw EncryptionError.sealFailed }
 
+            debugPrint("Sealing message, using forward secrecy prekey...")
+            
             return OccultaBundle(
                 version:           OccultaBundle.currentVersion,
                 secrecy:           secrecy,
@@ -88,6 +90,8 @@ extension Manager.Crypto {
                 senderFingerprint: senderFingerprint
             )
         }
+        
+        debugPrint("Sealing message, using long-term identity key...")
 
         // ── Long-term fallback path (contactPrekey nil) ──────────────────
         // Caller explicitly chose this path because prekeys are exhausted.

@@ -942,7 +942,6 @@ extension ContactManager {
 // MARK: - v3fs bundle decryption
  
 extension ContactManager {
- 
     /// Decrypt a v3fs bundle.
     func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
         guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
@@ -992,6 +991,8 @@ extension ContactManager {
         //
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
         let plaintext: Data?
+        
+        debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
  
         switch bundle.secrecy.mode {
         case .forwardSecret:
