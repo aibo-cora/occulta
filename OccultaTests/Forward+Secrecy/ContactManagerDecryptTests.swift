@@ -30,11 +30,11 @@ import CryptoKit
 
 @MainActor
 final class ContactManagerDecryptTests: XCTestCase {
-
     var contactManager: ContactManager!
     var container:      ModelContainer!
     var cryptoOps:      Manager.Crypto!
     var prekeyManager:  Manager.PrekeyManager!
+    var testKeyMgr:    TestKeyManager!
 
     override func setUp() {
         super.setUp()
@@ -51,8 +51,9 @@ final class ContactManagerDecryptTests: XCTestCase {
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         container      = try! ModelContainer(for: schema, configurations: [config])
         contactManager = ContactManager(modelContainer: container)
-        cryptoOps      = Manager.Crypto()
         prekeyManager  = Manager.PrekeyManager()
+        testKeyMgr    = TestKeyManager()
+        cryptoOps = Manager.Crypto(keyManager: testKeyMgr)
     }
 
     override func tearDown() {
@@ -88,7 +89,9 @@ final class ContactManagerDecryptTests: XCTestCase {
     /// ContactManager does in production when storing a key received via key exchange.
     private func makeContactWithKey(_ publicKeyData: Data) throws -> Contact.Profile {
         // Encrypt the public key with the local DB crypto (Manager.Crypto.encrypt(data:))
-        guard let encryptedKey = try? cryptoOps.encrypt(data: publicKeyData) else {
+        guard
+            let encryptedKey = try? cryptoOps.encrypt(data: publicKeyData)
+        else {
             XCTFail("Failed to encrypt contact key"); throw TestError.setup
         }
 
@@ -110,7 +113,7 @@ final class ContactManagerDecryptTests: XCTestCase {
         )
 
         // Attach the contact's public key as a Key record (no expiry = active)
-        let ourIdentity    = (try? Manager.Key().retrieveIdentity()) ?? Data()
+        let ourIdentity    = (try? self.testKeyMgr.retrieveIdentity()) ?? Data()
         let encryptedOwner = try cryptoOps.encrypt(data: ourIdentity) ?? Data()
         let encryptedDate  = try cryptoOps.encrypt(data: Data()) ?? Data()
 
@@ -202,7 +205,7 @@ final class ContactManagerDecryptTests: XCTestCase {
     /// must be rejected with `invalidBundleFormat` before any storage.
     func test_decrypt_inboundBatchWithWrongKeyLength_throws_invalidBundleFormat() throws {
         // Set up: our identity public key as the "recipient" (Alice)
-        let ourPub  = Data.randomBytes(65)
+        let ourPub  = try self.testKeyMgr.retrieveIdentity()
 
         // Sender: a fresh in-memory key pair (Bob)
         let (senderPriv, senderPub) = inMemoryKeyPair()
