@@ -13,13 +13,13 @@ import CryptoKit
 
 @MainActor
 final class CryptoForwardSecrecyTests: XCTestCase {
-
     var crypto:        Manager.Crypto!
     var prekeyManager: Manager.PrekeyManager!
     var testKeyMgr:    TestKeyManager!
 
     override func setUp() {
         super.setUp()
+        
         testKeyMgr    = TestKeyManager()
         crypto        = Manager.Crypto(keyManager: testKeyMgr)
         prekeyManager = Manager.PrekeyManager()
@@ -27,6 +27,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
 
     override func tearDown() {
         crypto = nil; prekeyManager = nil; testKeyMgr = nil
+        
         super.tearDown()
     }
 
@@ -62,7 +63,9 @@ final class CryptoForwardSecrecyTests: XCTestCase {
                 else { return nil }
                 return try crypto.open(bundle, using: key)
             }()
-            if result != nil, let pk = prekey { prekeyManager.consume(prekey: pk) }
+            
+            if result != nil, let pk = prekey { self.prekeyManager.consume(prekey: pk) }
+            
             return result
         case .longTermFallback:
             guard let key = crypto.deriveSessionKey(using: bundle.secrecy.ephemeralPublicKey)
@@ -101,6 +104,7 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         // Construct a Prekey with a wrong-length public key (32 bytes instead of 65).
         // This simulates a malformed inbound batch entry.
         let badPrekey = Prekey(id: "bad", contactID: c, sequence: 0, publicKey: Data(count: 32))
+        
         XCTAssertThrowsError(
             try crypto.seal(
                 message: Data("test".utf8), contactPrekey: badPrekey,
@@ -395,6 +399,80 @@ final class CryptoForwardSecrecyTests: XCTestCase {
         else { XCTFail("Key derivation failed"); return }
         prekeyManager.consume(prekey: prekey)
         XCTAssertThrowsError(try crypto.open(tamperedBundle, using: key))
+    }
+
+    // MARK: - AAD tamper — prekeyID and prekeySequence (4.6.6, 4.6.7)
+
+    /// 4.6.6 — Changing prekeyID modifies the AAD; GCM tag fails on open.
+    /// An attacker cannot redirect decryption to a different SE key.
+    func test_openBundle_tamperedPrekeyID_throws() throws {
+        let c      = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
+        let prekey = try onePrekey(for: c)
+        let bundle = try crypto.seal(
+            message: Data("test".utf8), contactPrekey: prekey,
+            recipientMaterial: recipientPub(), outboundBatch: nil
+        )
+        let tampered = OccultaBundle(
+            version: bundle.version,
+            secrecy: OccultaBundle.SecrecyContext(
+                mode:               bundle.secrecy.mode,
+                ephemeralPublicKey: bundle.secrecy.ephemeralPublicKey,
+                prekeyID:           "attacker-injected-id",   // changed
+                prekeySequence:     bundle.secrecy.prekeySequence,
+                prekeyBatch:        bundle.secrecy.prekeyBatch
+            ),
+            ciphertext:        bundle.ciphertext,
+            fingerprintNonce:  bundle.fingerprintNonce,
+            senderFingerprint: bundle.senderFingerprint
+        )
+        guard
+            let priv = prekeyManager.retrievePrivateKey(for: prekey),
+            let key  = crypto.deriveSessionKey(
+                ephemeralPrivateKey: priv,
+                recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+            )
+        else { XCTFail("Key derivation failed"); return }
+        prekeyManager.consume(prekey: prekey)
+        
+        XCTAssertThrowsError(
+            try crypto.open(tampered, using: key),
+            "Tampered prekeyID must fail GCM AAD verification"
+        )
+    }
+
+    /// 4.6.7 — Changing prekeySequence modifies the AAD; GCM tag fails on open.
+    func test_openBundle_tamperedPrekeySequence_throws() throws {
+        let c      = cid(); defer { prekeyManager.deleteAllKeys(for: c) }
+        let prekey = try onePrekey(for: c)
+        let bundle = try crypto.seal(
+            message: Data("test".utf8), contactPrekey: prekey,
+            recipientMaterial: recipientPub(), outboundBatch: nil
+        )
+        let tampered = OccultaBundle(
+            version: bundle.version,
+            secrecy: OccultaBundle.SecrecyContext(
+                mode:               bundle.secrecy.mode,
+                ephemeralPublicKey: bundle.secrecy.ephemeralPublicKey,
+                prekeyID:           bundle.secrecy.prekeyID,
+                prekeySequence:     999,  // changed from real sequence
+                prekeyBatch:        bundle.secrecy.prekeyBatch
+            ),
+            ciphertext:        bundle.ciphertext,
+            fingerprintNonce:  bundle.fingerprintNonce,
+            senderFingerprint: bundle.senderFingerprint
+        )
+        guard
+            let priv = prekeyManager.retrievePrivateKey(for: prekey),
+            let key  = crypto.deriveSessionKey(
+                ephemeralPrivateKey: priv,
+                recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+            )
+        else { XCTFail("Key derivation failed"); return }
+        prekeyManager.consume(prekey: prekey)
+        XCTAssertThrowsError(
+            try crypto.open(tampered, using: key),
+            "Tampered prekeySequence must fail GCM AAD verification"
+        )
     }
 
     // MARK: - Sender fingerprint

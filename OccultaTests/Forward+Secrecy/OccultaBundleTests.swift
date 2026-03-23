@@ -222,6 +222,34 @@ final class OccultaBundleTests: XCTestCase {
         XCTAssertFalse(nonce.allSatisfy { $0 == 0 }, "Nonce must not be all-zero bytes")
     }
 
+    /// 2.5.4 — If the OS random-bytes provider fails, generateNonce throws
+    /// `BundleError.entropyUnavailable`. It must never silently return a zero
+    /// nonce, which would make senderFingerprint identical across all bundles.
+    func test_generateNonce_entropyFailure_throws() {
+        // Inject a provider that always returns errSecParam (failure)
+        // to simulate boot-time entropy starvation or hardware fault.
+        XCTAssertThrowsError(
+            try OccultaBundle.SecrecyContext._generateNonce { _, _ in errSecParam }
+        ) { error in
+            guard case OccultaBundle.BundleError.entropyUnavailable = error else {
+                XCTFail("Expected entropyUnavailable, got \(error)")
+                return
+            }
+        }
+    }
+
+    /// Corollary to 2.5.4: a failing provider must not silently return
+    /// an all-zero nonce. The function must throw instead.
+    func test_generateNonce_entropyFailure_doesNotProduceZeroNonce() {
+        var capturedData: Data? = nil
+        XCTAssertThrowsError(
+            try {
+                capturedData = try OccultaBundle.SecrecyContext._generateNonce { _, _ in errSecParam }
+            }()
+        )
+        XCTAssertNil(capturedData, "On entropy failure the function must throw, not return zero bytes")
+    }
+
     // MARK: - PrekeySyncBatch
 
     func test_prekeySyncBatch_encodeDecode() throws {

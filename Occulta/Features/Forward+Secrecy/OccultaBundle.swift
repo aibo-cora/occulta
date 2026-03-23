@@ -116,9 +116,17 @@ struct OccultaBundle: Codable {
         ///   Callers must not fall back to a hardcoded nonce — a static nonce
         ///   makes `senderFingerprint` identical across all bundles from the same sender.
         static func generateNonce() throws -> Data {
+            try self._generateNonce { bytes, count in
+                SecRandomCopyBytes(kSecRandomDefault, count, bytes)
+            }
+        }
+
+        /// Testable entry point — production code delegates here via `generateNonce()`.
+        /// Inject a failing provider to verify `entropyUnavailable` is thrown.
+        internal static func _generateNonce(provider: (UnsafeMutablePointer<UInt8>, Int) -> Int32) throws -> Data {
             var bytes = [UInt8](repeating: 0, count: 16)
             
-            guard SecRandomCopyBytes(kSecRandomDefault, 16, &bytes) == errSecSuccess else {
+            guard provider(&bytes, 16) == errSecSuccess else {
                 throw BundleError.entropyUnavailable
             }
             
@@ -167,23 +175,19 @@ struct OccultaBundle: Codable {
     func fullAAD() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        
         var aad = self.version.rawValue.data(using: .utf8)!
         aad.append(contentsOf: try encoder.encode(self.secrecy))
-        
         return aad
     }
 
     // MARK: - UI helpers
 
-    var isForwardSecret: Bool { self.secrecy.mode == .forwardSecret }
+    var isForwardSecret: Bool { secrecy.mode == .forwardSecret }
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    
-            return "Forward Secret"
-        case .longTermFallback: 
-            return "Standard Encryption"
+        case .forwardSecret:    return "Forward Secret"
+        case .longTermFallback: return "Standard Encryption"
         }
     }
 }

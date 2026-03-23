@@ -945,7 +945,6 @@ extension ContactManager {
  
     /// Decrypt a v3fs bundle.
     func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
- 
         guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
  
         let cryptoOps     = Manager.Crypto()

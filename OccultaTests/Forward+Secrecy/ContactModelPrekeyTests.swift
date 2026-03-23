@@ -389,6 +389,67 @@ final class ContactModelPrekeyTests: XCTestCase {
         XCTAssertEqual(c.ownPrekeysCount, 2)
     }
 
+    // MARK: - Missing tests 3.2.5, 3.4.7, 3.8.3
+
+    /// 3.2.5 — Empty store: syncInboundPrekeys stores the batch directly without running
+    /// the filter loop. Tests that the empty-store path is correct and doesn't add
+    /// phantom entries.
+    func test_syncInbound_emptyStore_storesDirectly() throws {
+        let c = makeContact()
+        XCTAssertEqual(c.availableInboundPrekeyCount, 0, "precondition: store is empty")
+
+        let blobA = try encrypt(prekey(id: "A", sequence: 2))
+        let blobB = try encrypt(prekey(id: "B", sequence: 2))
+        c.syncInboundPrekeys([blobA, blobB], sequence: 2, decryptor: decryptBlob)
+
+        // Exactly 2 entries — no phantom entries from an erroneous filter pass
+        XCTAssertEqual(c.contactPrekeys?.count, 2)
+        XCTAssertEqual(c.contactPrekeySequence, 2)
+        let ids = try c.contactPrekeys!.map { try decryptPrekey($0).id }
+        XCTAssertTrue(ids.contains("A") && ids.contains("B"))
+    }
+
+    /// 3.4.7 — Multiple blobs with the same sequence number in ownPrekeys:
+    /// findOwnPrekeyData must select the correct blob by Prekey.id, not by sequence.
+    func test_findOwn_multipleBlobs_sameSequence_correctIdSelected() throws {
+        let c = makeContact()
+        // Three prekeys all at seq=1 — differ only in id
+        let blobX = try encrypt(prekey(id: "X", sequence: 1))
+        let blobY = try encrypt(prekey(id: "Y", sequence: 1))
+        let blobZ = try encrypt(prekey(id: "Z", sequence: 1))
+        c.appendOwnPrekeys([blobX, blobY, blobZ])
+
+        // Each lookup must return the exact blob for the requested id
+        XCTAssertEqual(c.findOwnPrekeyData(id: "X") { try self.decrypt($0) }, blobX, "Must select X not Y or Z")
+        XCTAssertEqual(c.findOwnPrekeyData(id: "Y") { try self.decrypt($0) }, blobY, "Must select Y not X or Z")
+        XCTAssertEqual(c.findOwnPrekeyData(id: "Z") { try self.decrypt($0) }, blobZ, "Must select Z not X or Y")
+        // Store untouched — find never removes
+        XCTAssertEqual(c.ownPrekeysCount, 3)
+    }
+
+    /// 3.8.3 — appendOwnPrekeys writes only to ownPrekeys, never to contactPrekeys.
+    func test_appendOwnPrekeys_doesNotAffectContactPrekeys() throws {
+        let c = makeContact()
+        // Prime contactPrekeys with a known entry
+        c.syncInboundPrekeys(try [encrypt(prekey(id: "THEIRS"))], sequence: 1, decryptor: decryptBlob)
+        let countBefore = c.availableInboundPrekeyCount
+
+        // Append to ownPrekeys
+        c.appendOwnPrekeys(try [encrypt(prekey(id: "OURS-A")), encrypt(prekey(id: "OURS-B"))])
+
+        // contactPrekeys must be completely unchanged
+        XCTAssertEqual(c.availableInboundPrekeyCount, countBefore,
+                       "appendOwnPrekeys must not touch contactPrekeys")
+        XCTAssertEqual(c.ownPrekeysCount, 2,
+                       "ownPrekeys must have the two new entries")
+
+        // Cross-contamination check: ownPrekeys IDs must not appear in contactPrekeys
+        let inboundId  = try decryptPrekey(c.contactPrekeys![0]).id
+        let outboundIds = try c.ownPrekeys!.map { try decryptPrekey($0).id }
+        XCTAssertFalse(outboundIds.contains(inboundId),
+                       "ownPrekeys must not contain contactPrekeys entries")
+    }
+
     // MARK: - isLikelySender
 
     func test_isLikelySender_trueForMatchingKeyAndNonce() throws {

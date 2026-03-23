@@ -98,11 +98,13 @@ extension Manager {
                 kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
             ]
             var item: CFTypeRef?
+            
             switch SecItemCopyMatching(query as CFDictionary, &item) {
             case errSecItemNotFound:
+                item = nil
                 _ = try self.create()
-                return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
-                    ? (item as! SecKey) : nil
+                
+                return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess ? (item as! SecKey) : nil
             case errSecSuccess:
                 return (item as! SecKey)
             default:
