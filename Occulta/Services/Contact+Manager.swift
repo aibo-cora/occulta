@@ -876,7 +876,8 @@ extension ContactManager {
         //   - SE stock is low OR we have no inbound prekey (fallback path).
         //
         // SE writes happen here, before step 4. encryptForwardSecret is zero-SE.
-        var outboundBatch:      OccultaBundle.PrekeySyncBatch? = nil
+        var outboundBatch: OccultaBundle.PrekeySyncBatch? = nil
+        
         var nextSeq             = contact.outboundPrekeySequence
         let seq                 = contact.outboundPrekeySequence
         var didGenerateNewBatch = false
@@ -885,14 +886,11 @@ extension ContactManager {
             // Reuse pending batch — same batch, same sequence, same prekeys.
             // Idempotent on the receiving side: sequence guard ignores duplicates.
             outboundBatch = pending
- 
         } else if prekeyManager.needsReplenishment(for: contact.identifier) || contactPrekey == nil {
             // No pending batch, and we need to send one.
-            let result = try prekeyManager.generateBatch(
-                contactID:       contact.identifier,
-                currentSequence: seq
-            )
+            let result = try prekeyManager.generateBatch(contactID: contact.identifier, currentSequence: seq)
             let batch = OccultaBundle.PrekeySyncBatch(sequence: seq, prekeys: result.prekeys)
+            
             try contact.storePendingBatch(batch)
             
             outboundBatch      = batch
@@ -918,6 +916,7 @@ extension ContactManager {
                     let encoded   = try? JSONEncoder().encode(prekey),
                     let encrypted = try? cryptoOps.encrypt(data: encoded)
                 else { return nil }
+                
                 return encrypted
             }
             contact.appendOwnPrekeys(blobs)
@@ -961,6 +960,7 @@ extension ContactManager {
  
             if contact.isLikelySender(of: bundle, contactPublicKey: pubKey) {
                 sender = contact
+                
                 break
             }
         }
@@ -992,7 +992,7 @@ extension ContactManager {
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
         let plaintext: Data?
         
-        debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
+        debugPrint("Opening message, using mode: \(bundle.secrecy.mode), batch: \(String(describing: bundle.secrecy.prekeyBatch))")
  
         switch bundle.secrecy.mode {
         case .forwardSecret:
@@ -1000,13 +1000,10 @@ extension ContactManager {
                 guard
                     let prekey   = resolvedPrekey,
                     let privKey  = prekeyManager.retrievePrivateKey(for: prekey),
-                    let sessKey  = cryptoOps.deriveSessionKey(
-                                       ephemeralPrivateKey: privKey,
-                                       recipientMaterial:   bundle.secrecy.ephemeralPublicKey
-                                   )
+                    let sessKey  = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey)
                 else { return nil }
+                
                 return try cryptoOps.open(bundle, using: sessKey)
-                // ← privKey released here — BEFORE consume()
             }()
  
             if decrypted != nil, let prekey = resolvedPrekey {
@@ -1015,9 +1012,9 @@ extension ContactManager {
             
             plaintext = decrypted
         case .longTermFallback:
-            guard let sessKey = cryptoOps.deriveSessionKey(
-                using: bundle.secrecy.ephemeralPublicKey
-            ) else { plaintext = nil; break }
+            guard
+                let sessKey = cryptoOps.deriveSessionKey(using: bundle.secrecy.ephemeralPublicKey)
+            else { plaintext = nil; break }
             
             plaintext = try cryptoOps.open(bundle, using: sessKey)
         }
@@ -1045,10 +1042,8 @@ extension ContactManager {
         // will keep riding Alice's messages and will reach Bob eventually.
         if bundle.secrecy.mode == .longTermFallback && !sender.hasPendingBatch {
             let seq    = sender.outboundPrekeySequence
-            let result = try? prekeyManager.generateBatch(
-                contactID:       sender.identifier,
-                currentSequence: seq
-            )
+            let result = try? prekeyManager.generateBatch(contactID: sender.identifier, currentSequence: seq)
+            
             if let result {
                 let batch = OccultaBundle.PrekeySyncBatch(
                     sequence: seq,
@@ -1091,6 +1086,7 @@ extension ContactManager {
                     let encoded   = try? JSONEncoder().encode(prekey),
                     let encrypted = try? cryptoOps.encrypt(data: encoded)
                 else { return nil }
+                
                 return encrypted
             }
             // Prune-then-append semantics: drops provably dead entries,
@@ -1101,7 +1097,7 @@ extension ContactManager {
         }
  
         // ── 8. Persist ───────────────────────────────────────────────────
-        try modelContext.save()
+        try self.modelContext.save()
  
         return (plaintext, sender.identifier)
     }

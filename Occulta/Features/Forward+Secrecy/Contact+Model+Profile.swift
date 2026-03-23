@@ -20,8 +20,10 @@ extension Contact.Profile {
     /// and should have a pending batch ready to attach.
     func popOldestPrekeyData() -> Data? {
         guard var current = self.contactPrekeys, !current.isEmpty else { return nil }
+        
         let oldest          = current.removeFirst()
         self.contactPrekeys = current
+        
         return oldest
     }
 
