@@ -1,219 +1,233 @@
 # Forward Secrecy Development Guide
 
-Occulta — internal engineering reference.
-Commit this file alongside any change to the forward secrecy implementation.
+Occulta v3fs — internal engineering reference.
+Add this file to any PR that touches the forward secrecy implementation.
 
 ---
 
-## The Two-Array Invariant
+## Mental model: two arrays, two directions
 
-Every `Contact.Profile` holds two prekey arrays that must never be confused.
+Every `Contact.Profile` holds two prekey arrays and one pending delivery slot.
 
 | Property | Whose keys | Direction | Operation |
 |---|---|---|---|
-| `contactPrekeys` | **Their** public keys | Received FROM contact | Pop (FIFO) when encrypting TO them |
-| `ownPrekeys` | **Our** public keys | Sent TO contact | Find by ID / remove when decrypting |
+| `contactPrekeys` | Their public keys | Received FROM contact | Pop FIFO when encrypting TO them |
+| `ownPrekeys` | Our public keys | Sent TO contact | Find by ID / remove when they encrypt back to us |
+| `pendingOutboundBatch` | Our freshly generated batch | Outbound | Rides every message until receipt is confirmed |
 
-**Mnemonic:** `contactPrekeys` = the pile of stamps they gave us. `ownPrekeys` = the receipts for stamps we sent them.
+**contactPrekeys:** their keys → Alice pops one → uses it for ECDH → encrypts to Bob
 
-Violations of this invariant break decryption silently. The GCM tag will not catch it — the wrong session key is derived before any authenticated data is checked.
+**ownPrekeys:** our keys → Alice appended when generating → Bob uses one → Alice
+finds it by Prekey.id to reconstruct SE tag → derives session key
 
-### Checklist before touching prekey storage
-
-- [ ] `encryptBundle` pops from `contactPrekeys` (their key for our ECDH)
-- [ ] `encryptBundle` appends new batch to `ownPrekeys` (our keys we just sent)
-- [ ] `decrypt` searches `ownPrekeys` by `bundle.secrecy.prekeyID` (our key they used)
-- [ ] `decrypt` removes from `ownPrekeys` on success (not on failure)
-- [ ] `decrypt` calls `syncInboundPrekeys` on `contactPrekeys` (their new keys for us)
+**Why two arrays:**
+Using a single array caused a silent collision. When Bob exhausted Alice's prekeys and
+sent a fallback bundle with a new batch, `syncInboundPrekeys` replaced the entire store.
+Alice's own prekeys — needed to look up SE private keys — were overwritten.
+The next time Bob used one of Alice's keys, her SE tag lookup failed silently.
 
 ---
 
-## SE Operation Ordering
+## The pending batch guarantee
 
-The Secure Enclave `securityd` daemon crashes with `malloc: pointer being freed was not allocated`
-if SE writes (`SecKeyCreateRandomKey`, `SecItemDelete`) and ECDH (`SecKeyCopyKeyExchangeResult`)
-are interleaved in the same call stack.
+**The problem with any flag approach:**
+Clearing a flag on encrypt is too early. The message might not be sent, not be opened,
+or be opened out of order. No delivery receipt exists without a server.
 
-**Rule: all SE writes must complete before any ECDH operation begins.**
+**The solution:**
+Attach the same batch to every outbound message until we receive cryptographic proof
+that the contact received it. The proof is unforgeable: they sent a .forwardSecret
+bundle that opened successfully using one of our prekeys.
 
 ```
-✅  generateBatch()       → (SE writes done)
-    encryptForwardSecret() → (ECDH, AES-GCM — zero SE side effects)
-
-❌  encryptForwardSecret() → generateBatch() inside → ECDH immediately after
+pendingOutboundBatch lifecycle:
+  generateBatch()          → store in pendingOutboundBatch
+  encryptBundle()          → attach pendingOutboundBatch to every message
+  removeOwnPrekeyData()    → fires on successful FS open from them
+  clearPendingBatch()      → called immediately after removeOwnPrekeyData
 ```
 
-### SecKey lifetime rule
+Edge cases this handles:
+- Message encrypted but not sent: next message includes the same batch
+- Message sent but not opened: same
+- Two messages in flight with same batch: sequence guard is idempotent on receive
+- Messages opened out of order: same batch in both, no-op on duplicate
+- Both sides exhausted simultaneously: both detect inbound .longTermFallback,
+  both generate new batches, recovery is automatic on next message in either direction
 
-`SecItemDelete` (inside `PrekeyManager.consume`) invalidates the SE item backing the `SecKey`.
-If ARC releases the `SecKey` after `SecItemDelete`, `CFRelease` is called on freed memory.
+---
 
-**Rule: the `SecKey` reference must go out of scope BEFORE `consume()` is called.**
+## SE operation ordering
 
-The closure pattern enforces this:
+**Rule: all SE writes must complete before any ECDH begins.**
+
+```
+CORRECT:
+  generateBatch()           → SE writes done
+  encryptForwardSecret()    → ECDH, AES-GCM, zero SE side effects
+
+WRONG:
+  encryptForwardSecret() calling generateBatch() internally,
+  immediately followed by generateEphemeralKeyPair() + ECDH
+```
+
+**SecKey lifetime rule:**
+
+`SecItemDelete` (inside `consume()`) invalidates the SE item backing the `SecKey`.
+If ARC releases the `SecKey` after `SecItemDelete`, `CFRelease` crashes with
+`malloc: pointer being freed was not allocated`.
+
+The `SecKey` must go out of scope BEFORE `consume()` is called:
 
 ```swift
 let decrypted: Data? = try {
     guard let privKey = prekeyManager.retrievePrivateKey(for: prekey) else { return nil }
-    let sessionKey = crypto.deriveSessionKey(ephemeralPrivateKey: privKey, ...)
-    return try crypto.openBundle(bundle, using: sessionKey)
-    // ← privKey released here at closing brace
+    let key = crypto.deriveSessionKey(ephemeralPrivateKey: privKey, ...)
+    return try crypto.openBundle(bundle, using: key)
+    // privKey released here at closing brace
 }()
-
-// privKey is gone — safe to call SecItemDelete
-prekeyManager.consume(prekey: prekey)
+prekeyManager.consume(prekey: prekey)   // SecKey is gone — safe
 ```
-
-**Never** call `consume()` inside the same scope that holds a `SecKey` reference.
 
 ---
 
-## AAD Requirements
-
-Every field in `SecrecyContext` is authenticated by the AES-GCM tag via AAD.
-Fields outside `SecrecyContext` (`fingerprintNonce`, `senderFingerprint`, `version`) must also
-be covered — `version` is included in `fullAAD()`.
+## AAD requirements
 
 ```
-AES-GCM tag covers:
-  ✅ SecrecyContext (mode, ephemeralPublicKey, prekeyID, prekeySequence, prekeyBatch)
-  ✅ version (prepended to AAD via fullAAD())
-  ✅ ciphertext (always covered by GCM)
-  — fingerprintNonce and senderFingerprint are routing metadata, not authenticated
+fullAAD() = version.rawValue.utf8 || sortedKeys(JSON(SecrecyContext))
+
+In AAD (tamper causes authenticationFailure):
+  version, mode, ephemeralPublicKey, prekeyID, prekeySequence, prekeyBatch
+
+Not in AAD (routing metadata):
+  fingerprintNonce, senderFingerprint
 ```
 
-**Rule: always call `bundle.fullAAD()` on open, `computeAAD(version:secrecy:)` on seal.**
-Never compute AAD inline with a bare `JSONEncoder()`.
+Routing fields must be outside AAD: the recipient needs them to identify the sender
+before deriving the session key — putting them inside would create a circular dependency.
+Tampering with routing fields makes the bundle undeliverable but cannot expose plaintext.
 
-**Rule: `JSONEncoder` for AAD must always use `.sortedKeys`.**
-Without sorted keys, two encoder instances can produce different byte sequences for the same struct,
-causing spurious `authenticationFailure` on every open.
+**Rules:**
+- Always use `bundle.fullAAD()` on open and `Manager.Crypto.computeAAD(version:secrecy:)` on seal
+- `JSONEncoder` for AAD must always use `.sortedKeys` — without it, different encoder
+  instances produce different key orderings and AAD bytes diverge, causing spurious
+  `authenticationFailure` on every open
 
 ---
 
-## Entropy Validation
+## No silent security degradation
 
-`SecRandomCopyBytes` can fail (boot-time entropy starvation, hardware fault).
-The return value must always be checked.
+If the caller provides a non-nil `contactPrekey` (requesting FS), any failure **throws**
+rather than producing a `.longTermFallback` bundle. The caller intended FS. Silently
+falling back would show the wrong security badge and waste the popped prekey.
 
-```swift
-// ✅ correct
-guard SecRandomCopyBytes(kSecRandomDefault, count, &bytes) == errSecSuccess else {
-    throw OccultaBundle.BundleError.entropyUnavailable
-}
+Error types:
+- `invalidRecipientMaterial` — long-term key is not exactly 65 bytes
+- `invalidPrekeyMaterial`    — contact's prekey.publicKey is not exactly 65 bytes
+- `ephemeralKeyGenerationFailed` — SE could not generate the throwaway key pair
+- `keyDerivationFailed`     — ECDH failed despite valid key material
 
-// ❌ wrong — silent zero nonce
-_ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
-```
-
-A zero nonce makes `senderFingerprint` identical across all bundles from the same sender,
-defeating cross-bundle unlinkability.
+The fallback path is entered only when `contactPrekey` is nil.
 
 ---
 
-## HKDF Domain Separation
+## syncInboundPrekeys: prune-then-append, not replace
 
-Two different key derivation purposes must use two different `info` strings.
-Sharing an info string means if two code paths ever produce the same ECDH IKM,
-they silently derive the same key.
+Blind replace discards valid unconsumed prekeys from the previous batch.
+The correct semantics:
+
+1. **Prune** entries with `sequence < incoming.sequence - 1`.
+   Those private keys are already deleted from the sender's SE.
+   Keeping them wastes pop slots — they can never produce a valid session key.
+
+2. **Append** the new batch to what remains.
+   Keys at sequence `incoming.sequence - 1` are still valid (SE retains them as a buffer).
+
+Blobs that fail decryption are kept defensively — never prune what you cannot read.
+
+---
+
+## ownPrekeys pruning
+
+`ownPrekeys` uses append semantics. After each `generateBatch`, call
+`pruneOwnPrekeys(olderThan: currentSequence - 1, decryptor:)` to remove dead blobs.
+The SE prunes the same threshold — mirror it in SwiftData.
+
+Blobs that fail decryption are kept defensively.
+
+---
+
+## generateBatch failure handling
+
+The generation loop throws `PrekeyError.seKeyCreationFailed` on any SE failure rather
+than continuing with a partial batch. A partial batch would advance the sequence and
+prune old keys, leaving the contact with fewer prekeys than expected and no safety buffer.
+Throw and let the caller retry.
+
+---
+
+## HKDF domain separation
 
 | Path | Info string |
 |---|---|
 | Transport (message encryption) | `"Occulta-v1-transport-2025"` |
 | Local database encryption | `"Occulta-v1-local-db-2025"` |
 
-**⚠️ BREAKING CHANGE WARNING**
-Changing the info string invalidates all previously encrypted data.
-Do this once at the right time, then never again.
+These strings are baked into every existing encrypted record.
+⚠️ Changing them is a one-way breaking migration. Change once, never change again.
 
 ---
 
-## Input Validation
+## Input validation
 
-All public key material entering the ECDH path must be validated before use.
+All public key material must be validated before ECDH. Validated at three entry points:
 
-```swift
-// P-256 x963 uncompressed point: 0x04 || X(32) || Y(32) = 65 bytes exactly
-guard material.count == 65 else { return nil }
-```
-
-Passing wrong-length material to `SecKeyCreateWithData` returns nil silently.
-Making the failure explicit at the validation site produces a clear error rather than
-a confusing nil session key deep in the crypto stack.
-
----
-
-## Prekey Accumulation and Pruning
-
-`ownPrekeys` uses append semantics. Without pruning, it grows indefinitely as new batches
-are generated for a contact.
-
-**Rule: prune `ownPrekeys` immediately after `generateBatch` using the same sequence threshold.**
-
-The SE prunes keys with `sequence < currentSequence - 1`.
-`ownPrekeys` must be pruned with the same threshold so dead blobs (whose SE private keys
-no longer exist) do not accumulate in SwiftData.
+1. `recipientMaterial` in `encryptBundle` — long-term key from SwiftData
+2. `contactPrekey.publicKey` in `encryptForwardSecret` — from received PrekeySyncBatch (attacker-influenced)
+3. `bundle.secrecy.ephemeralPublicKey` in `decrypt` — from decoded JSON bundle (attacker-influenced)
 
 ```swift
-// After generateBatch for sequence N:
-// SE prunes: seq < N - 1
-// ownPrekeys must also prune: seq < N - 1
-if seq > 1 {
-    contact.pruneOwnPrekeys(olderThan: seq - 1) { try? cryptoOps.decrypt(data: $0) }
-}
+guard material.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
 ```
 
 ---
 
-## Inbound Batch Size Limit
+## Common mistakes — historical record
 
-The `PrekeySyncBatch` inside a received bundle is attacker-controlled data.
-Always validate size before processing.
+1. **Single prekey array for both directions.** `contactPrekeys` served both inbound and
+   outbound. Sequences advanced, one direction overwrote the other, decrypt silently failed.
 
-```swift
-guard inboundBatch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
-    throw ContactManager.Errors.invalidPrekeySyncBatch
-}
-```
+2. **Silent fallback when FS was intended.** ECDH failure with a valid contactPrekey called
+   `self.fallback(...)` silently. UI showed FS; encryption used long-term keys.
 
-A legitimate peer sends at most `defaultBatchSize` (15) prekeys per batch.
-The 2× factor gives headroom for future batch size changes.
+3. **generateBatch silently truncating on SE failure.** The `continue` on failure advanced
+   the sequence and pruned old keys with a partial batch. Fixed: throw immediately.
 
----
+4. **SE writes interleaved with ECDH.** `generateBatch` inside `encryptForwardSecret`
+   followed immediately by ECDH → SE daemon produced malloc corruption.
 
-## Testing Requirements for Crypto Features
+5. **SecKey held across SecItemDelete.** `consume()` called while `SecKey` still in scope
+   → `CFRelease` on freed SE item → `malloc: pointer being freed was not allocated`.
 
-Every forward secrecy change must include tests covering:
+6. **fatalError on nil ECDH error.** `SecKeyCopyKeyExchangeResult` can return nil without
+   populating the error parameter. Force-unwrap of nil → undefined behaviour.
 
-- [ ] **Two-array isolation**: encrypt then decrypt for the same contact, verify ownPrekeys and contactPrekeys never contain each other's data
-- [ ] **Bidirectional conversation**: Alice → Bob uses Bob's prekey; Bob → Alice uses Alice's prekey; both decrypt correctly; no cross-contamination
-- [ ] **Sequence advancement with pruning**: after batch N+2 is generated, batch N blobs are pruned from both SE and ownPrekeys
-- [ ] **AAD tamper**: flip each SecrecyContext field individually; verify `openBundle` throws on each
-- [ ] **Version tamper**: flip bundle.version; verify `openBundle` throws
-- [ ] **Batch size limit**: bundle with oversized batch is rejected before any SE write
-- [ ] **Entropy failure path**: if generateNonce throws, encryption throws (does not fall back silently)
-- [ ] **Input validation**: recipientMaterial of wrong length causes encryptForwardSecret to throw, not fall back silently
+7. **Non-deterministic AAD.** `JSONEncoder()` without `.sortedKeys` produced different key
+   orderings across instances → spurious `authenticationFailure` on every decrypt.
 
----
+8. **version not in AAD.** Attacker could flip version from `.v3fs` to `.v1` without
+   triggering GCM failure → UI displayed wrong security badge.
 
-## Common Mistakes Caught in This Codebase
+9. **Blind replace in syncInboundPrekeys.** New batch replaced entire store, discarding
+   valid unconsumed prekeys from the previous batch → those messages became undecryptable.
 
-1. **Single array for both prekey directions** — caused by treating `contactPrekeys` as a generic prekey store. Always ask: "whose keys are these, and in which direction?"
-
-2. **SE writes inside encryptForwardSecret** — `generateBatch` was called inside the crypto function, interleaved with ECDH. Moved to ContactManager before the crypto call.
-
-3. **SecKey held across SecItemDelete** — `consume()` was called while `prekeyPrivKey` was still a local variable. Fixed with closure-scoped release.
-
-4. **`fatalError` on ECDH failure** — `SecKeyCopyKeyExchangeResult` can return nil with `error == nil`. Force-unwrapping the nil error caused heap corruption. Replace all `fatalError` with `return nil`.
-
-5. **Non-deterministic AAD** — `JSONEncoder()` without `.sortedKeys` produced different key orderings across instances, causing spurious `authenticationFailure`. Always use `.sortedKeys` for AAD.
-
-6. **`decryptForwardSecret` as monolithic SE+ECDH+GCM** — combining SE key retrieval, ECDH, and AES-GCM in one function made it impossible to control SecKey lifetime. Separated into `deriveSessionKey` (SE+ECDH) and `openBundle` (GCM only).
+10. **No pending batch mechanism.** Bob stuck in fallback indefinitely after exhausting
+    Alice's prekeys — no way to notify Alice she needed to generate new keys for him.
 
 ---
 
-## Protocol Review Checklist
+## Protocol review checklist
 
-Before implementing any cryptographic feature, complete every item in `CRYPTO_REVIEW_CHECKLIST.md`.
-This guide is for implementation; the checklist is for protocol design.
-Both are required.
+Before implementing any cryptographic feature, complete every item in
+`CRYPTO_REVIEW_CHECKLIST.md`. This guide is for implementation;
+the checklist is for protocol design. Both are required.

@@ -68,8 +68,12 @@ extension Contact {
         /// Read and incremented by PrekeyManager.generateBatch(contactID:currentSequence:).
         /// Caller writes the returned nextSequence back here after each encrypt call.
         var outboundPrekeySequence: Int = 0
-        /// Identifier to determine the owner of the public key.
+        /// The outbound prekey batch Alice is trying to deliver to Bob.
+        /// Sent with every message until Alice decrypts a FS bundle from Bob
+        /// that used one of her prekeys — proof of receipt.
+        var pendingOutboundBatch: Data? = nil
         
+        /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
         /// Identifier of the user that originally acquired this contact's public key.
         var identifierAcquirer: String?
