@@ -992,7 +992,7 @@ extension ContactManager {
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
         let plaintext: Data?
         
-        debugPrint("Opening message, using mode: \(bundle.secrecy.mode), batch: \(String(describing: bundle.secrecy.prekeyBatch))")
+        debugPrint("Opening message, using mode: \(bundle.secrecy.mode), batch sequence: \(String(describing: bundle.secrecy.prekeyBatch?.sequence))")
  
         switch bundle.secrecy.mode {
         case .forwardSecret:
@@ -1008,15 +1008,24 @@ extension ContactManager {
  
             if decrypted != nil, let prekey = resolvedPrekey {
                 prekeyManager.consume(prekey: prekey)
+            } else {
+                debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekey = \(String(describing: resolvedPrekey))")
             }
             
             plaintext = decrypted
         case .longTermFallback:
             guard
-                let sessKey = cryptoOps.deriveSessionKey(using: bundle.secrecy.ephemeralPublicKey)
-            else { plaintext = nil; break }
+                let sendersEncryptedIdentityKey = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+                let decryptedIdentityKey = try cryptoOps.decrypt(data: sendersEncryptedIdentityKey.material),
+                let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey)
+            else {
+                debugPrint("Opening message, could not derive session key. Aborting open...")
+                plaintext = nil
+                
+                break
+            }
             
-            plaintext = try cryptoOps.open(bundle, using: sessKey)
+            plaintext = try cryptoOps.open(bundle, using: sessionKey)
         }
  
         guard let plaintext else { throw Errors.decryptionFailed }

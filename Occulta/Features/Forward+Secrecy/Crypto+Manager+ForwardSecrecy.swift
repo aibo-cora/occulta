@@ -151,7 +151,7 @@ extension Manager.Crypto {
 
         let secrecy = OccultaBundle.SecrecyContext(
             mode:               .longTermFallback,
-            ephemeralPublicKey: ourPublicKey,
+            ephemeralPublicKey: Data(),
             prekeyID:           nil,
             prekeySequence:     nil,
             prekeyBatch:        outboundBatch
