@@ -222,11 +222,13 @@ extension Manager {
             else { return 0 }
 
             let prefix = "prekey.\(contactID)."
+            
             return allItems.filter { item in
                 guard
                     let tagData = item[kSecAttrApplicationTag as String] as? Data,
                     let tag     = String(data: tagData, encoding: .utf8)
                 else { return false }
+                
                 return tag.hasPrefix(prefix)
             }.count
         }

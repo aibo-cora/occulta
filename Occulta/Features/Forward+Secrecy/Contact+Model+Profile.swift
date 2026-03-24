@@ -19,10 +19,15 @@ extension Contact.Profile {
     /// Returns nil when exhausted — caller falls back to long-term path
     /// and should have a pending batch ready to attach.
     func popOldestPrekeyData() -> Data? {
-        guard var current = self.contactPrekeys, !current.isEmpty else { return nil }
+        guard var current = self.contactPrekeys, !current.isEmpty else {
+            debugPrint("popOldestPrekeyData: no prekeys available")
+            
+            return nil
+        }
+        let oldest = current.removeFirst()
+        self.contactPrekeys = current.isEmpty ? nil : current
         
-        let oldest          = current.removeFirst()
-        self.contactPrekeys = current
+        debugPrint("popOldestPrekeyData: popped one, remaining: \(current.count)")
         
         return oldest
     }
@@ -49,30 +54,37 @@ extension Contact.Profile {
     ///   - sequence:  The `PrekeySyncBatch.sequence` of the incoming batch.
     ///   - decryptor: Closure to decrypt a blob to its raw bytes. Non-throwing;
     ///                return nil on failure.
-    func syncInboundPrekeys(
-        _ blobs: [Data],
-        sequence: Int,
-        decryptor: (Data) -> Data?
-    ) {
-        guard sequence > self.contactPrekeySequence else { return }
+    func syncInboundPrekeys(_ blobs: [Data], sequence: Int, decryptor: (Data) -> Data?) {
+        let currentSeq = self.contactPrekeySequence ?? -1
+        
+        debugPrint("syncInboundPrekeys called - sequence: \(sequence), current: \(currentSeq), prekeys count: \(self.contactPrekeys?.count ?? 0)")
 
-        // Prune entries that are provably dead: their private keys have been
-        // deleted from the sender's SE (sequence < incomingSequence - 1).
-        if var existing = self.contactPrekeys, !existing.isEmpty {
-            existing = existing.filter { blob in
-                guard
-                    let raw    = decryptor(blob),
-                    let prekey = try? JSONDecoder().decode(Prekey.self, from: raw)
-                else { return true }                          // keep if unreadable
-                return prekey.sequence >= sequence - 1
-            }
-            existing.append(contentsOf: blobs)
-            self.contactPrekeys = existing
-        } else {
-            self.contactPrekeys = blobs
+        // Allow == sequence (idempotent) — only reject older batches
+        guard sequence >= currentSeq else {
+            debugPrint("syncInboundPrekeys: sequence \(sequence) < current \(currentSeq) → skipping (older batch)")
+            
+            return
         }
 
+        var target = self.contactPrekeys ?? []
+
+        // Prune only provably dead entries (sequence < incoming - 1)
+        if !target.isEmpty {
+            target = target.filter { blob in
+                guard let raw = decryptor(blob),
+                      let prekey = try? JSONDecoder().decode(Prekey.self, from: raw)
+                else { return true } // keep unreadable defensively
+                
+                return prekey.sequence >= sequence - 1
+            }
+        }
+
+        target.append(contentsOf: blobs)
+        
+        self.contactPrekeys = target.isEmpty ? nil : target
         self.contactPrekeySequence = sequence
+
+        debugPrint("syncInboundPrekeys SUCCESS: now \(target.count) prekeys, sequence = \(sequence)")
     }
 
     // MARK: - Outbound prekeys (our keys, for lookup when they encrypt to us)

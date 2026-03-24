@@ -58,7 +58,7 @@ extension Contact {
         var contactPrekeys: [Data]? = []
         /// Sequence number of the last prekey batch received FROM this contact.
         /// Replace incoming batch only when sequence > this value.
-        var contactPrekeySequence: Int = -1
+        var contactPrekeySequence: Int?
         /// Our own public prekeys we generated and sent to this contact.
         /// When they encrypt to us using one of these prekeys, we search here by
         /// Prekey.id to reconstruct the SE tag and find our private key.
@@ -67,7 +67,7 @@ extension Contact {
         /// Sequence number of the last prekey batch generated FOR this contact.
         /// Read and incremented by PrekeyManager.generateBatch(contactID:currentSequence:).
         /// Caller writes the returned nextSequence back here after each encrypt call.
-        var outboundPrekeySequence: Int = 0
+        var outboundPrekeySequence: Int?
         /// The outbound prekey batch Alice is trying to deliver to Bob.
         /// Sent with every message until Alice decrypts a FS bundle from Bob
         /// that used one of her prekeys — proof of receipt.
