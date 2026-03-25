@@ -866,8 +866,6 @@ extension ContactManager {
         var contactPrekey: Prekey? = nil
  
         if let blob = contact.popOldestPrekeyData() {
-            contact.pendingOutboundBatch = nil
-            
             contactPrekey = (try? cryptoOps.decrypt(data: blob))
                 .flatMap { try? JSONDecoder().decode(Prekey.self, from: $0) }
         }
@@ -890,11 +888,6 @@ extension ContactManager {
         // Use the stored sequence, or 0 for a brand-new contact
         let currentSeq = contact.outboundPrekeySequence ?? 0
         var nextSeq = currentSeq
-        
-        // Optional: add a small debug
-        if contactPrekey == nil {
-            debugPrint("No inbound prekey available → falling back to long-term + generating new batch")
-        }
 
         if let pending = contact.loadPendingBatch() {
             // Reuse the pending batch — do NOT advance the sequence yet.
@@ -916,6 +909,7 @@ extension ContactManager {
             nextSeq = result.nextSequence
             didGenerateNewBatch = true
             
+            debugPrint("No inbound prekey available → falling back to long-term + generating new batch")
             debugPrint("Generated new batch seq \(currentSeq) → next will be \(nextSeq)")
         }
  
@@ -1032,6 +1026,8 @@ extension ContactManager {
             
             plaintext = decrypted
         case .longTermFallback:
+            debugPrint("🔥 longTermFallback detected — forcing fresh pending batch for sender \(sender.identifier)")
+            
             guard
                 let sendersEncryptedIdentityKey = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
                 let decryptedIdentityKey = try cryptoOps.decrypt(data: sendersEncryptedIdentityKey.material),
@@ -1065,12 +1061,8 @@ extension ContactManager {
         //
         // A .longTermFallback bundle means the sender is out of our prekeys.
         // Generate a new batch immediately so Alice's next outbound message
-        // to Bob carries it. This is an SE write — safe here because step 4
-        // is complete (all SecKey references are released).
-        //
-        // Only generate if no batch is already pending — the pending batch
-        // will keep riding Alice's messages and will reach Bob eventually.
-        if bundle.secrecy.mode == .longTermFallback && !sender.hasPendingBatch {
+        // to Bob carries it.
+        if bundle.secrecy.mode == .longTermFallback {
             let seq    = sender.outboundPrekeySequence ?? -1
             let result = try? prekeyManager.generateBatch(contactID: sender.identifier, currentSequence: seq)
             
@@ -1103,6 +1095,7 @@ extension ContactManager {
         // ── 7. Store inbound prekey batch ────────────────────────────────
         if let inboundBatch = bundle.secrecy.prekeyBatch {
             debugPrint("Decrypting bundle containing inbound prekey sync batch...")
+            
             guard inboundBatch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
                 throw Errors.invalidPrekeySyncBatch
             }
@@ -1129,8 +1122,7 @@ extension ContactManager {
         // ── 8. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
         
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt())")
-        debugPrint("  pending now: \(sender.hasPendingBatch)")
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
  
         return (plaintext, sender.identifier)
     }
