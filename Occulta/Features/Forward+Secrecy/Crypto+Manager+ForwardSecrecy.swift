@@ -11,7 +11,6 @@ import CryptoKit
 // MARK: - Forward-secret encryption
 
 extension Manager.Crypto {
-
     /// Encrypt a message for a single recipient.
     ///
     /// ## Invariant: no silent security degradation
@@ -28,7 +27,9 @@ extension Manager.Crypto {
     /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
     /// (generateBatch) are done by the caller (ContactManager) before this call.
     func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
-        guard recipientMaterial.count == 65 else {
+        guard
+            recipientMaterial.count == 65
+        else {
             throw EncryptionError.invalidRecipientMaterial
         }
 
@@ -44,7 +45,9 @@ extension Manager.Crypto {
             // contactPrekey.publicKey comes from a received PrekeySyncBatch —
             // attacker-influenced data. Reject invalid material explicitly
             // rather than letting it fail silently two layers down.
-            guard contactPrekey.publicKey.count == 65 else {
+            guard
+                contactPrekey.publicKey.count == 65
+            else {
                 throw EncryptionError.invalidPrekeyMaterial
             }
 
@@ -74,7 +77,8 @@ extension Manager.Crypto {
                 prekeyBatch:        outboundBatch
             )
 
-            let aad = try Self.computeAAD(version: OccultaBundle.currentVersion, secrecy: secrecy)
+            /// Adding `version` and `secrecy` to authenticate against tampering.
+            let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
             guard
                 let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
@@ -95,12 +99,7 @@ extension Manager.Crypto {
 
         // ── Long-term fallback path (contactPrekey nil) ──────────────────
         // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(
-            message: message, recipientMaterial: recipientMaterial,
-            ourPublicKey: ourPublicKey,
-            fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint,
-            outboundBatch: outboundBatch
-        )
+        return try self.fallback(message: message, recipientMaterial: recipientMaterial, ourPublicKey: ourPublicKey, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, outboundBatch: outboundBatch)
     }
 }
 
@@ -122,12 +121,11 @@ extension Manager.Crypto {
 // MARK: - Bundle open
 
 extension Manager.Crypto {
-    /// Open a sealed bundle with a pre-derived session key. Pure AES-GCM, zero SE.
+    /// Open a sealed bundle with a pre-derived session key.
     ///
-    /// `fullAAD()` includes `version` + `SecrecyContext` — any tampered field throws.
     /// SecKey must be released and consume() must not yet be called when this is invoked.
     func open(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
-        let aad = try bundle.fullAAD()
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: bundle.version, secrecy: bundle.secrecy)
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
         
         return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
@@ -137,31 +135,24 @@ extension Manager.Crypto {
 // MARK: - Private helpers
 
 extension Manager.Crypto {
-    private func fallback(
-        message:           Data,
-        recipientMaterial: Data,
-        ourPublicKey:      Data,
-        fingerprintNonce:  Data,
-        senderFingerprint: Data,
-        outboundBatch:     OccultaBundle.PrekeySyncBatch?
-    ) throws -> OccultaBundle {
-        guard let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial) else {
+    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data,
+        outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
+        guard
+            let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial)
+        else {
             throw EncryptionError.keyDerivationFailed
         }
-
-        let secrecy = OccultaBundle.SecrecyContext(
-            mode:               .longTermFallback,
-            ephemeralPublicKey: Data(),
-            prekeyID:           nil,
-            prekeySequence:     nil,
-            prekeyBatch:        outboundBatch
-        )
-
-        let aad = try Self.computeAAD(version: OccultaBundle.currentVersion, secrecy: secrecy)
+        /// We are passing an empty `Data` object because the recipient already has our public key.
+        /// There is no reason to expose it.
+        let secrecy = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil, prekeySequence: nil, prekeyBatch: outboundBatch)
+        /// Adding `version` and `secrecy` to authenticate against tampering.
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
         guard
             let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-        else { throw EncryptionError.keyDerivationFailed }
+        else {
+            throw EncryptionError.keyDerivationFailed
+        }
 
         return OccultaBundle(
             version:           OccultaBundle.currentVersion,
@@ -170,19 +161,6 @@ extension Manager.Crypto {
             fingerprintNonce:  fingerprintNonce,
             senderFingerprint: senderFingerprint
         )
-    }
-
-    /// Compute AAD: `version.rawValue || sortedKeys(SecrecyContext)`.
-    /// `.sortedKeys` is mandatory — without it encoder instances can produce
-    /// different key orderings, causing spurious authenticationFailure.
-    static func computeAAD(version: OccultaBundle.Version, secrecy: OccultaBundle.SecrecyContext) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        
-        var aad = version.rawValue.data(using: .utf8)!
-        aad.append(contentsOf: try encoder.encode(secrecy))
-        
-        return aad
     }
 }
 

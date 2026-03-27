@@ -845,8 +845,10 @@ extension ContactManager {
         guard data.isEmpty == false else { throw Errors.messageHasNoData }
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
         
-        debugPrint("=== encryptBundle for \(identifier) ===")
-        debugPrint("  outboundPrekeySequence: \(String(describing: contact.outboundPrekeySequence))")
+        try contact.configureForwardSecrecy()
+        
+        debugPrint("encryptBundle for: \(identifier)")
+        debugPrint("  outboundPrekeySequence: \(String(describing: try contact.plainTextForwardSecrecy?.outboundPrekeySequence))")
         debugPrint("  hasPendingBatch: \(contact.hasPendingBatch)")
         debugPrint("Encrypting for contact. Inbound prekeys now: \(contact.availableInboundPrekeyCount), contact: \(contact.givenName.decrypt())")
  
@@ -865,9 +867,8 @@ extension ContactManager {
         // ── 2. Pop oldest inbound prekey ─────────────────────────────────
         var contactPrekey: Prekey? = nil
  
-        if let blob = contact.popOldestPrekeyData() {
-            contactPrekey = (try? cryptoOps.decrypt(data: blob))
-                .flatMap { try? JSONDecoder().decode(Prekey.self, from: $0) }
+        if let blob = try contact.popOldestPrekeyData() {
+            contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
         }
  
         // ── 3. Resolve outbound batch ─────────────────────────────────────
@@ -886,10 +887,9 @@ extension ContactManager {
         var didGenerateNewBatch = false
 
         // Use the stored sequence, or 0 for a brand-new contact
-        let currentSeq = contact.outboundPrekeySequence ?? 0
-        var nextSeq = currentSeq
+        let currentSeq = try contact.plainTextForwardSecrecy?.outboundPrekeySequence ?? 0
 
-        if let pending = contact.loadPendingBatch() {
+        if let pending = try contact.loadPendingBatch() {
             // Reuse the pending batch — do NOT advance the sequence yet.
             // The sequence only advances when we actually generate a new batch.
             outboundBatch = pending
@@ -900,17 +900,15 @@ extension ContactManager {
             // Generate a fresh batch using the current sequence number
             
             let result = try prekeyManager.generateBatch(contactID: contact.identifier, currentSequence: currentSeq)
-            
             let batch = OccultaBundle.PrekeySyncBatch(sequence: currentSeq, prekeys: result.prekeys)
             
-            try contact.storePendingBatch(batch)
+            try contact.store(batch: batch, sequence: result.nextSequence)
             
             outboundBatch = batch
-            nextSeq = result.nextSequence
             didGenerateNewBatch = true
             
             debugPrint("No inbound prekey available → falling back to long-term + generating new batch")
-            debugPrint("Generated new batch seq \(currentSeq) → next will be \(nextSeq)")
+            debugPrint("Generated new batch seq \(currentSeq) → next will be \(result.nextSequence)")
         }
  
         // ── 4. ECDH + AES-GCM ────────────────────────────────────────────
@@ -921,29 +919,23 @@ extension ContactManager {
         if didGenerateNewBatch, let batch = outboundBatch {
             let blobs: [Data] = batch.prekeys.compactMap { prekey in
                 guard
-                    let encoded   = try? JSONEncoder().encode(prekey),
-                    let encrypted = try? cryptoOps.encrypt(data: encoded)
+                    let encoded   = try? JSONEncoder().encode(prekey)
                 else { return nil }
                 
-                return encrypted
+                return encoded
             }
-            contact.appendOwnPrekeys(blobs)
+            try contact.appendOwnPrekeys(blobs)
         }
  
         // ── 6. Prune dead ownPrekeys ─────────────────────────────────────
         // Only when we just generated — sequence only advances on new generation.
         if didGenerateNewBatch && currentSeq > 1 {
-            contact.pruneOwnPrekeys(olderThan: currentSeq - 1) {
-                try? cryptoOps.decrypt(data: $0)
-            }
+            try contact.pruneOwnPrekeys(olderThan: currentSeq - 1)
         }
- 
-        // ── 7. Update sequence and persist ───────────────────────────────
-        contact.outboundPrekeySequence = nextSeq
         
-        try modelContext.save()
+        try self.modelContext.save()
         
-        debugPrint("encryptBundle finished for \(identifier) - outboundPrekeySequence now: \(nextSeq), hasPendingBatch: \(contact.hasPendingBatch)")
+        debugPrint("encryptBundle finished for \(identifier) - outboundPrekeySequence now: \(String(describing: try contact.plainTextForwardSecrecy?.outboundPrekeySequence)), hasPendingBatch: \(contact.hasPendingBatch)")
  
         return try bundle.encoded()
     }
@@ -975,6 +967,8 @@ extension ContactManager {
                 break
             }
         }
+        
+        try sender?.configureForwardSecrecy()
  
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
  
@@ -988,14 +982,11 @@ extension ContactManager {
                 throw Errors.invalidBundleFormat
             }
             
-            let blob = sender.findOwnPrekeyData(id: prekeyID) {
-                try cryptoOps.decrypt(data: $0)
-            }
+            let blob = try sender.findOwnPrekeyData(id: prekeyID)
             
             if let blob {
                 consumedOwnPrekeyBlob = blob
-                resolvedPrekey        = (try? cryptoOps.decrypt(data: blob))
-                    .flatMap { try? JSONDecoder().decode(Prekey.self, from: $0) }
+                resolvedPrekey = try? JSONDecoder().decode(Prekey.self, from: blob)
             }
         }
  
@@ -1050,8 +1041,8 @@ extension ContactManager {
         // that is cryptographic proof they received our pendingOutboundBatch.
         // Clearing it here allows the next replenishment to generate a new batch.
         if let blob = consumedOwnPrekeyBlob {
-            sender.removeOwnPrekeyData(blob)
-            sender.clearPendingBatch()         // proof of receipt confirmed
+            try sender.removeOwnPrekeyData(blob)
+            try sender.clearPendingBatch()         // proof of receipt confirmed
             
             debugPrint("=== decrypt cleared pending batch for \(sender.identifier) ===")
             debugPrint("  pending now: \(sender.hasPendingBatch)")
@@ -1063,31 +1054,29 @@ extension ContactManager {
         // Generate a new batch immediately so Alice's next outbound message
         // to Bob carries it.
         if bundle.secrecy.mode == .longTermFallback {
-            let seq    = sender.outboundPrekeySequence ?? -1
+            let seq    = try sender.plainTextForwardSecrecy?.outboundPrekeySequence ?? 0
             let result = try? prekeyManager.generateBatch(contactID: sender.identifier, currentSequence: seq)
             
             if let result {
                 let batch = OccultaBundle.PrekeySyncBatch(sequence: seq, prekeys: result.prekeys)
                 
-                try? sender.storePendingBatch(batch)
-                sender.outboundPrekeySequence = result.nextSequence
+                try? sender.store(batch: batch, sequence: result.nextSequence)
  
                 // Record the new prekeys in ownPrekeys so we can find
                 // the SE private key when the sender uses one to reply.
                 let blobs: [Data] = result.prekeys.compactMap { prekey in
                     guard
-                        let encoded   = try? JSONEncoder().encode(prekey),
-                        let encrypted = try? cryptoOps.encrypt(data: encoded)
+                        let encoded   = try? JSONEncoder().encode(prekey)
                     else { return nil }
-                    return encrypted
+                    
+                    return encoded
                 }
-                sender.appendOwnPrekeys(blobs)
+                
+                try sender.appendOwnPrekeys(blobs)
  
                 // Prune dead ownPrekeys entries for the same threshold.
                 if seq > 1 {
-                    sender.pruneOwnPrekeys(olderThan: seq - 1) {
-                        try? cryptoOps.decrypt(data: $0)
-                    }
+                    try sender.pruneOwnPrekeys(olderThan: seq - 1)
                 }
             }
         }
@@ -1114,9 +1103,7 @@ extension ContactManager {
             debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
             // Prune-then-append semantics: drops provably dead entries,
             // keeps unconsumed valid prekeys, appends fresh ones.
-            sender.syncInboundPrekeys(blobs, sequence: inboundBatch.sequence) {
-                try? cryptoOps.decrypt(data: $0)
-            }
+            try sender.syncInboundPrekeys(blobs, sequence: inboundBatch.sequence)
         }
  
         // ── 8. Persist ───────────────────────────────────────────────────

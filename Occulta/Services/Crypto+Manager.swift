@@ -16,7 +16,6 @@ extension Manager {
     // TODO: Separate local and transport versions into their own classes for clarity
 
     class Crypto: CryptoProtocol {
-
         let keyManager: any KeyManagerProtocol
 
         /// Production init — uses the real Secure Enclave key manager.
@@ -196,6 +195,13 @@ extension Data {
 
     func decrypt() -> Data? {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
+        
         return try? cryptoOps.decrypt(data: self)
+    }
+    
+    func encrypt() throws -> Data? {
+        let cryptoOps: CryptoProtocol = Manager.Crypto()
+        
+        return try cryptoOps.encrypt(data: self)
     }
 }

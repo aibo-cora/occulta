@@ -172,22 +172,32 @@ struct OccultaBundle: Codable {
     ///
     /// `.sortedKeys` is mandatory — without it, two `JSONEncoder` instances can produce
     /// different key orderings for the same struct, causing spurious `authenticationFailure`.
-    func fullAAD() throws -> Data {
+    static func computeAdditionalAuthentication(version: OccultaBundle.Version, secrecy: SecrecyContext) throws -> Data {
+        let version = version.rawValue.data(using: .utf8)!
+        let secrecy = try Self.encoder.encode(secrecy)
+        let together = version + secrecy
+        
+        return together
+    }
+    /// Encoder for computing additional authentication data.
+    /// Using `.sortedKeys` to make results deterministic.
+    static private var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        var aad = self.version.rawValue.data(using: .utf8)!
-        aad.append(contentsOf: try encoder.encode(self.secrecy))
-        return aad
+        
+        return encoder
     }
 
     // MARK: - UI helpers
 
-    var isForwardSecret: Bool { secrecy.mode == .forwardSecret }
+    var isForwardSecret: Bool { self.secrecy.mode == .forwardSecret }
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    return "Forward Secret"
-        case .longTermFallback: return "Standard Encryption"
+        case .forwardSecret:    
+            return "Forward Secret"
+        case .longTermFallback: 
+            return "Standard Encryption"
         }
     }
 }

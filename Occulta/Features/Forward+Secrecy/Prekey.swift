@@ -63,7 +63,7 @@ struct Prekey: Codable, Equatable {
     ///
     /// Format: `"prekey.<contactID>.<sequence>.<id>"`
     var seTag: String {
-        Prekey.seTag(for: id, contactID: contactID, sequence: sequence)
+        Prekey.seTag(for: self.id, contactID: self.contactID, sequence: self.sequence)
     }
 
     static func seTag(for id: String, contactID: String, sequence: Int) -> String {
