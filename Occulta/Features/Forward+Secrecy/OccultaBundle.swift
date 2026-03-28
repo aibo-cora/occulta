@@ -9,37 +9,55 @@ import Foundation
 import CryptoKit
 
 // MARK: - Bundle
-
+ 
 /// A single-recipient encrypted bundle.
 ///
-/// ## Layout
+/// ## Wire layout
 /// ```
 /// OccultaBundle {
 ///     version           : Version        // typed version — included in AAD
-///     secrecy           : SecrecyContext  // key-exchange fields — authenticated as AAD
-///     ciphertext        : Data            // AES-GCM combined (nonce || ct || tag)
+///     secrecy           : SecrecyContext  // minimal key-exchange fields — AAD
+///     ciphertext        : Data            // AES-GCM(SealedPayload) — see below
 ///     fingerprintNonce  : Data            // 16 random bytes — pre-decryption routing
 ///     senderFingerprint : Data            // SHA-256(senderPub || nonce) — routing
 /// }
+///
+/// SealedPayload (encrypted, inside ciphertext) {
+///     message     : Data               // plaintext message bytes
+///     prekeyBatch : PrekeySyncBatch?   // sender's new prekeys, or nil
+/// }
 /// ```
 ///
-/// ## Pre-decryption routing fields
-/// `fingerprintNonce` and `senderFingerprint` cannot live inside `SecrecyContext`
-/// because the recipient must identify the sender before deriving the session key:
-/// ```
-/// senderFingerprint → identify sender → get their long-term public key
-///                   → derive session key → open ciphertext
-/// ```
+/// ## Why the batch lives in the ciphertext, not in SecrecyContext
+///
+/// `PrekeySyncBatch` used to sit in `SecrecyContext` (AAD — authenticated but visible).
+/// Every observer could read the batch: prekey public keys, their count, and every
+/// `Prekey.contactID` — the sender's internal identifier for the recipient. That
+/// identifier is stable and non-rotating, leaking the relationship graph to any passive
+/// interceptor even with no ability to decrypt the message.
+///
+/// Moving the batch into `SealedPayload` encrypts it with the same session key and GCM
+/// tag as the message itself. Zero additional nonces, zero additional operations,
+/// zero size cost beyond the batch JSON. An observer now sees only:
+///   - `mode` (forwardSecret or longTermFallback)
+///   - `ephemeralPublicKey` (65 bytes, required for ECDH, inherently visible)
+///   - `prekeyID` (needed to look up our SE private key before decryption)
+///
+/// `prekeySequence` has been removed. It was written into `SecrecyContext` but never
+/// read during decryption — the sequence is already embedded in the stored `Prekey`
+/// blob retrieved via `prekeyID`. Removing it reduces AAD size and eliminates one
+/// metadata field visible to observers.
 ///
 /// ## Tamper protection
-/// `fullAAD()` serialises `version.rawValue + SecrecyContext` and passes it to
-/// `AES.GCM.seal(authenticating:)` / `AES.GCM.open(authenticating:)`.
-/// Any modification to `version`, `mode`, `ephemeralPublicKey`, `prekeyID`,
-/// `prekeySequence`, or `prekeyBatch` causes `openBundle` to throw.
-/// This closes the prekey substitution attack and the version-badge spoofing attack.
+/// `computeAdditionalAuthentication()` = `version.rawValue || sortedKeys(SecrecyContext)`.
+/// Any modification to `version`, `mode`, `ephemeralPublicKey`, or `prekeyID`
+/// causes `AES.GCM.open` to throw.
 ///
-/// The routing fields (`fingerprintNonce`, `senderFingerprint`) are NOT authenticated.
-/// Tampering with them makes the bundle undeliverable but cannot expose plaintext.
+/// ## Pre-decryption routing
+/// `fingerprintNonce` and `senderFingerprint` are not in the AAD and not encrypted.
+/// They must be readable before any key is derived. Tampering with them makes the
+/// bundle undeliverable — no contact's fingerprint will match — but cannot expose
+/// plaintext or inject bad prekeys.
 struct OccultaBundle: Codable {
 
     // MARK: - Errors
@@ -64,27 +82,78 @@ struct OccultaBundle: Codable {
     }
 
     // MARK: - Mode
-
+     
     enum Mode: String, Codable {
         /// Full forward secrecy.
         /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
-        /// Recipient's prekey private key is deleted from SE on successful decrypt.
+        /// Recipient's prekey private key deleted from SE on successful open.
         case forwardSecret
-
+ 
         /// Prekey exhaustion fallback.
         /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub)).
-        /// Bundle always includes a fresh `PrekeySyncBatch` so the next message uses FS.
+        /// Bundle always carries a fresh PrekeySyncBatch (inside ciphertext)
+        /// so the next message can use the forward secret path.
         case longTermFallback
     }
 
-    // MARK: - PrekeySyncBatch
-
+    // MARK: - WirePrekey
+     
+    /// The wire representation of a prekey — public key only, no `contactID`.
+    ///
+    /// `Prekey` (the internal type) carries `contactID` so we can reconstruct
+    /// the SE tag `"prekey.<contactID>.<sequence>.<id>"` when decrypting.
+    /// That identifier is the sender's internal reference to the recipient and
+    /// must never travel on the wire — it would leak the relationship graph to
+    /// any passive observer.
+    ///
+    /// The recipient reconstructs the full `Prekey` by filling in their own
+    /// local identifier as `contactID` when storing the batch.
     nonisolated
-    struct PrekeySyncBatch: Codable {
-        /// Monotonically increasing batch generation number, per contact.
-        let sequence: Int
-        /// Prekey public keys in this batch.
-        let prekeys: [Prekey]
+    struct WirePrekey: Codable, Equatable {
+        /// Unique identifier for this prekey within its batch.
+        let id:        String
+        /// Batch generation number. Monotonically increasing per contact pair.
+        let sequence:  Int
+        /// x963 uncompressed P-256 public key (65 bytes).
+        let publicKey: Data
+    }
+    
+    // MARK: - SealedPayload
+     
+    /// The plaintext structure sealed inside `ciphertext`.
+    ///
+    /// Both `message` and `prekeyBatch` are encrypted and authenticated together
+    /// by a single AES-GCM operation. No additional nonces or operations needed.
+    ///
+    /// Keeping the batch here rather than in `SecrecyContext` (AAD) means:
+    /// - Prekey public keys are never visible to a passive observer.
+    /// - `WirePrekey.contactID` (stripped at the type level) cannot leak.
+    /// - Batch size gives no metadata beyond total bundle size.
+    nonisolated
+    struct SealedPayload: Codable {
+        /// The message plaintext.
+        let message: Data
+        /// The sender's fresh prekeys for the recipient to store, or nil.
+        /// Non-nil on the fallback path (always), and on the FS path when
+        /// the sender's SE stock for this contact is below the replenishment threshold.
+        let prekeyBatch: PrekeySyncBatch?
+     
+        /// A versioned batch of the sender's prekey public keys.
+        ///
+        /// Encrypted inside `SealedPayload.ciphertext` — never visible to observers.
+        ///
+        /// Sequence semantics (on the recipient side):
+        /// ```
+        /// incoming.sequence > stored.sequence  →  prune-then-append
+        /// incoming.sequence ≤ stored.sequence  →  ignore (duplicate or stale)
+        /// ```
+        nonisolated
+        struct PrekeySyncBatch: Codable {
+            /// Monotonically increasing batch generation number, per contact pair.
+            let sequence: Int
+            /// Wire representation of the prekey public keys in this batch.
+            let prekeys: [WirePrekey]
+        }
     }
 
     // MARK: - SecrecyContext
@@ -92,13 +161,21 @@ struct OccultaBundle: Codable {
     /// Key-exchange fields, authenticated as AAD.
     ///
     /// Every field here is covered by the GCM tag — modification causes `openBundle` to throw.
-    /// The version enum is prepended to the AAD outside this struct (see `fullAAD()`).
+    /// The version enum is prepended to the AAD outside this struct (see `computeAdditionalAuthentication()`).
     struct SecrecyContext: Codable {
-        let mode:               Mode
-        let ephemeralPublicKey: Data       // x963, 65 bytes
-        let prekeyID:           String?    // non-nil only when mode == .forwardSecret
-        let prekeySequence:     Int?       // non-nil only when mode == .forwardSecret
-        let prekeyBatch:        PrekeySyncBatch?
+        /// Which key derivation path was used.
+        let mode: Mode
+ 
+        /// Sender's ephemeral public key in x963 format (65 bytes).
+        /// `.forwardSecret`: throwaway key for this message only.
+        /// `.longTermFallback`: sender's long-term identity public key.
+        let ephemeralPublicKey: Data
+ 
+        /// UUID of the recipient's prekey used to derive the session key.
+        /// Non-nil only when `mode == .forwardSecret`.
+        /// The recipient looks this up in their `ownPrekeys` store to reconstruct
+        /// the SE tag and retrieve the corresponding private key.
+        let prekeyID: String?
 
         // MARK: Fingerprint helpers
 
@@ -135,20 +212,22 @@ struct OccultaBundle: Codable {
     }
 
     // MARK: - Fields
-
-    /// Protocol version. Included in AAD — tampering causes `openBundle` to throw.
+     
+    /// Protocol version. Included in AAD — tampering causes `open` to throw.
     let version: Version
-
-    /// Key-exchange fields. Authenticated as AAD — not encrypted.
+ 
+    /// Minimal key-exchange fields. Authenticated as AAD — not encrypted.
+    /// An observer can read `mode`, `ephemeralPublicKey`, and `prekeyID` only.
     let secrecy: SecrecyContext
-
-    /// AES-GCM combined payload (nonce(12B) || ciphertext || tag(16B)).
-    /// GCM tag covers both this field and `fullAAD()`.
+ 
+    /// AES-GCM combined payload: nonce(12B) || JSON(SealedPayload) || tag(16B).
+    /// The GCM tag covers both this ciphertext and `computeAdditionalAuthentication()`.
+    /// `SealedPayload` contains the message AND any `PrekeySyncBatch`.
     let ciphertext: Data
-
+ 
     /// 16 random bytes, unique per bundle. Pre-decryption routing — not in AAD.
     let fingerprintNonce: Data
-
+ 
     /// SHA-256(senderLongTermPublicKey || fingerprintNonce). Routing — not in AAD.
     let senderFingerprint: Data
 

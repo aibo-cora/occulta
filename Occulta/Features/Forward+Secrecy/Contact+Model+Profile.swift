@@ -233,7 +233,7 @@ extension Contact.Profile {
     /// - Parameters:
     ///   - batch:Ppending outbound batch for this contact.
     ///   - sequence: New sequence #.
-    func store(batch: OccultaBundle.PrekeySyncBatch, sequence: Int?) throws {
+    func store(batch: OccultaBundle.SealedPayload.PrekeySyncBatch, sequence: Int?) throws {
         guard
             var secrecy = try self.plainTextForwardSecrecy
         else {
@@ -251,7 +251,7 @@ extension Contact.Profile {
     }
 
     /// Return the pending outbound batch, or nil if none is waiting.
-    func loadPendingBatch() throws -> OccultaBundle.PrekeySyncBatch? {
+    func loadPendingBatch() throws -> OccultaBundle.SealedPayload.PrekeySyncBatch? {
         guard
             let secrecy = try self.plainTextForwardSecrecy,
             let encoded = secrecy.pendingOutboundBatch
@@ -259,7 +259,7 @@ extension Contact.Profile {
             return nil
         }
         
-        let batch = try JSONDecoder().decode(OccultaBundle.PrekeySyncBatch.self, from: encoded)
+        let batch = try JSONDecoder().decode(OccultaBundle.SealedPayload.PrekeySyncBatch.self, from: encoded)
         
         return batch
     }

@@ -26,7 +26,7 @@ extension Manager.Crypto {
     /// ## SE ordering
     /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
     /// (generateBatch) are done by the caller (ContactManager) before this call.
-    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
+    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data) throws -> OccultaBundle {
         guard
             recipientMaterial.count == 65
         else {
@@ -69,12 +69,7 @@ extension Manager.Crypto {
 
             // ephemeralPrivateKey goes out of scope here — never persisted.
 
-            let secrecy = OccultaBundle.SecrecyContext(
-                mode:               .forwardSecret,
-                ephemeralPublicKey: ephemeralPublicKeyData,
-                prekeyID:           contactPrekey.id,
-                prekeyBatch:        outboundBatch
-            )
+            let secrecy = OccultaBundle.SecrecyContext(mode: .forwardSecret, ephemeralPublicKey: ephemeralPublicKeyData, prekeyID: contactPrekey.id)
 
             /// Adding `version` and `secrecy` to authenticate against tampering.
             let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
@@ -83,22 +78,16 @@ extension Manager.Crypto {
                 let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
             else { throw EncryptionError.sealFailed }
 
-            debugPrint("Sealing message, using forward secrecy prekey, sending batch: \(String(describing: outboundBatch?.sequence))")
+            debugPrint("Sealing message, using forward secrecy prekey...")
             
-            return OccultaBundle(
-                version:           OccultaBundle.currentVersion,
-                secrecy:           secrecy,
-                ciphertext:        ciphertext,
-                fingerprintNonce:  fingerprintNonce,
-                senderFingerprint: senderFingerprint
-            )
+            return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
         }
         
-        debugPrint("Sealing message, using long-term identity key, sending batch: \(String(describing: outboundBatch?.sequence))")
+        debugPrint("Sealing message, using long-term identity key...")
 
         // ── Long-term fallback path (contactPrekey nil) ──────────────────
         // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(message: message, recipientMaterial: recipientMaterial, ourPublicKey: ourPublicKey, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, outboundBatch: outboundBatch)
+        return try self.fallback(message: message, recipientMaterial: recipientMaterial, ourPublicKey: ourPublicKey, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
     }
 }
 
@@ -134,8 +123,7 @@ extension Manager.Crypto {
 // MARK: - Private helpers
 
 extension Manager.Crypto {
-    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data,
-        outboundBatch: OccultaBundle.PrekeySyncBatch?) throws -> OccultaBundle {
+    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data) throws -> OccultaBundle {
         guard
             let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial)
         else {
@@ -143,7 +131,7 @@ extension Manager.Crypto {
         }
         /// We are passing an empty `Data` object because the recipient already has our public key.
         /// There is no reason to expose it.
-        let secrecy = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil, prekeyBatch: outboundBatch)
+        let secrecy = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil)
         /// Adding `version` and `secrecy` to authenticate against tampering.
         let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
@@ -153,13 +141,7 @@ extension Manager.Crypto {
             throw EncryptionError.keyDerivationFailed
         }
 
-        return OccultaBundle(
-            version:           OccultaBundle.currentVersion,
-            secrecy:           secrecy,
-            ciphertext:        ciphertext,
-            fingerprintNonce:  fingerprintNonce,
-            senderFingerprint: senderFingerprint
-        )
+        return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce:  fingerprintNonce, senderFingerprint: senderFingerprint)
     }
 }
 
