@@ -10,6 +10,7 @@ import SwiftData
 import Contacts
 import SwiftUI
 import Combine
+import Foundation
 
 @Observable
 class ContactManager {
@@ -806,29 +807,6 @@ extension ContactManager {
         throw ContactManager.Errors.noPublicKeyToEncryptWith
     }
 }
-
-//  PREKEY ARRAY MAP
-//
-//  contact.contactPrekeys        — THEIR prekeys, received FROM the contact.
-//                                  Pop (FIFO) when encrypting TO them.
-//                                  Prune-then-append when new inbound batch arrives.
-//
-//  contact.ownPrekeys            — OUR prekeys, sent TO the contact.
-//                                  Search by ID when they encrypt back to us.
-//                                  Remove individually on successful decrypt.
-//                                  Prune by sequence after generateBatch.
-//
-//  contact.pendingOutboundBatch  — Batch waiting for proof of receipt.
-//                                  Attached to every outbound message until
-//                                  the contact uses one of our prekeys (FS decrypt fires).
-//                                  Never generate a new batch while this is non-nil.
-//
-//  SE ORDERING RULE
-//  All SE writes (generateBatch) complete before any ECDH call.
-//  SecKey references go out of scope before consume() calls SecItemDelete.
-//
- 
-import Foundation
  
 // MARK: - v3fs bundle encryption
  
@@ -1055,29 +1033,27 @@ extension ContactManager {
         // to Bob carries it.
         if bundle.secrecy.mode == .longTermFallback {
             let seq    = try sender.plainTextForwardSecrecy?.outboundPrekeySequence ?? 0
-            let result = try? prekeyManager.generateBatch(contactID: sender.identifier, currentSequence: seq)
+            let result = try prekeyManager.generateBatch(contactID: sender.identifier, currentSequence: seq)
             
-            if let result {
-                let batch = OccultaBundle.PrekeySyncBatch(sequence: seq, prekeys: result.prekeys)
+            let batch = OccultaBundle.PrekeySyncBatch(sequence: seq, prekeys: result.prekeys)
+            
+            try sender.store(batch: batch, sequence: result.nextSequence)
+
+            // Record the new prekeys in ownPrekeys so we can find
+            // the SE private key when the sender uses one to reply.
+            let blobs: [Data] = result.prekeys.compactMap { prekey in
+                guard
+                    let encoded   = try? JSONEncoder().encode(prekey)
+                else { return nil }
                 
-                try? sender.store(batch: batch, sequence: result.nextSequence)
- 
-                // Record the new prekeys in ownPrekeys so we can find
-                // the SE private key when the sender uses one to reply.
-                let blobs: [Data] = result.prekeys.compactMap { prekey in
-                    guard
-                        let encoded   = try? JSONEncoder().encode(prekey)
-                    else { return nil }
-                    
-                    return encoded
-                }
-                
-                try sender.appendOwnPrekeys(blobs)
- 
-                // Prune dead ownPrekeys entries for the same threshold.
-                if seq > 1 {
-                    try sender.pruneOwnPrekeys(olderThan: seq - 1)
-                }
+                return encoded
+            }
+            
+            try sender.appendOwnPrekeys(blobs)
+
+            // Prune dead ownPrekeys entries for the same threshold.
+            if seq > 1 {
+                try sender.pruneOwnPrekeys(olderThan: seq - 1)
             }
         }
  

@@ -73,7 +73,6 @@ extension Manager.Crypto {
                 mode:               .forwardSecret,
                 ephemeralPublicKey: ephemeralPublicKeyData,
                 prekeyID:           contactPrekey.id,
-                prekeySequence:     contactPrekey.sequence,
                 prekeyBatch:        outboundBatch
             )
 
@@ -144,7 +143,7 @@ extension Manager.Crypto {
         }
         /// We are passing an empty `Data` object because the recipient already has our public key.
         /// There is no reason to expose it.
-        let secrecy = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil, prekeySequence: nil, prekeyBatch: outboundBatch)
+        let secrecy = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil, prekeyBatch: outboundBatch)
         /// Adding `version` and `secrecy` to authenticate against tampering.
         let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
 
