@@ -8,21 +8,18 @@
 import Foundation
 
 nonisolated
+/// Locally encrypted metadata carrying our contact's prekeys.
 struct ForwardSecrecy: Codable {
+    // MARK: From Contact
+    
     /// Plain text prekey public keys received from this contact.
-    var contactPrekeys: [Data]? = []
-    /// Sequence number of the last prekey batch received FROM this contact.
-    /// Replace incoming batch only when sequence > this value.
-    var contactPrekeySequence: Int? = nil
-    /// Our own public prekeys we generated and sent to this contact.
-    /// When they encrypt to us using one of these prekeys, we search here by
-    /// Prekey.id to reconstruct the SE tag and find our private key.
-    /// Append-only; entries are removed individually as they are consumed.
-    var ownPrekeys: [Data]? = []
-    /// Sequence number of the last prekey batch generated FOR this contact.
-    /// Read and incremented by PrekeyManager.generateBatch(contactID:currentSequence:).
-    /// Caller writes the returned nextSequence back here after each encrypt call.
-    var outboundPrekeySequence: Int? = nil
+    var encodedPrekeys: [Data]? = []
+    /// Date when `encodedPrekeys` were generated at.
+    /// When we get a new batch, we need to compare the 2 to make sure we don't append duplicates or old prekeys that have been consumed already.
+    var latestPrekeysGeneratedAt: Date?  = nil
+    
+    // MARK: For Contact
+    
     /// The outbound prekey batch Alice is trying to deliver to Bob.
     /// Sent with every message until Alice decrypts a FS bundle from Bob
     /// that used one of her prekeys — proof of receipt.

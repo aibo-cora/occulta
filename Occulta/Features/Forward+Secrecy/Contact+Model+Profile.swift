@@ -54,174 +54,53 @@ extension Contact.Profile {
     func popOldestPrekeyData() throws -> Data? {
         guard
             var secrecy = try self.plainTextForwardSecrecy,
-            var current = secrecy.contactPrekeys, !current.isEmpty
+            var current = secrecy.encodedPrekeys, !current.isEmpty
         else {
-            debugPrint("popOldestPrekeyData: no prekeys available")
+            debugPrint("popping error: no prekeys available")
             
             return nil
         }
         
         let oldest = current.removeFirst()
         
-        secrecy.contactPrekeys = current.isEmpty ? nil : current
+        secrecy.encodedPrekeys = current.isEmpty ? nil : current
         
-        debugPrint("popOldestPrekeyData: popped one, remaining: \(current.count)")
+        debugPrint("popping success: popped one, remaining: \(current.count)")
         
         try self.update(secrecy: secrecy)
         
         return oldest
     }
 
-    /// Merge a new inbound prekey batch into the store.
+    /// Replace the inbound prekey store with a new batch.
     ///
-    /// ## Semantics: prune dead entries, then append — never blind replace.
-    ///
-    /// Blind replace caused the original bug: valid unused prekeys were discarded
-    /// whenever a higher-sequence batch arrived. This implementation:
-    ///   1. Prunes entries whose `sequence < incomingSequence - 1`.
-    ///      Those private keys are already gone from the sender's SE (they prune
-    ///      `seq < currentSequence - 1` automatically in `generateBatch`).
-    ///      Keeping them would waste pop slots on keys that can never be used.
-    ///   2. Appends the new blobs so unconsumed prekeys from the previous batch
-    ///      are not discarded — they are still valid and the sender still holds
-    ///      their private keys.
-    ///
-    /// Blobs that fail decryption are kept defensively in case of transient
-    /// local key state issues.
+    /// Accepted only when `date > latestPrekeysGeneratedAt` — rejects duplicate
+    /// and stale deliveries. A new batch legitimately arrives only after the sender
+    /// exhausted the previous one, so the store is empty by then. Direct replace
+    /// is always correct; append would accumulate stale keys from prior batches.
     ///
     /// - Parameters:
-    ///   - blobs:     New inbound prekey blobs (plaintext).
-    ///   - sequence:  The `PrekeySyncBatch.sequence` of the incoming batch.
-    ///   - decryptor: Closure to decrypt a blob to its raw bytes. Non-throwing;
-    ///                return nil on failure.
-    func syncInboundPrekeys(_ blobs: [Data], sequence: Int) throws {
+    ///   - blobs: JSON-encoded `Prekey` blobs from the incoming batch.
+    ///   - date:  `PrekeySyncBatch.generatedAt` — when the sender created this batch.
+    func syncInboundPrekeys(_ blobs: [Data], date: Date) throws {
         guard
             var secrecy = try self.plainTextForwardSecrecy
         else {
             return
         }
+        debugPrint("Synching incoming prekeys...")
+        debugPrint("Current prekeys count: \(secrecy.encodedPrekeys?.count ?? 0)")
         
-        let currentSeq = secrecy.contactPrekeySequence ?? -1
-        
-        debugPrint("syncInboundPrekeys called - sequence: \(sequence), current: \(currentSeq), prekeys count: \(secrecy.contactPrekeys?.count ?? 0)")
-
-        // Allow == sequence (idempotent) — only reject older batches
-        guard sequence >= currentSeq else {
-            debugPrint("syncInboundPrekeys: sequence \(sequence) < current \(currentSeq) → skipping (older batch)")
+        guard
+            date > (secrecy.latestPrekeysGeneratedAt ?? .distantPast)
+        else {
+            debugPrint("Received an older batch of prekeys, exiting sync...")
             
             return
         }
 
-        var target = secrecy.contactPrekeys ?? []
-
-        // Prune only provably dead entries (sequence < incoming - 1)
-        if !target.isEmpty {
-            target = target.filter { blob in
-                guard
-                    let prekey = try? JSONDecoder().decode(Prekey.self, from: blob)
-                else { return true } // keep unreadable defensively
-                
-                return prekey.sequence >= sequence - 1
-            }
-        }
-
-        target.append(contentsOf: blobs)
-        
-        secrecy.contactPrekeys = target.isEmpty ? nil : target
-        secrecy.contactPrekeySequence = sequence
-
-        debugPrint("syncInboundPrekeys SUCCESS: now \(target.count) prekeys, sequence = \(sequence)")
-        
-        try self.update(secrecy: secrecy)
-    }
-
-    // MARK: - Outbound prekeys (our keys, for lookup when they encrypt to us)
-
-    /// Append freshly generated own-prekey blobs, plain text.
-    ///
-    /// Append (not replace) because multiple batches may be in flight.
-    func appendOwnPrekeys(_ blobs: [Data]) throws {
-        guard
-            var secrecy = try self.plainTextForwardSecrecy
-        else {
-            return
-        }
-        
-        if secrecy.ownPrekeys == nil {
-            secrecy.ownPrekeys = blobs
-        } else {
-            secrecy.ownPrekeys?.append(contentsOf: blobs)
-        }
-        
-        try self.update(secrecy: secrecy)
-    }
-
-    /// Find the own-prekey blob whose decrypted `Prekey.id` matches `id`.
-    ///
-    /// Does NOT remove the blob. Call `removeOwnPrekeyData` only after
-    /// successful open — failure leaves it in place for retry.
-    func findOwnPrekeyData(id: String) throws -> Data? {
-        guard
-            let secrecy = try self.plainTextForwardSecrecy,
-            let entries = secrecy.ownPrekeys,
-            entries.isEmpty == false
-        else {
-            return nil
-        }
-        
-        for entry in entries {
-            let prekey = try JSONDecoder().decode(Prekey.self, from: entry)
-            
-            guard
-                prekey.id == id
-            else {
-                continue
-            }
-            
-            return entry
-        }
-        
-        return nil
-    }
-
-    /// Remove a specific own-prekey blob after successful decryption.
-    func removeOwnPrekeyData(_ blob: Data) throws {
-        guard
-            var secrecy = try self.plainTextForwardSecrecy
-        else {
-            return
-        }
-        
-        secrecy.ownPrekeys?.removeAll { $0 == blob }
-        
-        try self.update(secrecy: secrecy)
-    }
-
-    /// Remove own-prekey blobs whose sequence is strictly less than `threshold`.
-    ///
-    /// Mirrors SE pruning: called with the same threshold as `generateBatch`
-    /// (`currentSequence - 1`) so dead blobs don't accumulate in SwiftData.
-    ///
-    /// Blobs that fail decryption are kept defensively.
-    func pruneOwnPrekeys(olderThan threshold: Int) throws {
-        guard
-            var secrecy = try self.plainTextForwardSecrecy,
-            threshold > 0,
-            let entries = secrecy.ownPrekeys,
-            entries.isEmpty == false
-        else {
-            return
-        }
-        
-        let filtered = entries.filter { encoded in
-            guard
-                let prekey = try? JSONDecoder().decode(Prekey.self, from: encoded)
-            else { return true }
-            
-            return prekey.sequence >= threshold
-        }
-        
-        secrecy.ownPrekeys = filtered
+        secrecy.encodedPrekeys = blobs
+        secrecy.latestPrekeysGeneratedAt = date
         
         try self.update(secrecy: secrecy)
     }
@@ -233,7 +112,7 @@ extension Contact.Profile {
     /// - Parameters:
     ///   - batch:Ppending outbound batch for this contact.
     ///   - sequence: New sequence #.
-    func store(batch: OccultaBundle.SealedPayload.PrekeySyncBatch, sequence: Int?) throws {
+    func store(batch: OccultaBundle.SealedPayload.PrekeySyncBatch) throws {
         guard
             var secrecy = try self.plainTextForwardSecrecy
         else {
@@ -243,11 +122,10 @@ extension Contact.Profile {
         let encoded = try JSONEncoder().encode(batch)
         
         secrecy.pendingOutboundBatch = encoded
-        secrecy.outboundPrekeySequence = sequence
         
         try self.update(secrecy: secrecy)
         
-        debugPrint("Stored new batch of prekeys: \(batch.prekeys.count), sequence: \(String(describing: sequence))")
+        debugPrint("Stored new batch of prekeys: \(batch.prekeys.count), date: \(String(describing: batch.generatedAt))")
     }
 
     /// Return the pending outbound batch, or nil if none is waiting.
@@ -293,17 +171,11 @@ extension Contact.Profile {
     var availableInboundPrekeyCount: Int  {
         let secrecy = try? self.plainTextForwardSecrecy
         
-        return secrecy?.contactPrekeys?.count ?? 0
+        return secrecy?.encodedPrekeys?.count ?? 0
     }
     
     var hasPrekeyAvailable: Bool {
         self.availableInboundPrekeyCount > 0
-    }
-    
-    var ownPrekeysCount: Int {
-        let secrecy = try? self.plainTextForwardSecrecy
-        
-        return secrecy?.ownPrekeys?.count ?? 0
     }
 
     // MARK: - Sender identification

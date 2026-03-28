@@ -9,11 +9,10 @@ import Foundation
 import CryptoKit
 
 extension Manager {
-
     /// Manages the full lifecycle of our own prekeys — the private side.
     ///
     /// All private keys are stored in the Secure Enclave tagged
-    /// `"prekey.<contactID>.<sequence>.<uuid>"`.
+    /// `"prekey.<contactID>.<uuid>"`.
     class PrekeyManager {
 
         // MARK: - Constants
@@ -25,29 +24,21 @@ extension Manager {
 
         /// Generate a batch of prekey pairs for a specific contact.
         ///
-        /// The caller provides the contact's current sequence number and receives
-        /// the incremented value back. The caller is responsible for persisting
-        /// the new sequence on `Contact.Profile.outboundPrekeySequence`.
         ///
-        /// After generation, SE private keys for this contact from sequences older
-        /// than `currentSequence - 1` are pruned automatically.
         ///
         /// - Parameters:
         ///   - contactID:       Identifier of the contact this batch is for.
         ///                      Embedded in SE tags to isolate this contact's pool.
-        ///   - currentSequence: The contact's current `outboundPrekeySequence`.
         ///   - count:           Number of prekeys to generate. Defaults to 15.
         /// - Returns:
         ///   - `prekeys`:      Generated ``Prekey`` structs (public side only).
-        ///   - `nextSequence`: The incremented sequence. Caller writes this back
-        ///                     to `Contact.Profile.outboundPrekeySequence`.
         /// - Throws: If SE key creation fails.
-        func generateBatch(contactID: String, currentSequence: Int, count: Int = defaultBatchSize) throws -> (prekeys: [Prekey], nextSequence: Int) {
+        func generateBatch(contactID: String, count: Int = PrekeyManager.defaultBatchSize) throws -> [Prekey] {
             var prekeys: [Prekey] = []
 
             for _ in 0..<count {
                 let id  = UUID().uuidString
-                let tag = Prekey.seTag(for: id, contactID: contactID, sequence: currentSequence)
+                let tag = Prekey.seTag(for: id, contactID: contactID)
 
                 var error: Unmanaged<CFError>?
 
@@ -87,20 +78,10 @@ extension Manager {
                     throw PrekeyError.seKeyCreationFailed
                 }
 
-                prekeys.append(Prekey(
-                    id:        id,
-                    contactID: contactID,
-                    sequence:  currentSequence,
-                    publicKey: publicKeyData
-                ))
+                prekeys.append(Prekey(id: id, contactID: contactID, publicKey: publicKeyData))
             }
 
-            // Prune SE keys for this contact from sequences older than currentSequence - 1.
-            if currentSequence > 1 {
-                self.pruneSequences(olderThan: currentSequence - 1, contactID: contactID)
-            }
-
-            return (prekeys, currentSequence + 1)
+            return prekeys
         }
 
         // MARK: - Retrieval
@@ -120,56 +101,6 @@ extension Manager {
         @discardableResult
         func consume(prekey: Prekey) -> Bool {
             self.deleteKey(tag: prekey.seTag)
-        }
-
-        // MARK: - Pruning
-
-        /// Delete all SE private keys for a contact from sequences strictly older than `threshold`.
-        ///
-        /// Scoped strictly to `contactID` — never touches other contacts' SE keys.
-        ///
-        /// - Parameters:
-        ///   - threshold: Delete SE keys with sequence < threshold.
-        ///   - contactID: Only delete keys belonging to this contact.
-        func pruneSequences(olderThan threshold: Int, contactID: String) {
-            guard threshold > 0 else { return }
-
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassKey,
-                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-                kSecReturnAttributes as String: true,
-                kSecMatchLimit as String: kSecMatchLimitAll,
-                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
-            ]
-
-            var items: CFTypeRef?
-            guard
-                SecItemCopyMatching(query as CFDictionary, &items) == errSecSuccess,
-                let allItems = items as? [[String: Any]]
-            else { return }
-
-            let prefix = "prekey.\(contactID)."
-
-            for item in allItems {
-                guard
-                    let tagData   = item[kSecAttrApplicationTag as String] as? Data,
-                    let tag       = String(data: tagData, encoding: .utf8),
-                    tag.hasPrefix(prefix)
-                else { continue }
-
-                // Tag: "prekey.<contactID>.<sequence>.<uuid>"
-                // Drop "prekey.<contactID>." prefix, parse sequence from remainder.
-                let remainder  = String(tag.dropFirst(prefix.count))
-                let components = remainder.split(separator: ".", maxSplits: 1)
-
-                guard
-                    components.count == 2,
-                    let seq = Int(components[0]),
-                    seq < threshold
-                else { continue }
-
-                self.deleteKey(tag: tag)
-            }
         }
 
         /// Delete ALL SE private keys for a contact, regardless of sequence.
@@ -263,6 +194,7 @@ extension Manager {
                 kSecAttrApplicationTag as String: tag.data(using: .utf8)!
             ]
             let status = SecItemDelete(query as CFDictionary)
+            
             return status == errSecSuccess || status == errSecItemNotFound
         }
     }

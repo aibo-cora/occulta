@@ -825,13 +825,9 @@ extension ContactManager {
         
         try contact.configureForwardSecrecy()
         
-        debugPrint("encryptBundle for: \(identifier)")
-        debugPrint("  outboundPrekeySequence: \(String(describing: try contact.plainTextForwardSecrecy?.outboundPrekeySequence))")
-        debugPrint("  hasPendingBatch: \(contact.hasPendingBatch)")
-        debugPrint("Encrypting for contact. Inbound prekeys now: \(contact.availableInboundPrekeyCount), contact: \(contact.givenName.decrypt())")
+        debugPrint("Encrypting for contact. Inbound prekeys now: \(contact.availableInboundPrekeyCount), contact: \(contact.givenName.decrypt()), has pending batch: \(contact.hasPendingBatch)")
  
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
  
         // ── 1. Recipient's long-term public key ──────────────────────────
         guard
@@ -843,85 +839,25 @@ extension ContactManager {
         }
  
         // ── 2. Pop oldest inbound prekey ─────────────────────────────────
-        var contactPrekey: Prekey? = nil
+        
+        var prekey: Prekey? = nil
  
         if let blob = try contact.popOldestPrekeyData() {
-            contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
-        }
- 
-        // ── 3. Resolve outbound batch ─────────────────────────────────────
-        //
-        // Priority 1: reuse the existing pending batch.
-        //   The contact has not yet proven they received it (no FS message from them).
-        //   Keep sending the same batch until confirmed — do NOT generate a new one.
-        //
-        // Priority 2: generate a new batch only when:
-        //   - No pending batch exists, AND
-        //   - SE stock is low OR we have no inbound prekey (fallback path).
-        //
-        // SE writes happen here, before step 4. encryptForwardSecret is zero-SE.
-        // ── 3. Resolve outbound batch ─────────────────────────────────────
-        var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
-        var didGenerateNewBatch = false
-
-        // Use the stored sequence, or 0 for a brand-new contact
-        let currentSeq = try contact.plainTextForwardSecrecy?.outboundPrekeySequence ?? 0
-
-        if let pending = try contact.loadPendingBatch() {
-            // Reuse the pending batch — do NOT advance the sequence yet.
-            // The sequence only advances when we actually generate a new batch.
-            outboundBatch = pending
-            // nextSeq remains = currentSeq (we will advance it only on new generation)
-            
-            debugPrint("Reusing pending batch with sequence \(pending.sequence)")
-        } else if prekeyManager.needsReplenishment(for: contact.identifier) || contactPrekey == nil {
-            // Generate a fresh batch using the current sequence number
-            
-            let result = try prekeyManager.generateBatch(contactID: contact.identifier, currentSequence: currentSeq)
-            /// These prekeys do not contain any useful information for an attacker. They have been tripped of anything meaningful.
-            let prekeysSuitableForTransport = result.prekeys.map { OccultaBundle.WirePrekey(id: $0.id, sequence: $0.sequence, publicKey: $0.publicKey) }
-            let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(sequence: currentSeq, prekeys: prekeysSuitableForTransport)
-            
-            try contact.store(batch: batch, sequence: result.nextSequence)
-            
-            outboundBatch = batch
-            didGenerateNewBatch = true
-            
-            debugPrint("No inbound prekey available → falling back to long-term + generating new batch")
-            debugPrint("Generated new batch seq \(currentSeq) → next will be \(result.nextSequence)")
+            prekey = try JSONDecoder().decode(Prekey.self, from: blob)
         }
         
+        // Create payload
+        
+        let outboundBatch = try contact.loadPendingBatch()
         let sealedPayload = OccultaBundle.SealedPayload(message: data, prekeyBatch: outboundBatch)
         let encodedSealedPayload: Data = try JSONEncoder().encode(sealedPayload)
  
         // ── 4. ECDH + AES-GCM ────────────────────────────────────────────
-        let bundle = try cryptoOps.seal(message: encodedSealedPayload, contactPrekey: contactPrekey, recipientMaterial: recipientMaterial)
-        // ── 5. Record our new prekeys in ownPrekeys ───────────────────────
-        // Only when we just generated a new batch — not when reusing pending.
-        // Reusing pending: blobs were already appended when first generated.
-        if didGenerateNewBatch, let batch = outboundBatch {
-            let blobs: [Data] = batch.prekeys.compactMap { wired in
-                /// Converted back to `PreKey` so we can look up a key by contact ID during decryption.
-                let prekey = Prekey(id: wired.id, contactID: contact.identifier, sequence: wired.sequence, publicKey: wired.publicKey)
-                
-                guard
-                    let encoded   = try? JSONEncoder().encode(prekey)
-                else { return nil }
-                
-                return encoded
-            }
-            try contact.appendOwnPrekeys(blobs)
-        }
- 
-        // ── 6. Prune dead ownPrekeys ─────────────────────────────────────
-        // Only when we just generated — sequence only advances on new generation.
-        if didGenerateNewBatch && currentSeq > 1 {
-            try contact.pruneOwnPrekeys(olderThan: currentSeq - 1)
-        }
-        
+        let bundle = try cryptoOps.seal(message: encodedSealedPayload, contactPrekey: prekey, recipientMaterial: recipientMaterial)
+        // Persist
         try self.modelContext.save()
         
-        debugPrint("encryptBundle finished for \(identifier) - outboundPrekeySequence now: \(String(describing: try contact.plainTextForwardSecrecy?.outboundPrekeySequence)), hasPendingBatch: \(contact.hasPendingBatch)")
+        debugPrint("Encrypt finished for \(identifier), prekey batch pending: \(contact.hasPendingBatch)")
  
         return try bundle.encoded()
     }
@@ -958,26 +894,6 @@ extension ContactManager {
  
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
  
-        // ── 2. Find our own prekey by ID ─────────────────────────────────
-        var resolvedPrekey:        Prekey? = nil
-        var consumedOwnPrekeyBlob: Data?   = nil
- 
-        if bundle.secrecy.mode == .forwardSecret, let prekeyID = bundle.secrecy.prekeyID {
-            // ── 3. Validate ephemeralPublicKey ────────────────────────────────
-            guard
-                bundle.secrecy.ephemeralPublicKey.count == 65
-            else {
-                throw Errors.invalidBundleFormat
-            }
-            
-            let blob = try sender.findOwnPrekeyData(id: prekeyID)
-            
-            if let blob {
-                consumedOwnPrekeyBlob = blob
-                resolvedPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
-            }
-        }
- 
         // ── 4. Key derivation + open ─────────────────────────────────────
         //
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
@@ -989,18 +905,32 @@ extension ContactManager {
         case .forwardSecret:
             let decrypted: Data? = try {
                 guard
-                    let prekey   = resolvedPrekey,
-                    let privKey  = prekeyManager.retrievePrivateKey(for: prekey),
+                    let prekeyID = bundle.secrecy.prekeyID
+                else {
+                    return nil
+                }
+                /// Temp prekey just for the tag,
+                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                
+                guard
+                    let privKey  = prekeyManager.retrievePrivateKey(for: temp),
                     let sessKey  = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey)
                 else { return nil }
                 
                 return try cryptoOps.open(bundle, using: sessKey)
             }()
  
-            if decrypted != nil, let prekey = resolvedPrekey {
-                prekeyManager.consume(prekey: prekey)
+            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
+                /// Temp prekey just for the tag,
+                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                
+                prekeyManager.consume(prekey: temp)
+                /// The message was opened successfully. FS was used, we don't need to send more batches - clearing.
+                try sender.clearPendingBatch()
+                
+                debugPrint("Message successfully opened in .forwardSecret mode. Pending batch cleared.")
             } else {
-                debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekey = \(String(describing: resolvedPrekey))")
+                debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekeyID = \(String(describing: bundle.secrecy.prekeyID))")
             }
             
             decryptedSealedPayload = decrypted
@@ -1022,52 +952,23 @@ extension ContactManager {
  
         guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
  
-        // ── 5. Consume own-prekey on FS success + clear pending batch ─────
-        //
-        // removeOwnPrekeyData firing means the sender used one of our prekeys —
-        // that is cryptographic proof they received our pendingOutboundBatch.
-        // Clearing it here allows the next replenishment to generate a new batch.
-        if let blob = consumedOwnPrekeyBlob {
-            try sender.removeOwnPrekeyData(blob)
-            try sender.clearPendingBatch()         // proof of receipt confirmed
-            
-            debugPrint("decrypt cleared pending batch for \(sender.identifier)")
-            debugPrint("  pending now: \(sender.hasPendingBatch)")
-        }
- 
         // ── 6. Detect inbound fallback → schedule fresh batch ─────────────
         //
         // A .longTermFallback bundle means the sender is out of our prekeys.
         // Generate a new batch immediately so Alice's next outbound message
         // to Bob carries it.
-        if bundle.secrecy.mode == .longTermFallback {
-            let seq    = try sender.plainTextForwardSecrecy?.outboundPrekeySequence ?? 0
-            let result = try prekeyManager.generateBatch(contactID: sender.identifier, currentSequence: seq)
-            /// These prekeys do not contain any useful information for an attacker. They have been tripped of anything meaningful.
-            let prekeysSuitableForTransport = result.prekeys.map { OccultaBundle.WirePrekey(id: $0.id, sequence: $0.sequence, publicKey: $0.publicKey) }
-            let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(sequence: seq, prekeys: prekeysSuitableForTransport)
+        if bundle.secrecy.mode == .longTermFallback && sender.hasPendingBatch == false {
+            debugPrint("🔥 longTermFallback detected — storing fresh pending batch for sender \(sender.identifier)")
+            
+            let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
+            /// These prekeys do not contain any useful information for an attacker. They have been stripped of anything meaningful.
+            let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
+            let timestamp = Date()
+            let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: timestamp, prekeys: prekeysSuitableForTransport)
             /// Store the newly generated batch with wired prekeys so it can be sent with the next message.
-            try sender.store(batch: batch, sequence: result.nextSequence)
-
-            // Record the new prekeys in ownPrekeys so we can find
-            // the SE private key when the sender uses one to reply.
-            let blobs: [Data] = result.prekeys.compactMap { wired in
-                /// Converted back to `PreKey` so we can look up a key by contact ID during decryption.
-                let prekey = Prekey(id: wired.id, contactID: sender.identifier, sequence: wired.sequence, publicKey: wired.publicKey)
-                
-                guard
-                    let encoded   = try? JSONEncoder().encode(prekey)
-                else { return nil }
-                
-                return encoded
-            }
-            /// Append
-            try sender.appendOwnPrekeys(blobs)
-
-            // Prune dead ownPrekeys entries for the same threshold.
-            if seq > 1 {
-                try sender.pruneOwnPrekeys(olderThan: seq - 1)
-            }
+            try sender.store(batch: batch)
+            
+            debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
         }
         
         let decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
@@ -1085,20 +986,18 @@ extension ContactManager {
  
             let blobs: [Data] = inboundBatch.prekeys.compactMap { wired in
                 /// Converted back to `PreKey` so we can look up a key by contact ID during decryption.
-                let prekey = Prekey(id: wired.id, contactID: sender.identifier, sequence: wired.sequence, publicKey: wired.publicKey)
+                let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
                 
                 guard
-                    let encoded   = try? JSONEncoder().encode(prekey),
-                    let encrypted = try? cryptoOps.encrypt(data: encoded)
+                    let encoded = try? JSONEncoder().encode(prekey)
                 else { return nil }
                 
-                return encrypted
+                return encoded
             }
             
             debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
-            // Prune-then-append semantics: drops provably dead entries,
-            // keeps unconsumed valid prekeys, appends fresh ones.
-            try sender.syncInboundPrekeys(blobs, sequence: inboundBatch.sequence)
+            
+            try sender.syncInboundPrekeys(blobs, date: inboundBatch.generatedAt)
         }
  
         // ── 8. Persist ───────────────────────────────────────────────────

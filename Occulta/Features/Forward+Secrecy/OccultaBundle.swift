@@ -112,8 +112,6 @@ struct OccultaBundle: Codable {
     struct WirePrekey: Codable, Equatable {
         /// Unique identifier for this prekey within its batch.
         let id:        String
-        /// Batch generation number. Monotonically increasing per contact pair.
-        let sequence:  Int
         /// x963 uncompressed P-256 public key (65 bytes).
         let publicKey: Data
     }
@@ -141,16 +139,9 @@ struct OccultaBundle: Codable {
         /// A versioned batch of the sender's prekey public keys.
         ///
         /// Encrypted inside `SealedPayload.ciphertext` — never visible to observers.
-        ///
-        /// Sequence semantics (on the recipient side):
-        /// ```
-        /// incoming.sequence > stored.sequence  →  prune-then-append
-        /// incoming.sequence ≤ stored.sequence  →  ignore (duplicate or stale)
-        /// ```
         nonisolated
         struct PrekeySyncBatch: Codable {
-            /// Monotonically increasing batch generation number, per contact pair.
-            let sequence: Int
+            let generatedAt: Date
             /// Wire representation of the prekey public keys in this batch.
             let prekeys: [WirePrekey]
         }
@@ -260,12 +251,12 @@ struct OccultaBundle: Codable {
     }
     /// Encoder for computing additional authentication data.
     /// Using `.sortedKeys` to make results deterministic.
-    static private var encoder: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
+    static private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = .sortedKeys
         
-        return encoder
-    }
+        return e
+    }()
 
     // MARK: - UI helpers
 

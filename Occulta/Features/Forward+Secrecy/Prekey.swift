@@ -15,21 +15,19 @@ import Foundation
 ///
 /// ## SE tag format
 /// ```
-/// "prekey.<contactID>.<sequence>.<uuid>"
+/// "prekey.<contactID>.<uuid>"
 ///
 /// e.g. "prekey.C3A1B2-...<contactID>....3.550e8400-...<uuid>"
 /// ```
 ///
 /// ## Lifecycle
 /// ```
-/// Generated    →  private key in SE tagged "prekey.<contactID>.<seq>.<id>"
+/// Generated    →  private key in SE tagged "prekey.<contactID>.<id>"
 ///                 public Prekey sent in outbound PrekeySyncBatch to that contact only
 /// Stored       →  recipient stores [Prekey] on sender's Contact.Profile
 /// Consumed     →  recipient picks oldest Prekey, uses publicKey for ECDH,
 ///                 removes from local store
 /// Deleted      →  sender's private key deleted from SE on successful decrypt
-/// Pruned       →  when a newer sequence arrives, SE keys from old sequences
-///                 for this contactID are deleted
 /// ```
 nonisolated
 struct Prekey: Codable, Equatable {
@@ -45,12 +43,6 @@ struct Prekey: Codable, Equatable {
     /// for Bob cannot be accidentally consumed when decrypting for Jake.
     let contactID: String
 
-    /// The batch generation this prekey belongs to.
-    ///
-    /// Monotonically increasing per contact. Each new batch for the same
-    /// contact increments this counter independently of other contacts.
-    let sequence: Int
-
     /// x963 uncompressed public key (04 || X || Y, 65 bytes).
     ///
     /// Safe to transmit unencrypted. Forward secrecy comes from deleting
@@ -61,19 +53,13 @@ struct Prekey: Codable, Equatable {
 
     /// The keychain application tag for this prekey's private key.
     ///
-    /// Format: `"prekey.<contactID>.<sequence>.<id>"`
+    /// Format: `"prekey.<contactID>.<id>"`
     var seTag: String {
-        Prekey.seTag(for: self.id, contactID: self.contactID, sequence: self.sequence)
+        Prekey.seTag(for: self.id, contactID: self.contactID)
     }
 
-    static func seTag(for id: String, contactID: String, sequence: Int) -> String {
-        "prekey.\(contactID).\(sequence).\(id)"
-    }
-
-    /// Tag prefix for all prekeys for a given contact and sequence.
-    /// Used for sequence-based pruning: query SE by this prefix, delete all matches.
-    static func seTagPrefix(contactID: String, sequence: Int) -> String {
-        "prekey.\(contactID).\(sequence)."
+    static func seTag(for id: String, contactID: String) -> String {
+        "prekey.\(contactID).\(id)"
     }
 
     /// Tag prefix for ALL prekeys for a given contact, regardless of sequence.
