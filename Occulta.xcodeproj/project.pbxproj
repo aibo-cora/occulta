@@ -10,6 +10,7 @@
 		DE02DCE72ED0A90D0091D4D9 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE62ED0A90D0091D4D9 /* Crypto */; };
 		DE02DCE92ED0A90D0091D4D9 /* CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */; };
 		DE02DCEB2ED0A90D0091D4D9 /* _CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */; };
+		DE1D95602F7A66A800115AEE /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = DE1D955F2F7A66A800115AEE /* README.md */; };
 		DEC7D75F2EEF1B9000764947 /* QuickLook.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DEC7D75E2EEF1B9000764947 /* QuickLook.framework */; };
 		DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -53,6 +54,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		DE1D955F2F7A66A800115AEE /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OccultaPreview.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		DEC7D75E2EEF1B9000764947 /* QuickLook.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuickLook.framework; path = System/Library/Frameworks/QuickLook.framework; sourceTree = SDKROOT; };
 		DEFFD8552E9D293500CA60F9 /* Occulta.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Occulta.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -175,6 +177,7 @@
 				DEC7D7602EEF1B9000764947 /* OccultaPreview */,
 				DEC7D75D2EEF1B9000764947 /* Frameworks */,
 				DEFFD8562E9D293500CA60F9 /* Products */,
+				DE1D955F2F7A66A800115AEE /* README.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -351,6 +354,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE1D95602F7A66A800115AEE /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
