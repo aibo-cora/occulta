@@ -413,21 +413,31 @@ struct ComposableMessage: View {
     }
     
     private func handleFile(_ result: Result<[URL], Error>) {
-        do {
-            guard
-                let url = try result.get().first,
-                url.startAccessingSecurityScopedResource()
-            else { return }
-            
-            defer { url.stopAccessingSecurityScopedResource() }
-            
-            let filename = url.lastPathComponent
-            let metadata = Occulta.File.Metadata(name: filename, extension: url.pathExtension)
-            let newFile = Occulta.File(url: url, format: .file(metadata), date: Date())
-            
-            self.messages.append(newFile)
-        } catch {
-            self.showErrorAlert(error.localizedDescription)
+        Task {
+            do {
+                guard
+                    let url = try result.get().first,
+                    url.startAccessingSecurityScopedResource()
+                else { return }
+                
+                defer { url.stopAccessingSecurityScopedResource() }
+                /// Extract data from file.
+                let data = try await URLSession.shared.data(from: url).0
+                /// Create a temp file.
+                let filename = url.lastPathComponent.components(separatedBy: ".").first ?? ""
+                let ext = url.lastPathComponent.components(separatedBy: ".").last ?? ""
+                let tempDir = FileManager.default.temporaryDirectory
+                let tempFileURL = tempDir.appendingPathComponent(filename + ".\(ext)")
+                /// Write to temp file because the original URL is going to have its scope changed back to private.
+                try data.write(to: tempFileURL)
+                
+                let metadata = Occulta.File.Metadata(name: filename, extension: ext)
+                let newFile = Occulta.File(url: tempFileURL, format: .file(metadata), date: Date())
+                
+                self.messages.append(newFile)
+            } catch {
+                self.showErrorAlert(error.localizedDescription)
+            }
         }
     }
     
