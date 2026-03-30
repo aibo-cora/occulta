@@ -51,6 +51,9 @@ extension Contact {
         @Relationship(deleteRule: .cascade, inverse: \Key.profile)
         /// Public key of the trusted contact.
         var contactPublicKeys: [Key]? = []
+        /// Encrypted forward secrecy metadata.
+        var forwardSecrecyEncrypted: Data?
+        
         /// Identifier to determine the owner of the public key.
         var identifierFromOutside: String?
         /// Identifier of the user that originally acquired this contact's public key.
