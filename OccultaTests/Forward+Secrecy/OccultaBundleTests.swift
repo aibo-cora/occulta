@@ -2,266 +2,278 @@
 //  OccultaBundleTests.swift
 //  OccultaTests
 //
-//  Tests for OccultaBundle structure, serialisation, fingerprint math, and AAD.
-//  No SE. No Manager.Crypto. No SwiftData.
-//  Safe to run in the simulator.
+//  Simulator safe — no Secure Enclave, no SwiftData.
+//  Tests: AAD computation, fingerprint math, nonce generation, Codable roundtrips.
 //
 
-import XCTest
+import Testing
 import CryptoKit
+import Foundation
+import Security
+
 @testable import Occulta
 
-final class OccultaBundleTests: XCTestCase {
+// MARK: - AAD
 
-    // MARK: - Helpers
+@Suite("OccultaBundle — AAD")
+struct OccultaBundleAADTests {
 
-    private func makeBundle(
-        mode:        OccultaBundle.Mode = .forwardSecret,
-        version:     OccultaBundle.Version = .v3fs,
-        prekeyID:    String?            = "test-prekey-id",
-        prekeySeq:   Int?               = 3,
-        nonce:       Data               = Data(repeating: 0x01, count: 16),
-        fingerprint: Data               = Data(repeating: 0xAB, count: 32),
-        ciphertext:  Data               = Data(repeating: 0xFF, count: 64),
-        prekeyBatch: OccultaBundle.PrekeySyncBatch? = nil
-    ) -> OccultaBundle {
-        let secrecy = OccultaBundle.SecrecyContext(
-            mode:               mode,
-            ephemeralPublicKey: Data(count: 65),
-            prekeyID:           prekeyID,
-            prekeySequence:     prekeySeq,
-            prekeyBatch:        prekeyBatch
+    private func makeSecrecy(
+        mode:    OccultaBundle.Mode = .forwardSecret,
+        epk:     Data              = Data(count: 65),
+        prekeyID: String?          = "test-id"
+    ) -> OccultaBundle.SecrecyContext {
+        OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: epk, prekeyID: prekeyID)
+    }
+
+    @Test func aad_isDeterministic() throws {
+        let secrecy = makeSecrecy()
+        let a = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: secrecy)
+        let b = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: secrecy)
+        #expect(a == b)
+    }
+
+    @Test func aad_beginsWithVersionBytes() throws {
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy())
+        let prefix = "v3fs".data(using: .utf8)!
+        #expect(aad.prefix(prefix.count) == prefix)
+    }
+
+    @Test func aad_differentVersion_producesDifferentAAD() throws {
+        let secrecy = makeSecrecy()
+        let v3  = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: secrecy)
+        let v1  = try OccultaBundle.computeAdditionalAuthentication(version: .v1,   secrecy: secrecy)
+        #expect(v3 != v1)
+    }
+
+    @Test func aad_differentMode_producesDifferentAAD() throws {
+        let a = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(mode: .forwardSecret))
+        let b = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(mode: .longTermFallback))
+        #expect(a != b)
+    }
+
+    @Test func aad_differentPrekeyID_producesDifferentAAD() throws {
+        let a = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(prekeyID: "id-A"))
+        let b = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(prekeyID: "id-B"))
+        #expect(a != b)
+    }
+
+    @Test func aad_nilPrekeyID_vs_nonNil_producesDifferentAAD() throws {
+        let a = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(prekeyID: nil))
+        let b = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(prekeyID: "id"))
+        #expect(a != b)
+    }
+
+    @Test func aad_differentEphemeralPublicKey_producesDifferentAAD() throws {
+        let a = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(epk: Data(repeating: 0x01, count: 65)))
+        let b = try OccultaBundle.computeAdditionalAuthentication(version: .v3fs, secrecy: makeSecrecy(epk: Data(repeating: 0x02, count: 65)))
+        #expect(a != b)
+    }
+}
+
+// MARK: - Fingerprint
+
+@Suite("OccultaBundle — Fingerprint")
+struct OccultaBundleFingerprintTests {
+
+    @Test func fingerprint_is32Bytes() {
+        let fp = OccultaBundle.SecrecyContext.fingerprint(
+            for:   Data(repeating: 0x42, count: 65),
+            nonce: Data(repeating: 0x01, count: 16)
         )
-        return OccultaBundle(
-            version:           version,
-            secrecy:           secrecy,
-            ciphertext:        ciphertext,
-            fingerprintNonce:  nonce,
-            senderFingerprint: fingerprint
-        )
+        #expect(fp.count == 32)
     }
 
-    // MARK: - Version
-
-    func test_currentVersion_isV3fs() {
-        XCTAssertEqual(OccultaBundle.currentVersion, .v3fs)
-    }
-
-    func test_versionRawValues() {
-        XCTAssertEqual(OccultaBundle.Version.v1.rawValue,   "v1")
-        XCTAssertEqual(OccultaBundle.Version.v2.rawValue,   "v2")
-        XCTAssertEqual(OccultaBundle.Version.v3fs.rawValue, "v3fs")
-    }
-
-    // MARK: - Mode
-
-    func test_modeRawValues() {
-        XCTAssertEqual(OccultaBundle.Mode.forwardSecret.rawValue,    "forwardSecret")
-        XCTAssertEqual(OccultaBundle.Mode.longTermFallback.rawValue, "longTermFallback")
-    }
-
-    // MARK: - UI helpers
-
-    func test_isForwardSecret_trueForFSMode()       { XCTAssertTrue(makeBundle(mode: .forwardSecret).isForwardSecret) }
-    func test_isForwardSecret_falseForFallback()    { XCTAssertFalse(makeBundle(mode: .longTermFallback).isForwardSecret) }
-    func test_securityLabel_forwardSecret()         { XCTAssertEqual(makeBundle(mode: .forwardSecret).securityLabel, "Forward Secret") }
-    func test_securityLabel_fallback()              { XCTAssertEqual(makeBundle(mode: .longTermFallback).securityLabel, "Standard Encryption") }
-
-    // MARK: - Serialisation roundtrip
-
-    func test_encodeDecode_preservesVersion() throws {
-        let decoded = try OccultaBundle.decoded(from: makeBundle().encoded())
-        XCTAssertEqual(decoded.version, .v3fs)
-    }
-
-    func test_encodeDecode_preservesMode() throws {
-        for mode in [OccultaBundle.Mode.forwardSecret, .longTermFallback] {
-            let decoded = try OccultaBundle.decoded(from: makeBundle(mode: mode).encoded())
-            XCTAssertEqual(decoded.secrecy.mode, mode)
-        }
-    }
-
-    func test_encodeDecode_preservesPrekeyIDAndSequence() throws {
-        let decoded = try OccultaBundle.decoded(from: makeBundle(prekeyID: "xyz", prekeySeq: 7).encoded())
-        XCTAssertEqual(decoded.secrecy.prekeyID,       "xyz")
-        XCTAssertEqual(decoded.secrecy.prekeySequence, 7)
-    }
-
-    func test_encodeDecode_nilPrekeyIDOnFallback() throws {
-        let decoded = try OccultaBundle.decoded(from: makeBundle(mode: .longTermFallback, prekeyID: nil, prekeySeq: nil).encoded())
-        XCTAssertNil(decoded.secrecy.prekeyID)
-        XCTAssertNil(decoded.secrecy.prekeySequence)
-    }
-
-    func test_encodeDecode_preservesFingerprintFields() throws {
-        let nonce       = Data((0..<16).map { UInt8($0) })
-        let fingerprint = Data((0..<32).map { UInt8($0 &+ 100) })
-        let decoded     = try OccultaBundle.decoded(from: makeBundle(nonce: nonce, fingerprint: fingerprint).encoded())
-        XCTAssertEqual(decoded.fingerprintNonce,  nonce)
-        XCTAssertEqual(decoded.senderFingerprint, fingerprint)
-    }
-
-    func test_encodeDecode_preservesCiphertext() throws {
-        let ct      = Data((0..<128).map { UInt8($0) })
-        let decoded = try OccultaBundle.decoded(from: makeBundle(ciphertext: ct).encoded())
-        XCTAssertEqual(decoded.ciphertext, ct)
-    }
-
-    func test_encodeDecode_preservesPrekeyBatch() throws {
-        let prekeys = [
-            Prekey(id: "A", contactID: "c", sequence: 1, publicKey: Data(count: 65)),
-            Prekey(id: "B", contactID: "c", sequence: 1, publicKey: Data(count: 65))
-        ]
-        let batch   = OccultaBundle.PrekeySyncBatch(sequence: 1, prekeys: prekeys)
-        let decoded = try OccultaBundle.decoded(from: makeBundle(prekeyBatch: batch).encoded())
-        XCTAssertEqual(decoded.secrecy.prekeyBatch?.sequence,         1)
-        XCTAssertEqual(decoded.secrecy.prekeyBatch?.prekeys.count,    2)
-        XCTAssertEqual(decoded.secrecy.prekeyBatch?.prekeys[0].id,    "A")
-        XCTAssertEqual(decoded.secrecy.prekeyBatch?.prekeys[1].id,    "B")
-    }
-
-    func test_decodeMalformedData_throws() {
-        XCTAssertThrowsError(try OccultaBundle.decoded(from: Data("not json".utf8)))
-    }
-
-    // MARK: - fullAAD
-
-    func test_fullAAD_includesVersion() throws {
-        let bundle     = makeBundle(version: .v3fs)
-        let aad        = try bundle.fullAAD()
-        let versionTag = "v3fs".data(using: .utf8)!
-        XCTAssertTrue(aad.starts(with: versionTag), "AAD must begin with version raw value")
-    }
-
-    func test_fullAAD_differentVersionProducesDifferentAAD() throws {
-        let b1 = makeBundle(version: .v3fs)
-        let b2 = makeBundle(version: .v1)
-        XCTAssertNotEqual(try b1.fullAAD(), try b2.fullAAD(),
-                          "Different versions must produce different AAD")
-    }
-
-    func test_fullAAD_deterministicAcrossCalls() throws {
-        let bundle = makeBundle()
-        XCTAssertEqual(try bundle.fullAAD(), try bundle.fullAAD(),
-                       "fullAAD must be deterministic for the same bundle")
-    }
-
-    func test_fullAAD_sealAndOpenProduceSameBytes() throws {
-        // The seal-side AAD is computed by Crypto+ForwardSecrecy.computeAAD.
-        // The open-side AAD is computed by bundle.fullAAD().
-        // This test verifies they produce identical bytes for the same inputs.
-        let secrecy = OccultaBundle.SecrecyContext(
-            mode:               .forwardSecret,
-            ephemeralPublicKey: Data(count: 65),
-            prekeyID:           "test-id",
-            prekeySequence:     2,
-            prekeyBatch:        nil
-        )
-        let bundle = OccultaBundle(
-            version:           .v3fs,
-            secrecy:           secrecy,
-            ciphertext:        Data(count: 28),
-            fingerprintNonce:  Data(count: 16),
-            senderFingerprint: Data(count: 32)
-        )
-        let sealAAD = try Manager.Crypto.computeAAD(version: .v3fs, secrecy: secrecy)
-        let openAAD = try bundle.fullAAD()
-        XCTAssertEqual(sealAAD, openAAD,
-                       "Seal and open AAD must be byte-identical for the same inputs")
-    }
-
-    // MARK: - Fingerprint math
-
-    func test_fingerprint_isSHA256OfPublicKeyPlusNonce() {
+    @Test func fingerprint_isDeterministic() {
         let key   = Data(repeating: 0x42, count: 65)
-        let nonce = Data(repeating: 0x11, count: 16)
-        var input = key; input.append(nonce)
-        XCTAssertEqual(
-            OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: nonce),
-            Data(SHA256.hash(data: input))
+        let nonce = Data(repeating: 0x01, count: 16)
+        #expect(
+            OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: nonce) ==
+            OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: nonce)
         )
     }
 
-    func test_fingerprint_differentNonce_producesDifferentResult() {
+    @Test func fingerprint_differentKey_producesDifferentResult() {
+        let nonce = Data(repeating: 0x01, count: 16)
+        let a = OccultaBundle.SecrecyContext.fingerprint(for: Data(repeating: 0x42, count: 65), nonce: nonce)
+        let b = OccultaBundle.SecrecyContext.fingerprint(for: Data(repeating: 0x43, count: 65), nonce: nonce)
+        #expect(a != b)
+    }
+
+    @Test func fingerprint_differentNonce_producesDifferentResult() {
         let key = Data(repeating: 0x42, count: 65)
-        XCTAssertNotEqual(
-            OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: Data(repeating: 0x01, count: 16)),
-            OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: Data(repeating: 0x02, count: 16))
-        )
+        let a = OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: Data(repeating: 0x01, count: 16))
+        let b = OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: Data(repeating: 0x02, count: 16))
+        #expect(a != b)
     }
 
-    func test_fingerprint_differentKey_producesDifferentResult() {
-        let nonce = Data(repeating: 0x99, count: 16)
-        XCTAssertNotEqual(
-            OccultaBundle.SecrecyContext.fingerprint(for: Data(repeating: 0x01, count: 65), nonce: nonce),
-            OccultaBundle.SecrecyContext.fingerprint(for: Data(repeating: 0x02, count: 65), nonce: nonce)
-        )
+    @Test func fingerprint_equalsSHA256_keyAppendedNonce() {
+        let key   = Data(repeating: 0x42, count: 65)
+        let nonce = Data(repeating: 0x01, count: 16)
+        var input = key; input.append(nonce)
+        let expected = Data(SHA256.hash(data: input))
+        #expect(OccultaBundle.SecrecyContext.fingerprint(for: key, nonce: nonce) == expected)
     }
+}
 
-    func test_fingerprint_is32Bytes() {
-        XCTAssertEqual(
-            OccultaBundle.SecrecyContext.fingerprint(for: Data(count: 65), nonce: Data(count: 16)).count,
-            32
-        )
-    }
+// MARK: - Nonce generation
 
-    // MARK: - generateNonce
+@Suite("OccultaBundle — Nonce")
+struct OccultaBundleNonceTests {
 
-    func test_generateNonce_is16Bytes() throws {
-        XCTAssertEqual(try OccultaBundle.SecrecyContext.generateNonce().count, 16)
-    }
-
-    func test_generateNonce_isRandomEachCall() throws {
-        let n1 = try OccultaBundle.SecrecyContext.generateNonce()
-        let n2 = try OccultaBundle.SecrecyContext.generateNonce()
-        XCTAssertNotEqual(n1, n2, "Consecutive nonces must not be equal")
-    }
-
-    func test_generateNonce_isNonZero() throws {
+    @Test func nonce_is16Bytes() throws {
         let nonce = try OccultaBundle.SecrecyContext.generateNonce()
-        XCTAssertFalse(nonce.allSatisfy { $0 == 0 }, "Nonce must not be all-zero bytes")
+        #expect(nonce.count == 16)
     }
 
-    /// 2.5.4 — If the OS random-bytes provider fails, generateNonce throws
-    /// `BundleError.entropyUnavailable`. It must never silently return a zero
-    /// nonce, which would make senderFingerprint identical across all bundles.
-    func test_generateNonce_entropyFailure_throws() {
-        // Inject a provider that always returns errSecParam (failure)
-        // to simulate boot-time entropy starvation or hardware fault.
-        XCTAssertThrowsError(
+    @Test func nonce_isNotAllZero() throws {
+        let nonce = try OccultaBundle.SecrecyContext.generateNonce()
+        #expect(!nonce.allSatisfy { $0 == 0 })
+    }
+
+    @Test func nonce_consecutiveCallsDiffer() throws {
+        let a = try OccultaBundle.SecrecyContext.generateNonce()
+        let b = try OccultaBundle.SecrecyContext.generateNonce()
+        #expect(a != b)
+    }
+
+    @Test func nonce_entropyFailure_throwsEntropyUnavailable() {
+        #expect(throws: OccultaBundle.BundleError.entropyUnavailable) {
             try OccultaBundle.SecrecyContext._generateNonce { _, _ in errSecParam }
-        ) { error in
-            guard case OccultaBundle.BundleError.entropyUnavailable = error else {
-                XCTFail("Expected entropyUnavailable, got \(error)")
-                return
-            }
         }
     }
 
-    /// Corollary to 2.5.4: a failing provider must not silently return
-    /// an all-zero nonce. The function must throw instead.
-    func test_generateNonce_entropyFailure_doesNotProduceZeroNonce() {
-        var capturedData: Data? = nil
-        XCTAssertThrowsError(
-            try {
-                capturedData = try OccultaBundle.SecrecyContext._generateNonce { _, _ in errSecParam }
-            }()
-        )
-        XCTAssertNil(capturedData, "On entropy failure the function must throw, not return zero bytes")
+    @Test func nonce_entropyFailure_doesNotReturnData() {
+        var result: Data? = nil
+        try? { result = try OccultaBundle.SecrecyContext._generateNonce { _, _ in errSecParam } }()
+        #expect(result == nil)
+    }
+}
+
+// MARK: - WirePrekey Codable
+
+@Suite("OccultaBundle — WirePrekey")
+struct WirePrekeyTests {
+
+    @Test func wirePrekey_codableRoundtrip() throws {
+        let original = OccultaBundle.WirePrekey(id: "abc-123", publicKey: Data(repeating: 0x04, count: 65))
+        let data     = try JSONEncoder().encode(original)
+        let decoded  = try JSONDecoder().decode(OccultaBundle.WirePrekey.self, from: data)
+        #expect(decoded.id == original.id)
+        #expect(decoded.publicKey == original.publicKey)
     }
 
-    // MARK: - PrekeySyncBatch
+    @Test func wirePrekey_hasNoContactID() throws {
+        let prekey = OccultaBundle.WirePrekey(id: "x", publicKey: Data(count: 65))
+        let json   = try JSONEncoder().encode(prekey)
+        let string = String(data: json, encoding: .utf8)!
+        #expect(!string.contains("contactID"))
+    }
+}
 
-    func test_prekeySyncBatch_encodeDecode() throws {
-        let batch  = OccultaBundle.PrekeySyncBatch(
-            sequence: 5,
-            prekeys: [Prekey(id: "X", contactID: "c", sequence: 5, publicKey: Data(count: 65))]
+// MARK: - SealedPayload Codable
+
+@Suite("OccultaBundle — SealedPayload")
+struct SealedPayloadTests {
+
+    @Test func sealedPayload_withoutBatch_roundtrips() throws {
+        let payload  = OccultaBundle.SealedPayload(message: Data("hello".utf8), prekeyBatch: nil)
+        let data     = try JSONEncoder().encode(payload)
+        let decoded  = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: data)
+        #expect(decoded.message == payload.message)
+        #expect(decoded.prekeyBatch == nil)
+    }
+
+    @Test func sealedPayload_withBatch_roundtrips() throws {
+        let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(
+            generatedAt: Date(timeIntervalSince1970: 1_000_000),
+            prekeys: [
+                OccultaBundle.WirePrekey(id: "k1", publicKey: Data(repeating: 0x04, count: 65)),
+                OccultaBundle.WirePrekey(id: "k2", publicKey: Data(repeating: 0x05, count: 65))
+            ]
         )
-        let data    = try JSONEncoder().encode(batch)
-        let decoded = try JSONDecoder().decode(OccultaBundle.PrekeySyncBatch.self, from: data)
-        XCTAssertEqual(decoded.sequence,            5)
-        XCTAssertEqual(decoded.prekeys.count,       1)
-        XCTAssertEqual(decoded.prekeys[0].id,       "X")
-        XCTAssertEqual(decoded.prekeys[0].sequence, 5)
+        let payload = OccultaBundle.SealedPayload(message: Data("msg".utf8), prekeyBatch: batch)
+        let data    = try JSONEncoder().encode(payload)
+        let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: data)
+
+        #expect(decoded.message == payload.message)
+        #expect(decoded.prekeyBatch?.prekeys.count == 2)
+        #expect(decoded.prekeyBatch?.prekeys.first?.id == "k1")
+        // generatedAt roundtrip — tolerance for JSON Date encoding
+        let diff = abs(decoded.prekeyBatch!.generatedAt.timeIntervalSince1970 - 1_000_000)
+        #expect(diff < 0.001)
+    }
+
+    @Test func prekeySyncBatch_batchContainsNoContactIDs() throws {
+        let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(
+            generatedAt: Date(),
+            prekeys: [OccultaBundle.WirePrekey(id: "x", publicKey: Data(count: 65))]
+        )
+        let json   = String(data: try JSONEncoder().encode(batch), encoding: .utf8)!
+        #expect(!json.contains("contactID"))
+    }
+}
+
+// MARK: - OccultaBundle Codable + UI helpers
+
+@Suite("OccultaBundle — Bundle")
+struct OccultaBundleTests {
+
+    private func makeBundle(mode: OccultaBundle.Mode = .forwardSecret) -> OccultaBundle {
+        OccultaBundle(
+            version:           .v3fs,
+            secrecy:           OccultaBundle.SecrecyContext(
+                mode:               mode,
+                ephemeralPublicKey: Data(count: 65),
+                prekeyID:           mode == .forwardSecret ? "test-prekey-id" : nil
+            ),
+            ciphertext:        Data(repeating: 0xFF, count: 64),
+            fingerprintNonce:  Data(repeating: 0x01, count: 16),
+            senderFingerprint: Data(repeating: 0xAB, count: 32)
+        )
+    }
+
+    @Test func bundle_codableRoundtrip() throws {
+        let original = makeBundle()
+        let decoded  = try OccultaBundle.decoded(from: original.encoded())
+        #expect(decoded.version == original.version)
+        #expect(decoded.secrecy.mode == original.secrecy.mode)
+        #expect(decoded.secrecy.ephemeralPublicKey == original.secrecy.ephemeralPublicKey)
+        #expect(decoded.secrecy.prekeyID == original.secrecy.prekeyID)
+        #expect(decoded.ciphertext == original.ciphertext)
+        #expect(decoded.fingerprintNonce == original.fingerprintNonce)
+        #expect(decoded.senderFingerprint == original.senderFingerprint)
+    }
+
+    @Test func bundle_fallback_nilPrekeyID() throws {
+        let bundle = makeBundle(mode: .longTermFallback)
+        let decoded = try OccultaBundle.decoded(from: bundle.encoded())
+        #expect(decoded.secrecy.prekeyID == nil)
+    }
+
+    @Test func bundle_isForwardSecret_true_forFS() {
+        #expect(makeBundle(mode: .forwardSecret).isForwardSecret == true)
+    }
+
+    @Test func bundle_isForwardSecret_false_forFallback() {
+        #expect(makeBundle(mode: .longTermFallback).isForwardSecret == false)
+    }
+
+    @Test func bundle_securityLabel_forwardSecret() {
+        #expect(makeBundle(mode: .forwardSecret).securityLabel == "Forward Secret")
+    }
+
+    @Test func bundle_securityLabel_fallback() {
+        #expect(makeBundle(mode: .longTermFallback).securityLabel == "Standard Encryption")
+    }
+
+    @Test func bundle_currentVersion_isV3fs() {
+        #expect(OccultaBundle.currentVersion == .v3fs)
+    }
+
+    @Test func bundle_malformedData_throwsOnDecode() {
+        #expect(throws: (any Error).self) {
+            try OccultaBundle.decoded(from: Data(repeating: 0xDE, count: 40))
+        }
     }
 }
