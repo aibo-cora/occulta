@@ -513,6 +513,6 @@ struct FileExtensions {
 
 #Preview {
     NavigationStack {
-        ComposableMessage.Conversation(mode: .write, messages: .constant([File(content: "https://www.apple.com".data(using: .utf8), format: .text), File(content: "Hi".data(using: .utf8), format: .text)]))
+        ComposableMessage.Conversation(mode: .read(messageOwner: UUID().uuidString), messages: .constant([File(content: "https://www.apple.com".data(using: .utf8), format: .text), File(content: "Hi".data(using: .utf8), format: .text)]))
     }
 }
