@@ -8,7 +8,7 @@
 import Testing
 @testable import Occulta
 import Foundation
-internal import CryptoKit
+import CryptoKit
 import Contacts
 
 @MainActor
