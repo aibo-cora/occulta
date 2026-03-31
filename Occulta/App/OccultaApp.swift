@@ -29,7 +29,7 @@ struct OccultaApp: App {
                 Contact.Message.self,
             ])
             
-            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .automatic)
+            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
 
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
