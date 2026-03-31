@@ -34,4 +34,8 @@ enum Feature: String {
     case allowSynchingBetweenDevices
     /// Advanced messaging with different content types in a single message
     case useComposableMessage
+    /// Make it more convenient for users to share messages with multiple contacts.
+    ///
+    /// Instead of build messages from scratch for each contact, we are going to include an array of capsules holding session key that was encrypted with the shared key of each contact.
+    case useMultipleRecipientMessageFormat
 }

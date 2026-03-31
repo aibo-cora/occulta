@@ -157,36 +157,41 @@ struct ComposableMessage: View {
         }
         
         var body: some View {
-            switch self.mode {
-            case .write:
-                ContactEncryptionDisclaimer()
-            case .read(let owner):
-                Contact.Info(identifier: owner)
-            }
-            
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .trailing, spacing: 24) {
-                        ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
-                            VStack(spacing: 6) {
-                                if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
-                                    DateHeader(date: file.date ?? Date())
-                                }
-                                
-                                MessageBubble(file: file, mode: self.mode)
-                            }
-                            .id(file.id)
-                        }
+            VStack {
+                Group {
+                    switch self.mode {
+                    case .write:
+                        ContactEncryptionDisclaimer()
+                    case .read(let owner):
+                        Contact.Info(identifier: owner)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 20)
                 }
-                .scrollIndicators(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: self.messages) { _, latest in
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        if let last = latest.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
+                .padding(.top)
+                
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .trailing, spacing: 24) {
+                            ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
+                                VStack(spacing: 6) {
+                                    if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
+                                        DateHeader(date: file.date ?? Date())
+                                    }
+                                    
+                                    MessageBubble(file: file, mode: self.mode)
+                                }
+                                .id(file.id)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 20)
+                    }
+                    .scrollIndicators(.hidden)
+                    .scrollDismissesKeyboard(.interactively)
+                    .onChange(of: self.messages) { _, latest in
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            if let last = latest.last {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
                         }
                     }
                 }
@@ -257,6 +262,8 @@ struct ComposableMessage: View {
                 .padding(.horizontal, 16)
             }
             
+            @Environment(\.colorScheme) private var colorScheme
+            
             @ViewBuilder
             private var contentPreview: some View {
                 switch self.file.format {
@@ -264,8 +271,8 @@ struct ComposableMessage: View {
                     if let data = self.file.content, let text = String(data: data, encoding: .utf8) {
                         Text(text.withDetectedLinks())
                             .padding(14)
-                            .background(Color.green)
-                            .foregroundStyle(.white)
+                            .background(Color.green.opacity(0.2))
+                            .foregroundStyle(self.colorScheme == .dark ? .white : .black)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                     }
                 case .file(let metadata):
@@ -406,21 +413,31 @@ struct ComposableMessage: View {
     }
     
     private func handleFile(_ result: Result<[URL], Error>) {
-        do {
-            guard
-                let url = try result.get().first,
-                url.startAccessingSecurityScopedResource()
-            else { return }
-            
-            defer { url.stopAccessingSecurityScopedResource() }
-            
-            let filename = url.lastPathComponent
-            let metadata = Occulta.File.Metadata(name: filename, extension: url.pathExtension)
-            let newFile = Occulta.File(url: url, format: .file(metadata), date: Date())
-            
-            self.messages.append(newFile)
-        } catch {
-            self.showErrorAlert(error.localizedDescription)
+        Task {
+            do {
+                guard
+                    let url = try result.get().first,
+                    url.startAccessingSecurityScopedResource()
+                else { return }
+                
+                defer { url.stopAccessingSecurityScopedResource() }
+                /// Extract data from file.
+                let data = try await URLSession.shared.data(from: url).0
+                /// Create a temp file.
+                let filename = url.lastPathComponent.components(separatedBy: ".").first ?? ""
+                let ext = url.lastPathComponent.components(separatedBy: ".").last ?? ""
+                let tempDir = FileManager.default.temporaryDirectory
+                let tempFileURL = tempDir.appendingPathComponent(filename + ".\(ext)")
+                /// Write to temp file because the original URL is going to have its scope changed back to private.
+                try data.write(to: tempFileURL)
+                
+                let metadata = Occulta.File.Metadata(name: filename, extension: ext)
+                let newFile = Occulta.File(url: tempFileURL, format: .file(metadata), date: Date())
+                
+                self.messages.append(newFile)
+            } catch {
+                self.showErrorAlert(error.localizedDescription)
+            }
         }
     }
     
@@ -496,6 +513,6 @@ struct FileExtensions {
 
 #Preview {
     NavigationStack {
-        ComposableMessage.Conversation.MessageBubble(file: File(content: "Hi".data(using: .utf8), format: .text), mode: .write)
+        ComposableMessage.Conversation(mode: .read(messageOwner: UUID().uuidString), messages: .constant([File(content: "https://www.apple.com".data(using: .utf8), format: .text), File(content: "Hi".data(using: .utf8), format: .text)]))
     }
 }

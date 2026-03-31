@@ -31,5 +31,5 @@ struct OccultaDocument: FileDocument {
 }
 
 extension UTType {
-    static let occ = UTType(exportedAs: "com.ghafla.aibo-cora.occulta")
+    static let occ = UTType(exportedAs: "com.github.aibo-cora.occulta")
 }

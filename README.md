@@ -12,6 +12,7 @@ Once exchanged, encrypt any file, photo, video, or document for anyone in your c
 
 - [How It Works](#how-it-works)
 - [Cryptographic Protocol](#cryptographic-protocol)
+- [Forward Secrecy](#forward-secrecy)
 - [Key Exchange Flow](#key-exchange-flow)
 - [Encryption Flow](#encryption-flow)
 - [Security Properties](#security-properties)
@@ -72,7 +73,7 @@ Output:     32 bytes → SymmetricKey (AES-256)
 
 The XOR salt binds the derived key to the specific key pair involved, ensuring that the same ECDH secret used with a different identity pair produces a different session key.
 
-### Message & File Encryption
+### Message Encryption
 
 All content encryption uses **AES-256-GCM**:
 
@@ -80,10 +81,11 @@ All content encryption uses **AES-256-GCM**:
 Algorithm:  AES-GCM
 Key size:   256 bits (derived via HKDF above)
 Nonce:      96-bit random nonce (AES.GCM.Nonce(), generated per message)
+AAD:        version || sortedKeys(JSON(SecrecyContext))
 Output:     combined = nonce || ciphertext || tag  (CryptoKit combined format)
 ```
 
-The combined format includes the authentication tag, providing integrity and authenticity guarantees in addition to confidentiality.
+The combined format includes the authentication tag, providing integrity and authenticity guarantees in addition to confidentiality. The AAD binds the session key to the specific key-exchange parameters — tampering with any field causes decryption to fail.
 
 ### Local Database Encryption
 
@@ -129,6 +131,68 @@ Encryption:      AES-256-GCM
 ```
 
 > **⚠️ Security note:** The current backup key derivation uses a single SHA-256 hash of the passphrase. This is fast to compute, which makes it easier to brute-force weak passphrases. A future version will replace this with PBKDF2 or Argon2id to increase the cost of offline attacks. When using the backup feature today, use a strong passphrase (minimum 5 random Diceware words recommended).
+
+---
+
+## Forward Secrecy
+
+Occulta implements **per-message forward secrecy** via the v3fs protocol. Once established, compromise of a device's long-term Secure Enclave key does not expose any past messages.
+
+### How it works
+
+Each contact maintains a pool of **prekeys** — single-use P-256 key pairs generated inside the Secure Enclave. The sender pops the oldest prekey public key from their local store, generates a throwaway ephemeral key pair in memory, and derives the session key via:
+
+```
+sessionKey = HKDF(ECDH(ephemeralPriv, contactPrekeyPub))
+```
+
+The ephemeral private key is discarded immediately after ECDH. The prekey private key is deleted from the Secure Enclave on the recipient's side as soon as the message is successfully decrypted. Past session keys cannot be reconstructed from any material that persists.
+
+### How it is established
+
+No bootstrap step is required. Forward secrecy is established through the natural message exchange:
+
+```
+Alice → Bob:  fallback bundle (long-term keys)
+              Bob detects fallback → generates Alice's prekeys → stores as pending batch
+
+Bob → Alice:  fallback bundle + Alice's prekey batch (encrypted inside payload)
+              Alice detects fallback → generates Bob's prekeys → stores as pending batch
+              Alice stores Bob's prekey batch
+
+Alice → Bob:  FS bundle using Bob's prekey + Alice's prekey batch (encrypted inside payload)
+              Bob stores Alice's prekeys → uses one to reply
+
+Bob → Alice:  FS bundle using Alice's prekey
+              Alice detects FS receipt → pending batch confirmed → both directions now FS
+```
+
+After the initial exchange, both directions are forward secret. This costs four messages and requires no out-of-band coordination.
+
+### Prekey delivery guarantee
+
+New prekeys are sent inside the **encrypted payload** — never in the visible metadata. An observer cannot see how many prekeys were sent, what they are, or that a prekey exchange occurred at all.
+
+A batch of prekeys is attached to every outbound message until the recipient proves they received it by sending back a forward-secret message using one of those prekeys. That consumed prekey is the cryptographic receipt — no server acknowledgement is needed.
+
+### Wire format
+
+Every bundle carries:
+
+```
+SecrecyContext (visible, authenticated in AAD):
+  mode              — forwardSecret | longTermFallback
+  ephemeralPublicKey — throwaway sender key, 65 bytes (empty for fallback)
+  prekeyID          — UUID of the consumed prekey (nil for fallback)
+
+SealedPayload (encrypted, inside ciphertext):
+  message           — plaintext bytes
+  prekeyBatch?      — sender's fresh prekeys, or nil
+    generatedAt     — timestamp for stale-batch guard
+    prekeys         — id + publicKey only, no contact identifiers
+```
+
+No contact identifiers travel on the wire. The sender's internal identifier for the recipient is used only to construct Secure Enclave tags on the sender's device — it never leaves it.
 
 ---
 
@@ -181,16 +245,23 @@ Alice                                              Bob
 Once you have a contact's verified public key, you can encrypt any data for them:
 
 ```
-1. Retrieve contact's stored public key (decrypted from SwiftData)
-2. createSharedSecret(using: contactPublicKey)
-      └─ ECDH(ourSecureEnclaveKey, contactPublicKey)
-      └─ HKDF<SHA256>(ikm, salt=XOR(keys), info="Occulta-v1-...")
-3. AES-GCM.seal(plaintext, using: sessionKey, nonce: .random)
-4. Output: combined bytes (nonce || ciphertext || tag)
-5. Share the combined bytes via any channel (AirDrop, email, etc.)
+First message (long-term fallback):
+  1. Retrieve contact's stored public key (decrypted from SwiftData)
+  2. ECDH(ourSecureEnclaveKey, contactPublicKey) → HKDF → sessionKey
+  3. Encode SealedPayload { message, prekeyBatch: nil }
+  4. AES-GCM.seal(SealedPayload, using: sessionKey, authenticating: AAD)
+  5. Contact detects fallback → generates our prekeys → sends them back
+
+Subsequent messages (forward secret):
+  1. Pop oldest prekey from contact's stored batch
+  2. generateEphemeralKeyPair() → throwaway key, never persisted
+  3. ECDH(ephemeralPriv, contactPrekey.publicKey) → HKDF → sessionKey
+  4. Encode SealedPayload { message, prekeyBatch: pendingBatch or nil }
+  5. AES-GCM.seal(SealedPayload, using: sessionKey, authenticating: AAD)
+  6. Ephemeral private key discarded; recipient deletes prekey from SE on decrypt
 ```
 
-Decryption by the recipient mirrors this exactly — they derive the same shared key using their Secure Enclave private key and your stored public key, then AES-GCM.open() the combined blob.
+Decryption mirrors this: the recipient reconstructs the session key using their Secure Enclave prekey private key and the sender's ephemeral public key, verifies the GCM tag, decodes the payload, and deletes the prekey. The session key never existed in persistent storage on either side.
 
 ---
 
@@ -204,11 +275,14 @@ Decryption by the recipient mirrors this exactly — they derive the same shared
 | Session key derivation | ✅ HKDF-SHA256 | Proper KDF with domain separation |
 | Content encryption | ✅ AES-256-GCM | Authenticated encryption |
 | Nonce reuse | ✅ Random per message | Each seal call generates a fresh nonce |
+| Bundle integrity | ✅ AAD covers version + key-exchange fields | Tampering causes GCM failure |
+| Prekey batch integrity | ✅ Encrypted inside ciphertext | Batch invisible and unauthenticated to observers |
+| Forward secrecy | ✅ Per-message, v3fs | Ephemeral + single-use prekeys; SE deletion on decrypt |
+| Metadata leakage | ✅ No contact identifiers on wire | WirePrekey carries id + publicKey only |
 | MITM during exchange | ✅ Diceware verification + peer ID guard | Human-verifiable |
 | Proximity spoofing | ✅ UWB hardware enforcement | ≤ 0.25m threshold |
 | Server-side exposure | ✅ None | No backend exists |
 | Backup passphrase KDF | ⚠️ SHA-256 (single round) | Should be PBKDF2/Argon2id |
-| Forward secrecy | ⚠️ Not provided | Long-term keys used directly |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
 
 ---
@@ -222,6 +296,8 @@ Decryption by the recipient mirrors this exactly — they derive the same shared
 - A network attacker intercepting your encrypted files in transit
 - Someone finding an encrypted file on your device or in email
 - A remote attacker with no physical access substituting keys
+- A passive observer correlating messages to relationships via wire metadata
+- Compromise of long-term keys exposing past messages (forward secrecy)
 
 **Occulta does not protect against:**
 
@@ -229,7 +305,7 @@ Decryption by the recipient mirrors this exactly — they derive the same shared
 - Compromise of the device itself (unlocked phone, jailbreak, MDM)
 - Loss of your iPhone — contact keys are device-local with no automatic backup
 - Weak passphrases used with the contact export feature
-- Metadata — Occulta encrypts *content*, not the fact that you communicate with someone
+- Future message confidentiality after device compromise — forward secrecy protects past messages, not future ones
 
 ---
 
@@ -238,22 +314,29 @@ Decryption by the recipient mirrors this exactly — they derive the same shared
 ```
 Occulta/
 ├── Manager/
-│   ├── Crypto+Manager.swift     # AES-GCM encrypt/decrypt (local + transport)
-│   ├── Key+Manager.swift        # Secure Enclave ops, ECDH, HKDF key derivation
-│   ├── Exchange+Manager.swift   # MultipeerConnectivity + NearbyInteraction orchestration
-│   └── Contact+Manager.swift    # SwiftData CRUD operations
+│   ├── Crypto+Manager.swift          # AES-GCM encrypt/decrypt (local + transport)
+│   ├── Crypto+ForwardSecrecy.swift   # seal(), open(), session key derivation
+│   ├── Key+Manager.swift             # SE identity key, ECDH, HKDF
+│   ├── Key+Manager+Ephemeral.swift   # Ephemeral key pair generation
+│   ├── Prekey+Manager.swift          # SE prekey lifecycle (generate, retrieve, consume)
+│   ├── Exchange+Manager.swift        # MultipeerConnectivity + NearbyInteraction
+│   └── Contact+Manager.swift         # SwiftData CRUD, encryptBundle, decrypt
 │
 ├── Models/
-│   ├── Contact+Model.swift      # SwiftData schema (Profile, Key, PhoneNumber, …)
-│   └── ExchangeResult.swift     # Post-exchange UI + Diceware verification view
+│   ├── Contact+Model.swift           # SwiftData schema (Profile, Key, PhoneNumber, …)
+│   ├── Contact+Model+Prekeys.swift   # ForwardSecrecy operations on Contact.Profile
+│   ├── ForwardSecrecy.swift          # Encrypted prekey state struct
+│   ├── OccultaBundle.swift           # Wire format, SealedPayload, SecrecyContext
+│   ├── Prekey.swift                  # Internal prekey type (SE tag construction)
+│   └── ExchangeResult.swift          # Post-exchange UI + Diceware verification
 │
 └── Views/
-    └── KeyExchange.swift        # Exchange UI, proximity session, duplicate detection
+    └── KeyExchange.swift             # Exchange UI, proximity session, duplicate detection
 ```
 
 **Dependencies:** All cryptographic operations use Apple-native frameworks only — `CryptoKit`, `Security.framework`, `NearbyInteraction`, and `MultipeerConnectivity`. There are no third-party cryptographic dependencies.
 
-**Data persistence:** SwiftData with encrypted fields. Sensitive strings (names, notes) and key material are encrypted with AES-GCM before storage, using a local key derived from the Secure Enclave identity key.
+**Data persistence:** SwiftData with encrypted fields. Sensitive strings (names, notes) and key material are encrypted with AES-GCM before storage. The `ForwardSecrecy` struct — containing inbound prekeys and pending batch state — is encrypted as a single blob, ensuring prekey state is always read and written atomically.
 
 ---
 
@@ -288,6 +371,7 @@ Occulta is open source under the Apache 2.0 license. Contributions are welcome, 
 - **QR code fallback** for key exchange on devices without UWB
 - **Key recovery / backup** that preserves the no-server guarantee
 - **Android client** using Android Keystore + Nearby Connections API
+- **Post-quantum upgrade** — HPKE with ML-KEM (iOS 26 / CryptoKit)
 - **Formal security review** of the HKDF salt construction and MITM guard logic
 
 Please open an issue before submitting a pull request for significant changes.

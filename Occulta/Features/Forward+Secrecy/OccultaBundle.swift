@@ -1,0 +1,273 @@
+//
+//  OccultaBundle.swift
+//  Occulta
+//
+//  Created by Yura on 3/14/26.
+//
+
+import Foundation
+import CryptoKit
+
+// MARK: - Bundle
+ 
+/// A single-recipient encrypted bundle.
+///
+/// ## Wire layout
+/// ```
+/// OccultaBundle {
+///     version           : Version        // typed version — included in AAD
+///     secrecy           : SecrecyContext  // minimal key-exchange fields — AAD
+///     ciphertext        : Data            // AES-GCM(SealedPayload) — see below
+///     fingerprintNonce  : Data            // 16 random bytes — pre-decryption routing
+///     senderFingerprint : Data            // SHA-256(senderPub || nonce) — routing
+/// }
+///
+/// SealedPayload (encrypted, inside ciphertext) {
+///     message     : Data               // plaintext message bytes
+///     prekeyBatch : PrekeySyncBatch?   // sender's new prekeys, or nil
+/// }
+/// ```
+///
+/// ## Why the batch lives in the ciphertext, not in SecrecyContext
+///
+/// `PrekeySyncBatch` used to sit in `SecrecyContext` (AAD — authenticated but visible).
+/// Every observer could read the batch: prekey public keys, their count, and every
+/// `Prekey.contactID` — the sender's internal identifier for the recipient. That
+/// identifier is stable and non-rotating, leaking the relationship graph to any passive
+/// interceptor even with no ability to decrypt the message.
+///
+/// Moving the batch into `SealedPayload` encrypts it with the same session key and GCM
+/// tag as the message itself. Zero additional nonces, zero additional operations,
+/// zero size cost beyond the batch JSON. An observer now sees only:
+///   - `mode` (forwardSecret or longTermFallback)
+///   - `ephemeralPublicKey` (65 bytes, required for ECDH, inherently visible)
+///   - `prekeyID` (needed to look up our SE private key before decryption)
+///
+/// `prekeySequence` has been removed. It was written into `SecrecyContext` but never
+/// read during decryption — the sequence is already embedded in the stored `Prekey`
+/// blob retrieved via `prekeyID`. Removing it reduces AAD size and eliminates one
+/// metadata field visible to observers.
+///
+/// ## Tamper protection
+/// `computeAdditionalAuthentication()` = `version.rawValue || sortedKeys(SecrecyContext)`.
+/// Any modification to `version`, `mode`, `ephemeralPublicKey`, or `prekeyID`
+/// causes `AES.GCM.open` to throw.
+///
+/// ## Pre-decryption routing
+/// `fingerprintNonce` and `senderFingerprint` are not in the AAD and not encrypted.
+/// They must be readable before any key is derived. Tampering with them makes the
+/// bundle undeliverable — no contact's fingerprint will match — but cannot expose
+/// plaintext or inject bad prekeys.
+struct OccultaBundle: Codable {
+
+    // MARK: - Errors
+
+    enum BundleError: Error {
+        /// `SecRandomCopyBytes` failed to produce entropy.
+        /// Encryption must not proceed with a zero or predictable nonce.
+        case entropyUnavailable
+    }
+
+    // MARK: - Version
+
+    static let currentVersion: Version = .v3fs
+
+    enum Version: String, Codable {
+        /// Long-term SE key. No forward secrecy. Legacy only.
+        case v1
+        /// Ephemeral key path. Never shipped.
+        case v2
+        /// Per-contact consumed prekey batches. `SecrecyContext` + version authenticated as AAD.
+        case v3fs
+    }
+
+    // MARK: - Mode
+     
+    enum Mode: String, Codable {
+        /// Full forward secrecy.
+        /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
+        /// Recipient's prekey private key deleted from SE on successful open.
+        case forwardSecret
+ 
+        /// Prekey exhaustion fallback.
+        /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub)).
+        /// Bundle always carries a fresh PrekeySyncBatch (inside ciphertext)
+        /// so the next message can use the forward secret path.
+        case longTermFallback
+    }
+
+    // MARK: - WirePrekey
+     
+    /// The wire representation of a prekey — public key only, no `contactID`.
+    ///
+    /// `Prekey` (the internal type) carries `contactID` so we can reconstruct
+    /// the SE tag `"prekey.<contactID>.<sequence>.<id>"` when decrypting.
+    /// That identifier is the sender's internal reference to the recipient and
+    /// must never travel on the wire — it would leak the relationship graph to
+    /// any passive observer.
+    ///
+    /// The recipient reconstructs the full `Prekey` by filling in their own
+    /// local identifier as `contactID` when storing the batch.
+    nonisolated
+    struct WirePrekey: Codable, Equatable {
+        /// Unique identifier for this prekey within its batch.
+        let id:        String
+        /// x963 uncompressed P-256 public key (65 bytes).
+        let publicKey: Data
+    }
+    
+    // MARK: - SealedPayload
+     
+    /// The plaintext structure sealed inside `ciphertext`.
+    ///
+    /// Both `message` and `prekeyBatch` are encrypted and authenticated together
+    /// by a single AES-GCM operation. No additional nonces or operations needed.
+    ///
+    /// Keeping the batch here rather than in `SecrecyContext` (AAD) means:
+    /// - Prekey public keys are never visible to a passive observer.
+    /// - `WirePrekey.contactID` (stripped at the type level) cannot leak.
+    /// - Batch size gives no metadata beyond total bundle size.
+    nonisolated
+    struct SealedPayload: Codable {
+        /// The message plaintext.
+        let message: Data
+        /// The sender's fresh prekeys for the recipient to store, or nil.
+        /// Non-nil on the fallback path (always), and on the FS path when
+        /// the sender's SE stock for this contact is below the replenishment threshold.
+        let prekeyBatch: PrekeySyncBatch?
+     
+        /// A versioned batch of the sender's prekey public keys.
+        ///
+        /// Encrypted inside `SealedPayload.ciphertext` — never visible to observers.
+        nonisolated
+        struct PrekeySyncBatch: Codable {
+            let generatedAt: Date
+            /// Wire representation of the prekey public keys in this batch.
+            let prekeys: [WirePrekey]
+        }
+    }
+
+    // MARK: - SecrecyContext
+
+    /// Key-exchange fields, authenticated as AAD.
+    ///
+    /// Every field here is covered by the GCM tag — modification causes `openBundle` to throw.
+    /// The version enum is prepended to the AAD outside this struct (see `computeAdditionalAuthentication()`).
+    struct SecrecyContext: Codable {
+        /// Which key derivation path was used.
+        let mode: Mode
+ 
+        /// Sender's ephemeral public key in x963 format (65 bytes).
+        /// `.forwardSecret`: throwaway key for this message only.
+        /// `.longTermFallback`: sender's long-term identity public key.
+        let ephemeralPublicKey: Data
+ 
+        /// UUID of the recipient's prekey used to derive the session key.
+        /// Non-nil only when `mode == .forwardSecret`.
+        /// The recipient looks this up in their `ownPrekeys` store to reconstruct
+        /// the SE tag and retrieve the corresponding private key.
+        let prekeyID: String?
+
+        // MARK: Fingerprint helpers
+
+        /// SHA-256(publicKey || nonce) — 32 bytes.
+        static func fingerprint(for publicKey: Data, nonce: Data) -> Data {
+            var input = publicKey
+            input.append(nonce)
+            
+            return Data(SHA256.hash(data: input))
+        }
+
+        /// 16 cryptographically random bytes.
+        ///
+        /// - Throws: `BundleError.entropyUnavailable` if `SecRandomCopyBytes` fails.
+        ///   Callers must not fall back to a hardcoded nonce — a static nonce
+        ///   makes `senderFingerprint` identical across all bundles from the same sender.
+        static func generateNonce() throws -> Data {
+            try self._generateNonce { bytes, count in
+                SecRandomCopyBytes(kSecRandomDefault, count, bytes)
+            }
+        }
+
+        /// Testable entry point — production code delegates here via `generateNonce()`.
+        /// Inject a failing provider to verify `entropyUnavailable` is thrown.
+        internal static func _generateNonce(provider: (UnsafeMutablePointer<UInt8>, Int) -> Int32) throws -> Data {
+            var bytes = [UInt8](repeating: 0, count: 16)
+            
+            guard provider(&bytes, 16) == errSecSuccess else {
+                throw BundleError.entropyUnavailable
+            }
+            
+            return Data(bytes)
+        }
+    }
+
+    // MARK: - Fields
+     
+    /// Protocol version. Included in AAD — tampering causes `open` to throw.
+    let version: Version
+ 
+    /// Minimal key-exchange fields. Authenticated as AAD — not encrypted.
+    /// An observer can read `mode`, `ephemeralPublicKey`, and `prekeyID` only.
+    let secrecy: SecrecyContext
+ 
+    /// AES-GCM combined payload: nonce(12B) || JSON(SealedPayload) || tag(16B).
+    /// The GCM tag covers both this ciphertext and `computeAdditionalAuthentication()`.
+    /// `SealedPayload` contains the message AND any `PrekeySyncBatch`.
+    let ciphertext: Data
+ 
+    /// 16 random bytes, unique per bundle. Pre-decryption routing — not in AAD.
+    let fingerprintNonce: Data
+ 
+    /// SHA-256(senderLongTermPublicKey || fingerprintNonce). Routing — not in AAD.
+    let senderFingerprint: Data
+
+    // MARK: - Serialisation
+
+    func encoded() throws -> Data {
+        try JSONEncoder().encode(self)
+    }
+
+    static func decoded(from data: Data) throws -> OccultaBundle {
+        try JSONDecoder().decode(OccultaBundle.self, from: data)
+    }
+
+    // MARK: - AAD
+
+    /// Full Additional Authenticated Data: `version.rawValue bytes || sortedKeys(SecrecyContext)`.
+    ///
+    /// Including `version` closes the version-badge spoofing attack (Finding 2):
+    /// an attacker cannot flip `version` from `.v3fs` to `.v1` without causing
+    /// `AES.GCM.open` to throw.
+    ///
+    /// `.sortedKeys` is mandatory — without it, two `JSONEncoder` instances can produce
+    /// different key orderings for the same struct, causing spurious `authenticationFailure`.
+    static func computeAdditionalAuthentication(version: OccultaBundle.Version, secrecy: SecrecyContext) throws -> Data {
+        let version = version.rawValue.data(using: .utf8)!
+        let secrecy = try Self.encoder.encode(secrecy)
+        let together = version + secrecy
+        
+        return together
+    }
+    /// Encoder for computing additional authentication data.
+    /// Using `.sortedKeys` to make results deterministic.
+    static private let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = .sortedKeys
+        
+        return e
+    }()
+
+    // MARK: - UI helpers
+
+    var isForwardSecret: Bool { self.secrecy.mode == .forwardSecret }
+
+    var securityLabel: String {
+        switch secrecy.mode {
+        case .forwardSecret:    
+            return "Forward Secret"
+        case .longTermFallback: 
+            return "Standard Encryption"
+        }
+    }
+}
