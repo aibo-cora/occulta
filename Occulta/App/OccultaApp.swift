@@ -82,7 +82,7 @@ struct OccultaApp: App {
     var body: some Scene {
         WindowGroup {
             if self.hasCompleted == false {
-                ForeverOnboardingView()
+                OnboardingView()
             } else {
                 TabView {
                     Contacts()
