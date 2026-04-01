@@ -74,7 +74,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				"Services/Key+Manager+LocalDB.swift",
 			);
 			target = DEFFD8542E9D293500CA60F9 /* Occulta */;
 		};
@@ -86,16 +85,6 @@
 			target = DEC7D75B2EEF1B9000764947 /* OccultaPreview */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
-/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
-		DE1D9BBF2F7D452000115AEE /* Exceptions for "Occulta" folder in "Copy Bundle Resources" phase from "Occulta" target */ = {
-			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
-			buildPhase = DEFFD8532E9D293500CA60F9 /* Resources */;
-			membershipExceptions = (
-				"Services/Key+Manager+LocalDB.swift",
-			);
-		};
-/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DEC7D7602EEF1B9000764947 /* OccultaPreview */ = {
@@ -110,7 +99,6 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				DE8B24C72EEEBB4300B83B51 /* Exceptions for "Occulta" folder in "Occulta" target */,
-				DE1D9BBF2F7D452000115AEE /* Exceptions for "Occulta" folder in "Copy Bundle Resources" phase from "Occulta" target */,
 			);
 			path = Occulta;
 			sourceTree = "<group>";

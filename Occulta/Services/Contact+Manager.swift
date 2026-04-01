@@ -295,6 +295,7 @@ class ContactManager {
             existing.namePrefix = encryptedNamePrefix
             existing.nameSuffix = encryptedNameSuffix
             existing.note = encryptedNote
+            existing.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
             
             debugPrint("Updated existing contact")
         } else {
@@ -316,7 +317,8 @@ class ContactManager {
                 phoneNumbers: encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) },
                 emailAddresses: encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) },
                 postalAddresses: encryptedPostalAddresses,
-                urlAddresses: encryptedURLs
+                urlAddresses: encryptedURLs,
+                encryptionScheme: EncryptionScheme.v2_hybridPQ.rawValue
             )
             
             self.modelContext.insert(newContact)
@@ -729,7 +731,6 @@ extension ContactManager {
             emailAddresses: emailAddresses ?? [],
             postalAddresses: postalAddresses ?? [],
             urlAddresses: urlAddresses ?? [],
-            importedAt: storedContact.importedAt,
             contactPublicKeys: plaintextPublicKeys ?? []
         )
     }

@@ -40,6 +40,28 @@ struct OccultaApp: App {
         
         self.sharedModelContainer = sharedModelContainer
         self.contactManager = ContactManager(modelContainer: sharedModelContainer)
+        
+        self.migrate()
+    }
+    
+    /// Run migration before any UI accesses contacts.
+    ///
+    /// Migrate our local database encryption scheme to a PQ resistant variant.
+    private func migrate() {
+        let context = ModelContext(self.sharedModelContainer)
+        let legacyCrypto = LegacyCryptoManager()
+        let newCrypto = Manager.Crypto()
+
+        do {
+            try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+        } catch {
+            // Migration failure is not recoverable — the DB is in a known state
+            // because migration saves per-record. Log and continue; un-migrated
+            // records will be retried on next launch.
+            #if DEBUG
+            debugPrint("Migration error: \(error)")
+            #endif
+        }
     }
     
     enum Tabs: String, Hashable {
