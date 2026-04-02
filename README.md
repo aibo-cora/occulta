@@ -12,6 +12,7 @@ Once exchanged, encrypt any file, photo, video, or document for anyone in your c
 
 - [How It Works](#how-it-works)
 - [Cryptographic Protocol](#cryptographic-protocol)
+- [Post-Quantum Protection](#post-quantum-protection)
 - [Forward Secrecy](#forward-secrecy)
 - [Key Exchange Flow](#key-exchange-flow)
 - [Encryption Flow](#encryption-flow)
@@ -22,16 +23,6 @@ Once exchanged, encrypt any file, photo, video, or document for anyone in your c
 - [Building](#building)
 - [Contributing](#contributing)
 - [License](#license)
-
----
-
-## How It Works
-
-Occulta is an **offline-first, serverless cryptographic contact book** for iOS. The core insight is that the hardest problem in end-to-end encryption is not *encryption itself* — it is *key distribution*: how do you know that the public key you hold actually belongs to the person you think it does?
-
-Most systems solve this by trusting a server (Signal, iMessage) or a web-of-trust (PGP). Occulta uses physical proximity. If you are standing next to someone and your devices measure the distance between you at ≤ 25 centimeters, you are almost certainly talking to the right person.
-
-That proximity event — measured by Apple's UWB (Ultra-Wideband) chip — is what gates the key exchange. No server ever sees your keys. No phone number is required. The trust is physical.
 
 ---
 
@@ -54,26 +45,47 @@ The public key is exported in **X9.63 uncompressed point format** (65 bytes: `0x
 
 ### Shared Secret Derivation
 
-When two parties exchange public keys, a shared symmetric key is derived using a two-step process:
+When two parties exchange public keys, the shared symmetric key derivation depends on whether the exchange included post-quantum key material.
 
-**Step 1 — ECDH:**
+**Classical path** (v1 contacts or iOS < 26):
+
 ```
-algorithm:  SecKeyAlgorithm.ecdhKeyExchangeCofactorX963SHA256
-output:     32-byte raw shared secret
+Step 1 — ECDH:
+  algorithm:  ecdhKeyExchangeCofactorX963SHA256
+  output:     32-byte raw shared secret
+
+Step 2 — HKDF:
+  KDF:        HKDF<SHA256>
+  IKM:        raw ECDH shared secret (32 bytes)
+  Salt:       XOR(peerPublicKey_bytes, ourPublicKey_bytes)  [65 bytes each]
+  Info:       "Occulta-v1-transport-2025" (UTF-8)
+  Output:     32 bytes → SymmetricKey (AES-256)
 ```
 
-**Step 2 — HKDF:**
+**Hybrid post-quantum path** (contacts exchanged on iOS 26+ with ML-KEM-1024):
+
 ```
-KDF:        HKDF<SHA256>
-IKM:        raw ECDH shared secret (32 bytes)
-Salt:       XOR(peerPublicKey_bytes, ourPublicKey_bytes)  [65 bytes each]
-Info:       "Occulta-v1-encryption-key-2025" (UTF-8)
-Output:     32 bytes → SymmetricKey (AES-256)
+Step 1 — ECDH:
+  algorithm:  ecdhKeyExchangeCofactorX963SHA256
+  output:     32-byte raw ECDH shared secret
+
+Step 2 — ML-KEM shared secrets:
+  Two independent 32-byte shared secrets from mutual encapsulation (Option A).
+  Sorted lexicographically so both sides produce identical input.
+
+Step 3 — HKDF:
+  KDF:        HKDF<SHA256>
+  IKM:        ECDH_secret || sorted(ML-KEM_secret_1, ML-KEM_secret_2)  [96 bytes]
+  Salt:       XOR(peerPublicKey_bytes, ourPublicKey_bytes)  [65 bytes each]
+  Info:       "Occulta-v2-hybrid-pq-transport-2026" (UTF-8)
+  Output:     32 bytes → SymmetricKey (AES-256)
 ```
 
-The XOR salt binds the derived key to the specific key pair involved, ensuring that the same ECDH secret used with a different identity pair produces a different session key.
+The hybrid construction is secure if *either* algorithm remains unbroken. If ML-KEM is found to have a flaw, P-256 ECDH still provides classical security. If a quantum computer breaks P-256, ML-KEM-1024 still provides NIST Level 5 quantum resistance.
 
-### Message Encryption
+Both paths coexist in the codebase. The contact record determines which path is used — contacts with `QuantumKeyMaterial` use the hybrid path, contacts without it use the classical path. There is no guessing or fallback chain.
+
+### Message & File Encryption
 
 All content encryption uses **AES-256-GCM**:
 
@@ -85,7 +97,7 @@ AAD:        version || sortedKeys(JSON(SecrecyContext))
 Output:     combined = nonce || ciphertext || tag  (CryptoKit combined format)
 ```
 
-The combined format includes the authentication tag, providing integrity and authenticity guarantees in addition to confidentiality. The AAD binds the session key to the specific key-exchange parameters — tampering with any field causes decryption to fail.
+AES-256-GCM is quantum-resistant — Grover's algorithm reduces effective key strength to 128-bit equivalent, which remains computationally infeasible.
 
 ### Local Database Encryption
 
@@ -111,94 +123,69 @@ Output:     hex-encoded signature string
 
 ### Verification Words (Diceware)
 
-After a key exchange completes, both parties see a set of human-readable **Diceware words** derived deterministically from the shared key material. Both parties must read these words aloud and confirm they match before the key is stored.
+After a key exchange completes, both parties see a set of human-readable **Diceware words** derived from the shared key material. Both parties must read these words aloud and confirm they match before the key is stored.
+
+For hybrid PQ exchanges, the Diceware derivation includes both exchange nonces (16 bytes each, committed in the discovery message before proximity is confirmed) so that verification words are unique on every exchange session, even between the same key pairs. This prevents complacency from recognizing "familiar" words on a re-exchange.
 
 ```
-Input:   shared key bytes (from HKDF output)
-Output:  N words from Diceware word list, separated by "-"
-Purpose: Out-of-band confirmation that no key substitution occurred mid-exchange
+Classical:  HKDF(ECDH_secret, info: "Occulta-v1-transport-2025")
+Hybrid PQ:  HKDF(ECDH_secret || ML-KEM_secrets, info: "Occulta-v2-diceware-2026" || sorted(nonce_A, nonce_B))
 ```
-
-If an attacker had substituted keys during the exchange (a MITM attack), the Diceware words derived by each party would differ. This provides human-verifiable authenticity.
-
-### Contact Export / Backup
-
-Contacts can be exported as an encrypted blob using a user-supplied passphrase:
-
-```
-Key derivation:  SHA-256(passphrase_utf8)   ⚠️  see security note below
-Encryption:      AES-256-GCM
-```
-
-> **⚠️ Security note:** The current backup key derivation uses a single SHA-256 hash of the passphrase. This is fast to compute, which makes it easier to brute-force weak passphrases. A future version will replace this with PBKDF2 or Argon2id to increase the cost of offline attacks. When using the backup feature today, use a strong passphrase (minimum 5 random Diceware words recommended).
 
 ---
 
-## Forward Secrecy
+## Post-Quantum Protection
 
-Occulta implements **per-message forward secrecy** via the v3fs protocol. Once established, compromise of a device's long-term Secure Enclave key does not expose any past messages.
+### The Threat
 
-### How it works
+Occulta's classical key agreement uses ECDH P-256. Shor's algorithm on a sufficiently powerful quantum computer can derive a P-256 private key from its public key in polynomial time. An adversary who records public keys exchanged today could decrypt all associated messages years from now when quantum computers become capable. This is the "harvest now, decrypt later" attack.
 
-Each contact maintains a pool of **prekeys** — single-use P-256 key pairs generated inside the Secure Enclave. The sender pops the oldest prekey public key from their local store, generates a throwaway ephemeral key pair in memory, and derives the session key via:
+### The Defense: Hybrid ECDH + ML-KEM-1024
 
-```
-sessionKey = HKDF(ECDH(ephemeralPriv, contactPrekeyPub))
-```
+On devices running iOS 26 or later, Occulta performs a hybrid key agreement during the in-person exchange that combines classical ECDH P-256 with **ML-KEM-1024** (NIST FIPS 203, Security Level 5). ML-KEM is a lattice-based Key Encapsulation Mechanism with no known quantum speedup.
 
-The ephemeral private key is discarded immediately after ECDH. The prekey private key is deleted from the Secure Enclave on the recipient's side as soon as the message is successfully decrypted. Past session keys cannot be reconstructed from any material that persists.
+The ML-KEM-1024 private key is generated inside the **Secure Enclave** via `SecureEnclave.MLKEM1024.PrivateKey`. The private key never exists in app memory — all decapsulation operations are performed by the SE chip internally. This matches the hardware isolation of the P-256 identity key.
 
-### How it is established
+### Mutual Encapsulation (Option A)
 
-No bootstrap step is required. Forward secrecy is established through the natural message exchange:
+Both devices generate an ephemeral ML-KEM-1024 key pair during the exchange. Both sides encapsulate against the other's public key, producing two independent shared secrets. Both sides send their ciphertext to the peer, who decapsulates to recover the same shared secret.
 
 ```
-Alice → Bob:  fallback bundle (long-term keys)
-              Bob detects fallback → generates Alice's prekeys → stores as pending batch
-
-Bob → Alice:  fallback bundle + Alice's prekey batch (encrypted inside payload)
-              Alice detects fallback → generates Bob's prekeys → stores as pending batch
-              Alice stores Bob's prekey batch
-
-Alice → Bob:  FS bundle using Bob's prekey + Alice's prekey batch (encrypted inside payload)
-              Bob stores Alice's prekeys → uses one to reply
-
-Bob → Alice:  FS bundle using Alice's prekey
-              Alice detects FS receipt → pending batch confirmed → both directions now FS
+Alice → Bob:  ML-KEM public key (1,568 bytes)
+Bob → Alice:  ML-KEM public key (1,568 bytes)
+Alice → Bob:  ML-KEM ciphertext (1,568 bytes)  — Bob decapsulates → secret_AB
+Bob → Alice:  ML-KEM ciphertext (1,568 bytes)  — Alice decapsulates → secret_BA
 ```
 
-After the initial exchange, both directions are forward secret. This costs four messages and requires no out-of-band coordination.
+Both sides now hold `secret_AB` and `secret_BA`. These are sorted lexicographically and concatenated with the ECDH shared secret before a single HKDF pass. Neither side has a privileged role — the protocol is fully symmetric.
 
-### Prekey delivery guarantee
+### Storage
 
-New prekeys are sent inside the **encrypted payload** — never in the visible metadata. An observer cannot see how many prekeys were sent, what they are, or that a prekey exchange occurred at all.
+All ML-KEM artifacts from the exchange — both shared secrets and both ciphertexts — are grouped in a single `QuantumKeyMaterial` struct, encrypted as one AES-GCM blob, and stored on the contact record. This follows the same pattern as the `ForwardSecrecy` struct: decrypt once when needed, read fields, discard plaintext.
 
-A batch of prekeys is attached to every outbound message until the recipient proves they received it by sending back a forward-secret message using one of those prekeys. That consumed prekey is the cryptographic receipt — no server acknowledgement is needed.
+### Transitive Protection of Forward-Secret Messages
 
-### Wire format
+Prekey public keys are never exposed in the clear. They travel exclusively inside AES-GCM-encrypted `SealedPayload` blobs. The chain of protection traces from the identity-level hybrid key agreement through every subsequent message:
 
-Every bundle carries:
+1. The first fallback bundles (carrying the initial prekey batches) are encrypted with the hybrid ECDH + ML-KEM session key.
+2. Each forward-secret message is encrypted with a session key derived from a prekey that was delivered inside a hybrid-protected payload.
+3. New prekey batches ride inside forward-secret messages, themselves protected by prekeys from the previous generation.
 
-```
-SecrecyContext (visible, authenticated in AAD):
-  mode              — forwardSecret | longTermFallback
-  ephemeralPublicKey — throwaway sender key, 65 bytes (empty for fallback)
-  prekeyID          — UUID of the consumed prekey (nil for fallback)
+A quantum attacker cannot extract any prekey public key without first breaking the encryption of the bundle that carried it. Since the root of the chain is quantum-resistant, every link in the chain is transitively protected.
 
-SealedPayload (encrypted, inside ciphertext):
-  message           — plaintext bytes
-  prekeyBatch?      — sender's fresh prekeys, or nil
-    generatedAt     — timestamp for stale-batch guard
-    prekeys         — id + publicKey only, no contact identifiers
-```
+### Backward Compatibility
 
-No contact identifiers travel on the wire. The sender's internal identifier for the recipient is used only to construct Secure Enclave tags on the sender's device — it never leaves it.
+PQ capability is negotiated implicitly via optional fields in the exchange message — not via a version bump. A v1 peer's JSON decoder silently ignores the `encapsulationKey`, `nonce`, and `ciphertext` fields it doesn't recognize. The exchange completes as classical, and messages are encrypted with the classical derivation path.
+
+On iOS < 26, the PQ provider is nil. The device sends its identity without an ML-KEM public key and falls back to classical on receive. No crash, no error, no degraded UX — just classical security.
+
+Contacts exchanged before the PQ upgrade retain their classical-only key material. They can re-exchange in person to establish hybrid PQ protection.
 
 ---
 
 ## Key Exchange Flow
 
-The exchange uses two Apple frameworks in concert: **MultipeerConnectivity (MC)** for peer discovery and data transport, and **NearbyInteraction (NI)** for proximity measurement.
+The exchange uses two Apple frameworks in concert: **MultipeerConnectivity (MC)** for peer discovery and data transport, and **NearbyInteraction (NI)** for proximity measurement. On iOS 26+, a third phase adds ML-KEM-1024 mutual encapsulation for post-quantum protection.
 
 ```
 Alice                                              Bob
@@ -211,32 +198,40 @@ Alice                                              Bob
   |                                                  |
   |  [MC session connected]                          |
   |                                                  |
-  |── Exchange{NIDiscoveryToken} ───────────────────>|
-  |<─ Exchange{NIDiscoveryToken} ───────────────────|
+  |  PHASE 1 — Discovery                            |
+  |── Exchange{token, nonce} ───────────────────────>|
+  |<─ Exchange{token, nonce} ───────────────────────|
   |                                                  |
   |  [NISession.run(peerToken)]                      |
   |                                                  |
   |  [NINearbyObject.distance ≤ 0.25m] ←── UWB ──> |
   |                                                  |
-  |── Exchange{NIDiscoveryToken + PublicKey(x963)} ->|
-  |<─ Exchange{NIDiscoveryToken + PublicKey(x963)} --|
+  |  PHASE 2 — Identity + ML-KEM public keys        |
+  |── Exchange{P-256 pub + ML-KEM pub} ────────────>|
+  |<─ Exchange{P-256 pub + ML-KEM pub} ────────────|
   |                                                  |
-  |  [MITM guard: verify sender == peer who          |
-  |   received our identity]                         |
+  |  [MITM guard: verify sender == proximate peer]   |
   |                                                  |
-  |  [Derive shared key → generate Diceware words]   |
+  |  PHASE 3 — ML-KEM ciphertexts                   |
+  |── Exchange{ML-KEM ciphertext} ─────────────────>|
+  |<─ Exchange{ML-KEM ciphertext} ─────────────────|
   |                                                  |
+  |  [Each side decapsulates → two shared secrets]   |
+  |                                                  |
+  |  [Derive hybrid key → Diceware words]            |
   |  [User confirms words match out-of-band]         |
-  |                                                  |
-  |  [Store encrypted public key in SwiftData]       |
+  |  [Store P-256 key + QuantumKeyMaterial]           |
 ```
 
 **Key points:**
 
-- The public key is only transmitted **after** NI confirms distance ≤ 25 cm. An attacker in the same room but not directly adjacent cannot trigger the exchange.
+- The exchange nonce is committed in Phase 1, before proximity is confirmed, preventing a MITM from choosing nonces after seeing identity keys.
+- The P-256 and ML-KEM public keys are only transmitted **after** NI confirms distance ≤ 25 cm.
 - Each device uses a **random UUID** as its MC peer display name, preventing fingerprinting across sessions.
-- A MITM guard checks that the inbound identity packet came from the **same MC peer ID** that received our own identity packet. Mismatches are flagged.
-- The NISession is invalidated immediately after the public key is transmitted, limiting the exposure window.
+- A MITM guard checks that the inbound identity packet came from the **same MC peer ID** confirmed by UWB proximity. The peer ID is set the moment NI confirms proximity, before key generation begins.
+- Phase 3 is skipped entirely when exchanging with a v1 peer (no ML-KEM public key received).
+- The ML-KEM-1024 private key lives in the Secure Enclave for the duration of the exchange and is released after decapsulation.
+- All delegate callbacks (MC and NI) are dispatched to the main queue for thread safety and `@Observable` correctness.
 
 ---
 
@@ -247,7 +242,10 @@ Once you have a contact's verified public key, you can encrypt any data for them
 ```
 First message (long-term fallback):
   1. Retrieve contact's stored public key (decrypted from SwiftData)
-  2. ECDH(ourSecureEnclaveKey, contactPublicKey) → HKDF → sessionKey
+  2. If contact has QuantumKeyMaterial:
+       HKDF(ECDH_secret || ML-KEM_secrets, info: kHybridTransportKeyInfo) → sessionKey
+     Else:
+       HKDF(ECDH_secret, info: kTransportKeyInfo) → sessionKey
   3. Encode SealedPayload { message, prekeyBatch: nil }
   4. AES-GCM.seal(SealedPayload, using: sessionKey, authenticating: AAD)
   5. Contact detects fallback → generates our prekeys → sends them back
@@ -271,17 +269,21 @@ Decryption mirrors this: the recipient reconstructs the session key using their 
 |---|---|---|
 | Private key extraction | ✅ Not possible | Secure Enclave hardware isolation |
 | Private key at rest | ✅ Never persisted in plaintext | Enclave-managed |
-| Key agreement | ✅ ECDH P-256 | Industry standard |
-| Session key derivation | ✅ HKDF-SHA256 | Proper KDF with domain separation |
-| Content encryption | ✅ AES-256-GCM | Authenticated encryption |
+| Key agreement (classical) | ✅ ECDH P-256 | Industry standard |
+| Key agreement (PQ) | ✅ Hybrid ECDH + ML-KEM-1024 | NIST Level 5, SE-backed, iOS 26+ |
+| Session key derivation | ✅ HKDF-SHA256 | Domain-separated info strings per path |
+| Content encryption | ✅ AES-256-GCM | Authenticated encryption, quantum-resistant |
 | Nonce reuse | ✅ Random per message | Each seal call generates a fresh nonce |
 | Bundle integrity | ✅ AAD covers version + key-exchange fields | Tampering causes GCM failure |
-| Prekey batch integrity | ✅ Encrypted inside ciphertext | Batch invisible and unauthenticated to observers |
+| Prekey batch integrity | ✅ Encrypted inside ciphertext | Batch invisible to observers |
+| Prekey quantum resistance | ✅ Transitive | Prekey public keys never travel in the clear; protected by PQ chain |
 | Forward secrecy | ✅ Per-message, v3fs | Ephemeral + single-use prekeys; SE deletion on decrypt |
 | Metadata leakage | ✅ No contact identifiers on wire | WirePrekey carries id + publicKey only |
-| MITM during exchange | ✅ Diceware verification + peer ID guard | Human-verifiable |
+| MITM during exchange | ✅ Diceware verification + peer ID guard | Human-verifiable, nonce-freshened |
 | Proximity spoofing | ✅ UWB hardware enforcement | ≤ 0.25m threshold |
 | Server-side exposure | ✅ None | No backend exists |
+| ML-KEM private key isolation | ✅ Secure Enclave | SecureEnclave.MLKEM1024.PrivateKey, never in app memory |
+| Backward compatibility | ✅ Classical fallback | v1 peers and iOS < 26 exchange classically, no breakage |
 | Backup passphrase KDF | ⚠️ SHA-256 (single round) | Should be PBKDF2/Argon2id |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
 
@@ -298,6 +300,8 @@ Decryption mirrors this: the recipient reconstructs the session key using their 
 - A remote attacker with no physical access substituting keys
 - A passive observer correlating messages to relationships via wire metadata
 - Compromise of long-term keys exposing past messages (forward secrecy)
+- A quantum adversary recording public keys today for future decryption (hybrid PQ key agreement)
+- Harvest-now-decrypt-later attacks against the entire message chain (transitive PQ protection via encrypted prekey delivery)
 
 **Occulta does not protect against:**
 
@@ -306,6 +310,7 @@ Decryption mirrors this: the recipient reconstructs the session key using their 
 - Loss of your iPhone — contact keys are device-local with no automatic backup
 - Weak passphrases used with the contact export feature
 - Future message confidentiality after device compromise — forward secrecy protects past messages, not future ones
+- Contacts exchanged before the PQ upgrade remain classical-only until re-exchanged in person
 
 ---
 
@@ -317,79 +322,30 @@ Occulta/
 │   ├── Crypto+Manager.swift          # AES-GCM encrypt/decrypt (local + transport)
 │   ├── Crypto+ForwardSecrecy.swift   # seal(), open(), session key derivation
 │   ├── Key+Manager.swift             # SE identity key, ECDH, HKDF
+│   ├── Key+Manager+PQ.swift          # Hybrid ECDH + ML-KEM HKDF derivation
 │   ├── Key+Manager+Ephemeral.swift   # Ephemeral key pair generation
 │   ├── Prekey+Manager.swift          # SE prekey lifecycle (generate, retrieve, consume)
-│   ├── Exchange+Manager.swift        # MultipeerConnectivity + NearbyInteraction
+│   ├── Exchange+Manager.swift        # MultipeerConnectivity + NearbyInteraction + PQ exchange
 │   └── Contact+Manager.swift         # SwiftData CRUD, encryptBundle, decrypt
 │
 ├── Models/
 │   ├── Contact+Model.swift           # SwiftData schema (Profile, Key, PhoneNumber, …)
 │   ├── Contact+Model+Prekeys.swift   # ForwardSecrecy operations on Contact.Profile
 │   ├── ForwardSecrecy.swift          # Encrypted prekey state struct
+│   ├── QuantumKeyMaterial.swift       # Encrypted ML-KEM shared secrets + ciphertexts
 │   ├── OccultaBundle.swift           # Wire format, SealedPayload, SecrecyContext
 │   ├── Prekey.swift                  # Internal prekey type (SE tag construction)
 │   └── ExchangeResult.swift          # Post-exchange UI + Diceware verification
+│
+├── Services/
+│   └── PQProvider.swift              # ML-KEM-1024 operations (SE + in-memory), iOS 26 gating
 │
 └── Views/
     └── KeyExchange.swift             # Exchange UI, proximity session, duplicate detection
 ```
 
-**Dependencies:** All cryptographic operations use Apple-native frameworks only — `CryptoKit`, `Security.framework`, `NearbyInteraction`, and `MultipeerConnectivity`. There are no third-party cryptographic dependencies.
+**Dependencies:** All cryptographic operations use Apple-native frameworks only — `CryptoKit`, `Security.framework`, `NearbyInteraction`, and `MultipeerConnectivity`. There are no third-party cryptographic dependencies. Post-quantum operations use `SecureEnclave.MLKEM1024` from CryptoKit (iOS 26+).
 
-**Data persistence:** SwiftData with encrypted fields. Sensitive strings (names, notes) and key material are encrypted with AES-GCM before storage. The `ForwardSecrecy` struct — containing inbound prekeys and pending batch state — is encrypted as a single blob, ensuring prekey state is always read and written atomically.
+**Data persistence:** SwiftData with encrypted fields. Sensitive strings (names, notes) and key material are encrypted with AES-GCM before storage. The `ForwardSecrecy` struct and `QuantumKeyMaterial` struct are each encrypted as single blobs, ensuring cryptographic state is always read and written atomically.
 
----
-
-## Requirements
-
-- **iOS 16.0+**
-- **iPhone 11 or later** (U1/UWB chip required for Nearby Interaction)
-- Xcode 16+
-- No server, no account, no network required after installation
-
----
-
-## Building
-
-```bash
-git clone https://github.com/aibo-cora/occulta.git
-cd occulta
-open Occulta.xcodeproj
-```
-
-Select your target device (NearbyInteraction cannot be fully tested in the simulator — a fixed public key is substituted automatically in simulator builds via `#if targetEnvironment(simulator)`).
-
-Build and run. On first launch, Occulta generates your P-256 identity key pair inside the Secure Enclave. This key is permanent until you explicitly delete it via **Settings → Reset Identity**.
-
----
-
-## Contributing
-
-Occulta is open source under the Apache 2.0 license. Contributions are welcome, particularly in these areas:
-
-- **PBKDF2 / Argon2id** for the contact export passphrase KDF
-- **QR code fallback** for key exchange on devices without UWB
-- **Key recovery / backup** that preserves the no-server guarantee
-- **Android client** using Android Keystore + Nearby Connections API
-- **Post-quantum upgrade** — HPKE with ML-KEM (iOS 26 / CryptoKit)
-- **Formal security review** of the HKDF salt construction and MITM guard logic
-
-Please open an issue before submitting a pull request for significant changes.
-
----
-
-## Privacy Policy
-
-Occulta collects no data. There are no servers. There is no analytics. There is no account. Your keys, contacts, and encrypted files never leave your device unless you explicitly share them.
-
-See [privacy-policy.md](privacy-policy.md) for the full policy.
-
----
-
-## License
-
-Apache License 2.0. See [LICENSE](LICENSE) for details.
-
----
-
-*Built by a privacy and security enthusiast, for the global community.*
+**iOS version support:** Deployment target is iOS 18. Post-quantum protection requires iOS 26+ and is negotiated at exchange time. All ML-KEM availability gating is confined to `PQProvider.swift` — no `#available` checks appear elsewhere in the codebase.
