@@ -349,7 +349,9 @@ extension ExchangeManager: NISessionDelegate {
             guard let peer = self.receivedDiscoveryTokens[token] else { continue }
 
             guard !self.identitySent else { continue }
+            
             self.identitySent = true
+            self.peerReceivingOurIdentity = peer
 
             do {
                 let keyManager = Manager.Key()
@@ -381,7 +383,7 @@ extension ExchangeManager: NISessionDelegate {
                 )
 
                 let encoded = try JSONEncoder().encode(exchange)
-                self.peerReceivingOurIdentity = peer
+                
                 try self.multipeerSession?.send(encoded, toPeers: [peer], with: .reliable)
             } catch {
                 #if DEBUG
