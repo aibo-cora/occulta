@@ -17,6 +17,14 @@ struct SaltInfo {
     /// to ensure the old (identity-derived) and new (hybrid) keys are never equivalent,
     /// even if the same SE key is used during migration.
     static let kLocalDBHybridKeyInfo = "Occulta-v2-local-db-pq-2026".data(using: .utf8)!
+    /// Hybrid transport key: ECDH + ML-KEM combined input keying material.
+    /// Used for long-term fallback encryption between PQ-capable contacts.
+    static let kHybridTransportKeyInfo = "Occulta-v2-hybrid-pq-transport-2026".data(using: .utf8)!
+ 
+    /// Diceware verification key: same hybrid IKM, but with exchange nonces
+    /// appended to the info field for per-session uniqueness.
+    /// The nonces are appended at call time — this is the static prefix only.
+    static let kDicewareKeyInfo = "Occulta-v2-diceware-2026".data(using: .utf8)!
 }
 
 extension Manager {
@@ -502,5 +510,139 @@ extension Manager.Key: KeyManagerProtocol {
         let keychainDeleted = keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound
 
         return seDeleted && keychainDeleted
+    }
+}
+
+extension Manager.Key {
+ 
+    // MARK: - Hybrid shared secret (ECDH + ML-KEM)
+ 
+    /// Derive a hybrid transport key combining ECDH and ML-KEM shared secrets.
+    ///
+    /// Option A — mutual encapsulation: both sides encapsulate and decapsulate,
+    /// producing two independent ML-KEM shared secrets. Both are included in the IKM.
+    ///
+    /// The two ML-KEM secrets are sorted lexicographically before concatenation
+    /// so both sides produce identical IKM regardless of who encapsulated first.
+    ///
+    /// ```
+    /// IKM  = ECDH_secret || sorted(ML-KEM_secret_A, ML-KEM_secret_B)
+    /// Salt = XOR(peerP256Pub, ourP256Pub)
+    /// Info = kHybridTransportKeyInfo
+    /// ```
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    ///
+    /// - Parameters:
+    ///   - peerP256Material: Peer's P-256 public key, x963 format (65 bytes).
+    ///   - quantumMaterial: ML-KEM shared secrets from the exchange.
+    /// - Returns: 256-bit hybrid SymmetricKey, or nil on failure.
+    func createHybridSharedSecret(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial
+    ) -> SymmetricKey? {
+        guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
+        guard quantumMaterial.isValid else { return nil }
+ 
+        let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+            .sorted { $0.lexicographicallyPrecedes($1) }
+ 
+        var ikm = ecdhAndSalt.rawECDH
+        ikm.append(contentsOf: sorted[0])
+        ikm.append(contentsOf: sorted[1])
+ 
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: ecdhAndSalt.salt,
+            info: SaltInfo.kHybridTransportKeyInfo,
+            outputByteCount: 32
+        )
+    }
+ 
+    /// Derive a Diceware verification key from hybrid material with per-session nonces.
+    ///
+    /// Same IKM and salt as `createHybridSharedSecret`, but the HKDF info field
+    /// includes both exchange nonces (sorted) for per-session uniqueness.
+    /// This ensures Diceware words differ on every exchange, even between the same key pairs.
+    ///
+    /// SE operations: one ECDH via SE identity key.
+    func createDicewareKey(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial,
+        ourNonce: Data,
+        peerNonce: Data
+    ) -> SymmetricKey? {
+        guard let ecdhAndSalt = self.ecdhWithSalt(peerP256Material: peerP256Material) else { return nil }
+        guard quantumMaterial.isValid else { return nil }
+        guard ourNonce.count == 16, peerNonce.count == 16 else { return nil }
+ 
+        let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+            .sorted { $0.lexicographicallyPrecedes($1) }
+ 
+        var ikm = ecdhAndSalt.rawECDH
+        ikm.append(contentsOf: sortedSecrets[0])
+        ikm.append(contentsOf: sortedSecrets[1])
+ 
+        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
+        var info = SaltInfo.kDicewareKeyInfo
+        info.append(contentsOf: sortedNonces[0])
+        info.append(contentsOf: sortedNonces[1])
+ 
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: ecdhAndSalt.salt,
+            info: info,
+            outputByteCount: 32
+        )
+    }
+ 
+    // MARK: - 16-byte exchange nonce
+ 
+    /// Generate a 16-byte cryptographic nonce for an exchange session.
+    ///
+    /// Committed in the discovery message before proximity is confirmed,
+    /// preventing a MITM from choosing nonces after seeing identity keys.
+    func generateExchangeNonce() -> Data? {
+        var bytes = [UInt8](repeating: 0, count: 16)
+ 
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            return nil
+        }
+ 
+        return Data(bytes)
+    }
+ 
+    // MARK: - Private
+ 
+    private struct ECDHResult {
+        let rawECDH: Data
+        let salt: Data
+    }
+ 
+    /// Perform ECDH with our SE identity key and compute the XOR salt.
+    ///
+    /// Factored out to avoid duplicating SE access between hybrid transport and Diceware derivation.
+    ///
+    /// SE operations: retrievePrivateKey (read), ECDH (compute).
+    private func ecdhWithSalt(peerP256Material: Data) -> ECDHResult? {
+        guard peerP256Material.count == 65 else { return nil }
+        
+        guard let peerKey = self.convert(material: peerP256Material) else { return nil }
+        guard let ourPriv = try? self.retrievePrivateKey() else { return nil }
+ 
+        var error: Unmanaged<CFError>?
+        guard
+            let rawECDH = SecKeyCopyKeyExchangeResult(
+                ourPriv, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+ 
+        guard let ourPubData = self.convert(key: self.retrivePublicKey(using: ourPriv)) else { return nil }
+ 
+        let salt = Data(zip(peerP256Material, ourPubData).map { $0 ^ $1 })
+ 
+        return ECDHResult(rawECDH: rawECDH, salt: salt)
     }
 }

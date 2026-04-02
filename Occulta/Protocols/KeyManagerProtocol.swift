@@ -20,6 +20,12 @@ protocol KeyManagerProtocol {
     /// Transport path (ephemeral/prekey) — uses `kTransportKeyInfo`.
     func createSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey?
     func generateEphemeralKeyPair() -> (privateKey: SecKey, publicKeyData: Data)?
+    
+    // MARK: - Hybrid PQ (HKDF only — no ML-KEM types)
+     
+    func createHybridSharedSecret(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
+    func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
+    func generateExchangeNonce() -> Data?
 }
 
 // MARK: - TestKeyManager
@@ -37,6 +43,9 @@ final class TestKeyManager: KeyManagerProtocol {
 
     /// Simulates the random Keychain component (32 bytes).
     private let randomComponent: Data
+    
+    var privateKey: Data?
+    var publicKeyData: Data?
 
     /// Fixed generator point G for ECDH derivation.
     private let fixedX963 = Data([
@@ -206,5 +215,95 @@ final class TestKeyManager: KeyManagerProtocol {
             info: info,
             outputByteCount: 32
         )
+    }
+}
+
+extension TestKeyManager {
+    func createHybridSharedSecret(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial
+    ) -> SymmetricKey? {
+        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
+        guard quantumMaterial.isValid else { return nil }
+ 
+        let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+            .sorted { $0.lexicographicallyPrecedes($1) }
+        var ikm = ecdh.rawECDH
+        ikm.append(contentsOf: sorted[0])
+        ikm.append(contentsOf: sorted[1])
+ 
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: ecdh.salt,
+            info: SaltInfo.kHybridTransportKeyInfo,
+            outputByteCount: 32
+        )
+    }
+    
+    func createDicewareKey(
+        peerP256Material: Data,
+        quantumMaterial: QuantumKeyMaterial,
+        ourNonce: Data,
+        peerNonce: Data
+    ) -> SymmetricKey? {
+        guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
+        guard quantumMaterial.isValid else { return nil }
+        guard ourNonce.count == 16, peerNonce.count == 16 else { return nil }
+ 
+        let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+            .sorted { $0.lexicographicallyPrecedes($1) }
+        var ikm = ecdh.rawECDH
+        ikm.append(contentsOf: sortedSecrets[0])
+        ikm.append(contentsOf: sortedSecrets[1])
+ 
+        let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
+        var info = SaltInfo.kDicewareKeyInfo
+        info.append(contentsOf: sortedNonces[0])
+        info.append(contentsOf: sortedNonces[1])
+ 
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: ecdh.salt,
+            info: info,
+            outputByteCount: 32
+        )
+    }
+    
+    func generateExchangeNonce() -> Data? {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
+        return Data(bytes)
+    }
+ 
+    // MARK: - Private
+ 
+    /// Raw ECDH + XOR salt without HKDF. Hybrid derivation combines ECDH with
+    /// ML-KEM secrets before a single HKDF pass — running HKDF twice would produce the wrong key.
+    private func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
+        guard peerP256Material.count == 65 else { return nil }
+ 
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+        var err: Unmanaged<CFError>?
+        guard
+            let peerKey = SecKeyCreateWithData(peerP256Material as CFData, attrs as CFDictionary, &err),
+            let privateKeyData = self.privateKey,
+            let privateKey = SecKeyCreateWithData(privateKeyData as CFData, attrs as CFDictionary, nil)
+        else { return nil }
+ 
+        guard
+            let publicKeyData = self.publicKeyData,
+            let rawECDH = SecKeyCopyKeyExchangeResult(
+                privateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary, &err
+            ) as? Data
+        else { return nil }
+ 
+        let salt = Data(zip(peerP256Material, publicKeyData).map { $0 ^ $1 })
+        
+        return (rawECDH, salt)
     }
 }

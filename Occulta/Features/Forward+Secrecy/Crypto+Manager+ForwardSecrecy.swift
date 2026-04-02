@@ -125,7 +125,7 @@ extension Manager.Crypto {
 extension Manager.Crypto {
     private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data) throws -> OccultaBundle {
         guard
-            let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial)
+            let sessionKey = self.deriveSessionKey(using: recipientMaterial)
         else {
             throw EncryptionError.keyDerivationFailed
         }

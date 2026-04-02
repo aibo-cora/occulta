@@ -402,7 +402,15 @@ extension ContactManager {
             throw ContactManager.Errors.identityNotSaved
         }
         
-        contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate))
+        var encryptedQuantumKeyMaterial: Data? = nil
+        
+        if let quantum = key.quantumKeyMaterial {
+            let encodedQuantum = try JSONEncoder().encode(quantum)
+            
+            encryptedQuantumKeyMaterial = try self.cryptoManager.encrypt(data: encodedQuantum)
+        }
+        
+        contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
         
         try self.modelContext.save()
     }

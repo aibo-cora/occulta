@@ -231,6 +231,21 @@ extension Contact.Profile {
         
         var expiredOn: Data?
         
+        // MARK: - Hybrid PQ (SecureEnclave.MLKEM1024)
+         
+        /// Encrypted QuantumKeyMaterial blob.
+        /// Contains both ML-KEM shared secrets and both ciphertexts from the exchange.
+        /// Nil for contacts exchanged before the PQ upgrade (v1 classical exchange).
+        /// Encrypted with the local DB key before storage — same as all other sensitive fields.
+        var quantumKeyMaterialEncrypted: Data?
+
+        init(material: Data? = nil, owner: Data, date: Data, quantumKeyMaterialEncrypted: Data? = nil) {
+            self.material = material
+            self.owner = owner
+            self.acquiredAt = date
+            self.quantumKeyMaterialEncrypted = quantumKeyMaterialEncrypted
+        }
+        
         init(material: Data? = nil, owner: Data, date: Data) {
             self.material = material
             self.owner = owner
