@@ -11,6 +11,7 @@ import Contacts
 import SwiftUI
 import Combine
 import Foundation
+import CryptoKit
 
 @Observable
 class ContactManager {
@@ -526,6 +527,7 @@ extension ContactManager {
         case invalidPrekeySyncBatch
         case unsupportedBundleVersion
         case invalidBundleFormat
+        case quantumKeyMaterialCorrupted
     }
 }
 
@@ -861,9 +863,20 @@ extension ContactManager {
         let sealedPayload = OccultaBundle.SealedPayload(message: data, prekeyBatch: outboundBatch)
         let encodedSealedPayload: Data = try JSONEncoder().encode(sealedPayload)
  
-        // ── 4. ECDH + AES-GCM ────────────────────────────────────────────
-        let bundle = try cryptoOps.seal(message: encodedSealedPayload, contactPrekey: prekey, recipientMaterial: recipientMaterial)
-        // Persist
+        // 4. ECDH + AES-GCM
+        let decryptedQuantum = try? cryptoOps.decrypt(data: keyRecord.quantumKeyMaterialEncrypted)
+        var quantumMaterial: QuantumKeyMaterial? = nil
+        
+        if let decryptedQuantum {
+            quantumMaterial = try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
+            
+            #if DEBUG
+            if quantumMaterial == nil { debugPrint("Quantum key material present but failed to decode — falling back to classical") }
+            #endif
+        }
+        
+        let bundle = try cryptoOps.seal(message: encodedSealedPayload, contactPrekey: prekey, recipientMaterial: recipientMaterial, quantumMaterial: quantumMaterial)
+        // 5. Persist
         try self.modelContext.save()
         
         debugPrint("Encrypt finished for \(identifier), prekey batch pending: \(contact.hasPendingBatch)")
@@ -946,14 +959,32 @@ extension ContactManager {
         case .longTermFallback:
             debugPrint("🔥 longTermFallback detected — forcing fresh pending batch for sender \(sender.identifier)")
             
+            let validKey = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil })
+            
             guard
-                let sendersEncryptedIdentityKey = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: sendersEncryptedIdentityKey.material),
-                let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey)
+                let sendersEncryptedIdentityKey = validKey,
+                let decryptedIdentityKey = try cryptoOps.decrypt(data: sendersEncryptedIdentityKey.material)
             else {
                 debugPrint("Opening message, could not derive session key. Aborting open...")
                 
                 throw Errors.decryptionFailed
+            }
+            
+            let decryptedQuantum = try? cryptoOps.decrypt(data: validKey?.quantumKeyMaterialEncrypted)
+            var quantumMaterial: QuantumKeyMaterial? = nil
+            
+            if let decryptedQuantum {
+                do {
+                    quantumMaterial = try JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
+                } catch {
+                    throw Errors.quantumKeyMaterialCorrupted
+                }
+            }
+            
+            guard
+                let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey, quantumMaterial: quantumMaterial)
+            else {
+                throw Manager.Crypto.EncryptionError.keyDerivationFailed
             }
             
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)

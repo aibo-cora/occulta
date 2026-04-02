@@ -26,7 +26,7 @@ extension Manager.Crypto {
     /// ## SE ordering
     /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
     /// (generateBatch) are done by the caller (ContactManager) before this call.
-    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data) throws -> OccultaBundle {
+    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial?) throws -> OccultaBundle {
         guard
             recipientMaterial.count == 65
         else {
@@ -87,7 +87,7 @@ extension Manager.Crypto {
 
         // ── Long-term fallback path (contactPrekey nil) ──────────────────
         // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(message: message, recipientMaterial: recipientMaterial, ourPublicKey: ourPublicKey, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
+        return try self.fallback(message: message, recipientMaterial: recipientMaterial, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, quantumMaterial: quantumMaterial)
     }
 }
 
@@ -101,8 +101,12 @@ extension Manager.Crypto {
     }
 
     /// Derive a session key using the long-term identity key.
-    func deriveSessionKey(using material: Data) -> SymmetricKey? {
-        self.keyManager.createSharedSecret(using: material)
+    func deriveSessionKey(using material: Data, quantumMaterial: QuantumKeyMaterial?) -> SymmetricKey? {
+        if let quantumMaterial {
+            return self.keyManager.createHybridSharedSecret(peerP256Material: material, quantumMaterial: quantumMaterial)
+        } else {
+            return self.keyManager.createSharedSecret(using: material)
+        }
     }
 }
 
@@ -123,9 +127,9 @@ extension Manager.Crypto {
 // MARK: - Private helpers
 
 extension Manager.Crypto {
-    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data) throws -> OccultaBundle {
+    private func fallback(message: Data, recipientMaterial: Data, fingerprintNonce: Data, senderFingerprint: Data, quantumMaterial: QuantumKeyMaterial?) throws -> OccultaBundle {
         guard
-            let sessionKey = self.deriveSessionKey(using: recipientMaterial)
+            let sessionKey = self.deriveSessionKey(using: recipientMaterial, quantumMaterial: quantumMaterial)
         else {
             throw EncryptionError.keyDerivationFailed
         }
