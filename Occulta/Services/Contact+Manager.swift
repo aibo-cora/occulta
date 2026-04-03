@@ -871,7 +871,12 @@ extension ContactManager {
             quantumMaterial = try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
             
             #if DEBUG
-            if quantumMaterial == nil { debugPrint("Quantum key material present but failed to decode — falling back to classical") }
+            if quantumMaterial == nil {
+                debugPrint("Quantum key material present but failed to decode — falling back to classical")
+            }
+            else {
+                debugPrint("Sealing bundle with a session key derived using quantum material...")
+            }
             #endif
         }
         
@@ -979,6 +984,10 @@ extension ContactManager {
                 } catch {
                     throw Errors.quantumKeyMaterialCorrupted
                 }
+                
+                #if DEBUG
+                debugPrint("Opening bundle using quantum material to derive session key...")
+                #endif
             }
             
             guard
