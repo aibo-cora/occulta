@@ -346,6 +346,8 @@ private struct TrustScreen: View {
                     description: "Apache 2.0. Every line of cryptographic code is public. Don't take our word for it — read it.",
                     accentColor: .purple
                 )
+                
+                TrustRow(icon: "envelope.badge.shield.half.filled.fill", title: "Quantum Protection", description: "ML-KEM1024 algorithm protecting your messages from quantum attacks.", accentColor: .blue)
             }
             .padding(.horizontal, 28)
             .opacity(self.showContent ? 1 : 0)
