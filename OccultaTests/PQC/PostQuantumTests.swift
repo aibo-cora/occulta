@@ -702,4 +702,9 @@ final class ExchangeNonceTests: XCTestCase {
 
         XCTAssertNotEqual(nonce1, nonce2)
     }
+    
+    override func tearDown() {
+        self.keyManager.delete(using: self.keyManager.tag)
+        super.tearDown()
+    }
 }
