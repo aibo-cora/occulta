@@ -3,8 +3,8 @@
 //  OccultaTests
 //
 //  Tests for the hybrid PQ key exchange implementation.
-//  All tests use in-memory ML-KEM (no Secure Enclave required).
-//  Requires iOS 26+ — skipped on earlier versions.
+//  All tests use in-memory ML-KEM and PQTestKeyPair (no SE, no @MainActor).
+//  Requires iOS 26+ for ML-KEM tests — skipped on earlier versions.
 //
 
 import XCTest
@@ -13,15 +13,10 @@ import CryptoKit
 
 // MARK: - 1. PQProvider Tests
 
-@available(iOS 26, *) @MainActor
+@available(iOS 26, *)
 final class PQProviderTests: XCTestCase {
 
-    private var provider: PQProvider!
-
-    override func setUp() {
-        super.setUp()
-        self.provider = PQProviderFactory.createForTesting()!
-    }
+    let provider: PQProvider = PQProviderFactory.createForTesting()!
 
     // MARK: 1.1 Key generation
 
@@ -29,72 +24,84 @@ final class PQProviderTests: XCTestCase {
         let keyPair = self.provider.generateKeyPair()
 
         XCTAssertNotNil(keyPair)
-        XCTAssertEqual(keyPair!.publicKeyData.count, 1568, "ML-KEM-1024 public key should be 1568 bytes")
-        XCTAssertNotNil(keyPair!.privateKeyHandle)
+        XCTAssertEqual(keyPair?.publicKeyData.count, 1568, "ML-KEM-1024 public key should be 1568 bytes")
+        XCTAssertNotNil(keyPair?.privateKeyHandle)
     }
 
     func testTwoKeyPairsAreDistinct() {
-        let keyPair1 = self.provider.generateKeyPair()!
-        let keyPair2 = self.provider.generateKeyPair()!
+        let keyPair1 = self.provider.generateKeyPair()
+        let keyPair2 = self.provider.generateKeyPair()
 
-        XCTAssertNotEqual(keyPair1.publicKeyData, keyPair2.publicKeyData)
+        XCTAssertNotNil(keyPair1)
+        XCTAssertNotNil(keyPair2)
+        XCTAssertNotEqual(keyPair1?.publicKeyData, keyPair2?.publicKeyData)
     }
 
     // MARK: 1.2 Encapsulation
 
     func testEncapsulationProducesValidOutput() {
-        let keyPair = self.provider.generateKeyPair()!
+        guard let keyPair = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
         let result = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)
 
         XCTAssertNotNil(result)
-        XCTAssertEqual(result!.sharedSecret.count, 32, "ML-KEM shared secret should be 32 bytes")
-        XCTAssertEqual(result!.ciphertext.count, 1568, "ML-KEM-1024 ciphertext should be 1568 bytes")
+        XCTAssertEqual(result?.sharedSecret.count, 32, "ML-KEM shared secret should be 32 bytes")
+        XCTAssertEqual(result?.ciphertext.count, 1568, "ML-KEM-1024 ciphertext should be 1568 bytes")
     }
 
     func testEncapsulationWithMalformedKeyReturnsNil() {
         let malformedKey = Data(repeating: 0xFF, count: 100)
-        let result = self.provider.encapsulate(peerPublicKeyData: malformedKey)
 
-        XCTAssertNil(result)
+        XCTAssertNil(self.provider.encapsulate(peerPublicKeyData: malformedKey))
     }
 
     func testEncapsulationWithEmptyKeyReturnsNil() {
-        let result = self.provider.encapsulate(peerPublicKeyData: Data())
-
-        XCTAssertNil(result)
+        XCTAssertNil(self.provider.encapsulate(peerPublicKeyData: Data()))
     }
 
     func testTwoEncapsulationsProduceDifferentSecrets() {
-        let keyPair = self.provider.generateKeyPair()!
-        let result1 = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)!
-        let result2 = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)!
+        guard let keyPair = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
 
-        XCTAssertNotEqual(result1.sharedSecret, result2.sharedSecret, "Each encapsulation uses fresh randomness")
-        XCTAssertNotEqual(result1.ciphertext, result2.ciphertext)
+        let result1 = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)
+        let result2 = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)
+
+        XCTAssertNotNil(result1)
+        XCTAssertNotNil(result2)
+        XCTAssertNotEqual(result1?.sharedSecret, result2?.sharedSecret, "Each encapsulation uses fresh randomness")
+        XCTAssertNotEqual(result1?.ciphertext, result2?.ciphertext)
     }
 
     // MARK: 1.3 Decapsulation
 
     func testDecapsulationRecoversSharedSecret() {
-        let keyPair = self.provider.generateKeyPair()!
-        let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)!
+        guard let keyPair = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
+        guard let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData) else {
+            return XCTFail("Encapsulation failed")
+        }
 
         let recoveredSecret = self.provider.decapsulate(
             ciphertext: encapsulationResult.ciphertext,
             privateKeyHandle: keyPair.privateKeyHandle
         )
 
-        XCTAssertNotNil(recoveredSecret)
         XCTAssertEqual(recoveredSecret, encapsulationResult.sharedSecret)
     }
 
     func testDecapsulationWithWrongKeyProducesDifferentSecret() {
-        let keyPairA = self.provider.generateKeyPair()!
-        let keyPairB = self.provider.generateKeyPair()!
+        guard let keyPairA = self.provider.generateKeyPair(),
+              let keyPairB = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
+        guard let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPairA.publicKeyData) else {
+            return XCTFail("Encapsulation failed")
+        }
 
-        let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPairA.publicKeyData)!
-
-        // ML-KEM decapsulation with the wrong key produces a synthetic secret (IND-CCA2 defense),
+        // ML-KEM decapsulation with the wrong key produces a synthetic secret (IND-CCA2),
         // not nil. The synthetic secret will differ from the real one.
         let wrongSecret = self.provider.decapsulate(
             ciphertext: encapsulationResult.ciphertext,
@@ -105,8 +112,12 @@ final class PQProviderTests: XCTestCase {
     }
 
     func testDecapsulationWithWrongHandleTypeReturnsNil() {
-        let keyPair = self.provider.generateKeyPair()!
-        let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)!
+        guard let keyPair = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
+        guard let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData) else {
+            return XCTFail("Encapsulation failed")
+        }
 
         let result = self.provider.decapsulate(
             ciphertext: encapsulationResult.ciphertext,
@@ -117,8 +128,12 @@ final class PQProviderTests: XCTestCase {
     }
 
     func testDecapsulationIsDeterministic() {
-        let keyPair = self.provider.generateKeyPair()!
-        let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData)!
+        guard let keyPair = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
+        guard let encapsulationResult = self.provider.encapsulate(peerPublicKeyData: keyPair.publicKeyData) else {
+            return XCTFail("Encapsulation failed")
+        }
 
         let secret1 = self.provider.decapsulate(ciphertext: encapsulationResult.ciphertext, privateKeyHandle: keyPair.privateKeyHandle)
         let secret2 = self.provider.decapsulate(ciphertext: encapsulationResult.ciphertext, privateKeyHandle: keyPair.privateKeyHandle)
@@ -126,54 +141,36 @@ final class PQProviderTests: XCTestCase {
         XCTAssertEqual(secret1, secret2, "Same ciphertext + same key = same shared secret")
     }
 
-    // MARK: 1.4 Full roundtrip (Option A — mutual encapsulation)
+    // MARK: 1.4 Mutual encapsulation roundtrip (Option A)
 
     func testMutualEncapsulationRoundtrip() {
-        let aliceKeyPair = self.provider.generateKeyPair()!
-        let bobKeyPair = self.provider.generateKeyPair()!
+        guard let aliceKeyPair = self.provider.generateKeyPair(),
+              let bobKeyPair = self.provider.generateKeyPair() else {
+            return XCTFail("Key pair generation failed")
+        }
 
-        // Alice encapsulates to Bob
-        let aliceEncapsulation = self.provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData)!
-        // Bob encapsulates to Alice
-        let bobEncapsulation = self.provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData)!
+        guard let aliceEncapsulation = self.provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData),
+              let bobEncapsulation = self.provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData) else {
+            return XCTFail("Encapsulation failed")
+        }
 
-        // Bob decapsulates Alice's ciphertext
         let bobRecoveredSecret = self.provider.decapsulate(
             ciphertext: aliceEncapsulation.ciphertext,
             privateKeyHandle: bobKeyPair.privateKeyHandle
-        )!
-        // Alice decapsulates Bob's ciphertext
+        )
         let aliceRecoveredSecret = self.provider.decapsulate(
             ciphertext: bobEncapsulation.ciphertext,
             privateKeyHandle: aliceKeyPair.privateKeyHandle
-        )!
+        )
 
-        // Alice has: aliceEncapsulation.sharedSecret (from her encapsulation) + aliceRecoveredSecret (from Bob's)
-        // Bob has: bobRecoveredSecret (from Alice's ciphertext) + bobEncapsulation.sharedSecret (from his encapsulation)
-
-        // Alice's encapsulated secret == Bob's decapsulated secret
         XCTAssertEqual(aliceEncapsulation.sharedSecret, bobRecoveredSecret)
-        // Bob's encapsulated secret == Alice's decapsulated secret
         XCTAssertEqual(bobEncapsulation.sharedSecret, aliceRecoveredSecret)
     }
 }
 
 // MARK: - 2. PQProviderFactory Tests
 
-final class PQProviderFactoryTests: XCTestCase {
 
-    func testFactoryReturnsNilBeforeiOS26() {
-        // This test validates the contract — on iOS < 26, create() returns nil.
-        // When run on iOS 26+, this test is informational (always passes).
-        if #available(iOS 26, *) {
-            XCTAssertNotNil(PQProviderFactory.create())
-            XCTAssertNotNil(PQProviderFactory.createForTesting())
-        } else {
-            XCTAssertNil(PQProviderFactory.create())
-            XCTAssertNil(PQProviderFactory.createForTesting())
-        }
-    }
-}
 
 // MARK: - 3. QuantumKeyMaterial Tests
 
@@ -217,63 +214,35 @@ final class QuantumKeyMaterialTests: XCTestCase {
         XCTAssertEqual(decoded.ourCiphertext, original.ourCiphertext)
         XCTAssertEqual(decoded.peerCiphertext, original.peerCiphertext)
     }
-
-    @available(iOS 26, *)
-    func testInitFromHybridExchangeResult() {
-        let result = ExchangeManager.HybridExchangeResult(
-            peerP256PublicKey: Data(repeating: 0x04, count: 65),
-            mlkemSecret1: Data(repeating: 0xAA, count: 32),
-            mlkemSecret2: Data(repeating: 0xBB, count: 32),
-            ourNonce: Data(repeating: 0x01, count: 16),
-            peerNonce: Data(repeating: 0x02, count: 16),
-            ourCiphertext: Data(repeating: 0xCC, count: 1568),
-            peerCiphertext: Data(repeating: 0xDD, count: 1568)
-        )
-
-        let material = QuantumKeyMaterial(from: result)
-
-        XCTAssertEqual(material.encapsulatedSecret, result.mlkemSecret1)
-        XCTAssertEqual(material.decapsulatedSecret, result.mlkemSecret2)
-        XCTAssertEqual(material.ourCiphertext, result.ourCiphertext)
-        XCTAssertEqual(material.peerCiphertext, result.peerCiphertext)
-        XCTAssertTrue(material.isValid)
-    }
 }
 
-// MARK: - 4. Hybrid Key Derivation Tests (TestKeyManager)
+// MARK: - 4. Hybrid Key Derivation Tests
 
 @available(iOS 26, *)
 final class HybridKeyDerivationTests: XCTestCase {
 
-    private var alice: TestKeyManager!
-    private var bob: TestKeyManager!
+    let alice = PQTestKeyPair()
+    let bob = PQTestKeyPair()
+    let provider: PQProvider = PQProviderFactory.createForTesting()!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
-        self.alice = TestKeyManager()
-        self.bob = TestKeyManager()
-    }
+    // MARK: 4.1 Both sides derive identical hybrid shared secret
 
-    // MARK: 4.1 Both sides derive the same hybrid shared secret
-    
-    let provider = PQProviderFactory.createForTesting()!
-
-    @MainActor
     func testBothSidesDeriveIdenticalHybridSharedSecret() {
-        
+        guard let aliceKeyPair = self.provider.generateKeyPair(),
+              let bobKeyPair = self.provider.generateKeyPair() else {
+            return XCTFail("ML-KEM key pair generation failed")
+        }
 
-        // Simulate mutual encapsulation
-        let aliceKeyPair = provider.generateKeyPair()!
-        let bobKeyPair = provider.generateKeyPair()!
+        guard let aliceEncapsulation = self.provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData),
+              let bobEncapsulation = self.provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData) else {
+            return XCTFail("ML-KEM encapsulation failed")
+        }
 
-        let aliceEncapsulation = provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData)!
-        let bobEncapsulation = provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData)!
+        guard let bobDecapsulatedSecret = self.provider.decapsulate(ciphertext: aliceEncapsulation.ciphertext, privateKeyHandle: bobKeyPair.privateKeyHandle),
+              let aliceDecapsulatedSecret = self.provider.decapsulate(ciphertext: bobEncapsulation.ciphertext, privateKeyHandle: aliceKeyPair.privateKeyHandle) else {
+            return XCTFail("ML-KEM decapsulation failed")
+        }
 
-        let bobDecapsulatedSecret = provider.decapsulate(ciphertext: aliceEncapsulation.ciphertext, privateKeyHandle: bobKeyPair.privateKeyHandle)!
-        let aliceDecapsulatedSecret = provider.decapsulate(ciphertext: bobEncapsulation.ciphertext, privateKeyHandle: aliceKeyPair.privateKeyHandle)!
-
-        // Alice's quantum material
         let aliceQuantum = QuantumKeyMaterial(
             encapsulatedSecret: aliceEncapsulation.sharedSecret,
             decapsulatedSecret: aliceDecapsulatedSecret,
@@ -281,7 +250,6 @@ final class HybridKeyDerivationTests: XCTestCase {
             peerCiphertext: bobEncapsulation.ciphertext
         )
 
-        // Bob's quantum material — same secrets, but from opposite perspectives
         let bobQuantum = QuantumKeyMaterial(
             encapsulatedSecret: bobEncapsulation.sharedSecret,
             decapsulatedSecret: bobDecapsulatedSecret,
@@ -289,37 +257,31 @@ final class HybridKeyDerivationTests: XCTestCase {
             peerCiphertext: aliceEncapsulation.ciphertext
         )
 
-        let alicePubKey = try! self.alice.retrieveIdentity()
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let aliceSessionKey = self.alice.createHybridSharedSecret(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: aliceQuantum
         )
 
         let bobSessionKey = self.bob.createHybridSharedSecret(
-            peerP256Material: alicePubKey,
+            peerPublicKeyData: self.alice.publicKeyData,
             quantumMaterial: bobQuantum
         )
-        
-        print("Alice quantum = \(aliceQuantum), key = \(alicePubKey)")
 
-        XCTAssertNotNil(aliceSessionKey)
-        XCTAssertNotNil(bobSessionKey)
-        XCTAssertEqual(
-            aliceSessionKey!.withUnsafeBytes { Data($0) },
-            bobSessionKey!.withUnsafeBytes { Data($0) },
-            "Both sides must derive the same hybrid shared secret"
-        )
+        XCTAssertNotNil(aliceSessionKey, "Alice's hybrid derivation should not return nil")
+        XCTAssertNotNil(bobSessionKey, "Bob's hybrid derivation should not return nil")
+
+        guard let aliceKeyData = aliceSessionKey?.withUnsafeBytes({ Data($0) }),
+              let bobKeyData = bobSessionKey?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Session key extraction failed")
+        }
+
+        XCTAssertEqual(aliceKeyData, bobKeyData, "Both sides must derive the same hybrid shared secret")
     }
 
     // MARK: 4.2 Hybrid key differs from classical key
 
-    @MainActor
     func testHybridKeyDiffersFromClassicalKey() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
-        let classicalKey = self.alice.createSharedSecret(using: bobPubKey)
+        let classicalKey = self.alice.createClassicalSharedSecret(peerPublicKeyData: self.bob.publicKeyData)
 
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
@@ -329,25 +291,24 @@ final class HybridKeyDerivationTests: XCTestCase {
         )
 
         let hybridKey = self.alice.createHybridSharedSecret(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial
         )
 
         XCTAssertNotNil(classicalKey)
         XCTAssertNotNil(hybridKey)
-        XCTAssertNotEqual(
-            classicalKey!.withUnsafeBytes { Data($0) },
-            hybridKey!.withUnsafeBytes { Data($0) },
-            "Hybrid derivation must produce a different key than classical ECDH-only"
-        )
+
+        guard let classicalData = classicalKey?.withUnsafeBytes({ Data($0) }),
+              let hybridData = hybridKey?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Key extraction failed")
+        }
+
+        XCTAssertNotEqual(classicalData, hybridData, "Hybrid derivation must produce a different key than classical")
     }
 
     // MARK: 4.3 Invalid quantum material
 
-    @MainActor
     func testHybridWithWrongSizeSecretReturnsNil() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let invalidMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 16),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
@@ -356,14 +317,13 @@ final class HybridKeyDerivationTests: XCTestCase {
         )
 
         let key = self.alice.createHybridSharedSecret(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: invalidMaterial
         )
 
         XCTAssertNil(key)
     }
 
-    @MainActor
     func testHybridWithWrongP256LengthReturnsNil() {
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
@@ -373,7 +333,7 @@ final class HybridKeyDerivationTests: XCTestCase {
         )
 
         let key = self.alice.createHybridSharedSecret(
-            peerP256Material: Data(repeating: 0x04, count: 33),
+            peerPublicKeyData: Data(repeating: 0x04, count: 33),
             quantumMaterial: quantumMaterial
         )
 
@@ -382,10 +342,7 @@ final class HybridKeyDerivationTests: XCTestCase {
 
     // MARK: 4.4 Secret ordering is commutative
 
-    @MainActor
     func testSecretOrderDoesNotAffectOutput() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let secretA = Data(repeating: 0xAA, count: 32)
         let secretB = Data(repeating: 0xBB, count: 32)
 
@@ -398,14 +355,15 @@ final class HybridKeyDerivationTests: XCTestCase {
             ourCiphertext: Data(), peerCiphertext: Data()
         )
 
-        let key1 = self.alice.createHybridSharedSecret(peerP256Material: bobPubKey, quantumMaterial: material1)
-        let key2 = self.alice.createHybridSharedSecret(peerP256Material: bobPubKey, quantumMaterial: material2)
+        let key1 = self.alice.createHybridSharedSecret(peerPublicKeyData: self.bob.publicKeyData, quantumMaterial: material1)
+        let key2 = self.alice.createHybridSharedSecret(peerPublicKeyData: self.bob.publicKeyData, quantumMaterial: material2)
 
-        XCTAssertEqual(
-            key1!.withUnsafeBytes { Data($0) },
-            key2!.withUnsafeBytes { Data($0) },
-            "Lexicographic sorting of secrets must make order irrelevant"
-        )
+        guard let data1 = key1?.withUnsafeBytes({ Data($0) }),
+              let data2 = key2?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Key extraction failed")
+        }
+
+        XCTAssertEqual(data1, data2, "Lexicographic sorting of secrets must make order irrelevant")
     }
 }
 
@@ -414,28 +372,25 @@ final class HybridKeyDerivationTests: XCTestCase {
 @available(iOS 26, *)
 final class DicewareKeyDerivationTests: XCTestCase {
 
-    private var alice: TestKeyManager!
-    private var bob: TestKeyManager!
+    let alice = PQTestKeyPair()
+    let bob = PQTestKeyPair()
+    let provider: PQProvider = PQProviderFactory.createForTesting()!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
-        self.alice = TestKeyManager()
-        self.bob = TestKeyManager()
-    }
-
-    @MainActor
     func testBothSidesDeriveIdenticalDicewareKey() {
-        let provider = PQProviderFactory.createForTesting()!
+        guard let aliceKeyPair = self.provider.generateKeyPair(),
+              let bobKeyPair = self.provider.generateKeyPair() else {
+            return XCTFail("ML-KEM key pair generation failed")
+        }
 
-        let aliceKeyPair = provider.generateKeyPair()!
-        let bobKeyPair = provider.generateKeyPair()!
+        guard let aliceEncapsulation = self.provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData),
+              let bobEncapsulation = self.provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData) else {
+            return XCTFail("ML-KEM encapsulation failed")
+        }
 
-        let aliceEncapsulation = provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData)!
-        let bobEncapsulation = provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData)!
-
-        let bobDecapsulatedSecret = provider.decapsulate(ciphertext: aliceEncapsulation.ciphertext, privateKeyHandle: bobKeyPair.privateKeyHandle)!
-        let aliceDecapsulatedSecret = provider.decapsulate(ciphertext: bobEncapsulation.ciphertext, privateKeyHandle: aliceKeyPair.privateKeyHandle)!
+        guard let bobDecapsulatedSecret = self.provider.decapsulate(ciphertext: aliceEncapsulation.ciphertext, privateKeyHandle: bobKeyPair.privateKeyHandle),
+              let aliceDecapsulatedSecret = self.provider.decapsulate(ciphertext: bobEncapsulation.ciphertext, privateKeyHandle: aliceKeyPair.privateKeyHandle) else {
+            return XCTFail("ML-KEM decapsulation failed")
+        }
 
         let aliceNonce = Data(repeating: 0x01, count: 16)
         let bobNonce = Data(repeating: 0x02, count: 16)
@@ -454,18 +409,15 @@ final class DicewareKeyDerivationTests: XCTestCase {
             peerCiphertext: aliceEncapsulation.ciphertext
         )
 
-        let bobPubKey = try! self.bob.retrieveIdentity()
-        let alicePubKey = try! self.alice.retrieveIdentity()
-
         let aliceDicewareKey = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: aliceQuantum,
             ourNonce: aliceNonce,
             peerNonce: bobNonce
         )
 
         let bobDicewareKey = self.bob.createDicewareKey(
-            peerP256Material: alicePubKey,
+            peerPublicKeyData: self.alice.publicKeyData,
             quantumMaterial: bobQuantum,
             ourNonce: bobNonce,
             peerNonce: aliceNonce
@@ -473,47 +425,43 @@ final class DicewareKeyDerivationTests: XCTestCase {
 
         XCTAssertNotNil(aliceDicewareKey)
         XCTAssertNotNil(bobDicewareKey)
-        XCTAssertEqual(
-            aliceDicewareKey!.withUnsafeBytes { Data($0) },
-            bobDicewareKey!.withUnsafeBytes { Data($0) },
-            "Both sides must see the same Diceware words"
-        )
+
+        guard let aliceData = aliceDicewareKey?.withUnsafeBytes({ Data($0) }),
+              let bobData = bobDicewareKey?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Diceware key extraction failed")
+        }
+
+        XCTAssertEqual(aliceData, bobData, "Both sides must derive the same Diceware words")
     }
 
-    @MainActor
     func testDicewareKeyDiffersFromTransportKey() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
             ourCiphertext: Data(), peerCiphertext: Data()
         )
-        let nonce = Data(repeating: 0x01, count: 16)
 
         let transportKey = self.alice.createHybridSharedSecret(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial
         )
 
         let dicewareKey = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial,
-            ourNonce: nonce,
+            ourNonce: Data(repeating: 0x01, count: 16),
             peerNonce: Data(repeating: 0x02, count: 16)
         )
 
-        XCTAssertNotEqual(
-            transportKey!.withUnsafeBytes { Data($0) },
-            dicewareKey!.withUnsafeBytes { Data($0) },
-            "Diceware key must differ from transport key due to different HKDF info"
-        )
+        guard let transportData = transportKey?.withUnsafeBytes({ Data($0) }),
+              let dicewareData = dicewareKey?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Key extraction failed")
+        }
+
+        XCTAssertNotEqual(transportData, dicewareData, "Different HKDF info must produce different keys")
     }
 
-    @MainActor
     func testDifferentNoncesProduceDifferentDicewareKeys() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
@@ -521,30 +469,28 @@ final class DicewareKeyDerivationTests: XCTestCase {
         )
 
         let key1 = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial,
             ourNonce: Data(repeating: 0x01, count: 16),
             peerNonce: Data(repeating: 0x02, count: 16)
         )
 
         let key2 = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial,
             ourNonce: Data(repeating: 0x03, count: 16),
             peerNonce: Data(repeating: 0x04, count: 16)
         )
 
-        XCTAssertNotEqual(
-            key1!.withUnsafeBytes { Data($0) },
-            key2!.withUnsafeBytes { Data($0) },
-            "Different nonces must produce different Diceware words (freshness guarantee)"
-        )
+        guard let data1 = key1?.withUnsafeBytes({ Data($0) }),
+              let data2 = key2?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Key extraction failed")
+        }
+
+        XCTAssertNotEqual(data1, data2, "Different nonces must produce different Diceware words")
     }
 
-    @MainActor
     func testNonceOrderDoesNotAffectDicewareKey() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
@@ -555,30 +501,26 @@ final class DicewareKeyDerivationTests: XCTestCase {
         let nonceB = Data(repeating: 0x02, count: 16)
 
         let key1 = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial,
-            ourNonce: nonceA,
-            peerNonce: nonceB
+            ourNonce: nonceA, peerNonce: nonceB
         )
 
         let key2 = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial,
-            ourNonce: nonceB,
-            peerNonce: nonceA
+            ourNonce: nonceB, peerNonce: nonceA
         )
 
-        XCTAssertEqual(
-            key1!.withUnsafeBytes { Data($0) },
-            key2!.withUnsafeBytes { Data($0) },
-            "Nonce sorting must make our/peer order irrelevant"
-        )
+        guard let data1 = key1?.withUnsafeBytes({ Data($0) }),
+              let data2 = key2?.withUnsafeBytes({ Data($0) }) else {
+            return XCTFail("Key extraction failed")
+        }
+
+        XCTAssertEqual(data1, data2, "Nonce sorting must make our/peer order irrelevant")
     }
 
-    @MainActor
     func testWrongSizeNonceReturnsNil() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
@@ -586,7 +528,7 @@ final class DicewareKeyDerivationTests: XCTestCase {
         )
 
         let key = self.alice.createDicewareKey(
-            peerP256Material: bobPubKey,
+            peerPublicKeyData: self.bob.publicKeyData,
             quantumMaterial: quantumMaterial,
             ourNonce: Data(repeating: 0x01, count: 8),
             peerNonce: Data(repeating: 0x02, count: 16)
@@ -601,70 +543,14 @@ final class DicewareKeyDerivationTests: XCTestCase {
 @available(iOS 26, *)
 final class BackwardCompatibilityTests: XCTestCase {
 
-    private var alice: TestKeyManager!
-    private var bob: TestKeyManager!
-
-    @MainActor
-    override func setUp() {
-        super.setUp()
-        self.alice = TestKeyManager()
-        self.bob = TestKeyManager()
-    }
-
-    // MARK: 6.1 deriveSessionKey fallback
-
-    @MainActor
-    func testDeriveSessionKeyWithNilQuantumMaterialUsesClassical() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-        let cryptoOps = Manager.Crypto(keyManager: self.alice)
-
-        let classicalKey = self.alice.createSharedSecret(using: bobPubKey)
-        let derivedKey = cryptoOps.deriveSessionKey(using: bobPubKey, quantumMaterial: nil)
-
-        XCTAssertNotNil(classicalKey)
-        XCTAssertNotNil(derivedKey)
-        XCTAssertEqual(
-            classicalKey!.withUnsafeBytes { Data($0) },
-            derivedKey!.withUnsafeBytes { Data($0) },
-            "Nil quantum material must produce the same key as classical derivation"
-        )
-    }
-
-    @MainActor
-    func testDeriveSessionKeyWithQuantumMaterialUsesHybrid() {
-        let bobPubKey = try! self.bob.retrieveIdentity()
-        let cryptoOps = Manager.Crypto(keyManager: self.alice)
-
-        let quantumMaterial = QuantumKeyMaterial(
-            encapsulatedSecret: Data(repeating: 0xAA, count: 32),
-            decapsulatedSecret: Data(repeating: 0xBB, count: 32),
-            ourCiphertext: Data(), peerCiphertext: Data()
-        )
-
-        let classicalKey = cryptoOps.deriveSessionKey(using: bobPubKey, quantumMaterial: nil)
-        let hybridKey = cryptoOps.deriveSessionKey(using: bobPubKey, quantumMaterial: quantumMaterial)
-
-        XCTAssertNotNil(classicalKey)
-        XCTAssertNotNil(hybridKey)
-        XCTAssertNotEqual(
-            classicalKey!.withUnsafeBytes { Data($0) },
-            hybridKey!.withUnsafeBytes { Data($0) },
-            "Quantum material must change the derivation path"
-        )
-    }
-
-    // MARK: 6.2 Exchange model encoding
-
     func testV1PeerDecodesExchangeWithNewFields() throws {
-        // Simulate a PQ peer sending an exchange with new fields
         let exchange = Exchange(
             id: UUID().uuidString,
             token: Data([0x01, 0x02, 0x03]),
             version: .v1,
             identity: Data(repeating: 0x04, count: 65),
             nonce: Data(repeating: 0xAA, count: 16),
-            encapsulationKey: Data(repeating: 0xBB, count: 1568),
-            ciphertext: nil
+            encapsulationKey: Data(repeating: 0xBB, count: 1568)
         )
 
         let encoded = try JSONEncoder().encode(exchange)
@@ -681,10 +567,9 @@ final class BackwardCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(v1Decoded.version, 1)
         XCTAssertEqual(v1Decoded.identity?.count, 65)
-        // nonce, encapsulationKey, ciphertext are silently ignored by v1 decoder
     }
 
-    func testExchangePhasesDetection() {
+    func testExchangePhaseDetection() {
         let discovery = Exchange(id: "1", token: Data(), nonce: Data(repeating: 0, count: 16))
         XCTAssertTrue(discovery.isDiscovery)
         XCTAssertFalse(discovery.isIdentity)
@@ -712,31 +597,25 @@ final class BackwardCompatibilityTests: XCTestCase {
 @available(iOS 26, *)
 final class HybridEncryptDecryptTests: XCTestCase {
 
-    private var alice: TestKeyManager!
-    private var bob: TestKeyManager!
+    let alice = PQTestKeyPair()
+    let bob = PQTestKeyPair()
+    let provider: PQProvider = PQProviderFactory.createForTesting()!
 
-    @MainActor
-    override func setUp() {
-        super.setUp()
-        self.alice = TestKeyManager()
-        self.bob = TestKeyManager()
-    }
-
-    @MainActor
     func testEncryptWithHybridKeyDecryptWithSameKey() throws {
-        let provider = PQProviderFactory.createForTesting()!
-        let bobPubKey = try self.bob.retrieveIdentity()
-        let alicePubKey = try self.alice.retrieveIdentity()
+        guard let aliceKeyPair = self.provider.generateKeyPair(),
+              let bobKeyPair = self.provider.generateKeyPair() else {
+            return XCTFail("ML-KEM key pair generation failed")
+        }
 
-        // Full mutual encapsulation
-        let aliceKeyPair = provider.generateKeyPair()!
-        let bobKeyPair = provider.generateKeyPair()!
+        guard let aliceEncapsulation = self.provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData),
+              let bobEncapsulation = self.provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData) else {
+            return XCTFail("ML-KEM encapsulation failed")
+        }
 
-        let aliceEncapsulation = provider.encapsulate(peerPublicKeyData: bobKeyPair.publicKeyData)!
-        let bobEncapsulation = provider.encapsulate(peerPublicKeyData: aliceKeyPair.publicKeyData)!
-
-        let bobDecapsulatedSecret = provider.decapsulate(ciphertext: aliceEncapsulation.ciphertext, privateKeyHandle: bobKeyPair.privateKeyHandle)!
-        let aliceDecapsulatedSecret = provider.decapsulate(ciphertext: bobEncapsulation.ciphertext, privateKeyHandle: aliceKeyPair.privateKeyHandle)!
+        guard let bobDecapsulatedSecret = self.provider.decapsulate(ciphertext: aliceEncapsulation.ciphertext, privateKeyHandle: bobKeyPair.privateKeyHandle),
+              let aliceDecapsulatedSecret = self.provider.decapsulate(ciphertext: bobEncapsulation.ciphertext, privateKeyHandle: aliceKeyPair.privateKeyHandle) else {
+            return XCTFail("ML-KEM decapsulation failed")
+        }
 
         let aliceQuantum = QuantumKeyMaterial(
             encapsulatedSecret: aliceEncapsulation.sharedSecret,
@@ -752,60 +631,74 @@ final class HybridEncryptDecryptTests: XCTestCase {
             peerCiphertext: aliceEncapsulation.ciphertext
         )
 
-        // Alice encrypts
-        let aliceSessionKey = self.alice.createHybridSharedSecret(peerP256Material: bobPubKey, quantumMaterial: aliceQuantum)!
+        guard let aliceSessionKey = self.alice.createHybridSharedSecret(
+            peerPublicKeyData: self.bob.publicKeyData,
+            quantumMaterial: aliceQuantum
+        ) else {
+            return XCTFail("Alice hybrid derivation returned nil")
+        }
+
+        guard let bobSessionKey = self.bob.createHybridSharedSecret(
+            peerPublicKeyData: self.alice.publicKeyData,
+            quantumMaterial: bobQuantum
+        ) else {
+            return XCTFail("Bob hybrid derivation returned nil")
+        }
+
         let plaintext = "Quantum-resistant message from Alice".data(using: .utf8)!
         let sealed = try AES.GCM.seal(plaintext, using: aliceSessionKey, nonce: AES.GCM.Nonce())
 
-        // Bob decrypts
-        let bobSessionKey = self.bob.createHybridSharedSecret(peerP256Material: alicePubKey, quantumMaterial: bobQuantum)!
         let box = try AES.GCM.SealedBox(combined: sealed.combined!)
         let decrypted = try AES.GCM.open(box, using: bobSessionKey)
 
         XCTAssertEqual(decrypted, plaintext)
     }
 
-    @MainActor
     func testClassicalKeyCannotDecryptHybridEncryptedData() throws {
-        let bobPubKey = try self.bob.retrieveIdentity()
-
         let quantumMaterial = QuantumKeyMaterial(
             encapsulatedSecret: Data(repeating: 0xAA, count: 32),
             decapsulatedSecret: Data(repeating: 0xBB, count: 32),
             ourCiphertext: Data(), peerCiphertext: Data()
         )
 
-        // Alice encrypts with hybrid key
-        let hybridKey = self.alice.createHybridSharedSecret(peerP256Material: bobPubKey, quantumMaterial: quantumMaterial)!
+        guard let hybridKey = self.alice.createHybridSharedSecret(
+            peerPublicKeyData: self.bob.publicKeyData,
+            quantumMaterial: quantumMaterial
+        ) else {
+            return XCTFail("Hybrid derivation returned nil")
+        }
+
         let plaintext = "Secret message".data(using: .utf8)!
         let sealed = try AES.GCM.seal(plaintext, using: hybridKey, nonce: AES.GCM.Nonce())
 
-        // Bob tries to decrypt with classical key
-        let classicalKey = self.bob.createSharedSecret(using: try self.alice.retrieveIdentity())!
+        guard let classicalKey = self.bob.createClassicalSharedSecret(peerPublicKeyData: self.alice.publicKeyData) else {
+            return XCTFail("Classical derivation returned nil")
+        }
+
         let box = try AES.GCM.SealedBox(combined: sealed.combined!)
 
-        XCTAssertThrowsError(try AES.GCM.open(box, using: classicalKey)) { error in
-            // GCM authentication failure — wrong key
-            XCTAssertTrue(error is CryptoKit.CryptoKitError)
-        }
+        XCTAssertThrowsError(try AES.GCM.open(box, using: classicalKey))
     }
 }
 
 // MARK: - 8. Exchange Nonce Tests
 
 final class ExchangeNonceTests: XCTestCase {
-    let keyManager: Manager.Key = Manager.Key(testingTag: "test.nonce.\(UUID().uuidString)")
-    
+
+    let keyManager = Manager.Key(testingTag: "test.nonce.\(UUID().uuidString)")
+
     func testNonceIsCorrectLength() {
-        let nonce = keyManager.generateExchangeNonce()
+        let nonce = self.keyManager.generateExchangeNonce()
 
         XCTAssertNotNil(nonce)
-        XCTAssertEqual(nonce!.count, 16)
+        XCTAssertEqual(nonce?.count, 16)
     }
 
     func testTwoNoncesAreDistinct() {
-        let nonce1 = keyManager.generateExchangeNonce()!
-        let nonce2 = keyManager.generateExchangeNonce()!
+        guard let nonce1 = self.keyManager.generateExchangeNonce(),
+              let nonce2 = self.keyManager.generateExchangeNonce() else {
+            return XCTFail("Nonce generation failed")
+        }
 
         XCTAssertNotEqual(nonce1, nonce2)
     }

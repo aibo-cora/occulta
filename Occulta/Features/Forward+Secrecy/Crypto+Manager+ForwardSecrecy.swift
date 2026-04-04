@@ -97,7 +97,7 @@ extension Manager.Crypto {
     /// Derive a session key from an ephemeral or prekey private key.
     /// Called by ContactManager. SecKey must be released by caller before consume().
     /// Derive a session key from an ephemeral or prekey private key.
-    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial?) -> SymmetricKey? {
+    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil) -> SymmetricKey? {
         if let quantumMaterial {
             return self.keyManager.createHybridFSSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial, quantumMaterial: quantumMaterial)
         } else {
@@ -106,7 +106,7 @@ extension Manager.Crypto {
     }
 
     /// Derive a session key using the long-term identity key.
-    func deriveSessionKey(using material: Data, quantumMaterial: QuantumKeyMaterial?) -> SymmetricKey? {
+    func deriveSessionKey(using material: Data, quantumMaterial: QuantumKeyMaterial? = nil) -> SymmetricKey? {
         if let quantumMaterial {
             return self.keyManager.createHybridSharedSecret(peerP256Material: material, quantumMaterial: quantumMaterial)
         } else {
