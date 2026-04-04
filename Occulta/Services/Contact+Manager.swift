@@ -927,6 +927,22 @@ extension ContactManager {
         let decryptedSealedPayload: Data?
         
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
+        
+        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        let decryptedQuantum = try? cryptoOps.decrypt(data: validKey?.quantumKeyMaterialEncrypted)
+        var quantumMaterial: QuantumKeyMaterial? = nil
+        
+        if let decryptedQuantum {
+            do {
+                quantumMaterial = try JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
+            } catch {
+                throw Errors.quantumKeyMaterialCorrupted
+            }
+            
+            #if DEBUG
+            debugPrint("Opening bundle using quantum material to derive session key...")
+            #endif
+        }
  
         switch bundle.secrecy.mode {
         case .forwardSecret:
@@ -941,7 +957,7 @@ extension ContactManager {
                 
                 guard
                     let privKey  = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey  = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey)
+                    let sessKey  = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey, quantumMaterial: quantumMaterial)
                 else { return nil }
                 
                 return try cryptoOps.open(bundle, using: sessKey)
@@ -973,21 +989,6 @@ extension ContactManager {
                 debugPrint("Opening message, could not derive session key. Aborting open...")
                 
                 throw Errors.decryptionFailed
-            }
-            
-            let decryptedQuantum = try? cryptoOps.decrypt(data: validKey?.quantumKeyMaterialEncrypted)
-            var quantumMaterial: QuantumKeyMaterial? = nil
-            
-            if let decryptedQuantum {
-                do {
-                    quantumMaterial = try JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
-                } catch {
-                    throw Errors.quantumKeyMaterialCorrupted
-                }
-                
-                #if DEBUG
-                debugPrint("Opening bundle using quantum material to derive session key...")
-                #endif
             }
             
             guard

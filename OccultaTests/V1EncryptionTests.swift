@@ -283,17 +283,18 @@ struct MigrationTests {
         let legacyCrypto = LegacyOnlyCrypto(keyManager: keyManager)
         let newCrypto = Manager.Crypto(keyManager: keyManager)
 
-        var imageData = Data(count: 1024)
-        _ = SecRandomCopyBytes(kSecRandomDefault, imageData.count, &imageData)
+        var imageBuffer: [UInt8] = .init(repeating: 0, count: 1024)
+        
+        _ = SecRandomCopyBytes(kSecRandomDefault, imageBuffer.count, &imageBuffer)
 
         // Step 1: v1 encrypt.
         let v1Key = try #require(try keyManager.createLocalEncryptionKey())
-        let v1Sealed = try AES.GCM.seal(imageData, using: v1Key, nonce: AES.GCM.Nonce())
+        let v1Sealed = try AES.GCM.seal(Data(imageBuffer), using: v1Key, nonce: AES.GCM.Nonce())
 
         // Step 2: Legacy decrypt.
         let decrypted = try #require(try legacyCrypto.decryptLegacy(data: v1Sealed.combined))
 
-        #expect(decrypted == imageData)
+        #expect(decrypted == Data(imageBuffer))
 
         // Step 3: v2 encrypt.
         let v2Encrypted = try #require(try newCrypto.encrypt(data: decrypted))
@@ -301,7 +302,7 @@ struct MigrationTests {
         // Step 4: v2 decrypt.
         let v2Decrypted = try #require(try newCrypto.decrypt(data: v2Encrypted))
 
-        #expect(v2Decrypted == imageData)
+        #expect(v2Decrypted == Data(imageBuffer))
     }
 
     @Test("Previously unencrypted field gets encrypted")
@@ -359,7 +360,7 @@ struct MigrationTests {
 
         // Verify it's valid ForwardSecrecy JSON.
         let decoded = try JSONDecoder().decode(ForwardSecrecy.self, from: decrypted)
-        #expect(decoded.encodedPrekeys == nil)
+        #expect(decoded.encodedPrekeys?.isEmpty == true)
 
         // v2 re-encrypt.
         let v2Encrypted = try #require(try newCrypto.encrypt(data: decrypted))
@@ -368,7 +369,7 @@ struct MigrationTests {
         let v2Decrypted = try #require(try newCrypto.decrypt(data: v2Encrypted))
         let reDecoded = try JSONDecoder().decode(ForwardSecrecy.self, from: v2Decrypted)
 
-        #expect(reDecoded.encodedPrekeys == nil)
+        #expect(reDecoded.encodedPrekeys?.isEmpty == true)
     }
 }
 

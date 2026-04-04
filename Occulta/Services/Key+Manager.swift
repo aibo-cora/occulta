@@ -20,7 +20,9 @@ struct SaltInfo {
     /// Hybrid transport key: ECDH + ML-KEM combined input keying material.
     /// Used for long-term fallback encryption between PQ-capable contacts.
     static let kHybridTransportKeyInfo = "Occulta-v2-hybrid-pq-transport-2026".data(using: .utf8)!
- 
+    /// Hybrid forward-secret transport key: ECDH(ephemeral, prekey) + ML-KEM combined IKM.
+    /// Domain-separated from the fallback hybrid path to prevent key collision.
+    static let kHybridFSTransportKeyInfo = "Occulta-v2-hybrid-pq-fs-transport-2026".data(using: .utf8)!
     /// Diceware verification key: same hybrid IKM, but with exchange nonces
     /// appended to the info field for per-session uniqueness.
     /// The nonces are appended at call time — this is the static prefix only.
@@ -135,6 +137,7 @@ extension Manager {
                 kSecAttrApplicationTag as String: tag.data(using: .utf8)!
             ]
             let status = SecItemDelete(query as CFDictionary)
+            
             return status == errSecSuccess || status == errSecItemNotFound
         }
 
@@ -558,6 +561,66 @@ extension Manager.Key {
             outputByteCount: 32
         )
     }
+    
+    /// Derive a hybrid forward-secret session key combining ephemeral ECDH and ML-KEM shared secrets.
+    ///
+    /// Same hybrid pattern as `createHybridSharedSecret`, but uses an ephemeral/prekey
+    /// ECDH instead of the identity-level ECDH. Each FS message becomes independently
+    /// quantum-resistant rather than relying on transitive chain protection.
+    ///
+    /// ```
+    /// IKM  = ECDH(ephemeralPriv, prekeyPub) || sorted(ML-KEM_secret_1, ML-KEM_secret_2)
+    /// Salt = XOR(prekeyPub, ephemeralPub)
+    /// Info = kHybridFSTransportKeyInfo
+    /// ```
+    ///
+    /// SE operations: none (ephemeral key is in-memory, passed in by caller).
+    ///
+    /// - Parameters:
+    ///   - ephemeralPrivateKey: Sender's throwaway in-memory P-256 private key.
+    ///   - recipientMaterial: Contact's prekey public key, x963 format (65 bytes).
+    ///   - quantumMaterial: ML-KEM shared secrets from the contact's exchange.
+    /// - Returns: 256-bit hybrid SymmetricKey, or nil on failure.
+    func createHybridFSSharedSecret(
+        ephemeralPrivateKey: SecKey,
+        recipientMaterial: Data,
+        quantumMaterial: QuantumKeyMaterial
+    ) -> SymmetricKey? {
+        guard recipientMaterial.count == 65 else { return nil }
+        guard quantumMaterial.isValid else { return nil }
+
+        guard
+            let ephemeralPublicKey = SecKeyCopyPublicKey(ephemeralPrivateKey),
+            let ephemeralPublicKeyData = SecKeyCopyExternalRepresentation(ephemeralPublicKey, nil) as Data?
+        else { return nil }
+
+        guard let peerKey = self.convert(material: recipientMaterial) else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let rawECDH = SecKeyCopyKeyExchangeResult(
+                ephemeralPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
+            .sorted { $0.lexicographicallyPrecedes($1) }
+
+        var ikm = rawECDH
+        ikm.append(contentsOf: sorted[0])
+        ikm.append(contentsOf: sorted[1])
+
+        let salt = Data(zip(recipientMaterial, ephemeralPublicKeyData).map { $0 ^ $1 })
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: salt,
+            info: SaltInfo.kHybridFSTransportKeyInfo,
+            outputByteCount: 32
+        )
+    }
  
     /// Derive a Diceware verification key from hybrid material with per-session nonces.
     ///
@@ -632,11 +695,7 @@ extension Manager.Key {
  
         var error: Unmanaged<CFError>?
         guard
-            let rawECDH = SecKeyCopyKeyExchangeResult(
-                ourPriv, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-                &error
-            ) as? Data
+            let rawECDH = SecKeyCopyKeyExchangeResult(ourPriv, .ecdhKeyExchangeCofactorX963SHA256, peerKey, [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary, &error) as? Data
         else { return nil }
  
         guard let ourPubData = self.convert(key: self.retrivePublicKey(using: ourPriv)) else { return nil }
