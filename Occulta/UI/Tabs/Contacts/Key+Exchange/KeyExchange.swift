@@ -59,15 +59,31 @@ struct KeyExchange: View {
                     self.receivedIdentityKey = Contact.Draft.Key(material: contactsIdentity, owner: myIdentity, date: date)
                 }
             }
+            .onReceive(self.exchangeManager.completedExchange, perform: { quantumExchange in
+                let myIdentity = try? Manager.Key().retrieveIdentity()
+                
+                #if DEBUG
+                debugPrint("Received quantum exchange: \(String(describing: quantumExchange)), my identity = \(String(describing: myIdentity)), setting key.,.")
+                #endif
+                if let quantumExchange = quantumExchange, let myIdentity = myIdentity {
+                    /// I am the owner of this key.
+                    ///
+                    print("Received identity: \(quantumExchange.peerP256PublicKey), with quantum material, displaying result...")
+                    
+                    let date = String(Date.now.timeIntervalSince1970)
+                    let quantum = QuantumKeyMaterial(encapsulatedSecret: quantumExchange.mlkemSecret1, decapsulatedSecret: quantumExchange.mlkemSecret2, ourCiphertext: quantumExchange.ourCiphertext, peerCiphertext: quantumExchange.peerCiphertext)
+                    
+                    self.receivedIdentityKey = Contact.Draft.Key(material: quantumExchange.peerP256PublicKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum)
+                }
+            })
             .sheet(item: self.$receivedIdentityKey, onDismiss: {
-                /// The session was already invalidated.
-                self.exchangeManager.receivedIdentity.send(nil)
                 self.exchangeManager.finish()
             }) { key in
                 let (isDuplicate, owner) = self.checkDuplicate(key: key)
                 
                 if isDuplicate == false {
-                    ExchangeResult(identifier: self.identifier, receivedKey: key)
+                    ExchangeResult(identifier: self.identifier, receivedKey: key, exchangeResult: self.exchangeManager.completedExchange.value)
+                        .environment(self.exchangeManager)
                 } else {
                     DuplicateKey(identifier: owner)
                 }

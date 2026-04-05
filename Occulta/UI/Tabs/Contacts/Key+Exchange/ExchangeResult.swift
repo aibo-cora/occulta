@@ -16,13 +16,7 @@ struct ExchangeResult: View {
     let receivedKey: Contact.Draft.Key
     let exchangeResult: ExchangeManager.HybridExchangeResult?
 
-    init(identifier: String, receivedKey: Contact.Draft.Key) {
-        self.identifier = identifier
-        self.receivedKey = receivedKey
-        self.exchangeResult = nil
-    }
-
-    init(identifier: String, receivedKey: Contact.Draft.Key, exchangeResult: ExchangeManager.HybridExchangeResult) {
+    init(identifier: String, receivedKey: Contact.Draft.Key, exchangeResult: ExchangeManager.HybridExchangeResult? = nil) {
         self.identifier = identifier
         self.receivedKey = receivedKey
         self.exchangeResult = exchangeResult
@@ -51,11 +45,7 @@ struct ExchangeResult: View {
                 }
                 .padding()
 
-                VerifyExchangeWords(
-                    identifier: self.identifier,
-                    key: self.receivedKey,
-                    exchangeResult: self.exchangeResult
-                )
+                VerifyExchangeWords(identifier: self.identifier, key: self.receivedKey, exchangeResult: self.exchangeResult)
             }
         }
         .presentationDetents([.large])
@@ -71,6 +61,8 @@ struct VerifyExchangeWords: View {
     let exchangeResult: ExchangeManager.HybridExchangeResult?
 
     @Environment(ContactManager.self) private var contactManager: ContactManager?
+    @Environment(ExchangeManager.self) private var exchangeManager: ExchangeManager?
+    
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -132,9 +124,7 @@ struct VerifyExchangeWords: View {
             
             return self.keyManager.createDicewareKey(peerP256Material: result.peerP256PublicKey, quantumMaterial: material, ourNonce: result.ourNonce, peerNonce: result.peerNonce)?.withUnsafeBytes { Data($0) }
         } else {
-            return self.keyManager.createSharedSecret(
-                using: self.key.material
-            )?.withUnsafeBytes { Data($0) }
+            return self.keyManager.createSharedSecret(using: self.key.material)?.withUnsafeBytes { Data($0) }
         }
     }
 }
