@@ -100,16 +100,10 @@ struct VerifyExchangeWords: View {
             }
 
             Button("Confirm") {
-                if let exchangeResult {
-                    let quantum = QuantumKeyMaterial(encapsulatedSecret: exchangeResult.mlkemSecret1, decapsulatedSecret: exchangeResult.mlkemSecret2, ourCiphertext: exchangeResult.ourCiphertext, peerCiphertext: exchangeResult.peerCiphertext)
+                do {
+                    try self.contactManager?.update(key: self.key, for: self.identifier)
+                } catch {
                     
-                    if let key = Contact.Draft.Key(material: self.key.material, owner: self.key.owner, date: self.key.acquiredAt, quantumKeyMaterial: quantum) {
-                        do {
-                            try self.contactManager?.update(key: key, for: self.identifier)
-                        } catch {
-                            
-                        }
-                    }
                 }
                 
                 self.dismiss()
