@@ -194,8 +194,13 @@ extension Manager {
                 kSecAttrApplicationTag as String: tag.data(using: .utf8)!
             ]
             let status = SecItemDelete(query as CFDictionary)
+            let result = status == errSecSuccess || status == errSecItemNotFound
             
-            return status == errSecSuccess || status == errSecItemNotFound
+            #if DEBUG
+            debugPrint("Deleted key with tag = \(tag), result = \(result)")
+            #endif
+            
+            return result
         }
     }
 }
