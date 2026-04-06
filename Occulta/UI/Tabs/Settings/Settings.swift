@@ -105,6 +105,7 @@ struct Settings: View {
                     try? self.contactManager.deleteAllContacts()
                     /// Delete identity key.
                     Manager.Key().deleteIdentity()
+                    Manager.Key().deleteLocalDBKey()
                 }
                 .prominentButtonStyle()
             }

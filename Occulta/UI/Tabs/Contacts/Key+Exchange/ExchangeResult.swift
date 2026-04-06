@@ -1,17 +1,27 @@
+//
+//  ExchangeResult.swift
+//  Occulta
+//
+//  Diceware verification supporting both classical (v1) and hybrid PQ exchanges.
+//
+//  ⚠️ Backward compatibility: `exchangeResult` is optional.
+//  Nil → classical Diceware (ECDH only). Non-nil → hybrid (ECDH + ML-KEM + nonces).
+//
+
 import SwiftUI
 import CryptoKit
 
 struct ExchangeResult: View {
     let identifier: String
     let receivedKey: Contact.Draft.Key
-    
-    private let testingData: Data = Data([
-        0x9A, 0xF3, 0x4B, 0x2D, 0xE7, 0xC1, 0x88, 0x56,
-        0x12, 0x9E, 0xA4, 0xF0, 0x7B, 0x33, 0xC5, 0xD9,
-        0x64, 0x1F, 0x8D, 0xB2, 0xA0, 0xE5, 0x77, 0xC9,
-        0x3E, 0x6A, 0xB1, 0xF4, 0x05, 0x92, 0xD8, 0x4C
-    ])
-    
+    let exchangeResult: ExchangeManager.HybridExchangeResult?
+
+    init(identifier: String, receivedKey: Contact.Draft.Key, exchangeResult: ExchangeManager.HybridExchangeResult? = nil) {
+        self.identifier = identifier
+        self.receivedKey = receivedKey
+        self.exchangeResult = exchangeResult
+    }
+
     var body: some View {
         VStack {
             VStack(spacing: 20) {
@@ -22,9 +32,9 @@ struct ExchangeResult: View {
                     .multilineTextAlignment(.center)
             }
             .padding(.horizontal)
-            
+
             Divider()
-            
+
             VStack(spacing: 20) {
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -34,8 +44,8 @@ struct ExchangeResult: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding()
-                
-                VerifyExchangeWords(identifier: self.identifier, key: self.receivedKey)
+
+                VerifyExchangeWords(identifier: self.identifier, key: self.receivedKey, exchangeResult: self.exchangeResult)
             }
         }
         .presentationDetents([.large])
@@ -45,22 +55,23 @@ struct ExchangeResult: View {
 struct VerifyExchangeWords: View {
     let passphraseGenerator = Manager.PassphraseGenerator()
     let keyManager = Manager.Key()
-    
+
     let identifier: String
     let key: Contact.Draft.Key
-    
-    @State private var beginAnimation = false
-    
+    let exchangeResult: ExchangeManager.HybridExchangeResult?
+
     @Environment(ContactManager.self) private var contactManager: ContactManager?
-    @Environment(\.dismiss) private var dismiss
+    @Environment(ExchangeManager.self) private var exchangeManager: ExchangeManager?
     
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
-        VStack() {
-            let sharedKeyingMaterial = self.keyManager.createSharedSecret(using: self.key.material)?.withUnsafeBytes { Data($0) }
+        VStack {
+            let dicewareKey = self.deriveDicewareKey()
             let separator = "-"
-            let passphrase = self.passphraseGenerator.generate(separator: separator, sharedKey: sharedKeyingMaterial)
+            let passphrase = self.passphraseGenerator.generate(separator: separator, sharedKey: dicewareKey)
             let components = passphrase.components(separatedBy: separator)
-            
+
             VStack(spacing: 20) {
                 ForEach(components, id: \.self) { word in
                     Text(word)
@@ -69,43 +80,45 @@ struct VerifyExchangeWords: View {
                         .bold()
                 }
             }
-            
+
             Text("By confirming these words, you are agreeing to use this contact's key to encrypt data between you two.")
-                .font(.footnote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
                 .padding()
-            
-            HStack {
-                Button("Cancel", role: .destructive) {
-                    self.dismiss()
-                }
-                .prominentButtonStyle()
-                .padding(.leading)
-                
-                Spacer()
-                
-                Button {
-                    do {
-                        try self.contactManager?.update(key: self.key, for: self.identifier)
-                        
-                        self.dismiss()
-                    } catch {
-                        
-                    }
-                } label: {
-                    Text("Confirm")
-                }
-                .prominentButtonStyle()
-                .padding([.trailing])
+
+            if self.exchangeResult != nil {
+                Label("Quantum-resistant exchange", systemImage: "shield.checkered")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                    .padding(.bottom)
+            } else {
+                Label("Classical exchange", systemImage: "lock.shield")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom)
             }
-        }
-        .task {
-            withAnimation(.easeIn(duration: 5.0).delay(5.0)) {
-                self.beginAnimation = true
+
+            Button("Confirm") {
+                do {
+                    try self.contactManager?.update(key: self.key, for: self.identifier)
+                } catch {
+                    
+                }
+                
+                self.dismiss()
             }
+            .buttonStyle(.borderedProminent)
         }
     }
-}
 
-#Preview {
-    ExchangeResult(identifier: UUID().uuidString, receivedKey: Contact.Draft.Key(material: Data.randomBytes(32), owner: Data.randomBytes(32), date: String(Date.now.timeIntervalSince1970))!)
+    private func deriveDicewareKey() -> Data? {
+        if let result = self.exchangeResult {
+            let material = QuantumKeyMaterial(from: result)
+            
+            return self.keyManager.createDicewareKey(peerP256Material: result.peerP256PublicKey, quantumMaterial: material, ourNonce: result.ourNonce, peerNonce: result.peerNonce)?.withUnsafeBytes { Data($0) }
+        } else {
+            return self.keyManager.createSharedSecret(using: self.key.material)?.withUnsafeBytes { Data($0) }
+        }
+    }
 }

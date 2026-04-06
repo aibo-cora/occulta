@@ -1,8 +1,22 @@
 //
-//  ExchangeManager.swift
+//  Exchange+Manager.swift
 //  Occulta
 //
-//  Created by Yura on 11/12/25.
+//  Hybrid post-quantum key exchange with full v1 backward compatibility.
+//  ML-KEM operations are delegated to PQProvider — no ML-KEM types appear in this file.
+//
+//  ⚠️ Backward compatibility contract:
+//  - All messages use `version: .v1` on the wire.
+//  - `receivedIdentity` preserved for v1 classical exchanges.
+//  - `completedExchange` added for hybrid PQ exchanges.
+//  - If PQProvider is nil (iOS < 26), exchange is classical-only.
+//  - If peer sends identity without `encapsulationKey`, exchange is classical-only.
+//
+//  ⚠️ Thread safety:
+//  MC and NI delegate callbacks arrive on arbitrary background threads.
+//  All state mutations are dispatched to the main queue via `DispatchQueue.main.async`.
+//  Main queue is serial + FIFO, preserving MC's per-peer ordering guarantee.
+//  This also ensures @Observable property changes are UI-safe.
 //
 
 import Foundation
@@ -16,34 +30,80 @@ class ExchangeManager: NSObject {
     private var nearbySession: NISession?
     private var multipeerSession: MCSession?
     private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
-    
+
     private let serviceType = "peer-data-ex"
     private let log = Logger(subsystem: "com.occulta.multipeer", category: "multipeer")
-    
-    /// This ID will be matched with the incoming data to make sure that we get a public key from a peer that got our identity - public key.
-    ///
-    /// This will be the peer that we verified through nearby interaction.
+
+    /// The peer whose proximity was confirmed by UWB.
+    /// ⚠️ Set the moment NI confirms distance ≤ 25cm, BEFORE key generation begins.
+    /// This closes the race window where a peer's identity could arrive before our
+    /// NI delegate fires and get silently dropped by the MITM guard.
     private var peerReceivingOurIdentity: MCPeerID?
-    /// Passing received identity from a contact that got within range.
+
+    /// Classical exchange result — peer's P-256 public key only.
+    /// ⚠️ Preserved for backward compatibility with KeyExchange.swift.
     let receivedIdentity: CurrentValueSubject<Data?, Never> = .init(nil)
-    
+
+    /// Hybrid PQ exchange result — P-256 + ML-KEM secrets + nonces.
+    let completedExchange: CurrentValueSubject<HybridExchangeResult?, Never> = .init(nil)
+
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
-    
-    /// Key exchange is in progress?
+
     var inProgress: Bool = false
-    
+
     var isExchangePossible: Bool {
         NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
     }
-    
+
+    // MARK: - PQ exchange state
+
+    /// PQ provider — nil on iOS < 26.
+    private let pqProvider: PQProvider? = PQProviderFactory.create()
+    /// Our 16-byte nonce, generated at session start and committed in discovery.
+    private var ourNonce: Data?
+    /// Peer's nonce from their discovery message. Nil if peer is v1.
+    private var peerNonce: Data?
+    /// Opaque handle to our SE-backed ML-KEM-1024 private key.
+    /// Type is `Any` to avoid ML-KEM type references in this file.
+    private var privateKeyHandle: Any?
+    /// Shared secret from OUR encapsulation of peer's ML-KEM key.
+    private var encapsulatedSecret: Data?
+    /// Shared secret from DECAPSULATING peer's ciphertext.
+    private var decapsulatedSecret: Data?
+    /// Peer's P-256 identity, stored temporarily until ML-KEM completes.
+    private var peerIdentity: Data?
+    /// ML-KEM ciphertext we produced (for contact record storage).
+    private var ourCiphertext: Data?
+    /// ML-KEM ciphertext peer produced (for contact record storage).
+    private var peerCiphertext: Data?
+    /// Guards: prevent duplicate sends on repeated NI distance callbacks.
+    private var identitySent: Bool = false
+    private var ciphertextSent: Bool = false
+    // Generate SE-backed ML-KEM-1024 key pair if available.
+    // On iOS < 26, pqProvider is nil → keyPair is nil → encapsulationKeyData is nil.
+    // V1 peers ignore the field. Our side falls back to classical on receive.
+    var encapsulationKeyData: Data?
+
+    // MARK: - Result type
+
+    struct HybridExchangeResult {
+        let peerP256PublicKey: Data
+        let mlkemSecret1: Data
+        let mlkemSecret2: Data
+        let ourNonce: Data
+        let peerNonce: Data
+        let ourCiphertext: Data
+        let peerCiphertext: Data
+    }
+
     override init() {
         super.init()
     }
-    
+
     private func setupMC() {
         let peerID = MCPeerID(displayName: UUID().uuidString)
-        
+
         self.multipeerSession = MCSession(peer: peerID, securityIdentity: nil, encryptionPreference: .required)
         self.multipeerSession?.delegate = self
 
@@ -53,193 +113,386 @@ class ExchangeManager: NSObject {
         self.advertiser?.delegate = self
         self.browser?.delegate = self
     }
-    
-    /// Start Nearby Interaction and Multipeer Connectivity to find a peer and exchange keys.
+
     func start() {
-        /// 1. Create a session and a discovery token.
+        self.finish()
         self.nearbySession = NISession()
         self.nearbySession?.delegate = self
-        
+
         self.setupMC()
-        
+
+        let keyManager = Manager.Key()
+        self.ourNonce = keyManager.generateExchangeNonce()
+
+        // ── NEW: generate ML-KEM keypair immediately (both sides)
+        if let provider = self.pqProvider {
+            if let keyPair = provider.generateKeyPair() {
+                self.privateKeyHandle = keyPair.privateKeyHandle
+                self.encapsulationKeyData = keyPair.publicKeyData
+                
+                #if DEBUG
+                debugPrint("ML-KEM keypair generated at start (public key \(self.encapsulationKeyData?.count ?? 0) bytes)")
+                #endif
+            }
+        }
+
         self.advertiser?.startAdvertisingPeer()
         self.browser?.startBrowsingForPeers()
-        
+
         self.inProgress = true
+        #if DEBUG
         debugPrint("Starting exchange...")
+        #endif
     }
-    
+
     func finish() {
         self.nearbySession?.pause()
-        
+
         self.advertiser?.stopAdvertisingPeer()
         self.browser?.stopBrowsingForPeers()
+
+        // ⚠️ Release SE-backed ML-KEM private key handle.
+        // For SecureEnclave.MLKEM1024, releasing the reference means the SE key
+        // can no longer be used. No explicit SE delete needed — CryptoKit SE keys
+        // are accessed via their object reference, not a keychain tag.
+        self.privateKeyHandle = nil
+
+        self.ourNonce = nil
+        self.peerNonce = nil
+        self.encapsulatedSecret = nil
+        self.decapsulatedSecret = nil
+        self.peerIdentity = nil
+        self.ourCiphertext = nil
+        self.peerCiphertext = nil
+        self.identitySent = false
+        self.ciphertextSent = false
+        self.peerReceivingOurIdentity = nil
         
+        /// The session was already invalidated.
+        self.receivedIdentity.send(nil)
+        self.completedExchange.send(nil)
+
         self.inProgress = false
+        #if DEBUG
         debugPrint("Exchange finished")
+        #endif
+    }
+
+    // MARK: - Completion check
+
+    private func tryCompleteHybridExchange() {
+        guard
+            let peerIdentity,
+            let encapsulatedSecret,
+            let decapsulatedSecret,
+            let ourNonce,
+            let peerNonce,
+            let ourCiphertext,
+            let peerCiphertext
+        else { return }
+
+        let result = HybridExchangeResult(
+            peerP256PublicKey: peerIdentity,
+            mlkemSecret1: encapsulatedSecret,
+            mlkemSecret2: decapsulatedSecret,
+            ourNonce: ourNonce,
+            peerNonce: peerNonce,
+            ourCiphertext: ourCiphertext,
+            peerCiphertext: peerCiphertext
+        )
+        
+        #if DEBUG
+        debugPrint("Hybrid exchange complete")
+        #endif
+
+        self.completedExchange.send(result)
+    }
+
+    // MARK: - Phase handlers (always called on main queue)
+
+    private func handleSessionStateChange(peerID: MCPeerID, state: MCSessionState) {
+        guard state == .connected else { return }
+
+        #if DEBUG
+        debugPrint("Connected to peer: \(peerID)")
+        #endif
+
+        guard let discoveryToken = self.nearbySession?.discoveryToken else { return }
+
+        do {
+            let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+
+            let exchange = Exchange(
+                id: UUID().uuidString,
+                token: archivedToken,
+                version: .v1,
+                nonce: self.ourNonce
+            )
+
+            let encoded = try JSONEncoder().encode(exchange)
+            try self.multipeerSession?.send(encoded, toPeers: [peerID], with: .reliable)
+        } catch {
+            #if DEBUG
+            debugPrint("Discovery send failed")
+            #endif
+        }
+    }
+
+    private func handleReceivedData(_ data: Data, from peerID: MCPeerID) {
+        do {
+            let decoded = try JSONDecoder().decode(Exchange.self, from: data)
+
+            // MARK: Phase 1 — Discovery (token + optional nonce)
+
+            if decoded.isDiscovery {
+                guard
+                    let token = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: decoded.token)
+                else { return }
+
+                if let nonce = decoded.nonce, nonce.count == 16 {
+                    self.peerNonce = nonce
+                }
+
+                self.receivedDiscoveryTokens[token] = peerID
+
+                let configuration = NINearbyPeerConfiguration(peerToken: token)
+                self.nearbySession?.run(configuration)
+                
+                return
+            }
+
+            // MARK: Phase 2 — Identity (P-256 + optional ML-KEM encapsulation key)
+
+            if decoded.isIdentity {
+                guard peerID == self.peerReceivingOurIdentity else {
+                    #if DEBUG
+                    debugPrint("MITM guard: identity from unexpected peer")
+                    #endif
+                    return
+                }
+
+                guard
+                    let peersP256Key = decoded.identity, peersP256Key.count == 65
+                else { return }
+                
+                self.peerIdentity = peersP256Key
+
+                // ── PQ path: peer sent encapsulation key, we have a provider, AND
+                //    we successfully generated our own ML-KEM key pair (privateKeyHandle != nil).
+                //    Without our own private key, we cannot decapsulate the peer's ciphertext
+                //    in Phase 3, so entering the PQ path would leave the exchange stuck.
+                if let peerEncapsulationKey = decoded.encapsulationKey, let provider = self.pqProvider, self.privateKeyHandle != nil {
+                    guard let encapsulationResult = provider.encapsulate(peerPublicKeyData: peerEncapsulationKey) else { return }
+                    
+                    self.encapsulatedSecret = encapsulationResult.sharedSecret
+                    self.ourCiphertext = encapsulationResult.ciphertext
+
+                    guard self.ciphertextSent == false else { return }
+
+                    // ⚠️ Guard against nil discovery token. If the NI session was invalidated
+                    //    between the NI delegate firing and now, the token is nil.
+                    guard let discoveryToken = self.nearbySession?.discoveryToken else { return }
+                    let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+
+                    let ciphertextExchange = Exchange(
+                        id: UUID().uuidString,
+                        token: archivedToken,
+                        version: .v1,
+                        ciphertext: encapsulationResult.ciphertext
+                    )
+
+                    let encoded = try JSONEncoder().encode(ciphertextExchange)
+                    try self.multipeerSession?.send(encoded, toPeers: [peerID], with: .reliable)
+                    
+                    self.ciphertextSent = true
+                    
+                    #if DEBUG
+                    debugPrint("Ciphertext sent to peer: \(peerID.displayName)")
+                    #endif
+                    
+                    /// We are trying to complete exchange. Identity & Ciphertext could arrive in different order. MC does not guarantee order.
+                    self.tryCompleteHybridExchange()
+                } else {
+                    // ── Classical fallback: peer is v1, we have no PQ provider,
+                    //    or our SE ML-KEM key generation failed.
+                    self.receivedIdentity.send(peersP256Key)
+                }
+                
+                return
+            }
+
+            // MARK: Phase 3 — Ciphertext (ML-KEM ciphertext for decapsulation)
+
+            if decoded.isCiphertext {
+                guard
+                    let ciphertext = decoded.ciphertext,
+                    let handle = self.privateKeyHandle,
+                    let provider = self.pqProvider
+                else { return }
+                
+                #if DEBUG
+                debugPrint("Ciphertext received from peer: \(peerID.displayName)")
+                #endif
+
+                guard let sharedSecret = provider.decapsulate(ciphertext: ciphertext, privateKeyHandle: handle) else { return }
+
+                self.decapsulatedSecret = sharedSecret
+                self.peerCiphertext = ciphertext
+                
+                #if DEBUG
+                debugPrint("Peer's secret decapsulated: \(peerID.displayName)")
+                #endif
+
+                // ⚠️ Release SE private key — its only purpose is fulfilled.
+                self.privateKeyHandle = nil
+                /// We are trying to complete exchange. Identity & Ciphertext could arrive in different order. MC does not guarantee order.
+                self.tryCompleteHybridExchange()
+                
+                return
+            }
+        } catch {
+            #if DEBUG
+            debugPrint("Exchange decode failed")
+            #endif
+        }
+    }
+
+    private func handleNearbyObjectsUpdate(_ nearbyObjects: [NINearbyObject]) {
+        for object in nearbyObjects {
+            guard
+                let distance = object.distance,
+                distance.isLessThanOrEqualTo(0.25)
+            else { continue }
+            
+            #if DEBUG
+            debugPrint("Object in range...")
+            #endif
+
+            let token = object.discoveryToken
+            guard let peer = self.receivedDiscoveryTokens[token] else { continue }
+            
+            #if DEBUG
+            debugPrint("Discovery token matches peer: \(peer.displayName)")
+            #endif
+
+            guard
+                self.identitySent == false
+            else { continue }
+
+            // ⚠️ Set peerReceivingOurIdentity BEFORE key generation.
+            // This closes the race where the peer's identity arrives before we finish
+            // generating keys and sending ours. The MITM guard checks this value —
+            // if it's nil when the peer's identity arrives, the identity is silently dropped
+            // and the exchange hangs because identitySent prevents a resend.
+            self.peerReceivingOurIdentity = peer
+
+            do {
+                let keyManager = Manager.Key()
+
+                #if targetEnvironment(simulator)
+                let keyingMaterial = keyManager.fixedX963
+                #else
+                let keyingMaterial = try keyManager.retrieveIdentity()
+                #endif
+
+                let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
+
+                let exchange = Exchange(
+                    id: UUID().uuidString,
+                    token: archivedToken,
+                    version: .v1,
+                    identity: keyingMaterial,
+                    encapsulationKey: self.encapsulationKeyData
+                )
+
+                let encoded = try JSONEncoder().encode(exchange)
+                try self.multipeerSession?.send(encoded, toPeers: [peer], with: .reliable)
+                
+                self.identitySent = true
+                
+                #if DEBUG
+                debugPrint("Identity sent to peer: \(peer.displayName)")
+                #endif
+            } catch {
+                #if DEBUG
+                debugPrint("Identity send failed")
+                #endif
+            }
+        }
     }
 }
+
+// MARK: - MCSessionDelegate
+// ⚠️ All delegate callbacks dispatch to the main queue before mutating state.
 
 extension ExchangeManager: MCSessionDelegate {
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
-        debugPrint("Changed state for peer \(peerID): \(state.rawValue)")
-        guard
-            state == .connected
-        else {
-            return
-        }
-        
-        debugPrint("Connected to a peer, id = \(peerID)")
-        
-        guard
-            let discoveryToken = self.nearbySession?.discoveryToken
-        else {
-            // TODO: Handle the no token event
-            return
-        }
-        
-        debugPrint("My discovery token, \(discoveryToken)")
-        
-        do {
-            let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
+        DispatchQueue.main.async { [weak self] in
+            #if DEBUG
+                debugPrint("session state changed: \(state)")
+            #endif
             
-            let exchange = Exchange(id: UUID().uuidString, token: archivedToken, version: .v1)
-            let encodedExchange = try JSONEncoder().encode(exchange)
-            
-            /// 2. Send the discovery token to ALL the peers in the vicinity.
-            try session.send(encodedExchange, toPeers: [peerID], with: .reliable)
-            
-            debugPrint("Exchange sent")
-        } catch {
-            // TODO: Handle the archiving, encoding and sending exceptions
-            debugPrint("Archiving or sending failed")
+            self?.handleSessionStateChange(peerID: peerID, state: state)
         }
     }
-    /// 3. Receive discovery token.
+
     func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        do {
-            let decoded = try JSONDecoder().decode(Exchange.self, from: data)
-            let archivedToken = decoded.token
-            let token = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: archivedToken)
+        DispatchQueue.main.async { [weak self] in
+            #if DEBUG
+                debugPrint("Received data from peer: \(peerID)")
+            #endif
             
-            // TODO: - Multiple peers
-            
-            debugPrint("Received data from peer, \(peerID): \(decoded)")
-            
-            guard
-                let token
-            else {
-                // TODO: Handle missing token
-                debugPrint("No token found")
-                return
-            }
-            
-            if let peersIdentity = decoded.identity {
-                if peerID == self.peerReceivingOurIdentity {
-                    Task { @MainActor in
-                        /// The exchange contains an identity key and we verified that we got it from the same peer that got our own identity.
-                        self.receivedIdentity.send(peersIdentity)
-                    }
-                } else {
-                    debugPrint("MITM attack?")
-                    // TODO: MITM? attack
-                    return
-                }
-            } else {
-                debugPrint("No identity key found in the received data")
-            }
-            
-            /// There could be multiple contacts in the vicinity willing to exchange keys. Need to create as many `NISession()` objects as there are tokens received. For simplicity, I am creating only one for now.
-            ///
-            self.receivedDiscoveryTokens[token] = peerID
-            /// 4. Run `NearbyInteraction` session.
-            ///
-            
-            /// Nearby configuratuio
-            let configuration = NINearbyPeerConfiguration(peerToken: token)
-            debugPrint("Running nearby session")
-            self.nearbySession?.run(configuration)
-        } catch {
-            // TODO: Handle decoding error
+            self?.handleReceivedData(data, from: peerID)
         }
     }
-    
-    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {
-        
-    }
-    
-    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {
-        
-    }
-    
-    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: (any Error)?) {
-        
-    }
+
+    func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) { }
+    func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) { }
+    func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: (any Error)?) { }
 }
 
+// MARK: - MCNearbyServiceBrowserDelegate
+
 extension ExchangeManager: MCNearbyServiceBrowserDelegate {
-    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?) {
-        self.log.info("Found peer: \(peerID.displayName)")
+    func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
+        #if DEBUG
+            debugPrint("Browser found peer: \(peerID)")
+        #endif
         
-        if self.multipeerSession?.connectedPeers.contains(peerID) == false, let session = self.multipeerSession {
-            browser.invitePeer(peerID, to: session, withContext: nil, timeout: 30)
+        guard let session = self.multipeerSession else { return }
+        
+        guard
+            peerID.displayName != session.myPeerID.displayName,
+            !session.connectedPeers.contains(peerID)
+        else {
+            return
         }
+        
+        browser.invitePeer(peerID, to: session, withContext: nil, timeout: 30)
     }
-    
-    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-        self.log.info("Lost peer: \(peerID.displayName)")
-    }
+
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) { }
 }
+
+// MARK: - MCNearbyServiceAdvertiserDelegate
 
 extension ExchangeManager: MCNearbyServiceAdvertiserDelegate {
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        self.log.info("Received invitation from \(peerID.displayName) - Auto-accepting")
+        #if DEBUG
+            debugPrint("Advertiser received invitation from peer: \(peerID)")
+        #endif
         
         invitationHandler(true, self.multipeerSession)
     }
 }
 
+// MARK: - NISessionDelegate
+// ⚠️ NI delegate callbacks dispatch to the main queue before mutating state.
+
 extension ExchangeManager: NISessionDelegate {
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
-        debugPrint("Detected nearby objects")
-        for object in nearbyObjects {
-            debugPrint("Object distance: \(object.distance ?? 0.0), token: \(object.discoveryToken.debugDescription)")
-            
-            if let distance = object.distance, distance.isLessThanOrEqualTo(0.25) {
-                let token = object.discoveryToken
-                
-                if let peer = self.receivedDiscoveryTokens[token] {
-                    do {
-                        let keyManager = Manager.Key()
-                        
-                        #if targetEnvironment(simulator)
-                        let keyingMaterial = keyManager.fixedX963
-                        #else
-                        let keyingMaterial = try keyManager.retrieveIdentity()
-                        #endif
-                        
-                        let archivedToken = try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
-                        let exchange = Exchange(id: UUID().uuidString, token: archivedToken, version: .v1, identity: keyingMaterial)
-                        let encodedExchange = try JSONEncoder().encode(exchange)
-                        /// Peer ID to be matched on receive.
-                        self.peerReceivingOurIdentity = peer
-                        /// Send public key to the peer that got close to us.
-                        try self.multipeerSession?.send(encodedExchange, toPeers: [peer], with: .reliable)
-                        /// Stop the session
-                        session.invalidate()
-                    } catch {
-                        // TODO: Handle errors
-                    }
-                }
-            }
+        DispatchQueue.main.async { [weak self] in
+            self?.handleNearbyObjectsUpdate(nearbyObjects)
         }
-    }
-    
-    func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
-        debugPrint("Did remove objects, \(nearbyObjects), reason - \(reason)")
-    }
-    
-    func session(_ session: NISession, didInvalidateWith error: any Error) {
-        debugPrint("Did invalidate with error = \(error)")
     }
 }

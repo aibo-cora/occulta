@@ -400,16 +400,21 @@ extension Contact.Draft {
         
         var expiredOn: String?
         
-        init?(material: Data?, owner: Data, date: String) {
-            guard
-                owner.isEmpty == false
-            else {
-                return nil
-            }
-            
+        // MARK: - Hybrid PQ
+         
+        /// Decrypted QuantumKeyMaterial. Nil for v1 contacts.
+        var quantumKeyMaterial: QuantumKeyMaterial?
+
+        /// Whether this contact was exchanged with hybrid PQ protection.
+        var isHybridPQ: Bool { self.quantumKeyMaterial != nil }
+
+        init?(material: Data?, owner: Data, date: String, quantumKeyMaterial: QuantumKeyMaterial? = nil) {
+            guard owner.isEmpty == false else { return nil }
+
             self.material = material
             self.owner = owner.sha256
             self.acquiredAt = date
+            self.quantumKeyMaterial = quantumKeyMaterial
         }
     }
 }

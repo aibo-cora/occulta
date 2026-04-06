@@ -4,6 +4,10 @@ import UniformTypeIdentifiers
 import PhotosUI
 import AVKit
 
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
+}
+
 struct ComposableMessage: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     
@@ -31,7 +35,7 @@ struct ComposableMessage: View {
     @State private var showFileImporter = false
     @State private var selectedMediaItems: [PhotosPickerItem] = []
     /// Encrypted conversation
-    @State private var encryptedResult: EncryptedFile?
+    @State private var encryptedResultURL: URL?
     
     // Error feedback
     @State private var showError = false
@@ -99,6 +103,9 @@ struct ComposableMessage: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                 }
                 .padding()
+                .sheet(item: self.$encryptedResultURL, content: { url in
+                    ActivityView(activityItems: [url])
+                })
             }
         }
         .background(Color(.systemGroupedBackground))
@@ -110,32 +117,6 @@ struct ComposableMessage: View {
         }
         .fileImporter(isPresented: self.$showFileImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
             self.handleFile(result)
-        }
-        .sheet(item: self.$encryptedResult) { encrypted in
-            NavigationStack {
-                VStack(spacing: 30) {
-                    Image(systemName: "lock.doc.fill")
-                        .font(.system(size: 80))
-                        .foregroundStyle(.blue)
-                    
-                    Text("Your entire conversation is encrypted and ready to be shared")
-                        .font(.title3)
-                        .multilineTextAlignment(.center)
-                    
-                    ShareLink(item: encrypted, preview: SharePreview("Encrypted Conversation", image: Image(systemName: "lock.doc"))) {
-                        Label("Share Encrypted File (.occ)", systemImage: "square.and.arrow.up")
-                            .font(.headline)
-                            .padding()
-                            .frame(maxWidth: .infinity)
-                            .background(Color.blue)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                }
-                .padding()
-                .navigationTitle("Ready to Send")
-                .navigationBarTitleDisplayMode(.inline)
-            }
         }
         .alert("Error", isPresented: self.$showError) {
             Button("OK") { }
@@ -474,10 +455,14 @@ struct ComposableMessage: View {
                     return
                 }
                 
-                let result = EncryptedFile(content: encrypted)
+                let id = UUID().uuidString.components(separatedBy: "-").last ?? "encrypted.file"
+                let tempURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(id).occ")
+                
+                try encrypted.write(to: tempURL)
                 
                 await MainActor.run {
-                    self.encryptedResult = result
+                    self.encryptedResultURL = tempURL
                 }
             } catch {
                 self.showErrorAlert(error.localizedDescription)

@@ -26,7 +26,7 @@ extension Manager.Crypto {
     /// ## SE ordering
     /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
     /// (generateBatch) are done by the caller (ContactManager) before this call.
-    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data) throws -> OccultaBundle {
+    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil) throws -> OccultaBundle {
         guard
             recipientMaterial.count == 65
         else {
@@ -62,7 +62,7 @@ extension Manager.Crypto {
             // ECDH failure with a valid 65-byte prekey public key is unexpected —
             // throw instead of silently degrading to the long-term path.
             guard
-                let sessionKey = self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey)
+                let sessionKey = self.deriveSessionKey(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey, quantumMaterial: quantumMaterial)
             else {
                 throw EncryptionError.keyDerivationFailed
             }
@@ -87,7 +87,7 @@ extension Manager.Crypto {
 
         // ── Long-term fallback path (contactPrekey nil) ──────────────────
         // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(message: message, recipientMaterial: recipientMaterial, ourPublicKey: ourPublicKey, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
+        return try self.fallback(message: message, recipientMaterial: recipientMaterial, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, quantumMaterial: quantumMaterial)
     }
 }
 
@@ -96,13 +96,22 @@ extension Manager.Crypto {
 extension Manager.Crypto {
     /// Derive a session key from an ephemeral or prekey private key.
     /// Called by ContactManager. SecKey must be released by caller before consume().
-    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey? {
-        self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial)
+    /// Derive a session key from an ephemeral or prekey private key.
+    func deriveSessionKey(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil) -> SymmetricKey? {
+        if let quantumMaterial {
+            return self.keyManager.createHybridFSSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial, quantumMaterial: quantumMaterial)
+        } else {
+            return self.keyManager.createSharedSecret(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: recipientMaterial)
+        }
     }
 
     /// Derive a session key using the long-term identity key.
-    func deriveSessionKey(using material: Data) -> SymmetricKey? {
-        self.keyManager.createSharedSecret(using: material)
+    func deriveSessionKey(using material: Data, quantumMaterial: QuantumKeyMaterial? = nil) -> SymmetricKey? {
+        if let quantumMaterial {
+            return self.keyManager.createHybridSharedSecret(peerP256Material: material, quantumMaterial: quantumMaterial)
+        } else {
+            return self.keyManager.createSharedSecret(using: material)
+        }
     }
 }
 
@@ -123,9 +132,9 @@ extension Manager.Crypto {
 // MARK: - Private helpers
 
 extension Manager.Crypto {
-    private func fallback(message: Data, recipientMaterial: Data, ourPublicKey: Data, fingerprintNonce: Data, senderFingerprint: Data) throws -> OccultaBundle {
+    private func fallback(message: Data, recipientMaterial: Data, fingerprintNonce: Data, senderFingerprint: Data, quantumMaterial: QuantumKeyMaterial?) throws -> OccultaBundle {
         guard
-            let sessionKey = self.keyManager.createSharedSecret(using: recipientMaterial)
+            let sessionKey = self.deriveSessionKey(using: recipientMaterial, quantumMaterial: quantumMaterial)
         else {
             throw EncryptionError.keyDerivationFailed
         }

@@ -29,7 +29,7 @@ struct OccultaApp: App {
                 Contact.Message.self,
             ])
             
-            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .automatic)
+            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
 
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
@@ -40,6 +40,28 @@ struct OccultaApp: App {
         
         self.sharedModelContainer = sharedModelContainer
         self.contactManager = ContactManager(modelContainer: sharedModelContainer)
+        
+        self.migrate()
+    }
+    
+    /// Run migration before any UI accesses contacts.
+    ///
+    /// Migrate our local database encryption scheme to a PQ resistant variant.
+    private func migrate() {
+        let context = ModelContext(self.sharedModelContainer)
+        let legacyCrypto = LegacyCryptoManager()
+        let newCrypto = Manager.Crypto()
+
+        do {
+            try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+        } catch {
+            // Migration failure is not recoverable — the DB is in a known state
+            // because migration saves per-record. Log and continue; un-migrated
+            // records will be retried on next launch.
+            #if DEBUG
+            debugPrint("Migration error: \(error)")
+            #endif
+        }
     }
     
     enum Tabs: String, Hashable {
@@ -82,7 +104,7 @@ struct OccultaApp: App {
     var body: some Scene {
         WindowGroup {
             if self.hasCompleted == false {
-                ForeverOnboardingView()
+                OnboardingView()
             } else {
                 TabView {
                     Contacts()
@@ -147,11 +169,7 @@ struct OccultaApp: App {
                 .sheet(item: self.$openedFileContents) {
                     /// Dismiss
                 } content: { data in
-                    if FeatureFlags.isEnabled(.useComposableMessage) {
-                        ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
-                    } else {
-                        Import(imported: data)
-                    }
+                    ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
                 }
                 .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
                     Import.Contacts(encryptedFile: encryptedContactsFile)
