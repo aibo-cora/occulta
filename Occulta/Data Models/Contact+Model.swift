@@ -44,8 +44,6 @@ extension Contact {
         @Relationship(deleteRule: .cascade, inverse: \URLAddress.profile)
         var urlAddresses: [URLAddress]? = []
         
-        var importedAt: Date = Date()
-        
         // MARK: Application specific metadata - encrypted
         
         @Relationship(deleteRule: .cascade, inverse: \Key.profile)
@@ -54,10 +52,13 @@ extension Contact {
         /// Encrypted forward secrecy metadata.
         var forwardSecrecyEncrypted: Data?
         
-        /// Identifier to determine the owner of the public key.
-        var identifierFromOutside: String?
-        /// Identifier of the user that originally acquired this contact's public key.
-        var identifierAcquirer: String?
+        /// Tracks which encryption scheme protects this record's fields.
+        /// Default is 1 (v1_identityDerived) for backward compatibility with
+        /// existing records. Migration sets this to 2 (v2_hybridPQ).
+        ///
+        /// SwiftData handles the schema addition automatically — new column
+        /// with a default value is a lightweight migration.
+        var encryptionScheme: Int = EncryptionScheme.v1_identityDerived.rawValue
         
         // MARK: - Full Designated Initializer
         
@@ -83,7 +84,7 @@ extension Contact {
             emailAddresses: [EmailAddress] = [],
             postalAddresses: [PostalAddress] = [],
             urlAddresses: [URLAddress] = [],
-            importedAt: Date = Date()
+            encryptionScheme: Int = EncryptionScheme.v1_identityDerived.rawValue
         ) {
             self.identifier = identifier
             self.givenName = givenName
@@ -106,7 +107,7 @@ extension Contact {
             self.emailAddresses = emailAddresses
             self.postalAddresses = postalAddresses
             self.urlAddresses = urlAddresses
-            self.importedAt = importedAt
+            self.encryptionScheme = encryptionScheme
         }
         
         var fullName: String {
@@ -229,6 +230,21 @@ extension Contact.Profile {
         }
         
         var expiredOn: Data?
+        
+        // MARK: - Hybrid PQ (SecureEnclave.MLKEM1024)
+         
+        /// Encrypted QuantumKeyMaterial blob.
+        /// Contains both ML-KEM shared secrets and both ciphertexts from the exchange.
+        /// Nil for contacts exchanged before the PQ upgrade (v1 classical exchange).
+        /// Encrypted with the local DB key before storage — same as all other sensitive fields.
+        var quantumKeyMaterialEncrypted: Data?
+
+        init(material: Data? = nil, owner: Data, date: Data, quantumKeyMaterialEncrypted: Data? = nil) {
+            self.material = material
+            self.owner = owner
+            self.acquiredAt = date
+            self.quantumKeyMaterialEncrypted = quantumKeyMaterialEncrypted
+        }
         
         init(material: Data? = nil, owner: Data, date: Data) {
             self.material = material

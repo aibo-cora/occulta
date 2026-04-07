@@ -2,7 +2,11 @@
 //  Crypto+Manager.swift
 //  Occulta
 //
-//  Created by Yura on 11/21/25.
+//  Updated for v2_hybridPQ encryption scheme.
+//  Changes from original:
+//    1. Local encrypt/decrypt uses hybrid key + AAD (EncryptionScheme.v2_hybridPQ)
+//    2. Legacy decrypt path preserved for migration only
+//    3. CryptoProtocol updated with AAD-aware signatures
 //
 
 import Foundation
@@ -11,63 +15,92 @@ import Crypto
 
 enum Manager { }
 
+/// Crypto manager that uses the v1 key path for decryptLegacy.
+/// Used only during migration. Not stored or used after migration completes.
+final class LegacyCryptoManager: CryptoProtocol {
+    private let keyManager = Manager.Key()
+
+    func decryptLegacy(data: Data?) throws -> Data? {
+        guard let data, let key = try self.keyManager.createLocalEncryptionKey() else { return nil }
+        
+        let box = try AES.GCM.SealedBox(combined: data)
+        
+        return try AES.GCM.open(box, using: key)
+    }
+
+    // All other methods delegate to Manager.Crypto (not used during migration).
+    func encrypt(data: Data?) throws -> Data?                          { try Manager.Crypto().encrypt(data: data) }
+    func decrypt(data: Data?) throws -> Data?                          { try Manager.Crypto().decrypt(data: data) }
+    func encrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().encrypt(message: message, using: material) }
+    func decrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().decrypt(message: message, using: material) }
+    func encrypt(contacts: Data, using passphrase: String) throws -> Data? { try Manager.Crypto().encrypt(contacts: contacts, using: passphrase) }
+    func decrypt(contacts: Data, using passphrase: String) throws -> Data? { try Manager.Crypto().decrypt(contacts: contacts, using: passphrase) }
+    func sign(data: Data?) -> String { Manager.Crypto().sign(data: data) }
+}
+
 extension Manager {
-
-    // TODO: Separate local and transport versions into their own classes for clarity
-
     class Crypto: CryptoProtocol {
         let keyManager: any KeyManagerProtocol
 
-        /// Production init — uses the real Secure Enclave key manager.
         init() {
-            self.keyManager = Manager.Key()
+            self.keyManager = Manager.Key() as any KeyManagerProtocol
         }
 
-        /// Testable init — accepts any KeyManagerProtocol implementation.
-        ///
-        /// Pass a `TestKeyManager` to exercise crypto logic without SE access.
         init(keyManager: any KeyManagerProtocol) {
             self.keyManager = keyManager
         }
 
-        // MARK: Local encryption
+        // MARK: - Local encryption (v2 — hybrid key + AAD)
 
-        /// Encrypt data using our local encryption key.
-        /// - Parameter data: Payload.
-        /// - Returns: Encrypted data.
         func encrypt(data: Data?) throws -> Data? {
             guard
-                let data = data,
-                let key = try self.keyManager.createLocalEncryptionKey()
+                let data,
+                let key = try self.keyManager.createHybridLocalEncryptionKey()
             else {
                 return nil
             }
 
-            let sealed = try AES.GCM.seal(data, using: key, nonce: AES.GCM.Nonce())
+            let aad = EncryptionScheme.v2_hybridPQ.aad
+            let sealed = try AES.GCM.seal(data, using: key, nonce: AES.GCM.Nonce(), authenticating: aad)
 
             return sealed.combined
         }
 
-        /// Decrypt data using our local encryption key.
-        /// - Parameter data: Encrypted payload.
-        /// - Returns: Decrypted data.
         func decrypt(data: Data?) throws -> Data? {
             guard
-                let data = data,
+                let data,
+                let key = try self.keyManager.createHybridLocalEncryptionKey()
+            else {
+                return nil
+            }
+
+            let box = try AES.GCM.SealedBox(combined: data)
+            let aad = EncryptionScheme.v2_hybridPQ.aad
+
+            return try AES.GCM.open(box, using: key, authenticating: aad)
+        }
+
+        // MARK: - Legacy local decrypt (v1 — identity-derived key, no AAD)
+
+        /// Decrypt data encrypted under the v1 scheme (identity-derived key, no AAD).
+        ///
+        /// Used exclusively during migration from v1 → v2. After migration completes,
+        /// no v1 ciphertext should remain in the database. This method should not be
+        /// called from any path other than DatabaseMigration.
+        func decryptLegacy(data: Data?) throws -> Data? {
+            guard
+                let data,
                 let key = try self.keyManager.createLocalEncryptionKey()
             else {
                 return nil
             }
 
             let box = try AES.GCM.SealedBox(combined: data)
-            let payload = try AES.GCM.open(box, using: key)
-
-            return payload
+            return try AES.GCM.open(box, using: key)
         }
 
-        // MARK: Encrypting data for transport
+        // MARK: - Transport encryption (unchanged)
 
-        /// Encrypt a message for a contact using associated key to derived a shared crypto key.
         func encrypt(message: Data, using material: Data?) throws -> Data? {
             guard
                 let key = self.keyManager.createSharedSecret(using: material)
@@ -76,11 +109,9 @@ extension Manager {
             }
 
             let sealed = try AES.GCM.seal(message, using: key, nonce: AES.GCM.Nonce())
-
             return sealed.combined
         }
 
-        /// Decrypt a sealed box.
         func decrypt(message: Data, using material: Data?) throws -> Data? {
             guard
                 let key = self.keyManager.createSharedSecret(using: material)
@@ -89,10 +120,10 @@ extension Manager {
             }
 
             let sealed = try AES.GCM.SealedBox(combined: message)
-            let payload = try AES.GCM.open(sealed, using: key)
-
-            return payload
+            return try AES.GCM.open(sealed, using: key)
         }
+
+        // MARK: - Passphrase encryption (unchanged)
 
         func encrypt(contacts: Data, using passphrase: String) throws -> Data? {
             guard
@@ -105,7 +136,6 @@ extension Manager {
             let key = SymmetricKey(data: hash)
 
             let sealed = try AES.GCM.seal(contacts, using: key, nonce: AES.GCM.Nonce())
-
             return sealed.combined
         }
 
@@ -121,10 +151,10 @@ extension Manager {
             let key = SymmetricKey(data: hash)
 
             let box = try AES.GCM.SealedBox(combined: contacts)
-            let decrypted = try AES.GCM.open(box, using: key)
-
-            return decrypted
+            return try AES.GCM.open(box, using: key)
         }
+
+        // MARK: - Signing (unchanged)
 
         func sign(data: Data?) -> String {
             do {
@@ -133,16 +163,11 @@ extension Manager {
 
                 var error: Unmanaged<CFError>?
 
-                guard
-                    let key,
-                    let data
-                else {
+                guard let key, let data else {
                     return "Key or data is missing"
                 }
 
-                guard
-                    SecKeyIsAlgorithmSupported(key, .sign, algorithm)
-                else {
+                guard SecKeyIsAlgorithmSupported(key, .sign, algorithm) else {
                     return "Algorithm is not supported"
                 }
 
@@ -160,15 +185,20 @@ extension Manager {
     }
 }
 
+// MARK: - Protocol
+
 protocol CryptoProtocol {
     func encrypt(data: Data?) throws -> Data?
     func decrypt(data: Data?) throws -> Data?
+    func decryptLegacy(data: Data?) throws -> Data?
     func encrypt(message: Data, using material: Data?) throws -> Data?
     func decrypt(message: Data, using material: Data?) throws -> Data?
     func encrypt(contacts: Data, using passphrase: String) throws -> Data?
     func decrypt(contacts: Data, using passphrase: String) throws -> Data?
     func sign(data: Data?) -> String
 }
+
+// MARK: - Convenience extensions (use v2 path post-migration)
 
 extension String {
     func decrypt() -> String {
@@ -177,8 +207,7 @@ extension String {
 
         do {
             if let decrypted = try cryptoOps.decrypt(data: data) {
-                let decoded = String(data: decrypted, encoding: .utf8) ?? ""
-                return decoded
+                return String(data: decrypted, encoding: .utf8) ?? ""
             } else {
                 return ""
             }
@@ -190,18 +219,16 @@ extension String {
 
 extension Data {
     func hexEncodedString() -> String {
-        return self.map { String(format: "%02x", $0) }.joined()
+        self.map { String(format: "%02x", $0) }.joined()
     }
 
     func decrypt() -> Data? {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
-        
         return try? cryptoOps.decrypt(data: self)
     }
-    
+
     func encrypt() throws -> Data? {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
-        
         return try cryptoOps.encrypt(data: self)
     }
 }

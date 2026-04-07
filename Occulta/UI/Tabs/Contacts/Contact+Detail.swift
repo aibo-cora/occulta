@@ -111,11 +111,7 @@ extension Contact {
                     if self.needsExchange {
                         KeyExchange(identifier: self.identifier)
                     } else {
-                        if FeatureFlags.isEnabled(.useComposableMessage) {
-                            ComposableMessage(identifier: self.identifier)
-                        } else {
-                            Encrypt(identifier: self.identifier)
-                        }
+                        ComposableMessage(identifier: self.identifier)
                     }
                 }
                 .toolbar {
