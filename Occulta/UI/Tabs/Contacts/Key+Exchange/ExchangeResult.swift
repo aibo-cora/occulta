@@ -122,3 +122,7 @@ struct VerifyExchangeWords: View {
         }
     }
 }
+
+#Preview {
+    VerifyExchangeWords(identifier: UUID().uuidString, key: Contact.Draft.Key(material: nil, owner: Data.randomBytes(32), date: "")!, exchangeResult: nil)
+}
