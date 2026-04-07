@@ -90,7 +90,7 @@ extension Manager {
         ///
         /// Returns `nil` if the key was already consumed, pruned, or never existed.
         func retrievePrivateKey(for prekey: Prekey) -> SecKey? {
-            self.retrieveKey(tag: prekey.seTag)
+            self.retrieveSecKeysInSE(matching: prekey.id)
         }
 
         // MARK: - Consumption
@@ -98,9 +98,8 @@ extension Manager {
         /// Delete a prekey private key from the SE immediately after use.
         ///
         /// This is the exact moment forward secrecy is established for a message.
-        @discardableResult
-        func consume(prekey: Prekey) -> Bool {
-            self.deleteKey(tag: prekey.seTag)
+        func consume(prekey: Prekey) {
+            self.deleteSecKeysInSE(matchingTagSubstring: prekey.id)
         }
 
         /// Delete ALL SE private keys for a contact, regardless of sequence.
@@ -163,6 +162,74 @@ extension Manager {
                 return tag.hasPrefix(prefix)
             }.count
         }
+        
+        /// Returns all SecKey objects from the Secure Enclave whose Application Tag
+        /// contains the given substring (case-insensitive).
+        func retrieveSecKeysInSE(matching substring: String) -> SecKey? {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+                kSecReturnAttributes as String: true,
+                kSecReturnRef as String: true,
+                kSecMatchLimit as String: kSecMatchLimitAll
+            ]
+            
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            
+            guard
+                status == errSecSuccess,
+                let items = result as? [[String: Any]]
+            else {
+                if status != errSecItemNotFound {
+                    print("SecItemCopyMatching failed: \(status)")
+                }
+                return nil
+            }
+            
+            let filtered =  items.compactMap { item -> SecKey? in
+                guard
+                    let tagData = item[kSecAttrApplicationTag as String] as? Data,
+                    let tagString = String(data: tagData, encoding: .utf8), tagString.localizedCaseInsensitiveContains(substring)
+                else {
+                    return nil
+                }
+                
+                let key = item[kSecValueRef as String] as! SecKey
+                
+                return key
+            }
+            
+            return filtered.first
+        }
+        
+        private func findAllTags() -> [String] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecReturnAttributes as String: true,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
+            ]
+
+            var items: CFTypeRef?
+            guard
+                SecItemCopyMatching(query as CFDictionary, &items) == errSecSuccess,
+                let allItems = items as? [[String: Any]]
+            else { return [] }
+
+            let prefix = "prekey."
+            let tags = allItems.compactMap { item -> String? in
+                guard
+                    let tagData = item[kSecAttrApplicationTag as String] as? Data,
+                    let tag     = String(data: tagData, encoding: .utf8)
+                else { return nil }
+                
+                return tag.contains(prefix) ? tag : nil
+            }
+            
+            return tags
+        }
 
         /// Whether a fresh batch should be generated for this contact.
         func needsReplenishment(for contactID: String) -> Bool {
@@ -181,9 +248,20 @@ extension Manager {
             ]
 
             var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
+            
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            let resultSuccess = status == errSecSuccess
+            
+            if resultSuccess == false {
+                debugPrint("Could not retrieve private key to decrypt message.")
+            }
+            
+            guard
+                resultSuccess
+            else {
                 return nil
             }
+            
             return (item as! SecKey)
         }
 
@@ -194,8 +272,64 @@ extension Manager {
                 kSecAttrApplicationTag as String: tag.data(using: .utf8)!
             ]
             let status = SecItemDelete(query as CFDictionary)
+            let result = status == errSecSuccess || status == errSecItemNotFound
             
-            return status == errSecSuccess || status == errSecItemNotFound
+            #if DEBUG
+            debugPrint("Deleted key with tag = \(tag), result = \(result)")
+            #endif
+            
+            return result
+        }
+        
+        /// Deletes all Secure Enclave SecKeys whose Application Tag contains the given substring.
+        /// Returns the number of keys successfully deleted.
+        @discardableResult
+        private func deleteSecKeysInSE(matchingTagSubstring substring: String) -> Int {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+                kSecReturnAttributes as String: true,
+                kSecMatchLimit as String: kSecMatchLimitAll
+            ]
+            
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            
+            guard status == errSecSuccess,
+                  let items = result as? [[String: Any]] else {
+                if status != errSecItemNotFound {
+                    print("SecItemCopyMatching failed: \(status)")
+                }
+                return 0
+            }
+            
+            var deletedCount = 0
+            
+            // Step 2: Filter + delete one by one
+            for item in items {
+                guard let tagData = item[kSecAttrApplicationTag as String] as? Data,
+                      let tagString = String(data: tagData, encoding: .utf8),
+                      tagString.localizedCaseInsensitiveContains(substring) else {
+                    continue
+                }
+                
+                // Step 3: Delete using the *exact* full tag (this is what makes deletion work)
+                let deleteQuery: [String: Any] = [
+                    kSecClass as String: kSecClassKey,
+                    kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+                    kSecAttrApplicationTag as String: tagData   // exact match, not substring
+                ]
+                
+                let delStatus = SecItemDelete(deleteQuery as CFDictionary)
+                if delStatus == errSecSuccess {
+                    deletedCount += 1
+                    print("✅ Deleted key with tag: \(tagString)")
+                } else {
+                    print("⚠️ Failed to delete key '\(tagString)': \(delStatus)")
+                }
+            }
+            
+            return deletedCount
         }
     }
 }

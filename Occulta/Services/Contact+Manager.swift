@@ -822,7 +822,6 @@ extension ContactManager {
 // MARK: - v3fs bundle encryption
  
 extension ContactManager {
- 
     /// Encrypt a payload for a contact using the v3fs path.
     ///
     /// ## Pending batch delivery guarantee
@@ -952,6 +951,9 @@ extension ContactManager {
                 else {
                     return nil
                 }
+                #if DEBUG
+                debugPrint("Using prekey, ID = \(prekeyID)")
+                #endif
                 /// Temp prekey just for the tag,
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
                 
@@ -966,6 +968,10 @@ extension ContactManager {
             if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
                 /// Temp prekey just for the tag,
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                
+                #if DEBUG
+                debugPrint("Opened bundle using prekey = \(temp), consuming key...")
+                #endif
                 
                 prekeyManager.consume(prekey: temp)
                 /// The message was opened successfully. FS was used, we don't need to send more batches - clearing.
