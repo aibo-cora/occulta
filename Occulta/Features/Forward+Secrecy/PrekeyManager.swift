@@ -190,7 +190,7 @@ extension Manager {
             let filtered =  items.compactMap { item -> SecKey? in
                 guard
                     let tagData = item[kSecAttrApplicationTag as String] as? Data,
-                    let tagString = String(data: tagData, encoding: .utf8), tagString.localizedCaseInsensitiveContains(substring)
+                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasSuffix(substring)
                 else {
                     return nil
                 }
@@ -309,7 +309,7 @@ extension Manager {
             for item in items {
                 guard let tagData = item[kSecAttrApplicationTag as String] as? Data,
                       let tagString = String(data: tagData, encoding: .utf8),
-                      tagString.localizedCaseInsensitiveContains(substring) else {
+                      tagString.hasPrefix(substring) else {
                     continue
                 }
                 
