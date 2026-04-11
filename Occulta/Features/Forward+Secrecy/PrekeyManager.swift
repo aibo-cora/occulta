@@ -313,7 +313,7 @@ extension Manager {
             for item in items {
                 guard
                     let tagData = item[kSecAttrApplicationTag as String] as? Data,
-                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasPrefix(substring)
+                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasSuffix(substring)
                 else {
                     continue
                 }
