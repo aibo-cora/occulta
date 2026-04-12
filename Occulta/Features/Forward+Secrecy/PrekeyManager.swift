@@ -98,7 +98,8 @@ extension Manager {
         /// Delete a prekey private key from the SE immediately after use.
         ///
         /// This is the exact moment forward secrecy is established for a message.
-        func consume(prekey: Prekey) {
+        @discardableResult
+        func consume(prekey: Prekey) -> Int {
             self.deleteSecKeysInSE(matchingTagSubstring: prekey.id)
         }
 

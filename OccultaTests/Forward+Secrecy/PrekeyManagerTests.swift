@@ -154,9 +154,10 @@ struct PrekeyManagerConsumptionTests {
         defer { pm.deleteAllKeys(for: cid) }
 
         let prekeys = try pm.generateBatch(contactID: cid, count: 1)
-        pm.consume(prekey: prekeys[0])
+        
+        #expect(pm.consume(prekey: prekeys[0]) == 1)
         // Second call must return true (errSecItemNotFound is treated as success)
-        #expect(pm.consume(prekey: prekeys[0]) == true)
+        #expect(pm.consume(prekey: prekeys[0]) == 0)
     }
 
     @Test func consume_onlyDeletesTargetKey() throws {
