@@ -177,8 +177,9 @@ class ContactManager {
         }
         
         try self.modelContext.save()
+        self.syncShareIndex()
     }
-    
+
     func save(contacts: [Contact.Draft]) throws {
         for contact in contacts {
             try self.save(contact: contact)
@@ -330,10 +331,11 @@ class ContactManager {
             
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
         }
-    
+
         try self.modelContext.save()
+        self.syncShareIndex()
     }
-    
+
     // MARK: - Read
     
     /// Fetches all contacts from the SwiftData context.
@@ -366,19 +368,21 @@ class ContactManager {
         
         self.modelContext.delete(contact)
         try modelContext.save()
+        self.syncShareIndex()
     }
-    
+
     /// Deletes all contacts.
     func deleteAllContacts() throws {
         let contacts = try self.fetchAllContacts()
-        
+
         for contact in contacts {
             debugPrint("Deleting contact with identifier: \(contact.identifier)")
-            
+
             self.modelContext.delete(contact)
         }
-        
+
         try self.modelContext.save()
+        self.syncShareIndex()
     }
 }
 

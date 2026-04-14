@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(brew upgrade:*)"
+      "Bash(brew upgrade:*)",
+      "Bash(xcodebuild build:*)",
+      "Bash(xcodebuild test:*)",
+      "Bash(xcodebuild -list -project Occulta.xcodeproj)",
+      "Bash(xcodebuild -target ShareExtension -showBuildSettings)"
     ]
   }
 }

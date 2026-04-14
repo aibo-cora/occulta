@@ -1,0 +1,31 @@
+{
+  "" : {
+    "const-values" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.swiftconstvalues",
+    "dependencies" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.d",
+    "diagnostics" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.dia",
+    "emit-module-dependencies" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary-emit-module.dia",
+    "pch" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.swiftdeps"
+  },
+  "/Users/yura/Xcode Projects/personal/Occulta/Occulta/Features/ShareExtension/ShareIndexKeyManager.swift" : {
+    "index-unit-output-path" : "/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareIndexKeyManager.o",
+    "llvm-bc" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareIndexKeyManager.bc",
+    "object" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareIndexKeyManager.o"
+  },
+  "/Users/yura/Xcode Projects/personal/Occulta/Occulta/Features/ShareExtension/ShareManifest.swift" : {
+    "index-unit-output-path" : "/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareManifest.o",
+    "llvm-bc" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareManifest.bc",
+    "object" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareManifest.o"
+  },
+  "/Users/yura/Xcode Projects/personal/Occulta/Occulta/Features/ShareExtension/ShareableContact.swift" : {
+    "index-unit-output-path" : "/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareableContact.o",
+    "llvm-bc" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareableContact.bc",
+    "object" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareableContact.o"
+  },
+  "/Users/yura/Xcode Projects/personal/Occulta/ShareExtension/ShareViewController.swift" : {
+    "index-unit-output-path" : "/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareViewController.o",
+    "llvm-bc" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareViewController.bc",
+    "object" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareViewController.o"
+  }
+}

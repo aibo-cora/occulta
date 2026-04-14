@@ -1,0 +1,12 @@
+{
+  "/Users/yura/Xcode Projects/personal/Occulta/Occulta/Features/ShareExtension/ShareableContact.swift" : {
+    "abi-baseline-json" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension.abi.json",
+    "const-values" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.swiftconstvalues",
+    "dependencies" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.d",
+    "diagnostics" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-primary.dia",
+    "objc-header" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension-Swift.h",
+    "swiftdoc" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension.swiftdoc",
+    "swiftmodule" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension.swiftmodule",
+    "swiftsourceinfo" : "/Users/yura/Xcode Projects/personal/Occulta/build/Occulta.build/Release-iphoneos/ShareExtension.build/Objects-normal/arm64/ShareExtension.swiftsourceinfo"
+  }
+}

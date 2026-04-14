@@ -7,6 +7,8 @@
 
 import SwiftUI
 import SwiftData
+import ImageIO
+import UniformTypeIdentifiers
 
 // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
 
@@ -14,6 +16,7 @@ import SwiftData
 struct OccultaApp: App {
     @State private var contactManager: ContactManager
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
+    @Environment(\.scenePhase) private var scenePhase
     
     var sharedModelContainer: ModelContainer
     
@@ -100,6 +103,8 @@ struct OccultaApp: App {
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
+    /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
+    @State private var shareResult: ShareResult?
 
     var body: some Scene {
         WindowGroup {
@@ -138,11 +143,19 @@ struct OccultaApp: App {
                         }
                 }
                 .onOpenURL { url in
+                    // Handle share extension handoff
+                    if url.scheme == "occulta",
+                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                       let sessionID = components.queryItems?.first(where: { $0.name == "session" })?.value {
+                        Task { await self.processShareSession(sessionID: sessionID) }
+                        return
+                    }
+
                     let accessing = url.startAccessingSecurityScopedResource()
                     
                     Task {
                         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                        /// Contents of the enrypted file we opened.
+                        /// Contents of the encrypted file we opened.
                         let (data, _) = try await URLSession.shared.data(from: url)
                         
                         do {
@@ -173,6 +186,20 @@ struct OccultaApp: App {
                 }
                 .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
                     Import.Contacts(encryptedFile: encryptedContactsFile)
+                }
+                .sheet(item: self.$shareResult) { result in
+                    ShareActivityView(url: result.url)
+                        .onDisappear {
+                            try? FileManager.default.removeItem(at: result.url)
+                        }
+                }
+                .onChange(of: self.scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        // Keep the share extension's contact index in sync and
+                        // delete stale/orphaned session directories from the shared container.
+                        self.contactManager.syncShareIndex()
+                        self.contactManager.cleanupPendingSessions()
+                    }
                 }
             }
         }
@@ -253,4 +280,128 @@ struct OccultaApp: App {
             return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
         }
     }
+
+    // MARK: - Share Extension Processing
+
+    /// Process a share session handed off from the extension via `occulta://share?session=<uuid>`.
+    ///
+    /// Reads the encrypted manifest, EXIF-strips images, encrypts via the full FS path,
+    /// and presents the resulting `.occ` file for sharing. The entire flow is wrapped in
+    /// do/catch — any failure deletes the session directory immediately.
+    private func processShareSession(sessionID: String) async {
+        guard let containerURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
+        else { return }
+
+        let sessionDir = containerURL
+            .appendingPathComponent("pending")
+            .appendingPathComponent(sessionID)
+
+        do {
+            // 1. Read and decrypt manifest
+            let manifestURL = sessionDir.appendingPathComponent("manifest.enc")
+            let keyManager = ShareIndexKeyManager()
+            var manifestData = try keyManager.decrypt(data: Data(contentsOf: manifestURL))
+            let manifest = try JSONDecoder().decode(ShareManifest.self, from: manifestData)
+
+            // Zero manifest plaintext — contains contact identifier (relationship metadata)
+            _ = manifestData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+            manifestData = Data()
+
+            // 2. Build files — EXIF strip images before encryption (in main app, not extension)
+            var files: [Occulta.File] = []
+
+            for entry in manifest.files {
+                let fileURL = sessionDir.appendingPathComponent(entry.filename)
+                var content = try Data(contentsOf: fileURL)
+
+                // Strip EXIF/GPS/camera metadata from images before encryption.
+                // If stripping fails (e.g. unsupported format), the original data is used —
+                // metadata stays inside the encrypted payload, visible only to the recipient.
+                if UTType(entry.uti)?.conforms(to: .image) == true {
+                    if let stripped = self.stripEXIF(from: content, uti: entry.uti) {
+                        _ = content.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                        content = stripped
+                    }
+                }
+
+                let metadata = Occulta.File.Metadata(
+                    name: UUID().uuidString,
+                    extension: entry.fileExtension
+                )
+                files.append(Occulta.File(content: content, format: .file(metadata)))
+            }
+
+            // 3. Encrypt via the full FS path — same as in-app messages
+            let basket = Basket(files: files, date: Date())
+            var basketData = try JSONEncoder().encode(basket)
+
+            let occData = try self.contactManager.encryptBundle(
+                data: basketData, for: manifest.contactIdentifier
+            )
+
+            // Zero all plaintext buffers before deallocation.
+            // Swift Data uses COW — if Basket copied the buffers, the originals
+            // may not be the same allocation. Best-effort; Swift doesn't guarantee zeroing.
+            _ = basketData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+            basketData = Data()
+            for i in files.indices {
+                _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+            }
+            files = []
+
+            // 4. Write .occ file
+            let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
+            let occURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(occID).occ")
+            try occData.write(to: occURL)
+
+            // 5. Delete session directory — plaintext no longer needed
+            try FileManager.default.removeItem(at: sessionDir)
+
+            // 6. Present share sheet
+            self.shareResult = ShareResult(url: occURL)
+
+        } catch {
+            // Plaintext cleanup on ANY failure — non-negotiable
+            try? FileManager.default.removeItem(at: sessionDir)
+            self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
+            self.showError = true
+        }
+    }
+
+    /// Strip EXIF, GPS, camera metadata from image data using CGImageSource/CGImageDestination.
+    private func stripEXIF(from imageData: Data, uti: String) -> Data? {
+        guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
+
+        let destData = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            destData, uti as CFString, 1, nil
+        ) else { return nil }
+
+        // Empty properties dictionary strips all metadata
+        CGImageDestinationAddImageFromSource(destination, source, 0, [:] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+
+        return destData as Data
+    }
+}
+
+// MARK: - Share Types
+
+private struct ShareResult: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+/// Wraps `UIActivityViewController` for SwiftUI. Presents the system share sheet
+/// with the encrypted `.occ` file so the user can AirDrop, save, or send it.
+private struct ShareActivityView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

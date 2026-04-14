@@ -10,12 +10,20 @@
 		DE02DCE72ED0A90D0091D4D9 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE62ED0A90D0091D4D9 /* Crypto */; };
 		DE02DCE92ED0A90D0091D4D9 /* CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */; };
 		DE02DCEB2ED0A90D0091D4D9 /* _CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */; };
+		DE1C8BEA2F8EC10D00F0E248 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		DE1D95602F7A66A800115AEE /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = DE1D955F2F7A66A800115AEE /* README.md */; };
 		DEC7D75F2EEF1B9000764947 /* QuickLook.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DEC7D75E2EEF1B9000764947 /* QuickLook.framework */; };
 		DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		DE1C8BE82F8EC10D00F0E248 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DEFFD84D2E9D293500CA60F9 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DE1C8BDF2F8EC10C00F0E248;
+			remoteInfo = ShareExtension;
+		};
 		DEC7D7692EEF1B9000764947 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = DEFFD84D2E9D293500CA60F9 /* Project object */;
@@ -46,6 +54,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
+				DE1C8BEA2F8EC10D00F0E248 /* ShareExtension.appex in Embed Foundation Extensions */,
 				DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
@@ -54,6 +63,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		DE1D955F2F7A66A800115AEE /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OccultaPreview.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		DEC7D75E2EEF1B9000764947 /* QuickLook.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuickLook.framework; path = System/Library/Frameworks/QuickLook.framework; sourceTree = SDKROOT; };
@@ -63,6 +73,22 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DE1C8BEE2F8EC10D00F0E248 /* Exceptions for "ShareExtension" folder in "ShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */;
+		};
+		DE1C8BF02F8EC17200F0E248 /* Exceptions for "Occulta" folder in "ShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Features/ShareExtension/ShareableContact.swift,
+				Features/ShareExtension/ShareIndexKeyManager.swift,
+				Features/ShareExtension/ShareManifest.swift,
+			);
+			target = DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */;
+		};
 		DE8B24BA2EEB31C500B83B51 /* Exceptions for "Assets" folder in "OccultaTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -87,6 +113,14 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		DE1C8BE12F8EC10C00F0E248 /* ShareExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DE1C8BEE2F8EC10D00F0E248 /* Exceptions for "ShareExtension" folder in "ShareExtension" target */,
+			);
+			path = ShareExtension;
+			sourceTree = "<group>";
+		};
 		DEC7D7602EEF1B9000764947 /* OccultaPreview */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -99,6 +133,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				DE8B24C72EEEBB4300B83B51 /* Exceptions for "Occulta" folder in "Occulta" target */,
+				DE1C8BF02F8EC17200F0E248 /* Exceptions for "Occulta" folder in "ShareExtension" target */,
 			);
 			path = Occulta;
 			sourceTree = "<group>";
@@ -124,6 +159,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		DE1C8BDD2F8EC10C00F0E248 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DEC7D7592EEF1B9000764947 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -175,6 +217,7 @@
 				DEFFD8672E9D293700CA60F9 /* OccultaTests */,
 				DEFFD8712E9D293700CA60F9 /* OccultaUITests */,
 				DEC7D7602EEF1B9000764947 /* OccultaPreview */,
+				DE1C8BE12F8EC10C00F0E248 /* ShareExtension */,
 				DEC7D75D2EEF1B9000764947 /* Frameworks */,
 				DEFFD8562E9D293500CA60F9 /* Products */,
 				DE1D955F2F7A66A800115AEE /* README.md */,
@@ -188,6 +231,7 @@
 				DEFFD8642E9D293600CA60F9 /* OccultaTests.xctest */,
 				DEFFD86E2E9D293700CA60F9 /* OccultaUITests.xctest */,
 				DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */,
+				DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -195,6 +239,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DE1C8BED2F8EC10D00F0E248 /* Build configuration list for PBXNativeTarget "ShareExtension" */;
+			buildPhases = (
+				DE1C8BDC2F8EC10C00F0E248 /* Sources */,
+				DE1C8BDD2F8EC10C00F0E248 /* Frameworks */,
+				DE1C8BDE2F8EC10C00F0E248 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				DE1C8BE12F8EC10C00F0E248 /* ShareExtension */,
+			);
+			name = ShareExtension;
+			packageProductDependencies = (
+			);
+			productName = ShareExtension;
+			productReference = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		DEC7D75B2EEF1B9000764947 /* OccultaPreview */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = DEC7D76C2EEF1B9000764947 /* Build configuration list for PBXNativeTarget "OccultaPreview" */;
@@ -230,6 +296,7 @@
 			);
 			dependencies = (
 				DEC7D76A2EEF1B9000764947 /* PBXTargetDependency */,
+				DE1C8BE92F8EC10D00F0E248 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				DEFFD8572E9D293500CA60F9 /* Occulta */,
@@ -298,9 +365,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2610;
+				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
+					DE1C8BDF2F8EC10C00F0E248 = {
+						CreatedOnToolsVersion = 26.2;
+					};
 					DEC7D75B2EEF1B9000764947 = {
 						CreatedOnToolsVersion = 26.1;
 					};
@@ -338,11 +408,19 @@
 				DEFFD8632E9D293600CA60F9 /* OccultaTests */,
 				DEFFD86D2E9D293700CA60F9 /* OccultaUITests */,
 				DEC7D75B2EEF1B9000764947 /* OccultaPreview */,
+				DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		DE1C8BDE2F8EC10C00F0E248 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DEC7D75A2EEF1B9000764947 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -375,6 +453,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		DE1C8BDC2F8EC10C00F0E248 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DEC7D7582EEF1B9000764947 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -406,6 +491,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		DE1C8BE92F8EC10D00F0E248 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DE1C8BDF2F8EC10C00F0E248 /* ShareExtension */;
+			targetProxy = DE1C8BE82F8EC10D00F0E248 /* PBXContainerItemProxy */;
+		};
 		DEC7D76A2EEF1B9000764947 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = DEC7D75B2EEF1B9000764947 /* OccultaPreview */;
@@ -424,6 +514,71 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		DE1C8BEB2F8EC10D00F0E248 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R6F5KHKKNX;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ShareExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.ShareExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DE1C8BEC2F8EC10D00F0E248 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R6F5KHKKNX;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ShareExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.ShareExtension";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		DEC7D76D2EEF1B9000764947 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -838,6 +993,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		DE1C8BED2F8EC10D00F0E248 /* Build configuration list for PBXNativeTarget "ShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DE1C8BEB2F8EC10D00F0E248 /* Debug */,
+				DE1C8BEC2F8EC10D00F0E248 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		DEC7D76C2EEF1B9000764947 /* Build configuration list for PBXNativeTarget "OccultaPreview" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
