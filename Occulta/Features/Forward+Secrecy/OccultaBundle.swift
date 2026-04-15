@@ -79,6 +79,12 @@ struct OccultaBundle: Codable {
         case v2
         /// Per-contact consumed prekey batches. `SecrecyContext` + version authenticated as AAD.
         case v3fs
+        /// Identity challenge — challenger → responder. SealedPayload carries `ChallengePayload` bytes.
+        /// Always uses long-term key derivation; no prekey consumption, no ephemeral key.
+        case identityChallenge
+        /// Identity challenge response — responder → challenger. SealedPayload carries `ResponsePayload` bytes.
+        /// Always uses long-term key derivation; no prekey consumption, no ephemeral key.
+        case identityChallengeResponse
     }
 
     // MARK: - Mode
@@ -88,12 +94,18 @@ struct OccultaBundle: Codable {
         /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
         /// Recipient's prekey private key deleted from SE on successful open.
         case forwardSecret
- 
+
         /// Prekey exhaustion fallback.
         /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub)).
         /// Bundle always carries a fresh PrekeySyncBatch (inside ciphertext)
         /// so the next message can use the forward secret path.
         case longTermFallback
+
+        /// Identity challenge / response transport.
+        /// Always uses the long-term key derivation path — `createSharedSecret(using:)` —
+        /// so identity verification can never fail due to prekey exhaustion.
+        /// `ephemeralPublicKey` is empty `Data()`; `prekeyID` is `nil`.
+        case identityChallenge
     }
 
     // MARK: - WirePrekey
@@ -264,10 +276,22 @@ struct OccultaBundle: Codable {
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    
+        case .forwardSecret:
             return "Forward Secret"
-        case .longTermFallback: 
+        case .longTermFallback:
             return "Standard Encryption"
+        case .identityChallenge:
+            return "Identity Challenge"
+        }
+    }
+
+    /// True for inbound bundles whose payload is an identity challenge or response.
+    /// The UI uses this to route to the dedicated challenge view rather than the
+    /// normal message decrypt flow.
+    var isIdentityChallenge: Bool {
+        switch self.version {
+        case .identityChallenge, .identityChallengeResponse: return true
+        case .v1, .v2, .v3fs:                                return false
         }
     }
 }

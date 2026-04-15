@@ -1008,6 +1008,13 @@ extension ContactManager {
             }
             
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+        case .identityChallenge:
+            // Identity challenges and responses do not flow through the message
+            // decrypt pipeline. They are routed by `OccultaApp` based on
+            // `bundle.version` (.identityChallenge / .identityChallengeResponse)
+            // to `IdentityChallenge.Manager`. Reaching this branch indicates
+            // upstream routing failed.
+            throw Errors.decryptionFailed
         }
  
         guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
