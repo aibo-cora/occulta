@@ -115,9 +115,10 @@ private func parties(
         }
     }
 
-    @Test func decryptChallenge_wrongVersion_throws() throws {
+    @Test func decryptChallenge_regularMessageBundle_throwsUnknownSender() throws {
+        // A bundle produced by the regular message path has no ContentType set.
+        // With an empty contact list it fails at the sender-routing stage.
         let (c, r) = parties()
-        // A regular v3fs bundle must not be routed through the challenge decryptor.
         let fake = OccultaBundle(
             version: .v3fs,
             secrecy: OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil),
@@ -126,7 +127,7 @@ private func parties(
             senderFingerprint: Data(count: 32)
         )
         _ = c
-        #expect(throws: IdentityChallenge.ManagerError.malformedBundle) {
+        #expect(throws: IdentityChallenge.ManagerError.unknownSender) {
             _ = try r.mgr.decryptChallenge(bundle: fake, contacts: [])
         }
     }
@@ -317,21 +318,22 @@ private func parties(
 
     // MARK: Bundle metadata
 
-    @Test func challengeBundle_hasCorrectVersionAndMode() throws {
+    @Test func challengeBundle_ridesV3fsLongTermFallback() throws {
+        // Wire envelope must be indistinguishable from a regular fallback
+        // message so older builds can still decode the bundle.
         let (c, r) = parties()
         let b = try c.mgr.createChallenge(for: r.view)
-        #expect(b.version      == .identityChallenge)
-        #expect(b.secrecy.mode == .identityChallenge)
-        #expect(b.secrecy.ephemeralPublicKey.isEmpty)
+        #expect(b.version      == .v3fs)
+        #expect(b.secrecy.mode == .longTermFallback)
         #expect(b.secrecy.prekeyID == nil)
     }
 
-    @Test func responseBundle_hasCorrectVersionAndMode() throws {
+    @Test func responseBundle_ridesV3fsLongTermFallback() throws {
         let (c, r) = parties()
         let challenge = try c.mgr.createChallenge(for: r.view)
         let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
         let response  = try r.mgr.respond(to: pending)
-        #expect(response.version      == .identityChallengeResponse)
-        #expect(response.secrecy.mode == .identityChallenge)
+        #expect(response.version      == .v3fs)
+        #expect(response.secrecy.mode == .longTermFallback)
     }
 }

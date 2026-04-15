@@ -899,6 +899,10 @@ extension ContactManager {
     /// Decrypt a v3fs bundle.
     func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
         guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
+        // Defence-in-depth: never touch a bundle whose version or mode was
+        // produced by a future build we don't understand. `Version`/`Mode` both
+        // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
+        guard bundle.secrecy.mode != .unsupported else { throw OccultaBundle.BundleError.unsupportedMode }
  
         let cryptoOps     = Manager.Crypto()
         let prekeyManager = Manager.PrekeyManager()
@@ -1008,13 +1012,9 @@ extension ContactManager {
             }
             
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
-        case .identityChallenge:
-            // Identity challenges and responses do not flow through the message
-            // decrypt pipeline. They are routed by `OccultaApp` based on
-            // `bundle.version` (.identityChallenge / .identityChallengeResponse)
-            // to `IdentityChallenge.Manager`. Reaching this branch indicates
-            // upstream routing failed.
-            throw Errors.decryptionFailed
+        case .unsupported:
+            // Already rejected above — exhaustiveness only.
+            throw OccultaBundle.BundleError.unsupportedMode
         }
  
         guard let decryptedSealedPayload else { throw Errors.decryptionFailed }

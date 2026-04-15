@@ -9,9 +9,13 @@
 //    3. Challenger → verifyResponse(bundle:contacts:)    → Bool (pass/fail)
 //
 //  Only the long-term key derivation path is used — identity verification must
-//  never fail because of prekey exhaustion. `OccultaBundle.Mode.identityChallenge`
-//  (empty ephemeralPublicKey, nil prekeyID) makes the lack of FS explicit and
-//  authenticates it via AAD.
+//  never fail because of prekey exhaustion.
+//
+//  ⚠️ Wire compatibility: challenge bundles ride on `Version.v3fs` +
+//  `Mode.longTermFallback` — values every shipped Occulta build already decodes.
+//  Routing to this manager happens via `SealedPayload.contentType` *after*
+//  decryption, so old builds that don't know about identity challenges simply
+//  render the human-readable fallback string in `SealedPayload.message`.
 //
 
 import Foundation
@@ -111,9 +115,9 @@ extension IdentityChallenge {
         ///     Throws `.rateLimited` if one is already outstanding for this
         ///     contact.
         ///
-        /// The bundle's `version` is `.identityChallenge` and the mode is
-        /// `.identityChallenge` — AAD pins both, so flipping to `.v3fs` or
-        /// `.longTermFallback` breaks the GCM tag.
+        /// The bundle rides on `Version.v3fs` + `Mode.longTermFallback` — values
+        /// every shipped Occulta build decodes. Routing discrimination lives in
+        /// `SealedPayload.contentType` inside the encrypted envelope.
         func createChallenge(for contact: ContactView) throws -> OccultaBundle {
             // 0. Rate limit first — avoid wasting SE work on a request we'll reject.
             guard !self.store.hasOutstanding(for: contact.identifier) else {
@@ -150,10 +154,11 @@ extension IdentityChallenge {
 
             // 3. Seal the payload for the responder.
             let bundle = try self.sealIdentityBundle(
-                payloadBytes:  payload.encoded(),
-                ourPublicKey:  ourPublicKey,
-                recipientKey:  contact.publicKey,
-                version:       .identityChallenge
+                contentType:     .identityChallenge,
+                contentData:     payload.encoded(),
+                fallbackMessage: IdentityChallenge.challengeFallbackMessage,
+                ourPublicKey:    ourPublicKey,
+                recipientKey:    contact.publicKey
             )
 
             // 4. Remember this challenge until the response arrives or expires.
@@ -175,17 +180,19 @@ extension IdentityChallenge {
             bundle:   OccultaBundle,
             contacts: [ContactView]
         ) throws -> PendingApproval {
-            guard bundle.version == .identityChallenge else {
-                throw ManagerError.malformedBundle
-            }
-
             // 1. Route by outer senderFingerprint.
             guard let sender = Self.matchSender(bundle: bundle, contacts: contacts) else {
                 throw ManagerError.unknownSender
             }
 
-            // 2. Open the bundle with the long-term session key.
-            let payloadBytes = try self.openIdentityBundle(bundle: bundle, peerPublicKey: sender.publicKey)
+            // 2. Open the bundle and extract the challenge payload bytes from
+            //    SealedPayload.contentData. A bundle without `.identityChallenge`
+            //    content type has no business in this path.
+            let payloadBytes = try self.openIdentityBundle(
+                bundle:        bundle,
+                peerPublicKey: sender.publicKey,
+                expecting:     .identityChallenge
+            )
 
             // 3. Decode the inner ChallengePayload.
             let payload: ChallengePayload
@@ -249,10 +256,11 @@ extension IdentityChallenge {
             let response  = ResponsePayload(challengeNonce: pending.payload.nonce, signature: signature)
 
             return try self.sealIdentityBundle(
-                payloadBytes: response.encoded(),
-                ourPublicKey: ourPublicKey,
-                recipientKey: pending.challenger.publicKey,
-                version:      .identityChallengeResponse
+                contentType:     .identityChallengeResponse,
+                contentData:     response.encoded(),
+                fallbackMessage: IdentityChallenge.responseFallbackMessage,
+                ourPublicKey:    ourPublicKey,
+                recipientKey:    pending.challenger.publicKey
             )
         }
 
@@ -269,15 +277,15 @@ extension IdentityChallenge {
             bundle:   OccultaBundle,
             contacts: [ContactView]
         ) throws -> Bool {
-            guard bundle.version == .identityChallengeResponse else {
-                throw ManagerError.malformedBundle
-            }
-
             guard let sender = Self.matchSender(bundle: bundle, contacts: contacts) else {
                 throw ManagerError.unknownSender
             }
 
-            let payloadBytes = try self.openIdentityBundle(bundle: bundle, peerPublicKey: sender.publicKey)
+            let payloadBytes = try self.openIdentityBundle(
+                bundle:        bundle,
+                peerPublicKey: sender.publicKey,
+                expecting:     .identityChallengeResponse
+            )
 
             let response: ResponsePayload
             do {
@@ -352,17 +360,25 @@ extension IdentityChallenge {
         // MARK: - Private helpers
 
         /// Build an OccultaBundle for the identity-challenge protocol.
-        /// Uses the long-term ECDH path; mode `.identityChallenge` makes the
-        /// absence of forward secrecy explicit and AAD-authenticated.
+        ///
+        /// Wire envelope is deliberately indistinguishable from a regular
+        /// long-term-fallback message: `version = .v3fs`, `mode = .longTermFallback`.
+        /// The `contentType` discriminator lives inside the encrypted payload,
+        /// so old decoders render `fallbackMessage` as a normal text message
+        /// and new decoders route on `contentType`.
         private func sealIdentityBundle(
-            payloadBytes: Data,
-            ourPublicKey: Data,
-            recipientKey: Data,
-            version:      OccultaBundle.Version
+            contentType:     OccultaBundle.SealedPayload.ContentType,
+            contentData:     Data,
+            fallbackMessage: String,
+            ourPublicKey:    Data,
+            recipientKey:    Data
         ) throws -> OccultaBundle {
-            // Wrap in SealedPayload (same wire shape as regular messages) so a
-            // future change to the payload envelope applies here too.
-            let sealed        = OccultaBundle.SealedPayload(message: payloadBytes, prekeyBatch: nil)
+            let sealed = OccultaBundle.SealedPayload(
+                message:     Data(fallbackMessage.utf8),
+                prekeyBatch: nil,
+                contentType: contentType,
+                contentData: contentData
+            )
             let encodedSealed: Data
             do {
                 encodedSealed = try JSONEncoder().encode(sealed)
@@ -375,11 +391,12 @@ extension IdentityChallenge {
             }
 
             let secrecy = OccultaBundle.SecrecyContext(
-                mode:               .identityChallenge,
-                ephemeralPublicKey: Data(),
+                mode:               .longTermFallback,
+                ephemeralPublicKey: ourPublicKey,
                 prekeyID:           nil
             )
 
+            let version = OccultaBundle.Version.v3fs
             let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
 
             let ciphertext: Data
@@ -406,9 +423,21 @@ extension IdentityChallenge {
             )
         }
 
-        /// Open an identity-challenge bundle and return the inner payload bytes
-        /// (the `message` field of the JSON-encoded SealedPayload).
-        private func openIdentityBundle(bundle: OccultaBundle, peerPublicKey: Data) throws -> Data {
+        /// Open an identity-challenge bundle and return the raw challenge/response
+        /// payload bytes from `SealedPayload.contentData`.
+        ///
+        /// Rejects bundles whose inner `contentType` does not match `expecting` —
+        /// e.g. a `.identityChallenge` bundle offered to the response verifier.
+        private func openIdentityBundle(
+            bundle:        OccultaBundle,
+            peerPublicKey: Data,
+            expecting:     OccultaBundle.SealedPayload.ContentType
+        ) throws -> Data {
+            // Reject unsupported versions/modes up-front — never derive a key or
+            // compute AAD for a bundle we fundamentally can't process.
+            guard bundle.version      != .unsupported else { throw ManagerError.malformedBundle }
+            guard bundle.secrecy.mode != .unsupported else { throw ManagerError.malformedBundle }
+
             guard let sessionKey = self.crypto.deriveSessionKey(using: peerPublicKey) else {
                 throw ManagerError.keyDerivationFailed
             }
@@ -418,12 +447,16 @@ extension IdentityChallenge {
             } catch {
                 throw ManagerError.malformedBundle
             }
+            let sealed: OccultaBundle.SealedPayload
             do {
-                let sealed = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
-                return sealed.message
+                sealed = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
             } catch {
                 throw ManagerError.malformedBundle
             }
+            guard sealed.contentType == expecting, let data = sealed.contentData else {
+                throw ManagerError.malformedBundle
+            }
+            return data
         }
 
         /// Routing — find the contact whose `senderFingerprint` matches the bundle.
