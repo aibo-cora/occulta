@@ -52,6 +52,10 @@ extension IdentityChallenge {
         let challenger: ContactView
         /// Decoded inner payload.
         let payload: ChallengePayload
+        /// Optional freetext from the challenger, shown alongside the approval
+        /// prompt so the responder knows what they're being asked about. Plain
+        /// text only — never rendered as markdown/HTML/attributed string.
+        let contextNote: String?
     }
 
     // MARK: - Errors
@@ -118,11 +122,21 @@ extension IdentityChallenge {
         /// The bundle rides on `Version.v3fs` + `Mode.longTermFallback` — values
         /// every shipped Occulta build decodes. Routing discrimination lives in
         /// `SealedPayload.contentType` inside the encrypted envelope.
-        func createChallenge(for contact: ContactView) throws -> OccultaBundle {
+        func createChallenge(
+            for contact: ContactView,
+            contextNote: String? = nil
+        ) throws -> OccultaBundle {
             // 0. Rate limit first — avoid wasting SE work on a request we'll reject.
             guard !self.store.hasOutstanding(for: contact.identifier) else {
                 throw ManagerError.rateLimited
             }
+
+            // Sender-side cap: truncate (do not throw) so the user's question
+            // still gets through in a slightly shortened form.
+            let sanitizedNote = Self.truncate(
+                note: contextNote,
+                maxBytes: IdentityChallenge.maxContextNoteBytes
+            )
 
             // 1. Gather our own public key (needed for the inner fingerprint
             //    AND for the outer routing fingerprint).
@@ -157,6 +171,7 @@ extension IdentityChallenge {
                 contentType:     .identityChallenge,
                 contentData:     payload.encoded(),
                 fallbackMessage: IdentityChallenge.challengeFallbackMessage,
+                contextNote:     sanitizedNote,
                 ourPublicKey:    ourPublicKey,
                 recipientKey:    contact.publicKey
             )
@@ -164,7 +179,12 @@ extension IdentityChallenge {
             // 4. Remember this challenge until the response arrives or expires.
             //    Done LAST so a seal failure doesn't leave a ghost entry.
             try self.store.store(
-                .init(nonce: nonce, timestamp: timestamp, contactKeyID: contact.identifier)
+                .init(
+                    nonce:        nonce,
+                    timestamp:    timestamp,
+                    contactKeyID: contact.identifier,
+                    contextNote:  sanitizedNote
+                )
             )
 
             return bundle
@@ -188,11 +208,17 @@ extension IdentityChallenge {
             // 2. Open the bundle and extract the challenge payload bytes from
             //    SealedPayload.contentData. A bundle without `.identityChallenge`
             //    content type has no business in this path.
-            let payloadBytes = try self.openIdentityBundle(
+            let (payloadBytes, note) = try self.openIdentityBundle(
                 bundle:        bundle,
                 peerPublicKey: sender.publicKey,
                 expecting:     .identityChallenge
             )
+
+            // Responder-side length enforcement. A compliant sender truncates
+            // to `maxContextNoteBytes`; anything larger is treated as malformed.
+            if let note, note.utf8.count > IdentityChallenge.maxContextNoteBytes {
+                throw ManagerError.malformedBundle
+            }
 
             // 3. Decode the inner ChallengePayload.
             let payload: ChallengePayload
@@ -229,7 +255,7 @@ extension IdentityChallenge {
                 }
             }
 
-            return PendingApproval(challenger: sender, payload: payload)
+            return PendingApproval(challenger: sender, payload: payload, contextNote: note)
         }
 
         /// Sign the approved challenge and build the response bundle.
@@ -259,6 +285,7 @@ extension IdentityChallenge {
                 contentType:     .identityChallengeResponse,
                 contentData:     response.encoded(),
                 fallbackMessage: IdentityChallenge.responseFallbackMessage,
+                contextNote:     nil,  // responses never carry a note
                 ourPublicKey:    ourPublicKey,
                 recipientKey:    pending.challenger.publicKey
             )
@@ -276,12 +303,12 @@ extension IdentityChallenge {
         func verifyResponse(
             bundle:   OccultaBundle,
             contacts: [ContactView]
-        ) throws -> Bool {
+        ) throws -> (ok: Bool, contextNote: String?) {
             guard let sender = Self.matchSender(bundle: bundle, contacts: contacts) else {
                 throw ManagerError.unknownSender
             }
 
-            let payloadBytes = try self.openIdentityBundle(
+            let (payloadBytes, _) = try self.openIdentityBundle(
                 bundle:        bundle,
                 peerPublicKey: sender.publicKey,
                 expecting:     .identityChallengeResponse
@@ -297,7 +324,7 @@ extension IdentityChallenge {
             // Look up the outstanding challenge by nonce.
             guard let entry = self.store.lookup(nonce: response.challengeNonce) else {
                 // No such challenge — replay, forgery, or expired & removed.
-                return false
+                return (false, nil)
             }
 
             // Must come from the contact we issued the challenge to.
@@ -305,7 +332,7 @@ extension IdentityChallenge {
             // challenge and claim their identity.
             guard entry.contactKeyID == sender.identifier else {
                 self.store.remove(nonce: response.challengeNonce)
-                return false
+                return (false, entry.contextNote)
             }
 
             // Hard 5-minute window — stricter than the staleness soft check.
@@ -321,7 +348,7 @@ extension IdentityChallenge {
             }()
             guard delta < IdentityChallenge.timestampWindow else {
                 self.store.remove(nonce: response.challengeNonce)
-                return false
+                return (false, entry.contextNote)
             }
 
             // Reconstruct the exact bytes that were signed. Inner fingerprint
@@ -347,14 +374,18 @@ extension IdentityChallenge {
             // Construct a SecKey view over the responder's stored public key.
             guard let publicKey = Self.makePublicKey(x963: sender.publicKey) else {
                 self.store.remove(nonce: response.challengeNonce)
-                return false
+                return (false, entry.contextNote)
             }
 
             let ok = self.crypto.verifyChallenge(signedData, signature: response.signature, publicKey: publicKey)
 
+            // Snapshot the note BEFORE consuming the slot so the caller can
+            // render "you asked X — verified" even after removal.
+            let note = entry.contextNote
+
             // One-shot: consume the slot regardless of outcome.
             self.store.remove(nonce: response.challengeNonce)
-            return ok
+            return (ok, note)
         }
 
         // MARK: - Private helpers
@@ -370,6 +401,7 @@ extension IdentityChallenge {
             contentType:     OccultaBundle.SealedPayload.ContentType,
             contentData:     Data,
             fallbackMessage: String,
+            contextNote:     String?,
             ourPublicKey:    Data,
             recipientKey:    Data
         ) throws -> OccultaBundle {
@@ -377,7 +409,8 @@ extension IdentityChallenge {
                 message:     Data(fallbackMessage.utf8),
                 prekeyBatch: nil,
                 contentType: contentType,
-                contentData: contentData
+                contentData: contentData,
+                contextNote: contextNote
             )
             let encodedSealed: Data
             do {
@@ -432,7 +465,7 @@ extension IdentityChallenge {
             bundle:        OccultaBundle,
             peerPublicKey: Data,
             expecting:     OccultaBundle.SealedPayload.ContentType
-        ) throws -> Data {
+        ) throws -> (Data, String?) {
             // Reject unsupported versions/modes up-front — never derive a key or
             // compute AAD for a bundle we fundamentally can't process.
             guard bundle.version      != .unsupported else { throw ManagerError.malformedBundle }
@@ -456,7 +489,27 @@ extension IdentityChallenge {
             guard sealed.contentType == expecting, let data = sealed.contentData else {
                 throw ManagerError.malformedBundle
             }
-            return data
+            return (data, sealed.contextNote)
+        }
+
+        /// Truncate `note` so its UTF-8 encoding is at most `maxBytes` bytes.
+        /// Drops trailing bytes at a scalar boundary — never produces invalid
+        /// UTF-8. An empty string round-trips to `nil` so absent and empty
+        /// are treated the same on the wire.
+        static func truncate(note: String?, maxBytes: Int) -> String? {
+            guard let note, !note.isEmpty else { return nil }
+            if note.utf8.count <= maxBytes { return note }
+
+            // Walk unicode scalars, appending while we stay under the cap.
+            var out = ""
+            var used = 0
+            for scalar in note.unicodeScalars {
+                let add = String(scalar).utf8.count
+                if used + add > maxBytes { break }
+                out.unicodeScalars.append(scalar)
+                used += add
+            }
+            return out.isEmpty ? nil : out
         }
 
         /// Routing — find the contact whose `senderFingerprint` matches the bundle.

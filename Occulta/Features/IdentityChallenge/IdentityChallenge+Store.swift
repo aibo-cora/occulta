@@ -36,6 +36,10 @@ extension IdentityChallenge {
             let timestamp: UInt64
             /// Stable per-contact identifier — enforces the 1-per-contact limit.
             let contactKeyID: String
+            /// Preserved across the round trip so the UI can show the original
+            /// question alongside the verification result. Not part of the
+            /// signed data, not part of the rate-limit key.
+            let contextNote: String?
         }
 
         enum StoreError: Error {

@@ -32,20 +32,44 @@ private struct OldSealedPayload: Codable {
     // MARK: SealedPayload cross-version Codable
 
     @Test func oldDecoder_readsNewSealedPayload() throws {
-        // New build writes a SealedPayload with contentType/contentData.
+        // New build writes a SealedPayload with contentType/contentData/contextNote.
         let fresh = OccultaBundle.SealedPayload(
             message:     Data("hello old app".utf8),
             prekeyBatch: nil,
             contentType: .identityChallenge,
-            contentData: Data(repeating: 0xAB, count: 72)
+            contentData: Data(repeating: 0xAB, count: 72),
+            contextNote: "Was this you?"
         )
         let bytes = try JSONEncoder().encode(fresh)
 
-        // Old build has no knowledge of contentType/contentData — must still decode.
+        // Old build has no knowledge of contentType/contentData/contextNote — must still decode.
         let old = try JSONDecoder().decode(OldSealedPayload.self, from: bytes)
 
         #expect(old.message == Data("hello old app".utf8))
         #expect(old.prekeyBatch == nil)
+    }
+
+    @Test func sealedPayload_contextNoteRoundtrips() throws {
+        let original = OccultaBundle.SealedPayload(
+            message:     Data(),
+            contentType: .identityChallenge,
+            contentData: Data([0x00]),
+            contextNote: "hi"
+        )
+        let bytes   = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: bytes)
+        #expect(decoded.contextNote == "hi")
+    }
+
+    @Test func sealedPayload_contextNoteNilWhenAbsent() throws {
+        let original = OccultaBundle.SealedPayload(
+            message:     Data(),
+            contentType: .identityChallenge,
+            contentData: Data([0x00])
+        )
+        let bytes   = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: bytes)
+        #expect(decoded.contextNote == nil)
     }
 
     @Test func newDecoder_readsOldSealedPayload() throws {
@@ -58,6 +82,7 @@ private struct OldSealedPayload: Codable {
         #expect(new.message     == Data("legacy".utf8))
         #expect(new.contentType == nil)
         #expect(new.contentData == nil)
+        #expect(new.contextNote == nil)
     }
 
     @Test func fallbackMessages_areValidUtf8() {

@@ -192,6 +192,18 @@ struct OccultaBundle: Codable {
         /// variable-length `ResponsePayload` encoding.
         let contentData: Data?
 
+        /// Optional human-readable context from the challenger.
+        ///
+        /// Encrypted inside `SealedPayload` — invisible to observers. Authenticated
+        /// by GCM but NOT included in the ECDSA-signed data: keeping user-typed
+        /// freetext out of the signature eliminates a signing-oracle class of
+        /// attack where a user could be tricked into signing arbitrary content
+        /// dressed up as a "question".
+        ///
+        /// Capped at `IdentityChallenge.maxContextNoteBytes` UTF-8 bytes. Always
+        /// `nil` on responses and on regular messages.
+        let contextNote: String?
+
         /// Payload routing inside the encrypted envelope.
         ///
         /// Lives here (not on the wire envelope) so discrimination happens after
@@ -206,12 +218,14 @@ struct OccultaBundle: Codable {
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
             contentType: ContentType? = nil,
-            contentData: Data? = nil
+            contentData: Data? = nil,
+            contextNote: String? = nil
         ) {
             self.message     = message
             self.prekeyBatch = prekeyBatch
             self.contentType = contentType
             self.contentData = contentData
+            self.contextNote = contextNote
         }
 
         /// A versioned batch of the sender's prekey public keys.

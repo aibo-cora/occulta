@@ -26,6 +26,13 @@ enum IdentityChallenge {
     /// Maximum outstanding challenges per contact.
     static let maxOutstandingPerContact = 1
 
+    /// Maximum context-note length in UTF-8 bytes.
+    /// Sender truncates; responder rejects anything larger as malformed —
+    /// the sender is supposed to enforce this, so a larger note is evidence
+    /// of a tampered or non-compliant peer (though GCM integrity means it
+    /// must have come from the peer, not a MITM).
+    static let maxContextNoteBytes = 500
+
     // MARK: - Fallback messages
 
     /// Fallback text shown by old Occulta builds that predate identity challenges.

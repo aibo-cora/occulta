@@ -73,8 +73,9 @@ private func parties(
 
         let responseBundle = try r.mgr.respond(to: pending)
 
-        let ok = try c.mgr.verifyResponse(bundle: responseBundle, contacts: [r.view])
+        let (ok, note) = try c.mgr.verifyResponse(bundle: responseBundle, contacts: [r.view])
         #expect(ok)
+        #expect(note == nil)
 
         // Slot is released after verification.
         #expect(c.store.count == 0)
@@ -208,7 +209,7 @@ private func parties(
         // Advance past the 5-minute window before the challenger verifies.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) + 1
 
-        let ok = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (ok, _) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
         #expect(!ok)
     }
 
@@ -227,7 +228,7 @@ private func parties(
         // Just under the window.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) - 1
 
-        let ok = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (ok, _) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
         #expect(ok)
     }
 
@@ -240,10 +241,10 @@ private func parties(
         let response  = try r.mgr.respond(to: pending)
 
         // First verify — succeeds and consumes the slot.
-        #expect(try c.mgr.verifyResponse(bundle: response, contacts: [r.view]))
+        #expect(try c.mgr.verifyResponse(bundle: response, contacts: [r.view]).ok)
 
         // Replay — same response, but store no longer has the entry.
-        let replay = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (replay, _) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
         #expect(!replay)
     }
 
@@ -326,6 +327,88 @@ private func parties(
         #expect(b.version      == .v3fs)
         #expect(b.secrecy.mode == .longTermFallback)
         #expect(b.secrecy.prekeyID == nil)
+    }
+
+    // MARK: Context note
+
+    @Test func contextNote_roundtripsThroughChallengeAndVerify() throws {
+        let (c, r) = parties()
+        let note = "Someone on Telegram is asking me for 18,000. Was this you?"
+
+        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: note)
+        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        #expect(pending.contextNote == note)
+
+        let response = try r.mgr.respond(to: pending)
+        let (ok, echoed) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        #expect(ok)
+        #expect(echoed == note)
+    }
+
+    @Test func contextNote_nilWhenNotProvided() throws {
+        let (c, r) = parties()
+        let challenge = try c.mgr.createChallenge(for: r.view)
+        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        #expect(pending.contextNote == nil)
+
+        let response = try r.mgr.respond(to: pending)
+        let (ok, echoed) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        #expect(ok)
+        #expect(echoed == nil)
+    }
+
+    @Test func contextNote_truncatedAtMaxBytes() throws {
+        let (c, r) = parties()
+        // 600-byte ASCII note — sender MUST truncate to 500 before seal.
+        let oversize = String(repeating: "a", count: 600)
+        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: oversize)
+        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+
+        #expect(pending.contextNote?.utf8.count == IdentityChallenge.maxContextNoteBytes)
+        #expect(pending.contextNote == String(repeating: "a", count: IdentityChallenge.maxContextNoteBytes))
+    }
+
+    @Test func contextNote_emptyStringTreatedAsNil() throws {
+        let (c, r) = parties()
+        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: "")
+        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        #expect(pending.contextNote == nil)
+    }
+
+    @Test func contextNote_responseCarriesNoNote() throws {
+        // Responses never include a contextNote — the SealedPayload.contextNote
+        // on a response bundle must be nil even when the challenge had one.
+        let (c, r) = parties()
+        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: "hi")
+        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let response  = try r.mgr.respond(to: pending)
+
+        // Decrypt the response ourselves (challenger side) and inspect the
+        // SealedPayload directly — can't use the public API since it strips
+        // the note for response-typed bundles.
+        let sessionKey = c.crypto.deriveSessionKey(using: r.view.publicKey)!
+        let plaintext  = try c.crypto.open(response, using: sessionKey)
+        let sealed     = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
+        #expect(sealed.contextNote == nil)
+        #expect(sealed.contentType == .identityChallengeResponse)
+    }
+
+    @Test func contextNote_notInSignedData() throws {
+        // Signing the same (nonce, timestamp, fingerprint) with or without a
+        // note must produce data that verifies identically — the note has
+        // zero cryptographic role.
+        let epoch = Party.defaultEpoch
+        let clock: () -> Date = { Date(timeIntervalSince1970: TimeInterval(epoch)) }
+
+        let c = Party(name: "c", clock: clock)
+        let r = Party(name: "r", clock: clock)
+
+        // Challenge WITH note → sign → verify.
+        let challengeA = try c.mgr.createChallenge(for: r.view, contextNote: "X")
+        let pendingA   = try r.mgr.decryptChallenge(bundle: challengeA, contacts: [c.view])
+        let responseA  = try r.mgr.respond(to: pendingA)
+        let (okA, _)   = try c.mgr.verifyResponse(bundle: responseA, contacts: [r.view])
+        #expect(okA)
     }
 
     @Test func responseBundle_ridesV3fsLongTermFallback() throws {
