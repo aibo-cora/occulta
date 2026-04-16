@@ -224,10 +224,18 @@ extension IdentityChallenge {
                 let pubKey    = try? crypto.decrypt(data: keyRecord.material)
             else { return nil }
             let name = contact.givenName.decrypt()
+            let quantumMaterial: QuantumKeyMaterial? = {
+                guard
+                    let encrypted = keyRecord.quantumKeyMaterialEncrypted,
+                    let decrypted = try? crypto.decrypt(data: encrypted)
+                else { return nil }
+                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decrypted)
+            }()
             return IdentityChallenge.ContactView(
-                identifier:  contact.identifier,
-                publicKey:   pubKey,
-                displayName: name.isEmpty ? "Unknown" : name
+                identifier:         contact.identifier,
+                publicKey:          pubKey,
+                displayName:        name.isEmpty ? "Unknown" : name,
+                quantumKeyMaterial: quantumMaterial
             )
         }
 

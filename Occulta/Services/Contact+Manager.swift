@@ -1024,7 +1024,7 @@ extension ContactManager {
             else {
                 throw Manager.Crypto.EncryptionError.keyDerivationFailed
             }
-            
+
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
         case .unsupported:
             // Already rejected above — exhaustiveness only.

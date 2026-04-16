@@ -39,6 +39,9 @@ extension IdentityChallenge {
         let publicKey: Data
         /// Display name for the UI only. Never fed into crypto.
         let displayName: String
+        /// ML-KEM quantum material from the proximity exchange, if present.
+        /// Used to derive hybrid session keys consistent with regular messages.
+        let quantumKeyMaterial: QuantumKeyMaterial?
     }
 
     // MARK: - PendingApproval
@@ -175,7 +178,8 @@ extension IdentityChallenge {
                 envelope:        envelope,
                 fallbackMessage: IdentityChallenge.challengeFallbackMessage,
                 ourPublicKey:    ourPublicKey,
-                recipientKey:    contact.publicKey
+                recipientKey:    contact.publicKey,
+                quantumMaterial: contact.quantumKeyMaterial
             )
 
             // 4. Remember this challenge until the response arrives or expires.
@@ -213,6 +217,7 @@ extension IdentityChallenge {
             let envelope = try self.openIdentityBundle(
                 bundle:        bundle,
                 peerPublicKey: sender.publicKey,
+                peerQuantum:   sender.quantumKeyMaterial,
                 expecting:     .challenge
             )
             let payloadBytes = envelope.payload
@@ -292,7 +297,8 @@ extension IdentityChallenge {
                 envelope:        envelope,
                 fallbackMessage: IdentityChallenge.responseFallbackMessage,
                 ourPublicKey:    ourPublicKey,
-                recipientKey:    pending.challenger.publicKey
+                recipientKey:    pending.challenger.publicKey,
+                quantumMaterial: pending.challenger.quantumKeyMaterial
             )
         }
 
@@ -316,6 +322,7 @@ extension IdentityChallenge {
             let envelope = try self.openIdentityBundle(
                 bundle:        bundle,
                 peerPublicKey: sender.publicKey,
+                peerQuantum:   sender.quantumKeyMaterial,
                 expecting:     .response
             )
 
@@ -406,7 +413,8 @@ extension IdentityChallenge {
             envelope:        IdentityChallengeEnvelope,
             fallbackMessage: String,
             ourPublicKey:    Data,
-            recipientKey:    Data
+            recipientKey:    Data,
+            quantumMaterial: QuantumKeyMaterial? = nil
         ) throws -> OccultaBundle {
             let sealed = OccultaBundle.SealedPayload(
                 message:           Data(fallbackMessage.utf8),
@@ -420,13 +428,13 @@ extension IdentityChallenge {
                 throw ManagerError.malformedBundle
             }
 
-            guard let sessionKey = self.crypto.deriveSessionKey(using: recipientKey) else {
+            guard let sessionKey = self.crypto.deriveSessionKey(using: recipientKey, quantumMaterial: quantumMaterial) else {
                 throw ManagerError.keyDerivationFailed
             }
 
             let secrecy = OccultaBundle.SecrecyContext(
                 mode:               .longTermFallback,
-                ephemeralPublicKey: ourPublicKey,
+                ephemeralPublicKey: Data(),
                 prekeyID:           nil
             )
 
@@ -464,16 +472,17 @@ extension IdentityChallenge {
         /// match `expecting` — e.g. a challenge bundle offered to the response
         /// verifier.
         private func openIdentityBundle(
-            bundle:        OccultaBundle,
-            peerPublicKey: Data,
-            expecting:     IdentityChallengeEnvelope.Kind
+            bundle:          OccultaBundle,
+            peerPublicKey:   Data,
+            peerQuantum:     QuantumKeyMaterial? = nil,
+            expecting:       IdentityChallengeEnvelope.Kind
         ) throws -> IdentityChallengeEnvelope {
             // Reject unsupported versions/modes up-front — never derive a key or
             // compute AAD for a bundle we fundamentally can't process.
             guard bundle.version      != .unsupported else { throw ManagerError.malformedBundle }
             guard bundle.secrecy.mode != .unsupported else { throw ManagerError.malformedBundle }
 
-            guard let sessionKey = self.crypto.deriveSessionKey(using: peerPublicKey) else {
+            guard let sessionKey = self.crypto.deriveSessionKey(using: peerPublicKey, quantumMaterial: peerQuantum) else {
                 throw ManagerError.keyDerivationFailed
             }
             let plaintext: Data

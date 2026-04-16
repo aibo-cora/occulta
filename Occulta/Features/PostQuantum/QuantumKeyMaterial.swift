@@ -11,7 +11,7 @@
 import Foundation
 
 /// ML-KEM artifacts from a hybrid PQ key exchange.
-struct QuantumKeyMaterial: Codable {
+struct QuantumKeyMaterial: Codable, Equatable {
     /// ML-KEM shared secret from our encapsulation of the contact's key (32 bytes).
     /// Cannot be rederived — encapsulation used one-time internal randomness.
     let encapsulatedSecret: Data
