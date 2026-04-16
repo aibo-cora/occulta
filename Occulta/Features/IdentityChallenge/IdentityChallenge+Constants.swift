@@ -15,7 +15,7 @@ enum IdentityChallenge {
     static let nonceLength = 32
 
     /// Challenger-enforced verification window (seconds).
-    static let timestampWindow: TimeInterval = 300
+    static let timestampWindow: TimeInterval = 3600
 
     /// Responder-side soft lower bound for stale rejection (seconds). Not security-critical.
     static let timestampStaleThreshold: TimeInterval = 3600
