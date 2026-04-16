@@ -15,6 +15,7 @@ import UniformTypeIdentifiers
 @main
 struct OccultaApp: App {
     @State private var contactManager: ContactManager
+    @State private var identityChallenge = IdentityChallenge.Coordinator()
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
     
@@ -159,9 +160,12 @@ struct OccultaApp: App {
                         let (data, _) = try await URLSession.shared.data(from: url)
                         
                         do {
-                            let ownedBasket = try await self.buildOwnedBasket(from: data)
-                            
-                            self.openedFileContents = ownedBasket
+                            if let ownedBasket = try await self.buildOwnedBasket(from: data) {
+                                self.openedFileContents = ownedBasket
+                            }
+                            // If nil, the bundle was an identity-challenge and
+                            // the IdentityChallenge.Coordinator has taken over
+                            // presentation (approval sheet or result sheet).
                         } catch ContactManager.Errors.messageHasNoData {
                             self.errorMessage = "This message contains no data."
                             self.showError = true
@@ -193,6 +197,37 @@ struct OccultaApp: App {
                             try? FileManager.default.removeItem(at: result.url)
                         }
                 }
+                // Identity-challenge outbound share (challenge OR response `.occ`).
+                .sheet(item: Binding(
+                    get: { self.identityChallenge.outboundShare },
+                    set: { self.identityChallenge.outboundShare = $0 }
+                )) { share in
+                    ShareActivityView(url: share.url)
+                        .onDisappear {
+                            try? FileManager.default.removeItem(at: share.url)
+                        }
+                }
+                // Identity-challenge responder approval sheet.
+                .sheet(item: Binding(
+                    get: { self.identityChallenge.incomingChallenge },
+                    set: { self.identityChallenge.incomingChallenge = $0 }
+                )) { incoming in
+                    IdentityChallenge.IncomingChallengeSheet(
+                        incoming:  incoming,
+                        onApprove: { self.identityChallenge.approvePending() },
+                        onDecline: { self.identityChallenge.declinePending() }
+                    )
+                }
+                // Identity-challenge verification result on the challenger side.
+                .sheet(item: Binding(
+                    get: { self.identityChallenge.verificationOutcome },
+                    set: { self.identityChallenge.verificationOutcome = $0 }
+                )) { outcome in
+                    IdentityChallenge.VerificationResultSheet(
+                        outcome:   outcome,
+                        onDismiss: { self.identityChallenge.verificationOutcome = nil }
+                    )
+                }
                 .onChange(of: self.scenePhase) { _, newPhase in
                     if newPhase == .active {
                         // Keep the share extension's contact index in sync and
@@ -205,6 +240,7 @@ struct OccultaApp: App {
         }
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
+        .environment(self.identityChallenge)
     }
     
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
@@ -215,30 +251,46 @@ struct OccultaApp: App {
     ///
     /// After decryption, file-type attachments are written to a temporary directory
     /// so `AsyncImage` and `AVPlayer` can load them by URL.
-    private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket {
+    private func buildOwnedBasket(from fileContents: Data) async throws -> OwnedBasket? {
         try await withThrowingTaskGroup(of: Occulta.File.self) { group in
             let bundle = try? OccultaBundle.decoded(from: fileContents)
- 
+
             debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
- 
+
             let decrypted: (plaintext: Data, ownerID: String)
- 
+
             switch bundle?.version {
             case .v3fs:
                 guard let bundle else {
                     throw ContactManager.Errors.messageHasNoData
                 }
-                
+
                 // ContactManager owns sender identification, prekey resolution,
                 // consumed-key cleanup, inbound batch sync, and model persistence.
-                
-                decrypted = try self.contactManager.decrypt(bundle: bundle)
+                //
+                // We decrypt into the full SealedPayload (not just the message
+                // bytes) so we can peek at the identity-challenge envelope and
+                // route that traffic out of the basket pipeline entirely.
+                let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
+
+                // Identity-challenge traffic rides on .v3fs/.longTermFallback
+                // but is NOT a basket — hand it to the coordinator and bail.
+                if sealed.identityChallenge != nil {
+                    _ = self.identityChallenge.handleInbound(
+                        bundle:         bundle,
+                        sealed:         sealed,
+                        contactManager: self.contactManager
+                    )
+                    return nil
+                }
+
+                decrypted = (sealed.message, ownerID)
             default:
                 // Legacy path — v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
                 decrypted = try self.contactManager.decrypt(data: fileContents)
             }
- 
+
             let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
  
             // ── Write file attachments, photos, videos to temp directory ─────────────────

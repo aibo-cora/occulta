@@ -112,6 +112,9 @@ extension Contact {
                         KeyExchange(identifier: self.identifier)
                     } else {
                         ComposableMessage(identifier: self.identifier)
+                        if let contact = self.contacts.first {
+                            IdentityChallenge.VerifyIdentityButton(contact: contact)
+                        }
                     }
                 }
                 .toolbar {

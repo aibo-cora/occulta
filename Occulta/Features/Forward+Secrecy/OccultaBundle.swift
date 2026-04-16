@@ -66,12 +66,27 @@ struct OccultaBundle: Codable {
         /// `SecRandomCopyBytes` failed to produce entropy.
         /// Encryption must not proceed with a zero or predictable nonce.
         case entropyUnavailable
+        /// Bundle carries a `Version` string this build does not recognise.
+        /// Surfaced to the UI as "requires a newer version of Occulta."
+        case unsupportedVersion
+        /// Bundle carries a `Mode` string this build does not recognise.
+        /// Surfaced to the UI as "requires a newer version of Occulta."
+        case unsupportedMode
     }
 
     // MARK: - Version
 
     static let currentVersion: Version = .v3fs
 
+    /// ⚠️ Adding a new case here is a **wire-format-breaking change** for older
+    /// builds already in the field. An old `Version` enum without the new case
+    /// throws `DecodingError.dataCorrupted` on decode, killing the bundle
+    /// silently. Do not add cases to introduce new features — instead, put the
+    /// feature's discriminator *inside* the encrypted `SealedPayload` via its
+    /// own optional sub-envelope (see `SealedPayload.identityChallenge`) and
+    /// keep the wire `version` at a value old builds already understand. See
+    /// the Exchange.swift comment for the same pattern applied to key-exchange
+    /// messages.
     enum Version: String, Codable {
         /// Long-term SE key. No forward secrecy. Legacy only.
         case v1
@@ -79,21 +94,46 @@ struct OccultaBundle: Codable {
         case v2
         /// Per-contact consumed prekey batches. `SecrecyContext` + version authenticated as AAD.
         case v3fs
+        /// A version string this build does not understand.
+        /// Never written to the wire — only produced by `init(from:)` when an
+        /// inbound bundle carries an unknown raw value. Decryption aborts
+        /// before AAD computation; AAD would fail anyway since the original
+        /// version string is lost.
+        case unsupported
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Version(rawValue: raw) ?? .unsupported
+        }
     }
 
     // MARK: - Mode
-     
+
+    /// ⚠️ Same rule as `Version`: adding a case here breaks existing builds.
+    /// Route new behaviour through a dedicated optional envelope on
+    /// `SealedPayload` (e.g. `identityChallenge`), not new modes.
     enum Mode: String, Codable {
         /// Full forward secrecy.
         /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
         /// Recipient's prekey private key deleted from SE on successful open.
         case forwardSecret
- 
+
         /// Prekey exhaustion fallback.
         /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub)).
         /// Bundle always carries a fresh PrekeySyncBatch (inside ciphertext)
         /// so the next message can use the forward secret path.
+        ///
+        /// Identity challenges also ride this mode — they are long-term ECDH
+        /// bundles with an `IdentityChallengeEnvelope` inside the payload.
         case longTermFallback
+
+        /// Mode this build does not understand. Same semantics as `Version.unsupported`.
+        case unsupported
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Mode(rawValue: raw) ?? .unsupported
+        }
     }
 
     // MARK: - WirePrekey
@@ -130,12 +170,41 @@ struct OccultaBundle: Codable {
     nonisolated
     struct SealedPayload: Codable {
         /// The message plaintext.
+        ///
+        /// For regular messages this is the user's text or file basket.
+        /// For identity challenges (non-nil `identityChallenge`) this is a
+        /// human-readable fallback string shown by old builds that don't
+        /// know about the identity-challenge envelope.
         let message: Data
         /// The sender's fresh prekeys for the recipient to store, or nil.
         /// Non-nil on the fallback path (always), and on the FS path when
         /// the sender's SE stock for this contact is below the replenishment threshold.
         let prekeyBatch: PrekeySyncBatch?
-     
+
+        /// Identity-challenge sub-envelope. `nil` means a regular message —
+        /// routing to `IdentityChallenge.Manager` happens iff this is non-nil.
+        ///
+        /// Bundling the phase discriminator, binary payload, and optional
+        /// context note into a single field makes "kind and payload travel
+        /// together" a type-level invariant: a single optional unwrap tells
+        /// us everything the router needs. Old builds without this key
+        /// silently ignore it and render `message` as regular text.
+        ///
+        /// Added in v1.4.0. Future per-feature envelopes (Document Signing,
+        /// etc.) should sit alongside as their own optional fields rather
+        /// than extending this one.
+        let identityChallenge: IdentityChallengeEnvelope?
+
+        init(
+            message: Data,
+            prekeyBatch: PrekeySyncBatch? = nil,
+            identityChallenge: IdentityChallengeEnvelope? = nil
+        ) {
+            self.message           = message
+            self.prekeyBatch       = prekeyBatch
+            self.identityChallenge = identityChallenge
+        }
+
         /// A versioned batch of the sender's prekey public keys.
         ///
         /// Encrypted inside `SealedPayload.ciphertext` — never visible to observers.
@@ -264,10 +333,9 @@ struct OccultaBundle: Codable {
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    
-            return "Forward Secret"
-        case .longTermFallback: 
-            return "Standard Encryption"
+        case .forwardSecret:    return "Forward Secret"
+        case .longTermFallback: return "Standard Encryption"
+        case .unsupported:      return "Unsupported"
         }
     }
 }
