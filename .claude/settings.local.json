@@ -5,7 +5,8 @@
       "Bash(xcodebuild build:*)",
       "Bash(xcodebuild test:*)",
       "Bash(xcodebuild -list -project Occulta.xcodeproj)",
-      "Bash(xcodebuild -target ShareExtension -showBuildSettings)"
+      "Bash(xcodebuild -target ShareExtension -showBuildSettings)",
+      "Bash(xcrun simctl:*)"
     ]
   }
 }
