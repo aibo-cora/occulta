@@ -114,26 +114,26 @@ extension IdentityChallenge {
         // MARK: - Inbound: route a decrypted SealedPayload
 
         /// Called by the inbound `.occ` pipeline in `OccultaApp` when the
-        /// decoded `SealedPayload.contentType` is non-nil. Reconstitutes the
-        /// `OccultaBundle` so the `Manager` can re-open it through its own
+        /// decoded `SealedPayload.identityChallenge` is non-nil. Reconstitutes
+        /// the `OccultaBundle` so the `Manager` can re-open it through its own
         /// ECDSA/AAD checks — we do NOT trust the pre-decrypted payload alone.
         ///
         /// - Returns: `true` if the bundle was routed to identity-challenge
         ///   handling (approval sheet or verification result was presented).
         ///   `false` means the caller should fall back to regular message
-        ///   handling (e.g. an unknown content type from a future build).
+        ///   handling (envelope was absent).
         @discardableResult
         func handleInbound(
             bundle: OccultaBundle,
             sealed: OccultaBundle.SealedPayload,
             contactManager: ContactManager
         ) -> Bool {
-            guard let contentType = sealed.contentType else { return false }
+            guard let envelope = sealed.identityChallenge else { return false }
 
             let contactViews = Self.allContactViews(contactManager: contactManager)
 
-            switch contentType {
-            case .identityChallenge:
+            switch envelope.kind {
+            case .challenge:
                 do {
                     let pending = try self.manager.decryptChallenge(bundle: bundle, contacts: contactViews)
                     self.incomingChallenge = IncomingChallenge(pending: pending)
@@ -142,7 +142,7 @@ extension IdentityChallenge {
                 }
                 return true
 
-            case .identityChallengeResponse:
+            case .response:
                 do {
                     let (ok, note) = try self.manager.verifyResponse(bundle: bundle, contacts: contactViews)
                     // Best-effort: match the responder back to a contact name.

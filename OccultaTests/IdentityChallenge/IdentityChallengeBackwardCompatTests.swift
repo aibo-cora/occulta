@@ -6,8 +6,9 @@
 //
 //  Identity challenges MUST ride on existing `Version` / `Mode` values so that
 //  old builds in the field can still decode the envelope. Content routing is
-//  done inside the encrypted `SealedPayload` via the optional `contentType`
-//  field — which old Codable decoders harmlessly ignore.
+//  done inside the encrypted `SealedPayload` via the optional
+//  `identityChallenge` sub-envelope — which old Codable decoders harmlessly
+//  ignore.
 //
 
 import Testing
@@ -16,9 +17,9 @@ import Foundation
 
 // MARK: - Fixtures
 
-/// A minimal SealedPayload as an OLD build would see it — no contentType /
-/// contentData keys at all. Used to verify a new build decodes legacy data
-/// cleanly and that an old build (this struct) decodes new data cleanly.
+/// A minimal SealedPayload as an OLD build would see it — no
+/// `identityChallenge` key at all. Used to verify a new build decodes legacy
+/// data cleanly and that an old build (this struct) decodes new data cleanly.
 private struct OldSealedPayload: Codable {
     let message: Data
     let prekeyBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
@@ -32,17 +33,18 @@ private struct OldSealedPayload: Codable {
     // MARK: SealedPayload cross-version Codable
 
     @Test func oldDecoder_readsNewSealedPayload() throws {
-        // New build writes a SealedPayload with contentType/contentData/contextNote.
+        // New build writes a SealedPayload with a full identityChallenge envelope.
         let fresh = OccultaBundle.SealedPayload(
-            message:     Data("hello old app".utf8),
-            prekeyBatch: nil,
-            contentType: .identityChallenge,
-            contentData: Data(repeating: 0xAB, count: 72),
-            contextNote: "Was this you?"
+            message:           Data("hello old app".utf8),
+            prekeyBatch:       nil,
+            identityChallenge: .challenge(
+                payload:     Data(repeating: 0xAB, count: 72),
+                contextNote: "Was this you?"
+            )
         )
         let bytes = try JSONEncoder().encode(fresh)
 
-        // Old build has no knowledge of contentType/contentData/contextNote — must still decode.
+        // Old build has no knowledge of the identityChallenge key — must still decode.
         let old = try JSONDecoder().decode(OldSealedPayload.self, from: bytes)
 
         #expect(old.message == Data("hello old app".utf8))
@@ -51,38 +53,33 @@ private struct OldSealedPayload: Codable {
 
     @Test func sealedPayload_contextNoteRoundtrips() throws {
         let original = OccultaBundle.SealedPayload(
-            message:     Data(),
-            contentType: .identityChallenge,
-            contentData: Data([0x00]),
-            contextNote: "hi"
+            message:           Data(),
+            identityChallenge: .challenge(payload: Data([0x00]), contextNote: "hi")
         )
         let bytes   = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: bytes)
-        #expect(decoded.contextNote == "hi")
+        #expect(decoded.identityChallenge?.contextNote == "hi")
     }
 
     @Test func sealedPayload_contextNoteNilWhenAbsent() throws {
         let original = OccultaBundle.SealedPayload(
-            message:     Data(),
-            contentType: .identityChallenge,
-            contentData: Data([0x00])
+            message:           Data(),
+            identityChallenge: .challenge(payload: Data([0x00]), contextNote: nil)
         )
         let bytes   = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: bytes)
-        #expect(decoded.contextNote == nil)
+        #expect(decoded.identityChallenge?.contextNote == nil)
     }
 
     @Test func newDecoder_readsOldSealedPayload() throws {
-        // Old build writes a SealedPayload without the new fields.
+        // Old build writes a SealedPayload without the identityChallenge key.
         let old = OldSealedPayload(message: Data("legacy".utf8), prekeyBatch: nil)
         let bytes = try JSONEncoder().encode(old)
 
         let new = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: bytes)
 
-        #expect(new.message     == Data("legacy".utf8))
-        #expect(new.contentType == nil)
-        #expect(new.contentData == nil)
-        #expect(new.contextNote == nil)
+        #expect(new.message           == Data("legacy".utf8))
+        #expect(new.identityChallenge == nil)
     }
 
     @Test func fallbackMessages_areValidUtf8() {
@@ -180,16 +177,16 @@ private struct OldSealedPayload: Codable {
     // MARK: End-to-end — old-format bundle on new code
 
     @Test func oldFormatBundle_decryptsAsRegularMessage() throws {
-        // A bundle produced without the contentType field ends up with
-        // contentType == nil after decode. The identity manager refuses it;
+        // A bundle produced without the identityChallenge key ends up with
+        // envelope == nil after decode. The identity manager refuses it;
         // the regular message path treats `message` as text. Here we assert
         // the SealedPayload decoding behaviour directly.
         let old = OldSealedPayload(message: Data("plain text".utf8), prekeyBatch: nil)
         let bytes = try JSONEncoder().encode(old)
         let sealed = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: bytes)
 
-        #expect(sealed.contentType == nil)
-        #expect(sealed.message     == Data("plain text".utf8))
+        #expect(sealed.identityChallenge == nil)
+        #expect(sealed.message           == Data("plain text".utf8))
     }
 
     // MARK: - Helper

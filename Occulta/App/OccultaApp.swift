@@ -269,13 +269,13 @@ struct OccultaApp: App {
                 // consumed-key cleanup, inbound batch sync, and model persistence.
                 //
                 // We decrypt into the full SealedPayload (not just the message
-                // bytes) so we can peek at `contentType` and route identity-
-                // challenge traffic out of the basket pipeline entirely.
+                // bytes) so we can peek at the identity-challenge envelope and
+                // route that traffic out of the basket pipeline entirely.
                 let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
 
                 // Identity-challenge traffic rides on .v3fs/.longTermFallback
                 // but is NOT a basket — hand it to the coordinator and bail.
-                if sealed.contentType != nil {
+                if sealed.identityChallenge != nil {
                     _ = self.identityChallenge.handleInbound(
                         bundle:         bundle,
                         sealed:         sealed,

@@ -14,7 +14,7 @@
 //    ── IncomingChallengeSheet — auto-presented on inbound `.identityChallenge`
 //
 //    Challenger side (phase 3)
-//    ── VerificationResultSheet — auto-presented on inbound `.identityChallengeResponse`
+//    ── VerificationResultSheet — auto-presented on inbound response envelope
 //
 //  The sheets read/write state on `IdentityChallenge.Coordinator`, which lives
 //  in the environment. None of them do crypto directly.

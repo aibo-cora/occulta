@@ -36,10 +36,10 @@ enum IdentityChallenge {
     // MARK: - Fallback messages
 
     /// Fallback text shown by old Occulta builds that predate identity challenges.
-    /// Such builds decode `SealedPayload` without `contentType` / `contentData` and
-    /// render `message` as a regular text message. The strings are intentionally
-    /// short, non-alarming, and actionable. The `[Occulta]` prefix helps the reader
-    /// distinguish it from text their contact typed.
+    /// Such builds decode `SealedPayload` without the `identityChallenge`
+    /// envelope and render `message` as a regular text message. The strings are
+    /// intentionally short, non-alarming, and actionable. The `[Occulta]` prefix
+    /// helps the reader distinguish it from text their contact typed.
     static let challengeFallbackMessage = "[Occulta] This is an identity verification request. Update Occulta to respond."
     static let responseFallbackMessage  = "[Occulta] This is an identity verification response. Update Occulta to verify."
 }

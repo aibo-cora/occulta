@@ -81,11 +81,12 @@ struct OccultaBundle: Codable {
     /// ⚠️ Adding a new case here is a **wire-format-breaking change** for older
     /// builds already in the field. An old `Version` enum without the new case
     /// throws `DecodingError.dataCorrupted` on decode, killing the bundle
-    /// silently. Do not add cases to introduce new features — instead, put a
-    /// discriminator *inside* the encrypted `SealedPayload` (see
-    /// `SealedPayload.ContentType`) and keep the wire `version` at a value old
-    /// builds already understand. See the Exchange.swift comment for the same
-    /// pattern applied to key-exchange messages.
+    /// silently. Do not add cases to introduce new features — instead, put the
+    /// feature's discriminator *inside* the encrypted `SealedPayload` via its
+    /// own optional sub-envelope (see `SealedPayload.identityChallenge`) and
+    /// keep the wire `version` at a value old builds already understand. See
+    /// the Exchange.swift comment for the same pattern applied to key-exchange
+    /// messages.
     enum Version: String, Codable {
         /// Long-term SE key. No forward secrecy. Legacy only.
         case v1
@@ -109,7 +110,8 @@ struct OccultaBundle: Codable {
     // MARK: - Mode
 
     /// ⚠️ Same rule as `Version`: adding a case here breaks existing builds.
-    /// Route new behaviour through `SealedPayload.ContentType`, not new modes.
+    /// Route new behaviour through a dedicated optional envelope on
+    /// `SealedPayload` (e.g. `identityChallenge`), not new modes.
     enum Mode: String, Codable {
         /// Full forward secrecy.
         /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
@@ -122,7 +124,7 @@ struct OccultaBundle: Codable {
         /// so the next message can use the forward secret path.
         ///
         /// Identity challenges also ride this mode — they are long-term ECDH
-        /// bundles with a `ContentType` discriminator inside the payload.
+        /// bundles with an `IdentityChallengeEnvelope` inside the payload.
         case longTermFallback
 
         /// Mode this build does not understand. Same semantics as `Version.unsupported`.
@@ -170,62 +172,37 @@ struct OccultaBundle: Codable {
         /// The message plaintext.
         ///
         /// For regular messages this is the user's text or file basket.
-        /// For identity challenges (non-nil `contentType`) this is a human-readable
-        /// fallback string shown by old builds that don't know about `contentType`.
+        /// For identity challenges (non-nil `identityChallenge`) this is a
+        /// human-readable fallback string shown by old builds that don't
+        /// know about the identity-challenge envelope.
         let message: Data
         /// The sender's fresh prekeys for the recipient to store, or nil.
         /// Non-nil on the fallback path (always), and on the FS path when
         /// the sender's SE stock for this contact is below the replenishment threshold.
         let prekeyBatch: PrekeySyncBatch?
 
-        /// Content routing discriminator. `nil` means a regular message — this is
-        /// the backward-compatible default. Old builds' `Codable` decoders
-        /// silently ignore unrecognised keys, so a new build can set this field
-        /// without breaking anyone in the field.
+        /// Identity-challenge sub-envelope. `nil` means a regular message —
+        /// routing to `IdentityChallenge.Manager` happens iff this is non-nil.
         ///
-        /// Added in v1.4.0 to route identity-challenge traffic without adding
-        /// new cases to `OccultaBundle.Version` / `Mode`.
-        let contentType: ContentType?
-
-        /// Binary payload for features that use a `contentType`. `nil` for regular
-        /// messages. Carries e.g. the 72-byte `ChallengePayload` encoding or the
-        /// variable-length `ResponsePayload` encoding.
-        let contentData: Data?
-
-        /// Optional human-readable context from the challenger.
+        /// Bundling the phase discriminator, binary payload, and optional
+        /// context note into a single field makes "kind and payload travel
+        /// together" a type-level invariant: a single optional unwrap tells
+        /// us everything the router needs. Old builds without this key
+        /// silently ignore it and render `message` as regular text.
         ///
-        /// Encrypted inside `SealedPayload` — invisible to observers. Authenticated
-        /// by GCM but NOT included in the ECDSA-signed data: keeping user-typed
-        /// freetext out of the signature eliminates a signing-oracle class of
-        /// attack where a user could be tricked into signing arbitrary content
-        /// dressed up as a "question".
-        ///
-        /// Capped at `IdentityChallenge.maxContextNoteBytes` UTF-8 bytes. Always
-        /// `nil` on responses and on regular messages.
-        let contextNote: String?
-
-        /// Payload routing inside the encrypted envelope.
-        ///
-        /// Lives here (not on the wire envelope) so discrimination happens after
-        /// decryption, inside the authenticated boundary. An observer cannot tell
-        /// an identity challenge apart from a regular long-term-fallback message.
-        enum ContentType: String, Codable {
-            case identityChallenge
-            case identityChallengeResponse
-        }
+        /// Added in v1.4.0. Future per-feature envelopes (Document Signing,
+        /// etc.) should sit alongside as their own optional fields rather
+        /// than extending this one.
+        let identityChallenge: IdentityChallengeEnvelope?
 
         init(
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
-            contentType: ContentType? = nil,
-            contentData: Data? = nil,
-            contextNote: String? = nil
+            identityChallenge: IdentityChallengeEnvelope? = nil
         ) {
-            self.message     = message
-            self.prekeyBatch = prekeyBatch
-            self.contentType = contentType
-            self.contentData = contentData
-            self.contextNote = contextNote
+            self.message           = message
+            self.prekeyBatch       = prekeyBatch
+            self.identityChallenge = identityChallenge
         }
 
         /// A versioned batch of the sender's prekey public keys.

@@ -376,8 +376,9 @@ private func parties(
     }
 
     @Test func contextNote_responseCarriesNoNote() throws {
-        // Responses never include a contextNote — the SealedPayload.contextNote
-        // on a response bundle must be nil even when the challenge had one.
+        // Responses never include a contextNote — the response envelope on
+        // a response bundle must have contextNote == nil even when the
+        // originating challenge had one.
         let (c, r) = parties()
         let challenge = try c.mgr.createChallenge(for: r.view, contextNote: "hi")
         let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
@@ -389,8 +390,55 @@ private func parties(
         let sessionKey = c.crypto.deriveSessionKey(using: r.view.publicKey)!
         let plaintext  = try c.crypto.open(response, using: sessionKey)
         let sealed     = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
-        #expect(sealed.contextNote == nil)
-        #expect(sealed.contentType == .identityChallengeResponse)
+        #expect(sealed.identityChallenge?.kind        == .response)
+        #expect(sealed.identityChallenge?.contextNote == nil)
+    }
+
+    @Test func responder_silentlyIgnoresContextNoteOnResponseEnvelope() throws {
+        // A non-compliant peer could craft a response envelope with a
+        // contextNote set. The verifier must accept the response and simply
+        // ignore the note — never throw. This test fabricates such a response
+        // by hand because the public API (`.response(payload:)`) forces nil.
+        let (c, r) = parties()
+        let challenge = try c.mgr.createChallenge(for: r.view)
+        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let realResponse = try r.mgr.respond(to: pending)
+
+        // Decrypt the real response, rewrite the envelope to include a note,
+        // re-seal with the same session key, and hand it to the challenger.
+        let sessionKey = c.crypto.deriveSessionKey(using: r.view.publicKey)!
+        let plaintext  = try c.crypto.open(realResponse, using: sessionKey)
+        var sealed     = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
+
+        let tamperedEnvelope = IdentityChallengeEnvelope(
+            kind:        .response,
+            payload:     sealed.identityChallenge!.payload,
+            contextNote: "I should not be here"
+        )
+        sealed = OccultaBundle.SealedPayload(
+            message:           sealed.message,
+            prekeyBatch:       sealed.prekeyBatch,
+            identityChallenge: tamperedEnvelope
+        )
+
+        let reencoded = try JSONEncoder().encode(sealed)
+        let aad       = try OccultaBundle.computeAdditionalAuthentication(
+            version: realResponse.version, secrecy: realResponse.secrecy
+        )
+        let box = try AES.GCM.seal(
+            reencoded, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad
+        )
+        let resealed = OccultaBundle(
+            version:           realResponse.version,
+            secrecy:           realResponse.secrecy,
+            ciphertext:        box.combined!,
+            fingerprintNonce:  realResponse.fingerprintNonce,
+            senderFingerprint: realResponse.senderFingerprint
+        )
+
+        // Verification should succeed — the tampered note is ignored, not fatal.
+        let (ok, _) = try c.mgr.verifyResponse(bundle: resealed, contacts: [r.view])
+        #expect(ok)
     }
 
     @Test func contextNote_notInSignedData() throws {
