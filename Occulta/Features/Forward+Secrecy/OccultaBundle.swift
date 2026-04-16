@@ -333,9 +333,12 @@ struct OccultaBundle: Codable {
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    return "Forward Secret"
-        case .longTermFallback: return "Standard Encryption"
-        case .unsupported:      return "Unsupported"
+        case .forwardSecret:    
+            return "Forward Secret"
+        case .longTermFallback: 
+            return "Standard Encryption"
+        case .unsupported:      
+            return "Unsupported"
         }
     }
 }
