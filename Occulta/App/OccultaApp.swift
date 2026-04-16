@@ -144,11 +144,16 @@ struct OccultaApp: App {
                         }
                 }
                 .onOpenURL { url in
-                    // Handle share extension handoff
+                    // Handle share extension handoff (outbound) and inbound .occ routing.
                     if url.scheme == "occulta",
                        let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
                        let sessionID = components.queryItems?.first(where: { $0.name == "session" })?.value {
-                        Task { await self.processShareSession(sessionID: sessionID) }
+                        switch url.host {
+                        case "inbound":
+                            Task { await self.processInboundSession(sessionID: sessionID) }
+                        default:
+                            Task { await self.processShareSession(sessionID: sessionID) }
+                        }
                         return
                     }
 
@@ -418,6 +423,46 @@ struct OccultaApp: App {
             // Plaintext cleanup on ANY failure — non-negotiable
             try? FileManager.default.removeItem(at: sessionDir)
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
+            self.showError = true
+        }
+    }
+
+    /// Process an inbound `.occ` file handed off from the share extension via
+    /// `occulta://inbound?session=<uuid>`.
+    ///
+    /// Reads `group.com.occulta.shared/inbound/<uuid>.occ`, feeds the bytes
+    /// through the same `buildOwnedBasket` pipeline used for Files.app opens,
+    /// then routes the result:
+    /// - Non-nil basket → `openedFileContents` (regular message / file sheet).
+    /// - Nil → `IdentityChallenge.Coordinator` has taken over presentation.
+    /// - Error → surfaces via `showError`.
+    ///
+    /// The `.occ` file is deleted from the shared container on success or failure.
+    private func processInboundSession(sessionID: String) async {
+        guard let containerURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
+        else { return }
+
+        let fileURL = containerURL
+            .appendingPathComponent("inbound")
+            .appendingPathComponent("\(sessionID).occ")
+
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            if let basket = try await self.buildOwnedBasket(from: data) {
+                self.openedFileContents = basket
+            }
+            // If nil, IdentityChallenge.Coordinator has taken over via its sheets.
+        } catch ContactManager.Errors.messageHasNoData {
+            self.errorMessage = "This message contains no data."
+            self.showError = true
+        } catch ContactManager.Errors.noPublicKeyToEncryptWith {
+            self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
+            self.showError = true
+        } catch {
+            self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
         }
     }

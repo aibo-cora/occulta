@@ -24,6 +24,18 @@ class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+
+        // `.occ` inputs are already encrypted — re-encrypting them makes no
+        // sense. Hand them to the main app for decryption instead of showing
+        // the contact picker.
+        //
+        // Why this lives in the share extension at all: apps like WhatsApp
+        // present attachments through the system share sheet, which only
+        // surfaces App Extensions — not main-app document handlers. Without
+        // this branch, tapping "Occulta" on a `.occ` in WhatsApp wrongly
+        // routes through the encrypt-for-recipient picker.
+        if self.tryHandoffInboundOCC() { return }
+
         self.showContactPicker()
     }
 
@@ -353,6 +365,149 @@ class ShareViewController: UIViewController {
         }
 
         self.extensionContext?.completeRequest(returningItems: nil)
+    }
+
+    // MARK: - Inbound `.occ` handoff
+
+    /// UTI for `.occ` files as declared in the main app's Info.plist
+    /// (`UTExportedTypeDeclarations`). Providers that preserve UTI metadata
+    /// (e.g. Files.app, AirDrop) tag `.occ` attachments with this string.
+    private static let occUTI = "com.github.aibo-cora.occulta"
+
+    /// Returns true iff at least one attachment looks like an `.occ` file
+    /// AND we successfully kicked off the async handoff to the main app.
+    ///
+    /// The detection logic is lenient: many source apps (notably WhatsApp)
+    /// strip or replace the UTI when presenting an attachment through the
+    /// system share sheet. We therefore match on either:
+    ///   1. The exported UTI, or
+    ///   2. A `public.file-url` item whose path extension is `occ`.
+    ///
+    /// Returning true short-circuits `viewDidLoad` — the picker never shows.
+    /// Returning false falls back to the outbound encrypt-for-contact flow.
+    private func tryHandoffInboundOCC() -> Bool {
+        guard let extensionItems = self.extensionContext?.inputItems as? [NSExtensionItem] else {
+            return false
+        }
+
+        var providers: [NSItemProvider] = []
+        for item in extensionItems {
+            if let attachments = item.attachments {
+                providers.append(contentsOf: attachments)
+            }
+        }
+
+        guard let provider = providers.first(where: { Self.looksLikeOCC(provider: $0) }) else {
+            return false
+        }
+
+        Task { await self.handoffInboundOCC(provider: provider) }
+        return true
+    }
+
+    /// True if the provider advertises the `.occ` UTI or a file URL with
+    /// a `.occ` path extension.
+    private static func looksLikeOCC(provider: NSItemProvider) -> Bool {
+        if provider.hasItemConformingToTypeIdentifier(Self.occUTI) {
+            return true
+        }
+
+        // Some sources advertise the attachment as a file URL with no
+        // specific UTI. `registeredTypeIdentifiers` may include
+        // `public.file-url` / `public.url` — sniff the extension from the
+        // provider's suggestedName if available.
+        if let suggested = provider.suggestedName,
+           (suggested as NSString).pathExtension.lowercased() == "occ" {
+            return true
+        }
+
+        return false
+    }
+
+    /// Load the `.occ` bytes, stash them in the shared container, and launch
+    /// the main app with `occulta://inbound?session=<uuid>`.
+    ///
+    /// Failures at any stage cancel the extension request so the user isn't
+    /// stuck on a blank screen — in that case the `inbound/<uuid>.occ` file
+    /// either never got written or is deleted best-effort.
+    private func handoffInboundOCC(provider: NSItemProvider) async {
+        guard let containerURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
+        else {
+            self.extensionContext?.cancelRequest(withError: ShareError.noData)
+            return
+        }
+
+        let sessionID = UUID().uuidString
+        let inboundDir = containerURL.appendingPathComponent("inbound")
+        let destURL    = inboundDir.appendingPathComponent("\(sessionID).occ")
+        let fm = FileManager.default
+
+        do {
+            try fm.createDirectory(at: inboundDir, withIntermediateDirectories: true)
+            try (inboundDir as NSURL).setResourceValue(
+                URLFileProtection.complete,
+                forKey: .fileProtectionKey
+            )
+        } catch {
+            self.extensionContext?.cancelRequest(withError: ShareError.noData)
+            return
+        }
+
+        // Pick the UTI to request. If the provider advertises the exported
+        // Occulta UTI, use it; otherwise ask for the first registered type
+        // (often `public.file-url`).
+        let uti = provider.hasItemConformingToTypeIdentifier(Self.occUTI)
+            ? Self.occUTI
+            : (provider.registeredTypeIdentifiers.first ?? UTType.data.identifier)
+
+        do {
+            // Prefer file representation — bytes flow through the kernel,
+            // not app memory. Falls back to data representation for
+            // providers that don't support it.
+            let copied = try await self.copyFileRepresentation(
+                from: provider, uti: uti, to: destURL
+            )
+            if !copied {
+                try await self.copyDataRepresentation(
+                    from: provider, uti: uti, to: destURL
+                )
+            }
+            try (destURL as NSURL).setResourceValue(
+                URLFileProtection.complete,
+                forKey: .fileProtectionKey
+            )
+        } catch {
+            try? fm.removeItem(at: destURL)
+            self.extensionContext?.cancelRequest(withError: ShareError.noData)
+            return
+        }
+
+        // Launch the main app — identical responder-chain dance as
+        // `openContainingApp`. We don't reuse that method because the URL
+        // scheme path differs (`inbound` vs `share`) and that method also
+        // completes the extension request; keeping them separate keeps each
+        // read straightforwardly.
+        guard let url = URL(string: "occulta://inbound?session=\(sessionID)") else {
+            try? fm.removeItem(at: destURL)
+            self.extensionContext?.cancelRequest(withError: ShareError.noData)
+            return
+        }
+
+        await MainActor.run {
+            var responder: UIResponder? = self
+            while let r = responder {
+                if r.responds(to: #selector(UIApplication.open(_:options:completionHandler:))) {
+                    r.perform(
+                        #selector(UIApplication.open(_:options:completionHandler:)),
+                        with: url, with: nil
+                    )
+                    break
+                }
+                responder = r.next
+            }
+            self.extensionContext?.completeRequest(returningItems: nil)
+        }
     }
 
     /// Best-effort cleanup on cancellation. If the extension is killed before this
