@@ -1,5 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     '/Users/yura/Xcode Projects/personal/Occulta/build/Release-iphoneos/ShareExtension.appex/ShareExtension'
-relocations:     []
-...
