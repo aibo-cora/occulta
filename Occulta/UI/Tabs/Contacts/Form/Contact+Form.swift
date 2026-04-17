@@ -6,6 +6,7 @@
 //
 
 
+import SwiftData
 import SwiftUI
 import PhotosUI
 
@@ -13,32 +14,38 @@ extension Contact {
     struct Form: View {
         @State var contact: Contact.Draft
         @State private var selectedPhotoItem: PhotosPickerItem?
-        
+
         @Environment(\.dismiss) private var dismiss
         @Environment(ContactManager.self) private var contactManager: ContactManager
-        
+
+        /// Populated only in `.edit` mode — used to pass `Contact.Profile`
+        /// to `VerifyIdentityButton`, which needs SwiftData-backed state.
+        @Query private var profiles: [Contact.Profile]
+
         enum Mode {
             /// Create a new contact.
             case create
             /// We are editing an existing contact. The identifier is encrypted.
             case edit(identifier: String)
         }
-        
+
         let mode: Mode
         var onDismiss: (() -> Void)?
-        
+
         init(mode: Mode, onDismiss: (() -> Void)? = nil) {
             switch mode {
             case .create:
                 self.contact = .init(identifier: UUID().uuidString)
+                self._profiles = Query(filter: #Predicate { _ in false })
             case .edit(let identifier):
                 self.contact = .init(identifier: identifier)
+                self._profiles = Query(filter: #Predicate { $0.identifier == identifier })
             }
-            
+
             self.mode = mode
             self.onDismiss = onDismiss
         }
-        
+
         @State private var displayingRevokeKeyWarning: Bool = false
         @State private var displayingDeleteWarning: Bool = false
         
@@ -145,6 +152,10 @@ extension Contact {
                     case .create:
                         EmptyView()
                     case .edit(let identifier):
+                        if let profile = self.profiles.first {
+                            IdentityChallenge.VerifyIdentityButton(contact: profile)
+                        }
+
                         if self.keyIsRevocable {
                             Button("Revoke Key", systemImage: "key.horizontal.fill", role: .destructive) {
                                 self.displayingRevokeKeyWarning.toggle()

@@ -15,6 +15,7 @@
 //
 
 import Foundation
+import LocalAuthentication
 import SwiftUI
 
 extension IdentityChallenge {
@@ -175,20 +176,42 @@ extension IdentityChallenge {
         /// Sign the pending challenge and stage the response `.occ` for share.
         func approvePending() {
             guard let pending = self.incomingChallenge?.pending else { return }
-            defer { self.incomingChallenge = nil }
+            // Hold sheet open until biometry resolves — clear after.
+            Task {
+                let context = LAContext()
+                let authenticated: Bool
+                do {
+                    // Prefer biometrics; fall back to device passcode so users
+                    // without enrolled Face ID / Touch ID can still approve.
+                    let policy: LAPolicy = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+                        ? .deviceOwnerAuthenticationWithBiometrics
+                        : .deviceOwnerAuthentication
+                    try await context.evaluatePolicy(
+                        policy,
+                        localizedReason: "Confirm your identity to sign this verification"
+                    )
+                    authenticated = true
+                } catch {
+                    authenticated = false
+                }
 
-            do {
-                let bundle = try self.manager.respond(to: pending)
-                let url    = try Self.writeOCC(bundle.encoded(), kind: "response")
-                self.outboundShare = OutboundShare(
-                    url:         url,
-                    contactID:   pending.challenger.identifier,
-                    contactName: pending.challenger.displayName,
-                    contextNote: nil,
-                    kind:        .response
-                )
-            } catch {
-                self.errorMessage = "Could not produce response. The verification request has been discarded."
+                await MainActor.run {
+                    self.incomingChallenge = nil
+                    guard authenticated else { return }
+                    do {
+                        let bundle = try self.manager.respond(to: pending)
+                        let url    = try Self.writeOCC(bundle.encoded(), kind: "response")
+                        self.outboundShare = OutboundShare(
+                            url:         url,
+                            contactID:   pending.challenger.identifier,
+                            contactName: pending.challenger.displayName,
+                            contextNote: nil,
+                            kind:        .response
+                        )
+                    } catch {
+                        self.errorMessage = "Could not produce response. The verification request has been discarded."
+                    }
+                }
             }
         }
 
