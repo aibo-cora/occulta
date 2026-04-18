@@ -79,17 +79,8 @@ extension Contact {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button { self.editing = true } label: {
-                            Label("Edit", systemImage: "pencil")
-                        }
-                        NavigationLink {
-                            KeyExchange(identifier: self.identifier)
-                        } label: {
-                            Label("Re-exchange key", systemImage: "key.horizontal.fill")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                    Button { self.editing = true } label: {
+                        Label("Edit", systemImage: "pencil")
                     }
                 }
             }
