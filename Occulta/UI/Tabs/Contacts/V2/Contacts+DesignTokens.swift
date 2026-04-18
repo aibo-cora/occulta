@@ -75,10 +75,14 @@ func avatarGradientV2(for id: String) -> LinearGradient {
 extension Contact.Profile {
     var verificationStatus: VerificationStatus {
         let keys = self.contactPublicKeys
+        
         guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else { return .pending }
+        
         let ownerHash = try? Manager.Crypto().decrypt(data: keys.last?.owner)
         let ourHash   = (try? Manager.Key().retrieveIdentity())?.sha256
+        
         guard let ownerHash, let ourHash, !ownerHash.isEmpty else { return .unverified }
+        
         return ownerHash == ourHash ? .verified : .unverified
     }
 

@@ -19,103 +19,105 @@ struct ContactsV2: View {
 
     @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
 
-    private var sorted: [Contact.Profile] {
+    private var sortedContacts: [Contact.Profile] {
         let source = self.searchText.isEmpty ? self.contacts : self.contacts.filter {
             $0.givenName.decrypt().localizedStandardContains(self.searchText)
             || $0.familyName.decrypt().localizedStandardContains(self.searchText)
             || $0.organizationName.decrypt().localizedStandardContains(self.searchText)
         }
+        
         return source.sorted {
             let lf = $0.familyName.decrypt(), rf = $1.familyName.decrypt()
+            
             if !lf.isEmpty || !rf.isEmpty { return lf < rf }
+            
             return $0.givenName.decrypt() < $1.givenName.decrypt()
         }
     }
 
-    private var verified:   [Contact.Profile] { self.sorted.filter { $0.verificationStatus == .verified } }
-    private var unverified: [Contact.Profile] { self.sorted.filter { $0.verificationStatus == .unverified } }
-    private var pending:    [Contact.Profile] { self.sorted.filter { $0.verificationStatus == .pending } }
-
     var body: some View {
         NavigationStack {
-            List {
-                if self.showTrustSummary && !self.contacts.isEmpty {
-                    Section {
-                        TrustSummaryCard(
-                            verified: self.verified.count,
-                            unverified: self.unverified.count,
-                            pending: self.pending.count
-                        )
-                        .listRowInsets(EdgeInsets())
+            VStack {
+                List {
+                    let sorted = self.sortedContacts
+                    let verified = sorted.filter { $0.verificationStatus == .verified }
+                    let unverified = sorted.filter { $0.verificationStatus == .unverified }
+                    let pending = sorted.filter { $0.verificationStatus == .pending }
+                    
+                    if self.showTrustSummary && !self.contacts.isEmpty {
+                        Section {
+                            TrustSummaryCard(verified: verified.count, unverified: unverified.count, pending: pending.count)
+                            .listRowInsets(EdgeInsets())
+                        }
+                        .listRowBackground(Color.clear)
                     }
-                    .listRowBackground(Color.clear)
-                }
 
-                if !self.verified.isEmpty {
-                    Section { self.rows(self.verified) } header: { SectionHeaderV2(status: .verified) }
-                }
-                if !self.unverified.isEmpty {
-                    Section { self.rows(self.unverified) } header: { SectionHeaderV2(status: .unverified) }
-                }
-                if !self.pending.isEmpty {
-                    Section { self.rows(self.pending) } header: { SectionHeaderV2(status: .pending) }
-                }
+                    if self.searchText.isEmpty {
+                        if !verified.isEmpty {
+                            Section { self.rows(verified) } header: { SectionHeaderV2(status: .verified) }
+                        }
+                        if !unverified.isEmpty {
+                            Section { self.rows(unverified) } header: { SectionHeaderV2(status: .unverified) }
+                        }
+                        if !pending.isEmpty {
+                            Section { self.rows(pending) } header: { SectionHeaderV2(status: .pending) }
+                        }
+                    }
 
-                if self.contacts.isEmpty {
-                    Section {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if #available(iOS 18.0, *) {
-                                Text("Use the search field to import a contact from your device.")
+                    if self.contacts.isEmpty {
+                        Section {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if #available(iOS 18.0, *) {
+                                    Text("Use the search field to import a contact from your device.")
+                                }
+                                Text("Tap **+** to create a new contact.")
                             }
-                            Text("Tap **+** to create a new contact.")
+                            .font(.body)
+                            .padding(.vertical, 4)
                         }
-                        .font(.body)
-                        .padding(.vertical, 4)
+                        .listRowBackground(Color.clear)
                     }
-                    .listRowBackground(Color.clear)
-                }
 
-                Section {
-                    Text("\(self.contacts.count) contacts · e2e encrypted at rest")
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 2)
+                    if self.searchText.isEmpty {
+                        Section {
+                            Text("\(self.contacts.count) contacts · encrypted at rest")
+                                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 2)
+                        }
+                        .listRowBackground(Color.clear)
+                    }
                 }
-                .listRowBackground(Color.clear)
-
+                .scrollIndicators(.hidden)
+                .listStyle(.insetGrouped)
+                .navigationTitle("Contacts")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            self.creatingNewContact = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                    }
+                }
+                .sheet(isPresented: self.$creatingNewContact) {
+                    Contact.FormV2()
+                }
+                .navigationDestination(for: String.self) { identifier in
+                    Contact.DetailsV2(identifier: identifier)
+                }
+                
                 if #available(iOS 18.0, *) {
-                    Section {
-                        ContactAccessButton(queryString: self.searchText) { identifiers in
-                            self.fetchContacts(with: identifiers)
-                        }
-                        .contactAccessButtonCaption(.phone)
-                        .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
+                    ContactAccessButton(queryString: self.searchText) { identifiers in
+                        self.fetchContacts(with: identifiers)
                     }
+                    .contactAccessButtonCaption(.phone)
+                    .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
+                    .padding()
                 }
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Contacts")
-            .searchable(
-                text: self.$searchText,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Find a contact…"
-            )
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        self.creatingNewContact = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                }
-            }
-            .sheet(isPresented: self.$creatingNewContact) {
-                Contact.FormV2()
-            }
-            .navigationDestination(for: String.self) { identifier in
-                Contact.DetailsV2(identifier: identifier)
-            }
+            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always),prompt: "Find a contact…")
         }
     }
 
