@@ -50,11 +50,7 @@ struct DatabaseMigration {
                 continue
             }
 
-            try self.migrateContact(
-                contact,
-                legacyCrypto: legacyCrypto,
-                newCrypto: newCrypto
-            )
+            try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
             
             debugPrint("Migrated contact to v2 encryption scheme, contact - \(contact.givenName.decrypt())")
 

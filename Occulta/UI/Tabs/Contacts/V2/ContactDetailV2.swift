@@ -290,6 +290,7 @@ private struct ExchangeHeroV2: View {
 
             HStack(spacing: 12) {
                 // Show my QR (placeholder — QR flow wired in edit sheet)
+                /*
                 Button { } label: {
                     Text("Show my QR")
                         .font(.system(size: 14, weight: .semibold))
@@ -299,11 +300,11 @@ private struct ExchangeHeroV2: View {
                         .background(Capsule().fill(.white.opacity(0.2)))
                 }
                 .buttonStyle(.plain)
-
+                */
                 NavigationLink {
                     KeyExchange(identifier: self.identifier)
                 } label: {
-                    Text("Scan theirs")
+                    Text("Go to Exchange")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.occultaAccent)
                         .frame(maxWidth: .infinity)
