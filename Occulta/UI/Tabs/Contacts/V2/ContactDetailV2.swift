@@ -5,6 +5,8 @@
 
 import SwiftUI
 import SwiftData
+import PhotosUI
+import UniformTypeIdentifiers
 
 extension Contact {
     struct DetailsV2: View {
@@ -172,12 +174,21 @@ private struct ComposeHeroV2: View {
 
     @Environment(ContactManager.self) private var contactManager
     @State private var messageText = ""
+    @State private var attachments: [Occulta.File] = []
+    @State private var selectedMediaItems: [PhotosPickerItem] = []
+    @State private var showMediaPicker = false
+    @State private var showFilePicker = false
     @State private var encryptedURL: URL?
     @State private var isShowingError = false
     @State private var errorMessage = ""
 
-    private var ciphertextEstimate: Int { max(256, self.messageText.count * 4 + 256) }
-    private var canEncrypt: Bool { !self.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var ciphertextEstimate: Int {
+        max(256, self.messageText.count * 4 + 256 + self.attachments.count * 1024)
+    }
+    private var canEncrypt: Bool {
+        !self.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !self.attachments.isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -192,17 +203,58 @@ private struct ComposeHeroV2: View {
 
             TextField("", text: self.$messageText, axis: .vertical)
                 .lineLimit(4...)
-                .frame(minHeight: 100, alignment: .topLeading)
+                .frame(minHeight: self.attachments.isEmpty ? 100 : 60, alignment: .topLeading)
                 .tint(.occultaAccent)
 
-            Divider().padding(.top, 10)
+            // Attachment chips
+            if !self.attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(self.attachments) { file in
+                            AttachmentChipV2(file: file) {
+                                self.attachments.removeAll { $0.id == file.id }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+
+            Divider().padding(.top, self.attachments.isEmpty ? 10 : 2)
 
             HStack {
-                HStack(spacing: 6) {
-                    Circle().fill(Color.occultaVerified).frame(width: 6, height: 6)
-                    Text("ciphertext · \(self.ciphertextEstimate) bytes")
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Menu {
+                        Button {
+                            self.showMediaPicker = true
+                        } label: {
+                            Label("Photos & Videos", systemImage: "photo")
+                        }
+                        Button {
+                            self.showFilePicker = true
+                        } label: {
+                            Label("Browse Files", systemImage: "folder")
+                        }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color(.tertiarySystemFill))
+                                .overlay(Circle().strokeBorder(Color(.separator), lineWidth: 0.5))
+                                .frame(width: 30, height: 30)
+                            Image(systemName: "plus")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(.occultaAccent)
+
+                    HStack(spacing: 6) {
+                        Circle().fill(Color.occultaVerified).frame(width: 6, height: 6)
+                        
+                        Text("ciphertext · \(self.ciphertextEstimate) bytes")
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Button(action: self.encrypt) {
@@ -221,27 +273,86 @@ private struct ComposeHeroV2: View {
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .photosPicker(isPresented: self.$showMediaPicker, selection: self.$selectedMediaItems,
+                      matching: .any(of: [.images, .videos]))
+        .onChange(of: self.selectedMediaItems) { _, newItems in
+            newItems.forEach { item in Task { await self.handleMedia(item) } }
+        }
+        .fileImporter(isPresented: self.$showFilePicker,
+                      allowedContentTypes: [.data],
+                      allowsMultipleSelection: false) { result in
+            self.handleFile(result)
+        }
         .sheet(item: self.$encryptedURL) { url in ActivityView(activityItems: [url]) }
         .alert("Error", isPresented: self.$isShowingError) {
             Button("OK") { }
         } message: {
             Text(self.errorMessage)
         }
+        .onDisappear {
+            FileManager.default.clearTemporaryDirectory()
+        }
+    }
+
+    private func handleMedia(_ item: PhotosPickerItem) async {
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else { return }
+            let ext      = item.supportedContentTypes.first?.preferredFilenameExtension ?? "bin"
+            let name     = "media_\(UUID().uuidString.prefix(8))"
+            let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
+            try data.write(to: url)
+            let file = Occulta.File(url: url, format: .file(.init(name: name, extension: ext)), date: Date())
+            await MainActor.run { self.attachments.append(file) }
+        } catch {
+            self.showError(error.localizedDescription)
+        }
+    }
+
+    private func handleFile(_ result: Result<[URL], Error>) {
+        Task {
+            do {
+                guard let url = try result.get().first,
+                      url.startAccessingSecurityScopedResource() else { return }
+                defer { url.stopAccessingSecurityScopedResource() }
+                let data  = try await URLSession.shared.data(from: url).0
+                let name  = url.deletingPathExtension().lastPathComponent
+                let ext   = url.pathExtension
+                let tmp   = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
+                try data.write(to: tmp)
+                let file = Occulta.File(url: tmp, format: .file(.init(name: name, extension: ext)), date: Date())
+                await MainActor.run { self.attachments.append(file) }
+            } catch {
+                self.showError(error.localizedDescription)
+            }
+        }
     }
 
     private func encrypt() {
-        let text = self.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
         Task {
             do {
-                let file    = Occulta.File(content: text.data(using: .utf8), format: .text, date: Date())
-                let basket  = Basket(files: [file])
-                let encoded = try JSONEncoder().encode(basket)
+                var files: [Occulta.File] = []
+
+                // Text message (optional when attachments present)
+                let text = self.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    files.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
+                }
+
+                // Resolve URL-based attachments to inline data
+                for attachment in self.attachments {
+                    if let url = attachment.url {
+                        let (data, _) = try await URLSession.shared.data(from: url)
+                        files.append(Occulta.File(content: data, format: attachment.format, date: attachment.date))
+                    } else {
+                        files.append(attachment)
+                    }
+                }
+
+                let basket    = Basket(files: files)
+                let encoded   = try JSONEncoder().encode(basket)
                 let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier)
 
-                guard
-                    encrypted.isEmpty == false
-                else {
+                guard !encrypted.isEmpty else {
                     self.showError("Encryption failed. Try again.")
                     return
                 }
@@ -250,7 +361,12 @@ private struct ComposeHeroV2: View {
                 let url  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
                 try encrypted.write(to: url)
 
-                await MainActor.run { self.encryptedURL = url }
+                await MainActor.run {
+                    self.messageText = ""
+                    self.attachments = []
+                    self.selectedMediaItems = []
+                    self.encryptedURL = url
+                }
             } catch {
                 self.showError(error.localizedDescription)
             }
@@ -261,6 +377,68 @@ private struct ComposeHeroV2: View {
     private func showError(_ message: String) {
         self.errorMessage = message
         self.isShowingError = true
+    }
+}
+
+// MARK: - Attachment Chip
+
+private struct AttachmentChipV2: View {
+    let file: Occulta.File
+    let onRemove: () -> Void
+
+    private var name: String {
+        guard case .file(let meta) = self.file.format else { return "file" }
+        return [meta.name, meta.extension].compactMap { $0 }.joined(separator: ".")
+    }
+
+    private var sfSymbol: String {
+        guard case .file(let meta) = self.file.format else { return "doc" }
+        switch meta.extension?.lowercased() {
+        case "jpg", "jpeg", "png", "heic": return "photo"
+        case "mov", "mp4", "m4v":          return "video"
+        default:                           return "doc"
+        }
+    }
+
+    private var sizeLabel: String? {
+        guard let url = self.file.url,
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        else { return nil }
+        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.occultaAccent)
+                    .frame(width: 20, height: 20)
+                Image(systemName: self.sfSymbol)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+            Text(self.name)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .lineLimit(1)
+            if let size = self.sizeLabel {
+                Text(size)
+                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            Button(action: self.onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 6)
+        .padding(.vertical, 5)
+        .background(Color(.tertiarySystemFill))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
