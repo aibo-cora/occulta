@@ -28,6 +28,8 @@ import os
 @Observable
 class ExchangeManager: NSObject {
     private var nearbySession: NISession?
+    private var lastNIConfiguration: NINearbyPeerConfiguration?
+    
     private var multipeerSession: MCSession?
     private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
 
@@ -146,10 +148,22 @@ class ExchangeManager: NSObject {
     }
 
     func finish() {
-        self.nearbySession?.pause()
+        self.nearbySession?.invalidate()
+        self.nearbySession = nil
+        
+        self.lastNIConfiguration = nil
 
         self.advertiser?.stopAdvertisingPeer()
+        self.advertiser?.delegate = nil
+        self.advertiser = nil
+        
         self.browser?.stopBrowsingForPeers()
+        self.browser?.delegate = nil
+        self.browser = nil
+        
+        self.multipeerSession?.disconnect()
+        self.multipeerSession?.delegate = nil
+        self.multipeerSession = nil
 
         // ⚠️ Release SE-backed ML-KEM private key handle.
         // For SecureEnclave.MLKEM1024, releasing the reference means the SE key
@@ -245,17 +259,35 @@ class ExchangeManager: NSObject {
             // MARK: Phase 1 — Discovery (token + optional nonce)
 
             if decoded.isDiscovery {
-                guard
-                    let token = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: decoded.token)
-                else { return }
+                let token: NIDiscoveryToken
+                do {
+                    guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: decoded.token) else {
+                        #if DEBUG
+                        debugPrint("Discovery: NIDiscoveryToken unarchive returned nil (from peer \(peerID.displayName))")
+                        #endif
+                        return
+                    }
+                    token = unarchived
+                } catch {
+                    #if DEBUG
+                    debugPrint("Discovery: NIDiscoveryToken unarchive threw: \(error)")
+                    #endif
+                    return
+                }
 
                 if let nonce = decoded.nonce, nonce.count == 16 {
                     self.peerNonce = nonce
                 }
 
                 self.receivedDiscoveryTokens[token] = peerID
+                
+                #if DEBUG
+                debugPrint("Discovery: token received from \(peerID.displayName), running NI config")
+                #endif
 
                 let configuration = NINearbyPeerConfiguration(peerToken: token)
+                
+                self.lastNIConfiguration = configuration
                 self.nearbySession?.run(configuration)
                 
                 return
@@ -492,7 +524,46 @@ extension ExchangeManager: MCNearbyServiceAdvertiserDelegate {
 extension ExchangeManager: NISessionDelegate {
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         DispatchQueue.main.async { [weak self] in
+            #if DEBUG
+            let distances = nearbyObjects.map { $0.distance.map { String(format: "%.2f", $0) } ?? "nil" }
+            debugPrint("NI didUpdate: \(distances.count) objects, distances: \(distances)")
+            #endif
             self?.handleNearbyObjectsUpdate(nearbyObjects)
         }
+    }
+    
+    func session(_ session: NISession, didInvalidateWith error: Error) {
+        #if DEBUG
+        debugPrint("NI didInvalidateWith error: \(error)")
+        if let niError = error as? NIError {
+            debugPrint("NIError code: \(niError.code.rawValue)")
+        }
+        #endif
+    }
+    
+    func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
+        #if DEBUG
+        debugPrint("NI didRemove \(nearbyObjects.count) objects, reason: \(reason.rawValue)")
+        #endif
+    }
+    
+    func sessionWasSuspended(_ session: NISession) {
+        #if DEBUG
+        debugPrint("NI sessionWasSuspended")
+        #endif
+    }
+    
+    func sessionSuspensionEnded(_ session: NISession) {
+        #if DEBUG
+        debugPrint("NI sessionSuspensionEnded — re-running configuration")
+        #endif
+        
+        if let config = self.lastNIConfiguration {
+            session.run(config)
+        }
+    }
+    
+    func sessionDidStartRunning(_ session: NISession) {
+        print("✅ NISession started running successfully")
     }
 }
