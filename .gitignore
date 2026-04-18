@@ -1,0 +1,32 @@
+# Xcode build output
+build/
+DerivedData/
+*.xcarchive
+
+# Xcode user-specific settings
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Compiled and intermediate objects
+*.o
+*.d
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods (not used, but guard against accidental init)
+Pods/
+Podfile.lock
+
+# Carthage (not used, same reason)
+Carthage/Build/
+
+# macOS metadata
+.DS_Store
+*.swp

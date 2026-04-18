@@ -134,7 +134,9 @@ extension Manager {
         func delete(using tag: String) -> Bool {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassKey,
-                kSecAttrApplicationTag as String: tag.data(using: .utf8)!
+                kSecAttrApplicationTag as String: tag.data(using: .utf8)!,
+                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
             ]
             let status = SecItemDelete(query as CFDictionary)
             

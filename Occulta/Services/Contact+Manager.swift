@@ -177,8 +177,9 @@ class ContactManager {
         }
         
         try self.modelContext.save()
+        self.syncShareIndex()
     }
-    
+
     func save(contacts: [Contact.Draft]) throws {
         for contact in contacts {
             try self.save(contact: contact)
@@ -330,10 +331,11 @@ class ContactManager {
             
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
         }
-    
+
         try self.modelContext.save()
+        self.syncShareIndex()
     }
-    
+
     // MARK: - Read
     
     /// Fetches all contacts from the SwiftData context.
@@ -366,19 +368,21 @@ class ContactManager {
         
         self.modelContext.delete(contact)
         try modelContext.save()
+        self.syncShareIndex()
     }
-    
+
     /// Deletes all contacts.
     func deleteAllContacts() throws {
         let contacts = try self.fetchAllContacts()
-        
+
         for contact in contacts {
             debugPrint("Deleting contact with identifier: \(contact.identifier)")
-            
+
             self.modelContext.delete(contact)
         }
-        
+
         try self.modelContext.save()
+        self.syncShareIndex()
     }
 }
 
@@ -892,9 +896,27 @@ extension ContactManager {
 // MARK: - v3fs bundle decryption
  
 extension ContactManager {
-    /// Decrypt a v3fs bundle.
+    /// Decrypt a v3fs bundle and return the plaintext message bytes.
+    ///
+    /// Regular message path. For identity-challenge traffic the caller needs
+    /// the full `SealedPayload` so it can route on `identityChallenge` — use
+    /// ``decryptSealed(bundle:)`` instead.
     func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
+        let (sealed, ownerID) = try self.decryptSealed(bundle: bundle)
+        return (sealed.message, ownerID)
+    }
+
+    /// Decrypt a v3fs bundle and return the full decoded ``SealedPayload``.
+    ///
+    /// Needed by the identity-challenge routing hook in `OccultaApp`, which
+    /// inspects `identityChallenge` to decide whether to hand the bundle to
+    /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
+    func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
         guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
+        // Defence-in-depth: never touch a bundle whose version or mode was
+        // produced by a future build we don't understand. `Version`/`Mode` both
+        // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
+        guard bundle.secrecy.mode != .unsupported else { throw OccultaBundle.BundleError.unsupportedMode }
  
         let cryptoOps     = Manager.Crypto()
         let prekeyManager = Manager.PrekeyManager()
@@ -1002,8 +1024,11 @@ extension ContactManager {
             else {
                 throw Manager.Crypto.EncryptionError.keyDerivationFailed
             }
-            
+
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+        case .unsupported:
+            // Already rejected above — exhaustiveness only.
+            throw OccultaBundle.BundleError.unsupportedMode
         }
  
         guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
@@ -1061,6 +1086,6 @@ extension ContactManager {
         
         debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
  
-        return (decodedPayload.message, sender.identifier)
+        return (decodedPayload, sender.identifier)
     }
 }

@@ -98,7 +98,8 @@ extension Manager {
         /// Delete a prekey private key from the SE immediately after use.
         ///
         /// This is the exact moment forward secrecy is established for a message.
-        func consume(prekey: Prekey) {
+        @discardableResult
+        func consume(prekey: Prekey) -> Int {
             self.deleteSecKeysInSE(matchingTagSubstring: prekey.id)
         }
 
@@ -190,7 +191,7 @@ extension Manager {
             let filtered =  items.compactMap { item -> SecKey? in
                 guard
                     let tagData = item[kSecAttrApplicationTag as String] as? Data,
-                    let tagString = String(data: tagData, encoding: .utf8), tagString.localizedCaseInsensitiveContains(substring)
+                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasSuffix(substring)
                 else {
                     return nil
                 }
@@ -269,8 +270,11 @@ extension Manager {
         private func deleteKey(tag: String) -> Bool {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassKey,
-                kSecAttrApplicationTag as String: tag.data(using: .utf8)!
+                kSecAttrApplicationTag as String: tag.data(using: .utf8)!,
+                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
             ]
+            
             let status = SecItemDelete(query as CFDictionary)
             let result = status == errSecSuccess || status == errSecItemNotFound
             
@@ -306,21 +310,26 @@ extension Manager {
             var deletedCount = 0
             
             // Step 2: Filter + delete one by one
+            
             for item in items {
-                guard let tagData = item[kSecAttrApplicationTag as String] as? Data,
-                      let tagString = String(data: tagData, encoding: .utf8),
-                      tagString.localizedCaseInsensitiveContains(substring) else {
+                guard
+                    let tagData = item[kSecAttrApplicationTag as String] as? Data,
+                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasSuffix(substring)
+                else {
                     continue
                 }
                 
                 // Step 3: Delete using the *exact* full tag (this is what makes deletion work)
+                
                 let deleteQuery: [String: Any] = [
                     kSecClass as String: kSecClassKey,
+                    kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
                     kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
-                    kSecAttrApplicationTag as String: tagData   // exact match, not substring
+                    kSecAttrApplicationTag as String: tagData
                 ]
                 
                 let delStatus = SecItemDelete(deleteQuery as CFDictionary)
+                
                 if delStatus == errSecSuccess {
                     deletedCount += 1
                     print("✅ Deleted key with tag: \(tagString)")

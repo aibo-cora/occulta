@@ -123,13 +123,13 @@ extension Contact {
                         }
                     }
                 }
-                .sheet(isPresented: self.$editing) {
+                .fullScreenCover(isPresented: self.$editing, onDismiss: {
                     
-                } content: {
+                }, content: {
                     Contact.Form(mode: .edit(identifier: self.identifier)) {
                         self.dismiss()
                     }
-                }
+                })
                 .navigationTitle(self.name)
                 .navigationBarTitleDisplayMode(.inline)
                 
