@@ -28,6 +28,22 @@ protocol KeyManagerProtocol {
     
     func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
     func generateExchangeNonce() -> Data?
+
+    // MARK: - Identity challenge
+
+    /// ECDSA-sign `data` with the long-term SE identity key (or the in-memory
+    /// equivalent, in tests).
+    ///
+    /// Algorithm: `.ecdsaSignatureMessageX962SHA256`. The algorithm hashes
+    /// `data` internally with SHA-256 — callers MUST NOT pre-hash.
+    /// Double-hashing produces a signature that no verifier will accept,
+    /// silently breaking identity verification.
+    ///
+    /// In production this triggers Secure Enclave biometric per the access
+    /// control flags on the identity key.
+    ///
+    /// - Returns: DER-encoded ECDSA signature, raw bytes from `SecKeyCreateSignature`.
+    func signIdentityChallenge(_ data: Data) throws -> Data
 }
 
 // MARK: - TestKeyManager
@@ -323,7 +339,32 @@ extension TestKeyManager {
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
         return Data(bytes)
     }
- 
+
+    // MARK: - Identity challenge
+
+    /// In-memory ECDSA-sign with the test identity private key.
+    /// Same `.ecdsaSignatureMessageX962SHA256` algorithm as production —
+    /// signatures produced here verify with the matching public key obtained
+    /// from `retrieveIdentity()`.
+    func signIdentityChallenge(_ data: Data) throws -> Data {
+        let algorithm: SecKeyAlgorithm = .ecdsaSignatureMessageX962SHA256
+        var error: Unmanaged<CFError>?
+        // ⚠️ DO NOT PRE-HASH — `.ecdsaSignatureMessageX962SHA256` hashes `data`
+        // internally. Pre-hashing produces a signature no verifier will accept,
+        // and the failure is silent — looks identical to a wrong key.
+        guard
+            let signature = SecKeyCreateSignature(
+                self.identityPrivateKey,
+                algorithm,
+                data as CFData,
+                &error
+            ) as Data?
+        else {
+            throw error!.takeRetainedValue() as Error
+        }
+        return signature
+    }
+
     // MARK: - Private
  
     /// Raw ECDH + XOR salt without HKDF. Hybrid derivation combines ECDH with
