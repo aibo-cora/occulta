@@ -196,7 +196,7 @@ extension Contact.Profile {
 }
 
 #Preview {
-    Contacts()
+    ContactsV2()
         .environment(ContactManager.preview)
 }
 
@@ -251,7 +251,7 @@ struct BusinessCardContactsView: View {
             .navigationBarTitleDisplayMode(.large)
             .background(Color(.systemGroupedBackground))
             .navigationDestination(for: String.self) { identifier in
-                Contact.Details(identifier: identifier)
+                Contact.DetailsV2(identifier: identifier)
             }
             .scrollIndicators(.hidden)
         }
