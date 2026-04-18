@@ -20,10 +20,10 @@ struct ContactsV2: View {
     @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
 
     private var sorted: [Contact.Profile] {
-        let source = searchText.isEmpty ? contacts : contacts.filter {
-            $0.givenName.decrypt().localizedStandardContains(searchText)
-            || $0.familyName.decrypt().localizedStandardContains(searchText)
-            || $0.organizationName.decrypt().localizedStandardContains(searchText)
+        let source = self.searchText.isEmpty ? self.contacts : self.contacts.filter {
+            $0.givenName.decrypt().localizedStandardContains(self.searchText)
+            || $0.familyName.decrypt().localizedStandardContains(self.searchText)
+            || $0.organizationName.decrypt().localizedStandardContains(self.searchText)
         }
         return source.sorted {
             let lf = $0.familyName.decrypt(), rf = $1.familyName.decrypt()
@@ -32,36 +32,36 @@ struct ContactsV2: View {
         }
     }
 
-    private var verified:   [Contact.Profile] { sorted.filter { $0.verificationStatus == .verified } }
-    private var unverified: [Contact.Profile] { sorted.filter { $0.verificationStatus == .unverified } }
-    private var pending:    [Contact.Profile] { sorted.filter { $0.verificationStatus == .pending } }
+    private var verified:   [Contact.Profile] { self.sorted.filter { $0.verificationStatus == .verified } }
+    private var unverified: [Contact.Profile] { self.sorted.filter { $0.verificationStatus == .unverified } }
+    private var pending:    [Contact.Profile] { self.sorted.filter { $0.verificationStatus == .pending } }
 
     var body: some View {
         NavigationStack {
             List {
-                if showTrustSummary && !contacts.isEmpty {
+                if self.showTrustSummary && !self.contacts.isEmpty {
                     Section {
                         TrustSummaryCard(
-                            verified: verified.count,
-                            unverified: unverified.count,
-                            pending: pending.count
+                            verified: self.verified.count,
+                            unverified: self.unverified.count,
+                            pending: self.pending.count
                         )
                         .listRowInsets(EdgeInsets())
                     }
                     .listRowBackground(Color.clear)
                 }
 
-                if !verified.isEmpty {
-                    Section { rows(verified) } header: { SectionHeaderV2(status: .verified) }
+                if !self.verified.isEmpty {
+                    Section { self.rows(self.verified) } header: { SectionHeaderV2(status: .verified) }
                 }
-                if !unverified.isEmpty {
-                    Section { rows(unverified) } header: { SectionHeaderV2(status: .unverified) }
+                if !self.unverified.isEmpty {
+                    Section { self.rows(self.unverified) } header: { SectionHeaderV2(status: .unverified) }
                 }
-                if !pending.isEmpty {
-                    Section { rows(pending) } header: { SectionHeaderV2(status: .pending) }
+                if !self.pending.isEmpty {
+                    Section { self.rows(self.pending) } header: { SectionHeaderV2(status: .pending) }
                 }
 
-                if contacts.isEmpty {
+                if self.contacts.isEmpty {
                     Section {
                         VStack(alignment: .leading, spacing: 10) {
                             if #available(iOS 18.0, *) {
@@ -104,13 +104,13 @@ struct ContactsV2: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        creatingNewContact = true
+                        self.creatingNewContact = true
                     } label: {
                         Image(systemName: "plus")
                     }
                 }
             }
-            .sheet(isPresented: $creatingNewContact) {
+            .sheet(isPresented: self.$creatingNewContact) {
                 Contact.FormV2()
             }
             .navigationDestination(for: String.self) { identifier in
@@ -123,18 +123,18 @@ struct ContactsV2: View {
     private func rows(_ items: [Contact.Profile]) -> some View {
         ForEach(items) { contact in
             NavigationLink(value: contact.identifier) {
-                ContactRowV2(contact: contact, showFingerprint: showFingerprints)
+                ContactRowV2(contact: contact, showFingerprint: self.showFingerprints)
             }
         }
     }
 
     private func fetchContacts(with identifiers: [String]) {
         do {
-            let request = CNContactFetchRequest(keysToFetch: contactManager.keys)
+            let request = CNContactFetchRequest(keysToFetch: self.contactManager.keys)
             request.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
             var batch = [CNContact]()
             try CNContactStore().enumerateContacts(with: request) { contact, _ in batch.append(contact) }
-            try contactManager.createContacts(from: batch)
+            try self.contactManager.createContacts(from: batch)
         } catch {
             debugPrint("fetchContacts error: \(error.localizedDescription)")
         }
@@ -147,23 +147,23 @@ struct ContactRowV2: View {
     let contact: Contact.Profile
     let showFingerprint: Bool
 
-    private var givenName:  String { contact.givenName.decrypt() }
-    private var familyName: String { contact.familyName.decrypt() }
+    private var givenName:  String { self.contact.givenName.decrypt() }
+    private var familyName: String { self.contact.familyName.decrypt() }
 
     private var thumbnail: Data? {
-        contact.imageData?.decrypt() ?? contact.thumbnailImageData?.decrypt()
+        self.contact.imageData?.decrypt() ?? self.contact.thumbnailImageData?.decrypt()
     }
 
     var body: some View {
         HStack(spacing: 14) {
-            // 44×44 avatar
             Group {
-                if let data = thumbnail, let img = UIImage(data: data) {
+                if let data = self.thumbnail, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
                     ZStack {
-                        avatarGradientV2(for: contact.identifier)
-                        Text([givenName, familyName].filter { !$0.isEmpty }
+                        avatarGradientV2(for: self.contact.identifier)
+                        
+                        Text([self.givenName, self.familyName].filter { !$0.isEmpty }
                                 .joined(separator: " ").initials)
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white)
@@ -173,21 +173,20 @@ struct ContactRowV2: View {
             .frame(width: 44, height: 44)
             .clipShape(Circle())
 
-            // Name + status dot + fingerprint
             VStack(alignment: .leading, spacing: 4) {
-                (Text(givenName.isEmpty ? "" : givenName + " ")
+                (Text(self.givenName.isEmpty ? "" : self.givenName + " ")
                     .fontWeight(.regular)
-                + Text(familyName)
+                + Text(self.familyName)
                     .fontWeight(.semibold))
                     .font(.body)
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(contact.verificationStatus.color)
+                        .fill(self.contact.verificationStatus.color)
                         .frame(width: 6, height: 6)
 
-                    if showFingerprint, let fp = contact.fingerprintPreview {
+                    if self.showFingerprint, let fp = self.contact.fingerprintPreview {
                         Text(fp)
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -198,7 +197,7 @@ struct ContactRowV2: View {
 
             Spacer()
 
-            Text(contact.freshnessLabel)
+            Text(self.contact.freshnessLabel)
                 .font(.system(size: 10, weight: .regular, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
@@ -216,15 +215,15 @@ private struct TrustSummaryCard: View {
     var body: some View {
         HStack(spacing: 0) {
             Spacer()
-            CountColumn(count: verified,   label: "VERIFIED",   color: .occultaVerified)
+            CountColumn(count: self.verified,   label: "VERIFIED",   color: .occultaVerified)
             Spacer()
             Divider().frame(height: 36)
             Spacer()
-            CountColumn(count: unverified, label: "UNVERIFIED", color: .occultaWarn)
+            CountColumn(count: self.unverified, label: "UNVERIFIED", color: .occultaWarn)
             Spacer()
             Divider().frame(height: 36)
             Spacer()
-            CountColumn(count: pending,    label: "PENDING",    color: .secondary)
+            CountColumn(count: self.pending,    label: "PENDING",    color: .secondary)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -243,10 +242,10 @@ private struct TrustSummaryCard: View {
         var body: some View {
             VStack(spacing: 4) {
                 HStack(spacing: 5) {
-                    Circle().fill(color).frame(width: 7, height: 7)
-                    Text("\(count)").font(.system(size: 17, weight: .semibold))
+                    Circle().fill(self.color).frame(width: 7, height: 7)
+                    Text("\(self.count)").font(.system(size: 17, weight: .semibold))
                 }
-                Text(label)
+                Text(self.label)
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .tracking(0.5)
@@ -262,15 +261,15 @@ private struct SectionHeaderV2: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if status == .pending {
+            if self.status == .pending {
                 Circle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
                     .frame(width: 8, height: 8)
                     .foregroundStyle(.secondary)
             } else {
-                Circle().fill(status.color).frame(width: 8, height: 8)
+                Circle().fill(self.status.color).frame(width: 8, height: 8)
             }
-            Text(status.sectionLabel)
+            Text(self.status.sectionLabel)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .tracking(1.6)
         }

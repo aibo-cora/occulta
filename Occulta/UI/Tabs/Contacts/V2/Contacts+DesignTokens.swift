@@ -21,25 +21,34 @@ enum VerificationStatus {
 
     var color: Color {
         switch self {
-        case .verified:  .occultaVerified
-        case .unverified: .occultaWarn
-        case .pending:   .secondary
+        case .verified:
+            .occultaVerified
+        case .unverified:
+            .occultaWarn
+        case .pending:
+            .secondary
         }
     }
 
     var chipLabel: String {
         switch self {
-        case .verified:   "✓ VERIFIED"
-        case .unverified: "! UNVERIFIED"
-        case .pending:    "… PENDING"
+        case .verified:   
+            "✓ VERIFIED"
+        case .unverified: 
+            "! UNVERIFIED"
+        case .pending:   
+            "… PENDING"
         }
     }
 
     var sectionLabel: String {
         switch self {
-        case .verified:   "VERIFIED"
-        case .unverified: "UNVERIFIED"
-        case .pending:    "PENDING EXCHANGE"
+        case .verified:   
+            "VERIFIED"
+        case .unverified: 
+            "UNVERIFIED"
+        case .pending:    
+            "PENDING EXCHANGE"
         }
     }
 }
@@ -50,6 +59,7 @@ func avatarGradientV2(for id: String) -> LinearGradient {
     let hash = id.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) }
     let hue  = Double(abs(hash) % 360) / 360.0
     let hue2 = (hue + 30.0 / 360.0).truncatingRemainder(dividingBy: 1.0)
+    
     return LinearGradient(
         colors: [
             Color(hue: hue,  saturation: 0.62, brightness: 0.58),
@@ -64,7 +74,7 @@ func avatarGradientV2(for id: String) -> LinearGradient {
 
 extension Contact.Profile {
     var verificationStatus: VerificationStatus {
-        let keys = contactPublicKeys
+        let keys = self.contactPublicKeys
         guard let keys, !keys.isEmpty, keys.last?.expiredOn == nil else { return .pending }
         let ownerHash = try? Manager.Crypto().decrypt(data: keys.last?.owner)
         let ourHash   = (try? Manager.Key().retrieveIdentity())?.sha256
@@ -74,7 +84,7 @@ extension Contact.Profile {
 
     var fingerprintPreview: String? {
         guard
-            let material  = contactPublicKeys?.last?.material,
+            let material  = self.contactPublicKeys?.last?.material,
             let decrypted = material.decrypt()
         else { return nil }
         let hex    = decrypted.sha256.map { String(format: "%02X", $0) }
@@ -85,7 +95,7 @@ extension Contact.Profile {
 
     var fingerprintFull: String? {
         guard
-            let material  = contactPublicKeys?.last?.material,
+            let material  = self.contactPublicKeys?.last?.material,
             let decrypted = material.decrypt()
         else { return nil }
         return decrypted.sha256.map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -93,12 +103,12 @@ extension Contact.Profile {
 
     var freshnessLabel: String {
         guard
-            let acquiredData = contactPublicKeys?.last?.acquiredAt,
+            let acquiredData = self.contactPublicKeys?.last?.acquiredAt,
             let decrypted    = acquiredData.decrypt(),
             let str          = String(data: decrypted, encoding: .utf8),
             let interval     = Double(str)
         else {
-            return (contactPublicKeys?.isEmpty ?? true) ? "pending" : "never"
+            return (self.contactPublicKeys?.isEmpty ?? true) ? "pending" : "never"
         }
         let date = Date(timeIntervalSince1970: interval)
         let days = Calendar.current.dateComponents([.day], from: date, to: .now).day ?? 0
@@ -109,7 +119,7 @@ extension Contact.Profile {
 
     var exchangedDateLabel: String {
         guard
-            let acquiredData = contactPublicKeys?.last?.acquiredAt,
+            let acquiredData = self.contactPublicKeys?.last?.acquiredAt,
             let decrypted    = acquiredData.decrypt(),
             let str          = String(data: decrypted, encoding: .utf8),
             let interval     = Double(str)
@@ -121,7 +131,7 @@ extension Contact.Profile {
     }
 
     var encryptionSchemeLabel: String {
-        contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil
+        self.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil
             ? "Hybrid PQ · ML-KEM-1024"
             : "Classical (v1)"
     }

@@ -41,17 +41,18 @@ extension Contact {
         }
 
         private var isCreate: Bool {
-            if case .create = mode { return true }
+            if case .create = self.mode { return true }
+            
             return false
         }
 
         private var canSave: Bool {
-            !contact.givenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !contact.familyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            !self.contact.givenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !self.contact.familyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         private var keyIsRevocable: Bool {
-            guard case .edit = mode, let key = contact.contactPublicKeys.last else { return false }
+            guard case .edit = self.mode, let key = self.contact.contactPublicKeys.last else { return false }
             return key.expiredOn == nil
         }
 
@@ -59,22 +60,22 @@ extension Contact {
             NavigationStack {
                 ScrollView {
                     VStack(spacing: 24) {
-                        PhotoSlotV2(contact: $contact, selectedPhotoItem: $selectedPhotoItem)
+                        PhotoSlotV2(contact: self.$contact, selectedPhotoItem: self.$selectedPhotoItem)
 
                         FormSectionV2(header: "IDENTITY") {
-                            FormFieldRowV2(label: "GIVEN",  placeholder: "First name",   text: $contact.givenName)
+                            FormFieldRowV2(label: "GIVEN",  placeholder: "First name",   text: self.$contact.givenName)
                             Divider().padding(.leading, 76)
-                            FormFieldRowV2(label: "FAMILY", placeholder: "Last name",    text: $contact.familyName)
+                            FormFieldRowV2(label: "FAMILY", placeholder: "Last name",    text: self.$contact.familyName)
                             Divider().padding(.leading, 76)
-                            FormFieldRowV2(label: "ORG",    placeholder: "Organization", text: $contact.organizationName)
+                            FormFieldRowV2(label: "ORG",    placeholder: "Organization", text: self.$contact.organizationName)
                         }
 
                         FormSectionV2(header: "CONTACT") {
-                            PhoneSectionRowsV2(contact: $contact)
-                            EmailSectionRowsV2(contact: $contact)
+                            PhoneSectionRowsV2(contact: self.$contact)
+                            EmailSectionRowsV2(contact: self.$contact)
                         }
 
-                        if isCreate {
+                        if self.isCreate {
                             EncryptionCTAV2()
 
                             Text("You can save without a key — you just can't encrypt until you exchange one.")
@@ -83,7 +84,7 @@ extension Contact {
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 24)
                         } else {
-                            editOnlyActions
+                            self.editOnlyActions
                         }
                     }
                     .padding(.horizontal, 16)
@@ -91,36 +92,39 @@ extension Contact {
                     .padding(.bottom, 20)
                 }
                 .background(Color(.systemGroupedBackground))
-                .navigationTitle(isCreate ? "New Contact" : contact.fullName.isEmpty ? "Edit Contact" : contact.fullName)
+                .navigationTitle(self.isCreate ? "New Contact" : self.contact.fullName.isEmpty ? "Edit Contact" : self.contact.fullName)
                 .navigationBarTitleDisplayMode(.large)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Cancel", role: .cancel) { dismiss() }
+                        Button("Cancel", role: .cancel) { self.dismiss() }
                             .tint(Color.occultaAccent)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Save") {
-                            try? contactManager.save(contact: contact)
-                            dismiss()
+                            try? self.contactManager.save(contact: self.contact)
+                            self.dismiss()
                         }
                         .tint(Color.occultaAccent)
-                        .disabled(!canSave)
+                        .disabled(!self.canSave)
                     }
                 }
                 .onChange(of: selectedPhotoItem) { _, newItem in
                     Task {
                         guard let data = try? await newItem?.loadTransferable(type: Data.self) else { return }
-                        contact.imageData = data
+                        
+                        self.contact.imageData = data
+                        
                         if let img   = UIImage(data: data),
                            let thumb = img.preparingThumbnail(of: CGSize(width: 120, height: 120)) {
-                            contact.thumbnailImageData = thumb.jpegData(compressionQuality: 0.8)
+                            self.contact.thumbnailImageData = thumb.jpegData(compressionQuality: 0.8)
                         }
                     }
                 }
                 .task {
-                    guard case .edit(let identifier) = mode else { return }
-                    if let mutable = try? contactManager.convertToMutableCopy(using: identifier) {
-                        contact = mutable
+                    guard case .edit(let identifier) = self.mode else { return }
+                    
+                    if let mutable = try? self.contactManager.convertToMutableCopy(using: identifier) {
+                        self.contact = mutable
                     }
                 }
             }
@@ -128,13 +132,13 @@ extension Contact {
 
         @ViewBuilder
         private var editOnlyActions: some View {
-            if let profile = profiles.first {
+            if let profile = self.profiles.first {
                 IdentityChallenge.VerifyIdentityButton(contact: profile)
             }
 
-            if keyIsRevocable, case .edit(let identifier) = mode {
+            if self.keyIsRevocable, case .edit(let identifier) = self.mode {
                 Button(role: .destructive) {
-                    displayingRevokeKeyWarning = true
+                    self.displayingRevokeKeyWarning = true
                 } label: {
                     Label("Revoke Key", systemImage: "key.horizontal.fill")
                         .frame(maxWidth: .infinity)
@@ -144,18 +148,18 @@ extension Contact {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.occultaDanger)
-                .confirmationDialog("Warning", isPresented: $displayingRevokeKeyWarning) {
+                .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
                     Button("Revoke", role: .destructive) {
-                        try? contactManager.reset(identity: identifier)
+                        try? self.contactManager.reset(identity: identifier)
                     }
                 } message: {
                     Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
                 }
             }
 
-            if case .edit(let identifier) = mode {
+            if case .edit(let identifier) = self.mode {
                 Button(role: .destructive) {
-                    displayingDeleteWarning = true
+                    self.displayingDeleteWarning = true
                 } label: {
                     Label("Delete Contact", systemImage: "trash.fill")
                         .frame(maxWidth: .infinity)
@@ -165,11 +169,12 @@ extension Contact {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.occultaDanger)
-                .confirmationDialog("Delete Contact", isPresented: $displayingDeleteWarning) {
+                .confirmationDialog("Delete Contact", isPresented: self.$displayingDeleteWarning) {
                     Button("Delete", role: .destructive) {
-                        try? contactManager.deleteContact(identifier: identifier)
-                        dismiss()
-                        onDismiss?()
+                        try? self.contactManager.deleteContact(identifier: identifier)
+                        
+                        self.dismiss()
+                        self.onDismiss?()
                     }
                 } message: {
                     Text("Deleting all information for this contact is irreversible. Are you sure?")
@@ -186,7 +191,7 @@ private struct PhotoSlotV2: View {
     @Binding var selectedPhotoItem: PhotosPickerItem?
 
     var body: some View {
-        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+        PhotosPicker(selection: self.$selectedPhotoItem, matching: .images) {
             ZStack {
                 Circle()
                     .fill(Color(.tertiarySystemFill))
@@ -196,7 +201,7 @@ private struct PhotoSlotV2: View {
                             .foregroundStyle(Color.secondary)
                     )
 
-                if let data = contact.thumbnailImageData, let img = UIImage(data: data) {
+                if let data = self.contact.thumbnailImageData, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill().clipShape(Circle())
                 } else {
                     VStack(spacing: 4) {
@@ -222,7 +227,7 @@ private struct FormSectionV2<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(header)
+            Text(self.header)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .tracking(1.6)
@@ -230,7 +235,7 @@ private struct FormSectionV2<Content: View>: View {
                 .padding(.bottom, 6)
 
             VStack(spacing: 0) {
-                content()
+                self.content()
             }
             .background(Color(.secondarySystemGroupedBackground))
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -247,11 +252,11 @@ private struct FormFieldRowV2: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text(label)
+            Text(self.label)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 50, alignment: .leading)
-            TextField(placeholder, text: $text)
+            TextField(self.placeholder, text: self.$text)
                 .tint(Color.occultaAccent)
         }
         .padding(.horizontal, 14)
@@ -265,13 +270,14 @@ private struct PhoneSectionRowsV2: View {
     @Binding var contact: Contact.Draft
 
     var body: some View {
-        if contact.phoneNumbers.isEmpty {
-            addButtonV2(label: "add phone") { contact.phoneNumbers.append(.init()) }
+        if self.contact.phoneNumbers.isEmpty {
+            addButtonV2(label: "add phone") { self.contact.phoneNumbers.append(.init()) }
         } else {
             ForEach($contact.phoneNumbers) { $phone in
                 Divider().padding(.leading, 76)
                 HStack(spacing: 12) {
-                    removeButtonV2 { contact.phoneNumbers.removeAll { $0.id == phone.id } }
+                    removeButtonV2 { self.contact.phoneNumbers.removeAll { $0.id == phone.id } }
+                    
                     Text("PHONE")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -284,43 +290,10 @@ private struct PhoneSectionRowsV2: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
             }
-            if contact.phoneNumbers.count < 4 {
+            if self.contact.phoneNumbers.count < 4 {
                 Divider().padding(.leading, 76)
-                addButtonV2(label: "add phone") { contact.phoneNumbers.append(.init()) }
-            }
-        }
-    }
-}
-
-// MARK: - Email Rows
-
-private struct EmailSectionRowsV2: View {
-    @Binding var contact: Contact.Draft
-
-    var body: some View {
-        Divider().padding(.leading, 76)
-        if contact.emailAddresses.isEmpty {
-            addButtonV2(label: "add email") { contact.emailAddresses.append(.init()) }
-        } else {
-            ForEach($contact.emailAddresses) { $email in
-                HStack(spacing: 12) {
-                    removeButtonV2 { contact.emailAddresses.removeAll { $0.id == email.id } }
-                    Text("EMAIL")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 50, alignment: .leading)
-                    TextField("Email address", text: $email.value)
-                        .keyboardType(.emailAddress)
-                        .textContentType(.emailAddress)
-                        .autocorrectionDisabled()
-                        .tint(Color.occultaAccent)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                Divider().padding(.leading, 76)
-            }
-            if contact.emailAddresses.count < 4 {
-                addButtonV2(label: "add email") { contact.emailAddresses.append(.init()) }
+                
+                addButtonV2(label: "add phone") { self.contact.phoneNumbers.append(.init()) }
             }
         }
     }
@@ -352,6 +325,42 @@ private func removeButtonV2(action: @escaping () -> Void) -> some View {
         Image(systemName: "minus.circle.fill").foregroundStyle(.red)
     }
     .buttonStyle(.plain)
+}
+
+// MARK: - Email Rows
+
+private struct EmailSectionRowsV2: View {
+    @Binding var contact: Contact.Draft
+
+    var body: some View {
+        Divider().padding(.leading, 76)
+        if self.contact.emailAddresses.isEmpty {
+            addButtonV2(label: "add email") { self.contact.emailAddresses.append(.init()) }
+        } else {
+            ForEach(self.$contact.emailAddresses) { $email in
+                HStack(spacing: 12) {
+                    removeButtonV2 { self.contact.emailAddresses.removeAll { $0.id == email.id } }
+                    
+                    Text("EMAIL")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 50, alignment: .leading)
+                    TextField("Email address", text: $email.value)
+                        .keyboardType(.emailAddress)
+                        .textContentType(.emailAddress)
+                        .autocorrectionDisabled()
+                        .tint(Color.occultaAccent)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                Divider().padding(.leading, 76)
+            }
+            
+            if self.contact.emailAddresses.count < 4 {
+                addButtonV2(label: "add email") { self.contact.emailAddresses.append(.init()) }
+            }
+        }
+    }
 }
 
 // MARK: - Encryption CTA
