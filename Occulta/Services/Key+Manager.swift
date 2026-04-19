@@ -27,6 +27,11 @@ struct SaltInfo {
     /// appended to the info field for per-session uniqueness.
     /// The nonces are appended at call time — this is the static prefix only.
     static let kDicewareKeyInfo = "Occulta-v2-diceware-2026".data(using: .utf8)!
+    /// Vault session key: self-ECDH(SE_identity_priv, SE_identity_pub) → HKDF.
+    /// The derived key is held in memory only, never stored to disk or Keychain.
+    /// Domain-separated from all transport and local-DB paths so a vault key
+    /// and any session key can never be equal even from the same SE key pair.
+    static let kVaultKeyInfo = "Occulta-v1-vault-2026".data(using: .utf8)!
 }
 
 extension Manager {
