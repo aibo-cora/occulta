@@ -49,6 +49,18 @@ class ExchangeManager: NSObject {
     /// Hybrid PQ exchange result — P-256 + ML-KEM secrets + nonces.
     let completedExchange: CurrentValueSubject<HybridExchangeResult?, Never> = .init(nil)
 
+    // MARK: - Session failure
+
+    enum FailureReason {
+        case uwbUnavailable // timed out — no NI updates arrived in 30s
+        case cancelled      // user-initiated — UI must NOT show an alert
+    }
+
+    /// Published when the exchange ends abnormally. nil = no failure / reset.
+    let exchangeFailed: CurrentValueSubject<FailureReason?, Never> = .init(nil)
+
+    private var watchdog: DispatchSourceTimer?
+
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
 
@@ -142,15 +154,25 @@ class ExchangeManager: NSObject {
         self.browser?.startBrowsingForPeers()
 
         self.inProgress = true
+
+        self.scheduleWatchdog()
+
         #if DEBUG
         debugPrint("Starting exchange...")
         #endif
     }
 
     func finish() {
+        self.watchdog?.cancel()
+        self.watchdog = nil
+
+        // Publish reason before state is torn down so subscribers can distinguish
+        // user-cancel (.cancelled) from watchdog-timeout (.uwbUnavailable, already sent).
+        self.exchangeFailed.send(.cancelled)
+
         self.nearbySession?.invalidate()
         self.nearbySession = nil
-        
+
         self.lastNIConfiguration = nil
 
         self.advertiser?.stopAdvertisingPeer()
@@ -185,11 +207,30 @@ class ExchangeManager: NSObject {
         /// The session was already invalidated.
         self.receivedIdentity.send(nil)
         self.completedExchange.send(nil)
+        self.exchangeFailed.send(nil)
 
         self.inProgress = false
         #if DEBUG
         debugPrint("Exchange finished")
         #endif
+    }
+
+    // MARK: - Watchdog
+
+    private func scheduleWatchdog() {
+        self.watchdog?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 30)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            #if DEBUG
+            debugPrint("Exchange watchdog fired — no NI updates in 30s")
+            #endif
+            self.exchangeFailed.send(.uwbUnavailable)
+            self.finish()
+        }
+        timer.resume()
+        self.watchdog = timer
     }
 
     // MARK: - Completion check
@@ -390,6 +431,11 @@ class ExchangeManager: NSObject {
     }
 
     private func handleNearbyObjectsUpdate(_ nearbyObjects: [NINearbyObject]) {
+        // Any NI update — even nil-distance or out-of-range — proves the subsystem
+        // is alive. Reset the watchdog before the distance filter so ranging activity
+        // at > 25 cm still keeps the session alive.
+        self.scheduleWatchdog()
+
         for object in nearbyObjects {
             guard
                 let distance = object.distance,

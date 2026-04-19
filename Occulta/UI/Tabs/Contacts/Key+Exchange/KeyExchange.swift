@@ -35,8 +35,10 @@ struct KeyExchange: View {
     }
     
     @State private var receivedIdentityKey: Contact.Draft.Key?
-    
+    @State private var failureAlert: Bool = false
+
     var body: some View {
+        Group {
         if self.exchangeManager.inProgress {
             VStack {
                 StartingSession(withContact: self.identifier)
@@ -76,6 +78,11 @@ struct KeyExchange: View {
                     self.receivedIdentityKey = Contact.Draft.Key(material: quantumExchange.peerP256PublicKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum)
                 }
             })
+            .onReceive(self.exchangeManager.exchangeFailed) { reason in
+                if reason == .uwbUnavailable {
+                    self.failureAlert = true
+                }
+            }
             .sheet(item: self.$receivedIdentityKey, onDismiss: {
                 self.exchangeManager.finish()
             }) { key in
@@ -142,6 +149,12 @@ struct KeyExchange: View {
                     .padding()
                     .foregroundStyle(.red)
             }
+        }
+        } // end Group
+        .alert("Exchange couldn't complete", isPresented: self.$failureAlert) {
+            Button("OK") { }
+        } message: {
+            Text("We couldn't measure the distance to your contact. This usually means Ultra Wideband isn't available right now.\n\nOn both devices, try:\n\n1. Settings → Privacy & Security → Location Services → System Services → toggle 'Networking & Wireless' off, then on\n2. Restart both devices\n3. Try the exchange again")
         }
     }
     
