@@ -241,6 +241,98 @@ extension Manager {
             )
         }
 
+        // MARK: - Vault key derivation (kVaultKeyInfo)
+
+        // CRYPTO_REVIEW_CHECKLIST — Vault Key Derivation Path
+        // ══════════════════════════════════════════════════
+        // 1. Key ownership map
+        //    - Generator: this device's SE identity key (single owner).
+        //    - Public half: our own public key — held locally, never shared as vault material.
+        //    - Private half: SE identity key — hardware-bound, never extractable.
+        //    - Shared between contacts: No. Self-ECDH produces a device-unique key.
+        //
+        // 2. Consumption events
+        //    - No one-time consumption. The key is re-derivable on demand via ECDH.
+        //    - Zeroed on VaultManager.lock() and on scenePhase .background.
+        //    - No local inconsistency risk — derivation is stateless.
+        //
+        // 3. Multi-party trace
+        //    - Single owner only. SSS shards are separate per-contact values;
+        //      no contact ever holds this key directly.
+        //
+        // 4. Security property verification
+        //    - Property: confidentiality of vault entries, bound to SE hardware.
+        //    - Attacker view: SwiftData ciphertext is opaque without the vault key.
+        //      Deriving the vault key requires SE access (device unlocked + biometric).
+        //    - Not achieved: forward secrecy (same key re-derived on each unlock);
+        //      post-quantum resistance (P-256 self-ECDH is classical).
+        //    - SE compromise = vault compromise — intentional, no weaker fallback.
+        //    - No prekey public keys involved. Checklist item 4.6: N/A.
+        //
+        // 5. Layer boundary check
+        //    - deriveVaultKey() returns SymmetricKey to caller. No SwiftData, no UI.
+        //    - VaultManager holds the key; crypto layer never touches SwiftData.
+
+        /// Derive the vault session key via self-ECDH with the SE identity key.
+        ///
+        /// **SE operations performed:**
+        /// 1. `retrievePrivateKey` — reads the identity SE private key by tag.
+        /// 2. `SecKeyCopyPublicKey` — derives the matching public key reference.
+        /// 3. `SecKeyCopyExternalRepresentation` — exports the public key (HKDF salt).
+        /// 4. `SecKeyCopyKeyExchangeResult` — ECDH(identity_priv, identity_pub).
+        ///
+        /// The XOR-of-peers salt used elsewhere collapses to zero for self-ECDH;
+        /// the identity public key is used as salt instead, preserving hardware
+        /// binding without a zero salt input to HKDF.
+        ///
+        /// The returned SymmetricKey is never stored. The caller (VaultManager)
+        /// holds it in memory and zeroes it on lock.
+        ///
+        /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+        func deriveVaultKey() throws -> SymmetricKey? {
+            guard let ourPriv    = try self.retrievePrivateKey()         else { return nil }
+            guard let ourPub     = self.retrivePublicKey(using: ourPriv) else { return nil }
+            guard let ourPubData = self.convert(key: ourPub)             else { return nil }
+
+            var error: Unmanaged<CFError>?
+            guard
+                let rawSecret = SecKeyCopyKeyExchangeResult(
+                    ourPriv, .ecdhKeyExchangeCofactorX963SHA256, ourPub,
+                    [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                    &error
+                ) as? Data
+            else { return nil }
+
+            return HKDF<SHA256>.deriveKey(
+                inputKeyMaterial: SymmetricKey(data: rawSecret),
+                salt: ourPubData,
+                info: SaltInfo.kVaultKeyInfo,
+                outputByteCount: 32
+            )
+        }
+
+        // MARK: - SE signing (general purpose)
+
+        /// ECDSA-sign `data` with the SE identity key.
+        ///
+        /// **SE operations performed:**
+        /// 1. `retrievePrivateKey` — reads the identity private key by tag.
+        /// 2. `SecKeyCreateSignature` — signs; SE applies SHA-256 internally.
+        ///
+        /// ⚠️ DO NOT pre-hash `data`. `.ecdsaSignatureMessageX962SHA256` hashes
+        /// internally. Pre-hashing produces a signature no verifier will accept,
+        /// and the failure is silent — identical to a key mismatch.
+        ///
+        /// - Returns: DER-encoded ECDSA signature.
+        func signData(_ data: Data) throws -> Data {
+            guard let key = try self.retrievePrivateKey() else { throw Errors.noIdentityAvailable }
+            var error: Unmanaged<CFError>?
+            guard
+                let sig = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, data as CFData, &error) as Data?
+            else { throw error!.takeRetainedValue() as Error }
+            return sig
+        }
+
         /// Generate a throwaway in-memory P-256 key pair for a single FS message.
         ///
         /// `kSecAttrIsPermanent: false` — key is never written to any keychain.

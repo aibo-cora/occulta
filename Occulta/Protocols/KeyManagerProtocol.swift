@@ -44,6 +44,23 @@ protocol KeyManagerProtocol {
     ///
     /// - Returns: DER-encoded ECDSA signature, raw bytes from `SecKeyCreateSignature`.
     func signIdentityChallenge(_ data: Data) throws -> Data
+
+    // MARK: - Vault
+
+    /// Derive the vault session key via self-ECDH with the SE identity key.
+    ///
+    /// The returned SymmetricKey is never stored. The caller holds it in memory
+    /// for the duration of the unlocked vault session and zeroes it on lock.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveVaultKey() throws -> SymmetricKey?
+
+    /// ECDSA-sign `data` with the SE identity key.
+    ///
+    /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
+    ///
+    /// - Returns: DER-encoded ECDSA signature.
+    func signData(_ data: Data) throws -> Data
 }
 
 // MARK: - TestKeyManager
@@ -365,8 +382,54 @@ extension TestKeyManager {
         return signature
     }
 
+    // MARK: - Vault (TestKeyManager)
+
+    /// Self-ECDH with the in-memory identity key pair — mirrors Manager.Key.deriveVaultKey().
+    func deriveVaultKey() throws -> SymmetricKey? {
+        let attrs: [String: Any] = [
+            kSecAttrKeyType       as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass      as String: kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+        var err: Unmanaged<CFError>?
+        guard
+            let pubKey = SecKeyCreateWithData(identityPublicKeyData as CFData, attrs as CFDictionary, &err)
+        else { return nil }
+
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                identityPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, pubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &err
+            ) as? Data
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: identityPublicKeyData,
+            info: SaltInfo.kVaultKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    /// In-memory ECDSA-sign — mirrors Manager.Key.signData(_:).
+    ///
+    /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
+    func signData(_ data: Data) throws -> Data {
+        var error: Unmanaged<CFError>?
+        guard
+            let sig = SecKeyCreateSignature(
+                identityPrivateKey,
+                .ecdsaSignatureMessageX962SHA256,
+                data as CFData,
+                &error
+            ) as Data?
+        else { throw error!.takeRetainedValue() as Error }
+        return sig
+    }
+
     // MARK: - Private
- 
+
     /// Raw ECDH + XOR salt without HKDF. Hybrid derivation combines ECDH with
     /// ML-KEM secrets before a single HKDF pass — running HKDF twice would produce the wrong key.
     private func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
