@@ -16,6 +16,7 @@ struct KeyExchange: View {
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
+    @Environment(\.dismiss) private var dismiss
     
     init(identifier: String) {
         let predicate = #Predicate<Contact.Profile> {
@@ -74,6 +75,11 @@ struct KeyExchange: View {
                     let quantum = QuantumKeyMaterial(encapsulatedSecret: quantumExchange.mlkemSecret1, decapsulatedSecret: quantumExchange.mlkemSecret2, ourCiphertext: quantumExchange.ourCiphertext, peerCiphertext: quantumExchange.peerCiphertext)
                     
                     self.receivedIdentityKey = Contact.Draft.Key(material: quantumExchange.peerP256PublicKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum)
+                }
+            })
+            .onReceive(self.contactManager?.contactKeyUpdated ?? PassthroughSubject<String, Never>(), perform: { identifier in
+                if identifier == self.identifier {
+                    self.dismiss()
                 }
             })
             .sheet(item: self.$receivedIdentityKey, onDismiss: {
