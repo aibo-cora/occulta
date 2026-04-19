@@ -136,26 +136,25 @@ extension Contact {
                 IdentityChallenge.VerifyIdentityButton(contact: profile)
             }
 
-            if self.keyIsRevocable, case .edit(let identifier) = self.mode {
-                Button(role: .destructive) {
-                    self.displayingRevokeKeyWarning = true
-                } label: {
-                    Label("Revoke Key", systemImage: "key.horizontal.fill")
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.occultaDanger)
-                .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
-                    Button("Revoke", role: .destructive) {
-                        try? self.contactManager.reset(identity: identifier)
-                    }
-                } message: {
-                    Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
-                }
+            Button(role: .destructive) {
+                self.displayingRevokeKeyWarning = true
+            } label: {
+                Label("Revoke Key", systemImage: "key.horizontal.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.occultaDanger)
+            .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
+                Button("Revoke", role: .destructive) {
+                    try? self.contactManager.reset(identity: self.contact.identifier)
+                }
+            } message: {
+                Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
+            }
+            .disabled(self.profiles.first?.contactPublicKeys?.last?.expiredOn != nil)
 
             if case .edit(let identifier) = self.mode {
                 Button(role: .destructive) {
