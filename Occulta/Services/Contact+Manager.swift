@@ -44,6 +44,8 @@ class ContactManager {
         CNContactBirthdayKey as CNKeyDescriptor,
     ]
     
+    var contactKeyUpdated: PassthroughSubject<String, Never> = .init()
+    
     init(modelContainer: ModelContainer) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
@@ -418,6 +420,8 @@ extension ContactManager {
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
         
         try self.modelContext.save()
+        
+        self.contactKeyUpdated.send(identifier)
     }
     
     /// Remove all keys of a contact.

@@ -113,7 +113,7 @@ struct OccultaApp: App {
                 OnboardingView()
             } else {
                 TabView {
-                    Contacts()
+                    ContactsV2()
                         .tag(Tabs.contacts)
                         .tabItem {
                             Tabs.contacts.image

@@ -162,6 +162,6 @@ extension Contact {
 }
 
 #Preview {
-    Contact.Details(identifier: UUID().uuidString)
+    Contact.DetailsV2(identifier: UUID().uuidString)
         .environment(ContactManager.preview)
 }

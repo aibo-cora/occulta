@@ -16,6 +16,7 @@ struct KeyExchange: View {
     @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
+    @Environment(\.dismiss) private var dismiss
     
     init(identifier: String) {
         let predicate = #Predicate<Contact.Profile> {
@@ -35,113 +36,131 @@ struct KeyExchange: View {
     }
     
     @State private var receivedIdentityKey: Contact.Draft.Key?
-    
+    @State private var failureAlert: Bool = false
+
     var body: some View {
-        if self.exchangeManager.inProgress {
-            VStack {
-                StartingSession(withContact: self.identifier)
-                
-                Button {
-                    self.exchangeManager.finish()
-                } label: {
-                    Text("Cancel")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .onReceive(self.exchangeManager.receivedIdentity) { received in
-                if let contactsIdentity = received, let myIdentity = try? Manager.Key().retrieveIdentity() {
-                    /// I am the owner of this key.
-                    ///
-                    print("Received identity: \(contactsIdentity), displaying result...")
-                    
-                    let date = String(Date.now.timeIntervalSince1970)
-                    
-                    self.receivedIdentityKey = Contact.Draft.Key(material: contactsIdentity, owner: myIdentity, date: date)
-                }
-            }
-            .onReceive(self.exchangeManager.completedExchange, perform: { quantumExchange in
-                let myIdentity = try? Manager.Key().retrieveIdentity()
-                
-                #if DEBUG
-                debugPrint("Received quantum exchange: \(String(describing: quantumExchange)), my identity = \(String(describing: myIdentity)), setting key.,.")
-                #endif
-                if let quantumExchange = quantumExchange, let myIdentity = myIdentity {
-                    /// I am the owner of this key.
-                    ///
-                    print("Received identity: \(quantumExchange.peerP256PublicKey), with quantum material, displaying result...")
-                    
-                    let date = String(Date.now.timeIntervalSince1970)
-                    let quantum = QuantumKeyMaterial(encapsulatedSecret: quantumExchange.mlkemSecret1, decapsulatedSecret: quantumExchange.mlkemSecret2, ourCiphertext: quantumExchange.ourCiphertext, peerCiphertext: quantumExchange.peerCiphertext)
-                    
-                    self.receivedIdentityKey = Contact.Draft.Key(material: quantumExchange.peerP256PublicKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum)
-                }
-            })
-            .sheet(item: self.$receivedIdentityKey, onDismiss: {
-                self.exchangeManager.finish()
-            }) { key in
-                let (isDuplicate, owner) = self.checkDuplicate(key: key)
-                
-                if isDuplicate == false {
-                    ExchangeResult(identifier: self.identifier, receivedKey: key, exchangeResult: self.exchangeManager.completedExchange.value)
-                        .environment(self.exchangeManager)
-                } else {
-                    DuplicateKey(identifier: owner)
-                }
-            }
-        } else {
-            if self.exchangeManager.isExchangePossible {
+        Group {
+            if self.exchangeManager.inProgress {
                 VStack {
-                    if self.displayingInfo {
-                        VStack {
-                            Text("To begin communicating with **\(self.name)**, first, we need to exchange **public** keys.")
-                                
-                            Divider()
-                            
-                            VStack(alignment: .leading, spacing: 20) {
-                                HStack {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundStyle(.yellow)
-                                    Text("Allow **Nearby Interaction** if prompted.")
-                                }
-                                
-                                HStack {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .foregroundStyle(.yellow)
-                                    Text("Allow **Finding and Connecting** to devices on local network if prompted.")
-                                }
-                            }
-                            
-                            Divider()
-                            
-                            Text("Press **Exchange Keys** to start a secure session.")
-                        }
-                        .padding()
-                    }
+                    StartingSession(withContact: self.identifier)
                     
-                    HStack {
-                        Button {
-                            self.exchangeManager.start()
-                        } label: {
-                            HStack {
-                                Text("Exchange Keys")
-                                Image(systemName: "key.horizontal")
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
+                    Button {
+                        self.exchangeManager.finish()
+                    } label: {
+                        Text("Cancel")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .onReceive(self.exchangeManager.receivedIdentity) { received in
+                    if let contactsIdentity = received, let myIdentity = try? Manager.Key().retrieveIdentity() {
+                        /// I am the owner of this key.
+                        ///
+                        print("Received identity: \(contactsIdentity), displaying result...")
                         
-                        Button {
-                            self.displayingInfo.toggle()
-                        } label: {
-                            Image(systemName: "info.bubble")
-                        }
-                        .padding(.leading, 20)
+                        let date = String(Date.now.timeIntervalSince1970)
+                        
+                        self.receivedIdentityKey = Contact.Draft.Key(material: contactsIdentity, owner: myIdentity, date: date)
+                    }
+                }
+                .onReceive(self.exchangeManager.completedExchange, perform: { quantumExchange in
+                    let myIdentity = try? Manager.Key().retrieveIdentity()
+                    
+                    #if DEBUG
+                    debugPrint("Received quantum exchange: \(String(describing: quantumExchange)), my identity = \(String(describing: myIdentity)), setting key.,.")
+                    #endif
+                    if let quantumExchange = quantumExchange, let myIdentity = myIdentity {
+                        /// I am the owner of this key.
+                        ///
+                        print("Received identity: \(quantumExchange.peerP256PublicKey), with quantum material, displaying result...")
+                        
+                        let date = String(Date.now.timeIntervalSince1970)
+                        let quantum = QuantumKeyMaterial(encapsulatedSecret: quantumExchange.mlkemSecret1, decapsulatedSecret: quantumExchange.mlkemSecret2, ourCiphertext: quantumExchange.ourCiphertext, peerCiphertext: quantumExchange.peerCiphertext)
+                        
+                        self.receivedIdentityKey = Contact.Draft.Key(material: quantumExchange.peerP256PublicKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum)
+                    }
+                })
+                .onReceive(self.contactManager?.contactKeyUpdated ?? PassthroughSubject<String, Never>(), perform: { identifier in
+                    if identifier == self.identifier {
+                        self.dismiss()
+                    }
+                })
+                .onReceive(self.exchangeManager.exchangeFailed) { reason in
+                    if reason == .uwbUnavailable {
+                        self.failureAlert = true
+                    }
+                }
+                .sheet(item: self.$receivedIdentityKey, onDismiss: {
+                    self.exchangeManager.finish()
+                }) { key in
+                    let (isDuplicate, owner) = self.checkDuplicate(key: key)
+                    
+                    if isDuplicate == false {
+                        ExchangeResult(identifier: self.identifier, receivedKey: key, exchangeResult: self.exchangeManager.completedExchange.value)
+                            .environment(self.exchangeManager)
+                    } else {
+                        DuplicateKey(identifier: owner)
                     }
                 }
             } else {
-                Text("Key exchange is not supported by your device's hardware capabilities. Device must have UWB chip.")
-                    .padding()
-                    .foregroundStyle(.red)
+                if self.exchangeManager.isExchangePossible {
+                    VStack {
+                        if self.displayingInfo {
+                            VStack {
+                                Text("To begin communicating with **\(self.name)**, first, we need to exchange **public** keys.")
+                                    
+                                Divider()
+                                
+                                VStack(alignment: .leading, spacing: 20) {
+                                    HStack {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundStyle(.yellow)
+                                        Text("Allow **Nearby Interaction** if prompted.")
+                                    }
+                                    
+                                    HStack {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundStyle(.yellow)
+                                        Text("Allow **Finding and Connecting** to devices on local network if prompted.")
+                                    }
+                                }
+                                
+                                Divider()
+                                
+                                Text("Press **Exchange Keys** to start a secure session.")
+                            }
+                            .padding()
+                        }
+                        
+                        HStack {
+                            Button {
+                                self.exchangeManager.start()
+                            } label: {
+                                HStack {
+                                    Text("Exchange Keys")
+                                    Image(systemName: "key.horizontal")
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            
+                            Button {
+                                self.displayingInfo.toggle()
+                            } label: {
+                                Image(systemName: "info.bubble")
+                            }
+                            .padding(.leading, 20)
+                        }
+                    }
+                } else {
+                    Text("Key exchange is not supported by your device's hardware capabilities. Device must have UWB chip.")
+                        .padding()
+                        .foregroundStyle(.red)
+                }
             }
+        }
+        .alert("Exchange couldn't complete", isPresented: self.$failureAlert) {
+            Button("OK") { }
+        } message: {
+            Text("We couldn't measure the distance to your contact. This could mean Ultra Wideband isn't available right now.\n\nOn both devices, try:\n\n1. Settings → Privacy & Security → Location Services → System Services → toggle 'Networking & Wireless' off, then on\n2. Restart both devices\n3. Try the exchange again")
         }
     }
     
