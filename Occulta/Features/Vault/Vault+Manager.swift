@@ -28,7 +28,9 @@ final class VaultManager {
 
     private let modelExecutor: any ModelExecutor
     private let modelContainer: ModelContainer
-    private var modelContext: ModelContext { modelExecutor.modelContext }
+    // Internal (not private) so extensions in separate files (Vault+Manager+Shards.swift)
+    // can call modelContext.save(). Swift private is file-scoped for extension access.
+    var modelContext: ModelContext { modelExecutor.modelContext }
 
     let keyManager: any KeyManagerProtocol
 

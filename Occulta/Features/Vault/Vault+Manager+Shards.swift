@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import SwiftData
 import CryptoKit
 
 extension VaultManager {
