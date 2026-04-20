@@ -50,11 +50,15 @@ struct VaultShardSetup: View {
 
                         Text("\(threshold)/\(max(threshold, selectedIDs.count))")
                             .font(.system(size: 20, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.occultaAccent)
+                            .foregroundStyle(Color.primary)
                             .frame(minWidth: 44, alignment: .trailing)
                     }
 
-                    Text("Any \(threshold) contacts can help you recover. Fewer than \(threshold) shards reveal nothing.")
+                    (Text("Any ")
+                     + Text("\(threshold)").fontWeight(.bold).foregroundColor(.primary)
+                     + Text(" contacts can help you recover. Fewer than ")
+                     + Text("\(threshold)").fontWeight(.bold).foregroundColor(.primary)
+                     + Text(" shards reveal nothing."))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineSpacing(3)
@@ -84,17 +88,20 @@ struct VaultShardSetup: View {
 
             // Information-theoretic security note
             Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("🔐  Information-theoretic security")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
-                    Text("Any single shard carries zero information about your secret. An attacker with fewer than \(threshold) shards learns nothing. This is perfect secrecy over GF(2⁸), not computational hardness.")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
-                        .lineSpacing(3)
+                HStack(alignment: .top, spacing: 8) {
+                    Text("🔮")
+                        .font(.system(size: 13))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Information-theoretic security")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        Text("Any single shard carries zero information about your secret. An attacker with fewer than \(threshold) shards learns nothing. This is perfect secrecy over GF(2⁸), not computational hardness.")
+                            .font(.system(size: 11, design: .monospaced))
+                            .lineSpacing(3)
+                    }
+                    .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
                 }
                 .padding(.vertical, 4)
-                .listRowBackground(Color(red: 0xEE/255, green: 0xED/255, blue: 0xFE/255))
+                .listRowBackground(VaultEntryType.cat(light: (0xEE,0xED,0xFE), dark: (0x1e,0x1c,0x38)))
             }
 
             // Delivery info
@@ -178,7 +185,7 @@ struct VaultShardSetup: View {
                         .fill(avatarGradientV2(for: contact.identifier))
                         .frame(width: 36, height: 36)
                     Text(name.initials)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.white)
                 }
 
@@ -201,7 +208,7 @@ struct VaultShardSetup: View {
     private func monoHeader(_ text: String) -> some View {
         Text(text.uppercased())
             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .tracking(1.4)
+            .tracking(1.6)
     }
 
     private func distribute() {

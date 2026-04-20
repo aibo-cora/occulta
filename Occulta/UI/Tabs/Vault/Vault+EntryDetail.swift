@@ -17,7 +17,7 @@ struct VaultEntryDetail: View {
 
     @Query private var entries: [VaultEntry]
 
-    @State private var cachedLabel  = ""
+    @State private var cachedLabel     = ""
     @State private var showDeleteAlert = false
     @GestureState private var isHeld   = false
 
@@ -42,6 +42,7 @@ struct VaultEntryDetail: View {
                 ContentUnavailableView("Entry not found", systemImage: "lock.slash")
             }
         }
+        .privacySensitive(true)
         .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom) {
             if let entry {
@@ -87,7 +88,7 @@ struct VaultEntryDetail: View {
         HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(entry.type.tileTint.opacity(0.15))
+                    .fill(entry.type.tileBackground)
                     .frame(width: 52, height: 52)
                 Text(entry.type.emoji)
                     .font(.system(size: 26))
@@ -140,15 +141,15 @@ struct VaultEntryDetail: View {
                 HStack(spacing: 6) {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 11))
-                    Text("Hold to Reveal")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .tracking(0.5)
+                    Text("HOLD TO REVEAL")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(0.8)
                 }
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
-                .background(Capsule().fill(Color(.secondarySystemGroupedBackground)))
-                .overlay(Capsule().strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5))
+                .background(Capsule().fill(Color(.tertiarySystemGroupedBackground)))
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
             }
         }
         .frame(minHeight: 80)
@@ -213,19 +214,52 @@ struct VaultEntryDetail: View {
         .padding(.vertical, 12)
     }
 
-    // MARK: - Provenance note
+    // MARK: - Provenance note (green info block per spec)
 
     private var provenance: some View {
-        Text("✓ Encrypted with a P-256 key bound to the Secure Enclave of this device. Decryption requires biometric authentication matching the enrolled set at key creation time. Key material never leaves the SE.")
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(Color.occultaVerified)
-            .lineSpacing(3)
-            .padding(12)
-            .background(Color.occultaVerified.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+        HStack(alignment: .top, spacing: 8) {
+            Text("🛡")
+                .font(.system(size: 13))
+            Text("Encrypted with a P-256 key bound to the Secure Enclave of this device. Decryption requires biometric authentication matching the enrolled set at key creation time. Key material never leaves the SE.")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Color(UIColor { t in
+                    t.userInterfaceStyle == .dark
+                        ? UIColor(red: 0x6e/255, green: 0xc9/255, blue: 0x7e/255, alpha: 1)
+                        : UIColor(red: 0x3B/255, green: 0x6D/255, blue: 0x11/255, alpha: 1)
+                }))
+                .lineSpacing(3)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VaultEntryType.cat(light: (0xEA,0xF3,0xDE), dark: (0x1a,0x2e,0x1a)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    // MARK: - Action strip
+    // MARK: - Action strip (text-only buttons per spec)
+
+    private enum ActionButtonStyle { case standard, primary, danger }
+
+    private func actionButton(_ label: String, style: ActionButtonStyle) -> some View {
+        Text(label.uppercased())
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .tracking(0.8)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .foregroundStyle(style == .danger ? Color.occultaDanger : Color.primary)
+            .background(style == .primary
+                ? Color(.tertiarySystemGroupedBackground)
+                : Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(
+                        style == .danger
+                            ? Color.occultaDanger.opacity(0.3)
+                            : Color.primary.opacity(0.1),
+                        lineWidth: 0.5
+                    )
+            )
+    }
 
     private func actionStrip(entry: VaultEntry) -> some View {
         HStack(spacing: 8) {
@@ -235,38 +269,21 @@ struct VaultEntryDetail: View {
                     UIPasteboard.general.string = str
                 }
             } label: {
-                actionTile(icon: "doc.on.doc", label: "Copy", tint: .occultaAccent)
+                actionButton("Copy", style: .standard)
             }
             .buttonStyle(.plain)
 
             NavigationLink {
                 VaultShardSetup(entryID: entry.id)
             } label: {
-                actionTile(icon: "puzzlepiece.extension", label: "Manage Shards", tint: .primary)
+                actionButton("Manage Shards", style: .primary)
             }
             .buttonStyle(.plain)
 
             Button { showDeleteAlert = true } label: {
-                actionTile(icon: "trash", label: "Delete", tint: .occultaDanger)
+                actionButton("Delete", style: .danger)
             }
             .buttonStyle(.plain)
         }
-    }
-
-    private func actionTile(icon: String, label: String, tint: Color) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 16))
-                .foregroundStyle(tint)
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(tint.opacity(0.85))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }

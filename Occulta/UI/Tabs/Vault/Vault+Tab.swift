@@ -42,6 +42,25 @@ extension VaultEntryType {
         case .photo:      .occultaAccent
         }
     }
+
+    // Spec-exact categorical backgrounds with dark-mode variants.
+    var tileBackground: Color {
+        switch self {
+        case .seedPhrase: Self.cat(light: (0xEA,0xF3,0xDE), dark: (0x1a,0x2e,0x1a))
+        case .note:       Self.cat(light: (0xE6,0xF1,0xFB), dark: (0x0e,0x1f,0x30))
+        case .keyToken:   Self.cat(light: (0xFC,0xF0,0xF0), dark: (0x2e,0x18,0x18))
+        case .document:   Self.cat(light: (0xFA,0xEE,0xDA), dark: (0x2e,0x23,0x10))
+        case .photo:      Self.cat(light: (0xFB,0xE9,0xF5), dark: (0x2a,0x15,0x20))
+        }
+    }
+
+    static func cat(light l: (Int,Int,Int), dark d: (Int,Int,Int)) -> Color {
+        Color(UIColor { t in
+            t.userInterfaceStyle == .dark
+                ? UIColor(red: CGFloat(d.0)/255, green: CGFloat(d.1)/255, blue: CGFloat(d.2)/255, alpha: 1)
+                : UIColor(red: CGFloat(l.0)/255, green: CGFloat(l.1)/255, blue: CGFloat(l.2)/255, alpha: 1)
+        })
+    }
 }
 
 // MARK: - VaultTab
@@ -172,7 +191,7 @@ struct VaultTab: View {
                             .frame(width: 7, height: 7)
                         Text("Personal")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .tracking(1.4)
+                            .tracking(1.6)
                         if !entries.isEmpty {
                             Spacer()
                             Text("\(entries.count)")
@@ -183,7 +202,7 @@ struct VaultTab: View {
                 } footer: {
                     if !entries.isEmpty {
                         Text("\(entries.count) \(entries.count == 1 ? "entry" : "entries") · se-bound · this device only")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(size: 10, design: .monospaced))
                     }
                 }
             }
@@ -202,7 +221,7 @@ struct VaultTab: View {
                             .frame(width: 7, height: 7)
                         Text("Shards Held for You")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .tracking(1.4)
+                            .tracking(1.6)
                     }
                 }
             }
@@ -242,7 +261,7 @@ private struct VaultEntryRow: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9)
-                    .fill(entry.type.tileTint.opacity(0.15))
+                    .fill(entry.type.tileBackground)
                     .frame(width: 36, height: 36)
                 Text(entry.type.emoji)
                     .font(.system(size: 18))
@@ -253,7 +272,7 @@ private struct VaultEntryRow: View {
                     .font(.system(size: 16, weight: .medium))
                     .lineLimit(1)
                 Text("\(entry.type.displayName) · \(entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -261,11 +280,12 @@ private struct VaultEntryRow: View {
             Spacer()
 
             Text("SE")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .tracking(0.8)
                 .foregroundStyle(Color.occultaVerified)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(Color.occultaVerified.opacity(0.12))
+                .background(VaultEntryType.cat(light: (0xEA,0xF3,0xDE), dark: (0x1a,0x2e,0x1a)))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .padding(.vertical, 3)

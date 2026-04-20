@@ -61,6 +61,7 @@ struct VaultNewEntrySheet: View {
                             .background(Color(.secondarySystemGroupedBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .tint(.occultaAccent)
+                            .privacySensitive(true)
                     }
 
                     if let error {
