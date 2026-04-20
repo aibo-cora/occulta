@@ -1,0 +1,212 @@
+//
+//  Vault+ShardSetup.swift
+//  Occulta
+//
+//  Shard distribution setup: threshold slider + contact picker + distribute.
+//  Calls VaultManager.prepareShards() to split and sign shards.
+//  Delivery via .occ is a separate step outside this view.
+//
+
+import SwiftUI
+import SwiftData
+
+struct VaultShardSetup: View {
+    let entryID: UUID
+
+    @Environment(VaultManager.self) private var vault
+    @Environment(\.dismiss) private var dismiss
+
+    @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
+
+    @State private var selectedIDs:  Set<String> = []
+    @State private var threshold     = 2
+    @State private var distributing  = false
+    @State private var error: String?
+
+    private var recipients: [Contact.Profile] {
+        contacts.filter { selectedIDs.contains($0.identifier) }
+    }
+
+    private var canDistribute: Bool {
+        selectedIDs.count >= 2 && threshold <= selectedIDs.count
+    }
+
+    var body: some View {
+        List {
+            // Threshold
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(threshold)")
+                            .font(.system(size: 40, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.occultaAccent)
+                        Text("of \(max(threshold, selectedIDs.count)) contacts required")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(
+                        value: Binding(
+                            get: { Double(threshold) },
+                            set: { threshold = max(2, min(Int($0.rounded()), selectedIDs.count)) }
+                        ),
+                        in: 2...Double(max(2, selectedIDs.count)),
+                        step: 1
+                    )
+                    .tint(.occultaAccent)
+                    .disabled(selectedIDs.count < 2)
+
+                    Text("Any \(threshold) contacts can help you recover. Fewer than \(threshold) shards reveal nothing.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                monoHeader("Threshold")
+            }
+
+            // Contact picker
+            Section {
+                if contacts.isEmpty {
+                    Text("No contacts yet. Exchange keys first.")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(contacts) { contact in
+                        contactRow(contact)
+                    }
+                }
+            } header: {
+                monoHeader("Recipients")
+            } footer: {
+                Text("Select ≥ 2 contacts. Each receives one signed shard via .occ.")
+                    .font(.system(size: 11, design: .monospaced))
+            }
+
+            // Information-theoretic security note
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("🔐  Information-theoretic security")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                    Text("Any single shard carries zero information about your secret. An attacker with fewer than \(threshold) shards learns nothing. This is perfect secrecy over GF(2⁸), not computational hardness.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                        .lineSpacing(3)
+                }
+                .padding(.vertical, 4)
+                .listRowBackground(Color(red: 0xEE/255, green: 0xED/255, blue: 0xFE/255))
+            }
+
+            // Error
+            if let error {
+                Section {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(Color.occultaDanger)
+                        .listRowBackground(Color.clear)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollIndicators(.hidden)
+        .navigationTitle("Shard Setup")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Done") { dismiss() }
+                    .tint(.occultaAccent)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button(action: distribute) {
+                Group {
+                    if distributing {
+                        ProgressView().tint(.white)
+                    } else {
+                        Text("Distribute Shards")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(canDistribute ? Color.occultaAccent : .secondary.opacity(0.3))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canDistribute || distributing)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    // MARK: - Contact row
+
+    private func contactRow(_ contact: Contact.Profile) -> some View {
+        let given    = contact.givenName.decrypt()
+        let family   = contact.familyName.decrypt()
+        let name     = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+        let selected = selectedIDs.contains(contact.identifier)
+
+        return Button {
+            if selected {
+                selectedIDs.remove(contact.identifier)
+                threshold = max(2, min(threshold, selectedIDs.count))
+            } else {
+                selectedIDs.insert(contact.identifier)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(avatarGradientV2(for: contact.identifier))
+                        .frame(width: 36, height: 36)
+                    Text(name.initials)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+
+                Text(name.isEmpty ? contact.identifier : name)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? Color.occultaAccent : .secondary)
+                    .font(.system(size: 20))
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Helpers
+
+    private func monoHeader(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .tracking(1.4)
+    }
+
+    private func distribute() {
+        distributing = true
+        error = nil
+        do {
+            _ = try vault.prepareShards(
+                for:        entryID,
+                threshold:  threshold,
+                recipients: recipients
+            )
+            dismiss()
+        } catch VaultManager.VaultError.locked {
+            error = "Vault locked — unlock and try again."
+            distributing = false
+        } catch {
+            self.error = "Failed: \(error.localizedDescription)"
+            distributing = false
+        }
+    }
+}
