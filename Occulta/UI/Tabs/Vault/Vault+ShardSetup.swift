@@ -37,16 +37,23 @@ struct VaultShardSetup: View {
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
-                        Slider(
-                            value: Binding(
-                                get: { Double(threshold) },
-                                set: { threshold = max(2, min(Int($0.rounded()), selectedIDs.count)) }
-                            ),
-                            in: 2...Double(max(2, selectedIDs.count)),
-                            step: 1
-                        )
-                        .tint(.occultaAccent)
-                        .disabled(selectedIDs.count < 2)
+                        // Slider requires range stride > 0; that only holds when count ≥ 3.
+                        // With 0–2 contacts the threshold is fixed at 2, so no slider is needed.
+                        if selectedIDs.count >= 3 {
+                            Slider(
+                                value: Binding(
+                                    get: { Double(threshold) },
+                                    set: { threshold = max(2, min(Int($0.rounded()), selectedIDs.count)) }
+                                ),
+                                in: 2...Double(selectedIDs.count),
+                                step: 1
+                            )
+                            .tint(.occultaAccent)
+                        } else {
+                            Slider(value: .constant(0), in: 0...1)
+                                .disabled(true)
+                                .opacity(0.35)
+                        }
 
                         Text("\(threshold)/\(max(threshold, selectedIDs.count))")
                             .font(.system(size: 20, weight: .bold, design: .monospaced))
