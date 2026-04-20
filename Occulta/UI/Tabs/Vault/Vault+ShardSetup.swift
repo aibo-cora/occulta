@@ -36,25 +36,23 @@ struct VaultShardSetup: View {
             // Threshold
             Section {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("\(threshold)")
-                            .font(.system(size: 40, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.occultaAccent)
-                        Text("of \(max(threshold, selectedIDs.count)) contacts required")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.secondary)
-                    }
+                    HStack(spacing: 12) {
+                        Slider(
+                            value: Binding(
+                                get: { Double(threshold) },
+                                set: { threshold = max(2, min(Int($0.rounded()), selectedIDs.count)) }
+                            ),
+                            in: 2...Double(max(2, selectedIDs.count)),
+                            step: 1
+                        )
+                        .tint(.occultaAccent)
+                        .disabled(selectedIDs.count < 2)
 
-                    Slider(
-                        value: Binding(
-                            get: { Double(threshold) },
-                            set: { threshold = max(2, min(Int($0.rounded()), selectedIDs.count)) }
-                        ),
-                        in: 2...Double(max(2, selectedIDs.count)),
-                        step: 1
-                    )
-                    .tint(.occultaAccent)
-                    .disabled(selectedIDs.count < 2)
+                        Text("\(threshold)/\(max(threshold, selectedIDs.count))")
+                            .font(.system(size: 20, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.occultaAccent)
+                            .frame(minWidth: 44, alignment: .trailing)
+                    }
 
                     Text("Any \(threshold) contacts can help you recover. Fewer than \(threshold) shards reveal nothing.")
                         .font(.system(size: 11, design: .monospaced))
@@ -99,6 +97,21 @@ struct VaultShardSetup: View {
                 .listRowBackground(Color(red: 0xEE/255, green: 0xED/255, blue: 0xFE/255))
             }
 
+            // Delivery info
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Delivery")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .tracking(1.2)
+                    Text("Each shard is encrypted to the contact's verified public key and delivered as a signed .occ bundle via any channel.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(3)
+                }
+                .padding(.vertical, 4)
+            }
+
             // Error
             if let error {
                 Section {
@@ -111,7 +124,7 @@ struct VaultShardSetup: View {
         }
         .listStyle(.insetGrouped)
         .scrollIndicators(.hidden)
-        .navigationTitle("Shard Setup")
+        .navigationTitle("Shards")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {

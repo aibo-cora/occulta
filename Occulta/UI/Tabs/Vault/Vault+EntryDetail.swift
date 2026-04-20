@@ -36,7 +36,6 @@ struct VaultEntryDetail: View {
                     contentCard(entry: entry)
                     metaCard(entry: entry)
                     provenance
-                    actionStrip(entry: entry)
                 }
                 .padding(16)
             } else {
@@ -44,6 +43,18 @@ struct VaultEntryDetail: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+        .safeAreaInset(edge: .bottom) {
+            if let entry {
+                VStack(spacing: 0) {
+                    Divider()
+                    actionStrip(entry: entry)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        .padding(.bottom, 12)
+                }
+                .background(Color(.systemGroupedBackground))
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -73,7 +84,7 @@ struct VaultEntryDetail: View {
     // MARK: - Hero
 
     private func hero(entry: VaultEntry) -> some View {
-        VStack(spacing: 8) {
+        HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 14)
                     .fill(entry.type.tileTint.opacity(0.15))
@@ -81,17 +92,21 @@ struct VaultEntryDetail: View {
                 Text(entry.type.emoji)
                     .font(.system(size: 26))
             }
-            Text(cachedLabel)
-                .font(.system(size: 22, weight: .bold))
-                .tracking(-0.3)
-            Text(entry.type.displayName)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .tracking(0.6)
-                .textCase(.uppercase)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(cachedLabel)
+                    .font(.system(size: 20, weight: .bold))
+                    .tracking(-0.3)
+                Text(entry.type.displayName)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .tracking(0.5)
+                    .textCase(.uppercase)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Content (hold-to-reveal)
@@ -123,15 +138,17 @@ struct VaultEntryDetail: View {
 
             if !isHeld {
                 HStack(spacing: 6) {
-                    Image(systemName: "eye")
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 11))
                     Text("Hold to Reveal")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .tracking(0.5)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(Color.occultaAccent))
-                .shadow(color: .occultaAccent.opacity(0.35), radius: 8, y: 4)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color(.secondarySystemGroupedBackground)))
+                .overlay(Capsule().strokeBorder(Color(.separator).opacity(0.5), lineWidth: 0.5))
             }
         }
         .frame(minHeight: 80)
@@ -148,25 +165,15 @@ struct VaultEntryDetail: View {
     private func metaCard(entry: VaultEntry) -> some View {
         VStack(spacing: 0) {
             metaRow(title: "Encrypted With") {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("vault.key.occulta.v1")
-                        .font(.system(size: 13, design: .monospaced))
-                    Text("SE key · this device only · biometryCurrentSet")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
+                Text("SE key · this device only")
+                    .font(.system(size: 13, design: .monospaced))
             }
 
             Divider().padding(.leading, 16)
 
             metaRow(title: "Created") {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.createdAt.formatted(date: .long, time: .omitted))
-                        .font(.system(size: 15))
-                    Text("id: \(entry.id.uuidString.prefix(8).lowercased()) · type:\(String(format: "%02X", entry.entryType))")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
+                Text(entry.createdAt.formatted(date: .long, time: .omitted))
+                    .font(.system(size: 15))
             }
 
             if entry.shardDistributionEncrypted != nil {
@@ -235,7 +242,7 @@ struct VaultEntryDetail: View {
             NavigationLink {
                 VaultShardSetup(entryID: entry.id)
             } label: {
-                actionTile(icon: "puzzlepiece.extension", label: "Shards", tint: .primary)
+                actionTile(icon: "puzzlepiece.extension", label: "Manage Shards", tint: .primary)
             }
             .buttonStyle(.plain)
 
@@ -254,6 +261,8 @@ struct VaultEntryDetail: View {
             Text(label)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(tint.opacity(0.85))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)

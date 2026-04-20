@@ -166,7 +166,20 @@ struct VaultTab: View {
                         }
                     }
                 } header: {
-                    monoLabel("Personal")
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.occultaVerified)
+                            .frame(width: 7, height: 7)
+                        Text("Personal")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .tracking(1.4)
+                        if !entries.isEmpty {
+                            Spacer()
+                            Text("\(entries.count)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                 } footer: {
                     if !entries.isEmpty {
                         Text("\(entries.count) \(entries.count == 1 ? "entry" : "entries") · se-bound · this device only")
@@ -183,7 +196,14 @@ struct VaultTab: View {
                         .foregroundStyle(.secondary)
                         .listRowBackground(Color.clear)
                 } header: {
-                    monoLabel("Shards Held for You")
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                            .frame(width: 7, height: 7)
+                        Text("Shards Held for You")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .tracking(1.4)
+                    }
                 }
             }
         }
@@ -192,12 +212,6 @@ struct VaultTab: View {
     }
 
     // MARK: Helpers
-
-    private func monoLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .tracking(1.4)
-    }
 
     private func unlockVault() {
         unlocking = true
