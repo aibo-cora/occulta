@@ -116,7 +116,7 @@ struct SignedAttribute: Codable, Identifiable {
         guard publicKeyData.count == 65 else { return false }
 
         // Expiry check before crypto — fast-path rejection, no SE access.
-        if let exp = expiresAt, exp < Date() { return false }
+        if let exp = self.expiresAt, exp < Date() { return false }
 
         let attrs: [String: Any] = [
             kSecAttrKeyType      as String: kSecAttrKeyTypeECSECPrimeRandom,
@@ -130,8 +130,8 @@ struct SignedAttribute: Codable, Identifiable {
         return SecKeyVerifySignature(
             pubKey,
             .ecdsaSignatureMessageX962SHA256,
-            signingPayload() as CFData,
-            signature as CFData,
+            self.signingPayload() as CFData,
+            self.signature as CFData,
             &error
         )
     }

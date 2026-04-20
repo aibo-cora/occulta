@@ -96,7 +96,7 @@ enum ShamirSecretSharing {
         // For each secret byte: generate an independent random degree-(k−1)
         // polynomial whose constant term is that byte, then evaluate at x=1..n.
         for byteIdx in 0..<32 {
-            var coeffs = try randomPolynomial(constant: secretBytes[byteIdx], degree: k - 1)
+            var coeffs = try Self.randomPolynomial(constant: secretBytes[byteIdx], degree: k - 1)
             defer { for i in 0..<coeffs.count { coeffs[i] = 0 } }
 
             for shareIdx in 0..<n {
@@ -131,7 +131,7 @@ enum ShamirSecretSharing {
         var secret = [UInt8](repeating: 0, count: 32)
         for byteIdx in 0..<32 {
             let yCoords = shares.map { $0[byteIdx + 1] }
-            secret[byteIdx] = lagrange(xCoords: xCoords, yCoords: yCoords)
+            secret[byteIdx] = Self.lagrange(xCoords: xCoords, yCoords: yCoords)
         }
         return Data(secret)
     }
@@ -170,8 +170,8 @@ enum ShamirSecretSharing {
         var base          = a
         var exp           = 254
         while exp > 0 {
-            if exp & 1 != 0 { result = gfMul(result, base) }
-            base = gfMul(base, base)
+            if exp & 1 != 0 { result = self.gfMul(result, base) }
+            base = Self.gfMul(base, base)
             exp >>= 1
         }
         return result
@@ -205,7 +205,7 @@ enum ShamirSecretSharing {
     /// Horner: p(x) = (…((pₙ·x + pₙ₋₁)·x + pₙ₋₂)·…·x + p₀)
     private static func eval(poly: [UInt8], at x: UInt8) -> UInt8 {
         poly.reversed().reduce(UInt8(0)) { acc, coeff in
-            gfMul(acc, x) ^ coeff
+            Self.gfMul(acc, x) ^ coeff
         }
     }
 
@@ -221,10 +221,10 @@ enum ShamirSecretSharing {
             var den: UInt8 = 1
             for j in 0..<xCoords.count {
                 guard i != j else { continue }
-                num = gfMul(num, xCoords[j])            // numerator  × xⱼ
-                den = gfMul(den, xCoords[i] ^ xCoords[j]) // denominator × (xᵢ ⊕ xⱼ)
+                num = Self.gfMul(num, xCoords[j])            // numerator  × xⱼ
+                den = Self.gfMul(den, xCoords[i] ^ xCoords[j]) // denominator × (xᵢ ⊕ xⱼ)
             }
-            secret ^= gfMul(num, gfInv(den))
+            secret ^= Self.gfMul(num, gfInv(den))
         }
         return secret
     }

@@ -87,7 +87,7 @@ final class VaultEntry {
     // MARK: Computed helpers
 
     var type: VaultEntryType {
-        VaultEntryType(rawValue: UInt8(entryType)) ?? .note
+        VaultEntryType(rawValue: UInt8(self.entryType)) ?? .note
     }
 
     // MARK: AAD construction
@@ -107,10 +107,13 @@ final class VaultEntry {
     /// Add new fields only by appending and only with a new HKDF info string.
     func aad() -> Data {
         var data = Data()
-        data.append(id.uuidString.data(using: .utf8)!)   // 36 bytes
-        data.append(UInt8(entryType))                     //  1 byte
-        var ts = UInt64(createdAt.timeIntervalSince1970).bigEndian
+        data.append(self.id.uuidString.data(using: .utf8)!)   // 36 bytes
+        data.append(UInt8(self.entryType))                     //  1 byte
+        
+        var ts = UInt64(self.createdAt.timeIntervalSince1970).bigEndian
+        
         data.append(Data(bytes: &ts, count: 8))           //  8 bytes
+        
         return data                                        // 45 bytes total
     }
 }

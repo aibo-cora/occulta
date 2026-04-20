@@ -103,8 +103,8 @@ final class VaultManager {
     /// LAContext.evaluatePolicy before calling unlock. VaultManager stores only
     /// the context reference — no key material is held.
     func unlock(context: LAContext) {
-        authContext = context
-        resetInactivityTimer()
+        self.authContext = context
+        self.resetInactivityTimer()
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.
@@ -112,10 +112,10 @@ final class VaultManager {
     /// Called automatically on background, device lock, resign active, inactivity
     /// timeout, and vault key derivation failure. Safe to call when already locked.
     func lock() {
-        inactivityTimer?.invalidate()
-        inactivityTimer = nil
-        authContext?.invalidate()
-        authContext = nil
+        self.inactivityTimer?.invalidate()
+        self.inactivityTimer = nil
+        self.authContext?.invalidate()
+        self.authContext = nil
     }
 
     // MARK: - Create
@@ -125,7 +125,7 @@ final class VaultManager {
     /// - Returns: The persisted VaultEntry (fields are ciphertext).
     @discardableResult
     func addEntry(label: String, content: Data, type: VaultEntryType) throws -> VaultEntry {
-        let key   = try currentKey()
+        let key   = try self.currentKey()
 
         // Build entry first to fix id and createdAt, which are required for AAD.
         let entry = VaultEntry(type: type, encryptedLabel: Data(), encryptedContent: Data())
@@ -144,8 +144,8 @@ final class VaultManager {
         entry.encryptedLabel   = combinedLabel
         entry.encryptedContent = combinedContent
 
-        modelContext.insert(entry)
-        try modelContext.save()
+        self.modelContext.insert(entry)
+        try self.modelContext.save()
 
         return entry
     }
@@ -154,20 +154,20 @@ final class VaultManager {
 
     func fetchAllEntries() throws -> [VaultEntry] {
         let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
-        return try modelContext.fetch(descriptor)
+        return try self.modelContext.fetch(descriptor)
     }
 
     func fetchEntry(by id: UUID) throws -> VaultEntry? {
         let predicate = #Predicate<VaultEntry> { $0.id == id }
-        return try modelContext.fetch(FetchDescriptor<VaultEntry>(predicate: predicate)).first
+        return try self.modelContext.fetch(FetchDescriptor<VaultEntry>(predicate: predicate)).first
     }
 
     /// Decrypt and return the plaintext label for one entry.
     ///
     /// ⚠️ The returned String is plaintext. Do not persist or log it.
     func decryptLabel(for entry: VaultEntry) throws -> String {
-        let key       = try currentKey()
-        let plaintext = try openField(entry.encryptedLabel, key: key, aad: entry.aad())
+        let key       = try self.currentKey()
+        let plaintext = try self.openField(entry.encryptedLabel, key: key, aad: entry.aad())
         guard let label = String(data: plaintext, encoding: .utf8) else {
             throw VaultError.decryptionFailed
         }
@@ -178,16 +178,17 @@ final class VaultManager {
     ///
     /// ⚠️ Caller must zero this buffer after use — it contains the raw secret.
     func decryptContent(for entry: VaultEntry) throws -> Data {
-        let key = try currentKey()
-        return try openField(entry.encryptedContent, key: key, aad: entry.aad())
+        let key = try self.currentKey()
+        return try self.openField(entry.encryptedContent, key: key, aad: entry.aad())
     }
 
     // MARK: - Delete
 
     func deleteEntry(id: UUID) throws {
-        guard let entry = try fetchEntry(by: id) else { throw VaultError.entryNotFound }
-        modelContext.delete(entry)
-        try modelContext.save()
+        guard let entry = try self.fetchEntry(by: id) else { throw VaultError.entryNotFound }
+        
+        self.modelContext.delete(entry)
+        try self.modelContext.save()
     }
 
     // MARK: - Key access
@@ -200,19 +201,20 @@ final class VaultManager {
     ///
     /// Internal (not private) so Vault+Manager+Shards.swift can access it.
     func currentKey() throws -> SymmetricKey {
-        guard let ctx = authContext else { throw VaultError.locked }
+        guard let ctx = self.authContext else { throw VaultError.locked }
         do {
-            guard let key = try keyManager.deriveVaultKey(context: ctx) else {
-                lock()
+            guard let key = try self.keyManager.deriveVaultKey(context: ctx) else {
+                self.lock()
+                
                 throw VaultError.keyDerivationFailed
             }
-            resetInactivityTimer()
+            self.resetInactivityTimer()
             return key
         } catch let error as VaultError {
             throw error
         } catch {
             // SE refused — context invalidated, biometric set changed, device restarted.
-            lock()
+            self.lock()
             throw VaultError.locked
         }
     }
@@ -229,9 +231,9 @@ final class VaultManager {
     }
 
     private func resetInactivityTimer() {
-        inactivityTimer?.invalidate()
-        inactivityTimer = Timer.scheduledTimer(
-            withTimeInterval: inactivityTimeout,
+        self.inactivityTimer?.invalidate()
+        self.inactivityTimer = Timer.scheduledTimer(
+            withTimeInterval: self.inactivityTimeout,
             repeats: false
         ) { [weak self] _ in
             self?.lock()

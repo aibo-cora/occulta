@@ -18,34 +18,33 @@ struct VaultShardSetup: View {
 
     @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
 
-    @State private var selectedIDs:  Set<String> = []
-    @State private var threshold     = 2
-    @State private var distributing  = false
+    @State private var selectedIDs: Set<String> = []
+    @State private var threshold = 2
+    @State private var distributing = false
     @State private var error: String?
 
     private var recipients: [Contact.Profile] {
-        contacts.filter { selectedIDs.contains($0.identifier) }
+        self.contacts.filter { self.selectedIDs.contains($0.identifier) }
     }
 
     private var canDistribute: Bool {
-        selectedIDs.count >= 2 && threshold <= selectedIDs.count
+        self.selectedIDs.count >= 2 && self.threshold <= self.selectedIDs.count
     }
 
     var body: some View {
         List {
-            // Threshold
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
                         // Slider requires range stride > 0; that only holds when count ≥ 3.
                         // With 0–2 contacts the threshold is fixed at 2, so no slider is needed.
-                        if selectedIDs.count >= 3 {
+                        if self.selectedIDs.count >= 3 {
                             Slider(
                                 value: Binding(
-                                    get: { Double(threshold) },
-                                    set: { threshold = max(2, min(Int($0.rounded()), selectedIDs.count)) }
+                                    get: { Double(self.threshold) },
+                                    set: { self.threshold = max(2, min(Int($0.rounded()), self.selectedIDs.count)) }
                                 ),
-                                in: 2...Double(selectedIDs.count),
+                                in: 2...Double(self.selectedIDs.count),
                                 step: 1
                             )
                             .tint(.occultaAccent)
@@ -55,16 +54,16 @@ struct VaultShardSetup: View {
                                 .opacity(0.35)
                         }
 
-                        Text("\(threshold)/\(max(threshold, selectedIDs.count))")
+                        Text("\(self.threshold)/\(max(self.threshold, self.selectedIDs.count))")
                             .font(.system(size: 20, weight: .bold, design: .monospaced))
                             .foregroundStyle(Color.primary)
                             .frame(minWidth: 44, alignment: .trailing)
                     }
 
                     (Text("Any ")
-                     + Text("\(threshold)").fontWeight(.bold).foregroundColor(.primary)
+                     + Text("\(self.threshold)").fontWeight(.bold).foregroundColor(.primary)
                      + Text(" contacts can help you recover. Fewer than ")
-                     + Text("\(threshold)").fontWeight(.bold).foregroundColor(.primary)
+                     + Text("\(self.threshold)").fontWeight(.bold).foregroundColor(.primary)
                      + Text(" shards reveal nothing."))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -72,22 +71,22 @@ struct VaultShardSetup: View {
                 }
                 .padding(.vertical, 4)
             } header: {
-                monoHeader("Threshold")
+                self.monoHeader("Threshold")
             }
 
             // Contact picker
             Section {
-                if contacts.isEmpty {
+                if self.contacts.isEmpty {
                     Text("No contacts yet. Exchange keys first.")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(contacts) { contact in
-                        contactRow(contact)
+                    ForEach(self.contacts) { contact in
+                        self.contactRow(contact)
                     }
                 }
             } header: {
-                monoHeader("Recipients")
+                self.monoHeader("Recipients")
             } footer: {
                 Text("Select ≥ 2 contacts. Each receives one signed shard via .occ.")
                     .font(.system(size: 11, design: .monospaced))
@@ -101,11 +100,11 @@ struct VaultShardSetup: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Information-theoretic security")
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        Text("Any single shard carries zero information about your secret. An attacker with fewer than \(threshold) shards learns nothing. This is perfect secrecy over GF(2⁸), not computational hardness.")
+                        Text("Any single shard carries zero information about your secret. An attacker with fewer than \(self.threshold) shards learns nothing. This is perfect secrecy over GF(2⁸), not computational hardness.")
                             .font(.system(size: 11, design: .monospaced))
                             .lineSpacing(3)
                     }
-                    .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                    .foregroundStyle(VaultEntryType.cat(light: (0xEE, 0xED, 0xFE), dark: (0xB8, 0xA8, 0xFF)))
                 }
                 .padding(.vertical, 4)
                 .listRowBackground(VaultEntryType.cat(light: (0xEE,0xED,0xFE), dark: (0x1e,0x1c,0x38)))
@@ -127,7 +126,7 @@ struct VaultShardSetup: View {
             }
 
             // Error
-            if let error {
+            if let error = self.error {
                 Section {
                     Text(error)
                         .font(.caption)
@@ -142,14 +141,14 @@ struct VaultShardSetup: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Done") { dismiss() }
+                Button("Done") { self.dismiss() }
                     .tint(.occultaAccent)
             }
         }
         .safeAreaInset(edge: .bottom) {
-            Button(action: distribute) {
+            Button(action: self.distribute) {
                 Group {
-                    if distributing {
+                    if self.distributing {
                         ProgressView().tint(.white)
                     } else {
                         Text("Distribute Shards")
@@ -159,11 +158,11 @@ struct VaultShardSetup: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(canDistribute ? Color.occultaAccent : .secondary.opacity(0.3))
+                .background(self.canDistribute ? Color.occultaAccent : .secondary.opacity(0.3))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .buttonStyle(.plain)
-            .disabled(!canDistribute || distributing)
+            .disabled(!self.canDistribute || self.distributing)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .background(.ultraThinMaterial)
@@ -173,17 +172,17 @@ struct VaultShardSetup: View {
     // MARK: - Contact row
 
     private func contactRow(_ contact: Contact.Profile) -> some View {
-        let given    = contact.givenName.decrypt()
-        let family   = contact.familyName.decrypt()
-        let name     = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
-        let selected = selectedIDs.contains(contact.identifier)
+        let given = contact.givenName.decrypt()
+        let family = contact.familyName.decrypt()
+        let name = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+        let selected = self.selectedIDs.contains(contact.identifier)
 
         return Button {
             if selected {
-                selectedIDs.remove(contact.identifier)
-                threshold = max(2, min(threshold, selectedIDs.count))
+                self.selectedIDs.remove(contact.identifier)
+                self.threshold = max(2, min(self.threshold, self.selectedIDs.count))
             } else {
-                selectedIDs.insert(contact.identifier)
+                self.selectedIDs.insert(contact.identifier)
             }
         } label: {
             HStack(spacing: 12) {
@@ -219,21 +218,22 @@ struct VaultShardSetup: View {
     }
 
     private func distribute() {
-        distributing = true
-        error = nil
+        self.distributing = true
+        self.error = nil
+        
         do {
-            _ = try vault.prepareShards(
-                for:        entryID,
-                threshold:  threshold,
-                recipients: recipients
+            _ = try self.vault.prepareShards(
+                for:        self.entryID,
+                threshold:  self.threshold,
+                recipients: self.recipients
             )
-            dismiss()
+            self.dismiss()
         } catch VaultManager.VaultError.locked {
-            error = "Vault locked — unlock and try again."
-            distributing = false
+            self.error = "Vault locked — unlock and try again."
+            self.distributing = false
         } catch {
             self.error = "Failed: \(error.localizedDescription)"
-            distributing = false
+            self.distributing = false
         }
     }
 }

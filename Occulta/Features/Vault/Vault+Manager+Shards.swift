@@ -41,8 +41,8 @@ extension VaultManager {
         threshold: Int,
         recipients: [Contact.Profile]
     ) throws -> [SignedAttribute] {
-        let key         = try currentKey()
-        guard let entry = try fetchEntry(by: entryID)     else { throw VaultError.entryNotFound }
+        let key         = try self.currentKey()
+        guard let entry = try self.fetchEntry(by: entryID)     else { throw VaultError.entryNotFound }
 
         let n = recipients.count
 
@@ -85,7 +85,7 @@ extension VaultManager {
             let payload = SignedAttribute.signingPayload(
                 id: attrID, category: .shard, value: shardData
             )
-            let signature = try keyManager.signData(payload)
+            let signature = try self.keyManager.signData(payload)
 
             attributes.append(SignedAttribute(
                 id:        attrID,
@@ -112,9 +112,12 @@ extension VaultManager {
             nonce:          AES.GCM.Nonce(),
             authenticating: entry.aad()
         )
+        
         guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+        
         entry.shardDistributionEncrypted = combined
-        try modelContext.save()
+        
+        try self.modelContext.save()
 
         return attributes
     }
@@ -126,8 +129,8 @@ extension VaultManager {
     /// Call this after the .occ bundle containing the shard has been handed
     /// to the basket pipeline. Updates the encrypted ShardDistributionMetadata.
     func markShardDelivered(for entryID: UUID, contactIdentifier: String) throws {
-        let key         = try currentKey()
-        guard let entry = try fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
+        let key         = try self.currentKey()
+        guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
         guard let encrypted = entry.shardDistributionEncrypted else { return }
 
         let box       = try AES.GCM.SealedBox(combined: encrypted)
@@ -138,8 +141,11 @@ extension VaultManager {
 
         let updated = try JSONEncoder().encode(meta)
         let sealed  = try AES.GCM.seal(updated, using: key, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
+        
         guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+        
         entry.shardDistributionEncrypted = combined
-        try modelContext.save()
+        
+        try self.modelContext.save()
     }
 }
