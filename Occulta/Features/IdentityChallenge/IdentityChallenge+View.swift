@@ -50,6 +50,10 @@ extension IdentityChallenge {
         private var hasOutstanding: Bool {
             self.coordinator?.store.hasOutstanding(for: self.contact.identifier) ?? false
         }
+        
+        private var hasValidIdentity: Bool {
+            self.contact.contactPublicKeys?.last?.expiredOn != nil
+        }
 
         private var verifiedCaption: String? {
             self.coordinator?.verifiedBadge(for: self.contact.identifier, now: self.now)
@@ -65,7 +69,7 @@ extension IdentityChallenge {
                         .padding(.vertical, 8)
                 }
                 .buttonStyle(.bordered)
-                .disabled(self.hasOutstanding)
+                .disabled(self.hasOutstanding || self.hasValidIdentity)
 
                 if self.hasOutstanding {
                     Text("Verification in progress. Send the shared file to \(self.displayName), then open their response.")

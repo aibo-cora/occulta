@@ -36,11 +36,7 @@ struct DatabaseMigration {
     ///   - modelContext: The SwiftData context to fetch and save contacts.
     ///   - legacyCrypto: Crypto manager configured with the v1 key path.
     ///   - newCrypto: Crypto manager configured with the v2 hybrid key path.
-    static func migrateToV2(
-        modelContext: ModelContext,
-        legacyCrypto: CryptoProtocol,
-        newCrypto: CryptoProtocol
-    ) throws {
+    static func migrateToV2(modelContext: ModelContext, legacyCrypto: CryptoProtocol, newCrypto: CryptoProtocol) throws {
         let descriptor = FetchDescriptor<Contact.Profile>()
         let allContacts = try modelContext.fetch(descriptor)
 
@@ -49,12 +45,8 @@ struct DatabaseMigration {
             guard contact.encryptionScheme == EncryptionScheme.v1_identityDerived.rawValue else {
                 continue
             }
-
-            try self.migrateContact(
-                contact,
-                legacyCrypto: legacyCrypto,
-                newCrypto: newCrypto
-            )
+            
+            try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
             
             debugPrint("Migrated contact to v2 encryption scheme, contact - \(contact.givenName.decrypt())")
 
@@ -67,11 +59,7 @@ struct DatabaseMigration {
 
     // MARK: - Per-contact migration
 
-    private static func migrateContact(
-        _ contact: Contact.Profile,
-        legacyCrypto: CryptoProtocol,
-        newCrypto: CryptoProtocol
-    ) throws {
+    private static func migrateContact(_ contact: Contact.Profile, legacyCrypto: CryptoProtocol, newCrypto: CryptoProtocol) throws {
         let id = contact.identifier
 
         // MARK: Scalar string fields (base64-encoded ciphertext)
@@ -159,13 +147,7 @@ struct DatabaseMigration {
     /// Re-encrypt a base64-encoded ciphertext string from v1 → v2.
     ///
     /// Empty strings are preserved as-is (they represent empty plaintext).
-    private static func reencryptString(
-        _ base64: String,
-        field: String,
-        id: String,
-        legacy: CryptoProtocol,
-        new: CryptoProtocol
-    ) throws -> String {
+    private static func reencryptString(_ base64: String, field: String, id: String, legacy: CryptoProtocol, new: CryptoProtocol) throws -> String {
         guard !base64.isEmpty else { return "" }
 
         guard let ciphertext = Data(base64Encoded: base64) else {

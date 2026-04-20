@@ -16,11 +16,15 @@ struct Settings: View {
                 NavigationLink("My Identity") {
                     MyIdentity()
                 }
-                
+
+                NavigationLink("Contact List") {
+                    ContactListSettings()
+                }
+
                 NavigationLink("Project Info") {
                     ProjectInfo()
                 }
-                
+
                 NavigationLink("Manage Contacts") {
                     ManageContacts()
                 }
@@ -83,6 +87,19 @@ struct Settings: View {
         }
     }
     
+    private struct ContactListSettings: View {
+        @AppStorage("showFingerprints") private var showFingerprints = true
+        @AppStorage("showTrustSummary") private var showTrustSummary = true
+
+        var body: some View {
+            List {
+                Toggle("Show fingerprints", isOn: $showFingerprints)
+                Toggle("Show trust summary card", isOn: $showTrustSummary)
+            }
+            .navigationTitle("Contact List")
+        }
+    }
+
     private struct ProjectInfo: View {
         var body: some View {
             VStack(spacing: 20) {

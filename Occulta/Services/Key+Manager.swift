@@ -80,7 +80,7 @@ extension Manager {
 
         func createLocalEncryptionKey() throws -> SymmetricKey? {
             guard let ourPrivateKey = try? self.retrievePrivateKey() else { return nil }
-            guard let fixedPubKey = self.convert(material: fixedX963) else { return nil }
+            guard let fixedPubKey = self.convert(material: self.fixedX963) else { return nil }
 
             var error: Unmanaged<CFError>?
             guard
@@ -94,7 +94,8 @@ extension Manager {
             guard let ourPubData = self.convert(key: self.retrivePublicKey(using: ourPrivateKey))
             else { return nil }
 
-            let salt = Data(zip(fixedX963.map { $0 }, ourPubData.map { $0 }).map { $0 ^ $1 })
+            let salt = Data(zip(self.fixedX963.map { $0 }, ourPubData.map { $0 }).map { $0 ^ $1 })
+            
             return HKDF<SHA256>.deriveKey(
                 inputKeyMaterial: SymmetricKey(data: rawSecret),
                 salt: salt, info: SaltInfo.kLocalDBKeyInfo, outputByteCount: 32
