@@ -5,10 +5,10 @@
 //  @Observable vault lifecycle and AES-256-GCM CRUD.
 //
 //  Key design decisions:
-//  - vaultKey is held in memory only; never stored to disk or Keychain.
-//  - lock() is wired to UIApplication.didEnterBackgroundNotification here,
-//    not in any view, so locking is guaranteed regardless of which view is
-//    on screen when the app backgrounds.
+//  - authContext (LAContext) is held in memory; no key material is ever stored.
+//  - The vault key is derived on the fly per-operation via ECDH(vault_SE_priv, G).
+//    It exists only as a local SymmetricKey for the duration of each encrypt/decrypt call.
+//  - Five lock triggers are wired in init — see Lock triggers section below.
 //  - Plaintext never touches SwiftData. Every write encrypts first; every
 //    read decrypts on demand.
 //  - AAD = entry.aad() — see VaultEntry.aad() for the locked wire encoding.
@@ -18,6 +18,7 @@ import Foundation
 import SwiftData
 import CryptoKit
 import UIKit
+import LocalAuthentication
 
 // MARK: - VaultManager
 
@@ -29,23 +30,27 @@ final class VaultManager {
     private let modelExecutor: any ModelExecutor
     private let modelContainer: ModelContainer
     // Internal (not private) so extensions in separate files (Vault+Manager+Shards.swift)
-    // can call modelContext.save(). Swift private is file-scoped for extension access.
+    // can call modelContext.save() and currentKey(). Swift private is file-scoped.
     var modelContext: ModelContext { modelExecutor.modelContext }
 
     let keyManager: any KeyManagerProtocol
 
-    // MARK: - Vault key
+    // MARK: - Auth context
 
-    /// Session vault key. Held in memory during an unlocked session.
-    ///
-    /// Zeroed on lock() by first overwriting with a zero-filled SymmetricKey,
-    /// then setting to nil. SymmetricKey internals are not directly addressable
-    /// in Swift, so the overwrite-then-nil pattern is best-effort: it ensures
-    /// the property slot no longer holds a live reference before ARC can defer
-    /// deallocation of the old storage to an arbitrary future point.
-    private(set) var vaultKey: SymmetricKey?
+    /// Evaluated LAContext from the most recent unlock(context:) call.
+    /// Nil when locked. Passed to deriveVaultKey(context:) on every vault operation —
+    /// the vault key is derived on the fly and never stored.
+    private var authContext: LAContext?
 
-    var isUnlocked: Bool { vaultKey != nil }
+    var isUnlocked: Bool { authContext != nil }
+
+    // MARK: - Inactivity timer
+
+    /// Inactivity timeout before automatic lock. Injected so tests can use short values.
+    private let inactivityTimeout: TimeInterval
+
+    @ObservationIgnored
+    private var inactivityTimer: Timer?
 
     // MARK: - Errors
 
@@ -62,55 +67,65 @@ final class VaultManager {
 
     init(
         modelContainer: ModelContainer,
-        keyManager: any KeyManagerProtocol = Manager.Key()
+        keyManager: any KeyManagerProtocol = Manager.Key(),
+        inactivityTimeout: TimeInterval = 5 * 60
     ) {
-        self.modelExecutor  = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
-        self.modelContainer = modelContainer
-        self.keyManager     = keyManager
+        self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+        self.modelContainer    = modelContainer
+        self.keyManager        = keyManager
+        self.inactivityTimeout = inactivityTimeout
 
-        // Wire background lock at the manager level so no view needs to handle it.
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.lock()
+        // ── Lock triggers (conditions 1–3) ───────────────────────────────────
+        // Condition 1: app goes to background
+        // Condition 2: device locks (OS about to encrypt protected data)
+        // Condition 3: app loses active focus (incoming call, Control Center, banner)
+        // Condition 4: inactivity — handled by inactivityTimer (resetInactivityTimer)
+        // Condition 5: derivation failure — handled inside currentKey()
+        let lockNames: [Notification.Name] = [
+            UIApplication.didEnterBackgroundNotification,
+            UIApplication.protectedDataWillBecomeUnavailableNotification,
+            UIApplication.willResignActiveNotification
+        ]
+        for name in lockNames {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.lock()
+            }
         }
     }
 
     // MARK: - Unlock / lock
 
-    /// Derive the vault key from the SE identity key and hold it in memory.
+    /// Store a pre-evaluated LAContext for the vault session.
     ///
-    /// Must be called before any encrypt or decrypt operation.
-    /// On success, isUnlocked becomes true.
-    func unlock() throws {
-        guard let key = try keyManager.deriveVaultKey() else {
-            throw VaultError.keyDerivationFailed
-        }
-        vaultKey = key
+    /// The caller (a view or coordinator) evaluates the biometric policy via
+    /// LAContext.evaluatePolicy before calling unlock. VaultManager stores only
+    /// the context reference — no key material is held.
+    func unlock(context: LAContext) {
+        authContext = context
+        resetInactivityTimer()
     }
 
-    /// Zero the vault key and discard it.
+    /// Invalidate the auth context and cancel the inactivity timer.
     ///
-    /// Called automatically on app background. Safe to call when already locked.
+    /// Called automatically on background, device lock, resign active, inactivity
+    /// timeout, and vault key derivation failure. Safe to call when already locked.
     func lock() {
-        // Overwrite with zero-key before nil — see vaultKey documentation above.
-        vaultKey = SymmetricKey(data: Data(repeating: 0, count: 32))
-        vaultKey = nil
+        inactivityTimer?.invalidate()
+        inactivityTimer = nil
+        authContext?.invalidate()
+        authContext = nil
     }
 
     // MARK: - Create
 
     /// Encrypt `label` and `content` with the vault key, then persist the entry.
     ///
-    /// The caller passes plaintext. This method encrypts before any write to
-    /// SwiftData. Plaintext label is never stored or logged.
-    ///
     /// - Returns: The persisted VaultEntry (fields are ciphertext).
     @discardableResult
     func addEntry(label: String, content: Data, type: VaultEntryType) throws -> VaultEntry {
-        guard let key = vaultKey else { throw VaultError.locked }
+        let key   = try currentKey()
 
         // Build entry first to fix id and createdAt, which are required for AAD.
         let entry = VaultEntry(type: type, encryptedLabel: Data(), encryptedContent: Data())
@@ -150,9 +165,8 @@ final class VaultManager {
     /// Decrypt and return the plaintext label for one entry.
     ///
     /// ⚠️ The returned String is plaintext. Do not persist or log it.
-    /// Swift String is a value type; retain it only for the duration of display.
     func decryptLabel(for entry: VaultEntry) throws -> String {
-        guard let key = vaultKey else { throw VaultError.locked }
+        let key       = try currentKey()
         let plaintext = try openField(entry.encryptedLabel, key: key, aad: entry.aad())
         guard let label = String(data: plaintext, encoding: .utf8) else {
             throw VaultError.decryptionFailed
@@ -164,7 +178,7 @@ final class VaultManager {
     ///
     /// ⚠️ Caller must zero this buffer after use — it contains the raw secret.
     func decryptContent(for entry: VaultEntry) throws -> Data {
-        guard let key = vaultKey else { throw VaultError.locked }
+        let key = try currentKey()
         return try openField(entry.encryptedContent, key: key, aad: entry.aad())
     }
 
@@ -176,6 +190,33 @@ final class VaultManager {
         try modelContext.save()
     }
 
+    // MARK: - Key access
+
+    /// Derive the vault key on the fly using the cached LAContext.
+    ///
+    /// Resets the inactivity timer on success. On any derivation failure —
+    /// covering invalidated context, biometric set change, device restart —
+    /// calls lock() and throws .locked. This is lock condition 5.
+    ///
+    /// Internal (not private) so Vault+Manager+Shards.swift can access it.
+    func currentKey() throws -> SymmetricKey {
+        guard let ctx = authContext else { throw VaultError.locked }
+        do {
+            guard let key = try keyManager.deriveVaultKey(context: ctx) else {
+                lock()
+                throw VaultError.keyDerivationFailed
+            }
+            resetInactivityTimer()
+            return key
+        } catch let error as VaultError {
+            throw error
+        } catch {
+            // SE refused — context invalidated, biometric set changed, device restarted.
+            lock()
+            throw VaultError.locked
+        }
+    }
+
     // MARK: - Private
 
     private func openField(_ combined: Data, key: SymmetricKey, aad: Data) throws -> Data {
@@ -184,6 +225,16 @@ final class VaultManager {
             return try AES.GCM.open(box, using: key, authenticating: aad)
         } catch {
             throw VaultError.decryptionFailed
+        }
+    }
+
+    private func resetInactivityTimer() {
+        inactivityTimer?.invalidate()
+        inactivityTimer = Timer.scheduledTimer(
+            withTimeInterval: inactivityTimeout,
+            repeats: false
+        ) { [weak self] _ in
+            self?.lock()
         }
     }
 }

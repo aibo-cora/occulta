@@ -6,6 +6,7 @@
 
 import Foundation
 import CryptoKit
+import LocalAuthentication
 
 // MARK: - KeyManagerProtocol
 
@@ -20,12 +21,12 @@ protocol KeyManagerProtocol {
     /// Transport path (ephemeral/prekey) — uses `kTransportKeyInfo`.
     func createSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data) -> SymmetricKey?
     func generateEphemeralKeyPair() -> (privateKey: SecKey, publicKeyData: Data)?
-    
+
     // MARK: - Hybrid PQ (HKDF only — no ML-KEM types)
-     
+
     func createHybridSharedSecret(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
     func createHybridFSSharedSecret(ephemeralPrivateKey: SecKey, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial) -> SymmetricKey?
-    
+
     func createDicewareKey(peerP256Material: Data, quantumMaterial: QuantumKeyMaterial, ourNonce: Data, peerNonce: Data) -> SymmetricKey?
     func generateExchangeNonce() -> Data?
 
@@ -39,23 +40,22 @@ protocol KeyManagerProtocol {
     /// Double-hashing produces a signature that no verifier will accept,
     /// silently breaking identity verification.
     ///
-    /// In production this triggers Secure Enclave biometric per the access
-    /// control flags on the identity key.
-    ///
     /// - Returns: DER-encoded ECDSA signature, raw bytes from `SecKeyCreateSignature`.
     func signIdentityChallenge(_ data: Data) throws -> Data
 
     // MARK: - Vault
 
-    /// Derive the vault session key via self-ECDH with the SE identity key.
+    /// Derive the vault session key: ECDH(vault_SE_priv, G) → HKDF-SHA256.
     ///
-    /// The returned SymmetricKey is never stored. The caller holds it in memory
-    /// for the duration of the unlocked vault session and zeroes it on lock.
+    /// The `context` must be a pre-evaluated LAContext. The SE uses it to satisfy
+    /// the biometric access control on the vault key without prompting the user.
+    ///
+    /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveVaultKey() throws -> SymmetricKey?
+    func deriveVaultKey(context: LAContext) throws -> SymmetricKey?
 
-    /// ECDSA-sign `data` with the SE identity key.
+    /// ECDSA-sign `data` with the SE identity key (used for vault shard signing).
     ///
     /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
     ///
@@ -76,9 +76,16 @@ final class TestKeyManager: KeyManagerProtocol {
     private let localDBPrivateKey: SecKey
     private let localDBPublicKeyData: Data
 
-    /// Simulates the random Keychain component (32 bytes).
+    /// Separate key pair simulating the dedicated vault SE key.
+    private let vaultPrivateKey: SecKey
+    private let vaultPublicKeyData: Data
+
+    /// Simulates the random Keychain component for the local DB hybrid key (32 bytes).
     private let randomComponent: Data
-    
+
+    /// Set to true to make deriveVaultKey(context:) throw — tests lock-on-failure behaviour.
+    var simulateVaultKeyFailure = false
+
     var privateKey: Data?
     var publicKeyData: Data?
 
@@ -96,25 +103,30 @@ final class TestKeyManager: KeyManagerProtocol {
     ])
 
     init() {
-        // Identity key pair
         let attrs: NSDictionary = [
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits: 256,
             kSecPrivateKeyAttrs: [kSecAttrIsPermanent: false]
         ]
         var err: Unmanaged<CFError>?
+
+        // Identity key pair
         let identityPriv = SecKeyCreateRandomKey(attrs, &err)!
         let identityPub  = SecKeyCopyPublicKey(identityPriv)!
-
         self.identityPrivateKey    = identityPriv
         self.identityPublicKeyData = SecKeyCopyExternalRepresentation(identityPub, nil)! as Data
 
         // Separate local DB key pair (simulates dedicated SE key)
         let localDBPriv = SecKeyCreateRandomKey(attrs, &err)!
         let localDBPub  = SecKeyCopyPublicKey(localDBPriv)!
-
         self.localDBPrivateKey    = localDBPriv
         self.localDBPublicKeyData = SecKeyCopyExternalRepresentation(localDBPub, nil)! as Data
+
+        // Separate vault key pair (simulates dedicated vault SE key)
+        let vaultPriv = SecKeyCreateRandomKey(attrs, &err)!
+        let vaultPub  = SecKeyCopyPublicKey(vaultPriv)!
+        self.vaultPrivateKey    = vaultPriv
+        self.vaultPublicKeyData = SecKeyCopyExternalRepresentation(vaultPub, nil)! as Data
 
         // Random component (simulates Keychain-stored random bytes)
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -136,7 +148,6 @@ final class TestKeyManager: KeyManagerProtocol {
 
     /// v2 — hybrid PQ-reinforced local key.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
-        // Step 1: SE-derived component via ECDH(localDB_key, G)
         guard
             let seComponent = self.deriveRawECDH(
                 privateKey: self.localDBPrivateKey,
@@ -144,7 +155,6 @@ final class TestKeyManager: KeyManagerProtocol {
             )
         else { return nil }
 
-        // Step 2: Combine SE component + random component via HKDF
         var ikm = Data(seComponent)
         ikm.append(self.randomComponent)
 
@@ -194,62 +204,135 @@ final class TestKeyManager: KeyManagerProtocol {
         return (priv, data)
     }
 
+    // MARK: - Vault (TestKeyManager)
+
+    /// ECDH(vaultPrivateKey, G) → HKDF — mirrors Manager.Key.deriveVaultKey(context:).
+    ///
+    /// The `context` parameter is ignored in tests — no SE, no biometric evaluation.
+    /// `simulateVaultKeyFailure = true` makes this throw to test lock-on-failure.
+    func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
+        if simulateVaultKeyFailure { throw SimulatedFailure() }
+
+        guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
+
+        var err: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                vaultPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &err
+            ) as? Data
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: vaultPublicKeyData,
+            info: SaltInfo.kVaultKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Identity challenge
+
+    /// In-memory ECDSA-sign with the test identity private key.
+    /// ⚠️ DO NOT PRE-HASH — `.ecdsaSignatureMessageX962SHA256` hashes internally.
+    func signIdentityChallenge(_ data: Data) throws -> Data {
+        var error: Unmanaged<CFError>?
+        guard
+            let signature = SecKeyCreateSignature(
+                self.identityPrivateKey,
+                .ecdsaSignatureMessageX962SHA256,
+                data as CFData,
+                &error
+            ) as Data?
+        else { throw error!.takeRetainedValue() as Error }
+        return signature
+    }
+
+    /// In-memory ECDSA-sign — mirrors Manager.Key.signData(_:).
+    /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
+    func signData(_ data: Data) throws -> Data {
+        var error: Unmanaged<CFError>?
+        guard
+            let sig = SecKeyCreateSignature(
+                identityPrivateKey,
+                .ecdsaSignatureMessageX962SHA256,
+                data as CFData,
+                &error
+            ) as Data?
+        else { throw error!.takeRetainedValue() as Error }
+        return sig
+    }
+
     // MARK: - Private
+
+    struct SimulatedFailure: Error {}
+
+    private func makePublicKey(from data: Data) -> SecKey? {
+        guard data.count == 65 else { return nil }
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+        var err: Unmanaged<CFError>?
+        return SecKeyCreateWithData(data as CFData, attrs as CFDictionary, &err)
+    }
 
     /// Raw 32-byte ECDH output without HKDF.
     private func deriveRawECDH(privateKey: SecKey, peerMaterial: Data) -> Data? {
-        guard peerMaterial.count == 65 else { return nil }
-
-        let attrs: [String: Any] = [
-            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
-            kSecAttrKeySizeInBits as String: 256
-        ]
+        guard let peerKey = makePublicKey(from: peerMaterial) else { return nil }
         var err: Unmanaged<CFError>?
-        guard
-            let peerKey = SecKeyCreateWithData(peerMaterial as CFData, attrs as CFDictionary, &err)
-        else { return nil }
-
-        guard
-            let rawSecret = SecKeyCopyKeyExchangeResult(
-                privateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-                &err
-            ) as? Data
-        else { return nil }
-
-        return rawSecret
+        return SecKeyCopyKeyExchangeResult(
+            privateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
+            [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+            &err
+        ) as? Data
     }
 
     private func deriveKey(privateKey: SecKey, ourPublicKeyData: Data, peerMaterial: Data, info: Data) -> SymmetricKey? {
-        guard peerMaterial.count == 65 else { return nil }
-
-        let attrs: [String: Any] = [
-            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
-            kSecAttrKeySizeInBits as String: 256
-        ]
-        var err: Unmanaged<CFError>?
-        guard
-            let peerKey = SecKeyCreateWithData(peerMaterial as CFData, attrs as CFDictionary, &err)
-        else { return nil }
-
-        guard
-            let rawSecret = SecKeyCopyKeyExchangeResult(
-                privateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-                &err
-            ) as? Data
-        else { return nil }
-
-        let salt = Data(zip(peerMaterial.map { $0 }, ourPublicKeyData.map { $0 }).map { $0 ^ $1 })
-
+        guard let rawSecret = deriveRawECDH(privateKey: privateKey, peerMaterial: peerMaterial) else { return nil }
+        let salt = Data(zip(peerMaterial, ourPublicKeyData).map { $0 ^ $1 })
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: salt,
             info: info,
             outputByteCount: 32
         )
+    }
+
+    /// Raw ECDH + XOR salt without HKDF. Hybrid derivation combines ECDH with
+    /// ML-KEM secrets before a single HKDF pass — running HKDF twice would produce the wrong key.
+    private func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
+        guard peerP256Material.count == 65 else { return nil }
+
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+        var err: Unmanaged<CFError>?
+        guard
+            let peerKey = SecKeyCreateWithData(peerP256Material as CFData, attrs as CFDictionary, &err),
+            let privateKey = self.privateKey,
+            let privKeyRef = SecKeyCreateWithData(privateKey as CFData, [
+                kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
+                kSecAttrKeyClass as String:      kSecAttrKeyClassPrivate,
+                kSecAttrKeySizeInBits as String: 256
+            ] as CFDictionary, &err)
+        else { return nil }
+
+        guard
+            let publicKeyData = self.publicKeyData,
+            let rawECDH = SecKeyCopyKeyExchangeResult(
+                privKeyRef, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &err
+            ) as? Data
+        else { return nil }
+
+        let salt = Data(zip(peerP256Material, publicKeyData).map { $0 ^ $1 })
+        return (rawECDH, salt)
     }
 }
 
@@ -260,13 +343,13 @@ extension TestKeyManager {
     ) -> SymmetricKey? {
         guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
         guard quantumMaterial.isValid else { return nil }
- 
+
         let sorted = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
             .sorted { $0.lexicographicallyPrecedes($1) }
         var ikm = ecdh.rawECDH
         ikm.append(contentsOf: sorted[0])
         ikm.append(contentsOf: sorted[1])
- 
+
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: ikm),
             salt: ecdh.salt,
@@ -274,7 +357,7 @@ extension TestKeyManager {
             outputByteCount: 32
         )
     }
-    
+
     func createHybridFSSharedSecret(
         ephemeralPrivateKey: SecKey,
         recipientMaterial: Data,
@@ -294,9 +377,9 @@ extension TestKeyManager {
             kSecAttrKeySizeInBits as String: 256
         ]
         var err: Unmanaged<CFError>?
-        guard
-            let peerKey = SecKeyCreateWithData(recipientMaterial as CFData, attrs as CFDictionary, &err)
-        else { return nil }
+        guard let peerKey = SecKeyCreateWithData(recipientMaterial as CFData, attrs as CFDictionary, &err) else {
+            return nil
+        }
 
         guard
             let rawECDH = SecKeyCopyKeyExchangeResult(
@@ -321,7 +404,7 @@ extension TestKeyManager {
             outputByteCount: 32
         )
     }
-    
+
     func createDicewareKey(
         peerP256Material: Data,
         quantumMaterial: QuantumKeyMaterial,
@@ -331,18 +414,18 @@ extension TestKeyManager {
         guard let ecdh = self.rawECDHWithSalt(peerP256Material: peerP256Material) else { return nil }
         guard quantumMaterial.isValid else { return nil }
         guard ourNonce.count == 16, peerNonce.count == 16 else { return nil }
- 
+
         let sortedSecrets = [quantumMaterial.encapsulatedSecret, quantumMaterial.decapsulatedSecret]
             .sorted { $0.lexicographicallyPrecedes($1) }
         var ikm = ecdh.rawECDH
         ikm.append(contentsOf: sortedSecrets[0])
         ikm.append(contentsOf: sortedSecrets[1])
- 
+
         let sortedNonces = [ourNonce, peerNonce].sorted { $0.lexicographicallyPrecedes($1) }
         var info = SaltInfo.kDicewareKeyInfo
         info.append(contentsOf: sortedNonces[0])
         info.append(contentsOf: sortedNonces[1])
- 
+
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: ikm),
             salt: ecdh.salt,
@@ -350,111 +433,10 @@ extension TestKeyManager {
             outputByteCount: 32
         )
     }
-    
+
     func generateExchangeNonce() -> Data? {
         var bytes = [UInt8](repeating: 0, count: 16)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
         return Data(bytes)
-    }
-
-    // MARK: - Identity challenge
-
-    /// In-memory ECDSA-sign with the test identity private key.
-    /// Same `.ecdsaSignatureMessageX962SHA256` algorithm as production —
-    /// signatures produced here verify with the matching public key obtained
-    /// from `retrieveIdentity()`.
-    func signIdentityChallenge(_ data: Data) throws -> Data {
-        let algorithm: SecKeyAlgorithm = .ecdsaSignatureMessageX962SHA256
-        var error: Unmanaged<CFError>?
-        // ⚠️ DO NOT PRE-HASH — `.ecdsaSignatureMessageX962SHA256` hashes `data`
-        // internally. Pre-hashing produces a signature no verifier will accept,
-        // and the failure is silent — looks identical to a wrong key.
-        guard
-            let signature = SecKeyCreateSignature(
-                self.identityPrivateKey,
-                algorithm,
-                data as CFData,
-                &error
-            ) as Data?
-        else {
-            throw error!.takeRetainedValue() as Error
-        }
-        return signature
-    }
-
-    // MARK: - Vault (TestKeyManager)
-
-    /// Self-ECDH with the in-memory identity key pair — mirrors Manager.Key.deriveVaultKey().
-    func deriveVaultKey() throws -> SymmetricKey? {
-        let attrs: [String: Any] = [
-            kSecAttrKeyType       as String: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass      as String: kSecAttrKeyClassPublic,
-            kSecAttrKeySizeInBits as String: 256
-        ]
-        var err: Unmanaged<CFError>?
-        guard
-            let pubKey = SecKeyCreateWithData(identityPublicKeyData as CFData, attrs as CFDictionary, &err)
-        else { return nil }
-
-        guard
-            let rawSecret = SecKeyCopyKeyExchangeResult(
-                identityPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, pubKey,
-                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
-                &err
-            ) as? Data
-        else { return nil }
-
-        return HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: rawSecret),
-            salt: identityPublicKeyData,
-            info: SaltInfo.kVaultKeyInfo,
-            outputByteCount: 32
-        )
-    }
-
-    /// In-memory ECDSA-sign — mirrors Manager.Key.signData(_:).
-    ///
-    /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
-    func signData(_ data: Data) throws -> Data {
-        var error: Unmanaged<CFError>?
-        guard
-            let sig = SecKeyCreateSignature(
-                identityPrivateKey,
-                .ecdsaSignatureMessageX962SHA256,
-                data as CFData,
-                &error
-            ) as Data?
-        else { throw error!.takeRetainedValue() as Error }
-        return sig
-    }
-
-    // MARK: - Private
-
-    /// Raw ECDH + XOR salt without HKDF. Hybrid derivation combines ECDH with
-    /// ML-KEM secrets before a single HKDF pass — running HKDF twice would produce the wrong key.
-    private func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
-        guard peerP256Material.count == 65 else { return nil }
- 
-        let attrs: [String: Any] = [
-            kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeyClass as String:      kSecAttrKeyClassPublic,
-            kSecAttrKeySizeInBits as String: 256
-        ]
-        
-        var err: Unmanaged<CFError>?
-        guard
-            let peerKey = SecKeyCreateWithData(peerP256Material as CFData, attrs as CFDictionary, &err),
-            let privateKeyData = self.privateKey,
-            let privateKey = SecKeyCreateWithData(privateKeyData as CFData, attrs as CFDictionary, nil)
-        else { return nil }
- 
-        guard
-            let publicKeyData = self.publicKeyData,
-            let rawECDH = SecKeyCopyKeyExchangeResult(privateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey, [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary, &err) as? Data
-        else { return nil }
- 
-        let salt = Data(zip(peerP256Material, publicKeyData).map { $0 ^ $1 })
-        
-        return (rawECDH, salt)
     }
 }

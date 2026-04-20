@@ -41,7 +41,7 @@ extension VaultManager {
         threshold: Int,
         recipients: [Contact.Profile]
     ) throws -> [SignedAttribute] {
-        guard let key   = vaultKey                        else { throw VaultError.locked }
+        let key         = try currentKey()
         guard let entry = try fetchEntry(by: entryID)     else { throw VaultError.entryNotFound }
 
         let n = recipients.count
@@ -126,7 +126,7 @@ extension VaultManager {
     /// Call this after the .occ bundle containing the shard has been handed
     /// to the basket pipeline. Updates the encrypted ShardDistributionMetadata.
     func markShardDelivered(for entryID: UUID, contactIdentifier: String) throws {
-        guard let key   = vaultKey                    else { throw VaultError.locked }
+        let key         = try currentKey()
         guard let entry = try fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
         guard let encrypted = entry.shardDistributionEncrypted else { return }
 
