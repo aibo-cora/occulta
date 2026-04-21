@@ -15,8 +15,8 @@ extension VaultEntryType {
         case .seedPhrase: "🌱"
         case .note:       "📝"
         case .keyToken:   "🔑"
-        case .document:   "📄"
-        case .photo:      "🖼️"
+//        case .document:   "📄"
+//        case .photo:      "🖼️"
         }
     }
 
@@ -25,8 +25,8 @@ extension VaultEntryType {
         case .seedPhrase: "Seed Phrase"
         case .note:       "Secure Note"
         case .keyToken:   "Key Token"
-        case .document:   "Document"
-        case .photo:      "Photo"
+//        case .document:   "Document"
+//        case .photo:      "Photo"
         }
     }
 
@@ -39,10 +39,10 @@ extension VaultEntryType {
             Color(red: 0x88/255, green: 0x44/255, blue: 0x94/255)  // Keep for now or make adaptive if pale
         case .keyToken:
             .occultaWarn
-        case .document:
-            Color(red: 0x1A/255, green: 0x6D/255, blue: 0xB5/255)  // Good blue
-        case .photo:
-            .occultaAccent
+//        case .document:
+//            Color(red: 0x1A/255, green: 0x6D/255, blue: 0xB5/255)  // Good blue
+//        case .photo:
+//            .occultaAccent
         }
     }
 
@@ -55,10 +55,10 @@ extension VaultEntryType {
             Self.cat(light: (0xF0, 0xF0, 0xFA), dark: (0x1C, 0x1B, 0x2E))   // Soft lavender
         case .keyToken:
             Self.cat(light: (0xFA, 0xF0, 0xF0), dark: (0x2E, 0x1C, 0x1C))   // Soft warm red
-        case .document:
-            Self.cat(light: (0xF0, 0xF4, 0xFA), dark: (0x1C, 0x2A, 0x38))   // Soft blue
-        case .photo:
-            Self.cat(light: (0xF8, 0xF0, 0xFA), dark: (0x2A, 0x1C, 0x2E))   // Soft purple
+//        case .document:
+//            Self.cat(light: (0xF0, 0xF4, 0xFA), dark: (0x1C, 0x2A, 0x38))   // Soft blue
+//        case .photo:
+//            Self.cat(light: (0xF8, 0xF0, 0xFA), dark: (0x2A, 0x1C, 0x2E))   // Soft purple
         }
     }
 

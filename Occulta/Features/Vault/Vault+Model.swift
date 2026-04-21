@@ -28,8 +28,8 @@ enum VaultEntryType: UInt8, Codable, CaseIterable {
     case seedPhrase = 0
     case note       = 1
     case keyToken   = 2
-    case document   = 3
-    case photo      = 4
+//    case document   = 3
+//    case photo      = 4
 }
 
 // MARK: - ShardDistributionMetadata

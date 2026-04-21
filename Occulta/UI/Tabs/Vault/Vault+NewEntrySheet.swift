@@ -25,7 +25,6 @@ struct VaultNewEntrySheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Type picker
                     VStack(alignment: .leading, spacing: 8) {
                         self.monoLabel("Type")
                         LazyVGrid(
