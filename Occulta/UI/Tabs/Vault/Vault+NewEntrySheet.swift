@@ -2,9 +2,6 @@
 //  Vault+NewEntrySheet.swift
 //  Occulta
 //
-//  Bottom sheet for adding a new vault entry.
-//  Type picker → label → content → save.
-//
 
 import SwiftUI
 
@@ -13,15 +10,15 @@ struct VaultNewEntrySheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedType: VaultEntryType = .seedPhrase
-    @State private var label   = ""
+    @State private var label = ""
     @State private var content = ""
-    @State private var error: String?
-    @State private var shardEntryID:    UUID? = nil
+    @State private var error: String? = nil
+    @State private var shardEntryID: UUID? = nil
     @State private var navigateToShards = false
 
     private var canSave: Bool {
-        !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !self.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !self.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -30,30 +27,29 @@ struct VaultNewEntrySheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     // Type picker
                     VStack(alignment: .leading, spacing: 8) {
-                        monoLabel("Type")
+                        self.monoLabel("Type")
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible()), count: 3),
                             spacing: 8
                         ) {
                             ForEach(VaultEntryType.allCases, id: \.self) { type in
-                                typeTile(type)
+                                self.typeTile(type)
                             }
                         }
                     }
 
-                    // Details — single compound card (label + content) per spec compose-field layout
+                    // Details section
                     VStack(alignment: .leading, spacing: 8) {
-                        monoLabel("Details")
+                        self.monoLabel("Details")
                         VStack(alignment: .leading, spacing: 0) {
                             // Label field
                             VStack(alignment: .leading, spacing: 4) {
-                                fieldLabel("Label")
+                                self.fieldLabel("Label")
                                 TextField("", text: $label, prompt:
                                     Text("e.g. Ethereum Wallet")
-                                        .foregroundStyle(.tertiary)
-                                        .font(.system(size: 15, design: .monospaced))
+                                        .font(.system(size: 13, design: .monospaced))
                                 )
-                                .font(.system(size: 15, design: .monospaced))
+                                .font(.system(size: 13, design: .monospaced))
                                 .tint(.occultaAccent)
                             }
                             .padding(.horizontal, 14)
@@ -63,12 +59,12 @@ struct VaultNewEntrySheet: View {
 
                             // Content field
                             VStack(alignment: .leading, spacing: 4) {
-                                fieldLabel("Content")
+                                self.fieldLabel("Content")
                                 ZStack(alignment: .topLeading) {
-                                    if content.isEmpty {
-                                        Text(selectedType == .seedPhrase
-                                             ? "Enter seed phrase, one word per line…"
-                                             : "Enter content…")
+                                    if self.content.isEmpty {
+                                        Text(self.selectedType == .seedPhrase
+                                            ? "Enter seed phrase, one word per line…"
+                                            : "Enter content…")
                                             .font(.system(size: 13, design: .monospaced))
                                             .foregroundStyle(.tertiary)
                                             .padding(.top, 8)
@@ -90,14 +86,14 @@ struct VaultNewEntrySheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
 
-                    if let error {
+                    if let error = self.error {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(Color.occultaDanger)
                     }
 
-                    // Shamir CTA — saves then pushes shard setup
-                    Button { saveAndSetupShards() } label: {
+                    // Shamir CTA
+                    Button { self.saveAndSetupShards() } label: {
                         HStack(spacing: 12) {
                             ZStack {
                                 RoundedRectangle(cornerRadius: 10)
@@ -120,12 +116,12 @@ struct VaultNewEntrySheet: View {
                         }
                         .foregroundStyle(.white)
                         .padding(14)
-                        .background(canSave ? Color.occultaAccent : Color.secondary.opacity(0.35))
+                        .background(self.canSave ? Color.occultaAccent : Color.secondary.opacity(0.50))
                         .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .shadow(color: canSave ? Color.occultaAccent.opacity(0.28) : .clear, radius: 8, y: 4)
+                        .shadow(color: self.canSave ? Color.occultaAccent.opacity(0.28) : .clear, radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!canSave)
+                    .disabled(!self.canSave)
 
                     Text("Content is encrypted with your SE key before being written to disk.")
                         .font(.system(size: 10, design: .monospaced))
@@ -140,17 +136,17 @@ struct VaultNewEntrySheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { self.dismiss() }
                         .tint(.occultaAccent)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") { save() }
+                    Button("Save") { self.save() }
                         .tint(.occultaAccent)
-                        .disabled(!canSave)
+                        .disabled(!self.canSave)
                 }
             }
             .navigationDestination(isPresented: $navigateToShards) {
-                if let id = shardEntryID {
+                if let id = self.shardEntryID {
                     VaultShardSetup(entryID: id)
                 }
             }
@@ -158,10 +154,9 @@ struct VaultNewEntrySheet: View {
     }
 
     // MARK: - Type tile
-
     private func typeTile(_ type: VaultEntryType) -> some View {
-        let selected = selectedType == type
-        return Button { selectedType = type } label: {
+        let selected = self.selectedType == type
+        return Button { self.selectedType = type } label: {
             VStack(spacing: 6) {
                 Text(type.emoji)
                     .font(.system(size: 24))
@@ -191,7 +186,6 @@ struct VaultNewEntrySheet: View {
     }
 
     // MARK: - Helpers
-
     private func monoLabel(_ text: String) -> some View {
         Text(text.uppercased())
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -207,27 +201,27 @@ struct VaultNewEntrySheet: View {
     }
 
     private func save() {
-        error = nil
+        self.error = nil
         do {
-            let data = content.data(using: .utf8) ?? Data()
-            _ = try vault.addEntry(label: label, content: data, type: selectedType)
-            dismiss()
+            let data = self.content.data(using: .utf8) ?? Data()
+            _ = try self.vault.addEntry(label: self.label, content: data, type: self.selectedType)
+            self.dismiss()
         } catch VaultManager.VaultError.locked {
-            error = "Vault locked — unlock and try again."
+            self.error = "Vault locked — unlock and try again."
         } catch {
             self.error = "Failed to save: \(error.localizedDescription)"
         }
     }
 
     private func saveAndSetupShards() {
-        error = nil
+        self.error = nil
         do {
-            let data  = content.data(using: .utf8) ?? Data()
-            let entry = try vault.addEntry(label: label, content: data, type: selectedType)
-            shardEntryID    = entry.id
-            navigateToShards = true
+            let data = self.content.data(using: .utf8) ?? Data()
+            let entry = try self.vault.addEntry(label: self.label, content: data, type: self.selectedType)
+            self.shardEntryID = entry.id
+            self.navigateToShards = true
         } catch VaultManager.VaultError.locked {
-            error = "Vault locked — unlock and try again."
+            self.error = "Vault locked — unlock and try again."
         } catch {
             self.error = "Failed to save: \(error.localizedDescription)"
         }

@@ -26,16 +26,16 @@ struct VaultEntryDetail: View {
         self._entries = Query(filter: #Predicate<VaultEntry> { $0.id == entryID })
     }
 
-    private var entry: VaultEntry? { entries.first }
+    private var entry: VaultEntry? { self.entries.first }
 
     var body: some View {
         ScrollView {
             if let entry {
                 VStack(alignment: .leading, spacing: 16) {
-                    hero(entry: entry)
-                    contentCard(entry: entry)
-                    metaCard(entry: entry)
-                    provenance
+                    self.hero(entry: entry)
+                    self.contentCard(entry: entry)
+                    self.metaCard(entry: entry)
+                    self.provenance
                 }
                 .padding(16)
             } else {
@@ -59,17 +59,19 @@ struct VaultEntryDetail: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button { showDeleteAlert = true } label: {
+                Button { self.showDeleteAlert = true } label: {
                     Image(systemName: "trash")
                         .foregroundStyle(Color.occultaDanger)
                 }
             }
         }
-        .alert("Delete Entry?", isPresented: $showDeleteAlert) {
+        .alert("Delete Entry?", isPresented: self.$showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 guard let entry else { return }
-                try? vault.deleteEntry(id: entry.id)
-                dismiss()
+                
+                try? self.vault.deleteEntry(id: entry.id)
+                
+                self.dismiss()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -77,7 +79,7 @@ struct VaultEntryDetail: View {
         }
         .onAppear {
             if let entry {
-                cachedLabel = (try? vault.decryptLabel(for: entry)) ?? entry.type.displayName
+                self.cachedLabel = (try? self.vault.decryptLabel(for: entry)) ?? entry.type.displayName
             }
         }
     }
@@ -94,7 +96,7 @@ struct VaultEntryDetail: View {
                     .font(.system(size: 26))
             }
             VStack(alignment: .leading, spacing: 3) {
-                Text(cachedLabel)
+                Text(self.cachedLabel)
                     .font(.system(size: 20, weight: .bold))
                     .tracking(-0.3)
                 Text(entry.type.displayName)
@@ -114,7 +116,8 @@ struct VaultEntryDetail: View {
 
     private func contentCard(entry: VaultEntry) -> some View {
         let text: String? = {
-            guard let data = try? vault.decryptContent(for: entry) else { return nil }
+            guard let data = try? self.vault.decryptContent(for: entry) else { return nil }
+            
             return String(data: data, encoding: .utf8)
         }()
 
@@ -134,10 +137,10 @@ struct VaultEntryDetail: View {
                         .padding(14)
                 }
             }
-            .blur(radius: isHeld ? 0 : 8)
-            .animation(.easeInOut(duration: 0.15), value: isHeld)
+            .blur(radius: self.isHeld ? 0 : 8)
+            .animation(.easeInOut(duration: 0.15), value: self.isHeld)
 
-            if !isHeld {
+            if !self.isHeld {
                 HStack(spacing: 6) {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 11))
@@ -157,7 +160,7 @@ struct VaultEntryDetail: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .gesture(
             DragGesture(minimumDistance: 0)
-                .updating($isHeld) { _, state, _ in state = true }
+                .updating(self.$isHeld) { _, state, _ in state = true }
         )
     }
 
@@ -165,14 +168,14 @@ struct VaultEntryDetail: View {
 
     private func metaCard(entry: VaultEntry) -> some View {
         VStack(spacing: 0) {
-            metaRow(title: "Encrypted With") {
+            self.metaRow(title: "Encrypted With") {
                 Text("SE key · this device only")
                     .font(.system(size: 13, design: .monospaced))
             }
 
             Divider().padding(.leading, 16)
 
-            metaRow(title: "Created") {
+            self.metaRow(title: "Created") {
                 Text(entry.createdAt.formatted(date: .long, time: .omitted))
                     .font(.system(size: 15))
             }
@@ -183,7 +186,7 @@ struct VaultEntryDetail: View {
                 NavigationLink {
                     VaultShardSetup(entryID: entry.id)
                 } label: {
-                    metaRow(title: "Shamir Shards") {
+                    self.metaRow(title: "Shamir Shards") {
                         Text("Active — tap to manage")
                             .font(.system(size: 15))
                             .foregroundStyle(.primary)
@@ -222,11 +225,7 @@ struct VaultEntryDetail: View {
                 .font(.system(size: 13))
             Text("Encrypted with a P-256 key bound to the Secure Enclave of this device. Decryption requires biometric authentication matching the enrolled set at key creation time. Key material never leaves the SE.")
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color(UIColor { t in
-                    t.userInterfaceStyle == .dark
-                        ? UIColor(red: 0x6e/255, green: 0xc9/255, blue: 0x7e/255, alpha: 1)
-                        : UIColor(red: 0x3B/255, green: 0x6D/255, blue: 0x11/255, alpha: 1)
-                }))
+                .foregroundStyle(VaultEntryType.cat(light: (0x6e, 0xc9, 0x7e), dark: (0x3B, 0x6D, 0x11)))
                 .lineSpacing(3)
         }
         .padding(12)
@@ -269,19 +268,19 @@ struct VaultEntryDetail: View {
                     UIPasteboard.general.string = str
                 }
             } label: {
-                actionButton("Copy", style: .standard)
+                self.actionButton("Copy", style: .standard)
             }
             .buttonStyle(.plain)
 
             NavigationLink {
                 VaultShardSetup(entryID: entry.id)
             } label: {
-                actionButton("Manage Shards", style: .primary)
+                self.actionButton("Manage Shards", style: .primary)
             }
             .buttonStyle(.plain)
 
-            Button { showDeleteAlert = true } label: {
-                actionButton("Delete", style: .danger)
+            Button { self.showDeleteAlert = true } label: {
+                self.actionButton("Delete", style: .danger)
             }
             .buttonStyle(.plain)
         }

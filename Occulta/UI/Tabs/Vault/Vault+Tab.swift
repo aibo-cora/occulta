@@ -2,9 +2,6 @@
 //  Vault+Tab.swift
 //  Occulta
 //
-//  Root NavigationStack for the Vault tab.
-//  Shows a lock gate when the vault is locked; the entry list when unlocked.
-//
 
 import SwiftUI
 import SwiftData
@@ -35,30 +32,41 @@ extension VaultEntryType {
 
     var tileTint: Color {
         switch self {
-        case .seedPhrase: .occultaVerified
-        case .note:       Color(red: 0x88/255, green: 0x44/255, blue: 0x94/255)
-        case .keyToken:   .occultaWarn
-        case .document:   Color(red: 0x1A/255, green: 0x6D/255, blue: 0xB5/255)
-        case .photo:      .occultaAccent
+        case .seedPhrase:
+            // Deep legible purple in light mode + bright in dark
+            Self.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF))
+        case .note:
+            Color(red: 0x88/255, green: 0x44/255, blue: 0x94/255)  // Keep for now or make adaptive if pale
+        case .keyToken:
+            .occultaWarn
+        case .document:
+            Color(red: 0x1A/255, green: 0x6D/255, blue: 0xB5/255)  // Good blue
+        case .photo:
+            .occultaAccent
         }
     }
 
-    // Spec-exact categorical backgrounds with dark-mode variants.
+    // Improved backgrounds: better contrast in light mode
     var tileBackground: Color {
         switch self {
-        case .seedPhrase: Self.cat(light: (0xEA,0xF3,0xDE), dark: (0x1a,0x2e,0x1a))
-        case .note:       Self.cat(light: (0xE6,0xF1,0xFB), dark: (0x0e,0x1f,0x30))
-        case .keyToken:   Self.cat(light: (0xFC,0xF0,0xF0), dark: (0x2e,0x18,0x18))
-        case .document:   Self.cat(light: (0xFA,0xEE,0xDA), dark: (0x2e,0x23,0x10))
-        case .photo:      Self.cat(light: (0xFB,0xE9,0xF5), dark: (0x2a,0x15,0x20))
+        case .seedPhrase:
+            Self.cat(light: (0xE8, 0xF0, 0xE0), dark: (0x1F, 0x2E, 0x1F))   // Softer green tint
+        case .note:
+            Self.cat(light: (0xF0, 0xF0, 0xFA), dark: (0x1C, 0x1B, 0x2E))   // Soft lavender
+        case .keyToken:
+            Self.cat(light: (0xFA, 0xF0, 0xF0), dark: (0x2E, 0x1C, 0x1C))   // Soft warm red
+        case .document:
+            Self.cat(light: (0xF0, 0xF4, 0xFA), dark: (0x1C, 0x2A, 0x38))   // Soft blue
+        case .photo:
+            Self.cat(light: (0xF8, 0xF0, 0xFA), dark: (0x2A, 0x1C, 0x2E))   // Soft purple
         }
     }
 
-    static func cat(light l: (Int,Int,Int), dark d: (Int,Int,Int)) -> Color {
-        Color(UIColor { t in
-            t.userInterfaceStyle == .dark
-                ? UIColor(red: CGFloat(d.0)/255, green: CGFloat(d.1)/255, blue: CGFloat(d.2)/255, alpha: 1)
-                : UIColor(red: CGFloat(l.0)/255, green: CGFloat(l.1)/255, blue: CGFloat(l.2)/255, alpha: 1)
+    static func cat(light l: (Int, Int, Int), dark d: (Int, Int, Int)) -> Color {
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark
+                ? UIColor(red: CGFloat(d.0)/255, green: CGFloat(d.1)/255, blue: CGFloat(d.2)/255, alpha: 1.0)
+                : UIColor(red: CGFloat(l.0)/255, green: CGFloat(l.1)/255, blue: CGFloat(l.2)/255, alpha: 1.0)
         })
     }
 }
@@ -71,8 +79,8 @@ struct VaultTab: View {
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
 
     @State private var filter: Filter = .all
-    @State private var showNewEntry  = false
-    @State private var unlocking     = false
+    @State private var showNewEntry = false
+    @State private var unlocking = false
 
     private enum Filter: String, CaseIterable {
         case all      = "All"
@@ -83,17 +91,17 @@ struct VaultTab: View {
     var body: some View {
         NavigationStack {
             Group {
-                if vault.isUnlocked {
-                    list
+                if self.vault.isUnlocked {
+                    self.list
                 } else {
-                    lockGate
+                    self.lockGate
                 }
             }
             .navigationTitle("Vault")
             .toolbar {
-                if vault.isUnlocked {
+                if self.vault.isUnlocked {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        Button { showNewEntry = true } label: {
+                        Button { self.showNewEntry = true } label: {
                             Image(systemName: "plus")
                         }
                         .tint(.occultaAccent)
@@ -129,7 +137,7 @@ struct VaultTab: View {
             }
 
             Button {
-                unlockVault()
+                self.unlockVault()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "faceid")
@@ -142,7 +150,7 @@ struct VaultTab: View {
                 .background(Capsule().fill(Color.occultaAccent))
             }
             .buttonStyle(.plain)
-            .disabled(unlocking)
+            .disabled(self.unlocking)
 
             Spacer()
         }
@@ -154,7 +162,6 @@ struct VaultTab: View {
 
     private var list: some View {
         List {
-            // Segment control
             Section {
                 Picker("Filter", selection: $filter) {
                     ForEach(Filter.allCases, id: \.self) { f in
@@ -167,21 +174,21 @@ struct VaultTab: View {
             }
 
             // Personal entries
-            if filter != .shards {
+            if self.filter != .shards {
                 Section {
-                    if entries.isEmpty {
+                    if self.entries.isEmpty {
                         Text("No entries yet. Tap + to add one.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(entries) { entry in
+                        ForEach(self.entries) { entry in
                             NavigationLink(value: entry.id) {
                                 VaultEntryRow(entry: entry)
                             }
                         }
                         .onDelete { offsets in
-                            for i in offsets { try? vault.deleteEntry(id: entries[i].id) }
+                            for i in offsets { try? self.vault.deleteEntry(id: self.entries[i].id) }
                         }
                     }
                 } header: {
@@ -192,23 +199,23 @@ struct VaultTab: View {
                         Text("Personal")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
-                        if !entries.isEmpty {
+                        if !self.entries.isEmpty {
                             Spacer()
-                            Text("\(entries.count)")
+                            Text("\(self.entries.count)")
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
                     }
                 } footer: {
-                    if !entries.isEmpty {
-                        Text("\(entries.count) \(entries.count == 1 ? "entry" : "entries") · se-bound · this device only")
+                    if !self.entries.isEmpty {
+                        Text("\(self.entries.count) \(self.entries.count == 1 ? "entry" : "entries") · se-bound · this device only")
                             .font(.system(size: 10, design: .monospaced))
                     }
                 }
             }
 
-            // Shards held for you (received from contacts via .occ)
-            if filter != .personal {
+            // Shards held for you
+            if self.filter != .personal {
                 Section {
                     Text("Shards held for you appear here once\ncontacts deliver them via .occ.")
                         .font(.system(size: 12, design: .monospaced))
@@ -233,7 +240,7 @@ struct VaultTab: View {
     // MARK: Helpers
 
     private func unlockVault() {
-        unlocking = true
+        self.unlocking = true
         let ctx = LAContext()
         ctx.evaluatePolicy(
             .deviceOwnerAuthenticationWithBiometrics,
@@ -254,24 +261,24 @@ private struct VaultEntryRow: View {
     @Environment(VaultManager.self) private var vault
 
     private var label: String {
-        (try? vault.decryptLabel(for: entry)) ?? entry.type.displayName
+        (try? self.vault.decryptLabel(for: self.entry)) ?? self.entry.type.displayName
     }
 
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9)
-                    .fill(entry.type.tileBackground)
+                    .fill(self.entry.type.tileBackground)
                     .frame(width: 36, height: 36)
-                Text(entry.type.emoji)
+                Text(self.entry.type.emoji)
                     .font(.system(size: 18))
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(label)
+                Text(self.label)
                     .font(.system(size: 16, weight: .medium))
                     .lineLimit(1)
-                Text("\(entry.type.displayName) · \(entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                Text("\(self.entry.type.displayName) · \(self.entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -285,7 +292,7 @@ private struct VaultEntryRow: View {
                 .foregroundStyle(Color.occultaVerified)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(VaultEntryType.cat(light: (0xEA,0xF3,0xDE), dark: (0x1a,0x2e,0x1a)))
+                .background(self.entry.type.tileBackground)   // Consistent with icon
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .padding(.vertical, 3)

@@ -104,7 +104,7 @@ struct VaultShardSetup: View {
                             .font(.system(size: 11, design: .monospaced))
                             .lineSpacing(3)
                     }
-                    .foregroundStyle(VaultEntryType.cat(light: (0xEE, 0xED, 0xFE), dark: (0xB8, 0xA8, 0xFF)))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)))
                 }
                 .padding(.vertical, 4)
                 .listRowBackground(VaultEntryType.cat(light: (0xEE,0xED,0xFE), dark: (0x1e,0x1c,0x38)))
@@ -125,7 +125,6 @@ struct VaultShardSetup: View {
                 .padding(.vertical, 4)
             }
 
-            // Error
             if let error = self.error {
                 Section {
                     Text(error)
