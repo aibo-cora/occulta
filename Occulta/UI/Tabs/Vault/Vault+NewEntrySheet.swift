@@ -27,6 +27,7 @@ struct VaultNewEntrySheet: View {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
                         self.monoLabel("Type")
+                        
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible()), count: 3),
                             spacing: 8
@@ -40,10 +41,11 @@ struct VaultNewEntrySheet: View {
                     // Details section
                     VStack(alignment: .leading, spacing: 8) {
                         self.monoLabel("Details")
+                        
                         VStack(alignment: .leading, spacing: 0) {
-                            // Label field
                             VStack(alignment: .leading, spacing: 4) {
                                 self.fieldLabel("Label")
+                                
                                 TextField("", text: $label, prompt:
                                     Text("e.g. Ethereum Wallet")
                                         .font(.system(size: 13, design: .monospaced))
@@ -56,9 +58,9 @@ struct VaultNewEntrySheet: View {
 
                             Divider()
 
-                            // Content field
                             VStack(alignment: .leading, spacing: 4) {
                                 self.fieldLabel("Content")
+                                
                                 ZStack(alignment: .topLeading) {
                                     if self.content.isEmpty {
                                         Text(self.selectedType == .seedPhrase
@@ -70,7 +72,7 @@ struct VaultNewEntrySheet: View {
                                             .padding(.leading, 4)
                                             .allowsHitTesting(false)
                                     }
-                                    TextEditor(text: $content)
+                                    TextEditor(text: self.$content)
                                         .font(.system(size: 13, design: .monospaced))
                                         .frame(minHeight: 100)
                                         .scrollContentBackground(.hidden)
@@ -91,36 +93,37 @@ struct VaultNewEntrySheet: View {
                             .foregroundStyle(Color.occultaDanger)
                     }
 
-                    // Shamir CTA
-                    Button { self.saveAndSetupShards() } label: {
-                        HStack(spacing: 12) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(Color.white.opacity(0.2))
-                                    .frame(width: 42, height: 42)
-                                Text("🔮")
-                                    .font(.system(size: 20))
+                    if FeatureFlags.isEnabled(.enableShamirShardSharing) {
+                        Button { self.saveAndSetupShards() } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.white.opacity(0.2))
+                                        .frame(width: 42, height: 42)
+                                    Text("🔮")
+                                        .font(.system(size: 20))
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Create Shamir shards")
+                                        .font(.system(size: 15, weight: .bold))
+                                    Text("split · distribute · recover")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .opacity(0.85)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .opacity(0.8)
                             }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Create Shamir shards")
-                                    .font(.system(size: 15, weight: .bold))
-                                Text("split · distribute · recover")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .opacity(0.85)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 14, weight: .semibold))
-                                .opacity(0.8)
+                            .foregroundStyle(.white)
+                            .padding(14)
+                            .background(self.canSave ? Color.occultaAccent : Color.secondary.opacity(0.50))
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                            .shadow(color: self.canSave ? Color.occultaAccent.opacity(0.28) : .clear, radius: 8, y: 4)
                         }
-                        .foregroundStyle(.white)
-                        .padding(14)
-                        .background(self.canSave ? Color.occultaAccent : Color.secondary.opacity(0.50))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .shadow(color: self.canSave ? Color.occultaAccent.opacity(0.28) : .clear, radius: 8, y: 4)
+                        .buttonStyle(.plain)
+                        .disabled(self.canSave == false)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!self.canSave)
 
                     Text("Content is encrypted with your SE key before being written to disk.")
                         .font(.system(size: 10, design: .monospaced))

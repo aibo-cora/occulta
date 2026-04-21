@@ -214,20 +214,22 @@ struct VaultTab: View {
                 }
             }
 
-            if self.filter != .personal {
-                Section {
-                    Text("Shards appear here once you get one from a contact for custody via .occ.")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .listRowBackground(Color.clear)
-                } header: {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
-                            .frame(width: 7, height: 7)
-                        Text("Custodian Shards")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .tracking(1.6)
+            if FeatureFlags.isEnabled(.enableShamirShardSharing) {
+                if self.filter != .personal {
+                    Section {
+                        Text("Shards appear here once you get one from a contact for custody via .occ.")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .listRowBackground(Color.clear)
+                    } header: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                                .frame(width: 7, height: 7)
+                            Text("Custodian Shards")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .tracking(1.6)
+                        }
                     }
                 }
             }
