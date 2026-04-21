@@ -41,27 +41,53 @@ struct VaultNewEntrySheet: View {
                         }
                     }
 
-                    // Label
-                    VStack(alignment: .leading, spacing: 6) {
-                        monoLabel("Label")
-                        TextField("e.g. Ethereum Wallet", text: $label)
-                            .padding(12)
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .tint(.occultaAccent)
-                    }
+                    // Details — single compound card (label + content) per spec compose-field layout
+                    VStack(alignment: .leading, spacing: 8) {
+                        monoLabel("Details")
+                        VStack(alignment: .leading, spacing: 0) {
+                            // Label field
+                            VStack(alignment: .leading, spacing: 4) {
+                                fieldLabel("Label")
+                                TextField("", text: $label, prompt:
+                                    Text("e.g. Ethereum Wallet")
+                                        .foregroundStyle(.tertiary)
+                                        .font(.system(size: 15, design: .monospaced))
+                                )
+                                .font(.system(size: 15, design: .monospaced))
+                                .tint(.occultaAccent)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
 
-                    // Content
-                    VStack(alignment: .leading, spacing: 6) {
-                        monoLabel("Content")
-                        TextEditor(text: $content)
-                            .font(.system(size: 13, design: .monospaced))
-                            .frame(minHeight: 100)
-                            .padding(8)
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .tint(.occultaAccent)
-                            .privacySensitive(true)
+                            Divider()
+
+                            // Content field
+                            VStack(alignment: .leading, spacing: 4) {
+                                fieldLabel("Content")
+                                ZStack(alignment: .topLeading) {
+                                    if content.isEmpty {
+                                        Text(selectedType == .seedPhrase
+                                             ? "Enter seed phrase, one word per line…"
+                                             : "Enter content…")
+                                            .font(.system(size: 13, design: .monospaced))
+                                            .foregroundStyle(.tertiary)
+                                            .padding(.top, 8)
+                                            .padding(.leading, 4)
+                                            .allowsHitTesting(false)
+                                    }
+                                    TextEditor(text: $content)
+                                        .font(.system(size: 13, design: .monospaced))
+                                        .frame(minHeight: 100)
+                                        .scrollContentBackground(.hidden)
+                                        .tint(.occultaAccent)
+                                        .privacySensitive(true)
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                        }
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
 
                     if let error {
@@ -171,6 +197,13 @@ struct VaultNewEntrySheet: View {
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
             .foregroundStyle(.secondary)
             .tracking(1.3)
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.tertiary)
+            .tracking(1.2)
     }
 
     private func save() {
