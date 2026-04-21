@@ -9,15 +9,19 @@
 //  persistence is the caller's responsibility (serialize with JSONEncoder, then
 //  AES-GCM seal the blob and store it in Contact.Profile.signedAttributes).
 //
-//  Signing payload layout (see signingPayload(id:category:value:)):
+//  Signing payload layout (see signingPayload(id:category:value:entryID:)):
 //    "occulta-signed-attribute-v1" (UTF-8 domain prefix)
 //    ∥ id.uuidString (UTF-8, always 36 bytes)
 //    ∥ category.rawValue (UTF-8)
+//    ∥ entryID.uuidString (UTF-8, 36 bytes — only for .shard; absent otherwise)
 //    ∥ value (raw bytes)
 //
 //  Including `category` in the payload prevents a category-substitution attack
 //  (e.g. changing .financial to .shard without invalidating the signature).
 //  Including `id` prevents cross-attribute signature transplants.
+//  Including `entryID` for shards binds them to a specific key generation:
+//  a shard signed for entryID A cannot be presented as valid for entryID B,
+//  and stale shards from before a vault re-key are cryptographically rejected.
 //
 
 import Foundation
@@ -54,13 +58,21 @@ struct SignedAttribute: Codable, Identifiable {
     let label: String
     /// The sensitive value being attested. For `.shard`, these are the raw
     /// GF(2^8) shard bytes from ShamirSecretSharing.split().
+    ///
+    /// ⚠️ For `.shard` attributes: these bytes are plaintext key material.
+    /// Encrypt this struct (via JSONEncoder + AES-GCM) to the recipient's public
+    /// key immediately — never queue it in plaintext or persist it unencrypted.
     let value: Data
     let category: Category
-    /// DER-encoded ECDSA-P256 signature over signingPayload(id:category:value:).
+    /// DER-encoded ECDSA-P256 signature over signingPayload(id:category:value:entryID:).
     let signature: Data
     let createdAt: Date
     /// Optional expiry. nil means the attribute never expires.
     let expiresAt: Date?
+    /// For `.shard` category: the VaultEntry.id this shard belongs to.
+    /// Included in the signing payload, binding the shard to a specific key
+    /// generation. nil for all other categories.
+    let entryID: UUID?
 
     // MARK: Init
 
@@ -71,7 +83,8 @@ struct SignedAttribute: Codable, Identifiable {
         category: Category,
         signature: Data,
         createdAt: Date = Date(),
-        expiresAt: Date? = nil
+        expiresAt: Date? = nil,
+        entryID: UUID? = nil
     ) {
         self.id        = id
         self.label     = label
@@ -80,6 +93,7 @@ struct SignedAttribute: Codable, Identifiable {
         self.signature = signature
         self.createdAt = createdAt
         self.expiresAt = expiresAt
+        self.entryID   = entryID
     }
 
     // MARK: Signing payload
@@ -89,18 +103,26 @@ struct SignedAttribute: Codable, Identifiable {
     /// This static form is the single authoritative definition of the payload.
     /// Both the instance helper and prepareShards() delegate here so sign and
     /// verify always produce the same bytes.
-    static func signingPayload(id: UUID, category: Category, value: Data) -> Data {
+    ///
+    /// Layout:
+    ///   domain prefix ∥ id (36 B) ∥ category ∥ [entryID (36 B) if non-nil] ∥ value
+    ///
+    /// - Parameter entryID: Pass the VaultEntry.id for `.shard` attributes; nil otherwise.
+    static func signingPayload(id: UUID, category: Category, value: Data, entryID: UUID? = nil) -> Data {
         var payload = Data()
         payload.append("occulta-signed-attribute-v1".data(using: .utf8)!)
-        payload.append(id.uuidString.data(using: .utf8)!)        // always 36 bytes
+        payload.append(id.uuidString.data(using: .utf8)!)           // always 36 bytes
         payload.append(category.rawValue.data(using: .utf8)!)
+        if let entryID {
+            payload.append(entryID.uuidString.data(using: .utf8)!)  // 36 bytes — shard only
+        }
         payload.append(value)
         return payload
     }
 
-    /// Convenience wrapper over the static form.
+    /// Convenience wrapper over the static form. Uses the stored `entryID` automatically.
     func signingPayload() -> Data {
-        SignedAttribute.signingPayload(id: id, category: category, value: value)
+        SignedAttribute.signingPayload(id: id, category: category, value: value, entryID: entryID)
     }
 
     // MARK: Verification

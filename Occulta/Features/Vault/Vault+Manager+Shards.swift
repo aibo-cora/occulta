@@ -82,8 +82,11 @@ extension VaultManager {
 
             // Build the signing payload using the canonical static method —
             // the same bytes that verify(against:) will reconstruct later.
+            // entryID binds this shard to the specific key generation; a shard
+            // from a previous prepareShards() call for the same entry (or a
+            // different entry) will fail verify() even if the key bytes match.
             let payload = SignedAttribute.signingPayload(
-                id: attrID, category: .shard, value: shardData
+                id: attrID, category: .shard, value: shardData, entryID: entryID
             )
             let signature = try self.keyManager.signData(payload)
 
@@ -93,7 +96,8 @@ extension VaultManager {
                 value:     shardData,
                 category:  .shard,
                 signature: signature,
-                createdAt: createdAt
+                createdAt: createdAt,
+                entryID:   entryID
             ))
         }
 
