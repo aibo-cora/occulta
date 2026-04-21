@@ -214,10 +214,9 @@ struct VaultTab: View {
                 }
             }
 
-            // Shards held for you
             if self.filter != .personal {
                 Section {
-                    Text("Shards held for you appear here once\ncontacts deliver them via .occ.")
+                    Text("Shards appear here once you get one from a contact for custody via .occ.")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .listRowBackground(Color.clear)
@@ -226,7 +225,7 @@ struct VaultTab: View {
                         Circle()
                             .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
                             .frame(width: 7, height: 7)
-                        Text("Shards Held for You")
+                        Text("Custodian Shards")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
                     }
