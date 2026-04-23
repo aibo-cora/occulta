@@ -86,7 +86,12 @@ extension VaultManager {
             // from a previous prepareShards() call for the same entry (or a
             // different entry) will fail verify() even if the key bytes match.
             let payload = SignedAttribute.signingPayload(
-                id: attrID, category: .shard, value: shardData, entryID: entryID
+                id:        attrID,
+                category:  .shard,
+                value:     shardData,
+                entryID:   entryID,
+                createdAt: createdAt,
+                expiresAt: nil
             )
             let signature = try self.keyManager.signData(payload)
 

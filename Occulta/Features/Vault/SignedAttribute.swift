@@ -9,19 +9,25 @@
 //  persistence is the caller's responsibility (serialize with JSONEncoder, then
 //  AES-GCM seal the blob and store it in Contact.Profile.signedAttributes).
 //
-//  Signing payload layout (see signingPayload(id:category:value:entryID:)):
-//    "occulta-signed-attribute-v1" (UTF-8 domain prefix)
+//  Signing payload layout (see signingPayload(id:category:value:entryID:createdAt:expiresAt:)):
+//    "occulta-signed-attribute-v2" (UTF-8 domain prefix)
 //    ∥ id.uuidString (UTF-8, always 36 bytes)
 //    ∥ category.rawValue (UTF-8)
 //    ∥ entryID.uuidString (UTF-8, 36 bytes — only for .shard; absent otherwise)
+//    ∥ createdAt as UInt64 big-endian (8 bytes, seconds since Unix epoch)
+//    ∥ 0x00 if expiresAt == nil; 0x01 ∥ UInt64 BE if expiresAt != nil (1 or 9 bytes)
 //    ∥ value (raw bytes)
 //
-//  Including `category` in the payload prevents a category-substitution attack
-//  (e.g. changing .financial to .shard without invalidating the signature).
+//  Including `category` prevents a category-substitution attack.
 //  Including `id` prevents cross-attribute signature transplants.
-//  Including `entryID` for shards binds them to a specific key generation:
-//  a shard signed for entryID A cannot be presented as valid for entryID B,
-//  and stale shards from before a vault re-key are cryptographically rejected.
+//  Including `entryID` for shards binds them to a specific key generation.
+//  Including `createdAt` and `expiresAt` prevents a trustee from modifying the
+//  expiry field in stored JSON to extend a shard's validity past its intended
+//  lifetime. Without this, expiry-based revocation would be unenforceable.
+//
+//  v1 → v2 is a breaking wire change. All v1 signatures fail verification
+//  against the v2 payload by design. SSS was not shipped in v1 (feature-flagged
+//  off), so no migration of existing signed shards is required.
 //
 
 import Foundation
@@ -105,24 +111,54 @@ struct SignedAttribute: Codable, Identifiable {
     /// verify always produce the same bytes.
     ///
     /// Layout:
-    ///   domain prefix ∥ id (36 B) ∥ category ∥ [entryID (36 B) if non-nil] ∥ value
+    ///   "occulta-signed-attribute-v2" ∥ id (36 B) ∥ category ∥ [entryID (36 B)]
+    ///   ∥ createdAt UInt64 BE (8 B) ∥ expiry flag (1 B) ∥ [expiresAt UInt64 BE (8 B)] ∥ value
     ///
-    /// - Parameter entryID: Pass the VaultEntry.id for `.shard` attributes; nil otherwise.
-    static func signingPayload(id: UUID, category: Category, value: Data, entryID: UUID? = nil) -> Data {
+    /// Timestamps are encoded as UInt64 big-endian seconds since Unix epoch.
+    /// expiresAt flag: 0x00 = no expiry; 0x01 = has expiry (followed by 8 bytes).
+    ///
+    /// - Parameters:
+    ///   - entryID:   Pass the VaultEntry.id for `.shard` attributes; nil otherwise.
+    ///   - createdAt: The attribute's creation timestamp (from the stored field).
+    ///   - expiresAt: The attribute's expiry (from the stored field); nil if none.
+    static func signingPayload(
+        id:        UUID,
+        category:  Category,
+        value:     Data,
+        entryID:   UUID?  = nil,
+        createdAt: Date,
+        expiresAt: Date?  = nil
+    ) -> Data {
         var payload = Data()
-        payload.append("occulta-signed-attribute-v1".data(using: .utf8)!)
-        payload.append(id.uuidString.data(using: .utf8)!)           // always 36 bytes
+        payload.append("occulta-signed-attribute-v2".data(using: .utf8)!)
+        payload.append(id.uuidString.data(using: .utf8)!)              // 36 bytes
         payload.append(category.rawValue.data(using: .utf8)!)
         if let entryID {
-            payload.append(entryID.uuidString.data(using: .utf8)!)  // 36 bytes — shard only
+            payload.append(entryID.uuidString.data(using: .utf8)!)     // 36 bytes — shard only
+        }
+        var createdSeconds = UInt64(createdAt.timeIntervalSince1970).bigEndian
+        withUnsafeBytes(of: createdSeconds) { payload.append(contentsOf: $0) }  // 8 bytes
+        if let expiresAt {
+            payload.append(0x01)
+            var expiresSeconds = UInt64(expiresAt.timeIntervalSince1970).bigEndian
+            withUnsafeBytes(of: expiresSeconds) { payload.append(contentsOf: $0) }  // 8 bytes
+        } else {
+            payload.append(0x00)
         }
         payload.append(value)
         return payload
     }
 
-    /// Convenience wrapper over the static form. Uses the stored `entryID` automatically.
+    /// Convenience wrapper over the static form. Uses all stored fields automatically.
     func signingPayload() -> Data {
-        SignedAttribute.signingPayload(id: id, category: category, value: value, entryID: entryID)
+        SignedAttribute.signingPayload(
+            id:        id,
+            category:  category,
+            value:     value,
+            entryID:   entryID,
+            createdAt: createdAt,
+            expiresAt: expiresAt
+        )
     }
 
     // MARK: Verification

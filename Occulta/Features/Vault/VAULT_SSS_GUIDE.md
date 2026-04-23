@@ -48,15 +48,24 @@ prerequisite for per-entry SSS.
 ## Shard signing
 
 Each shard is wrapped in a `SignedAttribute(category: .shard)` signed by the
-owner's SE identity key. The signing payload is:
+owner's SE identity key. The signing payload (v2) is:
 
 ```
-"occulta-signed-attribute-v1" ∥ attrID ∥ "shard" ∥ entryID ∥ shardBytes
+"occulta-signed-attribute-v2" ∥ attrID ∥ "shard" ∥ entryID
+∥ createdAt UInt64 BE ∥ expiry flag (0x00 | 0x01 ∥ expiresAt UInt64 BE)
+∥ shardBytes
 ```
 
 Including `entryID` binds the shard to a specific PEK generation. A shard from
 a previous distribution (old PEK) fails verification even against the same
 signing key, because the `entryID` in the payload won't match.
+
+Including `createdAt` and `expiresAt` in the payload prevents a trustee from
+modifying those fields in stored JSON to extend a shard's validity past its
+intended lifetime. Without this, a trustee who receives a shard with a 1-year
+expiry could edit the serialized `expiresAt` to nil — the ECDSA signature would
+still verify because the expiry wasn't covered. With v2, any modification to
+`createdAt` or `expiresAt` invalidates the signature.
 
 ### Signature verification after device loss
 
