@@ -61,6 +61,14 @@ protocol KeyManagerProtocol {
     ///
     /// - Returns: DER-encoded ECDSA signature.
     func signData(_ data: Data) throws -> Data
+
+    /// Derive the shard custody key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// No LAContext needed — the shard custody SE key has device-unlock-level access
+    /// (no biometric flag). Enables fully automatic shard operations on bundle receipt.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveShardCustodyKey() throws -> SymmetricKey?
 }
 
 // MARK: - TestKeyManager
@@ -79,6 +87,10 @@ final class TestKeyManager: KeyManagerProtocol {
     /// Separate key pair simulating the dedicated vault SE key.
     private let vaultPrivateKey: SecKey
     private let vaultPublicKeyData: Data
+
+    /// Separate key pair simulating the dedicated shard custody SE key.
+    private let shardCustodyPrivateKey: SecKey
+    private let shardCustodyPublicKeyData: Data
 
     /// Simulates the random Keychain component for the local DB hybrid key (32 bytes).
     private let randomComponent: Data
@@ -127,6 +139,12 @@ final class TestKeyManager: KeyManagerProtocol {
         let vaultPub  = SecKeyCopyPublicKey(vaultPriv)!
         self.vaultPrivateKey    = vaultPriv
         self.vaultPublicKeyData = SecKeyCopyExternalRepresentation(vaultPub, nil)! as Data
+
+        // Separate shard custody key pair (simulates dedicated shard custody SE key)
+        let shardCustodyPriv = SecKeyCreateRandomKey(attrs, &err)!
+        let shardCustodyPub  = SecKeyCopyPublicKey(shardCustodyPriv)!
+        self.shardCustodyPrivateKey    = shardCustodyPriv
+        self.shardCustodyPublicKeyData = SecKeyCopyExternalRepresentation(shardCustodyPub, nil)! as Data
 
         // Random component (simulates Keychain-stored random bytes)
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -228,6 +246,31 @@ final class TestKeyManager: KeyManagerProtocol {
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: vaultPublicKeyData,
             info: SaltInfo.kVaultKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Shard custody (TestKeyManager)
+
+    /// ECDH(shardCustodyPrivateKey, G) → HKDF — mirrors Manager.Key.deriveShardCustodyKey().
+    ///
+    /// The context-free signature mirrors the real key (no biometric needed).
+    func deriveShardCustodyKey() throws -> SymmetricKey? {
+        guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
+
+        var err: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                shardCustodyPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &err
+            ) as? Data
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: shardCustodyPublicKeyData,
+            info: SaltInfo.kShardCustodyKeyInfo,
             outputByteCount: 32
         )
     }

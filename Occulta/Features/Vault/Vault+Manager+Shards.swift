@@ -15,7 +15,7 @@ extension VaultManager {
 
     // MARK: - Shard preparation
 
-    /// Split the vault key for `entryID` into signed shards — one per recipient.
+    /// Split the per-entry key (PEK) for `entryID` into signed shards — one per recipient.
     ///
     /// Each returned `SignedAttribute` has `category: .shard`, is signed with the
     /// SE identity key, and contains the raw GF(2^8) shard bytes as its value.
@@ -23,16 +23,16 @@ extension VaultManager {
     ///
     /// Steps (in order):
     ///   1. Assert vault is unlocked.
-    ///   2. Extract 32-byte vault key bytes into a local buffer.
-    ///   3. SSS-split into n shards (one per recipient).
+    ///   2. Unwrap the entry's PEK (via unwrapPEK — handles legacy migration).
+    ///   3. SSS-split the PEK (not the vault key) into n shards.
     ///   4. For each shard: compute the SignedAttribute signing payload, sign
     ///      with the SE identity key, build a SignedAttribute(.shard).
     ///   5. Encrypt and persist ShardDistributionMetadata on the entry.
-    ///   6. Zero all intermediate key and shard buffers via defer.
+    ///   6. Zero all intermediate PEK and shard buffers via defer.
     ///   7. Return the signed attributes.
     ///
     /// - Parameters:
-    ///   - entryID:    The VaultEntry whose key is being split.
+    ///   - entryID:    The VaultEntry whose PEK is being split.
     ///   - threshold:  Minimum shards for reconstruction (k ≥ 2).
     ///   - recipients: Contacts receiving one shard each (n = count).
     /// - Returns: `[SignedAttribute]` in the same order as `recipients`.
@@ -41,26 +41,25 @@ extension VaultManager {
         threshold: Int,
         recipients: [Contact.Profile]
     ) throws -> [SignedAttribute] {
-        let key         = try self.currentKey()
-        guard let entry = try self.fetchEntry(by: entryID)     else { throw VaultError.entryNotFound }
+        let vaultKey    = try self.currentKey()
+        guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
 
         let n = recipients.count
 
-        // ── 1. Extract raw vault key bytes ───────────────────────────────────
-        // ⚠️ vaultKeyBytes is cleared by defer below — do not return early
-        // between here and the end of the function without ensuring defer fires.
-        var vaultKeyBytes = Data()
-        key.withUnsafeBytes { vaultKeyBytes = Data($0) }
+        // ── 1. Unwrap PEK ────────────────────────────────────────────────────
+        let pek = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
+
+        // ⚠️ pekBytes is cleared by defer below.
+        var pekBytes = Data()
+        pek.withUnsafeBytes { pekBytes = Data($0) }
 
         defer {
-            // Zero the local key copy. Swift Data uses COW; this clears the
-            // buffer that withUnsafeBytes gave us, not vaultKey itself.
-            for i in vaultKeyBytes.indices { vaultKeyBytes[i] = 0 }
+            for i in pekBytes.indices { pekBytes[i] = 0 }
         }
 
-        // ── 2. Split ─────────────────────────────────────────────────────────
+        // ── 2. Split the PEK ─────────────────────────────────────────────────
         var rawShares = try ShamirSecretSharing.split(
-            secret: vaultKeyBytes,
+            secret: pekBytes,
             threshold: threshold,
             shares: n
         )
@@ -97,7 +96,7 @@ extension VaultManager {
 
             attributes.append(SignedAttribute(
                 id:        attrID,
-                label:     "vault-shard-\(i + 1)-of-\(n)",
+                label:     "vault-shard",
                 value:     shardData,
                 category:  .shard,
                 signature: signature,
@@ -107,17 +106,18 @@ extension VaultManager {
         }
 
         // ── 4. Persist encrypted ShardDistributionMetadata on the entry ──────
-        let contactIDs = recipients.map { $0.identifier }
-        let meta = ShardDistributionMetadata(
-            threshold:          threshold,
-            total:              n,
-            contactIdentifiers: contactIDs,
-            deliveryStatus:     Dictionary(uniqueKeysWithValues: contactIDs.map { ($0, false) })
-        )
+        let shards = (0..<n).map { i in
+            ShardRecord(
+                contactIdentifier: recipients[i].identifier,
+                attrID:            attributes[i].id,
+                status:            .sent
+            )
+        }
+        let meta = ShardDistributionMetadata(threshold: threshold, shards: shards)
         let metaData = try JSONEncoder().encode(meta)
         let sealed   = try AES.GCM.seal(
             metaData,
-            using:          key,
+            using:          vaultKey,
             nonce:          AES.GCM.Nonce(),
             authenticating: entry.aad()
         )
@@ -138,18 +138,20 @@ extension VaultManager {
     /// Call this after the .occ bundle containing the shard has been handed
     /// to the basket pipeline. Updates the encrypted ShardDistributionMetadata.
     func markShardDelivered(for entryID: UUID, contactIdentifier: String) throws {
-        let key         = try self.currentKey()
+        let vaultKey    = try self.currentKey()
         guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
         guard let encrypted = entry.shardDistributionEncrypted else { return }
 
         let box       = try AES.GCM.SealedBox(combined: encrypted)
-        let plaintext = try AES.GCM.open(box, using: key, authenticating: entry.aad())
+        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad())
 
         var meta = try JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
-        meta.deliveryStatus[contactIdentifier] = true
+        if let idx = meta.shards.firstIndex(where: { $0.contactIdentifier == contactIdentifier }) {
+            meta.shards[idx].status = .confirmed
+        }
 
         let updated = try JSONEncoder().encode(meta)
-        let sealed  = try AES.GCM.seal(updated, using: key, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
+        let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
         
         guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
         

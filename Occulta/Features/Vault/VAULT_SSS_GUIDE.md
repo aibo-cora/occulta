@@ -145,25 +145,93 @@ old PEK which no longer encrypts anything.
 
 ---
 
+## Shard custody key
+
+Shard operations require a dedicated third SE key — separate from the identity key
+and the vault key.
+
+**Tag:** `"shard.custody.occulta"`  
+**Access:** `kSecAttrAccessibleWhenUnlockedThisDeviceOnly + .privateKeyUsage`  
+**No biometric flag** — device-unlock level only.
+
+Why no biometric? Shard requests arrive in inbound bundles, processed automatically
+on receipt. If the shard custody key required Face ID per operation, Bob would need to
+open the app and interact each time a contact requests a shard back. Full automation
+(zero UI involvement for Bob) is the design goal.
+
+Derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, info: kShardCustodyKeyInfo)`  
+Info string: `"Occulta-v1-shard-custody-2026"`
+
+Used to encrypt `HeldShard.encryptedAttribute` (a JSONEncoder(SignedAttribute) blob).
+
+---
+
+## Contact identifier for shards
+
+`ShardRecord.contactIdentifier` is a `String` holding the contact's identifier from
+`Contact.Profile`. A future migration to `Data` (SHA-256 of the contact's public key)
+is planned for the ShardCustodyManager phase, which will have direct access to the
+contact's key record.
+
+`HeldShard.ownerKeyFingerprint` is already `Data` (SHA-256 of the owner's public key)
+— the shard-receiving side has the owner's public key from the signed attribute itself.
+
+---
+
+## Inbound bundle processing order
+
+When a bundle carrying a `ShardOperation` arrives:
+
+1. **Revocations** (`.revoke`) — delete `HeldShard` immediately; no further action.
+2. **Distributions** (`.distribute`) — store new `HeldShard`; if `replacesID != nil`,
+   delete the old shard with that id.
+3. **Requests** (`.request`) — write `PendingShardRequest`; deduplicate by `attrID`
+   (update `receivedAt` only on duplicates); process automatically if device is unlocked.
+4. **Responses** (`.respond`) — hand shard bytes to the reconstruction flow.
+5. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
+6. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
+
+Processing is crash-safe: `PendingShardRequest.processed` stays `false` until the
+response bundle has been successfully queued. Unprocessed records are retried on next
+app launch.
+
+---
+
+## Contact key rotation = implicit shard loss
+
+When a contact re-exchanges keys with Alice, their old public key is replaced. Any
+shard Bob stored was sealed under Alice's old PEK and signed with her old identity key.
+Alice treats the old shards as `.lost` immediately on key rotation — no explicit
+"I lost my shard" message type is needed.
+
+---
+
 ## Implementation status
 
-| Component                        | Status        |
-|----------------------------------|---------------|
-| SSS math (split / reconstruct)   | ✅ Done        |
-| Shard signing (SE key)           | ✅ Done        |
-| entryID binding in signature     | ✅ Done        |
-| Per-entry encryption keys (PEK)  | ❌ Not started |
-| VaultEntry model update          | ❌ Not started |
-| VaultManager PEK unwrap path     | ❌ Not started |
-| .occ delivery pipeline           | ❌ Not started |
-| Delivery envelope (replacesID)   | ❌ Not started |
-| Recipient shard storage          | ❌ Not started |
-| "Shards held for contacts" UI    | ❌ Not started |
-| Shard request / return flow      | ❌ Not started |
-| Reconstruction flow              | ❌ Not started |
-| New-device recovery (no SE key)  | ❌ Not started |
-| PEK rotation on content change   | ❌ Not started |
-| Feature flag (hidden until done) | ❌ Not started |
+| Component                             | Status        |
+|---------------------------------------|---------------|
+| SSS math (split / reconstruct)        | ✅ Done        |
+| Shard signing (SE key, v2 payload)    | ✅ Done        |
+| entryID binding in signature          | ✅ Done        |
+| expiresAt / createdAt in signature    | ✅ Done        |
+| ShardStatus / ShardRecord model       | ✅ Done        |
+| ShardDistributionMetadata rewrite     | ✅ Done        |
+| HeldShard SwiftData model             | ✅ Done        |
+| PendingShardRequest SwiftData model   | ✅ Done        |
+| Shard custody SE key                  | ✅ Done        |
+| ShardOperation in SealedPayload       | ✅ Done        |
+| Schema registration (App)             | ✅ Done        |
+| Per-entry encryption keys (PEK)       | ✅ Done        |
+| VaultEntry model update (PEK fields)  | ✅ Done        |
+| VaultManager PEK unwrap path          | ✅ Done        |
+| ShardCustodyManager (inbound router)  | ❌ Not started |
+| .occ delivery pipeline                | ❌ Not started |
+| Shard request / return flow           | ❌ Not started |
+| Reconstruction flow                   | ✅ Done        |
+| New-device recovery (no SE key)       | ✅ Done        |
+| PEK rotation on content change        | ❌ Not started |
+| "Shards held for contacts" UI         | ❌ Not started |
+| Feature flag (hidden until done)      | ❌ Not started |
 
 ### Not needed
 - Cryptographic shard revocation — old shards become inert automatically when

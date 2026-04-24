@@ -34,6 +34,30 @@ enum VaultEntryType: UInt8, Codable, CaseIterable {
 
 // MARK: - ShardDistributionMetadata
 
+/// Lifecycle state of a shard delivered to one contact.
+///
+/// Raw strings are stable wire identifiers — never rename or reorder.
+enum ShardStatus: String, Codable {
+    /// Shard bundle has been handed to the .occ pipeline, delivery unconfirmed.
+    case sent
+    /// Contact's app acknowledged receipt.
+    case confirmed
+    /// Owner has revoked this shard (PEK rotated or trustee removed).
+    case revoked
+    /// Contact re-exchanged keys — their stored shard is cryptographically unreachable.
+    case lost
+}
+
+/// One shard's delivery record within a ShardDistributionMetadata.
+struct ShardRecord: Codable {
+    /// SHA-256(contact's public key) — stable across contact record updates,
+    /// will migrate to Data (keyFingerprint) in the ShardCustodyManager phase.
+    let contactIdentifier: String
+    /// The SignedAttribute.id for this shard — used to match replacesID in re-distributions.
+    let attrID: UUID
+    var status: ShardStatus
+}
+
 /// Tracks a Shamir split for one VaultEntry.
 ///
 /// Serialised with JSONEncoder, then AES-GCM sealed with the vault key and
@@ -41,13 +65,8 @@ enum VaultEntryType: UInt8, Codable, CaseIterable {
 struct ShardDistributionMetadata: Codable {
     /// Minimum shards required to reconstruct (k).
     let threshold: Int
-    /// Total shards generated (n).
-    let total: Int
-    /// Contact identifiers in shard-index order (index 0 → shard with x=1, etc.).
-    let contactIdentifiers: [String]
-    /// Delivery status per contact: true once the SignedAttribute has been handed
-    /// to the .occ basket pipeline for that contact.
-    var deliveryStatus: [String: Bool]
+    /// One record per trustee, in shard-index order (index 0 → shard with x=1, etc.).
+    var shards: [ShardRecord]
 }
 
 // MARK: - VaultEntry
@@ -69,6 +88,15 @@ final class VaultEntry {
 
     /// AES-256-GCM ciphertext of the entry content (nonce ∥ ciphertext ∥ tag).
     var encryptedContent: Data = Data()
+
+    /// AES-256-GCM ciphertext of the per-entry key (PEK, 32 random bytes).
+    ///
+    /// Wire format: nonce(12B) ∥ ciphertext(32B) ∥ tag(16B) = 60 bytes total.
+    /// Sealed with the vault key; AAD = entry.aad().
+    ///
+    /// Empty Data = legacy entry (label/content encrypted directly under vault key).
+    /// Non-empty = PEK-wrapped entry. The read path branches on isEmpty.
+    var encryptedEntryKey: Data = Data()
 
     /// Encrypted JSON-encoded ShardDistributionMetadata.
     /// nil until an SSS split has been performed for this entry.

@@ -33,6 +33,8 @@ struct OccultaApp: App {
                 Contact.Profile.Key.self,
                 Contact.Message.self,
                 VaultEntry.self,
+                HeldShard.self,
+                PendingShardRequest.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
