@@ -230,8 +230,44 @@ Alice treats the old shards as `.lost` immediately on key rotation — no explic
 | Reconstruction flow                   | ✅ Done        |
 | New-device recovery (no SE key)       | ✅ Done        |
 | PEK rotation on content change        | ❌ Not started |
-| "Shards held for contacts" UI         | ❌ Not started |
-| Feature flag (hidden until done)      | ❌ Not started |
+| Inbox / Requests tab                  | ❌ Not started |
+| Feature flag (hidden until done)      | ✅ Done        |
+
+---
+
+## Inbox / Requests tab (not started)
+
+A unified inbox for all actionable inbound items. Currently two kinds exist:
+shard requests and identity verification challenges. Designed to be extensible
+(document signing, key rotation, etc.).
+
+### Why a tab, not auto-presented sheets
+
+SwiftUI presents only one sheet at a time from the root `WindowGroup`. If the
+user has any sheet open (reading a message, share sheet, etc.) and an identity
+challenge or shard request arrives, the new sheet silently fails to appear. This
+is a real existing bug for identity challenges — the `incomingChallenge` binding
+gets set but nothing shows. The inbox tab fixes this: items persist regardless
+of what UI state the app is in when they arrive.
+
+### Design decisions
+
+- **Shard requests**: always go to inbox queue (`PendingShardRequest`). Never
+  auto-presented. Bob sees a badge on the tab, responds when ready.
+- **Identity challenges**: currently auto-present a sheet. Should also route
+  to the inbox as a persistent fallback. If the app is idle, auto-present the
+  sheet (preserving current behaviour). If any sheet is active, badge the tab.
+- **Identity challenge persistence**: challenges are currently ephemeral —
+  `OutstandingChallengeStore` holds some state but there is no SwiftData record.
+  A `PendingIdentityChallenge` SwiftData model is needed to support the inbox.
+- **No past history for now**: the inbox shows only actionable (`.pending`)
+  items. A future logs screen can query terminal-state records
+  (`PendingShardRequest.status` in `.sent / .declined / .notFound`). The data
+  is already being written; only the view is missing.
+- **Urgency sorting**: identity challenges should rank above shard requests —
+  the challenger is actively waiting. Sort by kind first, then `receivedAt`.
+- **Tab visibility**: show the tab only when the badge count is > 0, or always
+  show it. Decision deferred — depends on how often requests arrive in practice.
 
 ### Not needed
 - Cryptographic shard revocation — old shards become inert automatically when
