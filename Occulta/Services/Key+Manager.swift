@@ -7,6 +7,7 @@
 
 import Foundation
 import CryptoKit
+import LocalAuthentication
 
 // MARK: - HKDF info strings
 
@@ -27,6 +28,15 @@ struct SaltInfo {
     /// appended to the info field for per-session uniqueness.
     /// The nonces are appended at call time — this is the static prefix only.
     static let kDicewareKeyInfo = "Occulta-v2-diceware-2026".data(using: .utf8)!
+    /// Vault key: ECDH(vault_SE_priv, G) → HKDF. The vault SE key is a dedicated
+    /// SE key protected by .biometryCurrentSet — separate from the identity key.
+    /// The derived SymmetricKey lives only as a local per-operation value; never stored.
+    /// Domain-separated from all transport and local-DB paths.
+    static let kVaultKeyInfo = "Occulta-v1-vault-2026".data(using: .utf8)!
+    /// Shard custody key: ECDH(shard_custody_SE_priv, G) → HKDF. Dedicated SE key
+    /// with device-unlock-level access (no biometric). Used to encrypt HeldShard
+    /// records locally — fully automatic, no user friction.
+    static let kShardCustodyKeyInfo = "Occulta-v1-shard-custody-2026".data(using: .utf8)!
 }
 
 extension Manager {
@@ -234,6 +244,28 @@ extension Manager {
                 inputKeyMaterial: SymmetricKey(data: rawSecret),
                 salt: salt, info: SaltInfo.kTransportKeyInfo, outputByteCount: 32
             )
+        }
+
+        // MARK: - SE signing (general purpose)
+
+        /// ECDSA-sign `data` with the SE identity key.
+        ///
+        /// **SE operations performed:**
+        /// 1. `retrievePrivateKey` — reads the identity private key by tag.
+        /// 2. `SecKeyCreateSignature` — signs; SE applies SHA-256 internally.
+        ///
+        /// ⚠️ DO NOT pre-hash `data`. `.ecdsaSignatureMessageX962SHA256` hashes
+        /// internally. Pre-hashing produces a signature no verifier will accept,
+        /// and the failure is silent — identical to a key mismatch.
+        ///
+        /// - Returns: DER-encoded ECDSA signature.
+        func signData(_ data: Data) throws -> Data {
+            guard let key = try self.retrievePrivateKey() else { throw Errors.noIdentityAvailable }
+            var error: Unmanaged<CFError>?
+            guard
+                let sig = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, data as CFData, &error) as Data?
+            else { throw error!.takeRetainedValue() as Error }
+            return sig
         }
 
         /// Generate a throwaway in-memory P-256 key pair for a single FS message.
@@ -498,6 +530,233 @@ extension Manager.Key: KeyManagerProtocol {
         guard addStatus == errSecSuccess else { return nil }
 
         return randomData
+    }
+
+    // MARK: - Vault SE key
+
+    /// Dedicated SE key tag for vault derivation — separate from identity and local DB keys.
+    private static let vaultSEKeyTag = "vault.key.occulta.v1"
+
+    // CRYPTO_REVIEW_CHECKLIST — Vault Key Derivation Path (v2)
+    // ══════════════════════════════════════════════════════════
+    // 1. Key ownership map
+    //    - Vault SE key: dedicated P-256 key in SE (tag: vaultSEKeyTag). Single owner.
+    //    - Private half: hardware-bound, never extractable.
+    //    - Public half: never stored, never exported — no harvest surface for QC.
+    //    - Static peer: P-256 generator G — a universal constant, not a secret.
+    //    - Shared between contacts: No. Vault key is derived entirely locally.
+    //
+    // 2. Consumption events
+    //    - No one-time consumption. Re-derivable on demand via ECDH(vault_SE_priv, G).
+    //    - Key lives only as a local SymmetricKey for the duration of each vault op.
+    //    - No zeroing needed — scope-bounded by the calling function's stack frame.
+    //
+    // 3. Multi-party trace
+    //    - Single owner only. No contact ever receives this key or material from it.
+    //    - SSS shards split the vault entry key (separate per-entry concern).
+    //
+    // 4. Security property verification
+    //    - Harvest-now-decrypt-later: vault public key never stored → no harvest surface.
+    //    - QC: no classical public key on disk to recover the private key from.
+    //    - Biometric gate: .biometryCurrentSet — key unusable if biometrics change.
+    //    - Device binding: kSecAttrAccessibleWhenUnlockedThisDeviceOnly.
+    //    - LAContext: pre-evaluated once per session; passed to SE to avoid per-op prompts.
+    //    - Not achieved: forward secrecy (same key re-derived on each unlock).
+    //    - No prekey public keys involved. Checklist item 4.6: N/A.
+    //
+    // 5. Layer boundary check
+    //    - Input: LAContext. Output: SymmetricKey. No SwiftData, no UI.
+    //    - SE operations: key retrieval (biometric-gated via context), ECDH (compute).
+
+    /// Create the vault SE key with biometric access control.
+    ///
+    /// Access control: (`.biometryCurrentSet` OR `.devicePasscode`) + `.privateKeyUsage`.
+    /// `.biometryCurrentSet` invalidates the key if the enrolled biometric set changes.
+    private func createVaultSEKey() throws {
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode],
+            &error
+        ) else { throw error!.takeRetainedValue() as Error }
+
+        let attributes: NSDictionary = [
+            kSecAttrKeyType:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits: 256,
+            kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs: [
+                kSecAttrIsPermanent:    true,
+                kSecAttrApplicationTag: Self.vaultSEKeyTag.data(using: .utf8)!,
+                kSecAttrAccessControl:  access
+            ]
+        ]
+        var createError: Unmanaged<CFError>?
+        guard SecKeyCreateRandomKey(attributes, &createError) != nil else {
+            throw createError!.takeRetainedValue() as Error
+        }
+    }
+
+    /// Retrieve the vault SE private key, creating it on first use.
+    ///
+    /// Passes the pre-evaluated `context` to the Keychain query so the SE uses
+    /// the already-verified biometric instead of prompting the user again.
+    ///
+    /// - Throws: Keychain/SE error if retrieval fails (e.g. biometric mismatch,
+    ///           context invalidated). VaultManager.currentKey() converts these to .locked.
+    private func retrieveVaultPrivateKey(context: LAContext) throws -> SecKey? {
+        let query: [String: Any] = [
+            kSecClass as String:                    kSecClassKey,
+            kSecAttrApplicationTag as String:       Self.vaultSEKeyTag.data(using: .utf8)!,
+            kSecAttrKeyType as String:              kSecAttrKeyTypeECSECPrimeRandom,
+            kSecReturnRef as String:                true,
+            kSecAttrTokenID as String:              kSecAttrTokenIDSecureEnclave,
+            kSecUseAuthenticationContext as String: context
+        ]
+        var item: CFTypeRef?
+
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            return (item as! SecKey)
+        case errSecItemNotFound:
+            try self.createVaultSEKey()
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
+                return nil
+            }
+            return (item as! SecKey)
+        case let status:
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
+    /// Derive the vault session key: ECDH(vault_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// **SE operations:**
+    /// 1. `retrieveVaultPrivateKey(context:)` — retrieves vault SE key via pre-evaluated LAContext.
+    /// 2. `SecKeyCopyKeyExchangeResult` — ECDH with the P-256 generator point G.
+    ///
+    /// The returned SymmetricKey is scope-bounded — callers must not store it.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveVaultKey(context: LAContext) throws -> SymmetricKey? {
+        guard let vaultPriv   = try self.retrieveVaultPrivateKey(context: context) else { return nil }
+        guard let fixedPubKey = self.convert(material: fixedX963)                  else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                vaultPriv, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        // Salt = vault public key x963 — binds derivation to this specific SE key.
+        guard
+            let vaultPub     = self.retrivePublicKey(using: vaultPriv),
+            let vaultPubData = self.convert(key: vaultPub)
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: vaultPubData,
+            info: SaltInfo.kVaultKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Shard custody SE key
+
+    /// Dedicated SE key tag for shard custody — no biometric, device-unlock level.
+    private static let shardCustodySEKeyTag = "shard.custody.occulta"
+
+    /// Create the shard custody P-256 key in the Secure Enclave.
+    ///
+    /// Access control: `.privateKeyUsage` only — no biometric flag.
+    /// This allows fully automatic shard operations while the device is unlocked,
+    /// without requiring the user to approve each SE access.
+    private func createShardCustodySEKey() throws {
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.privateKeyUsage],
+            &error
+        ) else { throw error!.takeRetainedValue() as Error }
+
+        let attributes: NSDictionary = [
+            kSecAttrKeyType:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits: 256,
+            kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs: [
+                kSecAttrIsPermanent:    true,
+                kSecAttrApplicationTag: Self.shardCustodySEKeyTag.data(using: .utf8)!,
+                kSecAttrAccessControl:  access
+            ]
+        ]
+        var createError: Unmanaged<CFError>?
+        guard SecKeyCreateRandomKey(attributes, &createError) != nil else {
+            throw createError!.takeRetainedValue() as Error
+        }
+    }
+
+    /// Retrieve the shard custody SE private key, creating it on first use.
+    private func retrieveShardCustodyPrivateKey() throws -> SecKey? {
+        let query: [String: Any] = [
+            kSecClass as String:              kSecClassKey,
+            kSecAttrApplicationTag as String: Self.shardCustodySEKeyTag.data(using: .utf8)!,
+            kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
+            kSecReturnRef as String:          true,
+            kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
+        ]
+        var item: CFTypeRef?
+
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            return (item as! SecKey)
+        case errSecItemNotFound:
+            try self.createShardCustodySEKey()
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
+                return nil
+            }
+            return (item as! SecKey)
+        case let status:
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
+    /// Derive the shard custody key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// No LAContext needed — access control is device-unlock level (no biometric).
+    /// This enables fully automatic shard operations triggered by bundle receipt.
+    ///
+    /// The returned SymmetricKey is scope-bounded — callers must not store it.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveShardCustodyKey() throws -> SymmetricKey? {
+        guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
+        guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                custodyPriv, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        guard
+            let custodyPub     = self.retrivePublicKey(using: custodyPriv),
+            let custodyPubData = self.convert(key: custodyPub)
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: custodyPubData,
+            info: SaltInfo.kShardCustodyKeyInfo,
+            outputByteCount: 32
+        )
     }
 
     // MARK: - Cleanup

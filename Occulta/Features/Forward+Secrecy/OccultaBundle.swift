@@ -156,8 +156,69 @@ struct OccultaBundle: Codable {
         let publicKey: Data
     }
     
+    // MARK: - ShardOperation
+
+    /// A shard-protocol operation carried inside `SealedPayload`.
+    ///
+    /// Using a struct with a `kind` discriminator rather than an enum keeps
+    /// Codable synthesis simple and avoids associated-value encoding quirks.
+    ///
+    /// Field usage by kind:
+    ///
+    /// | kind         | attribute | attrID | replacesID |
+    /// |--------------|-----------|--------|------------|
+    /// | .distribute  | ✅        | —      | optional   |
+    /// | .acknowledge | —         | ✅     | —          |
+    /// | .revoke      | —         | ✅     | —          |
+    /// | .request     | —         | ✅     | —          |
+    /// | .respond     | ✅        | —      | —          |
+    /// | .notFound    | —         | ✅     | —          |
+    ///
+    /// Old builds that don't know about shards silently ignore `shardOperation`
+    /// and render `SealedPayload.message` as regular text — same pattern as
+    /// `identityChallenge`.
+    nonisolated
+    struct ShardOperation: Codable {
+        enum Kind: String, Codable {
+            /// Owner → trustee: here is your shard.
+            case distribute
+            /// Trustee → owner: shard received and stored.
+            case acknowledge
+            /// Owner → trustee: discard this shard (PEK rotated or trustee removed).
+            case revoke
+            /// Owner → trustee: please send me my shard back.
+            case request
+            /// Trustee → owner: here is your shard back.
+            case respond
+            /// Trustee → owner: I don't have a shard with this ID.
+            case notFound
+        }
+
+        let kind: Kind
+        /// The `SignedAttribute` shard payload. Non-nil for `.distribute` and `.respond`.
+        let attribute: SignedAttribute?
+        /// The target shard's `SignedAttribute.id`. Non-nil for `.acknowledge`, `.revoke`,
+        /// `.request`, and `.notFound`.
+        let attrID: UUID?
+        /// For `.distribute`: the `SignedAttribute.id` of an older shard this supersedes.
+        /// Trustee apps discard the old shard on receipt. Nil on first distribution.
+        let replacesID: UUID?
+
+        init(
+            kind: Kind,
+            attribute: SignedAttribute? = nil,
+            attrID: UUID? = nil,
+            replacesID: UUID? = nil
+        ) {
+            self.kind       = kind
+            self.attribute  = attribute
+            self.attrID     = attrID
+            self.replacesID = replacesID
+        }
+    }
+
     // MARK: - SealedPayload
-     
+
     /// The plaintext structure sealed inside `ciphertext`.
     ///
     /// Both `message` and `prekeyBatch` are encrypted and authenticated together
@@ -195,14 +256,25 @@ struct OccultaBundle: Codable {
         /// than extending this one.
         let identityChallenge: IdentityChallengeEnvelope?
 
+        /// SSS shard-protocol operation. `nil` means a regular message.
+        ///
+        /// Old builds silently ignore this field and render `message` as text,
+        /// identical to the `identityChallenge` pattern. Shard traffic always
+        /// uses `.longTermFallback` mode so old builds decode the outer bundle.
+        ///
+        /// Added in v1.6.0.
+        let shardOperation: ShardOperation?
+
         init(
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
-            identityChallenge: IdentityChallengeEnvelope? = nil
+            identityChallenge: IdentityChallengeEnvelope? = nil,
+            shardOperation: ShardOperation? = nil
         ) {
             self.message           = message
             self.prekeyBatch       = prekeyBatch
             self.identityChallenge = identityChallenge
+            self.shardOperation    = shardOperation
         }
 
         /// A versioned batch of the sender's prekey public keys.

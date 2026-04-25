@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 struct OccultaApp: App {
     @State private var contactManager: ContactManager
     @State private var identityChallenge = IdentityChallenge.Coordinator()
+    @State private var vaultManager: VaultManager
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
     
@@ -31,6 +32,9 @@ struct OccultaApp: App {
                 Contact.Profile.URLAddress.self,
                 Contact.Profile.Key.self,
                 Contact.Message.self,
+                VaultEntry.self,
+                HeldShard.self,
+                PendingShardRequest.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
@@ -44,6 +48,7 @@ struct OccultaApp: App {
         
         self.sharedModelContainer = sharedModelContainer
         self.contactManager = ContactManager(modelContainer: sharedModelContainer)
+        self.vaultManager   = VaultManager(modelContainer: sharedModelContainer)
         
         self.migrate()
     }
@@ -69,8 +74,8 @@ struct OccultaApp: App {
     }
     
     enum Tabs: String, Hashable {
-        case contacts, sign, verify, settings
-        
+        case contacts, sign, verify, vault, settings
+
         var image: Image {
             switch self {
             case .contacts:
@@ -81,9 +86,11 @@ struct OccultaApp: App {
                 .init(systemName: "gearshape.fill")
             case .verify:
                 .init(systemName: "checkmark.bubble")
+            case .vault:
+                .init(systemName: "lock.fill")
             }
         }
-        
+
         var name: some View {
             switch self {
             case .contacts:
@@ -94,6 +101,8 @@ struct OccultaApp: App {
                 Text("Settings")
             case .verify:
                 Text("Verify")
+            case .vault:
+                Text("Vault")
             }
         }
     }
@@ -136,6 +145,13 @@ struct OccultaApp: App {
                             }
                     }
                     
+                    VaultTab()
+                        .tag(Tabs.vault)
+                        .tabItem {
+                            Tabs.vault.image
+                            Tabs.vault.name
+                        }
+
                     Settings()
                         .tag(Tabs.settings)
                         .tabItem {
@@ -246,6 +262,7 @@ struct OccultaApp: App {
         .modelContainer(self.sharedModelContainer)
         .environment(self.contactManager)
         .environment(self.identityChallenge)
+        .environment(self.vaultManager)
     }
     
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.

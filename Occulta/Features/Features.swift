@@ -38,4 +38,6 @@ enum Feature: String {
     ///
     /// Instead of build messages from scratch for each contact, we are going to include an array of capsules holding session key that was encrypted with the shared key of each contact.
     case useMultipleRecipientMessageFormat
+    /// Enable SSS in vault to distribute vault key shards for custody.
+    case enableShamirShardSharing
 }
