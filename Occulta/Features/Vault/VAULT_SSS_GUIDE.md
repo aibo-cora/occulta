@@ -36,12 +36,8 @@ Normal access path:
 
 SSS path:
 - Split the PEK (not the vault key) into n shards.
-- Distribute shards via .occ to trustees.
+- Distribute shards via .occ to trustees (ML-KEM required — see below).
 - Recovery: collect ≥ k shards, reconstruct PEK, decrypt entry.
-
-**Current state:** The PEK layer does not yet exist. All entries currently
-share the vault key directly. Implementing per-entry keys is the first
-prerequisite for per-entry SSS.
 
 ---
 
@@ -84,10 +80,75 @@ Document this in user-facing recovery instructions.
 
 ---
 
+## Trustee eligibility: ML-KEM required
+
+A contact can only be a trustee if they have ML-KEM key material
+(`quantumKeyMaterialEncrypted != nil` on their key record). Contacts without it
+are excluded from trustee selection before the UI renders the picker — they
+never appear as an option.
+
+Why ML-KEM is mandatory:
+
+Shards are the highest-value HNDL (harvest-now-decrypt-later) target in the
+system. A passive adversary who archives shard bundles today and waits for a
+cryptographically relevant quantum computer can solve ECDLP on any recorded
+P-256 public key and recover the session key — unless a second, quantum-resistant
+primitive is also in the derivation.
+
+Forward secrecy does not protect against this. A quantum computer derives the
+private key from the public key that is always visible in the recorded bundle
+(ephemeral public key in `.forwardSecret`, long-term public key in
+`.longTermFallback`). Deleting keys from the SE after use does not help a
+future quantum computer that never needed the stored bytes.
+
+ML-KEM-768 in the hybrid session key is the only defense against HNDL.
+Requiring it for trustees makes the gate explicit and enforced in code.
+
+All contacts exchanged via UWB already have ML-KEM material — the key exchange
+flow always generates it. Contacts added via Bluetooth-only exchange do not.
+
+---
+
+## Shard delivery session key
+
+Shard bundles always use **`longTermFallback` + ML-KEM**. Prekeys are never
+consumed for shard traffic.
+
+Session key derivation:
+```
+HKDF-SHA256(
+  inputKeyMaterial: ECDH(senderLongTermPriv, recipientLongTermPub) ⊕ ML-KEM shared secret,
+  salt: XOR(recipientPub, senderPub),
+  info: contextString
+)
+```
+
+Why `longTermFallback` and not forward-secret prekeys:
+
+Classical forward secrecy protects against **private key extraction from
+storage** — if key bytes leak from a file, a memory dump, or a server, past FS
+sessions are still opaque. The SE identity key is hardware-protected and
+non-exportable; classical extraction is not a realistic threat model here.
+
+Against a quantum adversary, both modes are equally vulnerable: a quantum
+computer solves ECDLP on the public key recorded in the bundle — the ephemeral
+public key for FS, the long-term public key for `longTermFallback`. Deleting
+private keys from the SE does not prevent the adversary from deriving them from
+the public key they already have. ML-KEM is the defence against this attack
+regardless of mode.
+
+Given that the SE makes classical key extraction extremely hard and ML-KEM
+covers the quantum path, `longTermFallback` + ML-KEM provides the same
+practical security as FS + ML-KEM for shard traffic. It is simpler: no prekey
+batch management, no consumption of a finite per-contact resource, no fallback
+logic needed in the delivery path.
+
+---
+
 ## Shard delivery envelope
 
-Each shard is delivered to a trustee as a `.occ` bundle, encrypted to the
-trustee's verified public key. The delivery envelope carries:
+Each shard is delivered to a trustee as a `.occ` bundle using `longTermFallback`
+mode. The delivery envelope (inside `SealedPayload.shardOperation`) carries:
 
 ```
 newShard:    SignedAttribute   // the shard to store
@@ -252,8 +313,8 @@ column.
 
 When a bundle carrying a `ShardOperation` arrives:
 
-1. **Revocations** (`.revoke`) — delete `HeldShard` immediately; no further action.
-2. **Distributions** (`.distribute`) — store new `HeldShard`; if `replacesID != nil`,
+1. **Revocations** (`.revoke`) — delete `CustodyShard` immediately; no further action.
+2. **Distributions** (`.distribute`) — store new `CustodyShard`; if `replacesID != nil`,
    delete the old shard with that id.
 3. **Requests** (`.request`) — write `PendingShardRequest`; deduplicate by `attrID`
    (update `receivedAt` only on duplicates); process automatically if device is unlocked.
@@ -296,9 +357,10 @@ Alice treats the old shards as `.lost` immediately on key rotation — no explic
 | Per-entry encryption keys (PEK)       | ✅ Done        |
 | VaultEntry model update (PEK fields)  | ✅ Done        |
 | VaultManager PEK unwrap path          | ✅ Done        |
-| ShardCustodyManager (inbound router)  | ✅ Done (receive-side) |
-| .occ delivery pipeline                | ❌ Not started |
-| Shard request / return flow (auto-respond) | ❌ Not started |
+| Trustee ML-KEM gate (eligibility enforcement) | ✅ Done        |
+| ShardCustodyManager (inbound router)  | ✅ Done        |
+| .occ delivery pipeline (longTermFallback + ML-KEM) | ✅ Done |
+| Shard request / return flow           | ✅ Done        |
 | Reconstruction flow                   | ✅ Done        |
 | Reconstruction buffer + finalise on unlock | ✅ Done   |
 | New-device recovery (no SE key)       | ✅ Done        |
@@ -365,6 +427,15 @@ of what UI state the app is in when they arrive.
 - **Malicious trustee sending tampered shard:** ECDSA signature fails (normal
   operation). On new device: GCM decryption fails if the shard bytes were
   altered.
+- **Harvest-now-decrypt-later (HNDL):** a passive adversary archives shard
+  bundles today and waits for a quantum computer to break P-256. Both FS and
+  longTermFallback mode are equally vulnerable to this attack — a quantum
+  computer derives the private key from the public key recorded in the bundle,
+  without ever needing the stored key material. ML-KEM in the hybrid session key
+  is the only defence. The mandatory ML-KEM gate on trustee selection ensures
+  every shard bundle uses a session key that requires breaking ML-KEM-768 in
+  addition to P-256 to decrypt. As of 2026 no known classical or quantum attack
+  achieves this within the security parameter.
 - **GF(2⁸) arithmetic timing:** `gfMul` and `gfInv` contain data-dependent
   branches. On Apple Silicon this is acceptable for SSS (not key derivation),
   but the implementation is not formally constant-time.

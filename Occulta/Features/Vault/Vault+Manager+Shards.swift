@@ -131,6 +131,58 @@ extension VaultManager {
         return attributes
     }
 
+    // MARK: - Outbound delivery
+
+    /// Prepare shards and encrypt each as a `.occ` bundle ready for sharing.
+    ///
+    /// Returns one `(contactIdentifier, occData)` tuple per recipient, in the
+    /// same order as `recipients`. The caller writes each blob to a temp `.occ`
+    /// file and presents the share sheet for the corresponding contact.
+    ///
+    /// Requires the vault unlocked. Requires each recipient to have ML-KEM key
+    /// material — `encryptShardBundle` throws `trusteeLacksQuantumMaterial` if not.
+    func distributeShards(
+        for entryID: UUID,
+        threshold: Int,
+        recipients: [Contact.Profile],
+        contactManager: ContactManager
+    ) throws -> [(contactIdentifier: String, occData: Data)] {
+        let attributes = try self.prepareShards(for: entryID, threshold: threshold, recipients: recipients)
+
+        return try zip(recipients, attributes).map { contact, attribute in
+            let op  = OccultaBundle.ShardOperation(kind: .distribute, attribute: attribute)
+            let occ = try contactManager.encryptShardBundle(operation: op, for: contact.identifier)
+            return (contact.identifier, occ)
+        }
+    }
+
+    /// Build `.request` bundles for all active trustees of `entryID`.
+    ///
+    /// Skips trustees whose shard is already `.lost` or `.revoked`. Returns one
+    /// `(contactIdentifier, occData)` tuple per trustee reached. The caller
+    /// writes each blob to a temp `.occ` file and presents the share sheet.
+    ///
+    /// Requires the vault unlocked (distribution metadata access needed).
+    func requestShardsBack(
+        for entryID: UUID,
+        contactManager: ContactManager
+    ) throws -> [(contactIdentifier: String, occData: Data)] {
+        let vaultKey    = try self.currentKey()
+        guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
+        guard let cipher = entry.shardDistributionEncrypted else { return [] }
+
+        let box       = try AES.GCM.SealedBox(combined: cipher)
+        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad())
+        let meta      = try JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
+
+        return try meta.shards.compactMap { record in
+            guard record.status != .lost, record.status != .revoked else { return nil }
+            let op  = OccultaBundle.ShardOperation(kind: .request, attrID: record.attrID)
+            let occ = try contactManager.encryptShardBundle(operation: op, for: record.contactIdentifier)
+            return (record.contactIdentifier, occ)
+        }
+    }
+
     // MARK: - Delivery tracking
 
     /// Update the status of one ShardRecord identified by its `attrID`.

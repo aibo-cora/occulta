@@ -317,13 +317,27 @@ struct OccultaApp: App {
                 // sealed.shardOperation; ShardCustodyManager handles all six
                 // ops (.distribute / .acknowledge / .revoke / .request /
                 // .respond / .notFound) and decides what to persist.
-                if sealed.shardOperation != nil,
+                if let op = sealed.shardOperation,
                    let senderPub = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                     _ = self.shardCustodyManager.handleInbound(
-                        sealed:          sealed,
-                        senderPublicKey: senderPub,
-                        vaultManager:    self.vaultManager
+                        sealed:           sealed,
+                        senderPublicKey:  senderPub,
+                        senderIdentifier: ownerID,
+                        vaultManager:     self.vaultManager
                     )
+
+                    // After receiving a shard, send an acknowledgment back to the owner.
+                    if op.kind == .distribute, let attrID = op.attribute?.id,
+                       let occData = try? self.contactManager.encryptShardBundle(
+                           operation: OccultaBundle.ShardOperation(kind: .acknowledge, attrID: attrID),
+                           for: ownerID
+                       ) {
+                        let name   = (UUID().uuidString.components(separatedBy: "-").last ?? "ack") + ".occ"
+                        let occURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+                        try? occData.write(to: occURL)
+                        self.shareResult = ShareResult(url: occURL)
+                    }
+
                     return nil
                 }
 

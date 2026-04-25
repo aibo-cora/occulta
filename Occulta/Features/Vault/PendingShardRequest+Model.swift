@@ -50,6 +50,9 @@ final class PendingShardRequest {
     /// SHA-256(requester's public key) — identifies who is asking.
     var requesterKeyFingerprint: Data = Data()
 
+    /// Contact.Profile.identifier of the requester — used to address the reply bundle.
+    var requesterContactIdentifier: String = ""
+
     /// Timestamp of the most recent request for this attrID.
     /// Updated on duplicate arrivals so the latest request surfaces again.
     var receivedAt: Date = Date()
@@ -64,11 +67,12 @@ final class PendingShardRequest {
 
     // MARK: Init
 
-    init(attrID: UUID, requesterKeyFingerprint: Data) {
-        self.id                      = UUID()
-        self.attrID                  = attrID
-        self.requesterKeyFingerprint = requesterKeyFingerprint
-        self.receivedAt              = Date()
-        self.statusRaw               = RequestStatus.pending.rawValue
+    init(attrID: UUID, requesterKeyFingerprint: Data, requesterContactIdentifier: String) {
+        self.id                           = UUID()
+        self.attrID                       = attrID
+        self.requesterKeyFingerprint      = requesterKeyFingerprint
+        self.requesterContactIdentifier   = requesterContactIdentifier
+        self.receivedAt                   = Date()
+        self.statusRaw                    = RequestStatus.pending.rawValue
     }
 }

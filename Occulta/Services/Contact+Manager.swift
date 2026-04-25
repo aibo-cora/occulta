@@ -551,6 +551,7 @@ extension ContactManager {
         case unsupportedBundleVersion
         case invalidBundleFormat
         case quantumKeyMaterialCorrupted
+        case trusteeLacksQuantumMaterial
     }
 }
 
@@ -912,6 +913,62 @@ extension ContactManager {
     }
 }
  
+// MARK: - Shard bundle encryption
+
+extension ContactManager {
+
+    /// Contacts eligible to be SSS trustees — those with ML-KEM key material.
+    ///
+    /// Only UWB-exchanged contacts carry ML-KEM material. Bluetooth-only contacts
+    /// are excluded; shard bundles require the hybrid session key for HNDL protection.
+    func fetchTrusteeEligibleContacts() throws -> [Contact.Profile] {
+        try self.fetchAllContacts().filter { contact in
+            guard let key = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }) else {
+                return false
+            }
+            return key.quantumKeyMaterialEncrypted != nil
+        }
+    }
+
+    /// Encrypt a shard-protocol operation as a `.occ` bundle for `identifier`.
+    ///
+    /// Always uses `longTermFallback` + ML-KEM:
+    /// - `contactPrekey: nil` forces the longTermFallback path in `Manager.Crypto.seal`.
+    /// - ML-KEM quantum material is required; throws `trusteeLacksQuantumMaterial` if absent.
+    ///
+    /// Shard bundles never consume prekeys and never carry a prekey sync batch.
+    func encryptShardBundle(operation: OccultaBundle.ShardOperation, for identifier: String) throws -> Data {
+        guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
+
+        let cryptoOps = Manager.Crypto()
+
+        guard
+            let keyRecord         = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let recipientMaterial = try? cryptoOps.decrypt(data: keyRecord.material),
+            recipientMaterial.count == 65
+        else { throw Errors.contactHasNoKeys }
+
+        guard
+            let encryptedQuantum = keyRecord.quantumKeyMaterialEncrypted,
+            let decryptedQuantum = try? cryptoOps.decrypt(data: encryptedQuantum),
+            let quantumMaterial  = try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
+        else { throw Errors.trusteeLacksQuantumMaterial }
+
+        let fallback = Data("Occulta vault operation. Please update your app.".utf8)
+        let payload  = OccultaBundle.SealedPayload(message: fallback, shardOperation: operation)
+        let encoded  = try JSONEncoder().encode(payload)
+
+        let bundle = try cryptoOps.seal(
+            message:           encoded,
+            contactPrekey:     nil,
+            recipientMaterial: recipientMaterial,
+            quantumMaterial:   quantumMaterial
+        )
+
+        return try bundle.encoded()
+    }
+}
+
 // MARK: - v3fs bundle decryption
  
 extension ContactManager {

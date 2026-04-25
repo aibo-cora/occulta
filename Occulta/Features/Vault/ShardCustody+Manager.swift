@@ -48,16 +48,17 @@ final class ShardCustodyManager {
     /// "this bundle is not a basket" and must NOT fall back to message rendering.
     @discardableResult
     func handleInbound(
-        sealed:           OccultaBundle.SealedPayload,
-        senderPublicKey:  Data,
-        vaultManager:     VaultManager
+        sealed:            OccultaBundle.SealedPayload,
+        senderPublicKey:   Data,
+        senderIdentifier:  String,
+        vaultManager:      VaultManager
     ) -> Bool {
         guard let op = sealed.shardOperation else { return false }
         do {
             switch op.kind {
-            case .distribute:  try self.handleDistribute(op: op, senderPublicKey: senderPublicKey)
+            case .distribute:  try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
             case .revoke:      try self.handleRevoke(op: op)
-            case .request:     try self.handleRequest(op: op, senderPublicKey: senderPublicKey)
+            case .request:     try self.handleRequest(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
             case .respond:     try self.handleRespond(op: op, vaultManager: vaultManager)
             case .acknowledge: try self.handleAcknowledge(op: op, vaultManager: vaultManager)
             case .notFound:    try self.handleNotFound(op: op, vaultManager: vaultManager)
@@ -80,7 +81,7 @@ final class ShardCustodyManager {
     /// 4. If `replacesID` is set, delete the prior CustodyShard whose decrypted
     ///    payload references that SignedAttribute.id.
     /// 5. (TODO Phase 2) Enqueue an outbound `.acknowledge` reply.
-    private func handleDistribute(op: OccultaBundle.ShardOperation, senderPublicKey: Data) throws {
+    private func handleDistribute(op: OccultaBundle.ShardOperation, senderPublicKey: Data, senderIdentifier: String) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
         }
@@ -114,8 +115,6 @@ final class ShardCustodyManager {
         }
 
         try self.modelContext.save()
-
-        // TODO(Phase 2): enqueue outbound `.acknowledge(attrID: attribute.id)`.
     }
 
     /// `.revoke` — owner asks us to discard a shard. Match by SignedAttribute.id.
@@ -133,7 +132,7 @@ final class ShardCustodyManager {
 
     /// `.request` — owner asks for a shard back. Persist a PendingShardRequest;
     /// auto-response is Phase 2.
-    private func handleRequest(op: OccultaBundle.ShardOperation, senderPublicKey: Data) throws {
+    private func handleRequest(op: OccultaBundle.ShardOperation, senderPublicKey: Data, senderIdentifier: String) throws {
         guard let attrID = op.attrID else { throw CustodyError.invalidPayload }
         let requesterFingerprint = Self.fingerprint(of: senderPublicKey)
 
@@ -141,17 +140,45 @@ final class ShardCustodyManager {
         let existing  = try self.modelContext.fetch(FetchDescriptor<PendingShardRequest>(predicate: predicate)).first
 
         if let existing {
-            existing.receivedAt = Date()
-            existing.status     = .pending
+            existing.receivedAt                 = Date()
+            existing.status                     = .pending
+            existing.requesterContactIdentifier = senderIdentifier
         } else {
-            self.modelContext.insert(
-                PendingShardRequest(attrID: attrID, requesterKeyFingerprint: requesterFingerprint)
-            )
+            self.modelContext.insert(PendingShardRequest(
+                attrID:                     attrID,
+                requesterKeyFingerprint:    requesterFingerprint,
+                requesterContactIdentifier: senderIdentifier
+            ))
         }
         try self.modelContext.save()
+    }
 
-        // TODO(Phase 2): if vault unlocked and a CustodyShard exists for `attrID`,
-        // auto-enqueue an outbound `.respond` reply.
+    // MARK: - Trustee respond
+
+    /// Prepare a response for a pending shard request from Bob's inbox.
+    ///
+    /// Returns `(attrID, attribute, requesterIdentifier)` when a matching
+    /// `CustodyShard` is found — the caller encrypts the `.respond` bundle via
+    /// `ContactManager.encryptShardBundle` and presents the share sheet.
+    ///
+    /// Returns `(attrID, nil, requesterIdentifier)` when no matching shard exists
+    /// — the caller encrypts a `.notFound` bundle instead.
+    ///
+    /// Also updates `PendingShardRequest.status` to reflect the outcome so the
+    /// inbox can show the correct state before the user shares.
+    func shardForRequest(id: UUID) throws -> (attrID: UUID, attribute: SignedAttribute?, requesterIdentifier: String)? {
+        let predicate = #Predicate<PendingShardRequest> { $0.id == id }
+        guard let request = try self.modelContext.fetch(FetchDescriptor<PendingShardRequest>(predicate: predicate)).first else {
+            return nil
+        }
+
+        let match = try self.decryptAllCustodyShards()
+            .first { $0.payload.signedAttribute.id == request.attrID }
+
+        request.status = match != nil ? .sent : .notFound
+        try self.modelContext.save()
+
+        return (request.attrID, match?.payload.signedAttribute, request.requesterContactIdentifier)
     }
 
     // MARK: - Owner path
