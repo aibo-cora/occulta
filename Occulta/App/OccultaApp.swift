@@ -17,6 +17,7 @@ struct OccultaApp: App {
     @State private var contactManager: ContactManager
     @State private var identityChallenge = IdentityChallenge.Coordinator()
     @State private var vaultManager: VaultManager
+    @State private var shardCustodyManager: ShardCustodyManager
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
     
@@ -33,7 +34,8 @@ struct OccultaApp: App {
                 Contact.Profile.Key.self,
                 Contact.Message.self,
                 VaultEntry.self,
-                HeldShard.self,
+                CustodyShard.self,
+                ReconstructShard.self,
                 PendingShardRequest.self,
             ])
             
@@ -47,8 +49,12 @@ struct OccultaApp: App {
         }()
         
         self.sharedModelContainer = sharedModelContainer
-        self.contactManager = ContactManager(modelContainer: sharedModelContainer)
-        self.vaultManager   = VaultManager(modelContainer: sharedModelContainer)
+        self.contactManager      = ContactManager(modelContainer: sharedModelContainer)
+        self.vaultManager        = VaultManager(modelContainer: sharedModelContainer)
+        self.shardCustodyManager = ShardCustodyManager(
+            modelContainer: sharedModelContainer,
+            keyManager:     Manager.Key()
+        )
         
         self.migrate()
     }
@@ -263,6 +269,7 @@ struct OccultaApp: App {
         .environment(self.contactManager)
         .environment(self.identityChallenge)
         .environment(self.vaultManager)
+        .environment(self.shardCustodyManager)
     }
     
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
@@ -302,6 +309,20 @@ struct OccultaApp: App {
                         bundle:         bundle,
                         sealed:         sealed,
                         contactManager: self.contactManager
+                    )
+                    return nil
+                }
+
+                // Shard-protocol traffic rides on the same envelope. Route on
+                // sealed.shardOperation; ShardCustodyManager handles all six
+                // ops (.distribute / .acknowledge / .revoke / .request /
+                // .respond / .notFound) and decides what to persist.
+                if sealed.shardOperation != nil,
+                   let senderPub = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                    _ = self.shardCustodyManager.handleInbound(
+                        sealed:          sealed,
+                        senderPublicKey: senderPub,
+                        vaultManager:    self.vaultManager
                     )
                     return nil
                 }

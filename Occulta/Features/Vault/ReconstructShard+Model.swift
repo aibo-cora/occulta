@@ -1,0 +1,89 @@
+//
+//  ReconstructShard+Model.swift
+//  Occulta
+//
+//  Transient SwiftData buffer for shards Alice's device collects during
+//  reconstruction. One row per `.respond` bundle absorbed; deleted in bulk
+//  once a per-entry threshold is reached and reconstruction succeeds.
+//
+//  Privacy model — encryption at rest:
+//  - Plaintext columns (`id`, `createdAt`) carry no identifying information.
+//  - The target entryID, the SignedAttribute.id (`attrID`), and the full
+//    SignedAttribute live inside `encryptedPayload`, sealed under the recovery
+//    buffer key with AAD = aad().
+//  - Cold-disk forensics learns "Alice has N rows in the reconstruct buffer".
+//    No entry identifiers, no shard counts per entry, no signature material.
+//  - Querying "shards for entry X" requires decrypting every row. The buffer is
+//    transient and small (active recoveries only), so the cost is negligible.
+//
+//  Lifecycle:
+//  - Inserted on each `.respond` ShardOperation routed by ShardCustodyManager.
+//  - Bulk-deleted after VaultManager runs reconstruction for the matching
+//    entryID and re-wraps the recovered PEK under the current vault key.
+//  - User-cancelled recovery: bulk-delete by walking and matching entryID.
+//  - Stale rows (e.g. > 30 days, never reaching threshold) — periodic prune in a
+//    future pass; not part of this scaffolding.
+//
+//  Why a separate model from CustodyShard:
+//  - Different encryption keys (recovery buffer vs. shard custody) — the type
+//    system enforces "you can't decrypt one with the other".
+//  - Different lifecycles (transient queue vs. long-lived custody store).
+//  - Different sealed payloads (reconstruct must carry entryID + attrID; custody
+//    only carries the owner fingerprint + the signed attribute).
+//
+
+import Foundation
+import SwiftData
+
+@Model
+final class ReconstructShard {
+
+    // MARK: Persisted fields
+
+    /// Random per-row identifier. Bound into AAD; mutating invalidates decryption.
+    var id: UUID = UUID()
+
+    /// Sealed `Payload`: nonce(12B) ∥ ciphertext ∥ tag(16B) — CryptoKit .combined.
+    /// AAD = aad(). Key = `KeyManagerProtocol.deriveRecoveryBufferKey()`.
+    var encryptedPayload: Data = Data()
+
+    var createdAt: Date = Date()
+
+    // MARK: Init
+
+    init(id: UUID = UUID(), encryptedPayload: Data, createdAt: Date = Date()) {
+        self.id               = id
+        self.encryptedPayload = encryptedPayload
+        self.createdAt        = createdAt
+    }
+
+    // MARK: AAD
+
+    /// Authenticated additional data for AES-GCM seal/open of `encryptedPayload`.
+    ///
+    ///   id.uuidString (UTF-8)                                — 36 bytes
+    ///   ∥ UInt64BE(createdAt.timeIntervalSince1970)          —  8 bytes
+    ///                                                          44 bytes total
+    ///
+    /// ⚠️ Sealed contract. Any change makes existing ciphertext unreadable.
+    func aad() -> Data {
+        var data = Data()
+        data.append(self.id.uuidString.data(using: .utf8)!)   // 36 bytes
+        var ts = UInt64(self.createdAt.timeIntervalSince1970).bigEndian
+        data.append(Data(bytes: &ts, count: 8))               //  8 bytes
+        return data                                            // 44 bytes total
+    }
+
+    // MARK: - Sealed payload
+
+    /// Plaintext sealed inside `encryptedPayload`.
+    ///
+    /// `entryID` is needed to group shards toward the correct entry's threshold.
+    /// `attrID` lets us deduplicate within an entry's group (one shard per
+    /// trustee, identified by the SignedAttribute.id from the original split).
+    struct Payload: Codable {
+        let entryID: UUID
+        let attrID:  UUID
+        let signedAttribute: SignedAttribute
+    }
+}

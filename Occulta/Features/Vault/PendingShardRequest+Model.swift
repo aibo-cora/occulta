@@ -30,7 +30,7 @@ enum RequestStatus: String, Codable {
     case sent
     /// Bob explicitly chose not to respond.
     case declined
-    /// Bob's app could not find a HeldShard matching the requested attrID.
+    /// Bob's app could not find a CustodyShard matching the requested attrID.
     case notFound
 }
 

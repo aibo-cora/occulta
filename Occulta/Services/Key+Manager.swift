@@ -34,9 +34,15 @@ struct SaltInfo {
     /// Domain-separated from all transport and local-DB paths.
     static let kVaultKeyInfo = "Occulta-v1-vault-2026".data(using: .utf8)!
     /// Shard custody key: ECDH(shard_custody_SE_priv, G) → HKDF. Dedicated SE key
-    /// with device-unlock-level access (no biometric). Used to encrypt HeldShard
+    /// with device-unlock-level access (no biometric). Used to seal CustodyShard
     /// records locally — fully automatic, no user friction.
     static let kShardCustodyKeyInfo = "Occulta-v1-shard-custody-2026".data(using: .utf8)!
+    /// Recovery buffer key: same SE key as shard custody, distinct HKDF info →
+    /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
+    /// transient buffer of returned shards Alice's device collects during
+    /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
+    /// blob and a reconstruct blob are never decryptable with the same key.
+    static let kRecoveryBufferKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
 }
 
 extension Manager {
@@ -755,6 +761,45 @@ extension Manager.Key: KeyManagerProtocol {
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: custodyPubData,
             info: SaltInfo.kShardCustodyKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Recovery buffer key
+
+    /// Derive the recovery buffer key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256
+    /// with `kRecoveryBufferKeyInfo`. Reuses the shard custody SE key (same access
+    /// policy: device-unlock, no biometric) but produces a distinct symmetric key
+    /// via HKDF domain separation.
+    ///
+    /// Used to seal ReconstructShard rows — the transient buffer of returned
+    /// shards collected during reconstruction.
+    ///
+    /// The returned SymmetricKey is scope-bounded — callers must not store it.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveRecoveryBufferKey() throws -> SymmetricKey? {
+        guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
+        guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                custodyPriv, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        guard
+            let custodyPub     = self.retrivePublicKey(using: custodyPriv),
+            let custodyPubData = self.convert(key: custodyPub)
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: custodyPubData,
+            info: SaltInfo.kRecoveryBufferKeyInfo,
             outputByteCount: 32
         )
     }

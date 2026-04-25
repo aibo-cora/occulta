@@ -105,6 +105,8 @@ final class VaultManager {
     func unlock(context: LAContext) {
         self.authContext = context
         self.resetInactivityTimer()
+        // Drain reconstruction buffer entries that crossed threshold while locked.
+        self.tryFinalizeAllReconstructions()
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.

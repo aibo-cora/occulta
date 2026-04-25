@@ -133,6 +133,39 @@ extension VaultManager {
 
     // MARK: - Delivery tracking
 
+    /// Update the status of one ShardRecord identified by its `attrID`.
+    ///
+    /// Walks every entry's encrypted ShardDistributionMetadata until a matching
+    /// `attrID` is found, applies `newStatus`, and re-seals. No-op if no match.
+    /// Requires the vault unlocked.
+    ///
+    /// Used by ShardCustodyManager for `.acknowledge` (`.confirmed`) and
+    /// `.notFound` (`.lost`) inbound traffic.
+    func updateShardStatus(attrID: UUID, to newStatus: ShardStatus) throws {
+        let vaultKey = try self.currentKey()
+        let entries  = try self.fetchAllEntries()
+
+        for entry in entries {
+            guard let cipher = entry.shardDistributionEncrypted else { continue }
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: cipher),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
+            else { continue }
+
+            guard let idx = meta.shards.firstIndex(where: { $0.attrID == attrID }) else { continue }
+            meta.shards[idx].status = newStatus
+
+            let updated = try JSONEncoder().encode(meta)
+            let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
+            guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+
+            entry.shardDistributionEncrypted = combined
+            try self.modelContext.save()
+            return
+        }
+    }
+
     /// Mark a shard as delivered for a specific contact.
     ///
     /// Call this after the .occ bundle containing the shard has been handed

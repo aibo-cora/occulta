@@ -103,13 +103,25 @@ a key that no longer encrypts anything (the PEK was rotated), so it is harmless
 
 ## What Bob stores
 
-When Bob receives a shard from Alice, he stores:
-- The `SignedAttribute` (shard bytes + Alice's signature + attrID).
-- Alice's contact identifier (so he knows whose shard it is).
-- Nothing else. Bob does not need: the entry label, the threshold, or how many
-  other trustees Alice chose.
+When Bob receives a shard from Alice, he stores a `CustodyShard` row containing
+only:
+- A random per-row `id` and a `createdAt` timestamp (plaintext).
+- An `encryptedPayload` blob — AES-GCM seal of `{ ownerKeyFingerprint,
+  signedAttribute }` under the shard custody key, AAD = `id ∥ createdAt`.
 
-The `attrID` is sufficient to match an incoming `replacesID` from Alice.
+Bob does not need: the entry label, the threshold, or how many other trustees
+Alice chose.
+
+### Privacy at rest
+
+No plaintext column links a row to a contact. Cold-disk forensics learns
+"Bob holds N shards" — nothing about which contacts those shards belong to.
+Resolving owner identity requires the SE-protected shard custody key.
+
+Looking up a shard by `SignedAttribute.id` (for `.revoke` or `replacesID`
+matching) requires decrypting every row. The realistic N is low hundreds at
+most, so the cost is negligible. If N grows, a launch-time in-memory
+`(rowID → attrID)` cache is the cheap upgrade.
 
 ---
 
@@ -130,6 +142,54 @@ The `attrID` is sufficient to match an incoming `replacesID` from Alice.
 
 ---
 
+## Reconstruction buffer (`ReconstructShard`)
+
+Owner-side transient queue for `.respond` bundles arriving during recovery. Each
+arriving shard becomes one `ReconstructShard` row, sealed under the recovery
+buffer key with AAD = `id ∥ createdAt`. The plaintext columns carry no
+identifying information.
+
+Sealed payload: `{ entryID, attrID, signedAttribute }`. The `entryID` lives
+inside the seal so a forensic reader cannot tell which entries are mid-recovery
+or how many shards have arrived per entry.
+
+### Why a separate model from CustodyShard
+
+Different roles, different keys, different lifecycles. CustodyShard is custody
+*for someone else*, sealed under the shard custody key, long-lived. ReconstructShard
+is a self-recovery receive buffer, sealed under the recovery buffer key, transient.
+Keeping them as distinct types means the type system enforces "you cannot decrypt
+one with the other" and a stray cleanup query cannot accidentally cross-contaminate.
+
+### Lifecycle
+
+| Event                            | Action                                                      |
+|----------------------------------|-------------------------------------------------------------|
+| `.respond` arrives, vault locked | Insert row. Finalisation deferred to next vault unlock.     |
+| `.respond` arrives, vault unlocked | Insert row, then opportunistic `tryFinalizeReconstruction`. |
+| Vault unlock                     | Sweep all entries with `shardDistributionEncrypted` and finalise any that crossed threshold while locked. |
+| Reconstruction succeeds          | Bulk-delete all rows whose payload references that `entryID`. |
+| User cancels recovery            | Bulk-delete by `entryID` (decrypt-and-filter).              |
+
+Multiple recoveries coexist trivially because rows are filtered by the sealed
+`entryID` field at decrypt time — no new types needed for parallel recoveries.
+
+### Why custody-key-class access (no biometric)
+
+`.respond` bundles can arrive while the vault is locked. The recovery buffer
+key is derived from the custody SE key (device-unlock, no biometric) so the
+buffer can absorb shards without prompting. Reconstruction itself still requires
+the vault unlocked — re-wrapping the recovered PEK under the vault key needs
+the vault SE key.
+
+### Privacy at rest
+
+| | Without ReconstructShard | With ReconstructShard |
+|---|---|---|
+| Cold-disk forensics | (can't recover at all from process kill) | "Alice has N rows in the reconstruct buffer." Nothing about which entries, how many shards each, or who sent them. |
+
+---
+
 ## PEK rotation (content change)
 
 When an entry's content changes (if editing is ever supported):
@@ -145,9 +205,9 @@ old PEK which no longer encrypts anything.
 
 ---
 
-## Shard custody key
+## Shard custody and recovery buffer keys
 
-Shard operations require a dedicated third SE key — separate from the identity key
+Shard operations require a dedicated SE key — separate from the identity key
 and the vault key.
 
 **Tag:** `"shard.custody.occulta"`  
@@ -159,10 +219,18 @@ on receipt. If the shard custody key required Face ID per operation, Bob would n
 open the app and interact each time a contact requests a shard back. Full automation
 (zero UI involvement for Bob) is the design goal.
 
-Derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, info: kShardCustodyKeyInfo)`  
-Info string: `"Occulta-v1-shard-custody-2026"`
+Two distinct symmetric keys are HKDF-derived from this single SE key:
 
-Used to encrypt `HeldShard.encryptedAttribute` (a JSONEncoder(SignedAttribute) blob).
+| Symmetric key            | HKDF info                          | Seals          |
+|--------------------------|------------------------------------|----------------|
+| Shard custody key        | `Occulta-v1-shard-custody-2026`    | CustodyShard   |
+| Recovery buffer key      | `Occulta-v1-recovery-buffer-2026`  | ReconstructShard |
+
+Domain separation guarantees that a CustodyShard blob and a ReconstructShard
+blob are never decryptable with the same symmetric key, even though they share
+an SE source.
+
+Derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, info: <info>)`
 
 ---
 
@@ -173,8 +241,10 @@ Used to encrypt `HeldShard.encryptedAttribute` (a JSONEncoder(SignedAttribute) b
 is planned for the ShardCustodyManager phase, which will have direct access to the
 contact's key record.
 
-`HeldShard.ownerKeyFingerprint` is already `Data` (SHA-256 of the owner's public key)
-— the shard-receiving side has the owner's public key from the signed attribute itself.
+`CustodyShard.Payload.ownerKeyFingerprint` is `Data` (SHA-256 of the owner's public
+key) — the shard-receiving side has the owner's public key from the signed
+attribute itself. It lives inside the sealed payload, not in a plaintext
+column.
 
 ---
 
@@ -216,18 +286,21 @@ Alice treats the old shards as `.lost` immediately on key rotation — no explic
 | expiresAt / createdAt in signature    | ✅ Done        |
 | ShardStatus / ShardRecord model       | ✅ Done        |
 | ShardDistributionMetadata rewrite     | ✅ Done        |
-| HeldShard SwiftData model             | ✅ Done        |
+| CustodyShard SwiftData model (encrypted at rest) | ✅ Done |
+| ReconstructShard buffer (encrypted at rest) | ✅ Done   |
 | PendingShardRequest SwiftData model   | ✅ Done        |
 | Shard custody SE key                  | ✅ Done        |
+| Recovery buffer key (HKDF domain-sep) | ✅ Done        |
 | ShardOperation in SealedPayload       | ✅ Done        |
 | Schema registration (App)             | ✅ Done        |
 | Per-entry encryption keys (PEK)       | ✅ Done        |
 | VaultEntry model update (PEK fields)  | ✅ Done        |
 | VaultManager PEK unwrap path          | ✅ Done        |
-| ShardCustodyManager (inbound router)  | ❌ Not started |
+| ShardCustodyManager (inbound router)  | ✅ Done (receive-side) |
 | .occ delivery pipeline                | ❌ Not started |
-| Shard request / return flow           | ❌ Not started |
+| Shard request / return flow (auto-respond) | ❌ Not started |
 | Reconstruction flow                   | ✅ Done        |
+| Reconstruction buffer + finalise on unlock | ✅ Done   |
 | New-device recovery (no SE key)       | ✅ Done        |
 | PEK rotation on content change        | ❌ Not started |
 | Inbox / Requests tab                  | ❌ Not started |

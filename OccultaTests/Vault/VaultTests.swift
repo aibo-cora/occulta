@@ -228,7 +228,7 @@ private func makeVaultManager(
         vm.unlock(context: LAContext())
 
         _ = try vm.addEntry(label: "A", content: Data(), type: .note)
-        _ = try vm.addEntry(label: "B", content: Data(), type: .photo)
+        _ = try vm.addEntry(label: "B", content: Data(), type: .keyToken)
 
         let entries = try vm.fetchAllEntries()
         #expect(entries.count == 2)
@@ -359,11 +359,11 @@ private func makeVaultManager(
         }
     }
 
-    @Test("SSS reconstruction from threshold shards recovers the vault key")
-    func shardsReconstructVaultKey() throws {
+    @Test("SSS reconstruction from threshold shards recovers the entry's PEK")
+    func shardsReconstructPEK() throws {
         let (vm, km) = try makeVaultManager()
         vm.unlock(context: LAContext())
-        let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
+        let entry      = try vm.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
 
         let attrs = try vm.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
@@ -372,12 +372,14 @@ private func makeVaultManager(
         let rawShares = attrs.prefix(2).map { [UInt8]($0.value) }
         let reconstituted = try ShamirSecretSharing.reconstruct(shares: rawShares)
 
-        // Compare against fresh derivation from the key manager.
-        var vaultKeyBytes = Data()
-        try km.deriveVaultKey(context: LAContext())?.withUnsafeBytes { vaultKeyBytes = Data($0) }
+        // Compare against the entry's actual PEK — prepareShards splits the
+        // per-entry key, not the vault key.
+        let vaultKey  = try km.deriveVaultKey(context: LAContext())!
+        var pekBytes  = Data()
+        try vm.unwrapPEK(for: entry, vaultKey: vaultKey).withUnsafeBytes { pekBytes = Data($0) }
 
-        #expect(reconstituted == vaultKeyBytes,
-                "reconstructed secret must equal the vault key")
+        #expect(reconstituted == pekBytes,
+                "reconstructed secret must equal the entry's PEK")
     }
 }
 

@@ -352,8 +352,23 @@ class ContactManager {
         let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
         let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
         let contacts = try self.modelContext.fetch(descriptor)
-        
+
         return contacts.first
+    }
+
+    /// Decrypted x963-uncompressed P-256 public key (65 bytes) for the contact's
+    /// most recent unexpired key record, or nil if none.
+    ///
+    /// Used by inbound routers (e.g. ShardCustodyManager) that need a stable
+    /// per-contact identifier (`SHA-256(publicKey)`) after `decryptSealed` has
+    /// already resolved the sender by `identifier`.
+    func currentPublicKey(forIdentifier identifier: String) throws -> Data? {
+        guard
+            let contact   = try self.fetchContact(by: identifier),
+            let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let pubKey    = try? self.cryptoManager.decrypt(data: keyRecord.material)
+        else { return nil }
+        return pubKey
     }
     
     // MARK: - Delete

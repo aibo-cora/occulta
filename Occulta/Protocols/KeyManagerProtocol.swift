@@ -69,6 +69,13 @@ protocol KeyManagerProtocol {
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveShardCustodyKey() throws -> SymmetricKey?
+
+    /// Derive the recovery buffer key: same SE key as `deriveShardCustodyKey`,
+    /// distinct HKDF info — produces a dedicated symmetric key for sealing
+    /// ReconstructShard rows.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveRecoveryBufferKey() throws -> SymmetricKey?
 }
 
 // MARK: - TestKeyManager
@@ -256,6 +263,17 @@ final class TestKeyManager: KeyManagerProtocol {
     ///
     /// The context-free signature mirrors the real key (no biometric needed).
     func deriveShardCustodyKey() throws -> SymmetricKey? {
+        try self.deriveCustodySEKey(info: SaltInfo.kShardCustodyKeyInfo)
+    }
+
+    /// ECDH(shardCustodyPrivateKey, G) → HKDF with recovery-buffer info.
+    /// Mirrors Manager.Key.deriveRecoveryBufferKey() — same SE key, distinct HKDF
+    /// info, distinct symmetric key.
+    func deriveRecoveryBufferKey() throws -> SymmetricKey? {
+        try self.deriveCustodySEKey(info: SaltInfo.kRecoveryBufferKeyInfo)
+    }
+
+    private func deriveCustodySEKey(info: Data) throws -> SymmetricKey? {
         guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
 
         var err: Unmanaged<CFError>?
@@ -270,7 +288,7 @@ final class TestKeyManager: KeyManagerProtocol {
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: shardCustodyPublicKeyData,
-            info: SaltInfo.kShardCustodyKeyInfo,
+            info: info,
             outputByteCount: 32
         )
     }
