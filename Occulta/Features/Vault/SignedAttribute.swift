@@ -130,22 +130,29 @@ struct SignedAttribute: Codable, Identifiable {
         expiresAt: Date?  = nil
     ) -> Data {
         var payload = Data()
+        
         payload.append("occulta-signed-attribute-v2".data(using: .utf8)!)
         payload.append(id.uuidString.data(using: .utf8)!)              // 36 bytes
         payload.append(category.rawValue.data(using: .utf8)!)
+        
         if let entryID {
             payload.append(entryID.uuidString.data(using: .utf8)!)     // 36 bytes — shard only
         }
-        var createdSeconds = UInt64(createdAt.timeIntervalSince1970).bigEndian
+        let createdSeconds = UInt64(createdAt.timeIntervalSince1970).bigEndian
+        
         withUnsafeBytes(of: createdSeconds) { payload.append(contentsOf: $0) }  // 8 bytes
+        
         if let expiresAt {
             payload.append(0x01)
-            var expiresSeconds = UInt64(expiresAt.timeIntervalSince1970).bigEndian
+            
+            let expiresSeconds = UInt64(expiresAt.timeIntervalSince1970).bigEndian
+            
             withUnsafeBytes(of: expiresSeconds) { payload.append(contentsOf: $0) }  // 8 bytes
         } else {
             payload.append(0x00)
         }
         payload.append(value)
+        
         return payload
     }
 
