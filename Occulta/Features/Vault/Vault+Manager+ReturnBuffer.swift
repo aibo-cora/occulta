@@ -59,10 +59,9 @@ extension VaultManager {
             throw VaultError.keyDerivationFailed
         }
 
-        let rowID     = UUID()
-        let createdAt = Date()
-        let aad       = Self.reconstructRowAAD(id: rowID, createdAt: createdAt)
-        let payload   = ReconstructShard.Payload(
+        let rowID   = UUID()
+        let aad     = Self.reconstructRowAAD(id: rowID)
+        let payload = ReconstructShard.Payload(
             entryID:         entryID,
             attrID:          attribute.id,
             signedAttribute: attribute
@@ -71,7 +70,7 @@ extension VaultManager {
         let sealed    = try AES.GCM.seal(plaintext, using: bufferKey, nonce: AES.GCM.Nonce(), authenticating: aad)
         guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
 
-        let row = ReconstructShard(id: rowID, encryptedPayload: combined, createdAt: createdAt)
+        let row = ReconstructShard(id: rowID, encryptedPayload: combined)
         self.modelContext.insert(row)
         try self.modelContext.save()
 
@@ -152,12 +151,8 @@ extension VaultManager {
 
     /// Mirrors `ReconstructShard.aad()` — used at seal time before the @Model
     /// is constructed.
-    private static func reconstructRowAAD(id: UUID, createdAt: Date) -> Data {
-        var data = Data()
-        data.append(id.uuidString.data(using: .utf8)!)
-        var ts = UInt64(createdAt.timeIntervalSince1970).bigEndian
-        data.append(Data(bytes: &ts, count: 8))
-        return data
+    private static func reconstructRowAAD(id: UUID) -> Data {
+        id.uuidString.data(using: .utf8)!
     }
 
     /// Decrypt every ReconstructShard row using the recovery buffer key.

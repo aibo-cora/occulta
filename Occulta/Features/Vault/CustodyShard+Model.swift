@@ -39,32 +39,22 @@ final class CustodyShard {
     /// AAD = aad(). Key = `KeyManagerProtocol.deriveShardCustodyKey()`.
     var encryptedPayload: Data = Data()
 
-    var createdAt: Date = Date()
-
     // MARK: Init
 
-    init(id: UUID = UUID(), encryptedPayload: Data, createdAt: Date = Date()) {
+    init(id: UUID = UUID(), encryptedPayload: Data) {
         self.id               = id
         self.encryptedPayload = encryptedPayload
-        self.createdAt        = createdAt
     }
 
     // MARK: AAD
 
     /// Authenticated additional data for AES-GCM seal/open of `encryptedPayload`.
     ///
-    /// Wire encoding (concatenated, no length prefixes):
-    ///   id.uuidString (UTF-8)                                — 36 bytes
-    ///   ∥ UInt64BE(createdAt.timeIntervalSince1970)          —  8 bytes
-    ///                                                          44 bytes total
+    ///   id.uuidString (UTF-8)   — 36 bytes
     ///
     /// ⚠️ Sealed contract. Any change makes existing ciphertext unreadable.
     func aad() -> Data {
-        var data = Data()
-        data.append(self.id.uuidString.data(using: .utf8)!)   // 36 bytes
-        var ts = UInt64(self.createdAt.timeIntervalSince1970).bigEndian
-        data.append(Data(bytes: &ts, count: 8))               //  8 bytes
-        return data                                            // 44 bytes total
+        self.id.uuidString.data(using: .utf8)!
     }
 
     // MARK: - Sealed payload

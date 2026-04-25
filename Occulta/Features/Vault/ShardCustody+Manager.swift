@@ -58,7 +58,7 @@ final class ShardCustodyManager {
             switch op.kind {
             case .distribute:  try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
             case .revoke:      try self.handleRevoke(op: op)
-            case .request:     try self.handleRequest(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
+            case .request:     try self.handleRequest(op: op, senderIdentifier: senderIdentifier)
             case .respond:     try self.handleRespond(op: op, vaultManager: vaultManager)
             case .acknowledge: try self.handleAcknowledge(op: op, vaultManager: vaultManager)
             case .notFound:    try self.handleNotFound(op: op, vaultManager: vaultManager)
@@ -94,8 +94,7 @@ final class ShardCustodyManager {
         }
 
         let rowID     = UUID()
-        let createdAt = Date()
-        let aad       = Self.rowAAD(id: rowID, createdAt: createdAt)
+        let aad       = Self.rowAAD(id: rowID)
         let payload   = CustodyShard.Payload(
             ownerKeyFingerprint: Self.fingerprint(of: senderPublicKey),
             signedAttribute:     attribute
@@ -104,7 +103,7 @@ final class ShardCustodyManager {
         let sealed    = try AES.GCM.seal(plaintext, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
         guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
 
-        let row = CustodyShard(id: rowID, encryptedPayload: combined, createdAt: createdAt)
+        let row = CustodyShard(id: rowID, encryptedPayload: combined)
         self.modelContext.insert(row)
 
         if let replacesID = op.replacesID {
@@ -132,23 +131,40 @@ final class ShardCustodyManager {
 
     /// `.request` — owner asks for a shard back. Persist a PendingShardRequest;
     /// auto-response is Phase 2.
-    private func handleRequest(op: OccultaBundle.ShardOperation, senderPublicKey: Data, senderIdentifier: String) throws {
+    ///
+    /// Deduplication: decrypt all rows to find an existing record for `attrID`.
+    /// Re-seals the updated payload on duplicate; inserts a new sealed row otherwise.
+    private func handleRequest(op: OccultaBundle.ShardOperation, senderIdentifier: String) throws {
         guard let attrID = op.attrID else { throw CustodyError.invalidPayload }
-        let requesterFingerprint = Self.fingerprint(of: senderPublicKey)
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
 
-        let predicate = #Predicate<PendingShardRequest> { $0.attrID == attrID }
-        let existing  = try self.modelContext.fetch(FetchDescriptor<PendingShardRequest>(predicate: predicate)).first
+        let existing = try self.decryptAllPendingRequests().first { $0.payload.attrID == attrID }
 
         if let existing {
-            existing.receivedAt                 = Date()
-            existing.status                     = .pending
-            existing.requesterContactIdentifier = senderIdentifier
+            var updated = existing.payload
+            updated.receivedAt                 = Date()
+            updated.status                     = .pending
+            updated.requesterContactIdentifier = senderIdentifier
+            let pt     = try JSONEncoder().encode(updated)
+            let sealed = try AES.GCM.seal(pt, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: existing.row.aad())
+            guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+            existing.row.encryptedPayload = combined
         } else {
-            self.modelContext.insert(PendingShardRequest(
+            let rowID  = UUID()
+            let aad    = Self.pendingRequestAAD(id: rowID)
+            let now    = Date()
+            let payload = PendingShardRequest.Payload(
                 attrID:                     attrID,
-                requesterKeyFingerprint:    requesterFingerprint,
-                requesterContactIdentifier: senderIdentifier
-            ))
+                requesterContactIdentifier: senderIdentifier,
+                receivedAt:                 now,
+                status:                     .pending
+            )
+            let pt     = try JSONEncoder().encode(payload)
+            let sealed = try AES.GCM.seal(pt, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+            guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+            self.modelContext.insert(PendingShardRequest(id: rowID, encryptedPayload: combined))
         }
         try self.modelContext.save()
     }
@@ -167,18 +183,32 @@ final class ShardCustodyManager {
     /// Also updates `PendingShardRequest.status` to reflect the outcome so the
     /// inbox can show the correct state before the user shares.
     func shardForRequest(id: UUID) throws -> (attrID: UUID, attribute: SignedAttribute?, requesterIdentifier: String)? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
         let predicate = #Predicate<PendingShardRequest> { $0.id == id }
-        guard let request = try self.modelContext.fetch(FetchDescriptor<PendingShardRequest>(predicate: predicate)).first else {
+        guard let row = try self.modelContext.fetch(FetchDescriptor<PendingShardRequest>(predicate: predicate)).first else {
             return nil
         }
 
-        let match = try self.decryptAllCustodyShards()
-            .first { $0.payload.signedAttribute.id == request.attrID }
+        guard
+            let box     = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+            let pt      = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+            var payload = try? JSONDecoder().decode(PendingShardRequest.Payload.self, from: pt)
+        else { throw CustodyError.decryptionFailed }
 
-        request.status = match != nil ? .sent : .notFound
+        let match = try self.decryptAllCustodyShards()
+            .first { $0.payload.signedAttribute.id == payload.attrID }
+
+        payload.status = match != nil ? .sent : .notFound
+        let updated = try JSONEncoder().encode(payload)
+        let sealed  = try AES.GCM.seal(updated, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        row.encryptedPayload = combined
         try self.modelContext.save()
 
-        return (request.attrID, match?.payload.signedAttribute, request.requesterContactIdentifier)
+        return (payload.attrID, match?.payload.signedAttribute, payload.requesterContactIdentifier)
     }
 
     // MARK: - Owner path
@@ -213,11 +243,17 @@ final class ShardCustodyManager {
         case signatureRejected
         case keyDerivationFailed
         case encryptionFailed
+        case decryptionFailed
     }
 
     private struct DecodedCustodyShard {
         let row:     CustodyShard
         let payload: CustodyShard.Payload
+    }
+
+    private struct DecodedPendingRequest {
+        let row:     PendingShardRequest
+        let payload: PendingShardRequest.Payload
     }
 
     /// Decrypt every CustodyShard row using the shard custody key. Rows that fail
@@ -242,17 +278,33 @@ final class ShardCustodyManager {
         return out
     }
 
+    /// Decrypt every PendingShardRequest row. Rows that fail to decrypt are dropped.
+    private func decryptAllPendingRequests() throws -> [DecodedPendingRequest] {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardRequest>())
+        return rows.compactMap { row in
+            guard
+                let box     = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let pt      = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload = try? JSONDecoder().decode(PendingShardRequest.Payload.self, from: pt)
+            else { return nil }
+            return DecodedPendingRequest(row: row, payload: payload)
+        }
+    }
+
     private static func fingerprint(of publicKey: Data) -> Data {
         Data(SHA256.hash(data: publicKey))
     }
 
-    /// Mirrors `CustodyShard.aad()` — kept here so the AAD bytes can be computed
-    /// at sealing time before the @Model is constructed.
-    private static func rowAAD(id: UUID, createdAt: Date) -> Data {
-        var data = Data()
-        data.append(id.uuidString.data(using: .utf8)!)
-        var ts = UInt64(createdAt.timeIntervalSince1970).bigEndian
-        data.append(Data(bytes: &ts, count: 8))
-        return data
+    /// Mirrors `CustodyShard.aad()` — computed before the @Model is constructed.
+    private static func rowAAD(id: UUID) -> Data {
+        id.uuidString.data(using: .utf8)!
+    }
+
+    /// Mirrors `PendingShardRequest.aad()`.
+    private static func pendingRequestAAD(id: UUID) -> Data {
+        id.uuidString.data(using: .utf8)!
     }
 }

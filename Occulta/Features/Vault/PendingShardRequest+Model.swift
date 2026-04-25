@@ -4,15 +4,20 @@
 //
 //  SwiftData model for the shard-request queue.
 //
-//  Design:
-//  - Stored plaintext — contains no sensitive material (only a shard ID and
-//    the requester's key fingerprint, both of which the requester chose to send).
-//  - Written when a .request ShardOperation arrives in an inbound bundle.
-//  - Deduplication: if `attrID` already exists, only `receivedAt` is updated
-//    and status resets to .pending. This re-surfaces a request Bob previously
-//    declined without creating a duplicate record.
-//  - Not deleted after completion — retained for audit. Prune periodically
-//    (e.g. records older than 90 days in a terminal state) in a future pass.
+//  Privacy model — encryption at rest:
+//  - The only plaintext columns are `id` (random per row) and `createdAt`
+//    (coarse timestamp). Neither links the row to a contact or a specific shard.
+//  - The requester's identifier, the target attrID, receivedAt, and status
+//    all live inside `encryptedPayload`, sealed under the shard custody key
+//    with AAD = aad(). Mirrors the CustodyShard / ReconstructShard pattern.
+//  - Cold-disk forensics learns "Bob has N pending shard requests". Nothing
+//    about who is asking or which shards are involved.
+//
+//  Lifecycle:
+//  - Inserted on .request ShardOperation arrival; deduplicated by attrID
+//    (decrypt all rows, find match, re-seal updated payload).
+//  - Not deleted after completion — retained for audit. Prune records older
+//    than 90 days in a terminal state in a future pass.
 //
 
 import Foundation
@@ -41,38 +46,44 @@ final class PendingShardRequest {
 
     // MARK: Persisted fields
 
-    /// Deduplication key — one record per attrID.
+    /// Random per-row identifier. Bound into AAD so any row-id mutation
+    /// invalidates decryption. Not equal to the shard's attrID (that lives
+    /// inside the sealed payload).
     var id: UUID = UUID()
 
-    /// Which shard is being requested (SignedAttribute.id).
-    var attrID: UUID = UUID()
-
-    /// SHA-256(requester's public key) — identifies who is asking.
-    var requesterKeyFingerprint: Data = Data()
-
-    /// Contact.Profile.identifier of the requester — used to address the reply bundle.
-    var requesterContactIdentifier: String = ""
-
-    /// Timestamp of the most recent request for this attrID.
-    /// Updated on duplicate arrivals so the latest request surfaces again.
-    var receivedAt: Date = Date()
-
-    /// Current state of the request. Starts as .pending on arrival.
-    var statusRaw: String = RequestStatus.pending.rawValue
-
-    var status: RequestStatus {
-        get { RequestStatus(rawValue: statusRaw) ?? .pending }
-        set { statusRaw = newValue.rawValue }
-    }
+    /// Sealed `Payload`: nonce(12B) ∥ ciphertext ∥ tag(16B) — CryptoKit .combined.
+    /// AAD = aad(). Key = `KeyManagerProtocol.deriveShardCustodyKey()`.
+    var encryptedPayload: Data = Data()
 
     // MARK: Init
 
-    init(attrID: UUID, requesterKeyFingerprint: Data, requesterContactIdentifier: String) {
-        self.id                           = UUID()
-        self.attrID                       = attrID
-        self.requesterKeyFingerprint      = requesterKeyFingerprint
-        self.requesterContactIdentifier   = requesterContactIdentifier
-        self.receivedAt                   = Date()
-        self.statusRaw                    = RequestStatus.pending.rawValue
+    init(id: UUID = UUID(), encryptedPayload: Data) {
+        self.id               = id
+        self.encryptedPayload = encryptedPayload
+    }
+
+    // MARK: AAD
+
+    /// Authenticated additional data for AES-GCM seal/open of `encryptedPayload`.
+    ///
+    ///   id.uuidString (UTF-8)   — 36 bytes
+    ///
+    /// ⚠️ Sealed contract. Any change makes existing ciphertext unreadable.
+    func aad() -> Data {
+        self.id.uuidString.data(using: .utf8)!
+    }
+
+    // MARK: - Sealed payload
+
+    /// Plaintext sealed inside `encryptedPayload`.
+    struct Payload: Codable {
+        /// Which shard is being requested (SignedAttribute.id).
+        var attrID: UUID
+        /// Contact.Profile.identifier of the requester — used to address the reply bundle.
+        var requesterContactIdentifier: String
+        /// Timestamp of the most recent request for this attrID.
+        /// Updated on duplicate arrivals; the row's `createdAt` does not change.
+        var receivedAt: Date
+        var status: RequestStatus
     }
 }
