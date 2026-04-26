@@ -264,6 +264,12 @@ struct OccultaApp: App {
                         self.contactManager.cleanupPendingSessions()
                     }
                 }
+                // Key-rotation → schedule shard auto-return (Bob's path).
+                // When the peer re-exchanges and comes in with a different fingerprint,
+                // ShardCustodyManager upserts a PendingShardReturn for that contact.
+                .onReceive(self.contactManager.contactKeyRotated) { identifier in
+                    self.shardCustodyManager.scheduleReturnIfShardsCustodied(for: identifier)
+                }
             }
         }
         .modelContainer(self.sharedModelContainer)

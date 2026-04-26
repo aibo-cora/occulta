@@ -158,6 +158,60 @@ final class ShardCustodyManager {
         try? vaultManager.updateShardStatus(attrID: attrID, to: .lost)
     }
 
+    // MARK: - Auto-return trigger
+
+    /// Called when `ContactManager` emits `contactKeyRotated` for a contact we
+    /// hold shards for. Upserts one `PendingShardReturn` row for that contact.
+    ///
+    /// Upsert: if a row already exists for this `contactIdentifier` (Alice
+    /// re-exchanged again before delivery), only `scheduledAt` is updated so the
+    /// retry sees the freshest exchange time.
+    func scheduleReturnIfShardsCustodied(for contactIdentifier: String) {
+        do {
+            let shards = try self.decryptAllCustodyShards()
+            guard shards.contains(where: { $0.payload.ownerContactIdentifier == contactIdentifier }) else {
+                return // We hold no shards for this contact — nothing to return.
+            }
+
+            guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+                throw CustodyError.keyDerivationFailed
+            }
+
+            // Fetch existing row to implement upsert semantics.
+            let existing = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
+            for row in existing {
+                guard
+                    let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                    let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                    let payload   = try? JSONDecoder().decode(PendingShardReturn.Payload.self, from: plaintext),
+                    payload.contactIdentifier == contactIdentifier
+                else { continue }
+                // Update the existing row: re-seal with a fresh scheduledAt.
+                let updated  = PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: Date.now)
+                let bytes    = try JSONEncoder().encode(updated)
+                let sealed   = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
+                guard let combined = sealed.combined else { return }
+                row.encryptedPayload = combined
+                try self.modelContext.save()
+                return
+            }
+
+            // No existing row — insert a new one.
+            let rowID   = UUID()
+            let payload = PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: Date.now)
+            let bytes   = try JSONEncoder().encode(payload)
+            let aad     = Self.rowAAD(id: rowID)
+            let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+            guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+            self.modelContext.insert(PendingShardReturn(id: rowID, encryptedPayload: combined))
+            try self.modelContext.save()
+        } catch {
+            #if DEBUG
+            debugPrint("ShardCustodyManager.scheduleReturnIfShardsCustodied failed: \(error)")
+            #endif
+        }
+    }
+
     // MARK: - Private helpers
 
     enum CustodyError: Error {

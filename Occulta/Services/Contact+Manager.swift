@@ -45,6 +45,10 @@ class ContactManager {
     ]
     
     var contactKeyUpdated: PassthroughSubject<String, Never> = .init()
+    /// Emitted (with the contact's identifier) when `update(key:for:)` stores a
+    /// key whose P-256 fingerprint differs from the previously active key.
+    /// Subscribers (e.g. ShardCustodyManager) use this to schedule auto-returns.
+    var contactKeyRotated: PassthroughSubject<String, Never> = .init()
     
     init(modelContainer: ModelContainer) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
@@ -432,11 +436,20 @@ extension ContactManager {
             encryptedQuantumKeyMaterial = try self.cryptoManager.encrypt(data: encodedQuantum)
         }
         
+        // Detect fingerprint change before appending the new key.
+        var keyRotated = false
+        if let newMaterial = key.material,
+           let currentRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+           let storedMaterial = try? self.cryptoManager.decrypt(data: currentRecord.material) {
+            keyRotated = SHA256.hash(data: storedMaterial) != SHA256.hash(data: newMaterial)
+        }
+
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
-        
+
         try self.modelContext.save()
-        
+
         self.contactKeyUpdated.send(identifier)
+        if keyRotated { self.contactKeyRotated.send(identifier) }
     }
     
     /// Remove all keys of a contact.
