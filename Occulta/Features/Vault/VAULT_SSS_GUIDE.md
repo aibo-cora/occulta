@@ -160,6 +160,11 @@ when the owner re-distributes after a content change. The old shard reconstructs
 a key that no longer encrypts anything (the PEK was rotated), so it is harmless
 — but automatic cleanup prevents accumulation of stale shards.
 
+Trustees running an older build that does not process `replacesID` will retain
+the superseded shard indefinitely. This is safe: the old shard's reconstruction
+attempt produces the old PEK, which fails GCM authentication against the
+rotated entry. No plaintext is exposed and no action is required.
+
 ---
 
 ## What Bob stores
@@ -242,6 +247,28 @@ one with the other" and a stray cleanup query cannot accidentally cross-contamin
 Multiple recoveries coexist trivially because rows are filtered by the sealed
 `entryID` field at decrypt time — no new types needed for parallel recoveries.
 
+---
+
+## ShardRecord.status transitions
+
+`ShardRecord` (inside `ShardDistributionMetadata`) tracks the owner's view of each distributed shard.
+
+Valid transitions:
+
+| From        | To           | Trigger                                      |
+|-------------|--------------|----------------------------------------------|
+| `.sent`     | `.confirmed` | Trustee sends `.acknowledge`                 |
+| `.sent`     | `.lost`      | Trustee sends `.notFound`; trustee key change |
+| `.confirmed`| `.lost`      | Trustee becomes unreachable after confirmation |
+| any         | `.revoked`   | Owner explicitly revokes the shard           |
+
+Invalid / rejected transitions:
+
+- `.lost → .confirmed` — a lost shard cannot be un-lost by a late acknowledgement.
+- `.revoked → any` — revocation is terminal; the shard must be re-distributed as a new record with a new `attrID`.
+
+The transition `.confirmed → .lost` is valid because a trustee may lose their device after having previously acknowledged custody.
+
 ### Why custody-key-class access (no biometric)
 
 `.respond` bundles can arrive while the vault is locked. The recovery buffer
@@ -297,6 +324,11 @@ Two distinct symmetric keys are HKDF-derived from this single SE key:
 Domain separation guarantees that a CustodyShard blob and a ReconstructShard
 blob are never decryptable with the same symmetric key, even though they share
 an SE source.
+
+The year suffix in the info strings is frozen at the time the keys were first
+derived and cannot be changed without invalidating all existing sealed rows for
+existing users. Treat these strings as opaque immutable constants — the year
+carries no operational meaning.
 
 Derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, info: <info>)`
 
@@ -517,7 +549,7 @@ of what UI state the app is in when they arrive.
   computer derives the private key from the public key recorded in the bundle,
   without ever needing the stored key material. ML-KEM in the hybrid session key
   is the only defence. The mandatory ML-KEM gate on trustee selection ensures
-  every shard bundle uses a session key that requires breaking ML-KEM-768 in
+  every shard bundle uses a session key that requires breaking ML-KEM-1024 in
   addition to P-256 to decrypt. As of 2026 no known classical or quantum attack
   achieves this within the security parameter.
 - **GF(2⁸) arithmetic timing:** `gfMul` and `gfInv` contain data-dependent
