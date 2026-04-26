@@ -859,54 +859,93 @@ extension ContactManager {
 // MARK: - v3fs bundle encryption
  
 extension ContactManager {
-    /// Encrypt a payload for a contact using the v3fs path.
+    /// Encrypt a bundle for a contact using the v3fs path.
     ///
-    /// ## Pending batch delivery guarantee
-    /// A `pendingOutboundBatch` (if present) is attached to EVERY message until
-    /// the contact sends back a .forwardSecret bundle using one of our prekeys.
-    /// That is cryptographic proof they received and stored our batch.
-    /// Only then is the pending batch cleared and a new one allowed to be generated.
-    func encryptBundle(data: Data, for identifier: String, shardOperations: [OccultaBundle.ShardOperation]? = nil) throws -> Data {
-        guard data.isEmpty == false else { throw Errors.messageHasNoData }
+    /// **Mode selection is automatic**, driven by whether any shard operation
+    /// carries shard data (`.distribute`, `.handback` — i.e. `op.attribute != nil`):
+    ///
+    /// - **Shard mode** (any `attribute`-carrying op present, or `data == nil`):
+    ///   Forces `longTermFallback + ML-KEM`. Prekeys are not consumed; no prekey
+    ///   sync batch is attached. `data` defaults to a human-readable fallback for
+    ///   old builds. Throws `trusteeLacksQuantumMaterial` if ML-KEM is absent.
+    ///
+    /// - **Message mode** (no `attribute`-carrying ops, `data` non-nil):
+    ///   Standard v3fs path — pops a prekey (→ `.forwardSecret` when available,
+    ///   `.longTermFallback` when exhausted), attaches a pending prekey sync
+    ///   batch, and saves prekey state. `data` must be non-empty.
+    ///
+    /// This means `.distribute` and `.handback` always travel on `longTermFallback +
+    /// ML-KEM` regardless of call site — the HNDL constraint is enforced once,
+    /// here, and cannot be bypassed by a careless caller.
+    ///
+    /// ## Pending batch delivery guarantee (message mode only)
+    /// A `pendingOutboundBatch` is attached to every message until the contact
+    /// sends back a `.forwardSecret` bundle using one of our prekeys — cryptographic
+    /// proof they stored the batch. Only then is the batch cleared.
+    func encryptBundle(
+        data: Data? = nil,
+        for identifier: String,
+        shardOperations: [OccultaBundle.ShardOperation]? = nil
+    ) throws -> Data {
+        guard data != nil || shardOperations != nil else { throw Errors.messageHasNoData }
+        if let data, data.isEmpty { throw Errors.messageHasNoData }
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
-        
-        try contact.configureForwardSecrecy()
-        
-        debugPrint("Encrypting for contact. Inbound prekeys now: \(contact.availableInboundPrekeyCount), contact: \(contact.givenName.decrypt()), has pending batch: \(contact.hasPendingBatch)")
- 
-        // ── 1. Resolve recipient key material ────────────────────────────
-        // Handback operations carry shard data and require ML-KEM HNDL protection.
-        let requireQuantum = shardOperations?.contains(where: { $0.kind == .handback }) == true
-        let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact, requireQuantum: requireQuantum)
+
+        // Shard mode when any op carries a SignedAttribute (the actual shard bytes),
+        // or when there is no user message at all (protocol-only bundle).
+        let shardMode = data == nil || shardOperations?.contains(where: { $0.attribute != nil }) == true
+
+        // ── 1. Resolve recipient key material ─────────────────────────────
+        let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(
+            for: contact, requireQuantum: shardMode
+        )
 
         #if DEBUG
-        debugPrint(quantumMaterial != nil
-            ? "Sealing bundle with a session key derived using quantum material..."
-            : "Sealing bundle using classical session key (no quantum material)")
+        let modeTag = shardMode ? "shard (longTermFallback + ML-KEM)" : "message"
+        debugPrint("Sealing \(modeTag) bundle, quantum: \(quantumMaterial != nil)")
         #endif
 
-        // ── 2. Pop oldest inbound prekey ─────────────────────────────────
-        var prekey: Prekey? = nil
-        if let blob = try contact.popOldestPrekeyData() {
-            prekey = try JSONDecoder().decode(Prekey.self, from: blob)
+        // ── 2. Prekey handling ────────────────────────────────────────────
+        // Shard mode: never consume prekeys; never carry a prekey sync batch.
+        // Message mode: pop prekey (→ .forwardSecret or .longTermFallback);
+        //               attach pending batch if one exists.
+        var contactPrekey: Prekey? = nil
+        var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
+
+        if !shardMode {
+            try contact.configureForwardSecrecy()
+            debugPrint("Encrypting message for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
+            if let blob = try contact.popOldestPrekeyData() {
+                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            }
+            outboundBatch = try contact.loadPendingBatch()
         }
 
         // ── 3. Build and seal payload ─────────────────────────────────────
-        let outboundBatch     = try contact.loadPendingBatch()
-        let sealedPayload     = OccultaBundle.SealedPayload(message: data, prekeyBatch: outboundBatch, shardOperations: shardOperations)
-        let encodedSealedPayload: Data = try JSONEncoder().encode(sealedPayload)
+        let messageData   = data ?? Data("Occulta vault operation. Please update your app.".utf8)
+        let sealedPayload = OccultaBundle.SealedPayload(
+            message:         messageData,
+            prekeyBatch:     outboundBatch,
+            shardOperations: shardOperations
+        )
+        let encoded = try JSONEncoder().encode(sealedPayload)
 
-        let bundle = try Manager.Crypto().seal(message: encodedSealedPayload, contactPrekey: prekey, recipientMaterial: recipientMaterial, quantumMaterial: quantumMaterial)
-        // 5. Persist
-        try self.modelContext.save()
-        
-        debugPrint("Encrypt finished for \(identifier), prekey batch pending: \(contact.hasPendingBatch)")
- 
+        // contactPrekey == nil in shard mode → Manager.Crypto.seal uses longTermFallback.
+        let bundle = try Manager.Crypto().seal(
+            message:           encoded,
+            contactPrekey:     contactPrekey,
+            recipientMaterial: recipientMaterial,
+            quantumMaterial:   quantumMaterial
+        )
+
+        // Persist prekey state only when it was mutated (message mode).
+        if !shardMode { try self.modelContext.save() }
+
         return try bundle.encoded()
     }
 }
  
-// MARK: - Shard bundle encryption
+// MARK: - Shard bundle helpers
 
 extension ContactManager {
 
@@ -927,8 +966,7 @@ extension ContactManager {
     /// and ML-KEM quantum key material (if present).
     ///
     /// - `requireQuantum`: when `true`, throws `trusteeLacksQuantumMaterial` if the
-    ///   contact has no quantum key material. Required for shard operations (`.distribute`,
-    ///   `.handback`) that must have HNDL protection.
+    ///   contact has no quantum key material. Shard mode always passes `true`.
     private func resolveKeyMaterial(
         for contact: Contact.Profile,
         requireQuantum: Bool = false
@@ -952,33 +990,6 @@ extension ContactManager {
             throw Errors.trusteeLacksQuantumMaterial
         }
         return (recipientMaterial, quantumMaterial)
-    }
-
-    /// Encrypt one or more shard-protocol operations as a standalone `.occ` bundle.
-    ///
-    /// Always uses `longTermFallback` + ML-KEM:
-    /// - `contactPrekey: nil` forces the longTermFallback path in `Manager.Crypto.seal`.
-    /// - ML-KEM quantum material is required; throws `trusteeLacksQuantumMaterial` if absent.
-    ///
-    /// Shard bundles never consume prekeys and never carry a prekey sync batch.
-    /// Pass ALL operations for this contact in one call — a single bundle must carry
-    /// the complete set (e.g., all shards for a trustee, all handbacks for an owner).
-    func encryptShardBundle(operations: [OccultaBundle.ShardOperation], for identifier: String) throws -> Data {
-        guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
-
-        let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact, requireQuantum: true)
-
-        let fallback = Data("Occulta vault operation. Please update your app.".utf8)
-        let payload  = OccultaBundle.SealedPayload(message: fallback, shardOperations: operations)
-        let encoded  = try JSONEncoder().encode(payload)
-
-        let bundle = try Manager.Crypto().seal(
-            message:           encoded,
-            contactPrekey:     nil,
-            recipientMaterial: recipientMaterial,
-            quantumMaterial:   quantumMaterial
-        )
-        return try bundle.encoded()
     }
 }
 

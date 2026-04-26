@@ -140,7 +140,7 @@ extension VaultManager {
     /// file and presents the share sheet for the corresponding contact.
     ///
     /// Requires the vault unlocked. Requires each recipient to have ML-KEM key
-    /// material — `encryptShardBundle` throws `trusteeLacksQuantumMaterial` if not.
+    /// material — `encryptBundle` throws `trusteeLacksQuantumMaterial` if absent.
     func distributeShards(
         for entryID: UUID,
         threshold: Int,
@@ -151,7 +151,7 @@ extension VaultManager {
 
         return try zip(recipients, attributes).map { contact, attribute in
             let op  = OccultaBundle.ShardOperation(kind: .distribute, attribute: attribute)
-            let occ = try contactManager.encryptShardBundle(operations: [op], for: contact.identifier)
+            let occ = try contactManager.encryptBundle(for: contact.identifier, shardOperations: [op])
             return (contact.identifier, occ)
         }
     }

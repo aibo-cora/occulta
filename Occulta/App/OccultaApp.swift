@@ -340,9 +340,9 @@ struct OccultaApp: App {
                         .compactMap { $0.attribute?.id }
                         .map { OccultaBundle.ShardOperation(kind: .acknowledge, attrID: $0) }
                     if !ackOps.isEmpty,
-                       let occData = try? self.contactManager.encryptShardBundle(
-                           operations: ackOps,
-                           for: ownerID
+                       let occData = try? self.contactManager.encryptBundle(
+                           for: ownerID,
+                           shardOperations: ackOps
                        ) {
                         let name   = (UUID().uuidString.components(separatedBy: "-").last ?? "ack") + ".occ"
                         let occURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
