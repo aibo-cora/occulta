@@ -352,8 +352,9 @@ private struct ComposeHeroV2: View {
                 let basket  = Basket(files: files)
                 let encoded = try JSONEncoder().encode(basket)
                 var shardOps: [OccultaBundle.ShardOperation] = []
-                if let returnOps = try? self.shardCustodyManager?.pendingReturnOperations(for: self.identifier) { shardOps += returnOps }
-                if let ackOp    = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: self.identifier) { shardOps.append(ackOp) }
+                if let returnOps = try? self.shardCustodyManager?.pendingReturnOperations(for: self.identifier)    { shardOps += returnOps }
+                if let ackOp     = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: self.identifier) { shardOps.append(ackOp) }
+                if let revokeOps = try? self.shardCustodyManager?.pendingRevokeOperations(for: self.identifier)    { shardOps += revokeOps }
                 let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
 
                 guard !encrypted.isEmpty else {

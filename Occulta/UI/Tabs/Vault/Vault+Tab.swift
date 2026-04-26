@@ -75,6 +75,7 @@ extension VaultEntryType {
 
 struct VaultTab: View {
     @Environment(VaultManager.self) private var vault
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
 
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
 
@@ -188,7 +189,10 @@ struct VaultTab: View {
                             }
                         }
                         .onDelete { offsets in
-                            for i in offsets { try? self.vault.deleteEntry(id: self.entries[i].id) }
+                            for i in offsets {
+                                let metadata = try? self.vault.deleteEntry(id: self.entries[i].id)
+                                if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata) }
+                            }
                         }
                     }
                 } header: {

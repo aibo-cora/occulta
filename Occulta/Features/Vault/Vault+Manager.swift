@@ -211,11 +211,21 @@ final class VaultManager {
 
     // MARK: - Delete
 
-    func deleteEntry(id: UUID) throws {
+    /// Delete a vault entry and return its shard distribution metadata, if any.
+    ///
+    /// The metadata is read before deletion so the caller can queue `.revoke`
+    /// operations for each trustee. Returns `nil` when the entry had no
+    /// distributed shards (no action needed from `ShardCustodyManager`).
+    @discardableResult
+    func deleteEntry(id: UUID) throws -> ShardDistributionMetadata? {
         guard let entry = try self.fetchEntry(by: id) else { throw VaultError.entryNotFound }
-        
+
+        let metadata = try? self.shardDistributionMetadata(for: id)
+
         self.modelContext.delete(entry)
         try self.modelContext.save()
+
+        return metadata
     }
 
     // MARK: - Key access

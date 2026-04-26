@@ -13,6 +13,7 @@ struct VaultEntryDetail: View {
     let entryID: UUID
 
     @Environment(VaultManager.self) private var vault
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(\.dismiss) private var dismiss
 
     @Query private var entries: [VaultEntry]
@@ -71,9 +72,8 @@ struct VaultEntryDetail: View {
         .alert("Delete Entry?", isPresented: self.$showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 guard let entry else { return }
-                
-                try? self.vault.deleteEntry(id: entry.id)
-                
+                let metadata = try? self.vault.deleteEntry(id: entry.id)
+                if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata) }
                 self.dismiss()
             }
             Button("Cancel", role: .cancel) {}

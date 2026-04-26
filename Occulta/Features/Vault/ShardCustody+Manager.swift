@@ -211,6 +211,88 @@ final class ShardCustodyManager {
         if deletedAny { try self.modelContext.save() }
     }
 
+    // MARK: - Revocation queuing
+
+    /// Queue `.revoke` operations for every non-revoked shard in `metadata`.
+    ///
+    /// Called immediately after `VaultManager.deleteEntry` returns the metadata.
+    /// For each trustee, upserts one `PendingShardRevoke` row — merging `attrIDs`
+    /// if a row already exists (Alice may delete multiple entries before sending
+    /// the next message to a given trustee).
+    func queueRevokes(from metadata: ShardDistributionMetadata) {
+        do {
+            guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
+
+            let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
+
+            for shard in metadata.shards where shard.status != .revoked {
+                let contactID = shard.contactIdentifier
+                let attrID    = shard.attrID
+
+                // Upsert: find an existing row for this trustee and merge attrIDs.
+                if let existing = pending.first(where: { row in
+                    guard
+                        let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                        let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                        let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
+                    else { return false }
+                    return payload.contactIdentifier == contactID
+                }) {
+                    guard
+                        let box       = try? AES.GCM.SealedBox(combined: existing.encryptedPayload),
+                        let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: existing.aad()),
+                        var payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
+                    else { continue }
+                    let merged  = PendingShardRevoke.Payload(contactIdentifier: contactID, attrIDs: Array(Set(payload.attrIDs).union([attrID])))
+                    let bytes   = try JSONEncoder().encode(merged)
+                    let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: existing.aad())
+                    guard let combined = sealed.combined else { continue }
+                    existing.encryptedPayload = combined
+                } else {
+                    // Insert a new row.
+                    let rowID   = UUID()
+                    let payload = PendingShardRevoke.Payload(contactIdentifier: contactID, attrIDs: [attrID])
+                    let bytes   = try JSONEncoder().encode(payload)
+                    let aad     = Self.rowAAD(id: rowID)
+                    let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+                    guard let combined = sealed.combined else { continue }
+                    self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
+                }
+            }
+            try self.modelContext.save()
+        } catch {
+            #if DEBUG
+            debugPrint("ShardCustodyManager.queueRevokes failed: \(error)")
+            #endif
+        }
+    }
+
+    /// Build `.revoke` operations for any pending revocations owed to `contactIdentifier`.
+    ///
+    /// Deletes the row on send (fire-and-forget). Trustees silently delete the
+    /// matching `CustodyShard` rows; there is no acknowledgement. A missed revoke
+    /// leaves a cryptographically inert orphan shard on the trustee's device.
+    func pendingRevokeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext),
+                payload.contactIdentifier == contactIdentifier
+            else { continue }
+
+            self.modelContext.delete(row)
+            try self.modelContext.save()
+            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .revoke, attrID: $0) }
+        }
+        return nil
+    }
+
     // MARK: - Auto-return delivery
 
     /// Build `.handback` shard operations for every `CustodyShard` we hold for

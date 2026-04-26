@@ -38,6 +38,7 @@ struct OccultaApp: App {
                 ReconstructShard.self,
                 PendingShardReturn.self,
                 PendingReturnAcknowledge.self,
+                PendingShardRevoke.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
@@ -458,8 +459,9 @@ struct OccultaApp: App {
             var basketData = try JSONEncoder().encode(basket)
 
             var shardOps: [OccultaBundle.ShardOperation] = []
-            if let returnOps = try? self.shardCustodyManager.pendingReturnOperations(for: manifest.contactIdentifier) { shardOps += returnOps }
-            if let ackOp    = try? self.shardCustodyManager.pendingAcknowledgeOperation(for: manifest.contactIdentifier) { shardOps.append(ackOp) }
+            if let returnOps = try? self.shardCustodyManager.pendingReturnOperations(for: manifest.contactIdentifier)    { shardOps += returnOps }
+            if let ackOp     = try? self.shardCustodyManager.pendingAcknowledgeOperation(for: manifest.contactIdentifier) { shardOps.append(ackOp) }
+            if let revokeOps = try? self.shardCustodyManager.pendingRevokeOperations(for: manifest.contactIdentifier)    { shardOps += revokeOps }
             let occData = try self.contactManager.encryptBundle(
                 data: basketData, for: manifest.contactIdentifier, shardOperations: shardOps.isEmpty ? nil : shardOps
             )
