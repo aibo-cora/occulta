@@ -8,7 +8,7 @@
 //  Coverage:
 //  - CustodyShard sealed-blob round-trip and AAD binding.
 //  - ReconstructShard sealed-blob round-trip and AAD binding.
-//  - .distribute / .revoke / .request / .respond dispatch.
+//  - .distribute / .revoke / .respond dispatch.
 //  - Multi-entry reconstruction buffer isolation.
 //  - tryFinalizeReconstruction: threshold gate, lock gate, multi-entry independence.
 //
@@ -30,8 +30,7 @@ private func makeAlice(
     let schema = Schema([
         VaultEntry.self,
         CustodyShard.self,
-        ReconstructShard.self,
-        PendingShardRequest.self
+        ReconstructShard.self
     ])
     let config    = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
     let container = try ModelContainer(for: schema, configurations: [config])
@@ -45,8 +44,7 @@ private func makeBob() throws -> (custody: ShardCustodyManager, km: TestKeyManag
     let schema = Schema([
         VaultEntry.self,
         CustodyShard.self,
-        ReconstructShard.self,
-        PendingShardRequest.self
+        ReconstructShard.self
     ])
     let config    = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
     let container = try ModelContainer(for: schema, configurations: [config])
@@ -93,28 +91,6 @@ private func sealedOp(_ op: OccultaBundle.ShardOperation) -> OccultaBundle.Seale
 private func custodyShardCount(in container: ModelContainer) throws -> Int {
     let ctx = ModelContext(container)
     return try ctx.fetch(FetchDescriptor<CustodyShard>()).count
-}
-
-@MainActor
-private func decryptPendingPayload(
-    _ row: PendingShardRequest,
-    key: SymmetricKey
-) throws -> PendingShardRequest.Payload {
-    let box = try AES.GCM.SealedBox(combined: row.encryptedPayload)
-    let pt  = try AES.GCM.open(box, using: key, authenticating: row.aad())
-    return try JSONDecoder().decode(PendingShardRequest.Payload.self, from: pt)
-}
-
-@MainActor
-private func resealPendingPayload(
-    _ payload: PendingShardRequest.Payload,
-    into row: PendingShardRequest,
-    key: SymmetricKey
-) throws {
-    let pt     = try JSONEncoder().encode(payload)
-    let sealed = try AES.GCM.seal(pt, using: key, nonce: AES.GCM.Nonce(), authenticating: row.aad())
-    guard let combined = sealed.combined else { throw CryptoKitError.incorrectParameterSize }
-    row.encryptedPayload = combined
 }
 
 @MainActor
@@ -303,80 +279,6 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             vaultManager:     try makeAlice().vault
         )
         #expect(try custodyShardCount(in: container) == 0)
-    }
-}
-
-// MARK: - .request
-
-@Suite("ShardCustodyManager — .request")
-@MainActor struct RequestTests {
-
-    @Test(".request inserts a PendingShardRequest; payload decrypts correctly")
-    func insertsPending() throws {
-        let alice = TestKeyManager()
-        let (custody, bob, container) = try makeBob()
-
-        let attrID = UUID()
-        _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .request, attrID: attrID)),
-            senderPublicKey:  try alice.retrieveIdentity(),
-            senderIdentifier: "alice",
-            vaultManager:     try makeAlice().vault
-        )
-
-        let ctx  = ModelContext(container)
-        let rows = try ctx.fetch(FetchDescriptor<PendingShardRequest>())
-        #expect(rows.count == 1)
-
-        guard let custodyKey = try bob.deriveShardCustodyKey(), let row = rows.first else {
-            Issue.record("expected one row and a custody key"); return
-        }
-        let payload = try decryptPendingPayload(row, key: custodyKey)
-        #expect(payload.attrID == attrID)
-        #expect(payload.status == .pending)
-    }
-
-    @Test("Duplicate .request bumps receivedAt and resets status to .pending")
-    func duplicateUpdates() throws {
-        let alice = TestKeyManager()
-        let (custody, bob, container) = try makeBob()
-
-        let attrID   = UUID()
-        let alicePub = try alice.retrieveIdentity()
-        let vault    = try makeAlice().vault
-
-        _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .request, attrID: attrID)),
-            senderPublicKey:  alicePub,
-            senderIdentifier: "alice",
-            vaultManager:     vault
-        )
-
-        // Mark declined by re-sealing the payload with an updated status.
-        guard let custodyKey = try bob.deriveShardCustodyKey() else {
-            Issue.record("expected custody key"); return
-        }
-        let ctx = ModelContext(container)
-        if let row = try ctx.fetch(FetchDescriptor<PendingShardRequest>()).first {
-            var payload = try decryptPendingPayload(row, key: custodyKey)
-            payload.status = .declined
-            try resealPendingPayload(payload, into: row, key: custodyKey)
-            try ctx.save()
-        }
-
-        _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .request, attrID: attrID)),
-            senderPublicKey:  alicePub,
-            senderIdentifier: "alice",
-            vaultManager:     vault
-        )
-
-        let after = try ModelContext(container).fetch(FetchDescriptor<PendingShardRequest>())
-        #expect(after.count == 1, "dedup must produce one row, not two")
-
-        guard let afterRow = after.first else { Issue.record("no row after dedup"); return }
-        let afterPayload = try decryptPendingPayload(afterRow, key: custodyKey)
-        #expect(afterPayload.status == .pending, "duplicate must reset status to .pending")
     }
 }
 

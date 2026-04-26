@@ -156,33 +156,6 @@ extension VaultManager {
         }
     }
 
-    /// Build `.request` bundles for all active trustees of `entryID`.
-    ///
-    /// Skips trustees whose shard is already `.lost` or `.revoked`. Returns one
-    /// `(contactIdentifier, occData)` tuple per trustee reached. The caller
-    /// writes each blob to a temp `.occ` file and presents the share sheet.
-    ///
-    /// Requires the vault unlocked (distribution metadata access needed).
-    func requestShardsBack(
-        for entryID: UUID,
-        contactManager: ContactManager
-    ) throws -> [(contactIdentifier: String, occData: Data)] {
-        let vaultKey    = try self.currentKey()
-        guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
-        guard let cipher = entry.shardDistributionEncrypted else { return [] }
-
-        let box       = try AES.GCM.SealedBox(combined: cipher)
-        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad())
-        let meta      = try JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
-
-        return try meta.shards.compactMap { record in
-            guard record.status != .lost, record.status != .revoked else { return nil }
-            let op  = OccultaBundle.ShardOperation(kind: .request, attrID: record.attrID)
-            let occ = try contactManager.encryptShardBundle(operation: op, for: record.contactIdentifier)
-            return (record.contactIdentifier, occ)
-        }
-    }
-
     // MARK: - Delivery tracking
 
     /// Update the status of one ShardRecord identified by its `attrID`.

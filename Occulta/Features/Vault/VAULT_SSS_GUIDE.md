@@ -101,7 +101,7 @@ private key from the public key that is always visible in the recorded bundle
 `.longTermFallback`). Deleting keys from the SE after use does not help a
 future quantum computer that never needed the stored bytes.
 
-ML-KEM-768 in the hybrid session key is the only defense against HNDL.
+ML-KEM-1024 in the hybrid session key is the only defense against HNDL.
 Requiring it for trustees makes the gate explicit and enforced in code.
 
 All contacts exchanged via UWB already have ML-KEM material — the key exchange
@@ -200,9 +200,11 @@ upgrade.
 
 ## Reconstruction flow
 
-1. Alice requests her shards back from trustees via `.occ` (or out-of-band).
-2. Each trustee sends their `SignedAttribute` back via `.occ`.
-3. Alice's app collects ≥ k shards.
+1. Trustees detect Alice's key change during proximity exchange and auto-return
+   their shards. Each sends `.respond` operations in the next outbound bundle to
+   Alice (see "Owner key rotation = auto-return trigger" below).
+2. Alice's app collects arriving shards into the `ReconstructShard` buffer.
+3. When ≥ k shards are buffered, `tryFinalizeReconstruction` runs automatically.
 4. If Alice still has her original SE key: verify each shard's signature.
    If on a new device: skip signature verification, rely on GCM authentication.
 5. Run `ShamirSecretSharing.reconstruct(shares:)` → 32-byte PEK.
@@ -360,19 +362,17 @@ When a bundle carrying one or more `ShardOperation`s arrives:
 1. **Revocations** (`.revoke`) — delete `CustodyShard` immediately; no further action.
 2. **Distributions** (`.distribute`) — store new `CustodyShard`; if `replacesID != nil`,
    delete the old shard with that id.
-3. **Requests** (`.request`) — write `PendingShardRequest`; deduplicate by `attrID`
-   (update `receivedAt` only on duplicates); process automatically if device is unlocked.
-4. **Responses** (`.respond`) — hand shard bytes to the reconstruction flow; queue a
+3. **Responses** (`.respond`) — hand shard bytes to the reconstruction flow; queue a
    `PendingReturnAcknowledge` record so Alice confirms receipt in her next outbound bundle.
-5. **Return acknowledgements** (`.returnAcknowledged`) — trustee receives confirmation
+4. **Return acknowledgements** (`.returnAcknowledged`) — trustee receives confirmation
    that owner stored the returned shards; delete matching `CustodyShard` rows and the
    `PendingShardReturn` record for those `attrID`s.
-6. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
-7. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
+5. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
+6. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
 
-Processing is crash-safe: `PendingShardRequest.processed` stays `false` until the
-response bundle has been successfully queued. Unprocessed records are retried on next
-app launch.
+Processing is crash-safe: `PendingShardReturn` rows are retained until the owner
+confirms receipt via `.returnAcknowledged`. Undelivered returns are retried on the
+next outbound bundle to the owner.
 
 ---
 
@@ -431,11 +431,11 @@ at the moment of exchange (she just got her new device). Deferral gives Alice ti
 set up, and uses the existing outbound bundle pipeline without modification to the
 exchange protocol.
 
-### Badge for pending shard requests
+### Badge for pending shard returns
 
-When Bob has `PendingShardRequest` rows awaiting his response, the UI surfaces a
-badge on the relevant section. Implementation deferred — data is already written,
-only the view is missing.
+When Bob has `PendingShardReturn` rows awaiting delivery, the UI surfaces a badge
+to alert him that shards are queued for auto-return. Implementation deferred —
+data model planned, view not yet built.
 
 ### Key notes
 
@@ -462,7 +462,6 @@ only the view is missing.
 | ShardDistributionMetadata rewrite     | ✅ Done        |
 | CustodyShard SwiftData model (encrypted at rest) | ✅ Done |
 | ReconstructShard buffer (encrypted at rest) | ✅ Done   |
-| PendingShardRequest SwiftData model   | ✅ Done        |
 | Shard custody SE key                  | ✅ Done        |
 | Recovery buffer key (HKDF domain-sep) | ✅ Done        |
 | ShardOperation in SealedPayload       | ✅ Done        |
@@ -473,7 +472,6 @@ only the view is missing.
 | Trustee ML-KEM gate (eligibility enforcement) | ✅ Done        |
 | ShardCustodyManager (inbound router)  | ✅ Done        |
 | .occ delivery pipeline (longTermFallback + ML-KEM) | ✅ Done |
-| Shard request / return flow           | ✅ Done        |
 | Reconstruction flow                   | ✅ Done        |
 | Reconstruction buffer + finalise on unlock | ✅ Done   |
 | New-device recovery (no SE key)       | ✅ Done        |
@@ -495,36 +493,36 @@ only the view is missing.
 ## Inbox / Requests tab (not started)
 
 A unified inbox for all actionable inbound items. Currently two kinds exist:
-shard requests and identity verification challenges. Designed to be extensible
-(document signing, key rotation, etc.).
+pending shard returns (for trustees) and identity verification challenges.
+Designed to be extensible (document signing, key rotation, etc.).
 
 ### Why a tab, not auto-presented sheets
 
 SwiftUI presents only one sheet at a time from the root `WindowGroup`. If the
 user has any sheet open (reading a message, share sheet, etc.) and an identity
-challenge or shard request arrives, the new sheet silently fails to appear. This
-is a real existing bug for identity challenges — the `incomingChallenge` binding
-gets set but nothing shows. The inbox tab fixes this: items persist regardless
-of what UI state the app is in when they arrive.
+challenge arrives, the new sheet silently fails to appear. This is a real
+existing bug for identity challenges — the `incomingChallenge` binding gets set
+but nothing shows. The inbox tab fixes this: items persist regardless of what
+UI state the app is in when they arrive.
 
 ### Design decisions
 
-- **Shard requests**: always go to inbox queue (`PendingShardRequest`). Never
-  auto-presented. Bob sees a badge on the tab, responds when ready.
+- **Pending shard returns**: Bob sees a badge when `PendingShardReturn` rows
+  exist (shards queued for auto-return to an owner who got a new device). Bob
+  does not act manually — delivery is automatic on the next outbound bundle.
+  The badge is informational only.
 - **Identity challenges**: currently auto-present a sheet. Should also route
   to the inbox as a persistent fallback. If the app is idle, auto-present the
   sheet (preserving current behaviour). If any sheet is active, badge the tab.
 - **Identity challenge persistence**: challenges are currently ephemeral —
   `OutstandingChallengeStore` holds some state but there is no SwiftData record.
   A `PendingIdentityChallenge` SwiftData model is needed to support the inbox.
-- **No past history for now**: the inbox shows only actionable (`.pending`)
-  items. A future logs screen can query terminal-state records
-  (`PendingShardRequest.status` in `.sent / .declined / .notFound`). The data
-  is already being written; only the view is missing.
-- **Urgency sorting**: identity challenges should rank above shard requests —
+- **No past history for now**: the inbox shows only actionable items. A future
+  logs screen can surface completed returns and past challenges.
+- **Urgency sorting**: identity challenges should rank above shard returns —
   the challenger is actively waiting. Sort by kind first, then `receivedAt`.
 - **Tab visibility**: show the tab only when the badge count is > 0, or always
-  show it. Decision deferred — depends on how often requests arrive in practice.
+  show it. Decision deferred — depends on how often items arrive in practice.
 
 ### Not needed
 - Cryptographic shard revocation — old shards become inert automatically when

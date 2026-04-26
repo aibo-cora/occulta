@@ -170,7 +170,6 @@ struct OccultaBundle: Codable {
     /// | .distribute  | ✅        | —      | optional   |
     /// | .acknowledge | —         | ✅     | —          |
     /// | .revoke      | —         | ✅     | —          |
-    /// | .request     | —         | ✅     | —          |
     /// | .respond     | ✅        | —      | —          |
     /// | .notFound    | —         | ✅     | —          |
     ///
@@ -186,9 +185,7 @@ struct OccultaBundle: Codable {
             case acknowledge
             /// Owner → trustee: discard this shard (PEK rotated or trustee removed).
             case revoke
-            /// Owner → trustee: please send me my shard back.
-            case request
-            /// Trustee → owner: here is your shard back.
+            /// Trustee → owner: here is your shard back (auto-return on key change).
             case respond
             /// Trustee → owner: I don't have a shard with this ID.
             case notFound
@@ -198,7 +195,7 @@ struct OccultaBundle: Codable {
         /// The `SignedAttribute` shard payload. Non-nil for `.distribute` and `.respond`.
         let attribute: SignedAttribute?
         /// The target shard's `SignedAttribute.id`. Non-nil for `.acknowledge`, `.revoke`,
-        /// `.request`, and `.notFound`.
+        /// and `.notFound`.
         let attrID: UUID?
         /// For `.distribute`: the `SignedAttribute.id` of an older shard this supersedes.
         /// Trustee apps discard the old shard on receipt. Nil on first distribution.

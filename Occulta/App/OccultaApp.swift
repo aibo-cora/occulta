@@ -36,7 +36,6 @@ struct OccultaApp: App {
                 VaultEntry.self,
                 CustodyShard.self,
                 ReconstructShard.self,
-                PendingShardRequest.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
@@ -314,8 +313,8 @@ struct OccultaApp: App {
                 }
 
                 // Shard-protocol traffic rides on the same envelope. Route on
-                // sealed.shardOperation; ShardCustodyManager handles all six
-                // ops (.distribute / .acknowledge / .revoke / .request /
+                // sealed.shardOperation; ShardCustodyManager handles all five
+                // ops (.distribute / .acknowledge / .revoke /
                 // .respond / .notFound) and decides what to persist.
                 if let op = sealed.shardOperation,
                    let senderPub = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
