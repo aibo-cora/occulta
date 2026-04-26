@@ -378,11 +378,17 @@ app launch.
 
 ## Trustee key rotation = implicit shard loss
 
-When a trustee (Bob) re-exchanges keys with Alice, Bob's old public key is replaced.
-Any shard Alice distributed to Bob was encrypted to Bob's old session key — Bob's new
-SE key cannot derive the same session key, so Bob can no longer decrypt the bundle.
-Alice marks that shard's `ShardRecord.status` as `.lost` immediately on detecting
-Bob's key change — no explicit "I lost my shard" message type is needed.
+When a trustee (Bob) re-exchanges keys with Alice, Bob's identity key fingerprint
+has changed. Since Occulta has no in-app identity key rotation, this can only mean
+Bob is on a new device. A new device is a clean app install: Bob's SwiftData store
+is empty, so his `CustodyShard` rows no longer exist.
+
+Alice detects the fingerprint change and marks that shard's `ShardRecord.status` as
+`.lost` — no explicit "I lost my shard" message type is needed.
+
+Note: `Contact.Profile.identifier` is a stable SwiftData UUID created on init and
+does not change across key re-exchanges. Alice's `ShardDistributionMetadata` remains
+valid after Bob re-exchanges — only the shard itself is gone, not the routing metadata.
 
 ---
 
