@@ -522,9 +522,9 @@ data model planned, view not yet built.
 | attrIDs: [UUID] on ShardOperation (acknowledge payload) | ✅ Done |
 | PendingShardReturn SwiftData model    | ✅ Done |
 | PendingReturnAcknowledge SwiftData model | ✅ Done |
-| Key-change detection in exchange flow | ❌ Not started |
-| Auto-return trigger + delivery hook   | ❌ Not started |
-| Return acknowledge send + cleanup     | ❌ Not started |
+| Key-change detection in exchange flow | ✅ Done |
+| Auto-return trigger + delivery hook   | ✅ Done |
+| Return acknowledge send + cleanup     | ✅ Done |
 | PEK rotation on content change        | ❌ Not started |
 | Inbox / Requests tab (+ badge)        | ❌ Not started |
 | Feature flag (hidden until done)      | ✅ Done        |
