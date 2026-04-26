@@ -151,7 +151,7 @@ extension VaultManager {
 
         return try zip(recipients, attributes).map { contact, attribute in
             let op  = OccultaBundle.ShardOperation(kind: .distribute, attribute: attribute)
-            let occ = try contactManager.encryptShardBundle(operation: op, for: contact.identifier)
+            let occ = try contactManager.encryptShardBundle(operations: [op], for: contact.identifier)
             return (contact.identifier, occ)
         }
     }

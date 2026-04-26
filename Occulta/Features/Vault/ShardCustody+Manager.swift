@@ -4,12 +4,13 @@
 //
 //  Inbound router for `ShardOperation` traffic decoded from `.occ` bundles.
 //  Mirrors the IdentityChallenge.Coordinator pattern: the OccultaApp peeks at
-//  `SealedPayload.shardOperation` and hands the bundle here when non-nil.
+//  `SealedPayload.shardOperations` and hands the bundle here when non-nil.
 //
 //  Two roles, one router:
 //    - Trustee path: accept `.distribute` shards, store them as encrypted
-//      CustodyShard rows; serve `.revoke` from the owner.
-//    - Owner path: receive `.respond`, `.acknowledge`, `.notFound` from
+//      CustodyShard rows; serve `.revoke` from the owner; auto-return shards
+//      as `.handback` when the owner's identity key changes.
+//    - Owner path: receive `.handback`, `.acknowledge`, `.notFound` from
 //      trustees and update local recovery state.
 //
 //  Outbound `.occ` packing (acks, responses, revokes) is intentionally
@@ -55,7 +56,7 @@ final class ShardCustodyManager {
     ) -> Bool {
         guard let ops = sealed.shardOperations, !ops.isEmpty else { return false }
 
-        // Collect attrIDs from successfully absorbed .respond operations so we
+        // Collect attrIDs from successfully absorbed .handback operations so we
         // can queue a single PendingReturnAcknowledge for this sender afterwards.
         var respondedAttrIDs: [UUID] = []
 
@@ -64,8 +65,8 @@ final class ShardCustodyManager {
                 switch op.kind {
                 case .distribute:         try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
                 case .revoke:             try self.handleRevoke(op: op)
-                case .respond:
-                    try self.handleRespond(op: op, vaultManager: vaultManager)
+                case .handback:
+                    try self.handleHandback(op: op, vaultManager: vaultManager)
                     if let attrID = op.attribute?.id { respondedAttrIDs.append(attrID) }
                 case .acknowledge:        try self.handleAcknowledge(op: op, vaultManager: vaultManager)
                 case .notFound:           try self.handleNotFound(op: op, vaultManager: vaultManager)
@@ -153,8 +154,8 @@ final class ShardCustodyManager {
 
     // MARK: - Owner path
 
-    /// `.respond` — trustee returned one of our shards.
-    private func handleRespond(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
+    /// `.handback` — trustee returned one of our shards (auto-return after key change).
+    private func handleHandback(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
         }
@@ -212,14 +213,12 @@ final class ShardCustodyManager {
 
     // MARK: - Auto-return delivery
 
-    /// Build `.respond` shard operations for every `CustodyShard` we hold for
+    /// Build `.handback` shard operations for every `CustodyShard` we hold for
     /// `contactIdentifier`, provided a `PendingShardReturn` row exists for them.
     ///
-    /// Call this before sealing any outbound bundle to a contact. If the result
-    /// is non-nil, pass it to `ContactManager.encryptBundle(data:for:shardOperations:)`.
-    ///
-    /// Returns `nil` when no `PendingShardReturn` exists for this contact,
-    /// or when no matching `CustodyShard` rows can be decrypted.
+    /// Returns ALL shards for the contact in one call — the bundle piggybacking
+    /// these ops must carry the full set, not a subset. Returns `nil` when no
+    /// `PendingShardReturn` exists or no matching shards can be decrypted.
     func pendingReturnOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
@@ -237,11 +236,11 @@ final class ShardCustodyManager {
         }
         guard hasPending else { return nil }
 
-        // Build .respond operations from all matching custody shards.
+        // Build .handback operations from ALL matching custody shards.
         let ops = try self.decryptAllCustodyShards()
             .filter { $0.payload.ownerContactIdentifier == contactIdentifier }
             .map { decoded in
-                OccultaBundle.ShardOperation(kind: .respond, attribute: decoded.payload.signedAttribute)
+                OccultaBundle.ShardOperation(kind: .handback, attribute: decoded.payload.signedAttribute)
             }
         return ops.isEmpty ? nil : ops
     }

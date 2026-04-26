@@ -118,6 +118,24 @@ flow always generates it. Contacts added via Bluetooth-only exchange do not.
 Shard bundles always use **`longTermFallback` + ML-KEM**. Prekeys are never
 consumed for shard traffic.
 
+### Encryption API
+
+Two functions handle outbound shard traffic in `ContactManager`:
+
+- **`encryptShardBundle(operations:for:)`** — standalone shard-protocol bundle.
+  Always requires ML-KEM (throws `trusteeLacksQuantumMaterial` if absent).
+  Never consumes prekeys, never carries a prekey sync batch. Accepts an array
+  so all operations for one contact travel in a single bundle (e.g., one
+  `.acknowledge` per received `.distribute`; all `.distribute` ops for a trustee).
+
+- **`encryptBundle(data:for:shardOperations:)`** — regular message bundle with
+  optional piggybacked shard operations. Enforces ML-KEM when `shardOperations`
+  contains any `.handback` op — the ML-KEM gate applies regardless of call site.
+  Consumes prekeys and carries prekey sync batches as normal.
+
+Both call the shared private `resolveKeyMaterial(for:requireQuantum:)` helper
+so the key-lookup and quantum-decode logic is defined exactly once.
+
 Session key derivation:
 ```
 HKDF-SHA256(
@@ -152,7 +170,7 @@ logic needed in the delivery path.
 ## Shard delivery envelope
 
 Each shard is delivered to a trustee as a `.occ` bundle using `longTermFallback`
-mode. The delivery envelope (inside `SealedPayload.shardOperation`) carries:
+mode. The delivery envelope (inside `SealedPayload.shardOperations`) carries:
 
 ```
 newShard:    SignedAttribute   // the shard to store
@@ -205,7 +223,7 @@ upgrade.
 ## Reconstruction flow
 
 1. Trustees detect Alice's key change during proximity exchange and auto-return
-   their shards. Each sends `.respond` operations in the next outbound bundle to
+   their shards. Each sends `.handback` operations in the next outbound bundle to
    Alice (see "Owner key rotation = auto-return trigger" below).
 2. Alice's app collects arriving shards into the `ReconstructShard` buffer.
 3. When ≥ k shards are buffered, `tryFinalizeReconstruction` runs automatically.
@@ -229,7 +247,7 @@ reconstruction, asking her to redistribute.
 
 ## Reconstruction buffer (`ReconstructShard`)
 
-Owner-side transient queue for `.respond` bundles arriving during recovery. Each
+Owner-side transient queue for `.handback` bundles arriving during recovery. Each
 arriving shard becomes one `ReconstructShard` row, sealed under the recovery
 buffer key with AAD = `id` (id-only). The plaintext columns carry no
 identifying information.
@@ -250,8 +268,8 @@ one with the other" and a stray cleanup query cannot accidentally cross-contamin
 
 | Event                            | Action                                                      |
 |----------------------------------|-------------------------------------------------------------|
-| `.respond` arrives, vault locked | Insert row. Finalisation deferred to next vault unlock.     |
-| `.respond` arrives, vault unlocked | Insert row, then opportunistic `tryFinalizeReconstruction`. |
+| `.handback` arrives, vault locked | Insert row. Finalisation deferred to next vault unlock.     |
+| `.handback` arrives, vault unlocked | Insert row, then opportunistic `tryFinalizeReconstruction`. |
 | Vault unlock                     | Sweep all entries with `shardDistributionEncrypted` and finalise any that crossed threshold while locked. |
 | Reconstruction succeeds          | Bulk-delete all rows whose payload references that `entryID`. |
 | User cancels recovery            | Bulk-delete by `entryID` (decrypt-and-filter).              |
@@ -287,7 +305,7 @@ The transition `.confirmed → .lost` is valid because a trustee may lose their 
 
 ### Why custody-key-class access (no biometric)
 
-`.respond` bundles can arrive while the vault is locked. The recovery buffer
+`.handback` bundles can arrive while the vault is locked. The recovery buffer
 key is derived from the custody SE key (device-unlock, no biometric) so the
 buffer can absorb shards without prompting. Reconstruction itself still requires
 the vault unlocked — re-wrapping the recovered PEK under the vault key needs
@@ -396,7 +414,7 @@ When a bundle carrying one or more `ShardOperation`s arrives:
 1. **Revocations** (`.revoke`) — delete `CustodyShard` immediately; no further action.
 2. **Distributions** (`.distribute`) — store new `CustodyShard`; if `replacesID != nil`,
    delete the old shard with that id.
-3. **Responses** (`.respond`) — hand shard bytes to the reconstruction flow; queue a
+3. **Handbacks** (`.handback`) — hand shard bytes to the reconstruction flow; queue a
    `PendingReturnAcknowledge` record so Alice confirms receipt in her next outbound bundle.
 4. **Return acknowledgements** (`.returnAcknowledged`) — trustee receives confirmation
    that owner stored the returned shards; delete matching `CustodyShard` rows and the
@@ -444,11 +462,14 @@ Bob's app responds automatically:
    `scheduledAt` rather than inserting a second row. Encrypted at rest under the
    shard custody key: `Payload { contactIdentifier, scheduledAt }`, AAD = id-only.
 3. **Deliver** — before any outbound bundle is sent to Alice, check for a
-   `PendingShardReturn` for her. If found, generate `.respond` operations for all
+   `PendingShardReturn` for her. If found, generate `.handback` operations for **all**
    matching `CustodyShard` rows and include them in `SealedPayload.shardOperations`.
-   The bundle is encrypted to Alice's new identity key using the standard
-   `longTermFallback + ML-KEM` mode (the new key was stored during the exchange).
-4. **Confirm** — Alice receives the `.respond` operations, stores each in
+   All shards for the contact travel in the same bundle — partial returns are not
+   allowed. `ContactManager.encryptBundle` enforces ML-KEM when `shardOperations`
+   contains `.handback` ops: if Alice's new key lacks quantum material the call
+   throws `trusteeLacksQuantumMaterial` (cannot happen in practice — UWB exchange
+   always produces quantum material — but the gate is explicit in code).
+4. **Confirm** — Alice receives the `.handback` operations, stores each in
    `ReconstructShard`, and queues a `PendingReturnAcknowledge` record: `Payload
    { contactIdentifier, attrIDs: [UUID] }`, sealed under the recovery buffer key,
    AAD = id-only. In her next outbound bundle to Bob, she includes a
@@ -482,7 +503,7 @@ data model planned, view not yet built.
   not on send. If Alice's app never acknowledges (crash, new device again), Bob
   retries on his next outbound bundle to Alice.
 - If Bob holds shards for Alice across multiple vault entries, all are returned in
-  a single bundle (one `.respond` operation per shard, all in `shardOperations`).
+  a single bundle (one `.handback` operation per shard, all in `shardOperations`).
 - The returned `SignedAttribute`s were signed with Alice's old SE key. Verification
   fails on Alice's new device by design — GCM authentication on reconstruction is
   the integrity check (see "Signature verification after device loss").

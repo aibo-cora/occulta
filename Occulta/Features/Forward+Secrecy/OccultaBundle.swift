@@ -170,7 +170,7 @@ struct OccultaBundle: Codable {
     /// | .distribute         | ✅        | —      | —       | optional   |
     /// | .acknowledge        | —         | ✅     | —       | —          |
     /// | .revoke             | —         | ✅     | —       | —          |
-    /// | .respond            | ✅        | —      | —       | —          |
+    /// | .handback           | ✅        | —      | —       | —          |
     /// | .notFound           | —         | ✅     | —       | —          |
     /// | .returnAcknowledged | —         | —      | ✅      | —          |
     ///
@@ -187,7 +187,10 @@ struct OccultaBundle: Codable {
             /// Owner → trustee: discard this shard (PEK rotated or trustee removed).
             case revoke
             /// Trustee → owner: here is your shard back (auto-return on key change).
-            case respond
+            ///
+            /// Named `.handback` rather than `.return` (a Swift reserved word) or
+            /// `.respond` (which implied a prior `.request` that no longer exists).
+            case handback
             /// Trustee → owner: I don't have a shard with this ID.
             case notFound
             /// Owner → trustee: I received these shards — you may delete your custody rows.
@@ -203,7 +206,7 @@ struct OccultaBundle: Codable {
         }
 
         let kind: Kind
-        /// The `SignedAttribute` shard payload. Non-nil for `.distribute` and `.respond`.
+        /// The `SignedAttribute` shard payload. Non-nil for `.distribute` and `.handback`.
         let attribute: SignedAttribute?
         /// The target shard's `SignedAttribute.id`. Non-nil for `.acknowledge`, `.revoke`,
         /// and `.notFound`.
