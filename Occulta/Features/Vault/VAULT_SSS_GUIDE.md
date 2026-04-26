@@ -350,21 +350,6 @@ prompting redistribution. Active = `sent` + `confirmed` shards only.
 
 ---
 
-## PEK rotation (content change)
-
-When an entry's content changes (if editing is ever supported):
-1. Generate a new PEK.
-2. Re-encrypt label and content with the new PEK.
-3. Seal new PEK under vault key → update `encryptedEntryKey`.
-4. Run a fresh SSS split on the new PEK.
-5. Deliver new shards with `replacesID` set to each trustee's current attrID.
-6. Trustees' apps automatically discard the old shard on receipt.
-
-Old shards are cryptographically inert after rotation — they reconstruct the
-old PEK which no longer encrypts anything.
-
----
-
 ## Shard custody and recovery buffer keys
 
 Shard operations require a dedicated SE key — separate from the identity key
@@ -551,7 +536,6 @@ exchange protocol.
 | Key-change detection in exchange flow | ✅ Done |
 | Auto-return trigger + delivery hook   | ✅ Done |
 | Return acknowledge send + cleanup     | ✅ Done |
-| PEK rotation on content change        | ❌ Not started |
 | Feature flag (hidden until done)      | ✅ Done        |
 
 ---
