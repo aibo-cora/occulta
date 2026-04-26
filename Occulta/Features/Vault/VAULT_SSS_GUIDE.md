@@ -120,21 +120,31 @@ consumed for shard traffic.
 
 ### Encryption API
 
-Two functions handle outbound shard traffic in `ContactManager`:
+A single **`encryptBundle(data:for:shardOperations:)`** handles all outbound
+bundles. Mode selection is automatic and enforced inside the function — it
+cannot be bypassed at the call site:
 
-- **`encryptShardBundle(operations:for:)`** — standalone shard-protocol bundle.
-  Always requires ML-KEM (throws `trusteeLacksQuantumMaterial` if absent).
-  Never consumes prekeys, never carries a prekey sync batch. Accepts an array
-  so all operations for one contact travel in a single bundle (e.g., one
-  `.acknowledge` per received `.distribute`; all `.distribute` ops for a trustee).
+```
+shardMode = data == nil || shardOperations.contains { $0.attribute != nil }
+```
 
-- **`encryptBundle(data:for:shardOperations:)`** — regular message bundle with
-  optional piggybacked shard operations. Enforces ML-KEM when `shardOperations`
-  contains any `.handback` op — the ML-KEM gate applies regardless of call site.
-  Consumes prekeys and carries prekey sync batches as normal.
+**Shard mode** (any `.distribute` or `.handback` op present, or `data == nil`):
+- ML-KEM required; throws `trusteeLacksQuantumMaterial` if absent.
+- `contactPrekey: nil` — `Manager.Crypto.seal` uses `longTermFallback`.
+- No prekey consumption. No prekey sync batch. No model context save.
+- `data` defaults to a human-readable fallback for old builds.
 
-Both call the shared private `resolveKeyMaterial(for:requireQuantum:)` helper
-so the key-lookup and quantum-decode logic is defined exactly once.
+**Message mode** (no `attribute`-carrying ops, `data` non-nil):
+- Normal v3fs path: `configureForwardSecrecy`, prekey pop (→ `.forwardSecret`
+  when a prekey is available, `.longTermFallback` when exhausted), pending
+  prekey sync batch attached, prekey state saved.
+
+The condition keys on `op.attribute != nil` rather than enumerating kinds —
+any future operation that carries a `SignedAttribute` automatically gets shard
+mode treatment without touching the gate.
+
+The private `resolveKeyMaterial(for:requireQuantum:)` helper decrypts the
+contact's key record once; both modes call it.
 
 Session key derivation:
 ```
