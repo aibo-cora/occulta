@@ -50,8 +50,7 @@ enum ShardStatus: String, Codable {
 
 /// One shard's delivery record within a ShardDistributionMetadata.
 struct ShardRecord: Codable {
-    /// SHA-256(contact's public key) — stable across contact record updates,
-    /// will migrate to Data (keyFingerprint) in the ShardCustodyManager phase.
+    /// `Contact.Profile.identifier` — a stable SwiftData UUID, not derived from the key fingerprint.
     let contactIdentifier: String
     /// The SignedAttribute.id for this shard — used to match replacesID in re-distributions.
     let attrID: UUID

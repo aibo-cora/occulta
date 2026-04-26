@@ -35,6 +35,9 @@ struct VaultEntryDetail: View {
                     self.hero(entry: entry)
                     self.contentCard(entry: entry)
                     self.metaCard(entry: entry)
+                    if let erosion = self.shardErosion {
+                        self.erosionBanner(active: erosion.active, threshold: erosion.threshold)
+                    }
                     self.provenance
                 }
                 .padding(16)
@@ -215,6 +218,36 @@ struct VaultEntryDetail: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    // MARK: - Shard erosion
+
+    private var shardErosion: (active: Int, threshold: Int)? {
+        guard let meta = try? vault.shardDistributionMetadata(for: entryID) else { return nil }
+        let active = meta.shards.filter { $0.status == .sent || $0.status == .confirmed }.count
+        guard active < meta.threshold else { return nil }
+        return (active, meta.threshold)
+    }
+
+    private func erosionBanner(active: Int, threshold: Int) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recovery at risk")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)))
+                Text("\(active) of \(threshold) required trustees have active shards — below threshold. Redistribute to restore recovery coverage.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)).opacity(0.85))
+                    .lineSpacing(2)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - Provenance note (green info block per spec)

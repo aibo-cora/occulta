@@ -63,6 +63,10 @@ expiry could edit the serialized `expiresAt` to nil — the ECDSA signature woul
 still verify because the expiry wasn't covered. With v2, any modification to
 `createdAt` or `expiresAt` invalidates the signature.
 
+`expiresAt` is always nil for shards in the current implementation — enforcement
+is deferred until expiry is actually set. The signed payload already covers the
+field so future enforcement will have a cryptographically verified value to check.
+
 ### Signature verification after device loss
 
 The SE key is non-exportable and non-migratable. On a new device, Alice has a
@@ -215,6 +219,12 @@ upgrade.
      Surface error; do not persist.
 7. Zero the reconstructed PEK bytes immediately after re-wrapping.
 
+After successful reconstruction Alice's `shardDistributionEncrypted` still exists
+but references trustees who may no longer hold shards (they were returned and will
+be deleted on `.returnAcknowledged`). The entry detail view surfaces a
+"re-establish recovery" prompt the first time Alice opens the entry after
+reconstruction, asking her to redistribute.
+
 ---
 
 ## Reconstruction buffer (`ReconstructShard`)
@@ -248,6 +258,10 @@ one with the other" and a stray cleanup query cannot accidentally cross-contamin
 
 Multiple recoveries coexist trivially because rows are filtered by the sealed
 `entryID` field at decrypt time — no new types needed for parallel recoveries.
+
+`VaultManager` is `@MainActor` — all calls to `tryFinalizeReconstruction` and
+`tryFinalizeAllReconstructions` are serialised on the main thread. Concurrent
+finalisation is not possible in practice; no additional locking is needed.
 
 ---
 
@@ -284,6 +298,27 @@ the vault SE key.
 | | Without ReconstructShard | With ReconstructShard |
 |---|---|---|
 | Cold-disk forensics | (can't recover at all from process kill) | "Alice has N rows in the reconstruct buffer." Nothing about which entries, how many shards each, or who sent them. |
+
+---
+
+## Shard revocation
+
+`.revoke` carries only the `attrID` — it is globally unique so no `entryID` is
+needed. Bob's inbound handler deletes the matching `CustodyShard` row immediately.
+
+**What triggers revocation:**
+- Owner removes a trustee from the trustee list (user action).
+- Re-distribution of an entry: new shards supersede old ones; Alice sends
+  `.revoke` for each old `attrID` alongside or after the new `.distribute`.
+
+**Alice's side:** when Alice generates a `.revoke` bundle, she marks the
+corresponding `ShardRecord.status` to `.revoked` before (or atomically with)
+sending. `.revoked` is a terminal state — the shard must be re-distributed as
+a new record with a new `attrID` to restore coverage.
+
+**Threshold erosion:** when `.lost` or `.revoked` records reduce the active
+shard count below `threshold`, the entry detail view shows an inline warning
+prompting redistribution. Active = `sent` + `confirmed` shards only.
 
 ---
 
@@ -338,10 +373,9 @@ Derivation: `ECDH(shardCustodySEKey, G) → HKDF-SHA256(salt: custodyPubKey, inf
 
 ## Contact identifier for shards
 
-`ShardRecord.contactIdentifier` is a `String` holding the contact's identifier from
-`Contact.Profile`. A future migration to `Data` (SHA-256 of the contact's public key)
-is planned for the ShardCustodyManager phase, which will have direct access to the
-contact's key record.
+`ShardRecord.contactIdentifier` is a `String` holding `Contact.Profile.identifier`
+— a stable SwiftData UUID created on profile init. It does not change across key
+re-exchanges and does not encode the public key fingerprint.
 
 `CustodyShard.Payload.ownerKeyFingerprint` is `Data` (SHA-256 of the owner's public
 key) — the shard-receiving side has the owner's public key from the signed
@@ -404,10 +438,11 @@ Bob's app responds automatically:
 1. **Trigger** — on key exchange completion, compare the incoming fingerprint against
    the stored one. If they differ, look up all `CustodyShard` rows where
    `ownerContactIdentifier` matches Alice's contact identifier.
-2. **Schedule** — insert one `PendingShardReturn` row per matching contact (not per
-   shard — the pending record covers all shards for that contact). Encrypted at rest
-   under the shard custody key: `Payload { contactIdentifier, scheduledAt }`,
-   AAD = id-only.
+2. **Schedule** — upsert one `PendingShardReturn` row per matching contact (not per
+   shard — the pending record covers all shards for that contact). If a row for
+   this contact already exists (Alice re-exchanged again before delivery), update
+   `scheduledAt` rather than inserting a second row. Encrypted at rest under the
+   shard custody key: `Payload { contactIdentifier, scheduledAt }`, AAD = id-only.
 3. **Deliver** — before any outbound bundle is sent to Alice, check for a
    `PendingShardReturn` for her. If found, generate `.respond` operations for all
    matching `CustodyShard` rows and include them in `SealedPayload.shardOperations`.
@@ -417,7 +452,11 @@ Bob's app responds automatically:
    `ReconstructShard`, and queues a `PendingReturnAcknowledge` record: `Payload
    { contactIdentifier, attrIDs: [UUID] }`, sealed under the recovery buffer key,
    AAD = id-only. In her next outbound bundle to Bob, she includes a
-   `.returnAcknowledged` operation carrying those `attrID`s.
+   `.returnAcknowledged` operation carrying those `attrID`s. `PendingReturnAcknowledge`
+   is deleted on send (not on Bob's confirmation). If Bob never receives it and
+   resends, Alice re-inserts the shards idempotently — re-reconstruction produces
+   the same PEK and re-wrapping is safe. The retry cycle terminates when Bob
+   receives one acknowledgement and deletes his custody rows.
 5. **Cleanup** — Bob receives `.returnAcknowledged`, matches the `attrID`s against
    his `CustodyShard` rows, deletes the confirmed rows, and deletes the
    `PendingShardReturn` record. Bob never deletes a shard until he has explicit

@@ -156,6 +156,20 @@ extension VaultManager {
         }
     }
 
+    // MARK: - Shard status reader
+
+    /// Read the ShardDistributionMetadata for an entry without modifying it.
+    ///
+    /// Returns nil when no distribution exists or when the vault is locked.
+    func shardDistributionMetadata(for entryID: UUID) throws -> ShardDistributionMetadata? {
+        guard let entry   = try self.fetchEntry(by: entryID) else { return nil }
+        guard let cipher  = entry.shardDistributionEncrypted else { return nil }
+        let vaultKey  = try self.currentKey()
+        let box       = try AES.GCM.SealedBox(combined: cipher)
+        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad())
+        return try JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
+    }
+
     // MARK: - Delivery tracking
 
     /// Update the status of one ShardRecord identified by its `attrID`.
