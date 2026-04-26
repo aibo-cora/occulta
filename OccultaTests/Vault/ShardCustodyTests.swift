@@ -84,7 +84,7 @@ private func makeShardAttr(
 
 @MainActor
 private func sealedOp(_ op: OccultaBundle.ShardOperation) -> OccultaBundle.SealedPayload {
-    OccultaBundle.SealedPayload(message: Data(), shardOperation: op)
+    OccultaBundle.SealedPayload(message: Data(), shardOperations: [op])
 }
 
 @MainActor

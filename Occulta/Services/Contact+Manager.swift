@@ -955,7 +955,7 @@ extension ContactManager {
         else { throw Errors.trusteeLacksQuantumMaterial }
 
         let fallback = Data("Occulta vault operation. Please update your app.".utf8)
-        let payload  = OccultaBundle.SealedPayload(message: fallback, shardOperation: operation)
+        let payload  = OccultaBundle.SealedPayload(message: fallback, shardOperations: [operation])
         let encoded  = try JSONEncoder().encode(payload)
 
         let bundle = try cryptoOps.seal(

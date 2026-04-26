@@ -53,19 +53,23 @@ final class ShardCustodyManager {
         senderIdentifier:  String,
         vaultManager:      VaultManager
     ) -> Bool {
-        guard let op = sealed.shardOperation else { return false }
-        do {
-            switch op.kind {
-            case .distribute:  try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
-            case .revoke:      try self.handleRevoke(op: op)
-            case .respond:     try self.handleRespond(op: op, vaultManager: vaultManager)
-            case .acknowledge: try self.handleAcknowledge(op: op, vaultManager: vaultManager)
-            case .notFound:    try self.handleNotFound(op: op, vaultManager: vaultManager)
+        guard let ops = sealed.shardOperations, !ops.isEmpty else { return false }
+        for op in ops {
+            do {
+                switch op.kind {
+                case .distribute:         try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
+                case .revoke:             try self.handleRevoke(op: op)
+                case .respond:            try self.handleRespond(op: op, vaultManager: vaultManager)
+                case .acknowledge:        try self.handleAcknowledge(op: op, vaultManager: vaultManager)
+                case .notFound:           try self.handleNotFound(op: op, vaultManager: vaultManager)
+                case .returnAcknowledged: break // TODO: Phase 2 — delete CustodyShard rows + PendingShardReturn
+                case .unsupported:        break
+                }
+            } catch {
+                #if DEBUG
+                debugPrint("ShardCustodyManager dispatch failed for \(op.kind): \(error)")
+                #endif
             }
-        } catch {
-            #if DEBUG
-            debugPrint("ShardCustodyManager dispatch failed for \(op.kind): \(error)")
-            #endif
         }
         return true
     }
@@ -95,8 +99,9 @@ final class ShardCustodyManager {
         let rowID     = UUID()
         let aad       = Self.rowAAD(id: rowID)
         let payload   = CustodyShard.Payload(
-            ownerKeyFingerprint: Self.fingerprint(of: senderPublicKey),
-            signedAttribute:     attribute
+            ownerKeyFingerprint:    Self.fingerprint(of: senderPublicKey),
+            ownerContactIdentifier: senderIdentifier,
+            signedAttribute:        attribute
         )
         let plaintext = try JSONEncoder().encode(payload)
         let sealed    = try AES.GCM.seal(plaintext, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)

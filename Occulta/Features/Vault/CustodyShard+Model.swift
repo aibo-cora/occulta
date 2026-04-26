@@ -66,10 +66,12 @@ final class CustodyShard {
     /// "all shards from contact X" requires decrypting every row — acceptable
     /// for the realistic N (low hundreds at most).
     struct Payload: Codable {
-        /// SHA-256(ownerPublicKey) — stable contact identifier across app
-        /// restarts. The shard-receiving side has the owner's public key from
-        /// the SignedAttribute itself, so we store the hash for indexing only.
+        /// SHA-256(ownerPublicKey) — used to detect key changes at re-exchange.
         let ownerKeyFingerprint: Data
+        /// `Contact.Profile.identifier` of the owner in Bob's contact book.
+        /// Used to look up all shards for a given owner at auto-return time.
+        /// Optional for backward-compat with rows sealed before this field was added.
+        let ownerContactIdentifier: String?
         /// The owner-signed shard attribute (category == .shard).
         let signedAttribute: SignedAttribute
     }

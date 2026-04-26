@@ -313,10 +313,10 @@ struct OccultaApp: App {
                 }
 
                 // Shard-protocol traffic rides on the same envelope. Route on
-                // sealed.shardOperation; ShardCustodyManager handles all five
-                // ops (.distribute / .acknowledge / .revoke /
-                // .respond / .notFound) and decides what to persist.
-                if let op = sealed.shardOperation,
+                // sealed.shardOperations; ShardCustodyManager handles all ops
+                // (.distribute / .acknowledge / .revoke / .respond /
+                // .notFound / .returnAcknowledged) and decides what to persist.
+                if let ops = sealed.shardOperations, !ops.isEmpty,
                    let senderPub = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                     _ = self.shardCustodyManager.handleInbound(
                         sealed:           sealed,
@@ -326,7 +326,8 @@ struct OccultaApp: App {
                     )
 
                     // After receiving a shard, send an acknowledgment back to the owner.
-                    if op.kind == .distribute, let attrID = op.attribute?.id,
+                    if let distributeOp = ops.first(where: { $0.kind == .distribute }),
+                       let attrID  = distributeOp.attribute?.id,
                        let occData = try? self.contactManager.encryptShardBundle(
                            operation: OccultaBundle.ShardOperation(kind: .acknowledge, attrID: attrID),
                            for: ownerID
