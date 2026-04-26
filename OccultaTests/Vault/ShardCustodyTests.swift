@@ -96,6 +96,28 @@ private func custodyShardCount(in container: ModelContainer) throws -> Int {
 }
 
 @MainActor
+private func decryptPendingPayload(
+    _ row: PendingShardRequest,
+    key: SymmetricKey
+) throws -> PendingShardRequest.Payload {
+    let box = try AES.GCM.SealedBox(combined: row.encryptedPayload)
+    let pt  = try AES.GCM.open(box, using: key, authenticating: row.aad())
+    return try JSONDecoder().decode(PendingShardRequest.Payload.self, from: pt)
+}
+
+@MainActor
+private func resealPendingPayload(
+    _ payload: PendingShardRequest.Payload,
+    into row: PendingShardRequest,
+    key: SymmetricKey
+) throws {
+    let pt     = try JSONEncoder().encode(payload)
+    let sealed = try AES.GCM.seal(pt, using: key, nonce: AES.GCM.Nonce(), authenticating: row.aad())
+    guard let combined = sealed.combined else { throw CryptoKitError.incorrectParameterSize }
+    row.encryptedPayload = combined
+}
+
+@MainActor
 private func reconstructShardCount(in container: ModelContainer) throws -> Int {
     let ctx = ModelContext(container)
     return try ctx.fetch(FetchDescriptor<ReconstructShard>()).count
@@ -179,9 +201,10 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let alicePub = try alice.retrieveIdentity()
 
         _ = custody.handleInbound(
-            sealed:          sealedOp(op),
-            senderPublicKey: alicePub,
-            vaultManager:    try makeAlice().vault
+            sealed:           sealedOp(op),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     try makeAlice().vault
         )
 
         #expect(try custodyShardCount(in: container) == 1)
@@ -199,9 +222,10 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Verifying against the imposter's public key MUST fail and skip insert.
         let imposterPub = try imposter.retrieveIdentity()
         _ = custody.handleInbound(
-            sealed:          sealedOp(op),
-            senderPublicKey: imposterPub,
-            vaultManager:    try makeAlice().vault
+            sealed:           sealedOp(op),
+            senderPublicKey:  imposterPub,
+            senderIdentifier: "imposter",
+            vaultManager:     try makeAlice().vault
         )
 
         #expect(try custodyShardCount(in: container) == 0)
@@ -217,18 +241,20 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // First distribution.
         let oldAttr = try makeShardAttr(signer: alice, entryID: entryID, shardBytes: Data([0x01, 0x02]))
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .distribute, attribute: oldAttr)),
-            senderPublicKey: alicePub,
-            vaultManager:    try makeAlice().vault
+            sealed:           sealedOp(.init(kind: .distribute, attribute: oldAttr)),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     try makeAlice().vault
         )
         #expect(try custodyShardCount(in: container) == 1)
 
         // Re-distribution with replacesID = oldAttr.id.
         let newAttr = try makeShardAttr(signer: alice, entryID: entryID, shardBytes: Data([0x09, 0x0A]))
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .distribute, attribute: newAttr, replacesID: oldAttr.id)),
-            senderPublicKey: alicePub,
-            vaultManager:    try makeAlice().vault
+            sealed:           sealedOp(.init(kind: .distribute, attribute: newAttr, replacesID: oldAttr.id)),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     try makeAlice().vault
         )
 
         // Old row replaced by new — count is still 1, but the surviving row carries newAttr.
@@ -250,16 +276,18 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 
         let attr = try makeShardAttr(signer: alice)
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .distribute, attribute: attr)),
-            senderPublicKey: alicePub,
-            vaultManager:    aliceVault
+            sealed:           sealedOp(.init(kind: .distribute, attribute: attr)),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     aliceVault
         )
         #expect(try custodyShardCount(in: container) == 1)
 
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .revoke, attrID: attr.id)),
-            senderPublicKey: alicePub,
-            vaultManager:    aliceVault
+            sealed:           sealedOp(.init(kind: .revoke, attrID: attr.id)),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     aliceVault
         )
         #expect(try custodyShardCount(in: container) == 0)
     }
@@ -269,9 +297,10 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let alice = TestKeyManager()
         let (custody, _, container) = try makeBob()
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .revoke, attrID: UUID())),
-            senderPublicKey: try alice.retrieveIdentity(),
-            vaultManager:    try makeAlice().vault
+            sealed:           sealedOp(.init(kind: .revoke, attrID: UUID())),
+            senderPublicKey:  try alice.retrieveIdentity(),
+            senderIdentifier: "alice",
+            vaultManager:     try makeAlice().vault
         )
         #expect(try custodyShardCount(in: container) == 0)
     }
@@ -282,56 +311,72 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 @Suite("ShardCustodyManager — .request")
 @MainActor struct RequestTests {
 
-    @Test(".request inserts a PendingShardRequest")
+    @Test(".request inserts a PendingShardRequest; payload decrypts correctly")
     func insertsPending() throws {
         let alice = TestKeyManager()
-        let (custody, _, container) = try makeBob()
+        let (custody, bob, container) = try makeBob()
 
         let attrID = UUID()
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .request, attrID: attrID)),
-            senderPublicKey: try alice.retrieveIdentity(),
-            vaultManager:    try makeAlice().vault
+            sealed:           sealedOp(.init(kind: .request, attrID: attrID)),
+            senderPublicKey:  try alice.retrieveIdentity(),
+            senderIdentifier: "alice",
+            vaultManager:     try makeAlice().vault
         )
 
         let ctx  = ModelContext(container)
         let rows = try ctx.fetch(FetchDescriptor<PendingShardRequest>())
         #expect(rows.count == 1)
-        #expect(rows.first?.attrID == attrID)
-        #expect(rows.first?.status == .pending)
+
+        guard let custodyKey = try bob.deriveShardCustodyKey(), let row = rows.first else {
+            Issue.record("expected one row and a custody key"); return
+        }
+        let payload = try decryptPendingPayload(row, key: custodyKey)
+        #expect(payload.attrID == attrID)
+        #expect(payload.status == .pending)
     }
 
     @Test("Duplicate .request bumps receivedAt and resets status to .pending")
     func duplicateUpdates() throws {
         let alice = TestKeyManager()
-        let (custody, _, container) = try makeBob()
+        let (custody, bob, container) = try makeBob()
 
-        let attrID  = UUID()
+        let attrID   = UUID()
         let alicePub = try alice.retrieveIdentity()
         let vault    = try makeAlice().vault
 
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .request, attrID: attrID)),
-            senderPublicKey: alicePub,
-            vaultManager:    vault
+            sealed:           sealedOp(.init(kind: .request, attrID: attrID)),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     vault
         )
 
-        // Mark declined to verify the dedup branch resets to .pending.
+        // Mark declined by re-sealing the payload with an updated status.
+        guard let custodyKey = try bob.deriveShardCustodyKey() else {
+            Issue.record("expected custody key"); return
+        }
         let ctx = ModelContext(container)
         if let row = try ctx.fetch(FetchDescriptor<PendingShardRequest>()).first {
-            row.status = .declined
+            var payload = try decryptPendingPayload(row, key: custodyKey)
+            payload.status = .declined
+            try resealPendingPayload(payload, into: row, key: custodyKey)
             try ctx.save()
         }
 
         _ = custody.handleInbound(
-            sealed:          sealedOp(.init(kind: .request, attrID: attrID)),
-            senderPublicKey: alicePub,
-            vaultManager:    vault
+            sealed:           sealedOp(.init(kind: .request, attrID: attrID)),
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     vault
         )
 
         let after = try ModelContext(container).fetch(FetchDescriptor<PendingShardRequest>())
         #expect(after.count == 1, "dedup must produce one row, not two")
-        #expect(after.first?.status == .pending, "duplicate must reset status to .pending")
+
+        guard let afterRow = after.first else { Issue.record("no row after dedup"); return }
+        let afterPayload = try decryptPendingPayload(afterRow, key: custodyKey)
+        #expect(afterPayload.status == .pending, "duplicate must reset status to .pending")
     }
 }
 
@@ -366,27 +411,29 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         #expect(pl.attrID  == attrs[0].id)
     }
 
-    @Test("Mutating the row's createdAt invalidates AAD — payload no longer decrypts")
+    @Test("Wrong id in AAD invalidates GCM tag — payload no longer decrypts")
     func aadBindingHolds() throws {
         let (vault, alice, container) = try makeAlice()
         vault.unlock(context: LAContext())
-        let entry = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
+        let entry      = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
-        let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
+        let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
         try vault.acceptReturnedShard(attrs[0])
 
-        // Tamper: change the row's createdAt — AAD changes, GCM tag rejects.
-        let ctx = ModelContext(container)
-        let row = try ctx.fetch(FetchDescriptor<ReconstructShard>()).first!
-        row.createdAt = row.createdAt.addingTimeInterval(60)
-        try ctx.save()
-
         guard let bufferKey = try alice.deriveRecoveryBufferKey() else {
-            Issue.record("expected recovery buffer key")
-            return
+            Issue.record("expected recovery buffer key"); return
         }
+        let row = try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>()).first!
         let box = try AES.GCM.SealedBox(combined: row.encryptedPayload)
+
+        // Wrong AAD (a different UUID) — GCM authentication tag must reject it.
+        let wrongAAD = UUID().uuidString.data(using: .utf8)!
         #expect(throws: (any Error).self) {
+            _ = try AES.GCM.open(box, using: bufferKey, authenticating: wrongAAD)
+        }
+
+        // Correct AAD — must succeed.
+        #expect(throws: Never.self) {
             _ = try AES.GCM.open(box, using: bufferKey, authenticating: row.aad())
         }
     }
