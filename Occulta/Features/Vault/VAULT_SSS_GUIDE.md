@@ -501,11 +501,6 @@ at the moment of exchange (she just got her new device). Deferral gives Alice ti
 set up, and uses the existing outbound bundle pipeline without modification to the
 exchange protocol.
 
-### Badge for pending shard returns
-
-When Bob has `PendingShardReturn` rows awaiting delivery, the UI surfaces a badge
-to alert him that shards are queued for auto-return. Implementation deferred —
-data model planned, view not yet built.
 
 ### Key notes
 
@@ -557,51 +552,7 @@ data model planned, view not yet built.
 | Auto-return trigger + delivery hook   | ✅ Done |
 | Return acknowledge send + cleanup     | ✅ Done |
 | PEK rotation on content change        | ❌ Not started |
-| Inbox / Requests tab (+ badge)        | ❌ Not started |
 | Feature flag (hidden until done)      | ✅ Done        |
-
----
-
-## Inbox / Requests tab (not started)
-
-A unified inbox for all actionable inbound items. Currently two kinds exist:
-pending shard returns (for trustees) and identity verification challenges.
-Designed to be extensible (document signing, key rotation, etc.).
-
-### Why a tab, not auto-presented sheets
-
-SwiftUI presents only one sheet at a time from the root `WindowGroup`. If the
-user has any sheet open (reading a message, share sheet, etc.) and an identity
-challenge arrives, the new sheet silently fails to appear. This is a real
-existing bug for identity challenges — the `incomingChallenge` binding gets set
-but nothing shows. The inbox tab fixes this: items persist regardless of what
-UI state the app is in when they arrive.
-
-### Design decisions
-
-- **Pending shard returns**: Bob sees a badge when `PendingShardReturn` rows
-  exist (shards queued for auto-return to an owner who got a new device). Bob
-  does not act manually — delivery is automatic on the next outbound bundle.
-  The badge is informational only.
-- **Identity challenges**: currently auto-present a sheet. Should also route
-  to the inbox as a persistent fallback. If the app is idle, auto-present the
-  sheet (preserving current behaviour). If any sheet is active, badge the tab.
-- **Identity challenge persistence**: challenges are currently ephemeral —
-  `OutstandingChallengeStore` holds some state but there is no SwiftData record.
-  A `PendingIdentityChallenge` SwiftData model is needed to support the inbox.
-- **No past history for now**: the inbox shows only actionable items. A future
-  logs screen can surface completed returns and past challenges.
-- **Urgency sorting**: identity challenges should rank above shard returns —
-  the challenger is actively waiting. Sort by kind first, then `receivedAt`.
-- **Tab visibility**: show the tab only when the badge count is > 0, or always
-  show it. Decision deferred — depends on how often items arrive in practice.
-
-### Not needed
-- Cryptographic shard revocation — old shards become inert automatically when
-  the PEK rotates. `replacesID` in the delivery envelope handles cleanup.
-- Recipient-side threshold enforcement — Lagrange interpolation with fewer than
-  k shares produces a random value with no relation to the secret. The GCM
-  authentication tag on decryption is the practical enforcement.
 
 ---
 
