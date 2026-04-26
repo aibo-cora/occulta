@@ -514,6 +514,7 @@ data model planned, view not yet built.
 | Reconstruction flow                   | ✅ Done        |
 | Reconstruction buffer + finalise on unlock | ✅ Done   |
 | New-device recovery (no SE key)       | ✅ Done        |
+| Shard distribution UI (V4 Trust-first, ML-KEM gate) | ✅ Done |
 | Threshold erosion warning (entry detail) | ✅ Done     |
 | ownerContactIdentifier in CustodyShard.Payload | ❌ Not started |
 | [ShardOperation]? on SealedPayload (multi-shard bundles) | ❌ Not started |
