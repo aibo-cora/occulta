@@ -10,6 +10,7 @@ extension URL: @retroactive Identifiable {
 
 struct ComposableMessage: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager?
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     
     let identifier: String
     let filename = "message.occ"
@@ -445,7 +446,10 @@ struct ComposableMessage: View {
                 
                 let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
-                let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: identifier)
+                var shardOps: [OccultaBundle.ShardOperation] = []
+                if let returnOps = try? self.shardCustodyManager?.pendingReturnOperations(for: identifier) { shardOps += returnOps }
+                if let ackOp    = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: identifier) { shardOps.append(ackOp) }
+                let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false

@@ -173,6 +173,7 @@ private struct ComposeHeroV2: View {
     let firstName: String
 
     @Environment(ContactManager.self) private var contactManager
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @State private var messageText = ""
     @State private var attachments: [Occulta.File] = []
     @State private var selectedMediaItems: [PhotosPickerItem] = []
@@ -348,9 +349,12 @@ private struct ComposeHeroV2: View {
                     }
                 }
 
-                let basket    = Basket(files: files)
-                let encoded   = try JSONEncoder().encode(basket)
-                let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier)
+                let basket  = Basket(files: files)
+                let encoded = try JSONEncoder().encode(basket)
+                var shardOps: [OccultaBundle.ShardOperation] = []
+                if let returnOps = try? self.shardCustodyManager?.pendingReturnOperations(for: self.identifier) { shardOps += returnOps }
+                if let ackOp    = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: self.identifier) { shardOps.append(ackOp) }
+                let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
 
                 guard !encrypted.isEmpty else {
                     self.showError("Encryption failed. Try again.")

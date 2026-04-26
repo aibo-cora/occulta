@@ -453,8 +453,11 @@ struct OccultaApp: App {
             let basket = Basket(files: files, date: Date())
             var basketData = try JSONEncoder().encode(basket)
 
+            var shardOps: [OccultaBundle.ShardOperation] = []
+            if let returnOps = try? self.shardCustodyManager.pendingReturnOperations(for: manifest.contactIdentifier) { shardOps += returnOps }
+            if let ackOp    = try? self.shardCustodyManager.pendingAcknowledgeOperation(for: manifest.contactIdentifier) { shardOps.append(ackOp) }
             let occData = try self.contactManager.encryptBundle(
-                data: basketData, for: manifest.contactIdentifier
+                data: basketData, for: manifest.contactIdentifier, shardOperations: shardOps.isEmpty ? nil : shardOps
             )
 
             // Zero all plaintext buffers before deallocation.

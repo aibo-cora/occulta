@@ -866,7 +866,7 @@ extension ContactManager {
     /// the contact sends back a .forwardSecret bundle using one of our prekeys.
     /// That is cryptographic proof they received and stored our batch.
     /// Only then is the pending batch cleared and a new one allowed to be generated.
-    func encryptBundle(data: Data, for identifier: String) throws -> Data {
+    func encryptBundle(data: Data, for identifier: String, shardOperations: [OccultaBundle.ShardOperation]? = nil) throws -> Data {
         guard data.isEmpty == false else { throw Errors.messageHasNoData }
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
         
@@ -896,7 +896,7 @@ extension ContactManager {
         // Create payload
         
         let outboundBatch = try contact.loadPendingBatch()
-        let sealedPayload = OccultaBundle.SealedPayload(message: data, prekeyBatch: outboundBatch)
+        let sealedPayload = OccultaBundle.SealedPayload(message: data, prekeyBatch: outboundBatch, shardOperations: shardOperations)
         let encodedSealedPayload: Data = try JSONEncoder().encode(sealedPayload)
  
         // 4. ECDH + AES-GCM
