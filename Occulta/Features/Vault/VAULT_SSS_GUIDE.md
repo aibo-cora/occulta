@@ -166,9 +166,14 @@ a key that no longer encrypts anything (the PEK was rotated), so it is harmless
 
 When Bob receives a shard from Alice, he stores a `CustodyShard` row containing
 only:
-- A random per-row `id` and a `createdAt` timestamp (plaintext).
+- A random per-row `id` (plaintext SwiftData key — no other plaintext).
 - An `encryptedPayload` blob — AES-GCM seal of `{ ownerKeyFingerprint,
-  signedAttribute }` under the shard custody key, AAD = `id ∥ createdAt`.
+  ownerContactIdentifier, signedAttribute }` under the shard custody key,
+  AAD = `id` (id-only, no timestamp).
+
+`ownerContactIdentifier` is Alice's contact identifier in Bob's contact book.
+It is stored inside the sealed payload — never plaintext — so cold-disk forensics
+cannot link a shard row to a specific contact without the shard custody key.
 
 Bob does not need: the entry label, the threshold, or how many other trustees
 Alice chose.
@@ -176,13 +181,15 @@ Alice chose.
 ### Privacy at rest
 
 No plaintext column links a row to a contact. Cold-disk forensics learns
-"Bob holds N shards" — nothing about which contacts those shards belong to.
+"Bob holds N shards" — nothing about which contacts those shards belong to,
+when they were received, or how many shards each contact has outstanding.
 Resolving owner identity requires the SE-protected shard custody key.
 
-Looking up a shard by `SignedAttribute.id` (for `.revoke` or `replacesID`
-matching) requires decrypting every row. The realistic N is low hundreds at
-most, so the cost is negligible. If N grows, a launch-time in-memory
-`(rowID → attrID)` cache is the cheap upgrade.
+Looking up shards by contact identifier or `SignedAttribute.id` (for `.revoke`,
+`replacesID` matching, or auto-return) requires decrypting every row. The
+realistic N is low hundreds at most, so the cost is negligible. If N grows, a
+launch-time in-memory `(rowID → attrID, contactIdentifier)` cache is the cheap
+upgrade.
 
 ---
 
@@ -207,7 +214,7 @@ most, so the cost is negligible. If N grows, a launch-time in-memory
 
 Owner-side transient queue for `.respond` bundles arriving during recovery. Each
 arriving shard becomes one `ReconstructShard` row, sealed under the recovery
-buffer key with AAD = `id ∥ createdAt`. The plaintext columns carry no
+buffer key with AAD = `id` (id-only). The plaintext columns carry no
 identifying information.
 
 Sealed payload: `{ entryID, attrID, signedAttribute }`. The `entryID` lives
@@ -311,16 +318,25 @@ column.
 
 ## Inbound bundle processing order
 
-When a bundle carrying a `ShardOperation` arrives:
+A single `SealedPayload` may carry `[ShardOperation]?` — a list rather than a
+single operation. All operations in the list are processed in the order below.
+This allows multiple shards (e.g. from several vault entries) to be returned in
+one bundle without multiple round trips.
+
+When a bundle carrying one or more `ShardOperation`s arrives:
 
 1. **Revocations** (`.revoke`) — delete `CustodyShard` immediately; no further action.
 2. **Distributions** (`.distribute`) — store new `CustodyShard`; if `replacesID != nil`,
    delete the old shard with that id.
 3. **Requests** (`.request`) — write `PendingShardRequest`; deduplicate by `attrID`
    (update `receivedAt` only on duplicates); process automatically if device is unlocked.
-4. **Responses** (`.respond`) — hand shard bytes to the reconstruction flow.
-5. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
-6. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
+4. **Responses** (`.respond`) — hand shard bytes to the reconstruction flow; queue a
+   `PendingReturnAcknowledge` record so Alice confirms receipt in her next outbound bundle.
+5. **Return acknowledgements** (`.returnAcknowledged`) — trustee receives confirmation
+   that owner stored the returned shards; delete matching `CustodyShard` rows and the
+   `PendingShardReturn` record for those `attrID`s.
+6. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
+7. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
 
 Processing is crash-safe: `PendingShardRequest.processed` stays `false` until the
 response bundle has been successfully queued. Unprocessed records are retried on next
@@ -328,12 +344,71 @@ app launch.
 
 ---
 
-## Contact key rotation = implicit shard loss
+## Trustee key rotation = implicit shard loss
 
-When a contact re-exchanges keys with Alice, their old public key is replaced. Any
-shard Bob stored was sealed under Alice's old PEK and signed with her old identity key.
-Alice treats the old shards as `.lost` immediately on key rotation — no explicit
-"I lost my shard" message type is needed.
+When a trustee (Bob) re-exchanges keys with Alice, Bob's old public key is replaced.
+Any shard Alice distributed to Bob was encrypted to Bob's old session key — Bob's new
+SE key cannot derive the same session key, so Bob can no longer decrypt the bundle.
+Alice marks that shard's `ShardRecord.status` as `.lost` immediately on detecting
+Bob's key change — no explicit "I lost my shard" message type is needed.
+
+---
+
+## Owner key rotation = auto-return trigger
+
+When Alice re-exchanges keys with Bob (Alice got a new device), Bob detects that
+Alice's key fingerprint differs from the previously stored one. This is an unambiguous
+signal that Alice lost her device and vault — key exchange is proximity-only, so a
+changed fingerprint cannot be injected remotely.
+
+Bob's app responds automatically:
+
+1. **Trigger** — on key exchange completion, compare the incoming fingerprint against
+   the stored one. If they differ, look up all `CustodyShard` rows where
+   `ownerContactIdentifier` matches Alice's contact identifier.
+2. **Schedule** — insert one `PendingShardReturn` row per matching contact (not per
+   shard — the pending record covers all shards for that contact). Encrypted at rest
+   under the shard custody key: `Payload { contactIdentifier, scheduledAt }`,
+   AAD = id-only.
+3. **Deliver** — before any outbound bundle is sent to Alice, check for a
+   `PendingShardReturn` for her. If found, generate `.respond` operations for all
+   matching `CustodyShard` rows and include them in `SealedPayload.shardOperations`.
+   The bundle is encrypted to Alice's new identity key using the standard
+   `longTermFallback + ML-KEM` mode (the new key was stored during the exchange).
+4. **Confirm** — Alice receives the `.respond` operations, stores each in
+   `ReconstructShard`, and queues a `PendingReturnAcknowledge` record: `Payload
+   { contactIdentifier, attrIDs: [UUID] }`, sealed under the recovery buffer key,
+   AAD = id-only. In her next outbound bundle to Bob, she includes a
+   `.returnAcknowledged` operation carrying those `attrID`s.
+5. **Cleanup** — Bob receives `.returnAcknowledged`, matches the `attrID`s against
+   his `CustodyShard` rows, deletes the confirmed rows, and deletes the
+   `PendingShardReturn` record. Bob never deletes a shard until he has explicit
+   confirmation that Alice stored it.
+
+### Why delivery is deferred to the next message
+
+Injecting the shard return into the key exchange handshake would couple two distinct
+operations and complicate failure handling. Alice may not have her vault initialised
+at the moment of exchange (she just got her new device). Deferral gives Alice time to
+set up, and uses the existing outbound bundle pipeline without modification to the
+exchange protocol.
+
+### Badge for pending shard requests
+
+When Bob has `PendingShardRequest` rows awaiting his response, the UI surfaces a
+badge on the relevant section. Implementation deferred — data is already written,
+only the view is missing.
+
+### Key notes
+
+- `PendingShardReturn` is deleted only after `.returnAcknowledged` is received,
+  not on send. If Alice's app never acknowledges (crash, new device again), Bob
+  retries on his next outbound bundle to Alice.
+- If Bob holds shards for Alice across multiple vault entries, all are returned in
+  a single bundle (one `.respond` operation per shard, all in `shardOperations`).
+- The returned `SignedAttribute`s were signed with Alice's old SE key. Verification
+  fails on Alice's new device by design — GCM authentication on reconstruction is
+  the integrity check (see "Signature verification after device loss").
 
 ---
 
@@ -364,8 +439,17 @@ Alice treats the old shards as `.lost` immediately on key rotation — no explic
 | Reconstruction flow                   | ✅ Done        |
 | Reconstruction buffer + finalise on unlock | ✅ Done   |
 | New-device recovery (no SE key)       | ✅ Done        |
+| ownerContactIdentifier in CustodyShard.Payload | ❌ Not started |
+| [ShardOperation]? on SealedPayload (multi-shard bundles) | ❌ Not started |
+| .returnAcknowledged ShardOperation kind | ❌ Not started |
+| attrIDs: [UUID] on ShardOperation (acknowledge payload) | ❌ Not started |
+| PendingShardReturn SwiftData model    | ❌ Not started |
+| PendingReturnAcknowledge SwiftData model | ❌ Not started |
+| Key-change detection in exchange flow | ❌ Not started |
+| Auto-return trigger + delivery hook   | ❌ Not started |
+| Return acknowledge send + cleanup     | ❌ Not started |
 | PEK rotation on content change        | ❌ Not started |
-| Inbox / Requests tab                  | ❌ Not started |
+| Inbox / Requests tab (+ badge)        | ❌ Not started |
 | Feature flag (hidden until done)      | ✅ Done        |
 
 ---
