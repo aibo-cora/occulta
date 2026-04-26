@@ -141,16 +141,7 @@ struct VaultShardSetup: View {
                 }
                 .buttonStyle(.plain)
 
-                VStack(spacing: 4) {
-                    Text("any \(k)")
-                        .font(.system(size: 28, weight: .bold, design: .monospaced))
-                        .tracking(-1)
-                        .foregroundStyle(canMark ? Color.occultaAccent : Color.secondary)
-                    Text("of \(selected.isEmpty ? "—" : "\(selected.count)") trustees needed")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
+                Spacer()
 
                 Button {
                     threshold = min(max(selected.count, 2), threshold + 1)
