@@ -516,12 +516,12 @@ data model planned, view not yet built.
 | New-device recovery (no SE key)       | ✅ Done        |
 | Shard distribution UI (V4 Trust-first, ML-KEM gate) | ✅ Done |
 | Threshold erosion warning (entry detail) | ✅ Done     |
-| ownerContactIdentifier in CustodyShard.Payload | ❌ Not started |
-| [ShardOperation]? on SealedPayload (multi-shard bundles) | ❌ Not started |
-| .returnAcknowledged ShardOperation kind | ❌ Not started |
-| attrIDs: [UUID] on ShardOperation (acknowledge payload) | ❌ Not started |
-| PendingShardReturn SwiftData model    | ❌ Not started |
-| PendingReturnAcknowledge SwiftData model | ❌ Not started |
+| ownerContactIdentifier in CustodyShard.Payload | ✅ Done |
+| [ShardOperation]? on SealedPayload (multi-shard bundles) | ✅ Done |
+| .returnAcknowledged ShardOperation kind | ✅ Done |
+| attrIDs: [UUID] on ShardOperation (acknowledge payload) | ✅ Done |
+| PendingShardReturn SwiftData model    | ✅ Done |
+| PendingReturnAcknowledge SwiftData model | ✅ Done |
 | Key-change detection in exchange flow | ❌ Not started |
 | Auto-return trigger + delivery hook   | ❌ Not started |
 | Return acknowledge send + cleanup     | ❌ Not started |

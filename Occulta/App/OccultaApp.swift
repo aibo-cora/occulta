@@ -36,6 +36,8 @@ struct OccultaApp: App {
                 VaultEntry.self,
                 CustodyShard.self,
                 ReconstructShard.self,
+                PendingShardReturn.self,
+                PendingReturnAcknowledge.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
