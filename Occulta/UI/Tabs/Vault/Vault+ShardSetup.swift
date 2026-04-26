@@ -2,9 +2,8 @@
 //  Vault+ShardSetup.swift
 //  Occulta
 //
-//  Shard distribution setup: threshold slider + contact picker + distribute.
-//  Calls VaultManager.prepareShards() to split and sign shards.
-//  Delivery via .occ is a separate step outside this view.
+//  V4 "Trust-first" shard distribution.
+//  Single ML-KEM list, stacked avatar pile, "any k" stepper, Mark for Distribution CTA.
 //
 
 import SwiftUI
@@ -16,223 +15,391 @@ struct VaultShardSetup: View {
     @Environment(VaultManager.self) private var vault
     @Environment(\.dismiss) private var dismiss
 
-    @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
+    @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
 
     @State private var selectedIDs: Set<String> = []
     @State private var threshold = 2
-    @State private var distributing = false
+    @State private var marking = false
     @State private var error: String?
 
-    private var recipients: [Contact.Profile] {
-        self.contacts.filter { self.selectedIDs.contains($0.identifier) }
+    private var mlkemContacts: [Contact.Profile] {
+        allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
     }
 
-    private var canDistribute: Bool {
-        self.selectedIDs.count >= 2 && self.threshold <= self.selectedIDs.count
+    private var selected: [Contact.Profile] {
+        mlkemContacts.filter { selectedIDs.contains($0.identifier) }
     }
+
+    // k is always in [2, max(2, n)] — clamped on every render.
+    private var k: Int {
+        max(2, min(threshold, max(2, selected.count)))
+    }
+
+    private var canMark: Bool { selected.count >= 2 }
 
     var body: some View {
-        List {
-            Section {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 12) {
-                        // Slider requires range stride > 0; that only holds when count ≥ 3.
-                        // With 0–2 contacts the threshold is fixed at 2, so no slider is needed.
-                        if self.selectedIDs.count >= 3 {
-                            Slider(
-                                value: Binding(
-                                    get: { Double(self.threshold) },
-                                    set: { self.threshold = max(2, min(Int($0.rounded()), self.selectedIDs.count)) }
-                                ),
-                                in: 2...Double(self.selectedIDs.count),
-                                step: 1
-                            )
-                            .tint(.occultaAccent)
-                        } else {
-                            Slider(value: .constant(0), in: 0...1)
-                                .disabled(true)
-                                .opacity(0.35)
-                        }
+        ScrollView {
+            VStack(spacing: 0) {
+                summaryCard
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
 
-                        Text("\(self.threshold)/\(max(self.threshold, self.selectedIDs.count))")
-                            .font(.system(size: 20, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color.primary)
-                            .frame(minWidth: 44, alignment: .trailing)
-                    }
+                trusteesHeader
+                    .padding(.bottom, 6)
 
-                    (Text("Any ")
-                     + Text("\(self.threshold)").fontWeight(.bold).foregroundColor(.primary)
-                     + Text(" contacts can help you recover. Fewer than ")
-                     + Text("\(self.threshold)").fontWeight(.bold).foregroundColor(.primary)
-                     + Text(" shards reveal nothing."))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                }
-                .padding(.vertical, 4)
-            } header: {
-                self.monoHeader("Threshold")
-            }
+                trusteesCard
+                    .padding(.horizontal, 16)
 
-            // Contact picker
-            Section {
-                if self.contacts.isEmpty {
-                    Text("No contacts yet. Exchange keys first.")
+                Spacer().frame(height: 10)
+
+                infoNote
+                    .padding(.horizontal, 16)
+
+                if let err = error {
+                    Text(err)
                         .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(self.contacts) { contact in
-                        self.contactRow(contact)
-                    }
-                }
-            } header: {
-                self.monoHeader("Recipients")
-            } footer: {
-                Text("Select ≥ 2 contacts. Each receives one signed shard via .occ.")
-                    .font(.system(size: 11, design: .monospaced))
-            }
-
-            // Information-theoretic security note
-            Section {
-                HStack(alignment: .top, spacing: 8) {
-                    Text("🔮")
-                        .font(.system(size: 13))
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Information-theoretic security")
-                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        Text("Any single shard carries zero information about your secret. An attacker with fewer than \(self.threshold) shards learns nothing. This is perfect secrecy over GF(2⁸), not computational hardness.")
-                            .font(.system(size: 11, design: .monospaced))
-                            .lineSpacing(3)
-                    }
-                    .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)))
-                }
-                .padding(.vertical, 4)
-                .listRowBackground(VaultEntryType.cat(light: (0xEE,0xED,0xFE), dark: (0x1e,0x1c,0x38)))
-            }
-
-            // Delivery info
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Delivery")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .tracking(1.2)
-                    Text("Each shard is encrypted to the contact's verified public key and delivered as a signed .occ bundle via any channel.")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                }
-                .padding(.vertical, 4)
-            }
-
-            if let error = self.error {
-                Section {
-                    Text(error)
-                        .font(.caption)
                         .foregroundStyle(Color.occultaDanger)
-                        .listRowBackground(Color.clear)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
                 }
+
+                Spacer().frame(height: 8)
             }
+            .padding(.top, 8)
         }
-        .listStyle(.insetGrouped)
-        .scrollIndicators(.hidden)
-        .navigationTitle("Shards")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Shard Distribution")
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("Done") { self.dismiss() }
                     .tint(.occultaAccent)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            Button(action: self.distribute) {
-                Group {
-                    if self.distributing {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text("Distribute Shards")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(self.canDistribute ? Color.occultaAccent : .secondary.opacity(0.3))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .buttonStyle(.plain)
-            .disabled(!self.canDistribute || self.distributing)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial)
-        }
+        .safeAreaInset(edge: .bottom) { ctaBar }
     }
 
-    // MARK: - Contact row
+    // MARK: - Summary card
 
-    private func contactRow(_ contact: Contact.Profile) -> some View {
-        let given = contact.givenName.decrypt()
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Avatar stack + trustee count
+            HStack(spacing: 12) {
+                if selected.isEmpty {
+                    Circle()
+                        .strokeBorder(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [4]))
+                        .frame(width: 32, height: 32)
+                        .overlay {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                } else {
+                    avatarStack
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(selected.isEmpty
+                         ? "No trustees yet"
+                         : "\(selected.count) \(selected.count == 1 ? "trustee" : "trustees")")
+                        .font(.system(size: 16, weight: .semibold))
+
+                    Text(selected.count < 2
+                         ? "Select ≥ 2 trustees below"
+                         : "any \(k) of \(selected.count) can reconstruct")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(.bottom, 14)
+
+            Divider()
+                .padding(.bottom, 14)
+
+            // Threshold label
+            Text("Reconstruction threshold")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(1.5)
+                .textCase(.uppercase)
+                .foregroundStyle(Color.secondary.opacity(0.55))
+                .padding(.bottom, 8)
+
+            // Stepper
+            HStack(spacing: 10) {
+                Button {
+                    threshold = max(2, threshold - 1)
+                } label: {
+                    Circle()
+                        .fill(Color(.secondarySystemFill))
+                        .frame(width: 36, height: 36)
+                        .overlay {
+                            Text("−")
+                                .font(.system(size: 20))
+                                .foregroundStyle(k > 2 ? Color.primary : Color.secondary)
+                        }
+                }
+                .buttonStyle(.plain)
+
+                VStack(spacing: 4) {
+                    Text("any \(k)")
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .tracking(-1)
+                        .foregroundStyle(canMark ? Color.occultaAccent : Color.secondary)
+                    Text("of \(selected.isEmpty ? "—" : "\(selected.count)") trustees needed")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+
+                Button {
+                    threshold = min(max(selected.count, 2), threshold + 1)
+                } label: {
+                    Circle()
+                        .fill(Color(.secondarySystemFill))
+                        .frame(width: 36, height: 36)
+                        .overlay {
+                            Text("+")
+                                .font(.system(size: 20))
+                                .foregroundStyle(k < selected.count ? Color.primary : Color.secondary)
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+
+            if canMark {
+                Text("Any **\(k)** of your \(selected.count) trustees — in any combination — can help reconstruct. No specific trustee is required.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(2)
+                    .padding(10)
+                    .background(Color(.secondarySystemFill))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(.top, 12)
+            }
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    // MARK: - Trustees section
+
+    private var trusteesHeader: some View {
+        HStack(spacing: 6) {
+            Text("ML-KEM")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
+                .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+
+            Text("Eligible Trustees")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Text("\(mlkemContacts.count)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Color.secondary.opacity(0.5))
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private var trusteesCard: some View {
+        VStack(spacing: 0) {
+            if mlkemContacts.isEmpty {
+                Text("No ML-KEM contacts yet. Exchange keys with a contact first.")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(Array(mlkemContacts.enumerated()), id: \.element.identifier) { idx, contact in
+                    trusteeRow(contact)
+                    if idx < mlkemContacts.count - 1 {
+                        Divider().padding(.leading, 62)
+                    }
+                }
+            }
+        }
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func trusteeRow(_ contact: Contact.Profile) -> some View {
+        let given  = contact.givenName.decrypt()
         let family = contact.familyName.decrypt()
-        let name = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
-        let selected = self.selectedIDs.contains(contact.identifier)
+        let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+        let sel    = selectedIDs.contains(contact.identifier)
 
         return Button {
-            if selected {
-                self.selectedIDs.remove(contact.identifier)
-                self.threshold = max(2, min(self.threshold, self.selectedIDs.count))
+            if sel {
+                selectedIDs.remove(contact.identifier)
+                threshold = max(2, min(threshold, selectedIDs.count))
             } else {
-                self.selectedIDs.insert(contact.identifier)
+                selectedIDs.insert(contact.identifier)
             }
         } label: {
             HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(avatarGradientV2(for: contact.identifier))
-                        .frame(width: 36, height: 36)
-                    Text(name.initials)
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white)
-                }
+                contactAvatar(contact, size: 36)
 
-                Text(name.isEmpty ? contact.identifier : name)
-                    .font(.system(size: 16))
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name.isEmpty ? contact.identifier : name)
+                        .font(.system(size: 15))
+                        .foregroundStyle(.primary)
+                    Text("ML-KEM · verified key")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
+                        .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
 
                 Spacer()
 
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selected ? Color.occultaAccent : .secondary)
-                    .font(.system(size: 20))
+                ZStack {
+                    Circle()
+                        .fill(sel ? Color.occultaAccent : Color.clear)
+                    Circle()
+                        .strokeBorder(sel ? Color.occultaAccent : Color.secondary.opacity(0.35), lineWidth: 1.5)
+                    if sel {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 24, height: 24)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: - Helpers
+    // MARK: - Info note
 
-    private func monoHeader(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .tracking(1.6)
+    private var infoNote: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("🔮")
+                .font(.system(size: 14))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Information-theoretic security")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)))
+                Text("Fewer than \(k) shards reveal zero information. Perfect secrecy over GF(2⁸) — not computational hardness.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.85))
+                    .lineSpacing(2)
+            }
+        }
+        .padding(12)
+        .background(VaultEntryType.cat(light: (0xEE, 0xED, 0xFE), dark: (0x1e, 0x1c, 0x38)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func distribute() {
-        self.distributing = true
-        self.error = nil
-        
+    // MARK: - CTA bar
+
+    private var ctaBar: some View {
+        VStack(spacing: 6) {
+            Button(action: self.markForDistribution) {
+                Group {
+                    if self.marking {
+                        ProgressView().tint(.white)
+                    } else {
+                        Text("Mark for Distribution")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(canMark ? .white : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(canMark ? Color.occultaAccent : Color(.secondarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: canMark ? Color.occultaAccent.opacity(0.27) : .clear, radius: 10, y: 4)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canMark || marking)
+
+            if canMark {
+                Text("Shards will be delivered automatically with your next message.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    // MARK: - Avatar stack
+
+    private var avatarStack: some View {
+        let maxVis   = 7
+        let visible  = Array(selected.prefix(maxVis))
+        let overflow = selected.count > maxVis ? selected.count - maxVis : 0
+
+        return HStack(spacing: -10) {
+            ForEach(Array(visible.enumerated()), id: \.offset) { i, contact in
+                contactAvatar(contact, size: 32)
+                    .zIndex(Double(maxVis - i))
+            }
+            if overflow > 0 {
+                ZStack {
+                    Circle().fill(Color(.secondarySystemFill))
+                    Circle().strokeBorder(Color(.systemBackground), lineWidth: 2)
+                    Text("+\(overflow)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 32, height: 32)
+                .zIndex(0)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func contactAvatar(_ contact: Contact.Profile, size: CGFloat) -> some View {
+        let given = contact.givenName.decrypt()
+        let family = contact.familyName.decrypt()
+        let name  = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+        let inits = name.isEmpty
+            ? String(contact.identifier.prefix(2)).uppercased()
+            : name.initials
+
+        ZStack {
+            Circle().fill(avatarGradientV2(for: contact.identifier))
+            Text(inits)
+                .font(.system(size: size * 0.36, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+        .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 2))
+    }
+
+    // MARK: - Action
+
+    private func markForDistribution() {
+        self.marking = true
+        self.error   = nil
         do {
             _ = try self.vault.prepareShards(
                 for:        self.entryID,
-                threshold:  self.threshold,
-                recipients: self.recipients
+                threshold:  self.k,
+                recipients: self.selected
             )
             self.dismiss()
         } catch VaultManager.VaultError.locked {
-            self.error = "Vault locked — unlock and try again."
-            self.distributing = false
+            self.error   = "Vault locked — unlock and try again."
+            self.marking = false
         } catch {
-            self.error = "Failed: \(error.localizedDescription)"
-            self.distributing = false
+            self.error   = "Failed: \(error.localizedDescription)"
+            self.marking = false
         }
     }
 }
