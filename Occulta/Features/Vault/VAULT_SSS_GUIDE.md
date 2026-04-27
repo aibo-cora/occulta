@@ -96,11 +96,25 @@ Neither alone is sufficient; together they constitute full recovery.
 
 ### What to surface in the UI
 
-The entry detail and distribution setup views should make this scope boundary
-explicit: "SSS protects your encryption key. Export a vault backup separately to
-protect your content." The redistribution prompt after reconstruction should also
-remind Alice to update her backup, since she has just confirmed her shard
-distribution is intact.
+Two touch points surface this boundary without interrupting the user:
+
+**Shard distribution setup (`VaultShardSetup`)** — an amber cautionary note
+below the "Information-theoretic security" note, visible before the user taps
+"Mark for Distribution":
+
+> ⚠️ Key recovery only  
+> Shards protect your encryption key — not the entry content. To recover your
+> content after device loss, export a separate vault backup.
+
+**Entry detail (`VaultEntryDetail`)** — a low-weight secondary note, shown only
+when `shardDistributionEncrypted != nil`, positioned after the erosion banner and
+before the provenance block:
+
+> 🔑 Shards protect your encryption key — not the entry content. Export a vault
+> backup separately to ensure full recovery after device loss.
+
+No action button is attached to either note. The warning is informational only;
+navigation to the export flow is the user's responsibility via vault settings.
 
 ---
 
@@ -683,6 +697,7 @@ keeps the shard protocol self-contained.
 | Return acknowledge send + cleanup     | ✅ Done |
 | Feature flag (hidden until done)      | ✅ Done        |
 | Shard custody reconciliation (`.inquire` / `.notFound`) | 🔲 Phase 2 |
+| Backup scope warning in VaultShardSetup + VaultEntryDetail | ✅ Done |
 | Vault backup export (user-facing, prerequisite for full device-loss recovery) | 🔲 Recommended |
 
 ---

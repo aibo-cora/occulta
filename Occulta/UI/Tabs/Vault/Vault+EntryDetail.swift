@@ -39,6 +39,9 @@ struct VaultEntryDetail: View {
                     if let erosion = self.shardErosion {
                         self.erosionBanner(active: erosion.active, threshold: erosion.threshold)
                     }
+                    if entry.shardDistributionEncrypted != nil {
+                        self.backupNote
+                    }
                     self.provenance
                 }
                 .padding(16)
@@ -247,6 +250,24 @@ struct VaultEntryDetail: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: - Backup scope note
+
+    private var backupNote: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "key.slash")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.secondary)
+            Text("Shards protect your encryption key — not the entry content. Export a vault backup separately to ensure full recovery after device loss.")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineSpacing(2)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 

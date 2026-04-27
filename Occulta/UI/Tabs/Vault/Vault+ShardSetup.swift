@@ -55,6 +55,10 @@ struct VaultShardSetup: View {
                 infoNote
                     .padding(.horizontal, 16)
 
+                backupNote
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+
                 if let err = error {
                     Text(err)
                         .font(.system(size: 12, design: .monospaced))
@@ -290,6 +294,28 @@ struct VaultShardSetup: View {
         }
         .padding(12)
         .background(VaultEntryType.cat(light: (0xEE, 0xED, 0xFE), dark: (0x1e, 0x1c, 0x38)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Backup note
+
+    private var backupNote: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("⚠️")
+                .font(.system(size: 14))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Key recovery only")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)))
+                Text("Shards protect your encryption key — not the entry content. To recover your content after device loss, export a separate vault backup.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)).opacity(0.85))
+                    .lineSpacing(2)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)))
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
