@@ -313,11 +313,13 @@ struct OccultaApp: App {
                 // Identity-challenge traffic rides on .v3fs/.longTermFallback
                 // but is NOT a basket — hand it to the coordinator and bail.
                 if let identityEnvelope = sealed.identityChallenge {
-                    _ = self.identityChallenge.handleInboundChallenge(
-                        bundle:         bundle,
-                        envelope: identityEnvelope,
-                        contactManager: self.contactManager
-                    )
+                    if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                        _ = self.identityChallenge.handleInboundChallenge(
+                            bundle:   bundle,
+                            envelope: identityEnvelope,
+                            sender:   sender
+                        )
+                    }
                     return nil
                 }
 

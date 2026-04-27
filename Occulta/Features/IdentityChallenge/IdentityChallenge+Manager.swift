@@ -3,10 +3,10 @@
 //  Occulta
 //
 //  The three-phase lifecycle of an identity challenge:
-//    1. Challenger → createChallenge(for:)               → outbound OccultaBundle
-//    2. Responder  → decryptChallenge(bundle:contacts:)  → PendingApproval
-//                  → respond(to:)                        → outbound OccultaBundle
-//    3. Challenger → verifyResponse(bundle:contacts:)    → Bool (pass/fail)
+//    1. Challenger → createChallenge(recipientKey:recipientQuantum:contactID:)          → outbound OccultaBundle
+//    2. Responder  → decryptChallenge(bundle:senderKey:senderQuantum:senderID:senderName:) → PendingApproval
+//                  → respond(to:)                                                        → outbound OccultaBundle
+//    3. Challenger → verifyResponse(bundle:senderKey:senderQuantum:senderID:)           → Bool (pass/fail)
 //
 //  Only the long-term key derivation path is used — identity verification must
 //  never fail because of prekey exhaustion.
@@ -24,41 +24,22 @@ import Security
 
 extension IdentityChallenge {
 
-    // MARK: - ContactView
-
-    /// The subset of a contact's state this feature needs.
-    ///
-    /// A plain struct — not `Contact.Profile` — so protocol tests can construct
-    /// fixtures without SwiftData, and so this feature has no dependency on the
-    /// contact persistence layer.
-    struct ContactView: Equatable {
-        /// Stable per-contact identifier. Used as the contactKeyID in the
-        /// outstanding-challenge store.
-        let identifier: String
-        /// x963-uncompressed P-256 long-term public key (65 bytes).
-        let publicKey: Data
-        /// Display name for the UI only. Never fed into crypto.
-        let displayName: String
-        /// ML-KEM quantum material from the proximity exchange, if present.
-        /// Used to derive hybrid session keys consistent with regular messages.
-        let quantumKeyMaterial: QuantumKeyMaterial?
-    }
-
     // MARK: - PendingApproval
 
     /// Decrypted + well-formed challenge awaiting responder's explicit approval.
     ///
     /// Carries everything `respond(to:)` needs so it can complete without
-    /// re-decrypting the bundle or re-searching the contact list.
+    /// re-decrypting the bundle.
     struct PendingApproval {
-        /// The challenger — matched from the outer `senderFingerprint`.
-        let challenger: ContactView
+        let challengerID:        String
+        let challengerName:      String
+        let challengerPublicKey: Data
+        let challengerQuantum:   QuantumKeyMaterial?
         /// Decoded inner payload.
-        let payload: ChallengePayload
-        /// Optional freetext from the challenger, shown alongside the approval
-        /// prompt so the responder knows what they're being asked about. Plain
-        /// text only — never rendered as markdown/HTML/attributed string.
-        let contextNote: String?
+        let payload:             ChallengePayload
+        /// Optional freetext from the challenger. Plain text only — never
+        /// rendered as markdown/HTML/attributed string.
+        let contextNote:         String?
     }
 
     // MARK: - Errors
@@ -71,8 +52,6 @@ extension IdentityChallenge {
         case noIdentity
         /// Session key derivation returned nil.
         case keyDerivationFailed
-        /// The bundle's `senderFingerprint` did not match any known contact.
-        case unknownSender
         /// The bundle could not be decrypted or the inner payload did not parse.
         case malformedBundle
         /// Any verification-time rejection: bad signature, stale timestamp,
@@ -115,10 +94,10 @@ extension IdentityChallenge {
 
         // MARK: Phase 1 — challenger creates the challenge
 
-        /// Generate a fresh challenge bundle to send to `contact`.
+        /// Generate a fresh challenge bundle to send to a recipient.
         ///
         /// Side effects:
-        ///   - Registers an entry in `store` keyed by `contact.identifier`.
+        ///   - Registers an entry in `store` keyed by `contactID`.
         ///     Throws `.rateLimited` if one is already outstanding for this
         ///     contact.
         ///
@@ -126,11 +105,13 @@ extension IdentityChallenge {
         /// every shipped Occulta build decodes. Routing discrimination lives in
         /// `SealedPayload.identityChallenge` inside the encrypted envelope.
         func createChallenge(
-            for contact: ContactView,
-            contextNote: String? = nil
+            recipientKey:    Data,
+            recipientQuantum: QuantumKeyMaterial?,
+            contactID:       String,
+            contextNote:     String? = nil
         ) throws -> OccultaBundle {
             // 0. Rate limit first — avoid wasting SE work on a request we'll reject.
-            guard !self.store.hasOutstanding(for: contact.identifier) else {
+            guard !self.store.hasOutstanding(for: contactID) else {
                 throw ManagerError.rateLimited
             }
 
@@ -178,8 +159,8 @@ extension IdentityChallenge {
                 envelope:        envelope,
                 fallbackMessage: IdentityChallenge.challengeFallbackMessage,
                 ourPublicKey:    ourPublicKey,
-                recipientKey:    contact.publicKey,
-                quantumMaterial: contact.quantumKeyMaterial
+                recipientKey:    recipientKey,
+                quantumMaterial: recipientQuantum
             )
 
             // 4. Remember this challenge until the response arrives or expires.
@@ -188,7 +169,7 @@ extension IdentityChallenge {
                 .init(
                     nonce:        nonce,
                     timestamp:    timestamp,
-                    contactKeyID: contact.identifier,
+                    contactKeyID: contactID,
                     contextNote:  sanitizedNote
                 )
             )
@@ -200,24 +181,25 @@ extension IdentityChallenge {
 
         /// Decrypt an inbound challenge bundle and verify its framing.
         ///
+        /// The caller is responsible for sender identification — the sender's
+        /// resolved key material is passed directly so this method can
+        /// independently re-derive the session key as defense-in-depth.
+        ///
         /// Performs NO signing — signing requires explicit user approval and
         /// happens in `respond(to:)`. This phase is a pure parse + validate.
         func decryptChallenge(
-            bundle:   OccultaBundle,
-            contacts: [ContactView]
+            bundle:        OccultaBundle,
+            senderKey:     Data,
+            senderQuantum: QuantumKeyMaterial?,
+            senderID:      String,
+            senderName:    String
         ) throws -> PendingApproval {
-            // 1. Route by outer senderFingerprint.
-            guard let sender = Self.matchSender(bundle: bundle, contacts: contacts) else {
-                throw ManagerError.unknownSender
-            }
-
-            // 2. Open the bundle and extract the challenge envelope.
-            //    A bundle whose envelope is missing or has the wrong kind
-            //    has no business in this path.
+            // Open the bundle independently — we do NOT trust the pre-decrypted
+            // payload alone. Wrong key → AES-GCM auth failure → malformedBundle.
             let envelope = try self.openIdentityBundle(
                 bundle:        bundle,
-                peerPublicKey: sender.publicKey,
-                peerQuantum:   sender.quantumKeyMaterial,
+                peerPublicKey: senderKey,
+                peerQuantum:   senderQuantum,
                 expecting:     .challenge
             )
             let payloadBytes = envelope.payload
@@ -229,7 +211,7 @@ extension IdentityChallenge {
                 throw ManagerError.malformedBundle
             }
 
-            // 3. Decode the inner ChallengePayload.
+            // Decode the inner ChallengePayload.
             let payload: ChallengePayload
             do {
                 payload = try ChallengePayload(from: payloadBytes)
@@ -237,22 +219,21 @@ extension IdentityChallenge {
                 throw ManagerError.malformedBundle
             }
 
-            // 4. Inner fingerprint must bind to the sender's long-term key.
-            //    Prevents a stored-but-misrouted bundle from being accepted.
-            let expected = OccultaBundle.SecrecyContext.fingerprint(for: sender.publicKey, nonce: payload.nonce)
+            // Inner fingerprint must bind to the sender's long-term key.
+            // Prevents a stored-but-misrouted bundle from being accepted.
+            let expected = OccultaBundle.SecrecyContext.fingerprint(for: senderKey, nonce: payload.nonce)
             guard expected == payload.challengerFingerprint else {
                 throw ManagerError.verificationFailed
             }
 
-            // 5. Soft staleness check — reject obviously old challenges so a
-            //    replayed message can't coerce a biometric prompt hours later.
-            //    Tolerates moderate clock skew in both directions.
+            // Soft staleness check — reject obviously old challenges so a
+            // replayed message can't coerce a biometric prompt hours later.
+            // Tolerates moderate clock skew in both directions.
             let nowSec = UInt64(self.now().timeIntervalSince1970)
             guard let ts = try? IdentityChallenge.decodeTimestamp(payload.timestamp) else {
                 throw ManagerError.malformedBundle
             }
             if ts > nowSec {
-                // Challenge timestamped in the future.
                 let skew = TimeInterval(ts - nowSec)
                 guard skew <= IdentityChallenge.clockSkewGrace else {
                     throw ManagerError.verificationFailed
@@ -264,7 +245,14 @@ extension IdentityChallenge {
                 }
             }
 
-            return PendingApproval(challenger: sender, payload: payload, contextNote: note)
+            return PendingApproval(
+                challengerID:        senderID,
+                challengerName:      senderName,
+                challengerPublicKey: senderKey,
+                challengerQuantum:   senderQuantum,
+                payload:             payload,
+                contextNote:         note
+            )
         }
 
         /// Sign the approved challenge and build the response bundle.
@@ -287,7 +275,6 @@ extension IdentityChallenge {
             )
 
             let signature = try self.crypto.signChallenge(signedData)
-
             let response  = ResponsePayload(challengeNonce: pending.payload.nonce, signature: signature)
 
             // `.response(payload:)` forces contextNote == nil — the rule that
@@ -297,8 +284,8 @@ extension IdentityChallenge {
                 envelope:        envelope,
                 fallbackMessage: IdentityChallenge.responseFallbackMessage,
                 ourPublicKey:    ourPublicKey,
-                recipientKey:    pending.challenger.publicKey,
-                quantumMaterial: pending.challenger.quantumKeyMaterial
+                recipientKey:    pending.challengerPublicKey,
+                quantumMaterial: pending.challengerQuantum
             )
         }
 
@@ -312,17 +299,15 @@ extension IdentityChallenge {
         /// response consumes the one-shot rate-limit slot. This is intentional:
         /// retry must start with a fresh nonce.
         func verifyResponse(
-            bundle:   OccultaBundle,
-            contacts: [ContactView]
+            bundle:        OccultaBundle,
+            senderKey:     Data,
+            senderQuantum: QuantumKeyMaterial?,
+            senderID:      String
         ) throws -> (ok: Bool, contextNote: String?) {
-            guard let sender = Self.matchSender(bundle: bundle, contacts: contacts) else {
-                throw ManagerError.unknownSender
-            }
-
             let envelope = try self.openIdentityBundle(
                 bundle:        bundle,
-                peerPublicKey: sender.publicKey,
-                peerQuantum:   sender.quantumKeyMaterial,
+                peerPublicKey: senderKey,
+                peerQuantum:   senderQuantum,
                 expecting:     .response
             )
 
@@ -342,7 +327,7 @@ extension IdentityChallenge {
             // Must come from the contact we issued the challenge to.
             // Otherwise a different contact could respond to someone else's
             // challenge and claim their identity.
-            guard entry.contactKeyID == sender.identifier else {
+            guard entry.contactKeyID == senderID else {
                 self.store.remove(nonce: response.challengeNonce)
                 return (false, entry.contextNote)
             }
@@ -384,7 +369,7 @@ extension IdentityChallenge {
             )
 
             // Construct a SecKey view over the responder's stored public key.
-            guard let publicKey = Self.makePublicKey(x963: sender.publicKey) else {
+            guard let publicKey = Self.makePublicKey(x963: senderKey) else {
                 self.store.remove(nonce: response.challengeNonce)
                 return (false, entry.contextNote)
             }
@@ -511,7 +496,6 @@ extension IdentityChallenge {
             guard let note, !note.isEmpty else { return nil }
             if note.utf8.count <= maxBytes { return note }
 
-            // Walk unicode scalars, appending while we stay under the cap.
             var out = ""
             var used = 0
             for scalar in note.unicodeScalars {
@@ -521,15 +505,6 @@ extension IdentityChallenge {
                 used += add
             }
             return out.isEmpty ? nil : out
-        }
-
-        /// Routing — find the contact whose `senderFingerprint` matches the bundle.
-        private static func matchSender(bundle: OccultaBundle, contacts: [ContactView]) -> ContactView? {
-            for c in contacts {
-                let fp = OccultaBundle.SecrecyContext.fingerprint(for: c.publicKey, nonce: bundle.fingerprintNonce)
-                if fp == bundle.senderFingerprint { return c }
-            }
-            return nil
         }
 
         private static func makePublicKey(x963: Data) -> SecKey? {

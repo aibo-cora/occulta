@@ -20,11 +20,12 @@ import CryptoKit
 
 @MainActor
 private struct Party {
-    let km:    TestKeyManager
-    let crypto: Manager.Crypto
-    let store: IdentityChallenge.OutstandingChallengeStore
-    let mgr:   IdentityChallenge.Manager
-    let view:  IdentityChallenge.ContactView
+    let km:         TestKeyManager
+    let crypto:     Manager.Crypto
+    let store:      IdentityChallenge.OutstandingChallengeStore
+    let mgr:        IdentityChallenge.Manager
+    let identifier: String
+    let publicKey:  Data
 
     /// Clock shared between challenger and responder so tests can advance
     /// both in lockstep. Default is a fixed instant well inside the window.
@@ -35,16 +36,12 @@ private struct Party {
         let crypto = Manager.Crypto(keyManager: km)
         let store = IdentityChallenge.OutstandingChallengeStore()
         let mgr = IdentityChallenge.Manager(crypto: crypto, store: store, now: clock)
-        self.km = km
-        self.crypto = crypto
-        self.store = store
-        self.mgr = mgr
-        self.view = IdentityChallenge.ContactView(
-            identifier: name,
-            publicKey:  try! km.retrieveIdentity(),
-            displayName: name,
-            quantumKeyMaterial: nil
-        )
+        self.km         = km
+        self.crypto     = crypto
+        self.store      = store
+        self.mgr        = mgr
+        self.identifier = name
+        self.publicKey  = try! km.retrieveIdentity()
     }
 }
 
@@ -67,14 +64,21 @@ private func parties(
     @Test func happyPath_fullRoundtrip_verifies() throws {
         let (c, r) = parties()
 
-        let challengeBundle = try c.mgr.createChallenge(for: r.view)
+        let challengeBundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
 
-        let pending = try r.mgr.decryptChallenge(bundle: challengeBundle, contacts: [c.view])
-        #expect(pending.challenger == c.view)
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challengeBundle,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        #expect(pending.challengerPublicKey == c.publicKey && pending.challengerID == c.identifier)
 
         let responseBundle = try r.mgr.respond(to: pending)
 
-        let (ok, note) = try c.mgr.verifyResponse(bundle: responseBundle, contacts: [r.view])
+        let (ok, note) = try c.mgr.verifyResponse(
+            bundle: responseBundle, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(ok)
         #expect(note == nil)
 
@@ -86,10 +90,10 @@ private func parties(
 
     @Test func rateLimit_secondChallengeToSameContact_throws() throws {
         let (c, r) = parties()
-        _ = try c.mgr.createChallenge(for: r.view)
+        _ = try c.mgr.createChallenge(recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier)
 
         #expect(throws: IdentityChallenge.ManagerError.rateLimited) {
-            _ = try c.mgr.createChallenge(for: r.view)
+            _ = try c.mgr.createChallenge(recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier)
         }
     }
 
@@ -98,29 +102,35 @@ private func parties(
         let r1 = Party(name: "r1")
         let r2 = Party(name: "r2")
 
-        _ = try c.mgr.createChallenge(for: r1.view)
-        _ = try c.mgr.createChallenge(for: r2.view)
+        _ = try c.mgr.createChallenge(recipientKey: r1.publicKey, recipientQuantum: nil, contactID: r1.identifier)
+        _ = try c.mgr.createChallenge(recipientKey: r2.publicKey, recipientQuantum: nil, contactID: r2.identifier)
 
         #expect(c.store.count == 2)
     }
 
     // MARK: Phase 2 — framing
 
-    @Test func decryptChallenge_unknownSender_throws() throws {
+    @Test func decryptChallenge_wrongSenderKey_throwsMalformedBundle() throws {
         let (c, r) = parties()
         let stranger = Party(name: "stranger")
-        let bundle = try c.mgr.createChallenge(for: r.view)
+        let bundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
 
-        // Responder's contact list does not include the challenger.
-        #expect(throws: IdentityChallenge.ManagerError.unknownSender) {
-            _ = try r.mgr.decryptChallenge(bundle: bundle, contacts: [stranger.view])
+        // Passing the stranger's key produces a wrong-key decryption → malformedBundle.
+        #expect(throws: IdentityChallenge.ManagerError.malformedBundle) {
+            _ = try r.mgr.decryptChallenge(
+                bundle: bundle,
+                senderKey: stranger.publicKey, senderQuantum: nil,
+                senderID: stranger.identifier, senderName: stranger.identifier
+            )
         }
     }
 
-    @Test func decryptChallenge_regularMessageBundle_throwsUnknownSender() throws {
-        // A bundle produced by the regular message path has no ContentType set.
-        // With an empty contact list it fails at the sender-routing stage.
-        let (c, r) = parties()
+    @Test func decryptChallenge_garbledCiphertext_throwsMalformedBundle() throws {
+        // A bundle with random ciphertext must fail decryption regardless of the
+        // key provided.
+        let (_, r) = parties()
         let fake = OccultaBundle(
             version: .v3fs,
             secrecy: OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil),
@@ -128,9 +138,12 @@ private func parties(
             fingerprintNonce: Data(count: 16),
             senderFingerprint: Data(count: 32)
         )
-        _ = c
-        #expect(throws: IdentityChallenge.ManagerError.unknownSender) {
-            _ = try r.mgr.decryptChallenge(bundle: fake, contacts: [])
+        #expect(throws: IdentityChallenge.ManagerError.malformedBundle) {
+            _ = try r.mgr.decryptChallenge(
+                bundle: fake,
+                senderKey: r.publicKey, senderQuantum: nil,
+                senderID: r.identifier, senderName: r.identifier
+            )
         }
     }
 
@@ -138,8 +151,13 @@ private func parties(
 
     @Test func verify_tamperedResponseCiphertext_returnsFalseOrThrows() throws {
         let (c, r) = parties()
-        let challengeBundle = try c.mgr.createChallenge(for: r.view)
-        let pending = try r.mgr.decryptChallenge(bundle: challengeBundle, contacts: [c.view])
+        let challengeBundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challengeBundle,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
         let responseBundle = try r.mgr.respond(to: pending)
 
         // Tamper with the ciphertext — AES-GCM auth tag should fail.
@@ -154,7 +172,9 @@ private func parties(
         )
 
         #expect(throws: IdentityChallenge.ManagerError.malformedBundle) {
-            _ = try c.mgr.verifyResponse(bundle: tampered, contacts: [r.view])
+            _ = try c.mgr.verifyResponse(
+                bundle: tampered, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+            )
         }
     }
 
@@ -167,11 +187,13 @@ private func parties(
         let r        = Party(name: "r")
         let imposter = Party(name: "imposter")
 
-        let challenge = try c.mgr.createChallenge(for: r.view)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
 
         // Imposter decrypts nothing — they fabricate a response. Easiest path:
         // let them legitimately handle a DIFFERENT challenge aimed at them,
-        // then submit that response to verify against r.view. The store
+        // then submit that response to verify against r. The store
         // lookup will find a valid entry (for r), contactKeyID mismatch fires.
         _ = challenge
         // Simulate an imposter response by having `imposter` act as responder
@@ -179,17 +201,24 @@ private func parties(
         // claiming it proves `imposter`'s identity... but c's store has no
         // entry for `imposter`, so the nonce lookup fails → false.
         let c2 = Party(name: "c2")
-        let challengeToImposter = try c2.mgr.createChallenge(for: imposter.view)
-        let pending             = try imposter.mgr.decryptChallenge(bundle: challengeToImposter, contacts: [c2.view])
-        let imposterResponse    = try imposter.mgr.respond(to: pending)
+        let challengeToImposter = try c2.mgr.createChallenge(
+            recipientKey: imposter.publicKey, recipientQuantum: nil, contactID: imposter.identifier
+        )
+        let pending = try imposter.mgr.decryptChallenge(
+            bundle: challengeToImposter,
+            senderKey: c2.publicKey, senderQuantum: nil, senderID: c2.identifier, senderName: c2.identifier
+        )
+        let imposterResponse = try imposter.mgr.respond(to: pending)
 
         // Now submit imposterResponse to the ORIGINAL challenger. The bundle
-        // routes to `imposter` by fingerprint, but was sealed against c2's
-        // identity — so c cannot derive the session key. Decryption fails
-        // with `.malformedBundle`. Either outcome (throw or `false`) means
+        // was sealed by imposter for c2 — so c cannot derive the session key.
+        // Decryption fails with `.malformedBundle`. Either outcome means
         // the imposter cannot claim r's identity — which is the property.
         #expect(throws: IdentityChallenge.ManagerError.malformedBundle) {
-            _ = try c.mgr.verifyResponse(bundle: imposterResponse, contacts: [r.view, imposter.view])
+            _ = try c.mgr.verifyResponse(
+                bundle: imposterResponse,
+                senderKey: imposter.publicKey, senderQuantum: nil, senderID: imposter.identifier
+            )
         }
     }
 
@@ -203,14 +232,21 @@ private func parties(
         let c = Party(name: "c", clock: clock)
         let r = Party(name: "r", clock: clock)
 
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
-        let response  = try r.mgr.respond(to: pending)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let response = try r.mgr.respond(to: pending)
 
         // Advance past the 5-minute window before the challenger verifies.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) + 1
 
-        let (ok, _) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (ok, _) = try c.mgr.verifyResponse(
+            bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(!ok)
     }
 
@@ -222,14 +258,21 @@ private func parties(
         let c = Party(name: "c", clock: clock)
         let r = Party(name: "r", clock: clock)
 
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
-        let response  = try r.mgr.respond(to: pending)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let response = try r.mgr.respond(to: pending)
 
         // Just under the window.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) - 1
 
-        let (ok, _) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (ok, _) = try c.mgr.verifyResponse(
+            bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(ok)
     }
 
@@ -237,15 +280,24 @@ private func parties(
 
     @Test func verify_replayedResponse_returnsFalseOnSecondAttempt() throws {
         let (c, r) = parties()
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
-        let response  = try r.mgr.respond(to: pending)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let response = try r.mgr.respond(to: pending)
 
         // First verify — succeeds and consumes the slot.
-        #expect(try c.mgr.verifyResponse(bundle: response, contacts: [r.view]).ok)
+        #expect(try c.mgr.verifyResponse(
+            bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        ).ok)
 
         // Replay — same response, but store no longer has the entry.
-        let (replay, _) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (replay, _) = try c.mgr.verifyResponse(
+            bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(!replay)
     }
 
@@ -261,10 +313,15 @@ private func parties(
         }
 
         let (c, r) = parties(challengerClock: challengerClock, responderClock: responderClock)
-        let bundle = try c.mgr.createChallenge(for: r.view)
+        let bundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
 
         #expect(throws: IdentityChallenge.ManagerError.verificationFailed) {
-            _ = try r.mgr.decryptChallenge(bundle: bundle, contacts: [c.view])
+            _ = try r.mgr.decryptChallenge(
+                bundle: bundle,
+                senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+            )
         }
     }
 
@@ -276,9 +333,14 @@ private func parties(
         let responderClock:  () -> Date = { Date(timeIntervalSince1970: TimeInterval(epoch)) }
 
         let (c, r) = parties(challengerClock: challengerClock, responderClock: responderClock)
-        let bundle  = try c.mgr.createChallenge(for: r.view)
-        let pending = try r.mgr.decryptChallenge(bundle: bundle, contacts: [c.view])
-        #expect(pending.challenger == c.view)
+        let bundle  = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: bundle,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        #expect(pending.challengerPublicKey == c.publicKey && pending.challengerID == c.identifier)
     }
 
     @Test func decryptChallenge_futureTimestampBeyondSkewGrace_throws() throws {
@@ -288,10 +350,15 @@ private func parties(
         let responderClock:  () -> Date = { Date(timeIntervalSince1970: TimeInterval(epoch)) }
 
         let (c, r) = parties(challengerClock: challengerClock, responderClock: responderClock)
-        let bundle = try c.mgr.createChallenge(for: r.view)
+        let bundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
 
         #expect(throws: IdentityChallenge.ManagerError.verificationFailed) {
-            _ = try r.mgr.decryptChallenge(bundle: bundle, contacts: [c.view])
+            _ = try r.mgr.decryptChallenge(
+                bundle: bundle,
+                senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+            )
         }
     }
 
@@ -305,7 +372,9 @@ private func parties(
         let c = Party(name: "c", clock: clock)
         let r = Party(name: "r", clock: clock)
 
-        _ = try c.mgr.createChallenge(for: r.view)
+        _ = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
         #expect(c.store.count == 1)
 
         // Advance past the stale threshold and simulate an app launch sweep.
@@ -315,7 +384,7 @@ private func parties(
         #expect(c.store.count == 0)
 
         // Rate limit is now free again.
-        #expect(!c.store.hasOutstanding(for: r.view.identifier))
+        #expect(!c.store.hasOutstanding(for: r.identifier))
     }
 
     // MARK: Bundle metadata
@@ -324,7 +393,9 @@ private func parties(
         // Wire envelope must be indistinguishable from a regular fallback
         // message so older builds can still decode the bundle.
         let (c, r) = parties()
-        let b = try c.mgr.createChallenge(for: r.view)
+        let b = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
         #expect(b.version      == .v3fs)
         #expect(b.secrecy.mode == .longTermFallback)
         #expect(b.secrecy.prekeyID == nil)
@@ -336,24 +407,38 @@ private func parties(
         let (c, r) = parties()
         let note = "Someone on Telegram is asking me for 18,000. Was this you?"
 
-        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: note)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier, contextNote: note
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
         #expect(pending.contextNote == note)
 
         let response = try r.mgr.respond(to: pending)
-        let (ok, echoed) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (ok, echoed) = try c.mgr.verifyResponse(
+            bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(ok)
         #expect(echoed == note)
     }
 
     @Test func contextNote_nilWhenNotProvided() throws {
         let (c, r) = parties()
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
         #expect(pending.contextNote == nil)
 
         let response = try r.mgr.respond(to: pending)
-        let (ok, echoed) = try c.mgr.verifyResponse(bundle: response, contacts: [r.view])
+        let (ok, echoed) = try c.mgr.verifyResponse(
+            bundle: response, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(ok)
         #expect(echoed == nil)
     }
@@ -362,8 +447,13 @@ private func parties(
         let (c, r) = parties()
         // 600-byte ASCII note — sender MUST truncate to 500 before seal.
         let oversize = String(repeating: "a", count: 600)
-        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: oversize)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier, contextNote: oversize
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
 
         #expect(pending.contextNote?.utf8.count == IdentityChallenge.maxContextNoteBytes)
         #expect(pending.contextNote == String(repeating: "a", count: IdentityChallenge.maxContextNoteBytes))
@@ -371,8 +461,13 @@ private func parties(
 
     @Test func contextNote_emptyStringTreatedAsNil() throws {
         let (c, r) = parties()
-        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: "")
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier, contextNote: ""
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
         #expect(pending.contextNote == nil)
     }
 
@@ -381,14 +476,19 @@ private func parties(
         // a response bundle must have contextNote == nil even when the
         // originating challenge had one.
         let (c, r) = parties()
-        let challenge = try c.mgr.createChallenge(for: r.view, contextNote: "hi")
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
-        let response  = try r.mgr.respond(to: pending)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier, contextNote: "hi"
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let response = try r.mgr.respond(to: pending)
 
         // Decrypt the response ourselves (challenger side) and inspect the
         // SealedPayload directly — can't use the public API since it strips
         // the note for response-typed bundles.
-        let sessionKey = c.crypto.deriveSessionKey(using: r.view.publicKey)!
+        let sessionKey = c.crypto.deriveSessionKey(using: r.publicKey)!
         let plaintext  = try c.crypto.open(response, using: sessionKey)
         let sealed     = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
         #expect(sealed.identityChallenge?.kind        == .response)
@@ -401,13 +501,18 @@ private func parties(
         // ignore the note — never throw. This test fabricates such a response
         // by hand because the public API (`.response(payload:)`) forces nil.
         let (c, r) = parties()
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
         let realResponse = try r.mgr.respond(to: pending)
 
         // Decrypt the real response, rewrite the envelope to include a note,
         // re-seal with the same session key, and hand it to the challenger.
-        let sessionKey = c.crypto.deriveSessionKey(using: r.view.publicKey)!
+        let sessionKey = c.crypto.deriveSessionKey(using: r.publicKey)!
         let plaintext  = try c.crypto.open(realResponse, using: sessionKey)
         var sealed     = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: plaintext)
 
@@ -438,7 +543,9 @@ private func parties(
         )
 
         // Verification should succeed — the tampered note is ignored, not fatal.
-        let (ok, _) = try c.mgr.verifyResponse(bundle: resealed, contacts: [r.view])
+        let (ok, _) = try c.mgr.verifyResponse(
+            bundle: resealed, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(ok)
     }
 
@@ -453,18 +560,30 @@ private func parties(
         let r = Party(name: "r", clock: clock)
 
         // Challenge WITH note → sign → verify.
-        let challengeA = try c.mgr.createChallenge(for: r.view, contextNote: "X")
-        let pendingA   = try r.mgr.decryptChallenge(bundle: challengeA, contacts: [c.view])
-        let responseA  = try r.mgr.respond(to: pendingA)
-        let (okA, _)   = try c.mgr.verifyResponse(bundle: responseA, contacts: [r.view])
+        let challengeA = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier, contextNote: "X"
+        )
+        let pendingA = try r.mgr.decryptChallenge(
+            bundle: challengeA,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let responseA = try r.mgr.respond(to: pendingA)
+        let (okA, _)  = try c.mgr.verifyResponse(
+            bundle: responseA, senderKey: r.publicKey, senderQuantum: nil, senderID: r.identifier
+        )
         #expect(okA)
     }
 
     @Test func responseBundle_ridesV3fsLongTermFallback() throws {
         let (c, r) = parties()
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
-        let response  = try r.mgr.respond(to: pending)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let response = try r.mgr.respond(to: pending)
         #expect(response.version      == .v3fs)
         #expect(response.secrecy.mode == .longTermFallback)
     }
