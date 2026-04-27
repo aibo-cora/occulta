@@ -500,6 +500,88 @@ exchange protocol.
 
 ---
 
+## Shard custody reconciliation (Phase 2)
+
+### The gap
+
+Alice's `ShardRecord.status` can silently diverge from reality. The current system
+detects shard loss through two signals:
+
+1. **Key fingerprint change** — `contactKeyRotated` fires, `scheduleReturnIfShardsCustodied`
+   upserts a `PendingShardReturn`, Bob's next outbound bundle carries `.handback`.
+2. **Explicit `.notFound`** — Bob's app sends this when asked for a shard it no longer holds.
+
+Neither signal fires for **silent data loss**: Bob deletes and reinstalls the app.
+His SE key survives app deletion (Keychain items are not removed on uninstall), so
+his public key fingerprint is unchanged. `contactKeyRotated` never fires. Bob's new
+install has no `CustodyShard` rows and no knowledge of what it held, so no
+`.notFound` is ever sent. Alice's `ShardRecord.status` stays `.confirmed` indefinitely.
+
+The same failure occurs if a SwiftData migration wipes Bob's store without changing
+his SE key — a realistic risk during app updates with schema changes.
+
+**Consequence:** the erosion warning in the entry detail view shows a false-healthy
+state. Alice does not redistribute. She discovers the real shard count only when
+attempting recovery on a new device — the worst possible moment.
+
+This is not a cryptographic vulnerability. The vault and the PEK are unaffected.
+The consequence is missed redistribution prompts leading to undetected erosion below
+threshold.
+
+### Proposed solution: pull-based shard inquiry
+
+Add two new `ShardOperation` kinds:
+
+| Kind | Direction | Payload |
+|------|-----------|---------|
+| `.inquire` | owner → trustee | `attrID: UUID` |
+| `.notFound` | trustee → owner | `attrID: UUID` (already exists) |
+
+**Owner side:** when a `ShardRecord` has been in `.sent` for longer than a
+configurable threshold (e.g. 7 days) or in `.confirmed` without a recent liveness
+signal (e.g. 90 days), Alice's app appends a `.inquire` operation to the next
+outbound bundle to that trustee. No new bundle is created; the operation piggybacks
+on normal traffic.
+
+**Trustee side:** on receiving `.inquire(attrID:)`, Bob's app checks whether a
+`CustodyShard` row with a matching `signedAttribute.id` exists.
+- If found: send `.acknowledge(attrID:)` in the next outbound bundle to Alice.
+- If not found: send `.notFound(attrID:)` — the existing handler marks the record `.lost`.
+
+**Why pull, not push:** a push inventory (Bob piggybacks all held attrIDs on every
+outbound message) requires Bob's `encryptBundle` to access `ShardCustodyManager`
+on every send, coupling shard state to normal messaging. It also leaks the custody
+set size to anyone observing message frequency. Pull scopes the probe to contacts
+where Alice has an outstanding distribution, fires only when a record is stale, and
+keeps the shard protocol self-contained.
+
+### What this does not fix
+
+- **Bob never opens the app.** No client-side mechanism can probe a silent peer.
+  This requires a server-side presence signal, which is out of scope.
+- **Lost `.revoke` bundles.** Bob holds a stale shard Alice has rotated away.
+  The inquiry doesn't cover this — Alice's active attrID for Bob is the new one;
+  she inquires about the new one, Bob responds `.notFound`, Alice marks it `.lost`
+  and redistributes. The old shard in Bob's store is harmless (fails GCM auth) but
+  accumulates as dead storage. Fix: retry `.revoke` for the old attrID alongside
+  the `.inquire` for the new one.
+
+### Implementation notes
+
+- Add `.inquire` and update the `Kind` `init(from:)` fallback to `.unsupported`
+  (backward compat: old builds ignore unknown operations).
+- Alice needs a `lastContactedAt: Date?` field per `ShardRecord`, or a separate
+  staleness index, to decide when to probe. The staleness threshold is tunable;
+  start conservative (90 days for `.confirmed`, 7 days for `.sent`).
+- The trustee handler for `.inquire` requires no vault unlock — it only checks
+  whether a `CustodyShard` row exists by scanning decrypted attrIDs, which uses
+  the shard custody key (device-unlock level, no biometric).
+- Reconciliation is one-sided by design. Bob's `CustodyShard` rows are already
+  kept correct by `.revoke` and `replacesID`. Alice's `ShardRecord` is the only
+  state machine that can silently diverge.
+
+---
+
 ## Implementation status
 
 | Component                             | Status        |
@@ -537,6 +619,7 @@ exchange protocol.
 | Auto-return trigger + delivery hook   | ✅ Done |
 | Return acknowledge send + cleanup     | ✅ Done |
 | Feature flag (hidden until done)      | ✅ Done        |
+| Shard custody reconciliation (`.inquire` / `.notFound`) | 🔲 Phase 2 |
 
 ---
 
