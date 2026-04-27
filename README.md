@@ -16,6 +16,7 @@ Once exchanged, encrypt any file, photo, video, or document for anyone in your c
 - [Forward Secrecy](#forward-secrecy)
 - [Key Exchange Flow](#key-exchange-flow)
 - [Encryption Flow](#encryption-flow)
+- [Vault & Secret Sharing](#vault--secret-sharing)
 - [Security Properties](#security-properties)
 - [Threat Model](#threat-model)
 - [Architecture](#architecture)
@@ -361,6 +362,84 @@ Subsequent messages (forward secret):
 ```
 
 Decryption mirrors this: the recipient reconstructs the session key using their Secure Enclave prekey private key and the sender's ephemeral public key (plus ML-KEM secrets if available), verifies the GCM tag, decodes the payload, and deletes the prekey. The session key never existed in persistent storage on either side.
+
+---
+
+## Vault & Secret Sharing
+
+Occulta Vault stores encrypted entries (label + content). Each entry has its own randomly generated **per-entry key (PEK)** — the vault master key only wraps the PEK, not the content directly. This means recovery can be scoped per entry: different entries can have different trustees and different thresholds.
+
+### Encryption model
+
+```
+vault key (SE-derived)
+  └── encryptedEntryKey  →  per-entry key (PEK, 32 random bytes)
+        ├── encryptedLabel    (AES-GCM, AAD = entry.aad())
+        └── encryptedContent  (AES-GCM, AAD = entry.aad())
+```
+
+### Shamir's Secret Sharing
+
+The PEK is split using SSS over GF(2⁸) (Lagrange interpolation, field polynomial 0x11B). A threshold-of-n split produces n shards; any k ≥ threshold reconstruct the PEK. With fewer than k shards an attacker learns nothing about the PEK — information-theoretic security, not computational.
+
+Splitting is per-entry. Different entries use independent random polynomials; shards from different distributions are incompatible and fail GCM authentication if mixed.
+
+### Shard signing
+
+Each shard is wrapped in a `SignedAttribute(category: .shard)` signed by the owner's SE identity key. The v2 signing payload binds:
+
+```
+"occulta-signed-attribute-v2" ∥ attrID ∥ "shard" ∥ entryID
+∥ createdAt UInt64 BE ∥ expiry flag ∥ shardBytes
+```
+
+`entryID` binding prevents a shard from a previous PEK generation from being accepted against a rotated entry. `createdAt`/`expiresAt` in the payload prevent a trustee from extending validity by editing stored JSON — any modification invalidates the ECDSA signature.
+
+On a new device the owner's SE key is gone; signature verification is skipped. GCM authentication on reconstruction substitutes as the integrity check.
+
+### Shard delivery
+
+Shards are delivered as `.occ` bundles using `longTermFallback` + **mandatory ML-KEM**. A contact without ML-KEM key material cannot be selected as a trustee. This gates every shard bundle behind a session key that requires breaking ML-KEM-1024 in addition to P-256 to recover — the only practical defence against harvest-now-decrypt-later attacks. Forward secrecy is not used for shard traffic; `longTermFallback` + ML-KEM provides equivalent practical security for this threat model without consuming prekeys.
+
+### What a trustee stores
+
+A trustee stores a `CustodyShard` row containing only:
+- A random per-row `id` (plaintext SwiftData key).
+- An `encryptedPayload` blob — AES-GCM seal of `{ ownerKeyFingerprint, ownerContactIdentifier, signedAttribute }` under the shard custody key, AAD = `id`.
+
+No plaintext column links a shard to a specific contact. Cold-disk forensics learns "N shards stored" — nothing about ownership, timing, or which entries are covered.
+
+### Shard custody key
+
+A dedicated SE key (tag `"shard.custody.occulta"`, device-unlock level, no biometric) is used exclusively for shard operations. Two symmetric keys are HKDF-derived from it:
+
+| Symmetric key       | HKDF info                         | Seals            |
+|---------------------|-----------------------------------|------------------|
+| Shard custody key   | `Occulta-v1-shard-custody-2026`   | CustodyShard     |
+| Recovery buffer key | `Occulta-v1-recovery-buffer-2026` | ReconstructShard |
+
+Device-unlock (not biometric) allows shard bundles to be stored automatically on receipt without requiring the user to open the app.
+
+### Reconstruction
+
+1. Trustees detect Alice's key change during proximity exchange and auto-return shards via `.handback` operations in the next outbound bundle.
+2. Alice's app buffers arriving shards in `ReconstructShard` (encrypted under the recovery buffer key).
+3. When ≥ k shards are buffered, `tryFinalizeReconstruction` runs automatically.
+4. Old device: verify each shard's ECDSA signature. New device: skip, rely on GCM.
+5. `ShamirSecretSharing.reconstruct(shares:)` → 32-byte PEK.
+6. `AES.GCM.open(encryptedContent, using: PEK)` — success confirms shard integrity.
+7. Re-wrap PEK under current vault key; zero PEK bytes immediately.
+
+### Threat model
+
+| Threat | Defence |
+|--------|---------|
+| < k shards | Information-theoretically zero leakage |
+| Stale shards (old PEK) | GCM decryption fails immediately |
+| Tampered shard | ECDSA fails (normal); GCM fails on new device |
+| Shard mixing across entries | GCM authentication rejects incompatible shares |
+| HNDL (quantum adversary archives bundles) | Mandatory ML-KEM-1024 in session key |
+| Trustee device loss | Owner detects fingerprint change → marks shard `.lost`; UI prompts redistribution |
 
 ---
 
