@@ -236,17 +236,21 @@ final class ShardCustodyManager {
                         let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
                         let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
                     else { return false }
+                    
                     return payload.contactIdentifier == contactID
                 }) {
                     guard
                         let box       = try? AES.GCM.SealedBox(combined: existing.encryptedPayload),
                         let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: existing.aad()),
-                        var payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
+                        let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
                     else { continue }
+                    
                     let merged  = PendingShardRevoke.Payload(contactIdentifier: contactID, attrIDs: Array(Set(payload.attrIDs).union([attrID])))
                     let bytes   = try JSONEncoder().encode(merged)
                     let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: existing.aad())
+                    
                     guard let combined = sealed.combined else { continue }
+                    
                     existing.encryptedPayload = combined
                 } else {
                     // Insert a new row.
@@ -255,7 +259,9 @@ final class ShardCustodyManager {
                     let bytes   = try JSONEncoder().encode(payload)
                     let aad     = Self.rowAAD(id: rowID)
                     let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+                    
                     guard let combined = sealed.combined else { continue }
+                    
                     self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
                 }
             }

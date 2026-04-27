@@ -124,13 +124,7 @@ extension IdentityChallenge {
         ///   `false` means the caller should fall back to regular message
         ///   handling (envelope was absent).
         @discardableResult
-        func handleInbound(
-            bundle: OccultaBundle,
-            sealed: OccultaBundle.SealedPayload,
-            contactManager: ContactManager
-        ) -> Bool {
-            guard let envelope = sealed.identityChallenge else { return false }
-
+        func handleInboundChallenge(bundle: OccultaBundle, envelope: IdentityChallengeEnvelope, contactManager: ContactManager) -> Bool {
             let contactViews = Self.allContactViews(contactManager: contactManager)
 
             switch envelope.kind {
@@ -142,7 +136,6 @@ extension IdentityChallenge {
                     self.errorMessage = "Could not open identity verification request."
                 }
                 return true
-
             case .response:
                 do {
                     let (ok, note) = try self.manager.verifyResponse(bundle: bundle, contacts: contactViews)
@@ -246,6 +239,7 @@ extension IdentityChallenge {
                 let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
                 let pubKey    = try? crypto.decrypt(data: keyRecord.material)
             else { return nil }
+            
             let name = contact.givenName.decrypt()
             let quantumMaterial: QuantumKeyMaterial? = {
                 guard
@@ -254,6 +248,7 @@ extension IdentityChallenge {
                 else { return nil }
                 return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decrypted)
             }()
+            
             return IdentityChallenge.ContactView(
                 identifier:         contact.identifier,
                 publicKey:          pubKey,
