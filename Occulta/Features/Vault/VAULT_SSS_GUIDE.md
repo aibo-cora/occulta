@@ -41,6 +41,69 @@ SSS path:
 
 ---
 
+## Recovery scope
+
+SSS recovers the **per-entry key (PEK) only** — not the encrypted content.
+
+`encryptedLabel` and `encryptedContent` live in the `VaultEntry` SwiftData row on
+Alice's device. Reconstruction (`tryFinalizeReconstruction`) fetches that row by
+`entryID` and decrypts it using the reconstructed PEK. If the device is lost and
+the SwiftData store is gone, the ciphertext is gone — no number of shards can
+recover it.
+
+This is intentional and matches industry standard SSS deployments (SLIP-39,
+enterprise key management, hardware wallet recovery): trustees are **key custodians**,
+not data custodians. Distributing ciphertext to trustees was considered and rejected
+for the following reasons:
+
+- **Collusion attack surface**: k colluding trustees can silently decrypt a full
+  entry without Alice's involvement or awareness. Without ciphertext distribution,
+  k colluding trustees reconstruct the PEK but have no ciphertext to apply it to.
+- **Compromised trustee device**: with ciphertext at rest on a trustee's device,
+  an attacker who compromises that device holds the encrypted target plus one share.
+  The threshold property still holds, but the attack surface is materially worse.
+- **Size metadata**: AES-GCM does not pad. Every trustee can observe exact plaintext
+  sizes from the ciphertext length, revealing information about the entry even though
+  the content is encrypted.
+- **Trust relationship mismatch**: users selecting trustees understand them as key
+  holders. Silently making them data holders is a different and larger trust grant
+  that users are unlikely to reason about correctly.
+
+### Content backup is the user's responsibility
+
+Full recovery from device loss requires two independent components:
+
+1. **PEK** — reconstructed from k shards via SSS (what this system provides).
+2. **Ciphertext** — `encryptedLabel` + `encryptedContent` from a vault backup
+   (user's responsibility).
+
+Alice must maintain a separate vault backup — a passphrase-protected export stored
+in iCloud Drive, a password manager, or physical media — for full device-loss
+recovery. SSS alone is not sufficient.
+
+Recovery flow with both components:
+
+```
+backup file  → encryptedLabel, encryptedContent
+shards (≥ k) → reconstruct PEK
+PEK + encryptedContent → plaintext
+PEK + new vault key    → new encryptedEntryKey (re-establishes normal access path)
+```
+
+The two halves are independent. A backup without shards is useless if the vault
+key is lost. Shards without a backup reconstruct a key with nothing to decrypt.
+Neither alone is sufficient; together they constitute full recovery.
+
+### What to surface in the UI
+
+The entry detail and distribution setup views should make this scope boundary
+explicit: "SSS protects your encryption key. Export a vault backup separately to
+protect your content." The redistribution prompt after reconstruction should also
+remind Alice to update her backup, since she has just confirmed her shard
+distribution is intact.
+
+---
+
 ## Shard signing
 
 Each shard is wrapped in a `SignedAttribute(category: .shard)` signed by the
@@ -620,6 +683,7 @@ keeps the shard protocol self-contained.
 | Return acknowledge send + cleanup     | ✅ Done |
 | Feature flag (hidden until done)      | ✅ Done        |
 | Shard custody reconciliation (`.inquire` / `.notFound`) | 🔲 Phase 2 |
+| Vault backup export (user-facing, prerequisite for full device-loss recovery) | 🔲 Recommended |
 
 ---
 
