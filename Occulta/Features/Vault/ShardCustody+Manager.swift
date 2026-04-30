@@ -140,7 +140,7 @@ final class ShardCustodyManager {
 
         // Queue an outbound `.acknowledge` to the owner. Best-effort: if this
         // throws, the shard is still stored — the ack is cosmetic, not required
-        // for correctness. Alice's ShardRecord status will lag at `.sent` until
+        // for correctness. Alice's ShardRecord status will lag at `.pending` until
         // the next successful queue + send cycle.
         try? self.queueShardAcknowledge(attrID: attribute.id, for: senderIdentifier)
     }
@@ -333,6 +333,48 @@ final class ShardCustodyManager {
         }
     }
 
+    /// Queue a single-shard `.revoke` for `contactIdentifier`.
+    ///
+    /// Mirrors `queueRevokes(from:)` but for one attrID. Merges with any existing
+    /// `PendingShardRevoke` row for this contact so multiple revocations accumulate
+    /// in one outbound operation.
+    func queueRevoke(attrID: UUID, for contactIdentifier: String) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
+
+        if let existing = pending.first(where: { row in
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
+            else { return false }
+            return payload.contactIdentifier == contactIdentifier
+        }) {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: existing.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: existing.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
+            else { return }
+            let merged  = PendingShardRevoke.Payload(contactIdentifier: contactIdentifier, attrIDs: Array(Set(payload.attrIDs).union([attrID])))
+            let bytes   = try JSONEncoder().encode(merged)
+            let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: existing.aad())
+            guard let combined = sealed.combined else { return }
+            existing.encryptedPayload = combined
+        } else {
+            let rowID   = UUID()
+            let payload = PendingShardRevoke.Payload(contactIdentifier: contactIdentifier, attrIDs: [attrID])
+            let bytes   = try JSONEncoder().encode(payload)
+            let aad     = Self.rowAAD(id: rowID)
+            let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+            guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+            self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
+        }
+        try self.modelContext.save()
+    }
+
     /// Build `.revoke` operations for any pending revocations owed to `contactIdentifier`.
     ///
     /// Deletes the row on send (fire-and-forget). Trustees silently delete the
@@ -425,7 +467,7 @@ final class ShardCustodyManager {
     ///
     /// Returns one `ShardOperation(kind: .acknowledge, attrID:)` per queued attrID,
     /// then deletes the row (fire-and-forget). If the bundle is never delivered,
-    /// Alice's ShardRecord remains `.sent`; the next outbound message retries
+    /// Alice's ShardRecord remains `.pending`; the next outbound message retries
     /// automatically because the row was already deleted on this call.
     ///
     /// Returns `nil` when no pending ack exists for this contact.

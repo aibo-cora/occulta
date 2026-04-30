@@ -34,7 +34,7 @@ struct VaultShardHealth: View {
 
     private var atRiskCount: Int {
         decoded.filter { (_, meta, _) in
-            let active = meta.shards.filter { $0.status == .sent || $0.status == .confirmed }.count
+            let active = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
             return active < meta.threshold
         }.count
     }
@@ -154,7 +154,7 @@ struct VaultShardHealth: View {
     }
 
     private func healthRow(entry: VaultEntry, meta: ShardDistributionMetadata, label: String) -> some View {
-        let active   = meta.shards.filter { $0.status == .sent || $0.status == .confirmed }.count
+        let active   = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
         let total    = meta.shards.count
         let atRisk   = active < meta.threshold
 

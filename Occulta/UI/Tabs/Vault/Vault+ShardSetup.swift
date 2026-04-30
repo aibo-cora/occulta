@@ -2,8 +2,7 @@
 //  Vault+ShardSetup.swift
 //  Occulta
 //
-//  V4 "Trust-first" shard distribution.
-//  Single ML-KEM list, stacked avatar pile, "any k" stepper, Mark for Distribution CTA.
+//  V5: status chips, manual revocation, dirty tracking, context-aware CTA.
 //
 
 import SwiftUI
@@ -23,6 +22,14 @@ struct VaultShardSetup: View {
     @State private var threshold = 2
     @State private var marking = false
     @State private var error: String?
+    @State private var distributionMeta: ShardDistributionMetadata? = nil
+    @State private var snapshotIDs: Set<String> = []
+    @State private var snapshotThreshold: Int = 2
+    @State private var confirmationMessage: String? = nil
+    @State private var revokeTarget: ShardRecord? = nil
+
+    /// Shards in these two states count toward active recovery coverage.
+    private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
 
     /// Live set of contact IDs in the user's global trustee config.
     /// Recomputed whenever `globalConfigRows` changes — reactive badge display.
@@ -48,6 +55,21 @@ struct VaultShardSetup: View {
     }
 
     private var canMark: Bool { selected.count >= 2 }
+
+    private var hasExistingDistribution: Bool { distributionMeta != nil }
+
+    private var isDirty: Bool {
+        selectedIDs != snapshotIDs || threshold != snapshotThreshold
+    }
+
+    private var ctaTitle: String {
+        if !hasExistingDistribution { return "Mark for Distribution" }
+        return isDirty ? "Update Distribution" : "Up to date"
+    }
+
+    private var ctaEnabled: Bool {
+        canMark && (!hasExistingDistribution || isDirty)
+    }
 
     var body: some View {
         ScrollView {
@@ -93,6 +115,22 @@ struct VaultShardSetup: View {
         }
         .safeAreaInset(edge: .bottom) { ctaBar }
         .onAppear { self.seedInitialState() }
+        .confirmationDialog(
+            "Revoke Shard",
+            isPresented: Binding(
+                get: { revokeTarget != nil },
+                set: { if !$0 { revokeTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Revoke", role: .destructive) {
+                if let target = revokeTarget { self.revokeShard(target) }
+                revokeTarget = nil
+            }
+            Button("Cancel", role: .cancel) { revokeTarget = nil }
+        } message: {
+            Text("The shard will be remotely erased from the trustee's device on their next interaction.")
+        }
     }
 
     // MARK: - Summary card
@@ -146,6 +184,7 @@ struct VaultShardSetup: View {
             HStack(spacing: 10) {
                 Button {
                     threshold = max(2, threshold - 1)
+                    confirmationMessage = nil
                 } label: {
                     Circle()
                         .fill(Color(.secondarySystemFill))
@@ -162,6 +201,7 @@ struct VaultShardSetup: View {
 
                 Button {
                     threshold = min(max(selected.count, 2), threshold + 1)
+                    confirmationMessage = nil
                 } label: {
                     Circle()
                         .fill(Color(.secondarySystemFill))
@@ -243,14 +283,20 @@ struct VaultShardSetup: View {
         let family = contact.familyName.decrypt()
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
         let sel    = selectedIDs.contains(contact.identifier)
+        let record = shardRecord(for: contact.identifier)
+        // A contact is selectable if they have no shard record yet, or their shard
+        // is in an active (non-revoked/non-lost) state.
+        let isSelectable = record.map { Self.activeStatuses.contains($0.status) } ?? true
 
         return Button {
+            guard isSelectable else { return }
             if sel {
                 selectedIDs.remove(contact.identifier)
                 threshold = max(2, min(threshold, selectedIDs.count))
             } else {
                 selectedIDs.insert(contact.identifier)
             }
+            confirmationMessage = nil
         } label: {
             HStack(spacing: 12) {
                 contactAvatar(contact, size: 36)
@@ -258,7 +304,7 @@ struct VaultShardSetup: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(name.isEmpty ? contact.identifier : name)
                         .font(.system(size: 15))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isSelectable ? .primary : .secondary)
                     HStack(spacing: 4) {
                         Text("ML-KEM · verified key")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -276,28 +322,51 @@ struct VaultShardSetup: View {
                                 .foregroundStyle(Color.secondary)
                                 .clipShape(RoundedRectangle(cornerRadius: 3))
                         }
+                        if let record = record {
+                            let style = statusChipStyle(for: record.status)
+                            Text(style.label)
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(style.bg)
+                                .foregroundStyle(style.fg)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
                     }
                 }
 
                 Spacer()
 
-                ZStack {
-                    Circle()
-                        .fill(sel ? Color.occultaAccent : Color.clear)
-                    Circle()
-                        .strokeBorder(sel ? Color.occultaAccent : Color.secondary.opacity(0.35), lineWidth: 1.5)
-                    if sel {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
+                if isSelectable {
+                    ZStack {
+                        Circle()
+                            .fill(sel ? Color.occultaAccent : Color.clear)
+                        Circle()
+                            .strokeBorder(sel ? Color.occultaAccent : Color.secondary.opacity(0.35), lineWidth: 1.5)
+                        if sel {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
                     }
+                    .frame(width: 24, height: 24)
+                } else {
+                    Color.clear.frame(width: 24, height: 24)
                 }
-                .frame(width: 24, height: 24)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let record = record, Self.activeStatuses.contains(record.status) {
+                Button(role: .destructive) {
+                    revokeTarget = record
+                } label: {
+                    Label("Revoke Shard", systemImage: "xmark.circle")
+                }
+            }
+        }
     }
 
     // MARK: - Info note
@@ -347,30 +416,43 @@ struct VaultShardSetup: View {
 
     private var ctaBar: some View {
         VStack(spacing: 6) {
-            Button(action: self.markForDistribution) {
-                Group {
-                    if self.marking {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text("Mark for Distribution")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
+            if let msg = confirmationMessage, !isDirty {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text(msg)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
                 }
-                .foregroundStyle(canMark ? .white : Color.secondary)
+                .foregroundStyle(Color.occultaAccent)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(canMark ? Color.occultaAccent : Color(.secondarySystemFill))
+                .background(Color.occultaAccent.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: canMark ? Color.occultaAccent.opacity(0.27) : .clear, radius: 10, y: 4)
-            }
-            .buttonStyle(.plain)
-            .disabled(!canMark || marking)
+            } else {
+                Button(action: self.markForDistribution) {
+                    Group {
+                        if self.marking {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text(ctaTitle)
+                                .font(.system(size: 16, weight: .semibold))
+                        }
+                    }
+                    .foregroundStyle(ctaEnabled ? .white : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(ctaEnabled ? Color.occultaAccent : Color(.secondarySystemFill))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: ctaEnabled ? Color.occultaAccent.opacity(0.27) : .clear, radius: 10, y: 4)
+                }
+                .buttonStyle(.plain)
+                .disabled(!ctaEnabled || marking)
 
-            if canMark {
-                Text("Shards will be delivered automatically with your next message.")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Color.secondary.opacity(0.6))
-                    .multilineTextAlignment(.center)
+                if canMark {
+                    Text("Shards will be delivered automatically with your next message.")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.secondary.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -423,26 +505,51 @@ struct VaultShardSetup: View {
         .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 2))
     }
 
+    // MARK: - Helpers
+
+    private func shardRecord(for contactIdentifier: String) -> ShardRecord? {
+        distributionMeta?.shards.first { $0.contactIdentifier == contactIdentifier }
+    }
+
+    private func statusChipStyle(for status: ShardStatus) -> (label: String, bg: Color, fg: Color) {
+        switch status {
+        case .pending:
+            return ("PENDING",   Color.orange.opacity(0.15),          Color.orange)
+        case .confirmed:
+            return ("CONFIRMED", Color.occultaVerified.opacity(0.15), Color.occultaVerified)
+        case .revokePending:
+            return ("REVOKING",  Color.red.opacity(0.12),             Color.red)
+        case .revoked:
+            return ("REVOKED",   Color.secondary.opacity(0.12),       Color.secondary)
+        case .lost:
+            return ("LOST",      Color.red.opacity(0.12),             Color.red)
+        }
+    }
+
     // MARK: - Initial state seeding
 
     /// Populate working state on first appear.
     ///
-    /// - Existing distribution: seed selectedIDs and threshold from the
-    ///   persisted ShardDistributionMetadata (shows what's actually configured).
-    /// - New entry (no distribution): seed selectedIDs from the global trustee
-    ///   config if set; threshold stays at its default of 2.
-    ///
-    /// globalTrusteeIDs is a computed property backed by @Query — no loading needed.
+    /// - Existing distribution: seed selectedIDs and threshold from the persisted
+    ///   ShardDistributionMetadata, using only active (.pending/.confirmed) shards.
+    /// - New entry (no distribution): seed selectedIDs from the global trustee config
+    ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
-        if let meta = try? vault.shardDistributionMetadata(for: entryID) {
-            selectedIDs = Set(meta.shards.filter { $0.status != .revoked }.map { $0.contactIdentifier })
-            threshold   = meta.threshold
+        distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
+        if let meta = distributionMeta {
+            let activeIDs = Set(meta.shards
+                .filter { Self.activeStatuses.contains($0.status) }
+                .map { $0.contactIdentifier })
+            selectedIDs       = activeIDs
+            threshold         = meta.threshold
+            snapshotIDs       = activeIDs
+            snapshotThreshold = meta.threshold
         } else if !globalTrusteeIDs.isEmpty {
             selectedIDs = globalTrusteeIDs
         }
     }
 
-    // MARK: - Action
+    // MARK: - Actions
 
     private func markForDistribution() {
         self.marking = true
@@ -453,13 +560,38 @@ struct VaultShardSetup: View {
                 threshold:  self.k,
                 recipients: self.selected
             )
-            self.dismiss()
+            // Reload metadata and update snapshot so isDirty becomes false.
+            self.distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
+            let activeIDs = Set(
+                distributionMeta?.shards
+                    .filter { Self.activeStatuses.contains($0.status) }
+                    .map { $0.contactIdentifier } ?? []
+            )
+            self.snapshotIDs       = activeIDs
+            self.snapshotThreshold = self.k
+            self.marking           = false
+            self.confirmationMessage = "Shards queued for delivery."
         } catch VaultManager.VaultError.locked {
             self.error   = "Vault locked — unlock and try again."
             self.marking = false
         } catch {
             self.error   = "Failed: \(error.localizedDescription)"
             self.marking = false
+        }
+    }
+
+    private func revokeShard(_ record: ShardRecord) {
+        do {
+            try vault.updateShardStatus(attrID: record.attrID, to: .revokePending)
+            try shardCustodyManager?.queueRevoke(attrID: record.attrID, for: record.contactIdentifier)
+            // Reload metadata so the status chip updates immediately.
+            distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
+            // Remove from selection so the UI reflects the change.
+            selectedIDs.remove(record.contactIdentifier)
+            snapshotIDs.remove(record.contactIdentifier)
+            confirmationMessage = nil
+        } catch {
+            self.error = "Revoke failed: \(error.localizedDescription)"
         }
     }
 }

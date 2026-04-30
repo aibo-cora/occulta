@@ -110,7 +110,7 @@ extension VaultManager {
             ShardRecord(
                 contactIdentifier: recipients[i].identifier,
                 attrID:            attributes[i].id,
-                status:            .sent
+                status:            .pending
             )
         }
         let meta = ShardDistributionMetadata(threshold: threshold, shards: shards)

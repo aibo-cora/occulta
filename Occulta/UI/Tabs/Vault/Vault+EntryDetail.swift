@@ -227,7 +227,7 @@ struct VaultEntryDetail: View {
 
     private var shardErosion: (active: Int, threshold: Int)? {
         guard let meta = try? vault.shardDistributionMetadata(for: entryID) else { return nil }
-        let active = meta.shards.filter { $0.status == .sent || $0.status == .confirmed }.count
+        let active = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
         guard active < meta.threshold else { return nil }
         return (active, meta.threshold)
     }

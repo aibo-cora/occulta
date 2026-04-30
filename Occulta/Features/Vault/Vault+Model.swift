@@ -39,10 +39,12 @@ enum VaultEntryType: UInt8, Codable, CaseIterable {
 /// Raw strings are stable wire identifiers — never rename or reorder.
 enum ShardStatus: String, Codable {
     /// Shard bundle has been handed to the .occ pipeline, delivery unconfirmed.
-    case sent
+    case pending
     /// Contact's app acknowledged receipt.
     case confirmed
-    /// Owner has revoked this shard (PEK rotated or trustee removed).
+    /// Revocation queued; `.revoke` operation not yet confirmed by the trustee.
+    case revokePending
+    /// Owner has revoked this shard and the trustee confirmed deletion.
     case revoked
     /// Contact re-exchanged keys — their stored shard is cryptographically unreachable.
     case lost
