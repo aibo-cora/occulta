@@ -102,7 +102,7 @@ final class ShardCustodyManager {
     /// 3. Insert.
     /// 4. If `replacesID` is set, delete the prior CustodyShard whose decrypted
     ///    payload references that SignedAttribute.id.
-    /// 5. (TODO Phase 2) Enqueue an outbound `.acknowledge` reply.
+    /// 5. Upsert a `PendingShardAcknowledge` row for the owner.
     private func handleDistribute(op: OccultaBundle.ShardOperation, senderPublicKey: Data, senderIdentifier: String) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
@@ -137,6 +137,12 @@ final class ShardCustodyManager {
         }
 
         try self.modelContext.save()
+
+        // Queue an outbound `.acknowledge` to the owner. Best-effort: if this
+        // throws, the shard is still stored — the ack is cosmetic, not required
+        // for correctness. Alice's ShardRecord status will lag at `.sent` until
+        // the next successful queue + send cycle.
+        try? self.queueShardAcknowledge(attrID: attribute.id, for: senderIdentifier)
     }
 
     /// `.revoke` — owner asks us to discard a shard. Match by SignedAttribute.id.
@@ -357,6 +363,76 @@ final class ShardCustodyManager {
             return OccultaBundle.ShardOperation(kind: .returnAcknowledged, attrIDs: payload.attrIDs)
         }
         return nil
+    }
+
+    // MARK: - Shard-receipt acknowledgement (trustee → owner)
+
+    /// Build `.acknowledge` operations for every shard Bob owes to `ownerIdentifier`.
+    ///
+    /// Returns one `ShardOperation(kind: .acknowledge, attrID:)` per queued attrID,
+    /// then deletes the row (fire-and-forget). If the bundle is never delivered,
+    /// Alice's ShardRecord remains `.sent`; the next outbound message retries
+    /// automatically because the row was already deleted on this call.
+    ///
+    /// Returns `nil` when no pending ack exists for this contact.
+    func pendingShardAcknowledgeOperations(for ownerIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardAcknowledge>())
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardAcknowledge.Payload.self, from: plaintext),
+                payload.ownerContactIdentifier == ownerIdentifier
+            else { continue }
+
+            self.modelContext.delete(row)
+            try self.modelContext.save()
+            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .acknowledge, attrID: $0) }
+        }
+        return nil
+    }
+
+    /// Upsert a `PendingShardAcknowledge` row for `ownerIdentifier`.
+    ///
+    /// If a row already exists (owner sent another shard before Bob acked the
+    /// first), merge the attrIDs so the ack covers all received shards.
+    private func queueShardAcknowledge(attrID: UUID, for ownerIdentifier: String) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardAcknowledge>())
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let existing  = try? JSONDecoder().decode(PendingShardAcknowledge.Payload.self, from: plaintext),
+                existing.ownerContactIdentifier == ownerIdentifier
+            else { continue }
+            // Merge: union of existing + new attrID.
+            let merged  = Array(Set(existing.attrIDs).union([attrID]))
+            let updated = PendingShardAcknowledge.Payload(ownerContactIdentifier: ownerIdentifier, attrIDs: merged)
+            let bytes   = try JSONEncoder().encode(updated)
+            let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
+            guard let combined = sealed.combined else { return }
+            row.encryptedPayload = combined
+            try self.modelContext.save()
+            return
+        }
+
+        // No existing row — insert a new one.
+        let rowID   = UUID()
+        let payload = PendingShardAcknowledge.Payload(ownerContactIdentifier: ownerIdentifier, attrIDs: [attrID])
+        let bytes   = try JSONEncoder().encode(payload)
+        let aad     = Self.rowAAD(id: rowID)
+        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        self.modelContext.insert(PendingShardAcknowledge(id: rowID, encryptedPayload: combined))
+        try self.modelContext.save()
     }
 
     /// Upsert a `PendingReturnAcknowledge` row for `contactIdentifier`.
