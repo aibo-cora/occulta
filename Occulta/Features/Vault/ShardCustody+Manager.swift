@@ -236,6 +236,22 @@ final class ShardCustodyManager {
         return nil
     }
 
+    /// Decrypt a single `GlobalShardConfig` row supplied by a `@Query`.
+    ///
+    /// Used by views that observe the store reactively and need to decrypt
+    /// a row they already hold, without triggering a separate fetch.
+    func decryptGlobalConfig(_ row: GlobalShardConfig) throws -> GlobalShardConfig.Payload? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        guard
+            let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+            let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+            let payload   = try? JSONDecoder().decode(GlobalShardConfig.Payload.self, from: plaintext)
+        else { return nil }
+        return payload
+    }
+
     /// Persist the user's global trustee configuration.
     ///
     /// Singleton semantics: deletes all existing rows then inserts a fresh one.

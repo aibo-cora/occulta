@@ -30,7 +30,7 @@ struct VaultGlobalTrustees: View {
         mlkemContacts.filter { selectedIDs.contains($0.identifier) }
     }
 
-    private var canSave: Bool { !selectedIDs.isEmpty }
+    private var canSave: Bool { true } // empty selection is valid — clears the global list
 
     var body: some View {
         ScrollView {

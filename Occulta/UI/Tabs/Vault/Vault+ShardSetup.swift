@@ -17,13 +17,22 @@ struct VaultShardSetup: View {
     @Environment(\.dismiss) private var dismiss
 
     @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
+    @Query private var globalConfigRows: [GlobalShardConfig]
 
     @State private var selectedIDs: Set<String> = []
     @State private var threshold = 2
     @State private var marking = false
     @State private var error: String?
-    /// Contact IDs from the user's global trustee config — used only for badge display.
-    @State private var globalTrusteeIDs: Set<String> = []
+
+    /// Live set of contact IDs in the user's global trustee config.
+    /// Recomputed whenever `globalConfigRows` changes — reactive badge display.
+    private var globalTrusteeIDs: Set<String> {
+        guard
+            let row     = globalConfigRows.first,
+            let payload = try? shardCustodyManager?.decryptGlobalConfig(row)
+        else { return [] }
+        return Set(payload.trusteeIDs)
+    }
 
     private var mlkemContacts: [Contact.Profile] {
         allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
@@ -420,23 +429,16 @@ struct VaultShardSetup: View {
     ///
     /// - Existing distribution: seed selectedIDs and threshold from the
     ///   persisted ShardDistributionMetadata (shows what's actually configured).
-    /// - New entry (no distribution): seed from global trustee config if set.
+    /// - New entry (no distribution): seed selectedIDs from the global trustee
+    ///   config if set; threshold stays at its default of 2.
     ///
-    /// Global trustee IDs are always loaded for badge display, regardless of
-    /// whether the entry is new or existing.
+    /// globalTrusteeIDs is a computed property backed by @Query — no loading needed.
     private func seedInitialState() {
-        // Always load global IDs for badge display.
-        if let config = try? shardCustodyManager?.globalShardConfig() {
-            globalTrusteeIDs = Set(config.trusteeIDs)
-        }
-
         if let meta = try? vault.shardDistributionMetadata(for: entryID) {
-            // Existing distribution — show active (non-revoked) trustees and their threshold.
             selectedIDs = Set(meta.shards.filter { $0.status != .revoked }.map { $0.contactIdentifier })
             threshold   = meta.threshold
-        } else if let config = try? shardCustodyManager?.globalShardConfig() {
-            // New entry — seed trustee list from global config; threshold stays at default.
-            selectedIDs = Set(config.trusteeIDs)
+        } else if !globalTrusteeIDs.isEmpty {
+            selectedIDs = globalTrusteeIDs
         }
     }
 
