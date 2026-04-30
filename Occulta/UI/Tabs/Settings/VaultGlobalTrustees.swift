@@ -6,13 +6,8 @@
 //  Selections here pre-populate VaultShardSetup when setting up shards for a
 //  new vault entry. Per-entry configuration can always override these defaults.
 //
-//  Storage: AppStorage (UserDefaults), unencrypted.
-//  - "vault.sss.global.trusteeIDs" — comma-separated Contact.Profile.identifier strings
-//  - "vault.sss.global.threshold"  — Int, minimum shards required (k)
-//
-//  Contact identifiers are stable SwiftData UUIDs. They are not sensitive in
-//  isolation — an attacker who reads UserDefaults learns who Alice has designated
-//  as trustees, but not any shard material.
+//  Storage: GlobalShardConfig (SwiftData), AES-GCM sealed under the shard
+//  custody key. Read and written through ShardCustodyManager.
 //
 
 import SwiftUI
@@ -20,14 +15,13 @@ import SwiftData
 
 struct VaultGlobalTrustees: View {
 
-    @AppStorage("vault.sss.global.trusteeIDs") private var trusteeIDsRaw: String = ""
-    @AppStorage("vault.sss.global.threshold")  private var savedThreshold: Int    = 2
-
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []
     @State private var threshold: Int = 2
+    @State private var saveError: String?
 
     private var mlkemContacts: [Contact.Profile] {
         allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
@@ -61,6 +55,14 @@ struct VaultGlobalTrustees: View {
                 self.scopeNote
                     .padding(.horizontal, 16)
 
+                if let err = saveError {
+                    Text(err)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Color.occultaDanger)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
+
                 Spacer().frame(height: 8)
             }
             .padding(.top, 8)
@@ -74,11 +76,7 @@ struct VaultGlobalTrustees: View {
                     .disabled(!self.canSave)
             }
         }
-        .onAppear {
-            let ids = self.trusteeIDsRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty }
-            self.selectedIDs = Set(ids)
-            self.threshold   = self.savedThreshold
-        }
+        .onAppear { self.loadConfig() }
     }
 
     // MARK: - Summary card (mirrors VaultShardSetup)
@@ -330,11 +328,24 @@ struct VaultGlobalTrustees: View {
         .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 2))
     }
 
-    // MARK: - Action
+    // MARK: - Load / save
+
+    private func loadConfig() {
+        guard let config = try? shardCustodyManager?.globalShardConfig() else { return }
+        selectedIDs = Set(config.trusteeIDs)
+        threshold   = config.threshold
+    }
 
     private func save() {
-        self.trusteeIDsRaw   = self.selectedIDs.joined(separator: ",")
-        self.savedThreshold  = self.k
-        self.dismiss()
+        let payload = GlobalShardConfig.Payload(
+            trusteeIDs: Array(selectedIDs),
+            threshold:  k
+        )
+        do {
+            try shardCustodyManager?.saveGlobalShardConfig(payload)
+            dismiss()
+        } catch {
+            saveError = "Failed to save: \(error.localizedDescription)"
+        }
     }
 }

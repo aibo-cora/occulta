@@ -217,6 +217,44 @@ final class ShardCustodyManager {
         if deletedAny { try self.modelContext.save() }
     }
 
+    // MARK: - Global shard config
+
+    /// Read the user's global trustee configuration. Returns `nil` if not yet set.
+    func globalShardConfig() throws -> GlobalShardConfig.Payload? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(GlobalShardConfig.Payload.self, from: plaintext)
+            else { continue }
+            return payload
+        }
+        return nil
+    }
+
+    /// Persist the user's global trustee configuration.
+    ///
+    /// Singleton semantics: deletes all existing rows then inserts a fresh one.
+    func saveGlobalShardConfig(_ payload: GlobalShardConfig.Payload) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let existing = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
+        for row in existing { self.modelContext.delete(row) }
+
+        let rowID    = UUID()
+        let bytes    = try JSONEncoder().encode(payload)
+        let aad      = Self.rowAAD(id: rowID)
+        let sealed   = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        self.modelContext.insert(GlobalShardConfig(id: rowID, encryptedPayload: combined))
+        try self.modelContext.save()
+    }
+
     // MARK: - Revocation queuing
 
     /// Queue `.revoke` operations for every non-revoked shard in `metadata`.

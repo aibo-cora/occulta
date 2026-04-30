@@ -40,6 +40,7 @@ struct OccultaApp: App {
                 PendingReturnAcknowledge.self,
                 PendingShardRevoke.self,
                 PendingShardAcknowledge.self,
+                GlobalShardConfig.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)

@@ -13,6 +13,7 @@ struct VaultShardSetup: View {
     let entryID: UUID
 
     @Environment(VaultManager.self) private var vault
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(\.dismiss) private var dismiss
 
     @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
@@ -21,6 +22,8 @@ struct VaultShardSetup: View {
     @State private var threshold = 2
     @State private var marking = false
     @State private var error: String?
+    /// Contact IDs from the user's global trustee config — used only for badge display.
+    @State private var globalTrusteeIDs: Set<String> = []
 
     private var mlkemContacts: [Contact.Profile] {
         allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
@@ -80,6 +83,7 @@ struct VaultShardSetup: View {
             }
         }
         .safeAreaInset(edge: .bottom) { ctaBar }
+        .onAppear { self.seedInitialState() }
     }
 
     // MARK: - Summary card
@@ -246,13 +250,24 @@ struct VaultShardSetup: View {
                     Text(name.isEmpty ? contact.identifier : name)
                         .font(.system(size: 15))
                         .foregroundStyle(.primary)
-                    Text("ML-KEM · verified key")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
-                        .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                    HStack(spacing: 4) {
+                        Text("ML-KEM · verified key")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
+                            .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                        if globalTrusteeIDs.contains(contact.identifier) {
+                            Text("GLOBAL")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.12))
+                                .foregroundStyle(Color.secondary)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
+                    }
                 }
 
                 Spacer()
@@ -397,6 +412,33 @@ struct VaultShardSetup: View {
         }
         .frame(width: size, height: size)
         .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 2))
+    }
+
+    // MARK: - Initial state seeding
+
+    /// Populate working state on first appear.
+    ///
+    /// - Existing distribution: seed selectedIDs and threshold from the
+    ///   persisted ShardDistributionMetadata (shows what's actually configured).
+    /// - New entry (no distribution): seed from global trustee config if set.
+    ///
+    /// Global trustee IDs are always loaded for badge display, regardless of
+    /// whether the entry is new or existing.
+    private func seedInitialState() {
+        // Always load global IDs for badge display.
+        if let config = try? shardCustodyManager?.globalShardConfig() {
+            globalTrusteeIDs = Set(config.trusteeIDs)
+        }
+
+        if let meta = try? vault.shardDistributionMetadata(for: entryID) {
+            // Existing distribution — show active (non-revoked) trustees.
+            selectedIDs = Set(meta.shards.filter { $0.status != .revoked }.map { $0.contactIdentifier })
+            threshold   = meta.threshold
+        } else if let config = try? shardCustodyManager?.globalShardConfig() {
+            // New entry — seed from global config.
+            selectedIDs = Set(config.trusteeIDs)
+            threshold   = config.threshold
+        }
     }
 
     // MARK: - Action
