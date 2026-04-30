@@ -77,6 +77,8 @@ struct VaultTab: View {
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
 
+    @AppStorage("vault.sss.enabled") private var ssEnabled = false
+
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
 
     @State private var filter: Filter = .all
@@ -218,7 +220,7 @@ struct VaultTab: View {
                 }
             }
 
-            if FeatureFlags.isEnabled(.enableShamirShardSharing) {
+            if self.ssEnabled {
                 if self.filter != .personal {
                     Section {
                         Text("Shards appear here once you get one from a contact for custody via .occ.")

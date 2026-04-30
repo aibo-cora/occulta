@@ -9,6 +9,8 @@ struct VaultNewEntrySheet: View {
     @Environment(VaultManager.self) private var vault
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage("vault.sss.enabled") private var ssEnabled = false
+
     @State private var selectedType: VaultEntryType = .seedPhrase
     @State private var label = ""
     @State private var content = ""
@@ -93,7 +95,7 @@ struct VaultNewEntrySheet: View {
                             .foregroundStyle(Color.occultaDanger)
                     }
 
-                    if FeatureFlags.isEnabled(.enableShamirShardSharing) {
+                    if self.ssEnabled {
                         Button { self.saveAndSetupShards() } label: {
                             HStack(spacing: 12) {
                                 ZStack {
