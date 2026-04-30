@@ -56,9 +56,8 @@ final class GlobalShardConfig {
     /// Plaintext sealed inside `encryptedPayload`.
     ///
     /// `trusteeIDs` — `Contact.Profile.identifier` values of global trustees.
-    /// `threshold`  — minimum shards required for reconstruction (k).
+    /// Threshold (k) is a per-entry decision set in VaultShardSetup, not here.
     struct Payload: Codable {
         let trusteeIDs: [String]
-        let threshold:  Int
     }
 }

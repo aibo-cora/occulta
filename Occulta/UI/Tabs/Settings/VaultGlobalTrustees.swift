@@ -2,9 +2,9 @@
 //  VaultGlobalTrustees.swift
 //  Occulta
 //
-//  Global trustee configuration for Secret Sharing.
+//  Global trustee contact picker for Secret Sharing.
 //  Selections here pre-populate VaultShardSetup when setting up shards for a
-//  new vault entry. Per-entry configuration can always override these defaults.
+//  new vault entry. Threshold (k) is a per-entry decision set in VaultShardSetup.
 //
 //  Storage: GlobalShardConfig (SwiftData), AES-GCM sealed under the shard
 //  custody key. Read and written through ShardCustodyManager.
@@ -20,7 +20,6 @@ struct VaultGlobalTrustees: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []
-    @State private var threshold: Int = 2
     @State private var saveError: String?
 
     private var mlkemContacts: [Contact.Profile] {
@@ -31,11 +30,7 @@ struct VaultGlobalTrustees: View {
         mlkemContacts.filter { selectedIDs.contains($0.identifier) }
     }
 
-    private var k: Int {
-        max(2, min(threshold, max(2, selected.count)))
-    }
-
-    private var canSave: Bool { selected.count >= 2 }
+    private var canSave: Bool { !selectedIDs.isEmpty }
 
     var body: some View {
         ScrollView {
@@ -79,90 +74,32 @@ struct VaultGlobalTrustees: View {
         .onAppear { self.loadConfig() }
     }
 
-    // MARK: - Summary card (mirrors VaultShardSetup)
+    // MARK: - Summary card
 
     private var summaryCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                if self.selected.isEmpty {
-                    Circle()
-                        .strokeBorder(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [4]))
-                        .frame(width: 32, height: 32)
-                        .overlay {
-                            Image(systemName: "plus")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
-                } else {
-                    self.avatarStack
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(self.selected.isEmpty
-                         ? "No trustees yet"
-                         : "\(self.selected.count) \(self.selected.count == 1 ? "trustee" : "trustees")")
-                        .font(.system(size: 16, weight: .semibold))
-                    Text(self.selected.count < 2
-                         ? "Select ≥ 2 trustees below"
-                         : "any \(self.k) of \(self.selected.count) can reconstruct")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.bottom, 14)
-
-            Divider().padding(.bottom, 14)
-
-            Text("Reconstruction threshold")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .tracking(1.5)
-                .textCase(.uppercase)
-                .foregroundStyle(Color.secondary.opacity(0.55))
-                .padding(.bottom, 8)
-
-            HStack(spacing: 10) {
-                Button {
-                    self.threshold = max(2, self.threshold - 1)
-                } label: {
-                    Circle()
-                        .fill(Color(.secondarySystemFill))
-                        .frame(width: 36, height: 36)
-                        .overlay {
-                            Text("−")
-                                .font(.system(size: 20))
-                                .foregroundStyle(self.k > 2 ? Color.primary : Color.secondary)
-                        }
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Button {
-                    self.threshold = min(max(self.selected.count, 2), self.threshold + 1)
-                } label: {
-                    Circle()
-                        .fill(Color(.secondarySystemFill))
-                        .frame(width: 36, height: 36)
-                        .overlay {
-                            Text("+")
-                                .font(.system(size: 20))
-                                .foregroundStyle(self.k < self.selected.count ? Color.primary : Color.secondary)
-                        }
-                }
-                .buttonStyle(.plain)
+        HStack(spacing: 12) {
+            if self.selected.isEmpty {
+                Circle()
+                    .strokeBorder(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [4]))
+                    .frame(width: 32, height: 32)
+                    .overlay {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+            } else {
+                self.avatarStack
             }
 
-            if self.canSave {
-                Text("Any **\(self.k)** of your \(self.selected.count) trustees — in any combination — can help reconstruct. No specific trustee is required.")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(self.selected.isEmpty ? "No trustees selected" : "\(self.selected.count) \(self.selected.count == 1 ? "trustee" : "trustees")")
+                    .font(.system(size: 16, weight: .semibold))
+                Text(self.selected.isEmpty ? "Select one or more trustees below" : "Will be suggested for new vault entries")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .lineSpacing(2)
-                    .padding(10)
-                    .background(Color(.secondarySystemFill))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(.top, 12)
             }
+
+            Spacer()
         }
         .padding(16)
         .background(Color(.secondarySystemGroupedBackground))
@@ -217,18 +154,14 @@ struct VaultGlobalTrustees: View {
     }
 
     private func trusteeRow(_ contact: Contact.Profile) -> some View {
-        let given  = contact.givenName.decrypt()
+        let given = contact.givenName.decrypt()
         let family = contact.familyName.decrypt()
-        let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
-        let sel    = selectedIDs.contains(contact.identifier)
+        let name  = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+        let sel   = selectedIDs.contains(contact.identifier)
 
         return Button {
-            if sel {
-                selectedIDs.remove(contact.identifier)
-                threshold = max(2, min(threshold, selectedIDs.count))
-            } else {
-                selectedIDs.insert(contact.identifier)
-            }
+            if sel { selectedIDs.remove(contact.identifier) }
+            else   { selectedIDs.insert(contact.identifier) }
         } label: {
             HStack(spacing: 12) {
                 self.contactAvatar(contact, size: 36)
@@ -272,7 +205,7 @@ struct VaultGlobalTrustees: View {
             Image(systemName: "info.circle")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-            Text("These trustees will be suggested when you set up shards for a new vault entry. You can override them per entry.")
+            Text("These trustees will be suggested when you set up shards for a new vault entry. Threshold (k of n) is configured per entry. You can always override the selection.")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)
@@ -333,16 +266,11 @@ struct VaultGlobalTrustees: View {
     private func loadConfig() {
         guard let config = try? shardCustodyManager?.globalShardConfig() else { return }
         selectedIDs = Set(config.trusteeIDs)
-        threshold   = config.threshold
     }
 
     private func save() {
-        let payload = GlobalShardConfig.Payload(
-            trusteeIDs: Array(selectedIDs),
-            threshold:  k
-        )
         do {
-            try shardCustodyManager?.saveGlobalShardConfig(payload)
+            try shardCustodyManager?.saveGlobalShardConfig(.init(trusteeIDs: Array(selectedIDs)))
             dismiss()
         } catch {
             saveError = "Failed to save: \(error.localizedDescription)"

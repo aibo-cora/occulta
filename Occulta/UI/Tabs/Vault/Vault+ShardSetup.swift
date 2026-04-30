@@ -431,13 +431,12 @@ struct VaultShardSetup: View {
         }
 
         if let meta = try? vault.shardDistributionMetadata(for: entryID) {
-            // Existing distribution — show active (non-revoked) trustees.
+            // Existing distribution — show active (non-revoked) trustees and their threshold.
             selectedIDs = Set(meta.shards.filter { $0.status != .revoked }.map { $0.contactIdentifier })
             threshold   = meta.threshold
         } else if let config = try? shardCustodyManager?.globalShardConfig() {
-            // New entry — seed from global config.
+            // New entry — seed trustee list from global config; threshold stays at default.
             selectedIDs = Set(config.trusteeIDs)
-            threshold   = config.threshold
         }
     }
 
