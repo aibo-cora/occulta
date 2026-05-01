@@ -20,7 +20,7 @@ These two mechanisms are complementary, not alternatives:
 | Mechanism | Recovers | Requires |
 |-----------|----------|----------|
 | SSS (per-entry) | One entry's PEK | k trustees + ciphertext on device |
-| Vault backup | All entry content | Backup file + KEY_A + k KEY_B shards |
+| Vault backup | All entry content | Backup file + k BEK shards from trustees |
 
 ---
 
@@ -36,19 +36,18 @@ of hardware-bound key material.
 
 ## Backup encryption key (BEK)
 
-The BEK is **derived**, not generated or stored:
+The BEK is a **random 32-byte key generated once** and stored as an AES-GCM
+sealed blob, using the vault master key — the same wrapping model as per-entry
+PEKs, but at vault scope:
 
 ```
-BEK = HKDF-SHA256(
-    inputKeyMaterial: vaultKey,
-    salt:             nil,
-    info:             "vault-backup-encryption-key"
-)
+BEK            = SecRandomCopyBytes(32)
+encryptedBEK   = AES-GCM(BEK, using: vaultKey, nonce: random, authenticating: bekAAD)
 ```
 
-The BEK is re-derived on demand whenever the vault is unlocked. No SE slot is
-consumed, no persistent storage required. If the vault key changes, the BEK
-changes with it.
+`encryptedBEK` is persisted in SwiftData as a vault-level singleton. The raw BEK
+bytes are available in memory when the vault is unlocked (vaultKey unwraps them),
+and nowhere else.
 
 The backup file is AES-256-GCM sealed under the BEK:
 
@@ -64,48 +63,61 @@ backup file = AES-GCM(
 `backupFileAAD` covers a fixed domain string + backup format version, preventing
 a backup file from being decrypted with a BEK from a different context.
 
+### Why not HKDF-derive BEK from the vault key
+
+The vault key is `ECDH(ourSEKey, P-256 generator G)` — deterministic and
+device-specific. Deriving `BEK = HKDF(vaultKey)` would mean a different device
+produces a different BEK, making every backup file permanently unrecoverable after
+device loss. This defeats the purpose of backup. BEK must be a stored value, not
+a derived one.
+
+### Why not store BEK in the Secure Enclave
+
+SE-resident keys cannot have their raw bytes extracted — that is the SE's core
+security guarantee. Shamir's Secret Sharing requires operating on the raw key
+bytes. BEK must be accessible in memory (under vault unlock) to be split into
+shards. The vaultKey wrapping provides hardware-bound protection at rest; biometric
+authentication gates access.
+
 ---
 
-## Two-key model
+## BEK trustee distribution
 
-The BEK is never distributed directly. Instead, two derived keys gate access:
+The BEK is Shamir-split and distributed to trustees via the same `OccultaBundle`
+shard pipeline used for per-entry PEK shards. From the trustee's perspective, a
+BEK shard is an ordinary `CustodyShard` row — no marking distinguishes it from a
+per-entry shard.
 
-```
-KEY_A  = random 32 bytes           (owner's companion shard file)
-KEY_B  = BEK XOR KEY_A             (Shamir-split to trustees)
-```
-
-**KEY_A** lives only in the owner's hands, exported as a companion `.occshard`
-file at backup setup time. The owner stores this separately from the backup file.
-
-**KEY_B** is Shamir-split into n shards and distributed to trustees via the
-existing shard delivery pipeline. Trustees receive a KEY_B shard — they cannot
-distinguish it from a per-entry PEK shard. No special marking.
-
-Recovery requires both halves:
+The BEK trustee picker is pre-populated from the user's Global Trustees with a
+GLOBAL badge on each pre-populated entry. The user can add or remove trustees
+before confirming distribution.
 
 ```
-BEK = KEY_A XOR KEY_B
+shards = ShamirSecretSharing.split(secret: BEK, threshold: k, shares: n)
 ```
 
-Neither the owner (KEY_A only) nor k trustees (KEY_B only) can reconstruct BEK
-alone. Both are required.
+Each shard is wrapped as a `SignedAttribute(.shard)` — signed with the owner's
+SE identity key — and delivered via `distributeShards`. The `entryID` field in
+the signed attribute carries the BEK's stable distribution UUID (stored inside
+`encryptedBEK` payload) rather than a VaultEntry UUID.
 
-### Core security invariant
+---
+
+## Core security invariant
+
+> **Trustees hold BEK shards. Trustees do not hold the backup file.**
 
 | Assets held | What an attacker gets |
 |---|---|
 | Backup file only | Encrypted blob, unreadable |
-| KEY_A only | Half a key, nothing to decrypt |
-| k KEY_B shards only | Half a key, nothing to decrypt |
-| KEY_A + k KEY_B shards (no backup file) | BEK, but no ciphertext |
-| Backup file + KEY_A (no shards) | BEK half, unreadable |
-| Backup file + k KEY_B shards (no KEY_A) | BEK half, unreadable |
-| Backup file + KEY_A + k KEY_B shards | Full vault access |
+| k BEK shards only | A key with no ciphertext to decrypt |
+| Backup file + k BEK shards | Full vault access |
 
-The attack that cannot be prevented cryptographically: the owner stores KEY_A
-and the backup file in the same location, and k trustees collude. The UI must
-make this concrete at every export touch point (see Export UI requirements).
+The attack that cannot be prevented cryptographically: a trustee obtains the
+backup file through a side channel (shared cloud folder, same messaging app,
+physical access to the owner's storage). If k trustees acquire the backup file,
+the vault is fully exposed. The UI must make this concrete at every export touch
+point.
 
 ---
 
@@ -113,24 +125,12 @@ make this concrete at every export touch point (see Export UI requirements).
 
 In practice, users maintain one trustee set and use the same trustees for every
 vault entry. Given this, per-entry SSS and BEK SSS have identical colluding-trustee
-security properties: if k trustees collude and hold the backup file and KEY_A,
-they can recover the entire vault regardless of which scheme is used.
+security properties: if k trustees collude and hold the backup file, they can
+recover the entire vault regardless of which scheme is used.
 
 The per-entry SSS model's theoretical advantage — trustee isolation per entry — is
 a UX fiction. A single BEK with one SSS distribution is therefore the correct
 architecture: simpler, with no practical security regression.
-
----
-
-## BEK trustee distribution
-
-The BEK trustee picker is pre-populated from the user's Global Trustees — the same
-contacts used for per-entry SSS — with a GLOBAL badge on each pre-populated entry.
-The user can add or remove trustees before confirming distribution.
-
-KEY_B shards are delivered via the same `OccultaBundle` shard pipeline. From the
-trustee's perspective, a KEY_B shard is an ordinary `CustodyShard` row — no
-marking distinguishes it from a per-entry PEK shard.
 
 ---
 
@@ -164,50 +164,41 @@ master key, exactly as if the entries were created new.
 ## Export flow
 
 1. Vault must be unlocked (biometric authentication).
-2. App derives BEK from vault key via HKDF.
-3. App decrypts every `VaultEntry` to plaintext using the existing PEK path.
+2. Unwrap `encryptedBEK` under `vaultKey` → raw BEK bytes in memory.
+3. Decrypt every `VaultEntry` to plaintext using the existing PEK path.
 4. Serialise all entries as `VaultBackup` JSON.
-5. `AES.GCM.seal(json, using: BEK)` → backup file bytes.
+5. `AES.GCM.seal(json, using: BEK)` → backup file bytes. Zero BEK from memory.
 6. Write to a `.occbak` file via `UIDocumentPickerViewController` (user chooses
    destination). App does not choose on behalf of the user.
 
-The BEK must already be distributed to trustees (KEY_B shards delivered) before
-export is permitted. If no BEK distribution exists or shards fall below threshold,
-the export action is blocked with an explanation.
-
-KEY_A companion file is generated once at BEK setup time and is not re-exported
-with each backup — the same KEY_A file covers all backups until trustees change.
+Export is blocked if `encryptedBEK` does not exist (BEK not yet set up) or if
+the BEK shard distribution falls below threshold.
 
 ---
 
 ## Import flow
 
 Import is not a blocking first step. On a new device the user provides the
-`.occbak` file and the KEY_A companion file. The app stores these as a **pending
-restore** and shows a "waiting for trustees" state. Vault content is not accessible
-until k KEY_B shards have been received.
+`.occbak` file. The app stores it as a **pending restore** and shows a
+"waiting for trustees" state. Vault content is not accessible until k BEK shards
+have been collected and BEK reconstructed.
 
-### KEY_B shard collection via auto-handback
+### BEK shard collection via auto-handback
 
-KEY_B shards are collected automatically as the owner re-establishes contact with
+BEK shards are collected automatically as the owner re-establishes contact with
 trustees via proximity exchange (same UWB ≤ 0.25 m + Diceware word confirmation
 used for initial key exchange).
 
 When a trustee's app processes a proximity exchange and detects that the incoming
-public key differs from the stored key for that contact (i.e. a key update), it
-automatically queues a handback operation containing the stored KEY_B shard. The
+public key differs from the stored key for that contact (key update), it
+automatically queues a `.handback` operation containing the stored BEK shard. The
 shard is delivered in the next `.occ` bundle to the owner's new device.
 
-Once k KEY_B shards have been received the app reconstructs automatically:
+Once k BEK shards have been received the app reconstructs and decrypts
+automatically:
 
 ```
-KEY_B = Shamir.combine(k KEY_B shards)
-BEK   = KEY_A XOR KEY_B
-```
-
-Then proceeds to decrypt:
-
-```
+BEK = Shamir.combine(k BEK shards)
 AES.GCM.open(backupFile, using: BEK) → VaultBackup JSON
 ```
 
@@ -216,6 +207,14 @@ For each `VaultBackupEntry`:
 2. Seal label and content under PEK.
 3. Seal PEK under the new device's vault master key → `encryptedEntryKey`.
 4. Insert new `VaultEntry` into SwiftData.
+
+Then re-wrap and persist BEK on the new device:
+
+```
+encryptedBEK = AES-GCM(BEK, using: newDeviceVaultKey)
+```
+
+Zero BEK from memory.
 
 **Dependency:** the exchange flow must support "update existing contact's key" as
 a first-class outcome (not just "create new contact"). Without this, the trustee's
@@ -226,26 +225,31 @@ auto-handback will not fire.
 
 ## SSS redistribution and contact re-establishment after import
 
-Import generates new PEKs for every entry. All existing per-entry SSS shards held
-by trustees are now stale — they reference PEKs that no longer correspond to any
-entry. The trustees still hold valid KEY_B shards (the BEK does not change on
-import as long as the vault key is preserved via HKDF).
-
-Two post-import prompts are shown on first vault unlock after import:
+Three things become stale on device migration and require post-import action:
 
 **1. Re-establish contacts**
 > "Your contacts have been restored, but encrypted messaging requires re-exchanging
 > keys via proximity. Meet each contact to restore secure communication."
 
-All ECDH sessions are stale on a new device (new identity key). Re-exchange via
-proximity restores them and, for trustees, also triggers KEY_B auto-handback.
+All ECDH sessions are stale (new identity key). Re-exchange via proximity restores
+them and simultaneously triggers BEK shard auto-handback for trustees.
 
-**2. Redistribute per-entry shards**
+**2. Redistribute BEK shards**
+After auto-handback, trustees no longer hold BEK shards (their `CustodyShard`
+rows are deleted once the owner sends `.returnAcknowledged`). New shards must be
+distributed for future recovery coverage.
+
+> "Your backup recovery shards have been used. Redistribute to your trustees to
+> restore backup recovery coverage."
+
+**3. Redistribute per-entry shards**
+Import generates new PEKs for every entry. All existing per-entry SSS shards are
+now stale — they reference PEKs that no longer exist on this device.
+
 > "Your vault was restored. Trustees holding per-entry recovery shards need to
 > receive new shards — the previous ones are no longer valid."
 
-Navigates to per-entry shard distribution setup for any entry that previously had
-SSS configured.
+Prompts 2 and 3 are shown on first vault unlock after import.
 
 ---
 
@@ -253,20 +257,22 @@ SSS configured.
 
 | Event | Action |
 |---|---|
-| BEK setup | Generate KEY_A, derive KEY_B = BEK XOR KEY_A, split KEY_B via SSS, distribute to trustees; export KEY_A as companion file |
+| First BEK setup | Generate BEK, seal as `encryptedBEK`, SSS-split, distribute shards to trustees |
 | Vault backup exported | No BEK rotation required |
-| Trustee set changes | Revoke old KEY_B shards, generate new KEY_A, redistribute KEY_B; existing backups require old KEY_A + old trustee shards to recover |
-| Vault imported on new device | BEK unchanged (HKDF output stable while vault key stable); per-entry PEKs regenerated |
-| KEY_B shards fall below threshold | UI warning: export blocked, redistribution required |
+| Trustee added or removed | Revoke old BEK shards; re-split same BEK with new set; redistribute. Consider rotating BEK (generate fresh) if former trustees should lose access |
+| Vault imported on new device | Re-wrap BEK under new device vaultKey; redistribute BEK shards (old ones consumed by auto-handback) |
+| BEK shards fall below threshold | UI warning: export blocked, redistribution required |
 
-BEK rotation (on trustee set change) generates a new KEY_A and a new KEY_B split.
-Existing backup files sealed under the old BEK are still recoverable as long as
-the old KEY_A companion file and k old KEY_B shards are available. The UI must
-warn:
+### BEK rotation on trustee change
 
-> "Changing your trustees rotates the backup key. Any existing backup files can
-> only be decrypted with your old KEY_A file and shards held by your previous
-> trustees. Export a new backup after updating your trustees."
+Revoking old BEK shards prevents former trustees from participating in future
+reconstructions. However, if a former trustee retained their shard (e.g. revoke
+not yet delivered) and later obtains the backup file, they contribute to a quorum.
+For high-security trustee changes, generate a fresh BEK, re-encrypt a new backup,
+and redistribute. The UI warns:
+
+> "Changing your trustees requires a new backup export. Your previous backup can
+> still be recovered using shards held by your previous trustees."
 
 ---
 
@@ -274,16 +280,14 @@ warn:
 
 | Threat | Defence |
 |---|---|
-| Backup file intercepted | AES-GCM under BEK; unreadable without KEY_A + k KEY_B shards |
-| KEY_A file intercepted (no shards, no backup) | Half a key; useless alone |
-| k trustees collude (no backup file, no KEY_A) | BEK half; nothing to decrypt |
-| k trustees collude + KEY_A (no backup file) | Full BEK; still no ciphertext |
-| Backup file + KEY_A obtained (no shards) | BEK half; still unreadable |
-| Backup file + KEY_A + k trustee shards | Full vault access — separation is the only defence |
-| Trustee device compromised | < k shards; KEY_B not reconstructable |
+| Backup file intercepted | AES-GCM under BEK; unreadable without k trustee shards |
+| k trustees collude (no backup file) | A key with no ciphertext to decrypt |
+| k trustees collude + have backup file | Full vault access — separation is the only defence |
+| Trustee device compromised | < k shards; BEK not reconstructable |
 | Backup file corrupted | GCM authentication tag rejects tampered bytes |
-| KEY_B shards below threshold | Export blocked; redistribution required |
-| User stores KEY_A alongside backup file | Reduces to: backup file + k shards → full access |
+| BEK shards below threshold | Export blocked; redistribution required |
+| encryptedBEK lost with device | BEK reconstructed from trustee shards on new device |
+| Former trustee retains shard after revoke-not-delivered | Rotate BEK on high-stakes trustee changes; UI warns |
 
 ---
 
@@ -291,15 +295,14 @@ warn:
 
 Export is a Settings action, not a feature flag. It requires:
 
-1. **BEK distribution check**: export is disabled if KEY_B shards have not been
+1. **BEK distribution check**: export is disabled if BEK shards have not been
    distributed or fall below threshold. Reason shown inline.
 
 2. **Mandatory educational sheet** (shown every time, no persistent dismiss):
    - What the backup file contains: all vault entries, encrypted
-   - What it does NOT contain: the decryption key (split between KEY_A and trustees)
-   - Explicit warning: KEY_A + backup file + k trustee shards = full vault access
-   - Storage guidance: "Store the backup file somewhere separate from your KEY_A
-     file, and somewhere your trustees cannot access"
+   - What it does NOT contain: the decryption key (held by trustees as shards)
+   - Explicit warning: backup file + k trustee shards = full vault access
+   - Storage guidance: "Store this file somewhere your trustees cannot access"
    - "I understand" CTA — no checkbox, must be read
 
 3. **Destination picker**: `UIDocumentPickerViewController`. App does not choose
@@ -317,10 +320,9 @@ than a manual `.occbak` file export, the Mac would act as a trusted sync target:
 the vault would replicate to the Mac automatically over the local network or iCloud,
 with the Mac holding an encrypted copy that could be used for recovery.
 
-This approach eliminates the manual file management burden and removes the risk of
-the user misplacing the KEY_A companion file or the backup file. The Mac itself
-(or a specific Secure Enclave / Keychain item on it) would serve as the KEY_A
-equivalent.
+In this model the Mac can also act as an additional BEK shard holder — effectively
+a "trusted device" shard using the same SSS scheme as human trustees. This gives
+the macOS sync path without weakening the cryptographic model.
 
 This is a future addition and explicitly out of scope for v1. The `.occbak` file
 model is the v1 implementation. The macOS sync path should be designed to coexist
@@ -349,22 +351,22 @@ without attempting decryption.
 
 | Component | Status |
 |---|---|
-| BEK derivation (HKDF from vault key — no storage) | 🔲 |
-| KEY_A generation + companion `.occshard` file export | 🔲 |
-| KEY_B = BEK XOR KEY_A + SSS split + shard delivery (reuse existing pipeline) | 🔲 |
+| BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | 🔲 |
+| BEK SSS split + shard delivery (reuse existing pipeline) | 🔲 |
 | BEK trustee picker (pre-populated from Global Trustees, GLOBAL badge) | 🔲 |
-| KEY_B shard collection via auto-handback on contact key re-exchange | 🔲 |
+| BEK shard collection via auto-handback on contact key re-exchange | 🔲 |
 | Contact key-update exchange outcome (prerequisite for auto-handback) | 🔲 |
-| Pending restore state (store .occbak + KEY_A, waiting-for-trustees UI) | 🔲 |
-| BEK reconstruction (XOR KEY_A ⊕ KEY_B) | 🔲 |
+| Pending restore state (store .occbak, waiting-for-trustees UI) | 🔲 |
+| BEK reconstruction (Shamir.combine) + re-wrap under new device vaultKey | 🔲 |
 | `VaultBackup` / `VaultBackupEntry` Codable models | 🔲 |
-| Export: derive BEK + decrypt all entries + AES-GCM seal | 🔲 |
+| Export: unwrap encryptedBEK + decrypt all entries + AES-GCM seal | 🔲 |
 | Export: document picker + `.occbak` UTI registration | 🔲 |
 | Import: AES-GCM open + PEK regeneration + SwiftData insert | 🔲 |
+| Post-import BEK shard redistribution prompt | 🔲 |
+| Post-import per-entry SSS redistribution prompt | 🔲 |
 | Post-import contact re-establishment prompt | 🔲 |
-| Post-import SSS redistribution prompt | 🔲 |
 | BEK rotation on trustee change + stale-backup warning | 🔲 |
 | Export educational sheet (mandatory, no persistent dismiss) | 🔲 |
-| Export disabled when KEY_B below threshold | 🔲 |
-| KEY_B erosion warning (mirrors per-entry erosion banner) | 🔲 |
+| Export disabled when BEK below threshold | 🔲 |
+| BEK erosion warning (mirrors per-entry erosion banner) | 🔲 |
 | Future: macOS companion app sync | 🔲 |
