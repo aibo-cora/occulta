@@ -175,6 +175,7 @@ struct OccultaBundle: Codable {
     /// | .replace            | ✅ new shard       | ✅ old shard to delete  |
     /// | .acknowledge        | —                  | ✅ shard confirmed      |
     /// | .revoke             | —                  | ✅ shard to discard     |
+    /// | .inquire            | —                  | ✅ shard to probe       |
     /// | .handback           | ✅ shard returned  | —                       |
     /// | .notFound           | —                  | ✅ shard not found      |
     /// | .returnAcknowledged | —                  | ✅ shard owner received |
@@ -193,6 +194,8 @@ struct OccultaBundle: Codable {
             case acknowledge
             /// Owner → trustee: discard this shard (PEK rotated or trustee removed).
             case revoke
+            /// Owner → trustee: probe whether the trustee still holds a specific shard.
+            case inquire
             /// Trustee → owner: here is your shard back (auto-return on key change).
             ///
             /// Named `.handback` rather than `.return` (a Swift reserved word) or

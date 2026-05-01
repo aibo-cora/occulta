@@ -106,11 +106,13 @@ extension VaultManager {
         }
 
         // ── 4. Persist encrypted ShardDistributionMetadata on the entry ──────
+        let now    = Date()
         let shards = (0..<n).map { i in
             ShardRecord(
                 contactIdentifier: recipients[i].identifier,
                 attrID:            attributes[i].id,
-                status:            .pending
+                status:            .pending,
+                distributedAt:     now
             )
         }
         let meta = ShardDistributionMetadata(threshold: threshold, shards: shards)
@@ -216,6 +218,68 @@ extension VaultManager {
             return
         }
     }
+
+    // MARK: - Reconciliation probing
+
+    /// Build `.inquire` operations for every stale shard owed to `contactIdentifier`.
+    ///
+    /// A shard is probe-eligible when:
+    ///   • status is `.pending` and `distributedAt` is more than 7 days ago, OR
+    ///   • status is `.confirmed` and `lastProbedAt` is nil or more than 90 days ago.
+    ///
+    /// Stamps `lastProbedAt = now` on every eligible ShardRecord and re-seals the
+    /// metadata before returning so the probe timer is reset even if the bundle is
+    /// never delivered (prevents rapid re-probing).
+    ///
+    /// Returns `nil` when no eligible shards exist for this contact.
+    func pendingInquireOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        let vaultKey = try self.currentKey()
+        let entries  = try self.fetchAllEntries()
+        let now      = Date()
+        let sevenDaysAgo   = now.addingTimeInterval(-7  * 24 * 3600)
+        let ninetyDaysAgo  = now.addingTimeInterval(-90 * 24 * 3600)
+
+        var ops = [OccultaBundle.ShardOperation]()
+
+        for entry in entries {
+            guard let cipher = entry.shardDistributionEncrypted else { continue }
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: cipher),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
+            else { continue }
+
+            var dirty = false
+            for i in meta.shards.indices where meta.shards[i].contactIdentifier == contactIdentifier {
+                let shard = meta.shards[i]
+                let eligible: Bool
+                switch shard.status {
+                case .pending:
+                    eligible = (shard.distributedAt.map { $0 < sevenDaysAgo } ?? true)
+                case .confirmed:
+                    eligible = (shard.lastProbedAt.map { $0 < ninetyDaysAgo } ?? true)
+                default:
+                    eligible = false
+                }
+                guard eligible else { continue }
+
+                ops.append(OccultaBundle.ShardOperation(kind: .inquire, attributeID: shard.attrID))
+                meta.shards[i].lastProbedAt = now
+                dirty = true
+            }
+
+            guard dirty else { continue }
+            let updated = try JSONEncoder().encode(meta)
+            let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
+            guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+            entry.shardDistributionEncrypted = combined
+        }
+
+        if !ops.isEmpty { try self.modelContext.save() }
+        return ops.isEmpty ? nil : ops
+    }
+
+    // MARK: - Delivery tracking
 
     /// Mark a shard as delivered for a specific contact.
     ///

@@ -493,6 +493,8 @@ When a bundle carrying one or more `ShardOperation`s arrives:
    `PendingShardReturn` record for those `attrID`s.
 5. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
 6. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
+7. **Inquiries** (`.inquire`) — check whether the probed `CustodyShard` exists; queue
+   `.acknowledge` (found) or `.notFound` (not found) for the next outbound bundle.
 
 Processing is crash-safe: `PendingShardReturn` rows are retained until the owner
 confirms receipt via `.returnAcknowledged`. Undelivered returns are retried on the
@@ -577,7 +579,7 @@ exchange protocol.
 
 ---
 
-## Shard custody reconciliation (Phase 2)
+## Shard custody reconciliation
 
 ### The gap
 
@@ -605,25 +607,33 @@ This is not a cryptographic vulnerability. The vault and the PEK are unaffected.
 The consequence is missed redistribution prompts leading to undetected erosion below
 threshold.
 
-### Proposed solution: pull-based shard inquiry
+### Solution: pull-based shard inquiry
 
-Add two new `ShardOperation` kinds:
+Two `ShardOperation` kinds handle reconciliation:
 
 | Kind | Direction | Payload |
 |------|-----------|---------|
-| `.inquire` | owner → trustee | `attrID: UUID` |
-| `.notFound` | trustee → owner | `attrID: UUID` (already exists) |
+| `.inquire` | owner → trustee | `attributeID: UUID` |
+| `.notFound` | trustee → owner | `attributeID: UUID` (existing handler) |
 
-**Owner side:** when a `ShardRecord` has been in `.sent` for longer than a
-configurable threshold (e.g. 7 days) or in `.confirmed` without a recent liveness
-signal (e.g. 90 days), Alice's app appends a `.inquire` operation to the next
-outbound bundle to that trustee. No new bundle is created; the operation piggybacks
-on normal traffic.
+**Owner side:** `VaultManager.pendingInquireOperations(for:)` is called before every
+outbound bundle. It walks every entry's `ShardDistributionMetadata` and appends a
+`.inquire` operation for each stale `ShardRecord` belonging to the recipient contact:
 
-**Trustee side:** on receiving `.inquire(attrID:)`, Bob's app checks whether a
-`CustodyShard` row with a matching `signedAttribute.id` exists.
-- If found: send `.acknowledge(attrID:)` in the next outbound bundle to Alice.
-- If not found: send `.notFound(attrID:)` — the existing handler marks the record `.lost`.
+- `status == .pending` and `distributedAt` is more than **7 days** ago.
+- `status == .confirmed` and `lastProbedAt` is nil or more than **90 days** ago.
+
+`lastProbedAt` is stamped and re-sealed immediately so the timer resets even if the
+bundle is never delivered. No new bundle is created; probes piggyback on normal traffic.
+
+**Trustee side:** `handleInquire` checks whether a `CustodyShard` row with a matching
+`signedAttribute.id` exists.
+- Found → queue `.acknowledge` (reuses `queueShardAcknowledge`).
+- Not found → queue `.notFound` via `PendingShardNotFound` (upsert, same pattern as
+  `PendingShardAcknowledge`). `pendingNotFoundOperations(for:)` drains the queue before
+  the next outbound bundle to the owner.
+
+`handleNotFound` already marks the `ShardRecord` `.lost`; no changes were needed there.
 
 **Why pull, not push:** a push inventory (Bob piggybacks all held attrIDs on every
 outbound message) requires Bob's `encryptBundle` to access `ShardCustodyManager`
@@ -643,19 +653,18 @@ keeps the shard protocol self-contained.
   accumulates as dead storage. Fix: retry `.revoke` for the old attrID alongside
   the `.inquire` for the new one.
 
-### Implementation notes
+### Design notes
 
-- Add `.inquire` and update the `Kind` `init(from:)` fallback to `.unsupported`
-  (backward compat: old builds ignore unknown operations).
-- Alice needs a `lastContactedAt: Date?` field per `ShardRecord`, or a separate
-  staleness index, to decide when to probe. The staleness threshold is tunable;
-  start conservative (90 days for `.confirmed`, 7 days for `.sent`).
-- The trustee handler for `.inquire` requires no vault unlock — it only checks
-  whether a `CustodyShard` row exists by scanning decrypted attrIDs, which uses
-  the shard custody key (device-unlock level, no biometric).
-- Reconciliation is one-sided by design. Bob's `CustodyShard` rows are already
-  kept correct by `.revoke` and `replacesID`. Alice's `ShardRecord` is the only
-  state machine that can silently diverge.
+- Old builds that don't know `.inquire` decode it as `.unsupported` and skip it —
+  backward compatibility is handled by the existing `init(from:)` fallback.
+- The trustee handler for `.inquire` requires no vault unlock — it only scans
+  decrypted attrIDs using the shard custody key (device-unlock level, no biometric).
+- Reconciliation is one-sided by design. Bob's `CustodyShard` rows are already kept
+  correct by `.revoke` and `replacesID`. Alice's `ShardRecord` is the only state
+  machine that can silently diverge.
+- `ShardRecord` carries two new optional fields: `distributedAt` (set in
+  `prepareShards`) and `lastProbedAt` (set in `pendingInquireOperations`). Both
+  default to `nil` for backward-compatible JSON decoding of existing records.
 
 ---
 
@@ -696,7 +705,13 @@ keeps the shard protocol self-contained.
 | Auto-return trigger + delivery hook   | ✅ Done |
 | Return acknowledge send + cleanup     | ✅ Done |
 | Feature flag (hidden until done)      | ✅ Done        |
-| Shard custody reconciliation (`.inquire` / `.notFound`) | 🔲 Phase 2 |
+| ShardRecord.distributedAt / lastProbedAt fields         | ✅ Done     |
+| PendingShardNotFound SwiftData model                    | ✅ Done     |
+| `.inquire` ShardOperation kind                          | ✅ Done     |
+| pendingInquireOperations (VaultManager)                 | ✅ Done     |
+| handleInquire + queueShardNotFound (ShardCustodyManager)| ✅ Done     |
+| pendingNotFoundOperations (ShardCustodyManager)         | ✅ Done     |
+| Shard custody reconciliation (`.inquire` / `.notFound`) | ✅ Done     |
 | Backup scope warning in VaultShardSetup + VaultEntryDetail | ✅ Done |
 | Vault backup export (user-facing, prerequisite for full device-loss recovery) | 🔲 Recommended |
 

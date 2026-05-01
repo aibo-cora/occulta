@@ -174,6 +174,7 @@ private struct ComposeHeroV2: View {
 
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(VaultManager.self) private var vaultManager: VaultManager?
     @State private var messageText = ""
     @State private var attachments: [Occulta.File] = []
     @State private var selectedMediaItems: [PhotosPickerItem] = []
@@ -352,10 +353,12 @@ private struct ComposeHeroV2: View {
                 let basket  = Basket(files: files)
                 let encoded = try JSONEncoder().encode(basket)
                 var shardOps: [OccultaBundle.ShardOperation] = []
-                if let returnOps = try? self.shardCustodyManager?.pendingReturnOperations(for: self.identifier)          { shardOps += returnOps }
-                if let ackOps    = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: self.identifier)       { shardOps += ackOps }
-                if let ackOps    = try? self.shardCustodyManager?.pendingShardAcknowledgeOperations(for: self.identifier) { shardOps += ackOps }
-                if let revokeOps = try? self.shardCustodyManager?.pendingRevokeOperations(for: self.identifier)           { shardOps += revokeOps }
+                if let returnOps   = try? self.shardCustodyManager?.pendingReturnOperations(for: self.identifier)            { shardOps += returnOps }
+                if let ackOps      = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: self.identifier)         { shardOps += ackOps }
+                if let ackOps      = try? self.shardCustodyManager?.pendingShardAcknowledgeOperations(for: self.identifier)   { shardOps += ackOps }
+                if let revokeOps   = try? self.shardCustodyManager?.pendingRevokeOperations(for: self.identifier)             { shardOps += revokeOps }
+                if let inquireOps  = try? self.vaultManager?.pendingInquireOperations(for: self.identifier)                   { shardOps += inquireOps }
+                if let notFoundOps = try? self.shardCustodyManager?.pendingNotFoundOperations(for: self.identifier)           { shardOps += notFoundOps }
                 let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
 
                 guard !encrypted.isEmpty else {

@@ -16,9 +16,10 @@
 //      update local recovery state.
 //
 //  Outbound operation queuing (`.acknowledge`, `.handback`, `.revoke`,
-//  `.returnAcknowledged`) is handled via Pending* SwiftData models read before
-//  every outbound bundle: `pendingReturnOperations`, `pendingAcknowledgeOperation`,
-//  `pendingShardAcknowledgeOperations`, `pendingRevokeOperations`.
+//  `.returnAcknowledged`, `.notFound`) is handled via Pending* SwiftData models
+//  read before every outbound bundle: `pendingReturnOperations`,
+//  `pendingAcknowledgeOperation`, `pendingShardAcknowledgeOperations`,
+//  `pendingRevokeOperations`, `pendingNotFoundOperations`.
 //
 
 import Foundation
@@ -73,6 +74,8 @@ final class ShardCustodyManager {
                     try self.handleReplace(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
                 case .revoke:
                     try self.handleRevoke(op: op)
+                case .inquire:
+                    try self.handleInquire(op: op, senderIdentifier: senderIdentifier)
                 case .handback:
                     try self.handleHandback(op: op, vaultManager: vaultManager)
                     if let attrID = op.attribute?.id { respondedAttrIDs.append(attrID) }
@@ -192,6 +195,25 @@ final class ShardCustodyManager {
 
         try self.modelContext.save()
         try? self.queueShardAcknowledge(attrID: attribute.id, for: senderIdentifier)
+    }
+
+    /// `.inquire` — owner probes whether we still hold a specific shard.
+    ///
+    /// Looks up the CustodyShard whose `signedAttribute.id` matches `op.attributeID`:
+    ///   • Found  → queue `.acknowledge` (already done for fresh distributes; this
+    ///              re-confirms an existing shard without inserting a duplicate ack).
+    ///   • Not found → queue `.notFound` so the owner can mark the ShardRecord `.lost`.
+    private func handleInquire(op: OccultaBundle.ShardOperation, senderIdentifier: String) throws {
+        guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
+
+        let found = try self.decryptAllCustodyShards()
+            .contains { $0.payload.signedAttribute.id == attributeID }
+
+        if found {
+            try? self.queueShardAcknowledge(attrID: attributeID, for: senderIdentifier)
+        } else {
+            try self.queueShardNotFound(attributeID: attributeID, for: senderIdentifier)
+        }
     }
 
     /// `.revoke` — owner asks us to discard a shard. Match by SignedAttribute.id.
@@ -586,6 +608,71 @@ final class ShardCustodyManager {
         guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
         self.modelContext.insert(PendingShardAcknowledge(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
+    }
+
+    /// Upsert a `PendingShardNotFound` row for `ownerIdentifier`.
+    ///
+    /// If a row already exists for this owner (Alice probed multiple shards before
+    /// Bob's next outbound bundle), merge the attributeIDs so all missing-shard
+    /// responses travel together.
+    private func queueShardNotFound(attributeID: UUID, for ownerIdentifier: String) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardNotFound>())
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let existing  = try? JSONDecoder().decode(PendingShardNotFound.Payload.self, from: plaintext),
+                existing.ownerContactIdentifier == ownerIdentifier
+            else { continue }
+            // Merge: union of existing + new attributeID.
+            let merged  = Array(Set(existing.attributeIDs).union([attributeID]))
+            let updated = PendingShardNotFound.Payload(ownerContactIdentifier: ownerIdentifier, attributeIDs: merged)
+            let bytes   = try JSONEncoder().encode(updated)
+            let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
+            guard let combined = sealed.combined else { return }
+            row.encryptedPayload = combined
+            try self.modelContext.save()
+            return
+        }
+
+        // No existing row — insert a new one.
+        let rowID   = UUID()
+        let payload = PendingShardNotFound.Payload(ownerContactIdentifier: ownerIdentifier, attributeIDs: [attributeID])
+        let bytes   = try JSONEncoder().encode(payload)
+        let aad     = Self.rowAAD(id: rowID)
+        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        self.modelContext.insert(PendingShardNotFound(id: rowID, encryptedPayload: combined))
+        try self.modelContext.save()
+    }
+
+    /// Build `.notFound` operations for every missing-shard response owed to `ownerIdentifier`.
+    ///
+    /// Deletes the row on send (fire-and-forget). Returns `nil` when no pending
+    /// not-found responses exist for this contact.
+    func pendingNotFoundOperations(for ownerIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardNotFound>())
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardNotFound.Payload.self, from: plaintext),
+                payload.ownerContactIdentifier == ownerIdentifier
+            else { continue }
+
+            self.modelContext.delete(row)
+            try self.modelContext.save()
+            return payload.attributeIDs.map { OccultaBundle.ShardOperation(kind: .notFound, attributeID: $0) }
+        }
+        return nil
     }
 
     /// Upsert a `PendingReturnAcknowledge` row for `contactIdentifier`.
