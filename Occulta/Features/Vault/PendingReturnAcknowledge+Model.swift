@@ -12,7 +12,7 @@
 //  will eventually receive the ack and delete his custody rows.
 //
 //  Privacy model — encryption at rest:
-//  - Plaintext columns (`id`, `createdAt`) carry no identifying data.
+//  - Plaintext columns (`id`) carry no identifying data.
 //  - `contactIdentifier` and `attrIDs` live inside `encryptedPayload`,
 //    sealed under the recovery buffer key with AAD = aad().
 //  - Cold-disk forensics learns "Alice has N pending acks" — nothing about
