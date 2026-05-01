@@ -313,6 +313,42 @@ Export is a Settings action, not a feature flag. It requires:
 
 ---
 
+## Recovery dashboard
+
+The recovery dashboard is the primary UI from the moment the user initiates a
+restore until the vault is fully rebuilt. Because shard collection requires
+physical proximity exchanges that may span multiple days, the vault tab must
+surface persistent, actionable restore progress rather than a generic loading
+state.
+
+### Requirements
+
+- **Persistent**: shown in place of the vault until reconstruction completes.
+  Survives app restarts — pending restore state is persisted.
+- **Per-trustee status**: list each trustee with a simple reached / not yet
+  indicator. Showing which trustees to prioritise is more useful than a raw
+  shard count.
+- **Plain language only**: no crypto terminology. Call shards "recovery pieces".
+  Do not name the cryptographic mechanism.
+- **Auto-advance**: when the threshold is reached, transition to "Rebuilding
+  vault…" automatically — do not require a manual tap.
+- **Rebuilding progress**: brief sequential steps shown during reconstruction
+  and import (collect → rebuild → redistribute), each checked off as it
+  completes.
+- **Unreachable trustee fallback**: a way to mark a trustee as unreachable
+  so the user understands they must reach the remaining trustees to meet
+  threshold. Does not change the cryptographic threshold — informs the user
+  which trustees they still need.
+
+### What it must not do
+
+- Reveal which shard index belongs to which trustee.
+- Use the words "shard", "BEK", "Shamir", "threshold", or "encryption key".
+- Require any action between shard collection and vault reconstruction — the
+  transition must be fully automatic once k pieces are in.
+
+---
+
 ## Future: macOS companion app sync
 
 A macOS companion app was considered as an alternative backup transport. Rather
@@ -369,4 +405,5 @@ without attempting decryption.
 | Export educational sheet (mandatory, no persistent dismiss) | 🔲 |
 | Export disabled when BEK below threshold | 🔲 |
 | BEK erosion warning (mirrors per-entry erosion banner) | 🔲 |
+| **Recovery dashboard** (required before ship — see Recovery dashboard section) | 🔲 |
 | Future: macOS companion app sync | 🔲 |
