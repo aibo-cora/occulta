@@ -85,6 +85,13 @@ struct VaultEntryDetail: View {
                 self.cachedLabel = (try? self.vault.decryptLabel(for: entry)) ?? entry.type.displayName
             }
         }
+        .onChange(of: self.vault.isUnlocked) { isUnlocked in
+            guard !isUnlocked else { return }
+            // Vault locked while detail is visible — clear the cached plaintext label
+            // and navigate back so Face ID is required to re-enter.
+            self.cachedLabel = self.entry?.type.displayName ?? ""
+            self.dismiss()
+        }
     }
 
     // MARK: - Hero
