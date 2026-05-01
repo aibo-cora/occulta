@@ -15,8 +15,13 @@
 //    Secure Enclave-protected custody key.
 //
 //  Lifecycle:
-//  - Inserted on .distribute. Deleted on .revoke from the owner or when the
-//    owner's contact key changes (shard becomes cryptographically unreachable).
+//  - Inserted on `.distribute` (new shard) or `.replace` (superseding an old
+//    shard: the old CustodyShard identified by `attributeID` is deleted and a
+//    new row is inserted for the replacement).
+//  - Deleted on `.revoke` from the owner (owner explicitly revokes the shard).
+//  - Deleted after auto-return: when a proximity re-exchange reveals the owner's
+//    key has changed, the trustee queues a `.respond` handback. The CustodyShard
+//    row is deleted once the handback bundle is sent and acknowledged.
 //  - Stale shards from old PEK rotations are cryptographically inert — GCM
 //    decryption of the entry will fail if Alice tries to use them. No proactive
 //    cleanup needed.

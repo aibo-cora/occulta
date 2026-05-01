@@ -47,6 +47,11 @@ final class GlobalShardConfig {
 
     // MARK: AAD
 
+    /// Authenticated additional data for AES-GCM seal/open of `encryptedPayload`.
+    ///
+    ///   id.uuidString (UTF-8)   — 36 bytes
+    ///
+    /// ⚠️ Sealed contract. Any change makes existing ciphertext unreadable.
     func aad() -> Data {
         self.id.uuidString.data(using: .utf8)!
     }

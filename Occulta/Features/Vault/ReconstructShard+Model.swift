@@ -3,11 +3,16 @@
 //  Occulta
 //
 //  Transient SwiftData buffer for shards Alice's device collects during
-//  reconstruction. One row per `.respond` bundle absorbed; deleted in bulk
-//  once a per-entry threshold is reached and reconstruction succeeds.
+//  per-entry PEK reconstruction. One row per `.respond` bundle absorbed;
+//  deleted in bulk once a per-entry threshold is reached and reconstruction
+//  succeeds.
+//
+//  Scope: this model handles per-entry PEK recovery only (the payload carries
+//  an `entryID`). It is NOT used for vault-level BEK reconstruction on a new
+//  device — that path collects KEY_B shards via the auto-handback flow
+//  triggered by proximity re-exchange. See VAULT_BACKUP_GUIDE.md.
 //
 //  Privacy model — encryption at rest:
-//  - Plaintext columns (`id`, `createdAt`) carry no identifying information.
 //  - The target entryID, the SignedAttribute.id (`attrID`), and the full
 //    SignedAttribute live inside `encryptedPayload`, sealed under the recovery
 //    buffer key with AAD = aad().

@@ -4,7 +4,7 @@
 //
 //  SwiftData model for a queued `.returnAcknowledged` operation Alice owes to Bob.
 //
-//  Created when Alice's ShardCustodyManager absorbs one or more `.respond`
+//  Created when Alice's ShardCustodyManager absorbs one or more `.handback`
 //  operations (Bob returning shards). Alice piggybacks the acknowledgement
 //  on her next outbound bundle to Bob. The row is deleted on send — not on
 //  Bob's receipt — because Bob's cleanup is idempotent: if he resends shards

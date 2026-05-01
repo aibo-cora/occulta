@@ -54,7 +54,8 @@ enum ShardStatus: String, Codable {
 struct ShardRecord: Codable {
     /// `Contact.Profile.identifier` — a stable SwiftData UUID, not derived from the key fingerprint.
     let contactIdentifier: String
-    /// The SignedAttribute.id for this shard — used to match replacesID in re-distributions.
+    /// The SignedAttribute.id for this shard — used as `attributeID` in `.replace` ShardOperations
+    /// to identify which old shard a new distribution supersedes.
     let attrID: UUID
     var status: ShardStatus
 }

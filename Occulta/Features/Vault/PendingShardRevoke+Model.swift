@@ -2,14 +2,18 @@
 //  PendingShardRevoke+Model.swift
 //  Occulta
 //
-//  SwiftData model for queued `.revoke` operations Alice owes to trustees
-//  after deleting a vault entry.
+//  SwiftData model for queued `.revoke` operations Alice owes to trustees.
 //
-//  Created when Alice deletes a vault entry that has distributed shards.
-//  For each trustee who holds a shard, one row is upserted here. Multiple
-//  attrIDs (e.g. Alice deletes several entries before sending a message to
-//  Bob) are merged into the same row so revocations for the same trustee
-//  travel together in one bundle.
+//  Created in two situations:
+//  1. Alice deletes a vault entry that has distributed shards — one row is
+//     upserted per trustee who holds a shard for that entry.
+//  2. Alice manually revokes a single shard via `queueRevoke(attrID:for:)` —
+//     used when the user removes a trustee from a live distribution without
+//     deleting the entry.
+//
+//  Multiple attrIDs (e.g. Alice deletes several entries or revokes several
+//  shards before sending a message to Bob) are merged into the same row so
+//  revocations for the same trustee travel together in one bundle.
 //
 //  Privacy model — encryption at rest:
 //  - Plaintext columns (`id`, `createdAt`) carry no identifying data.

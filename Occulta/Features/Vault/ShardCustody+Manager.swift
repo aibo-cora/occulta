@@ -7,15 +7,18 @@
 //  `SealedPayload.shardOperations` and hands the bundle here when non-nil.
 //
 //  Two roles, one router:
-//    - Trustee path: accept `.distribute` shards, store them as encrypted
-//      CustodyShard rows; serve `.revoke` from the owner; auto-return shards
-//      as `.handback` when the owner's identity key changes.
+//    - Trustee path: accept `.distribute` (new shard) and `.replace`
+//      (superseding shard) from the owner; store as encrypted CustodyShard rows;
+//      serve `.revoke`; auto-return shards as `.handback` when the owner's
+//      identity key changes.
 //    - Owner path: receive `.handback`, `.acknowledge`, `.notFound` from
-//      trustees and update local recovery state.
+//      trustees; send `.returnAcknowledged` after absorbing returned shards;
+//      update local recovery state.
 //
-//  Outbound `.occ` packing (acks, responses, revokes) is intentionally
-//  out of scope for this phase — see VAULT_SSS_GUIDE.md "Implementation status".
-//  TODOs mark the wire-up sites for the next phase.
+//  Outbound operation queuing (`.acknowledge`, `.handback`, `.revoke`,
+//  `.returnAcknowledged`) is handled via Pending* SwiftData models read before
+//  every outbound bundle: `pendingReturnOperations`, `pendingAcknowledgeOperation`,
+//  `pendingShardAcknowledgeOperations`, `pendingRevokeOperations`.
 //
 
 import Foundation

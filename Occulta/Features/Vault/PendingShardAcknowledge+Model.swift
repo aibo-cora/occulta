@@ -3,10 +3,11 @@
 //  Occulta
 //
 //  SwiftData model for queued `.acknowledge` operations Bob owes to Alice
-//  after receiving one or more `.distribute` shard operations from her.
+//  after receiving one or more `.distribute` or `.replace` shard operations.
 //
-//  Created when `ShardCustodyManager.handleDistribute` stores a shard.
-//  Bob piggybacks the acknowledgement on his next outbound bundle to Alice.
+//  Created when `ShardCustodyManager.handleDistribute` or `handleReplace`
+//  stores a shard. Bob piggybacks the acknowledgement on his next outbound
+//  bundle to Alice.
 //  The row is deleted on send (fire-and-forget). Alice's `handleAcknowledge`
 //  calls `updateShardStatus(attrID:to:.confirmed)`, which is idempotent, so
 //  duplicate delivery (e.g. from the immediate-ack path in `OccultaApp`) is safe.
