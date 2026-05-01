@@ -66,6 +66,17 @@ extension VaultManager {
 
         // ── 3. Reconstruct candidate PEK ─────────────────────────────────────
         let rawShares = shards.map { Array($0.value) }
+
+        // Enforce threshold before handing to SSS. With fewer than k shares,
+        // Lagrange interpolation silently produces garbage — GCM would catch it
+        // eventually, but throwing here gives a clear, early failure.
+        // tryFinalizeReconstruction already guards this for the normal path;
+        // this check protects any direct callers of reconstructEntry.
+        if let meta = try? self.shardDistributionMetadata(for: entryID),
+           rawShares.count < meta.threshold {
+            throw VaultError.decryptionFailed
+        }
+
         var candidateData: Data
         do {
             candidateData = try ShamirSecretSharing.reconstruct(shares: rawShares)

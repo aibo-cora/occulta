@@ -131,6 +131,16 @@ final class ShardCustodyManager {
             throw CustodyError.signatureRejected
         }
 
+        // Deduplicate: if we already hold a shard with this attributeID (e.g.,
+        // Alice shared the same .occ bundle twice), skip the insert but still
+        // queue the acknowledge so Alice's ShardRecord advances to .confirmed.
+        let alreadyStored = (try? self.decryptAllCustodyShards()
+            .contains { $0.payload.signedAttribute.id == attribute.id }) ?? false
+        if alreadyStored {
+            try? self.queueShardAcknowledge(attrID: attribute.id, for: senderIdentifier)
+            return
+        }
+
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }

@@ -224,10 +224,10 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         )
         #expect(try custodyShardCount(in: container) == 1)
 
-        // Re-distribution with replacesID = oldAttr.id.
+        // Re-distribution — .replace supersedes oldAttr.
         let newAttr = try makeShardAttr(signer: alice, entryID: entryID, shardBytes: Data([0x09, 0x0A]))
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .distribute, attribute: newAttr, replacesID: oldAttr.id)),
+            sealed:           sealedOp(.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)),
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -260,7 +260,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         #expect(try custodyShardCount(in: container) == 1)
 
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .revoke, attrID: attr.id)),
+            sealed:           sealedOp(.init(kind: .revoke, attributeID:attr.id)),
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     aliceVault
@@ -273,7 +273,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let alice = TestKeyManager()
         let (custody, _, container) = try makeBob()
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .revoke, attrID: UUID())),
+            sealed:           sealedOp(.init(kind: .revoke, attributeID:UUID())),
             senderPublicKey:  try alice.retrieveIdentity(),
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
