@@ -329,32 +329,4 @@ extension VaultManager {
         return ops.isEmpty ? nil : ops
     }
 
-    // MARK: - Delivery tracking
-
-    /// Mark a shard as delivered for a specific contact.
-    ///
-    /// Call this after the .occ bundle containing the shard has been handed
-    /// to the basket pipeline. Updates the encrypted ShardDistributionMetadata.
-    func markShardDelivered(for entryID: UUID, contactIdentifier: String) throws {
-        let vaultKey    = try self.currentKey()
-        guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
-        guard let encrypted = entry.shardDistributionEncrypted else { return }
-
-        let box       = try AES.GCM.SealedBox(combined: encrypted)
-        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad())
-
-        var meta = try JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
-        if let idx = meta.shards.firstIndex(where: { $0.contactIdentifier == contactIdentifier }) {
-            meta.shards[idx].status = .confirmed
-        }
-
-        let updated = try JSONEncoder().encode(meta)
-        let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
-        
-        guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
-        
-        entry.shardDistributionEncrypted = combined
-        
-        try self.modelContext.save()
-    }
 }
