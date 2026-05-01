@@ -39,9 +39,6 @@ struct VaultEntryDetail: View {
                     if let erosion = self.shardErosion {
                         self.erosionBanner(active: erosion.active, threshold: erosion.threshold)
                     }
-                    if entry.shardDistributionEncrypted != nil {
-                        self.backupNote
-                    }
                     self.provenance
                 }
                 .padding(16)
@@ -193,9 +190,23 @@ struct VaultEntryDetail: View {
                     VaultShardSetup(entryID: entry.id)
                 } label: {
                     self.metaRow(title: "Shamir Shards") {
-                        Text("Active — tap to manage")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.primary)
+                        if let s = self.shardSummary(for: entry.id) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("any \(s.threshold) of \(s.total)")
+                                    .font(.system(size: 13, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                HStack(spacing: 4) {
+                                    if s.confirmed > 0 { self.statusPill("\(s.confirmed) confirmed", Color.occultaVerified) }
+                                    if s.pending   > 0 { self.statusPill("\(s.pending) pending",   Color.orange) }
+                                    if s.revoking  > 0 { self.statusPill("\(s.revoking) revoking", Color.red) }
+                                    if s.lost      > 0 { self.statusPill("\(s.lost) lost",         Color.red) }
+                                }
+                            }
+                        } else {
+                            Text("Shards configured")
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .buttonStyle(.plain)
@@ -221,6 +232,39 @@ struct VaultEntryDetail: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    // MARK: - Shard status helpers
+
+    private struct ShardSummary {
+        let threshold: Int
+        let total: Int
+        let confirmed: Int
+        let pending: Int
+        let revoking: Int
+        let lost: Int
+    }
+
+    private func shardSummary(for entryID: UUID) -> ShardSummary? {
+        guard let meta = try? vault.shardDistributionMetadata(for: entryID) else { return nil }
+        return ShardSummary(
+            threshold: meta.threshold,
+            total:     meta.shards.count,
+            confirmed: meta.shards.filter { $0.status == .confirmed }.count,
+            pending:   meta.shards.filter { $0.status == .pending }.count,
+            revoking:  meta.shards.filter { $0.status == .revokePending }.count,
+            lost:      meta.shards.filter { $0.status == .lost }.count
+        )
+    }
+
+    private func statusPill(_ label: String, _ color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.13))
+            .foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 
     // MARK: - Shard erosion
@@ -250,24 +294,6 @@ struct VaultEntryDetail: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    // MARK: - Backup scope note
-
-    private var backupNote: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "key.slash")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.secondary)
-            Text("Shards protect your encryption key — not the entry content. Export a vault backup separately to ensure full recovery after device loss.")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineSpacing(2)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
