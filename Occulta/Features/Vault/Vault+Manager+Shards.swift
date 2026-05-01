@@ -186,6 +186,57 @@ extension VaultManager {
 
     // MARK: - Delivery tracking
 
+    /// Mark every active ShardRecord distributed to `contactIdentifier` as `.lost`.
+    ///
+    /// Called when `ContactManager` emits `contactKeyRotated` for a contact while
+    /// the vault is unlocked. The contact's new identity key makes their stored
+    /// shard bytes permanently inaccessible — the trustee's app auto-returns them
+    /// via `.handback`, but Alice's recovery health should degrade immediately
+    /// rather than waiting for the next `.inquire` probe cycle.
+    ///
+    /// Only targets `.pending` and `.confirmed` shards — `.revokePending`,
+    /// `.revoked`, and `.lost` are already in a terminal or in-flight state.
+    ///
+    /// Silent no-op when the vault is locked (`.inquire` probes will resolve the
+    /// status once Alice unlocks and the next outbound bundle is sent to Bob).
+    func markShardsLost(forContact contactIdentifier: String) {
+        guard let vaultKey = try? self.currentKey() else { return }
+        let entries = (try? self.fetchAllEntries()) ?? []
+        var changed = false
+
+        for entry in entries {
+            guard let cipher = entry.shardDistributionEncrypted else { continue }
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: cipher),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
+            else { continue }
+
+            var modified = false
+            for i in meta.shards.indices
+                where meta.shards[i].contactIdentifier == contactIdentifier
+                   && (meta.shards[i].status == .pending || meta.shards[i].status == .confirmed) {
+                meta.shards[i].status = .lost
+                modified = true
+            }
+            guard modified else { continue }
+
+            guard
+                let updated  = try? JSONEncoder().encode(meta),
+                let sealed   = try? AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad()),
+                let combined = sealed.combined
+            else { continue }
+
+            entry.shardDistributionEncrypted = combined
+            changed = true
+        }
+
+        if changed {
+            try? self.modelContext.save()
+            self.recomputeRecoveryHealth()
+        }
+    }
+
     /// Update the status of one ShardRecord identified by its `attrID`.
     ///
     /// Walks every entry's encrypted ShardDistributionMetadata until a matching

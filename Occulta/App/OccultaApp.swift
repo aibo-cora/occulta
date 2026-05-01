@@ -269,11 +269,13 @@ struct OccultaApp: App {
                         self.contactManager.cleanupPendingSessions()
                     }
                 }
-                // Key-rotation → schedule shard auto-return (Bob's path).
-                // When the peer re-exchanges and comes in with a different fingerprint,
-                // ShardCustodyManager upserts a PendingShardReturn for that contact.
+                // Key-rotation → two-sided response:
+                // • Bob's path: if we hold shards for this contact, schedule auto-return.
+                // • Alice's path: mark any shards we distributed TO this contact as .lost —
+                //   their stored shard bytes are cryptographically unreachable under the new key.
                 .onReceive(self.contactManager.contactKeyRotated) { identifier in
                     self.shardCustodyManager.scheduleReturnIfShardsCustodied(for: identifier)
+                    self.vaultManager.markShardsLost(forContact: identifier)
                 }
             }
         }
@@ -451,7 +453,7 @@ struct OccultaApp: App {
             if let returnOps   = try? self.shardCustodyManager.pendingReturnOperations(for: manifest.contactIdentifier)            { shardOps += returnOps }
             if let ackOps      = try? self.shardCustodyManager.pendingAcknowledgeOperation(for: manifest.contactIdentifier)         { shardOps += ackOps }
             if let ackOps      = try? self.shardCustodyManager.pendingShardAcknowledgeOperations(for: manifest.contactIdentifier)   { shardOps += ackOps }
-            if let revokeOps   = try? self.shardCustodyManager.pendingRevokeOperations(for: manifest.contactIdentifier)             { shardOps += revokeOps }
+            if let revokeOps   = try? self.shardCustodyManager.pendingRevokeOperations(for: manifest.contactIdentifier, vaultManager: self.vaultManager)             { shardOps += revokeOps }
             if let inquireOps  = try? self.vaultManager.pendingInquireOperations(for: manifest.contactIdentifier)                   { shardOps += inquireOps }
             if let notFoundOps = try? self.shardCustodyManager.pendingNotFoundOperations(for: manifest.contactIdentifier)           { shardOps += notFoundOps }
             let occData = try self.contactManager.encryptBundle(

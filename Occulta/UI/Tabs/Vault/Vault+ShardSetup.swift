@@ -555,6 +555,21 @@ struct VaultShardSetup: View {
         self.marking = true
         self.error   = nil
         do {
+            // Queue revokes for any trustees being removed from this distribution
+            // BEFORE prepareShards overwrites the metadata (and their attrIDs are lost).
+            if let existingMeta = try? vault.shardDistributionMetadata(for: entryID) {
+                let newIDs  = Set(selected.map(\.identifier))
+                let removed = existingMeta.shards.filter {
+                    !newIDs.contains($0.contactIdentifier)
+                        && $0.status != .revoked
+                        && $0.status != .revokePending
+                        && $0.status != .lost
+                }
+                for shard in removed {
+                    try? shardCustodyManager?.queueRevoke(attrID: shard.attrID, for: shard.contactIdentifier)
+                }
+            }
+
             _ = try self.vault.prepareShards(
                 for:        self.entryID,
                 threshold:  self.k,

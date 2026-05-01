@@ -366,19 +366,28 @@ final class ShardCustodyManager {
 
     // MARK: - Revocation queuing
 
-    /// Queue `.revoke` operations for every non-revoked shard in `metadata`.
+    /// Queue `.revoke` operations for every active shard in `metadata`.
     ///
-    /// Called immediately after `VaultManager.deleteEntry` returns the metadata.
+    /// Called immediately after `VaultManager.deleteEntry` returns the metadata,
+    /// and from `VaultShardSetup.markForDistribution` for trustees being removed
+    /// before a re-distribution.
+    ///
     /// For each trustee, upserts one `PendingShardRevoke` row — merging `attrIDs`
     /// if a row already exists (Alice may delete multiple entries before sending
     /// the next message to a given trustee).
+    ///
+    /// Skips shards already in a terminal or in-flight revocation state:
+    /// `.revoked`, `.revokePending` (already queued), and `.lost` (shard gone).
     func queueRevokes(from metadata: ShardDistributionMetadata) {
         do {
             guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
 
             let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
 
-            for shard in metadata.shards where shard.status != .revoked {
+            for shard in metadata.shards
+                where shard.status != .revoked
+                   && shard.status != .revokePending
+                   && shard.status != .lost {
                 let contactID = shard.contactIdentifier
                 let attrID    = shard.attrID
 
@@ -471,9 +480,15 @@ final class ShardCustodyManager {
     /// Build `.revoke` operations for any pending revocations owed to `contactIdentifier`.
     ///
     /// Deletes the row on send (fire-and-forget). Trustees silently delete the
-    /// matching `CustodyShard` rows; there is no acknowledgement. A missed revoke
-    /// leaves a cryptographically inert orphan shard on the trustee's device.
-    func pendingRevokeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+    /// matching `CustodyShard` rows; there is no `.revokeAcknowledged` response —
+    /// no confirmation is needed because every `prepareShards` call generates fresh
+    /// shard bytes, making old shards mathematically inert regardless of whether the
+    /// trustee deleted them.
+    ///
+    /// Writes `.revoked` to each affected `ShardRecord` so recovery health reflects
+    /// the actual distribution state. Best-effort: a no-op when the entry has been
+    /// deleted (the `ShardRecord` no longer exists).
+    func pendingRevokeOperations(for contactIdentifier: String, vaultManager: VaultManager) throws -> [OccultaBundle.ShardOperation]? {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
@@ -489,6 +504,13 @@ final class ShardCustodyManager {
 
             self.modelContext.delete(row)
             try self.modelContext.save()
+
+            // Mark each shard .revoked on Alice's side. No-op when the entry was
+            // deleted (updateShardStatus finds no matching ShardRecord and returns).
+            for attrID in payload.attrIDs {
+                try? vaultManager.updateShardStatus(attrID: attrID, to: .revoked)
+            }
+
             return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .revoke, attributeID: $0) }
         }
         return nil
