@@ -147,10 +147,22 @@ extension VaultManager {
         recipients: [Contact.Profile],
         contactManager: ContactManager
     ) throws -> [(contactIdentifier: String, occData: Data)] {
+        // Capture old attrIDs per contact before prepareShards replaces the distribution.
+        // Contacts found here receive a .replace op; new contacts receive .distribute.
+        let oldAttrIDs: [String: UUID] = {
+            guard let meta = try? self.shardDistributionMetadata(for: entryID) else { return [:] }
+            return Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attrID) })
+        }()
+
         let attributes = try self.prepareShards(for: entryID, threshold: threshold, recipients: recipients)
 
         return try zip(recipients, attributes).map { contact, attribute in
-            let op  = OccultaBundle.ShardOperation(kind: .distribute, attribute: attribute)
+            let oldID = oldAttrIDs[contact.identifier]
+            let op    = OccultaBundle.ShardOperation(
+                kind:        oldID != nil ? .replace : .distribute,
+                attribute:   attribute,
+                attributeID: oldID
+            )
             let occ = try contactManager.encryptBundle(for: contact.identifier, shardOperations: [op])
             return (contact.identifier, occ)
         }

@@ -448,7 +448,7 @@ struct ComposableMessage: View {
                 let encoded = try JSONEncoder().encode(basket)
                 var shardOps: [OccultaBundle.ShardOperation] = []
                 if let returnOps  = try? self.shardCustodyManager?.pendingReturnOperations(for: identifier)            { shardOps += returnOps }
-                if let ackOp      = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: identifier)           { shardOps.append(ackOp) }
+                if let ackOps     = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: identifier)           { shardOps += ackOps }
                 if let ackOps     = try? self.shardCustodyManager?.pendingShardAcknowledgeOperations(for: identifier)     { shardOps += ackOps }
                 if let revokeOps  = try? self.shardCustodyManager?.pendingRevokeOperations(for: identifier)               { shardOps += revokeOps }
                 let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)

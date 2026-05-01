@@ -339,11 +339,11 @@ struct OccultaApp: App {
                     )
 
                     // After receiving shards, send acknowledgements back to the owner.
-                    // One .acknowledge operation per received .distribute, all in a single bundle.
+                    // One .acknowledge operation per received .distribute or .replace.
                     let ackOps = ops
-                        .filter { $0.kind == .distribute }
+                        .filter { $0.kind == .distribute || $0.kind == .replace }
                         .compactMap { $0.attribute?.id }
-                        .map { OccultaBundle.ShardOperation(kind: .acknowledge, attrID: $0) }
+                        .map { OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: $0) }
                     if !ackOps.isEmpty,
                        let occData = try? self.contactManager.encryptBundle(
                            for: ownerID,
@@ -464,7 +464,7 @@ struct OccultaApp: App {
 
             var shardOps: [OccultaBundle.ShardOperation] = []
             if let returnOps = try? self.shardCustodyManager.pendingReturnOperations(for: manifest.contactIdentifier)          { shardOps += returnOps }
-            if let ackOp     = try? self.shardCustodyManager.pendingAcknowledgeOperation(for: manifest.contactIdentifier)       { shardOps.append(ackOp) }
+            if let ackOps    = try? self.shardCustodyManager.pendingAcknowledgeOperation(for: manifest.contactIdentifier)       { shardOps += ackOps }
             if let ackOps    = try? self.shardCustodyManager.pendingShardAcknowledgeOperations(for: manifest.contactIdentifier) { shardOps += ackOps }
             if let revokeOps = try? self.shardCustodyManager.pendingRevokeOperations(for: manifest.contactIdentifier)           { shardOps += revokeOps }
             let occData = try self.contactManager.encryptBundle(

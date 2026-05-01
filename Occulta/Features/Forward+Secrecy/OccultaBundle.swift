@@ -163,25 +163,32 @@ struct OccultaBundle: Codable {
     /// Using a struct with a `kind` discriminator rather than an enum keeps
     /// Codable synthesis simple and avoids associated-value encoding quirks.
     ///
+    /// Batching multiple operations of the same kind is done via the outer
+    /// `[ShardOperation]` array on `SealedPayload` — each operation carries
+    /// exactly one shard's data, so no plural-ID fields are needed here.
+    ///
     /// Field usage by kind:
     ///
-    /// | kind                | attribute | attrID | attrIDs | replacesID |
-    /// |---------------------|-----------|--------|---------|------------|
-    /// | .distribute         | ✅        | —      | —       | optional   |
-    /// | .acknowledge        | —         | ✅     | —       | —          |
-    /// | .revoke             | —         | ✅     | —       | —          |
-    /// | .handback           | ✅        | —      | —       | —          |
-    /// | .notFound           | —         | ✅     | —       | —          |
-    /// | .returnAcknowledged | —         | —      | ✅      | —          |
+    /// | kind                | attribute          | attributeID             |
+    /// |---------------------|--------------------|-------------------------|
+    /// | .distribute         | ✅ new shard       | —                       |
+    /// | .replace            | ✅ new shard       | ✅ old shard to delete  |
+    /// | .acknowledge        | —                  | ✅ shard confirmed      |
+    /// | .revoke             | —                  | ✅ shard to discard     |
+    /// | .handback           | ✅ shard returned  | —                       |
+    /// | .notFound           | —                  | ✅ shard not found      |
+    /// | .returnAcknowledged | —                  | ✅ shard owner received |
     ///
-    /// Old builds that don't know about shards silently ignore `shardOperation`
+    /// Old builds that don't know about shards silently ignore `shardOperations`
     /// and render `SealedPayload.message` as regular text — same pattern as
     /// `identityChallenge`.
     nonisolated
     struct ShardOperation: Codable {
         enum Kind: String, Codable {
-            /// Owner → trustee: here is your shard.
+            /// Owner → trustee: here is your shard (first distribution).
             case distribute
+            /// Owner → trustee: here is a replacement shard; discard `attributeID`.
+            case replace
             /// Trustee → owner: shard received and stored.
             case acknowledge
             /// Owner → trustee: discard this shard (PEK rotated or trustee removed).
@@ -193,7 +200,7 @@ struct OccultaBundle: Codable {
             case handback
             /// Trustee → owner: I don't have a shard with this ID.
             case notFound
-            /// Owner → trustee: I received these shards — you may delete your custody rows.
+            /// Owner → trustee: I received this shard — you may delete the custody row.
             case returnAcknowledged
             /// A kind this build does not understand. Decoded from unknown raw values.
             /// The handler skips it silently so bundles from newer builds don't break older ones.
@@ -206,31 +213,20 @@ struct OccultaBundle: Codable {
         }
 
         let kind: Kind
-        /// The `SignedAttribute` shard payload. Non-nil for `.distribute` and `.handback`.
+        /// The `SignedAttribute` shard payload. Non-nil for `.distribute`, `.replace`, and `.handback`.
         let attribute: SignedAttribute?
-        /// The target shard's `SignedAttribute.id`. Non-nil for `.acknowledge`, `.revoke`,
-        /// and `.notFound`.
-        let attrID: UUID?
-        /// Multiple shard IDs. Non-nil for `.returnAcknowledged` — carries every
-        /// `SignedAttribute.id` the owner has safely stored, so the trustee can
-        /// delete the corresponding `CustodyShard` rows in one pass.
-        let attrIDs: [UUID]?
-        /// For `.distribute`: the `SignedAttribute.id` of an older shard this supersedes.
-        /// Trustee apps discard the old shard on receipt. Nil on first distribution.
-        let replacesID: UUID?
+        /// A single shard ID. Non-nil for `.replace` (old shard to delete), `.acknowledge`,
+        /// `.revoke`, `.notFound`, and `.returnAcknowledged`.
+        let attributeID: UUID?
 
         init(
             kind: Kind,
             attribute: SignedAttribute? = nil,
-            attrID: UUID? = nil,
-            attrIDs: [UUID]? = nil,
-            replacesID: UUID? = nil
+            attributeID: UUID? = nil
         ) {
-            self.kind       = kind
-            self.attribute  = attribute
-            self.attrID     = attrID
-            self.attrIDs    = attrIDs
-            self.replacesID = replacesID
+            self.kind        = kind
+            self.attribute   = attribute
+            self.attributeID = attributeID
         }
     }
 

@@ -59,19 +59,29 @@ final class ShardCustodyManager {
         // Collect attrIDs from successfully absorbed .handback operations so we
         // can queue a single PendingReturnAcknowledge for this sender afterwards.
         var respondedAttrIDs: [UUID] = []
+        var sawReturnAcknowledged   = false
 
         for op in ops {
             do {
                 switch op.kind {
-                case .distribute:         try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
-                case .revoke:             try self.handleRevoke(op: op)
+                case .distribute:
+                    try self.handleDistribute(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
+                case .replace:
+                    try self.handleReplace(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
+                case .revoke:
+                    try self.handleRevoke(op: op)
                 case .handback:
                     try self.handleHandback(op: op, vaultManager: vaultManager)
                     if let attrID = op.attribute?.id { respondedAttrIDs.append(attrID) }
-                case .acknowledge:        try self.handleAcknowledge(op: op, vaultManager: vaultManager)
-                case .notFound:           try self.handleNotFound(op: op, vaultManager: vaultManager)
-                case .returnAcknowledged: try self.handleReturnAcknowledged(op: op, senderIdentifier: senderIdentifier)
-                case .unsupported:        break
+                case .acknowledge:
+                    try self.handleAcknowledge(op: op, vaultManager: vaultManager)
+                case .notFound:
+                    try self.handleNotFound(op: op, vaultManager: vaultManager)
+                case .returnAcknowledged:
+                    try self.handleReturnAcknowledged(op: op)
+                    sawReturnAcknowledged = true
+                case .unsupported:
+                    break
                 }
             } catch {
                 #if DEBUG
@@ -90,19 +100,23 @@ final class ShardCustodyManager {
             }
         }
 
+        // If we processed any .returnAcknowledged ops, clean up PendingShardReturn
+        // once — after all per-shard deletions have been applied.
+        if sawReturnAcknowledged {
+            try? self.cleanupPendingReturnIfComplete(for: senderIdentifier)
+        }
+
         return true
     }
 
     // MARK: - Trustee path
 
-    /// `.distribute` — owner sent us a shard to hold.
+    /// `.distribute` — owner sent us a shard to hold (first distribution).
     ///
     /// 1. Verify the SignedAttribute against the owner's public key.
     /// 2. Seal CustodyShard.Payload under the shard custody key + AAD.
     /// 3. Insert.
-    /// 4. If `replacesID` is set, delete the prior CustodyShard whose decrypted
-    ///    payload references that SignedAttribute.id.
-    /// 5. Upsert a `PendingShardAcknowledge` row for the owner.
+    /// 4. Upsert a `PendingShardAcknowledge` row for the owner.
     private func handleDistribute(op: OccultaBundle.ShardOperation, senderPublicKey: Data, senderIdentifier: String) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
@@ -126,16 +140,7 @@ final class ShardCustodyManager {
         let sealed    = try AES.GCM.seal(plaintext, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
         guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
 
-        let row = CustodyShard(id: rowID, encryptedPayload: combined)
-        self.modelContext.insert(row)
-
-        if let replacesID = op.replacesID {
-            for decoded in try self.decryptAllCustodyShards()
-                where decoded.payload.signedAttribute.id == replacesID {
-                self.modelContext.delete(decoded.row)
-            }
-        }
-
+        self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
 
         // Queue an outbound `.acknowledge` to the owner. Best-effort: if this
@@ -145,13 +150,54 @@ final class ShardCustodyManager {
         try? self.queueShardAcknowledge(attrID: attribute.id, for: senderIdentifier)
     }
 
+    /// `.replace` — owner sent a replacement shard; store the new one and delete the old.
+    ///
+    /// Same verification and storage as `.distribute`, then deletes the CustodyShard
+    /// whose `signedAttribute.id` matches `op.attributeID` (the superseded shard).
+    /// Insert-then-delete ordering ensures we never lose the shard even if the delete fails.
+    private func handleReplace(op: OccultaBundle.ShardOperation, senderPublicKey: Data, senderIdentifier: String) throws {
+        guard let attribute = op.attribute, attribute.category == .shard,
+              let oldID = op.attributeID else {
+            throw CustodyError.invalidPayload
+        }
+        guard attribute.verify(against: senderPublicKey) else {
+            throw CustodyError.signatureRejected
+        }
+
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        // Store the new shard.
+        let rowID     = UUID()
+        let aad       = Self.rowAAD(id: rowID)
+        let payload   = CustodyShard.Payload(
+            ownerKeyFingerprint:    Self.fingerprint(of: senderPublicKey),
+            ownerContactIdentifier: senderIdentifier,
+            signedAttribute:        attribute
+        )
+        let plaintext = try JSONEncoder().encode(payload)
+        let sealed    = try AES.GCM.seal(plaintext, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
+
+        // Delete the superseded shard.
+        for decoded in try self.decryptAllCustodyShards()
+            where decoded.payload.signedAttribute.id == oldID {
+            self.modelContext.delete(decoded.row)
+        }
+
+        try self.modelContext.save()
+        try? self.queueShardAcknowledge(attrID: attribute.id, for: senderIdentifier)
+    }
+
     /// `.revoke` — owner asks us to discard a shard. Match by SignedAttribute.id.
     private func handleRevoke(op: OccultaBundle.ShardOperation) throws {
-        guard let attrID = op.attrID else { throw CustodyError.invalidPayload }
+        guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
 
         var deletedAny = false
         for decoded in try self.decryptAllCustodyShards()
-            where decoded.payload.signedAttribute.id == attrID {
+            where decoded.payload.signedAttribute.id == attributeID {
             self.modelContext.delete(decoded.row)
             deletedAny = true
         }
@@ -173,47 +219,54 @@ final class ShardCustodyManager {
     /// is dropped (cosmetic — delivery succeeded, only the local status lags).
     /// A persisted update queue is a Phase 2 follow-up if the cosmetic gap matters.
     private func handleAcknowledge(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
-        guard let attrID = op.attrID else { throw CustodyError.invalidPayload }
-        try? vaultManager.updateShardStatus(attrID: attrID, to: .confirmed)
+        guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
+        try? vaultManager.updateShardStatus(attrID: attributeID, to: .confirmed)
     }
 
     /// `.notFound` — trustee no longer has our shard. Mark `.lost`.
     private func handleNotFound(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
-        guard let attrID = op.attrID else { throw CustodyError.invalidPayload }
-        try? vaultManager.updateShardStatus(attrID: attrID, to: .lost)
+        guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
+        try? vaultManager.updateShardStatus(attrID: attributeID, to: .lost)
     }
 
-    /// `.returnAcknowledged` — owner confirmed receipt; delete our custody rows and
-    /// the PendingShardReturn record for this contact.
-    private func handleReturnAcknowledged(op: OccultaBundle.ShardOperation, senderIdentifier: String) throws {
-        guard let attrIDs = op.attrIDs, !attrIDs.isEmpty else { return }
-
-        // Delete confirmed CustodyShard rows.
+    /// `.returnAcknowledged` — owner confirmed receipt of one shard; delete our custody row.
+    ///
+    /// PendingShardReturn cleanup is deferred to `cleanupPendingReturnIfComplete` which
+    /// is called once after all ops in the batch are processed.
+    private func handleReturnAcknowledged(op: OccultaBundle.ShardOperation) throws {
+        guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
         var deletedAny = false
-        let attrIDSet = Set(attrIDs)
         for decoded in try self.decryptAllCustodyShards()
-            where attrIDSet.contains(decoded.payload.signedAttribute.id) {
+            where decoded.payload.signedAttribute.id == attributeID {
             self.modelContext.delete(decoded.row)
             deletedAny = true
         }
+        if deletedAny { try self.modelContext.save() }
+    }
 
-        // If all our shards for this contact are now gone, delete the PendingShardReturn.
-        let remainingShards = try self.decryptAllCustodyShards()
-            .filter { $0.payload.ownerContactIdentifier == senderIdentifier }
-        if remainingShards.isEmpty {
-            guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
-            let pendingRows = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
-            for row in pendingRows {
-                guard
-                    let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                    let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                    let payload   = try? JSONDecoder().decode(PendingShardReturn.Payload.self, from: plaintext),
-                    payload.contactIdentifier == senderIdentifier
-                else { continue }
-                self.modelContext.delete(row)
-            }
+    /// Delete the `PendingShardReturn` row for `ownerIdentifier` if we no longer
+    /// hold any custody shards for them.
+    ///
+    /// Called once after all `.returnAcknowledged` ops in a bundle are processed,
+    /// so the check reflects the fully-applied state rather than a mid-batch snapshot.
+    private func cleanupPendingReturnIfComplete(for ownerIdentifier: String) throws {
+        let remaining = try self.decryptAllCustodyShards()
+            .filter { $0.payload.ownerContactIdentifier == ownerIdentifier }
+        guard remaining.isEmpty else { return }
+
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
+        var deletedAny = false
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardReturn.Payload.self, from: plaintext),
+                payload.contactIdentifier == ownerIdentifier
+            else { continue }
+            self.modelContext.delete(row)
+            deletedAny = true
         }
-
         if deletedAny { try self.modelContext.save() }
     }
 
@@ -396,7 +449,7 @@ final class ShardCustodyManager {
 
             self.modelContext.delete(row)
             try self.modelContext.save()
-            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .revoke, attrID: $0) }
+            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .revoke, attributeID: $0) }
         }
         return nil
     }
@@ -435,12 +488,13 @@ final class ShardCustodyManager {
         return ops.isEmpty ? nil : ops
     }
 
-    /// Build a `.returnAcknowledged` operation for Bob if Alice has a
+    /// Build `.returnAcknowledged` operations for Bob if Alice has a
     /// `PendingReturnAcknowledge` row for him, then delete that row (fire-and-forget;
-    /// retry on the next outbound bundle if the ack was never delivered).
+    /// retry on the next outbound bundle if the acks were never delivered).
     ///
-    /// Returns `nil` when no pending ack exists for this contact.
-    func pendingAcknowledgeOperation(for contactIdentifier: String) throws -> OccultaBundle.ShardOperation? {
+    /// Returns one operation per attrID — the outer `shardOperations` array handles
+    /// batching. Returns `nil` when no pending ack exists for this contact.
+    func pendingAcknowledgeOperation(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw CustodyError.keyDerivationFailed
         }
@@ -456,7 +510,7 @@ final class ShardCustodyManager {
 
             self.modelContext.delete(row)
             try self.modelContext.save()
-            return OccultaBundle.ShardOperation(kind: .returnAcknowledged, attrIDs: payload.attrIDs)
+            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .returnAcknowledged, attributeID: $0) }
         }
         return nil
     }
@@ -487,7 +541,7 @@ final class ShardCustodyManager {
 
             self.modelContext.delete(row)
             try self.modelContext.save()
-            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .acknowledge, attrID: $0) }
+            return payload.attrIDs.map { OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: $0) }
         }
         return nil
     }
