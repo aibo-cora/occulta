@@ -41,6 +41,7 @@ struct OccultaApp: App {
                 PendingShardRevoke.self,
                 PendingShardAcknowledge.self,
                 PendingShardNotFound.self,
+                PendingShardStatusUpdate.self,
                 GlobalShardConfig.self,
             ])
             
@@ -338,23 +339,6 @@ struct OccultaApp: App {
                         senderIdentifier: ownerID,
                         vaultManager:     self.vaultManager
                     )
-
-                    // After receiving shards, send acknowledgements back to the owner.
-                    // One .acknowledge operation per received .distribute or .replace.
-                    let ackOps = ops
-                        .filter { $0.kind == .distribute || $0.kind == .replace }
-                        .compactMap { $0.attribute?.id }
-                        .map { OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: $0) }
-                    if !ackOps.isEmpty,
-                       let occData = try? self.contactManager.encryptBundle(
-                           for: ownerID,
-                           shardOperations: ackOps
-                       ) {
-                        let name   = (UUID().uuidString.components(separatedBy: "-").last ?? "ack") + ".occ"
-                        let occURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-                        try? occData.write(to: occURL)
-                        self.shareResult = ShareResult(url: occURL)
-                    }
 
                     return nil
                 }

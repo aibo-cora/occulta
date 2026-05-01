@@ -220,6 +220,41 @@ extension VaultManager {
         }
     }
 
+    // MARK: - Deferred status updates
+
+    /// Apply any `PendingShardStatusUpdate` rows that were queued while the vault
+    /// was locked.
+    ///
+    /// Called from `unlock()` after the auth context is set. Each row is decrypted
+    /// with the shard custody key, applied via `updateShardStatus`, then deleted.
+    /// Rows that fail to apply (entry no longer exists, decryption error) are also
+    /// deleted — they can never succeed on retry.
+    func drainPendingShardStatusUpdates() {
+        guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return }
+
+        let rows = (try? self.modelContext.fetch(FetchDescriptor<PendingShardStatusUpdate>())) ?? []
+        var changed = false
+
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PendingShardStatusUpdate.Payload.self, from: plaintext)
+            else {
+                self.modelContext.delete(row)
+                changed = true
+                continue
+            }
+
+            // Apply regardless of result — a missing entry is not retryable.
+            try? self.updateShardStatus(attrID: payload.attributeID, to: payload.newStatus)
+            self.modelContext.delete(row)
+            changed = true
+        }
+
+        if changed { try? self.modelContext.save() }
+    }
+
     // MARK: - Recovery health
 
     /// Recompute `recoveryHealth` by walking every entry's shard distribution.

@@ -239,19 +239,34 @@ final class ShardCustodyManager {
         try vaultManager.acceptReturnedShard(attribute)
     }
 
-    /// `.acknowledge` — trustee confirmed receipt; mark our distribution record.
-    /// Best-effort: requires the vault to be unlocked. While locked, the update
-    /// is dropped (cosmetic — delivery succeeded, only the local status lags).
-    /// A persisted update queue is a Phase 2 follow-up if the cosmetic gap matters.
+    /// `.acknowledge` — trustee confirmed receipt; mark our distribution record `.confirmed`.
+    ///
+    /// If the vault is locked the update cannot be applied immediately. A
+    /// `PendingShardStatusUpdate` row is queued; `VaultManager.unlock()` drains
+    /// it on the next biometric unlock.
     private func handleAcknowledge(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
-        try? vaultManager.updateShardStatus(attrID: attributeID, to: .confirmed)
+        do {
+            try vaultManager.updateShardStatus(attrID: attributeID, to: .confirmed)
+        } catch VaultManager.VaultError.locked {
+            try self.queueShardStatusUpdate(attributeID: attributeID, newStatus: .confirmed)
+        } catch {
+            // Entry not found or other unrecoverable error — silently drop.
+        }
     }
 
-    /// `.notFound` — trustee no longer has our shard. Mark `.lost`.
+    /// `.notFound` — trustee no longer has our shard; mark it `.lost`.
+    ///
+    /// Same deferred-update pattern as `handleAcknowledge`.
     private func handleNotFound(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
-        try? vaultManager.updateShardStatus(attrID: attributeID, to: .lost)
+        do {
+            try vaultManager.updateShardStatus(attrID: attributeID, to: .lost)
+        } catch VaultManager.VaultError.locked {
+            try self.queueShardStatusUpdate(attributeID: attributeID, newStatus: .lost)
+        } catch {
+            // Entry not found or other unrecoverable error — silently drop.
+        }
     }
 
     /// `.returnAcknowledged` — owner confirmed receipt of one shard; delete our custody row.
@@ -607,6 +622,27 @@ final class ShardCustodyManager {
         let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
         guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
         self.modelContext.insert(PendingShardAcknowledge(id: rowID, encryptedPayload: combined))
+        try self.modelContext.save()
+    }
+
+    /// Insert a `PendingShardStatusUpdate` row for a status change that could not
+    /// be applied because the vault was locked.
+    ///
+    /// One row per `attributeID` — no merging needed since each shard identifier
+    /// is globally unique. `VaultManager.drainPendingShardStatusUpdates()` replays
+    /// the update on the next unlock.
+    private func queueShardStatusUpdate(attributeID: UUID, newStatus: ShardStatus) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        let rowID   = UUID()
+        let payload = PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus)
+        let bytes   = try JSONEncoder().encode(payload)
+        let aad     = Self.rowAAD(id: rowID)
+        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        self.modelContext.insert(PendingShardStatusUpdate(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
 
