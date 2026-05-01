@@ -695,6 +695,7 @@ keeps the shard protocol self-contained.
 | New-device recovery (no SE key)       | ✅ Done        |
 | Shard distribution UI (V4 Trust-first, ML-KEM gate) | ✅ Done |
 | Threshold erosion warning (entry detail) | ✅ Done     |
+| Aggregate recovery health indicator (vault tab attention section) | ✅ Done |
 | ownerContactIdentifier in CustodyShard.Payload | ✅ Done |
 | [ShardOperation]? on SealedPayload (multi-shard bundles) | ✅ Done |
 | .returnAcknowledged ShardOperation kind | ✅ Done |
