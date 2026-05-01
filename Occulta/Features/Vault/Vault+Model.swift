@@ -77,6 +77,36 @@ struct ShardDistributionMetadata: Codable {
     var shards: [ShardRecord]
 }
 
+// MARK: - RecoveryHealthSummary
+
+/// Aggregate vault-wide recovery health, computed on unlock and after each
+/// shard status mutation. `nil` when the vault is locked.
+struct RecoveryHealthSummary {
+
+    enum EntryStatus {
+        /// Active shards are below threshold but at least one remains.
+        case degraded
+        /// No active shards remain — recovery is impossible without redistribution.
+        case critical
+    }
+
+    struct AffectedEntry {
+        let entryID:   UUID
+        let label:     String
+        let entryType: VaultEntryType
+        let status:    EntryStatus
+        let active:    Int
+        let threshold: Int
+    }
+
+    /// Entries whose active shard count is below threshold.
+    /// Sorted: critical first, then degraded, both groups alphabetical by label.
+    /// Empty when all distributed entries meet their threshold.
+    let affected: [AffectedEntry]
+
+    var isEmpty: Bool { affected.isEmpty }
+}
+
 // MARK: - VaultEntry
 
 @Model

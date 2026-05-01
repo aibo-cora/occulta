@@ -164,7 +164,13 @@ struct VaultTab: View {
     // MARK: Entry list
 
     private var list: some View {
-        List {
+        let affected       = self.vault.recoveryHealth?.affected ?? []
+        let affectedIDs    = Set(affected.map(\.entryID))
+        let normalEntries  = self.entries.filter { !affectedIDs.contains($0.id) }
+        let hasCritical    = affected.contains { $0.status == .critical }
+        let attentionColor = hasCritical ? Color.red : Color.occultaWarn
+
+        return List {
             Section {
                 Picker("Filter", selection: $filter) {
                     ForEach(Filter.allCases, id: \.self) { f in
@@ -176,7 +182,32 @@ struct VaultTab: View {
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
 
-            // Personal entries
+            // Attention section — entries with degraded or critical coverage
+            if self.filter != .shards, !affected.isEmpty {
+                Section {
+                    ForEach(affected, id: \.entryID) { item in
+                        NavigationLink(value: item.entryID) {
+                            VaultAffectedEntryRow(item: item)
+                        }
+                    }
+                } header: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(attentionColor)
+                        Text("Needs Attention")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .tracking(1.6)
+                            .foregroundStyle(attentionColor)
+                        Spacer()
+                        Text("\(affected.count)")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            // Personal entries (excludes entries already shown in attention section)
             if self.filter != .shards {
                 Section {
                     if self.entries.isEmpty {
@@ -185,14 +216,14 @@ struct VaultTab: View {
                             .foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     } else {
-                        ForEach(self.entries) { entry in
+                        ForEach(normalEntries) { entry in
                             NavigationLink(value: entry.id) {
                                 VaultEntryRow(entry: entry)
                             }
                         }
                         .onDelete { offsets in
                             for i in offsets {
-                                let metadata = try? self.vault.deleteEntry(id: self.entries[i].id)
+                                let metadata = try? self.vault.deleteEntry(id: normalEntries[i].id)
                                 if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata) }
                             }
                         }
@@ -301,6 +332,54 @@ private struct VaultEntryRow: View {
                 .padding(.vertical, 3)
                 .background(self.entry.type.tileBackground)   // Consistent with icon
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+// MARK: - Affected Entry Row
+
+private struct VaultAffectedEntryRow: View {
+    let item: RecoveryHealthSummary.AffectedEntry
+
+    private var accentColor: Color {
+        item.status == .critical ? .red : .occultaWarn
+    }
+
+    private var subtitleText: String {
+        switch item.status {
+        case .critical: "recovery unavailable"
+        case .degraded: "\(item.active) of \(item.threshold) recovery pieces"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(item.entryType.tileBackground)
+                    .frame(width: 36, height: 36)
+                Text(item.entryType.emoji)
+                    .font(.system(size: 18))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.label)
+                    .font(.system(size: 16, weight: .medium))
+                    .lineLimit(1)
+                Text(subtitleText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(accentColor)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Image(systemName: item.status == .critical
+                  ? "exclamationmark.circle.fill"
+                  : "exclamationmark.triangle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(accentColor)
         }
         .padding(.vertical, 3)
     }

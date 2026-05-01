@@ -44,6 +44,13 @@ final class VaultManager {
 
     var isUnlocked: Bool { authContext != nil }
 
+    // MARK: - Recovery health
+
+    /// Aggregate shard coverage across all distributed entries.
+    /// `nil` when the vault is locked. Updated automatically on unlock and
+    /// after every shard status mutation.
+    var recoveryHealth: RecoveryHealthSummary? = nil
+
     // MARK: - Inactivity timer
 
     /// Inactivity timeout before automatic lock. Injected so tests can use short values.
@@ -107,6 +114,7 @@ final class VaultManager {
         self.resetInactivityTimer()
         // Drain reconstruction buffer entries that crossed threshold while locked.
         self.tryFinalizeAllReconstructions()
+        self.recomputeRecoveryHealth()
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.
@@ -117,7 +125,8 @@ final class VaultManager {
         self.inactivityTimer?.invalidate()
         self.inactivityTimer = nil
         self.authContext?.invalidate()
-        self.authContext = nil
+        self.authContext     = nil
+        self.recoveryHealth  = nil
     }
 
     // MARK: - Create
@@ -224,6 +233,7 @@ final class VaultManager {
 
         self.modelContext.delete(entry)
         try self.modelContext.save()
+        self.recomputeRecoveryHealth()
 
         return metadata
     }

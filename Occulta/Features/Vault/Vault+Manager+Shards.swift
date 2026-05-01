@@ -127,8 +127,8 @@ extension VaultManager {
         guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
         
         entry.shardDistributionEncrypted = combined
-        
         try self.modelContext.save()
+        self.recomputeRecoveryHealth()
 
         return attributes
     }
@@ -215,8 +215,58 @@ extension VaultManager {
 
             entry.shardDistributionEncrypted = combined
             try self.modelContext.save()
+            self.recomputeRecoveryHealth()
             return
         }
+    }
+
+    // MARK: - Recovery health
+
+    /// Recompute `recoveryHealth` by walking every entry's shard distribution.
+    ///
+    /// Best-effort: silently skips entries that fail to decrypt (corrupted or
+    /// from a concurrent lock). Sets `recoveryHealth = nil` if the vault is locked.
+    /// Called from unlock, deleteEntry, updateShardStatus, and prepareShards.
+    func recomputeRecoveryHealth() {
+        guard let vaultKey = try? self.currentKey() else {
+            self.recoveryHealth = nil
+            return
+        }
+        let entries = (try? self.fetchAllEntries()) ?? []
+        var affected: [RecoveryHealthSummary.AffectedEntry] = []
+
+        for entry in entries {
+            guard let cipher = entry.shardDistributionEncrypted else { continue }
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: cipher),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                let meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
+            else { continue }
+
+            let active = meta.shards.filter {
+                $0.status == .pending || $0.status == .confirmed
+            }.count
+            guard active < meta.threshold else { continue }
+
+            let label  = (try? self.decryptLabel(for: entry)) ?? entry.type.displayName
+            let status: RecoveryHealthSummary.EntryStatus = active == 0 ? .critical : .degraded
+            affected.append(RecoveryHealthSummary.AffectedEntry(
+                entryID:   entry.id,
+                label:     label,
+                entryType: entry.type,
+                status:    status,
+                active:    active,
+                threshold: meta.threshold
+            ))
+        }
+
+        // Critical first, then degraded; alphabetical within each group.
+        affected.sort {
+            if $0.status == $1.status { return $0.label < $1.label }
+            return $0.status == .critical
+        }
+
+        self.recoveryHealth = RecoveryHealthSummary(affected: affected)
     }
 
     // MARK: - Reconciliation probing
