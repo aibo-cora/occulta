@@ -652,6 +652,20 @@ keeps the shard protocol self-contained.
   and redistributes. The old shard in Bob's store is harmless (fails GCM auth) but
   accumulates as dead storage. Fix: retry `.revoke` for the old attrID alongside
   the `.inquire` for the new one.
+- **Trustees Alice rarely or never messages.** Probes piggyback on normal outbound
+  traffic. A trustee Alice has no reason to contact independently — someone added
+  purely as a shard holder — will never be probed. Their shard could be silently
+  dead (device loss, app uninstall, key rotation with no re-exchange) while Alice's
+  recovery health continues to show it `.confirmed`.
+
+  The fix is a standalone "Check Coverage" trigger in `VaultShardSetup` that calls
+  `pendingInquireOperations(for:)` for every trustee of that entry and presents the
+  resulting `.occ` bundles for sharing via the standard share-sheet flow. This was
+  deliberately deferred: there is no background send channel — every `.occ` delivery
+  requires a user-initiated share-sheet action — so an automatic trigger on app
+  resume or vault unlock would produce the identical UX as an explicit button, but
+  without the user's awareness. An explicit "Check Coverage" button is therefore
+  the correct design; it is not yet implemented.
 
 ### Design notes
 
