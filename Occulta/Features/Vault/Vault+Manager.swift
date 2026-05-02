@@ -42,6 +42,8 @@ final class VaultManager {
     /// the vault key is derived on the fly and never stored.
     private var authContext: LAContext?
 
+    /// `true` when a pre-evaluated `LAContext` is held in memory (vault unlocked).
+    /// Becomes `false` as soon as `lock()` clears `authContext`.
     var isUnlocked: Bool { authContext != nil }
 
     // MARK: - Recovery health
@@ -62,11 +64,20 @@ final class VaultManager {
     // MARK: - Errors
 
     enum VaultError: Error {
+        /// Vault not unlocked — call `unlock(context:)` first.
         case locked
+        /// SE returned `nil` during key derivation — device may have been restarted
+        /// or the enrolled biometric set changed. `lock()` is called as a side effect.
         case keyDerivationFailed
+        /// No `VaultEntry` with the requested UUID exists in the store.
         case entryNotFound
+        /// `AES.GCM.seal` or `SecRandomCopyBytes` failed (device in a bad state).
         case encryptionFailed
+        /// `AES.GCM.open` rejected the authentication tag — wrong key, corrupt
+        /// ciphertext, or mismatched AAD.
         case decryptionFailed
+        /// `ShardDistributionMetadata` could not be JSON-decoded after a successful
+        /// `AES.GCM.open` — the plaintext is structurally invalid.
         case metadataCorrupted
     }
 
@@ -188,11 +199,17 @@ final class VaultManager {
 
     // MARK: - Read
 
+    /// Return all vault entries sorted by creation date (oldest first).
+    ///
+    /// All fields on the returned entries are ciphertext — no decryption occurs here.
     func fetchAllEntries() throws -> [VaultEntry] {
         let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
         return try self.modelContext.fetch(descriptor)
     }
 
+    /// Find a single vault entry by its UUID.
+    ///
+    /// - Returns: The matching `VaultEntry`, or `nil` if none exists.
     func fetchEntry(by id: UUID) throws -> VaultEntry? {
         let predicate = #Predicate<VaultEntry> { $0.id == id }
         return try self.modelContext.fetch(FetchDescriptor<VaultEntry>(predicate: predicate)).first
@@ -331,6 +348,10 @@ final class VaultManager {
 
     // MARK: - Private
 
+    /// AES-GCM open a combined-format ciphertext (`nonce ∥ ciphertext ∥ tag`).
+    ///
+    /// Wraps any `AES.GCM.open` failure in `.decryptionFailed` so callers receive
+    /// a uniform vault error regardless of the underlying `CryptoKit` error type.
     private func openField(_ combined: Data, key: SymmetricKey, aad: Data) throws -> Data {
         let box = try AES.GCM.SealedBox(combined: combined)
         do {
@@ -340,6 +361,10 @@ final class VaultManager {
         }
     }
 
+    /// Reset the inactivity timer, extending the session by `inactivityTimeout` from now.
+    ///
+    /// Called on every successful vault key derivation so idle time is measured from
+    /// the last cryptographic operation, not from the initial `unlock(context:)` call.
     private func resetInactivityTimer() {
         self.inactivityTimer?.invalidate()
         self.inactivityTimer = Timer.scheduledTimer(

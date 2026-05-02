@@ -57,11 +57,24 @@ enum ShamirSecretSharing {
     // MARK: Errors
 
     enum Error: Swift.Error {
-        case invalidParameters      // k < 2, n < k, or n > 255
-        case invalidSecretLength    // secret must be exactly 32 bytes
-        case insufficientShares     // reconstruct() received an empty array
-        case invalidShareFormat     // shares have wrong or inconsistent length
-        case duplicateXCoordinate   // two shares share the same x-coordinate
+        /// `k < 2`, `n < k`, or `n > 255`.
+        case invalidParameters
+        /// Secret must be exactly 32 bytes.
+        case invalidSecretLength
+        /// `reconstruct()` received an empty share array or a share array whose
+        /// length is below the threshold.
+        ///
+        /// Note: `VaultManager.reconstructEntry` enforces the threshold guard before
+        /// calling `reconstruct`, providing a clear early error for the normal path.
+        /// This case fires when `reconstruct` is called directly with an empty array.
+        case insufficientShares
+        /// A share has the wrong length (expected 33 bytes each) or shares have
+        /// inconsistent lengths.
+        case invalidShareFormat
+        /// Two shares carry the same x-coordinate — Lagrange interpolation is
+        /// undefined and the call is rejected.
+        case duplicateXCoordinate
+        /// `SecRandomCopyBytes` failed during polynomial coefficient generation.
         case randomGenerationFailed
     }
 
