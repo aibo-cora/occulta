@@ -217,7 +217,12 @@ final class ShardCustodyManager {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
 
         let found = try self.decryptAllCustodyShards()
-            .contains { $0.payload.signedAttribute.id == attributeID }
+            .contains { decoded in
+                let attr = decoded.payload.signedAttribute
+                guard attr.id == attributeID else { return false }
+                if let exp = attr.expiresAt { return exp > Date() }
+                return true
+            }
 
         if found {
             try? self.queueShardAcknowledge(attributeID: attributeID, for: senderIdentifier)
