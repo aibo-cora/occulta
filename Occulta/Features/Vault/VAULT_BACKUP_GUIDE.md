@@ -45,9 +45,11 @@ BEK            = SecRandomCopyBytes(32)
 encryptedBEK   = AES-GCM(BEK, using: vaultKey, nonce: random, authenticating: bekAAD)
 ```
 
-`encryptedBEK` is persisted in SwiftData as a vault-level singleton. The raw BEK
-bytes are available in memory when the vault is unlocked (vaultKey unwraps them),
-and nowhere else.
+`encryptedBEK` is persisted in a dedicated SwiftData model (`BackupEncryptionKey`) following
+the same `id: UUID` + `encryptedPayload: Data` pattern used throughout the vault.
+At most one row exists; reads fetch the first row, writes delete-and-replace (same
+convention as `GlobalShardConfig`). The raw BEK bytes are available in memory when
+the vault is unlocked (vaultKey unwraps them), and nowhere else.
 
 The backup file is AES-256-GCM sealed under the BEK:
 
@@ -78,6 +80,14 @@ security guarantee. Shamir's Secret Sharing requires operating on the raw key
 bytes. BEK must be accessible in memory (under vault unlock) to be split into
 shards. The vaultKey wrapping provides hardware-bound protection at rest; biometric
 authentication gates access.
+
+### Why not store BEK in the Keychain
+
+Keychain is a valid storage location for a sealed blob, but it breaks the
+consistency of the vault's storage model — all other encrypted vault state lives
+in SwiftData. Keychain items also behave differently under backup and restore
+scenarios, which matters for the device-migration path. A `BackupKey` SwiftData
+model keeps all vault state in one container and follows the established pattern.
 
 ---
 
@@ -216,11 +226,6 @@ encryptedBEK = AES-GCM(BEK, using: newDeviceVaultKey)
 ```
 
 Zero BEK from memory.
-
-**Dependency:** the exchange flow must support "update existing contact's key" as
-a first-class outcome (not just "create new contact"). Without this, the trustee's
-app cannot associate the incoming exchange with an existing `CustodyShard` row and
-auto-handback will not fire.
 
 ---
 
@@ -392,7 +397,6 @@ without attempting decryption.
 | BEK SSS split + shard delivery (reuse existing pipeline) | 🔲 |
 | BEK trustee picker (pre-populated from Global Trustees, GLOBAL badge) | 🔲 |
 | BEK shard collection via auto-handback on contact key re-exchange | 🔲 |
-| Contact key-update exchange outcome (prerequisite for auto-handback) | 🔲 |
 | Pending restore state (store .occbak, waiting-for-trustees UI) | 🔲 |
 | BEK reconstruction (Shamir.combine) + re-wrap under new device vaultKey | 🔲 |
 | `VaultBackup` / `VaultBackupEntry` Codable models | 🔲 |

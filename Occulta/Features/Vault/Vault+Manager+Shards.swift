@@ -269,6 +269,9 @@ extension VaultManager {
             self.recomputeRecoveryHealth()
             return
         }
+
+        // No per-entry shard matched — check BEK shard metadata.
+        try? self.updateBEKShardStatus(attrID: attrID, to: newStatus)
     }
 
     // MARK: - Deferred status updates

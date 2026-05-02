@@ -43,6 +43,7 @@ struct OccultaApp: App {
                 PendingShardNotFound.self,
                 PendingShardStatusUpdate.self,
                 GlobalShardConfig.self,
+                BackupEncryptionKey.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
