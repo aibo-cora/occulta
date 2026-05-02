@@ -6,25 +6,24 @@
 //
 //  Created in two situations:
 //  1. Alice deletes a vault entry that has distributed shards — one row is
-//     upserted per trustee who holds a shard for that entry.
-//  2. Alice manually revokes a single shard via `queueRevoke(attrID:for:)` —
+//     inserted per active shard (one shard = one row).
+//  2. Alice manually revokes a single shard via `queueRevoke(attributeID:for:)` —
 //     used when the user removes a trustee from a live distribution without
 //     deleting the entry.
 //
-//  Multiple attrIDs (e.g. Alice deletes several entries or revokes several
-//  shards before sending a message to Bob) are merged into the same row so
-//  revocations for the same trustee travel together in one bundle.
+//  One row per attributeID. Batching across shards to the same trustee happens
+//  at the bundle level via `SealedPayload.shardOperations` — no merge logic here.
 //
 //  Privacy model — encryption at rest:
-//  - Plaintext columns (`id`, `createdAt`) carry no identifying data.
-//  - `contactIdentifier` and `attrIDs` live inside `encryptedPayload`,
+//  - Plaintext columns (`id`) carry no identifying data.
+//  - `ownerID` and `attributeID` live inside `encryptedPayload`,
 //    sealed under the shard custody key with AAD = aad().
 //  - Cold-disk forensics learns "Alice has N pending revocations" — nothing
 //    about which contacts or which shards. Resolving requires the SE-protected
 //    custody key.
 //
 //  Lifecycle:
-//  - Inserted (or updated) when a vault entry with shard distribution is deleted.
+//  - Inserted when a vault entry with shard distribution is deleted.
 //  - Read before every outbound bundle to each trustee; `.revoke` operations
 //    are included in `SealedPayload.shardOperations`.
 //  - Deleted on send (fire-and-forget). There is no `.revokeAcknowledged`
@@ -70,12 +69,10 @@ final class PendingShardRevoke {
 
     /// Plaintext sealed inside `encryptedPayload`.
     ///
-    /// `contactIdentifier` is `Contact.Profile.identifier` of the trustee.
-    /// `attrIDs` are the `SignedAttribute.id` values of all shards to revoke
-    /// for this trustee — accumulated across multiple entry deletions before
-    /// the next outbound bundle is sent.
+    /// `ownerID` is `Contact.Profile.identifier` of the trustee.
+    /// `attributeID` is the `SignedAttribute.id` of the shard to revoke.
     struct Payload: Codable {
-        let contactIdentifier: String
-        let attrIDs:           [UUID]
+        let ownerID:     String
+        let attributeID: UUID
     }
 }

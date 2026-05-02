@@ -566,7 +566,7 @@ struct VaultShardSetup: View {
                         && $0.status != .lost
                 }
                 for shard in removed {
-                    try? shardCustodyManager?.queueRevoke(attrID: shard.attrID, for: shard.contactIdentifier)
+                    try? shardCustodyManager?.queueRevoke(attributeID: shard.attrID, for: shard.contactIdentifier)
                 }
             }
 
@@ -598,7 +598,7 @@ struct VaultShardSetup: View {
     private func revokeShard(_ record: ShardRecord) {
         do {
             try vault.updateShardStatus(attrID: record.attrID, to: .revokePending)
-            try shardCustodyManager?.queueRevoke(attrID: record.attrID, for: record.contactIdentifier)
+            try shardCustodyManager?.queueRevoke(attributeID: record.attrID, for: record.contactIdentifier)
             // Reload metadata so the status chip updates immediately.
             distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
             // Remove from selection so the UI reflects the change.

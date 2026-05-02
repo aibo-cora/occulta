@@ -3,7 +3,7 @@
 //  Occulta
 //
 //  SwiftData model for queued `.acknowledge` operations Bob owes to Alice
-//  after receiving one or more `.distribute` or `.replace` shard operations.
+//  after receiving a `.distribute` or `.replace` shard operation.
 //
 //  Created when `ShardCustodyManager.handleDistribute` or `handleReplace`
 //  stores a shard. Bob piggybacks the acknowledgement on his next outbound
@@ -12,19 +12,20 @@
 //  calls `updateShardStatus(attrID:to:.confirmed)`, which is idempotent, so
 //  duplicate delivery (e.g. from the immediate-ack path in `OccultaApp`) is safe.
 //
+//  One row per attributeID. Batching to the same owner happens at the bundle
+//  level via `SealedPayload.shardOperations` — no merge logic here.
+//
 //  Privacy model — encryption at rest:
 //  - Plaintext columns (`id`) carry no identifying data.
-//  - `ownerContactIdentifier` and `attrIDs` live inside `encryptedPayload`,
+//  - `ownerID` and `attributeID` live inside `encryptedPayload`,
 //    sealed under the shard custody key with AAD = aad().
 //  - Cold-disk forensics learns "Bob has N pending shard acks" — nothing about
 //    which contacts or shards. Resolving requires the SE-protected custody key.
 //
 //  Lifecycle:
-//  - Inserted (or updated) on every successful `handleDistribute`.
-//  - One row per owner contact. Multiple shards from the same owner are merged
-//    into the same row so acks travel together in one bundle.
+//  - Inserted on every successful `handleDistribute`.
 //  - Read before every outbound bundle to Alice; `.acknowledge` operations
-//    (one per attrID) are added to `SealedPayload.shardOperations`.
+//    are added to `SealedPayload.shardOperations`.
 //  - Deleted on send. If never sent, retried on the next outbound bundle.
 //
 
@@ -65,15 +66,14 @@ final class PendingShardAcknowledge {
 
     /// Plaintext sealed inside `encryptedPayload`.
     ///
-    /// `ownerContactIdentifier` is `Contact.Profile.identifier` of the shard owner (Alice).
+    /// `ownerID` is `Contact.Profile.identifier` of the shard owner (Alice).
     /// Used to route the ack to the correct outbound bundle.
     ///
-    /// `attrIDs` are the `SignedAttribute.id` values of the received shards.
-    /// Accumulated across multiple `.distribute` ops before the next outbound
-    /// bundle is sent. Alice's `handleAcknowledge` updates each shard's status
-    /// to `.confirmed` on receipt.
+    /// `attributeID` is the `SignedAttribute.id` of the received shard.
+    /// Alice's `handleAcknowledge` updates the shard's status to `.confirmed`
+    /// on receipt.
     struct Payload: Codable {
-        let ownerContactIdentifier: String
-        let attrIDs:                [UUID]
+        let ownerID:     String
+        let attributeID: UUID
     }
 }
