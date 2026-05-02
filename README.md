@@ -6,6 +6,8 @@ In a world where your contacts and trust are locked inside messaging apps, Occul
 
 Once exchanged, encrypt any file, photo, video, or document for anyone in your collection — and share it however you want: AirDrop, email, iMessage, any chat app. Your data stays hidden from analysis and sale.
 
+Because Occulta requires no phone number, no server account, and no password, there is no account to take over remotely. Your cryptographic identity is a P-256 key pair bound to your device's Secure Enclave — it cannot be SIM-swapped, phished, or provider-hijacked from a distance. Every trust relationship requires physical presence to establish, and the same to replace.
+
 ---
 
 ## Table of Contents
@@ -17,6 +19,7 @@ Once exchanged, encrypt any file, photo, video, or document for anyone in your c
 - [Key Exchange Flow](#key-exchange-flow)
 - [Encryption Flow](#encryption-flow)
 - [Vault & Secret Sharing](#vault--secret-sharing)
+- [Account Takeover Resistance](#account-takeover-resistance)
 - [Security Properties](#security-properties)
 - [Threat Model](#threat-model)
 - [Architecture](#architecture)
@@ -443,6 +446,39 @@ Device-unlock (not biometric) allows shard bundles to be stored automatically on
 
 ---
 
+## Account Takeover Resistance
+
+Most end-to-end encrypted tools bind identity to something that can be stolen remotely:
+
+| Tool | Identity anchor | Remote takeover path |
+|---|---|---|
+| Signal | Phone number | SIM-swap → register new device → contacts see attacker's key |
+| iMessage | Apple ID | Apple ID compromise → new device added → transparent to contacts |
+| PGP | Email address | No key server authentication; key can be uploaded under any UID |
+
+These are not flaws in the cryptography — they are consequences of requiring identity to be remotely accessible. Occulta removes the attack surface at the architecture level.
+
+**What Occulta uses as identity:** a P-256 key pair generated inside your device's Secure Enclave. The private key never leaves the chip. There is no phone number, no account, no password, no server that knows who you are.
+
+**What this means in practice:**
+
+- A SIM-swap attack gives an attacker your phone number. Occulta does not know your phone number.
+- An Apple ID or Google account compromise gives an attacker your cloud identity. Occulta has no cloud account.
+- A provider receiving a legal demand to insert a surveillance key has no server to compel. There is no server.
+- A credential phishing attack has no password to steal.
+
+The only way to substitute a key in Occulta is to be physically present (≤ 25 cm) during an exchange and defeat the UWB proximity gate, the peer ID guard, *and* the Diceware out-of-band word verification simultaneously — which requires the target to cooperate or be deceived in person.
+
+**This is a complement to Signal, not a replacement.** Signal is the right tool when your contact is across the world and you need an accessible encrypted channel today. Occulta is the right tool when you can meet once, establish a hardware-bound trust anchor, and then send documents over any channel indefinitely without worrying that the other end has been remotely compromised.
+
+**Concrete scenario:** A journalist exchanges keys with a source in person. From that point on, any file dropped into an `.occ` bundle is encrypted to a key that lives in the source's Secure Enclave. Even if the source's Signal account is SIM-swapped, their iCloud is subpoenaed, or their phone number is ported — none of that touches the hardware key the journalist holds. The source's device is the trust anchor.
+
+### Re-verification
+
+If you need to confirm a contact hasn't been replaced since your last exchange, Occulta includes a signed identity challenge protocol — a challenge-response bundle signed by the contact's SE key that proves they still hold the same private key without requiring a physical re-exchange. This is available for any contact in your collection.
+
+---
+
 ## Security Properties
 
 | Property | Status | Notes |
@@ -465,6 +501,8 @@ Device-unlock (not biometric) allows shard bundles to be stored automatically on
 | MITM during exchange | ✅ Diceware verification + peer ID guard | Human-verifiable, nonce-freshened |
 | Proximity spoofing | ✅ UWB hardware enforcement | ≤ 0.25m threshold |
 | Server-side exposure | ✅ None | No backend exists |
+| Remote account takeover | ✅ No attack surface | No phone number, server account, or password |
+| Identity re-verification | ✅ Challenge-response | Signed ECDSA challenge; proves SE key continuity without re-exchange |
 | Backward compatibility | ✅ Classical fallback | v1 peers and iOS < 26 exchange classically, no breakage |
 | Backup passphrase KDF | ⚠️ SHA-256 (single round) | Should be PBKDF2/Argon2id |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
@@ -480,6 +518,9 @@ Device-unlock (not biometric) allows shard bundles to be stored automatically on
 - A network attacker intercepting your encrypted files in transit
 - Someone finding an encrypted file on your device or in email
 - A remote attacker with no physical access substituting keys
+- SIM-swap and phone number hijacking (no phone number exists in the system)
+- Server-side account compromise or provider-compelled key insertion (no server exists)
+- Credential phishing (no password)
 - A passive observer correlating messages to relationships via wire metadata
 - Compromise of long-term keys exposing past messages (forward secrecy)
 - A quantum adversary recording public keys today for future decryption (hybrid PQ key agreement)
