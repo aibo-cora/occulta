@@ -160,10 +160,7 @@ final class VaultManager {
         let vaultKey = try self.currentKey()
 
         // Build entry first — id and createdAt must be fixed before AAD is computed.
-        let entry = VaultEntry(type: type, encryptedLabel: Data(), encryptedContent: Data())
-        let aad   = entry.aad()
-
-        guard let labelData = label.data(using: .utf8) else { throw VaultError.encryptionFailed }
+        let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)
@@ -175,12 +172,20 @@ final class VaultManager {
         let pek = SymmetricKey(data: Data(pekBytes))
 
         // ── Seal PEK under vault key ──────────────────────────────────────────
-        let sealedKey = try AES.GCM.seal(Data(pekBytes), using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        let sealedKey = try AES.GCM.seal(
+            Data(pekBytes), using: vaultKey, nonce: AES.GCM.Nonce(),
+            authenticating: entry.aad(for: .entryKey)
+        )
         guard let combinedKey = sealedKey.combined else { throw VaultError.encryptionFailed }
 
-        // ── Encrypt label and content with PEK ────────────────────────────────
-        let sealedLabel   = try AES.GCM.seal(labelData, using: pek, nonce: AES.GCM.Nonce(), authenticating: aad)
-        let sealedContent = try AES.GCM.seal(content,   using: pek, nonce: AES.GCM.Nonce(), authenticating: aad)
+        // ── Encrypt label payload (type + label) and content with PEK ─────────
+        let labelPayload = SealedLabelPayload(type: type, label: label)
+        let labelData    = try JSONEncoder().encode(labelPayload)
+
+        let sealedLabel   = try AES.GCM.seal(labelData, using: pek, nonce: AES.GCM.Nonce(),
+                                              authenticating: entry.aad(for: .label))
+        let sealedContent = try AES.GCM.seal(content,    using: pek, nonce: AES.GCM.Nonce(),
+                                              authenticating: entry.aad(for: .content))
 
         guard
             let combinedLabel   = sealedLabel.combined,
@@ -215,17 +220,33 @@ final class VaultManager {
         return try self.modelContext.fetch(FetchDescriptor<VaultEntry>(predicate: predicate)).first
     }
 
+    /// Decrypt the sealed label payload (type + label string) for one entry.
+    ///
+    /// Internal visibility so `Vault+Manager+Shards.swift` can call it from
+    /// `recomputeRecoveryHealth` without double-decrypting.
+    ///
+    /// ⚠️ The returned payload is plaintext. Do not persist or log it.
+    func decryptLabelPayload(for entry: VaultEntry) throws -> SealedLabelPayload {
+        let vaultKey  = try self.currentKey()
+        let pek       = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
+        let plaintext = try self.openField(entry.encryptedLabel, key: pek, aad: entry.aad(for: .label))
+        do {
+            return try JSONDecoder().decode(SealedLabelPayload.self, from: plaintext)
+        } catch {
+            throw VaultError.decryptionFailed
+        }
+    }
+
     /// Decrypt and return the plaintext label for one entry.
     ///
     /// ⚠️ The returned String is plaintext. Do not persist or log it.
     func decryptLabel(for entry: VaultEntry) throws -> String {
-        let vaultKey  = try self.currentKey()
-        let pek       = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
-        let plaintext = try self.openField(entry.encryptedLabel, key: pek, aad: entry.aad())
-        guard let label = String(data: plaintext, encoding: .utf8) else {
-            throw VaultError.decryptionFailed
-        }
-        return label
+        try self.decryptLabelPayload(for: entry).label
+    }
+
+    /// Decrypt and return the entry type for one entry.
+    func decryptEntryType(for entry: VaultEntry) throws -> VaultEntryType {
+        try self.decryptLabelPayload(for: entry).type
     }
 
     /// Decrypt and return the plaintext content for one entry.
@@ -234,7 +255,7 @@ final class VaultManager {
     func decryptContent(for entry: VaultEntry) throws -> Data {
         let vaultKey = try self.currentKey()
         let pek      = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
-        return try self.openField(entry.encryptedContent, key: pek, aad: entry.aad())
+        return try self.openField(entry.encryptedContent, key: pek, aad: entry.aad(for: .content))
     }
 
     // MARK: - Delete
@@ -287,63 +308,16 @@ final class VaultManager {
 
     // MARK: - PEK unwrap
 
-    /// Return the per-entry key (PEK) for `entry`, migrating legacy entries on first access.
+    /// Return the per-entry key (PEK) for `entry`.
     ///
-    /// **PEK path (encryptedEntryKey non-empty):**
-    ///   AES-GCM open(encryptedEntryKey, using: vaultKey, authenticating: entry.aad()) → PEK
-    ///
-    /// **Legacy path (encryptedEntryKey empty):**
-    ///   Entry was written before the PEK layer existed. Decrypt label + content
-    ///   with the vault key, generate a fresh PEK, re-encrypt both fields, seal
-    ///   the PEK, and save — all transparently. Returns the new PEK so the caller
-    ///   can complete its original operation without a second round-trip.
-    ///
-    ///   If the save fails, the entry remains in the legacy state and migration
-    ///   retries on the next read. There is no half-migrated state.
+    /// AES-GCM open(encryptedEntryKey, using: vaultKey, authenticating: entry.aad(for: .entryKey)) → PEK
     ///
     /// Internal (not private) so Vault+Manager+Shards.swift can call it.
     func unwrapPEK(for entry: VaultEntry, vaultKey: SymmetricKey) throws -> SymmetricKey {
-        let aad = entry.aad()
-
-        if !entry.encryptedEntryKey.isEmpty {
-            // ── PEK path ─────────────────────────────────────────────────────
-            let pekData = try self.openField(entry.encryptedEntryKey, key: vaultKey, aad: aad)
-            guard pekData.count == 32 else { throw VaultError.decryptionFailed }
-            return SymmetricKey(data: pekData)
-        }
-
-        // ── Legacy migration path ─────────────────────────────────────────────
-        // 1. Decrypt both fields with the vault key (old path).
-        let plainLabel   = try self.openField(entry.encryptedLabel,   key: vaultKey, aad: aad)
-        let plainContent = try self.openField(entry.encryptedContent, key: vaultKey, aad: aad)
-
-        // 2. Generate new PEK.
-        var pekBytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, 32, &pekBytes) == errSecSuccess else {
-            throw VaultError.encryptionFailed
-        }
-        defer { for i in pekBytes.indices { pekBytes[i] = 0 } }
-
-        let pek = SymmetricKey(data: Data(pekBytes))
-
-        // 3. Re-encrypt under PEK.
-        let sealedLabel   = try AES.GCM.seal(plainLabel,   using: pek, nonce: AES.GCM.Nonce(), authenticating: aad)
-        let sealedContent = try AES.GCM.seal(plainContent, using: pek, nonce: AES.GCM.Nonce(), authenticating: aad)
-        let sealedKey     = try AES.GCM.seal(Data(pekBytes), using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-
-        guard
-            let combinedLabel   = sealedLabel.combined,
-            let combinedContent = sealedContent.combined,
-            let combinedKey     = sealedKey.combined
-        else { throw VaultError.encryptionFailed }
-
-        // 4. Persist — if save throws the entry stays legacy; retry on next read.
-        entry.encryptedLabel    = combinedLabel
-        entry.encryptedContent  = combinedContent
-        entry.encryptedEntryKey = combinedKey
-        try? self.modelContext.save()
-
-        return pek
+        let pekData = try self.openField(entry.encryptedEntryKey, key: vaultKey,
+                                         aad: entry.aad(for: .entryKey))
+        guard pekData.count == 32 else { throw VaultError.decryptionFailed }
+        return SymmetricKey(data: pekData)
     }
 
     // MARK: - Private

@@ -207,15 +207,18 @@ private func makeVaultManager(
         }
     }
 
-    @Test("AAD binding — tampered entryType causes decryption failure")
-    func aadBindsEntryType() throws {
+    @Test("Field discriminator — cross-field ciphertext swap is rejected")
+    func fieldDiscriminatorPreventsSwap() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
 
         let entry = try vm.addEntry(label: "test", content: Data("x".utf8), type: .note)
 
-        // Tamper the stored entryType after encryption — AAD will no longer match.
-        entry.entryType = Int(VaultEntryType.seedPhrase.rawValue)
+        // Swap encryptedLabel and encryptedContent. Each was sealed with a different
+        // field discriminator in the AAD, so GCM authentication rejects the swap.
+        let tmp = entry.encryptedLabel
+        entry.encryptedLabel   = entry.encryptedContent
+        entry.encryptedContent = tmp
 
         #expect(throws: VaultManager.VaultError.decryptionFailed) {
             _ = try vm.decryptContent(for: entry)

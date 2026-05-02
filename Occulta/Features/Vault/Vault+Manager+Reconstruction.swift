@@ -50,7 +50,6 @@ extension VaultManager {
     ) throws {
         let vaultKey    = try self.currentKey()
         guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
-        let aad         = entry.aad()
 
         // ── 1. Bind all shards to this entry ─────────────────────────────────
         guard shards.allSatisfy({ $0.entryID == entryID && $0.category == .shard }) else {
@@ -91,7 +90,8 @@ extension VaultManager {
         // ── 4. GCM authentication — integrity check ───────────────────────────
         // A wrong PEK produces a random value; the 128-bit GCM tag rejects it.
         let contentBox = try AES.GCM.SealedBox(combined: entry.encryptedContent)
-        guard (try? AES.GCM.open(contentBox, using: candidatePEK, authenticating: aad)) != nil else {
+        guard (try? AES.GCM.open(contentBox, using: candidatePEK,
+                                  authenticating: entry.aad(for: .content))) != nil else {
             throw VaultError.decryptionFailed
         }
 
@@ -100,7 +100,7 @@ extension VaultManager {
             candidateData,
             using:          vaultKey,
             nonce:          AES.GCM.Nonce(),
-            authenticating: aad
+            authenticating: entry.aad(for: .entryKey)
         )
         guard let combinedKey = sealedKey.combined else { throw VaultError.encryptionFailed }
 

@@ -121,7 +121,7 @@ extension VaultManager {
             metaData,
             using:          vaultKey,
             nonce:          AES.GCM.Nonce(),
-            authenticating: entry.aad()
+            authenticating: entry.aad(for: .shardDistribution)
         )
         
         guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
@@ -180,7 +180,7 @@ extension VaultManager {
         guard let cipher  = entry.shardDistributionEncrypted else { return nil }
         let vaultKey  = try self.currentKey()
         let box       = try AES.GCM.SealedBox(combined: cipher)
-        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad())
+        let plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: entry.aad(for: .shardDistribution))
         return try JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
     }
 
@@ -208,7 +208,7 @@ extension VaultManager {
             guard let cipher = entry.shardDistributionEncrypted else { continue }
             guard
                 let box       = try? AES.GCM.SealedBox(combined: cipher),
-                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad(for: .shardDistribution)),
                 var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
             else { continue }
 
@@ -223,7 +223,7 @@ extension VaultManager {
 
             guard
                 let updated  = try? JSONEncoder().encode(meta),
-                let sealed   = try? AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad()),
+                let sealed   = try? AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad(for: .shardDistribution)),
                 let combined = sealed.combined
             else { continue }
 
@@ -253,7 +253,7 @@ extension VaultManager {
             guard let cipher = entry.shardDistributionEncrypted else { continue }
             guard
                 let box       = try? AES.GCM.SealedBox(combined: cipher),
-                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad(for: .shardDistribution)),
                 var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
             else { continue }
 
@@ -261,7 +261,7 @@ extension VaultManager {
             meta.shards[idx].status = newStatus
 
             let updated = try JSONEncoder().encode(meta)
-            let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
+            let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad(for: .shardDistribution))
             guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
 
             entry.shardDistributionEncrypted = combined
@@ -325,7 +325,7 @@ extension VaultManager {
             guard let cipher = entry.shardDistributionEncrypted else { continue }
             guard
                 let box       = try? AES.GCM.SealedBox(combined: cipher),
-                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad(for: .shardDistribution)),
                 let meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
             else { continue }
 
@@ -334,12 +334,14 @@ extension VaultManager {
             }.count
             guard active < meta.threshold else { continue }
 
-            let label  = (try? self.decryptLabel(for: entry)) ?? entry.type.displayName
+            let payload   = try? self.decryptLabelPayload(for: entry)
+            let label     = payload?.label ?? "–"
+            let entryType = payload?.type  ?? .note
             let status: RecoveryHealthSummary.EntryStatus = active == 0 ? .critical : .degraded
             affected.append(RecoveryHealthSummary.AffectedEntry(
                 entryID:   entry.id,
                 label:     label,
-                entryType: entry.type,
+                entryType: entryType,
                 status:    status,
                 active:    active,
                 threshold: meta.threshold
@@ -381,7 +383,7 @@ extension VaultManager {
             guard let cipher = entry.shardDistributionEncrypted else { continue }
             guard
                 let box       = try? AES.GCM.SealedBox(combined: cipher),
-                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad()),
+                let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad(for: .shardDistribution)),
                 var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
             else { continue }
 
@@ -406,7 +408,7 @@ extension VaultManager {
 
             guard dirty else { continue }
             let updated = try JSONEncoder().encode(meta)
-            let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad())
+            let sealed  = try AES.GCM.seal(updated, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: entry.aad(for: .shardDistribution))
             guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
             entry.shardDistributionEncrypted = combined
         }

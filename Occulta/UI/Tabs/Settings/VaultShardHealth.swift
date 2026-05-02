@@ -22,18 +22,18 @@ struct VaultShardHealth: View {
         entries.filter { $0.shardDistributionEncrypted != nil }
     }
 
-    // Pairs (entry, metadata) for all entries we could decrypt.
-    private var decoded: [(entry: VaultEntry, meta: ShardDistributionMetadata, label: String)] {
+    // Pairs (entry, metadata, label, type) for all entries we could decrypt.
+    private var decoded: [(entry: VaultEntry, meta: ShardDistributionMetadata, label: String, type: VaultEntryType)] {
         guard vault.isUnlocked else { return [] }
         return entriesWithShards.compactMap { entry in
-            guard let meta = try? vault.shardDistributionMetadata(for: entry.id) else { return nil }
-            let label = (try? vault.decryptLabel(for: entry)) ?? entry.type.displayName
-            return (entry, meta, label)
+            guard let meta    = try? vault.shardDistributionMetadata(for: entry.id) else { return nil }
+            let payload = try? vault.decryptLabelPayload(for: entry)
+            return (entry, meta, payload?.label ?? "–", payload?.type ?? .note)
         }
     }
 
     private var atRiskCount: Int {
-        decoded.filter { (_, meta, _) in
+        decoded.filter { (_, meta, _, _) in
             let active = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
             return active < meta.threshold
         }.count
@@ -143,17 +143,17 @@ struct VaultShardHealth: View {
 
     private var healthSection: some View {
         Section("Entries") {
-            ForEach(decoded, id: \.entry.id) { entry, meta, label in
+            ForEach(decoded, id: \.entry.id) { entry, meta, label, type in
                 NavigationLink {
                     VaultShardSetup(entryID: entry.id)
                 } label: {
-                    self.healthRow(entry: entry, meta: meta, label: label)
+                    self.healthRow(meta: meta, label: label, type: type)
                 }
             }
         }
     }
 
-    private func healthRow(entry: VaultEntry, meta: ShardDistributionMetadata, label: String) -> some View {
+    private func healthRow(meta: ShardDistributionMetadata, label: String, type: VaultEntryType) -> some View {
         let active   = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
         let total    = meta.shards.count
         let atRisk   = active < meta.threshold
@@ -161,9 +161,9 @@ struct VaultShardHealth: View {
         return HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(entry.type.tileBackground)
+                    .fill(type.tileBackground)
                     .frame(width: 36, height: 36)
-                Text(entry.type.emoji)
+                Text(type.emoji)
                     .font(.system(size: 18))
             }
 

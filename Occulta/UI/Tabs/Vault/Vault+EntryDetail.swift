@@ -19,6 +19,7 @@ struct VaultEntryDetail: View {
     @Query private var entries: [VaultEntry]
 
     @State private var cachedLabel     = ""
+    @State private var cachedType      = VaultEntryType.note
     @State private var showDeleteAlert = false
     @GestureState private var isHeld   = false
 
@@ -81,15 +82,16 @@ struct VaultEntryDetail: View {
             Text("This permanently removes the encrypted entry. Distributed shards remain valid.")
         }
         .onAppear {
-            if let entry {
-                self.cachedLabel = (try? self.vault.decryptLabel(for: entry)) ?? entry.type.displayName
+            if let entry, let payload = try? self.vault.decryptLabelPayload(for: entry) {
+                self.cachedLabel = payload.label
+                self.cachedType  = payload.type
             }
         }
         .onChange(of: self.vault.isUnlocked) { isUnlocked in
             guard !isUnlocked else { return }
             // Vault locked while detail is visible — clear the cached plaintext label
             // and navigate back so Face ID is required to re-enter.
-            self.cachedLabel = self.entry?.type.displayName ?? ""
+            self.cachedLabel = ""
             self.dismiss()
         }
     }
@@ -100,16 +102,16 @@ struct VaultEntryDetail: View {
         HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(entry.type.tileBackground)
+                    .fill(self.cachedType.tileBackground)
                     .frame(width: 52, height: 52)
-                Text(entry.type.emoji)
+                Text(self.cachedType.emoji)
                     .font(.system(size: 26))
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(self.cachedLabel)
                     .font(.system(size: 20, weight: .bold))
                     .tracking(-0.3)
-                Text(entry.type.displayName)
+                Text(self.cachedType.displayName)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .tracking(0.5)

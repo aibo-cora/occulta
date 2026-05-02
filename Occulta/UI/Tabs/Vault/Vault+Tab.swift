@@ -298,25 +298,29 @@ private struct VaultEntryRow: View {
     let entry: VaultEntry
     @Environment(VaultManager.self) private var vault
 
-    private var label: String {
-        (try? self.vault.decryptLabel(for: self.entry)) ?? self.entry.type.displayName
+    private var labelPayload: SealedLabelPayload? {
+        try? self.vault.decryptLabelPayload(for: self.entry)
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        let payload = self.labelPayload
+        let label     = payload?.label ?? "–"
+        let entryType = payload?.type  ?? .note
+
+        return HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9)
-                    .fill(self.entry.type.tileBackground)
+                    .fill(entryType.tileBackground)
                     .frame(width: 36, height: 36)
-                Text(self.entry.type.emoji)
+                Text(entryType.emoji)
                     .font(.system(size: 18))
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(self.label)
+                Text(label)
                     .font(.system(size: 16, weight: .medium))
                     .lineLimit(1)
-                Text("\(self.entry.type.displayName) · \(self.entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                Text("\(entryType.displayName) · \(self.entry.createdAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -330,7 +334,7 @@ private struct VaultEntryRow: View {
                 .foregroundStyle(Color.occultaVerified)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(self.entry.type.tileBackground)   // Consistent with icon
+                .background(entryType.tileBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .padding(.vertical, 3)

@@ -99,7 +99,7 @@ extension VaultManager {
         guard let metaCipher = entry.shardDistributionEncrypted else { return }
 
         let metaBox       = try AES.GCM.SealedBox(combined: metaCipher)
-        let metaPlaintext = try AES.GCM.open(metaBox, using: vaultKey, authenticating: entry.aad())
+        let metaPlaintext = try AES.GCM.open(metaBox, using: vaultKey, authenticating: entry.aad(for: .shardDistribution))
         let meta          = try JSONDecoder().decode(ShardDistributionMetadata.self, from: metaPlaintext)
 
         let buffered = try self.decryptAllReconstructShards()
