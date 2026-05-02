@@ -25,14 +25,26 @@ This means:
 ```
 vault key (SE-derived)
   └── encryptedEntryKey  →  per-entry key (PEK, 32 random bytes)
-        ├── encryptedLabel    (AES-GCM, AAD = entry.aad())
-        └── encryptedContent  (AES-GCM, AAD = entry.aad())
+        │                    AAD = entry.aad(for: .entryKey)
+        ├── encryptedLabel    (AES-GCM, AAD = entry.aad(for: .label))
+        │   └── SealedLabelPayload { type: VaultEntryType, label: String }
+        ├── encryptedContent  (AES-GCM, AAD = entry.aad(for: .content))
+        └── shardDistributionEncrypted  (AES-GCM, AAD = entry.aad(for: .shardDistribution))
 ```
+
+`aad(for: VaultField)` appends a 1-byte field discriminator to the
+`id ∥ timestamp` base, so each ciphertext is bound to its role.
+A cross-field swap (e.g. substituting `encryptedContent` bytes for
+`encryptedLabel`) fails GCM authentication.
+
+`entryType` is stored inside `SealedLabelPayload` — never in a plaintext
+SwiftData column. Cold-disk forensics cannot determine entry categories
+without the vault key.
 
 Normal access path:
 1. Unlock vault → derive vault key from SE via ECDH.
-2. Unwrap PEK: AES-GCM open(encryptedEntryKey, using: vaultKey).
-3. Decrypt label/content with PEK.
+2. Unwrap PEK: AES-GCM open(encryptedEntryKey, using: vaultKey, authenticating: aad(for: .entryKey)).
+3. Decrypt label/content with PEK, passing the matching field discriminator.
 
 SSS path:
 - Split the PEK (not the vault key) into n shards.
@@ -376,12 +388,14 @@ finalisation is not possible in practice; no additional locking is needed.
 
 Valid transitions:
 
-| From        | To           | Trigger                                      |
-|-------------|--------------|----------------------------------------------|
-| `.sent`     | `.confirmed` | Trustee sends `.acknowledge`                 |
-| `.sent`     | `.lost`      | Trustee sends `.notFound`; trustee key change |
-| `.confirmed`| `.lost`      | Trustee becomes unreachable after confirmation |
-| any         | `.revoked`   | Owner explicitly revokes the shard           |
+| From             | To               | Trigger                                                    |
+|------------------|------------------|------------------------------------------------------------|
+| `.pending`       | `.confirmed`     | Trustee sends `.acknowledge`                               |
+| `.pending`       | `.lost`          | Trustee sends `.notFound`; trustee key change              |
+| `.pending`       | `.revokePending` | Owner queues a revoke (`queueRevoke`)                      |
+| `.confirmed`     | `.lost`          | Trustee becomes unreachable after confirmation             |
+| `.confirmed`     | `.revokePending` | Owner queues a revoke (`queueRevoke`)                      |
+| `.revokePending` | `.revoked`       | `.revoke` bundle sent (`pendingRevokeOperations`)          |
 
 Invalid / rejected transitions:
 
@@ -416,10 +430,15 @@ needed. Bob's inbound handler deletes the matching `CustodyShard` row immediatel
 - Re-distribution of an entry: new shards supersede old ones; Alice sends
   `.revoke` for each old `attrID` alongside or after the new `.distribute`.
 
-**Alice's side:** when Alice generates a `.revoke` bundle, she marks the
-corresponding `ShardRecord.status` to `.revoked` before (or atomically with)
-sending. `.revoked` is a terminal state — the shard must be re-distributed as
-a new record with a new `attrID` to restore coverage.
+**Alice's side:** revocation is a two-step state transition:
+1. `queueRevoke` sets the `ShardRecord.status` to `.revokePending` and writes a
+   `PendingShardRevoke` row. The shard is already treated as inactive (excluded
+   from active-count calculations) at this point.
+2. `pendingRevokeOperations` generates the `.revoke` bundles and sets status to
+   `.revoked` atomically with returning the operations for delivery.
+
+`.revoked` is a terminal state — the shard must be re-distributed as a new
+record with a new `attrID` to restore coverage.
 
 **Threshold erosion:** when `.lost` or `.revoked` records reduce the active
 shard count below `threshold`, the entry detail view shows an inline warning
@@ -728,6 +747,11 @@ keeps the shard protocol self-contained.
 | pendingNotFoundOperations (ShardCustodyManager)         | ✅ Done     |
 | Shard custody reconciliation (`.inquire` / `.notFound`) | ✅ Done     |
 | Backup scope warning in VaultShardSetup + VaultEntryDetail | ✅ Done |
+| AAD field discrimination (VaultField discriminator byte, B1) | ✅ Done |
+| entryType encrypted in SealedLabelPayload — no plaintext column (B2) | ✅ Done |
+| PendingShardStatusUpdate model (locked-vault status replay)  | ✅ Done |
+| Threshold guard in reconstructEntry (fail-fast before Lagrange) | ✅ Done |
+| Idempotent handleDistribute (duplicate shard delivery safe)   | ✅ Done |
 | Vault backup export (user-facing, prerequisite for full device-loss recovery) | 🔲 Recommended |
 
 ---
@@ -755,6 +779,14 @@ keeps the shard protocol self-contained.
   every shard bundle uses a session key that requires breaking ML-KEM-1024 in
   addition to P-256 to decrypt. As of 2026 no known classical or quantum attack
   achieves this within the security parameter.
+- **Cross-field ciphertext swap:** `encryptedLabel`, `encryptedContent`,
+  `encryptedEntryKey`, and `shardDistributionEncrypted` each carry a distinct
+  1-byte field discriminator in their AAD. Substituting one field's ciphertext
+  for another fails GCM authentication before any plaintext is produced.
+- **Entry category metadata leak:** `entryType` is sealed inside
+  `SealedLabelPayload` and never stored in a plaintext column. Cold-disk
+  forensics observes encrypted blobs only — entry categories (seed phrase,
+  note, key token) are not recoverable without the vault key.
 - **GF(2⁸) arithmetic timing:** `gfMul` and `gfInv` contain data-dependent
   branches. On Apple Silicon this is acceptable for SSS (not key derivation),
   but the implementation is not formally constant-time.
