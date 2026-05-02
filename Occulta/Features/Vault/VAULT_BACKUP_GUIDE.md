@@ -152,9 +152,10 @@ VaultBackupEntry: Codable {
 }
 ```
 
-Entries are serialised in plaintext inside the backup structure. The BEK's
-AES-GCM seal is the only encryption layer. There is no PEK layer in the backup —
-PEKs are internal implementation details that do not survive device migration.
+`VaultBackupEntry` is a transient in-memory type — it is never stored in SwiftData.
+Plaintext fields are safe here for the same reason `SealedPayload` carries a
+plaintext `message`: the struct is serialised and immediately sealed under the BEK
+before any I/O. The BEK's AES-GCM seal is the only encryption layer needed.
 
 On import, fresh PEKs are generated for every entry under the new device's vault
 master key, exactly as if the entries were created new.
