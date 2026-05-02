@@ -62,19 +62,13 @@ struct VaultEntryDetail: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { self.showDeleteAlert = true } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(Color.occultaDanger)
-                }
-            }
-        }
         .alert("Delete Entry?", isPresented: self.$showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 guard let entry else { return }
+                
                 let metadata = try? self.vault.deleteEntry(id: entry.id)
                 if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata) }
+                
                 self.dismiss()
             }
             Button("Cancel", role: .cancel) {}
@@ -87,7 +81,7 @@ struct VaultEntryDetail: View {
                 self.cachedType  = payload.type
             }
         }
-        .onChange(of: self.vault.isUnlocked) { isUnlocked in
+        .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
             guard !isUnlocked else { return }
             // Vault locked while detail is visible — clear the cached plaintext label
             // and navigate back so Face ID is required to re-enter.
