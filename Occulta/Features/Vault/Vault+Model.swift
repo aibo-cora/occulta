@@ -56,7 +56,7 @@ struct ShardRecord: Codable {
     let contactIdentifier: String
     /// The SignedAttribute.id for this shard — used as `attributeID` in `.replace` ShardOperations
     /// to identify which old shard a new distribution supersedes.
-    let attrID: UUID
+    let attributeID: UUID
     var status: ShardStatus
     /// When the shard was first distributed (bundle handed to the .occ pipeline).
     /// Used to age `.pending` shards: stale after 7 days with no `.acknowledge`.

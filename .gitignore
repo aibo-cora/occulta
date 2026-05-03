@@ -30,3 +30,7 @@ Carthage/Build/
 # macOS metadata
 .DS_Store
 *.swp
+
+# Claude
+.claude/settings.json
+.claude/worktrees/

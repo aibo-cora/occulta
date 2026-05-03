@@ -459,6 +459,7 @@ struct OccultaApp: App {
             if let revokeOps     = try? self.shardCustodyManager.pendingRevokeOperations(for: manifest.contactIdentifier, vaultManager: self.vaultManager) { shardOps += revokeOps }
             if let inquireOps    = try? self.vaultManager.pendingInquireOperations(for: manifest.contactIdentifier)                 { shardOps += inquireOps }
             if let notFoundOps   = try? self.shardCustodyManager.pendingNotFoundOperations(for: manifest.contactIdentifier)         { shardOps += notFoundOps }
+            
             let occData = try self.contactManager.encryptBundle(
                 data: basketData, for: manifest.contactIdentifier, shardOperations: shardOps.isEmpty ? nil : shardOps
             )

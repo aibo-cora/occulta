@@ -110,7 +110,7 @@ extension VaultManager {
         let shards = (0..<n).map { i in
             ShardRecord(
                 contactIdentifier: recipients[i].identifier,
-                attrID:            attributes[i].id,
+                attributeID:            attributes[i].id,
                 status:            .pending,
                 distributedAt:     now
             )
@@ -200,15 +200,15 @@ extension VaultManager {
         }
     }
 
-    /// Update the status of one ShardRecord identified by its `attrID`.
+    /// Update the status of one ShardRecord identified by its `attributeID`.
     ///
     /// Walks every entry's encrypted ShardDistributionMetadata until a matching
-    /// `attrID` is found, applies `newStatus`, and re-seals. No-op if no match.
+    /// `attributeID` is found, applies `newStatus`, and re-seals. No-op if no match.
     /// Requires the vault unlocked.
     ///
     /// Used by ShardCustodyManager for `.acknowledge` (`.confirmed`) and
     /// `.notFound` (`.lost`) inbound traffic.
-    func updateShardStatus(attrID: UUID, to newStatus: ShardStatus) throws {
+    func updateShardStatus(attributeID: UUID, to newStatus: ShardStatus) throws {
         let vaultKey = try self.currentKey()
         let entries  = try self.fetchAllEntries()
 
@@ -220,7 +220,7 @@ extension VaultManager {
                 var meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
             else { continue }
 
-            guard let idx = meta.shards.firstIndex(where: { $0.attrID == attrID }) else { continue }
+            guard let idx = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { continue }
             meta.shards[idx].status = newStatus
 
             let updated = try JSONEncoder().encode(meta)
@@ -234,7 +234,7 @@ extension VaultManager {
         }
 
         // No per-entry shard matched — check BEK shard metadata.
-        try? self.updateBEKShardStatus(attrID: attrID, to: newStatus)
+        try? self.updateBEKShardStatus(attributeID: attributeID, to: newStatus)
     }
 
     // MARK: - Deferred status updates
@@ -264,7 +264,7 @@ extension VaultManager {
             }
 
             // Apply regardless of result — a missing entry is not retryable.
-            try? self.updateShardStatus(attrID: payload.attributeID, to: payload.newStatus)
+            try? self.updateShardStatus(attributeID: payload.attributeID, to: payload.newStatus)
             self.modelContext.delete(row)
             changed = true
         }
@@ -367,7 +367,7 @@ extension VaultManager {
                 }
                 guard eligible else { continue }
 
-                ops.append(OccultaBundle.ShardOperation(kind: .inquire, attributeID: shard.attrID))
+                ops.append(OccultaBundle.ShardOperation(kind: .inquire, attributeID: shard.attributeID))
                 meta.shards[i].lastProbedAt = now
                 dirty = true
             }

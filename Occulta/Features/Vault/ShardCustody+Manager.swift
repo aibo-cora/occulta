@@ -262,7 +262,7 @@ final class ShardCustodyManager {
     private func handleAcknowledge(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
         do {
-            try vaultManager.updateShardStatus(attrID: attributeID, to: .confirmed)
+            try vaultManager.updateShardStatus(attributeID: attributeID, to: .confirmed)
         } catch VaultManager.VaultError.locked {
             try self.queueShardStatusUpdate(attributeID: attributeID, newStatus: .confirmed)
         } catch {
@@ -276,7 +276,7 @@ final class ShardCustodyManager {
     private func handleNotFound(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
         do {
-            try vaultManager.updateShardStatus(attrID: attributeID, to: .lost)
+            try vaultManager.updateShardStatus(attributeID: attributeID, to: .lost)
         } catch VaultManager.VaultError.locked {
             try self.queueShardStatusUpdate(attributeID: attributeID, newStatus: .lost)
         } catch {
@@ -386,14 +386,19 @@ final class ShardCustodyManager {
                 where shard.status != .revoked
                    && shard.status != .revokePending
                    && shard.status != .lost {
+                       
                 let alreadyQueued = pending.contains {
-                    (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == shard.attrID
+                    (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == shard.attributeID
                 }
+                       
                 guard !alreadyQueued else { continue }
+                       
                 let rowID = UUID()
-                let combined = try sealRow(PendingShardRevoke.Payload(ownerID: shard.contactIdentifier, attributeID: shard.attrID), using: custodyKey, id: rowID)
+                let combined = try self.sealRow(PendingShardRevoke.Payload(ownerID: shard.contactIdentifier, attributeID: shard.attributeID), using: custodyKey, id: rowID)
+                       
                 self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
             }
+            
             try self.modelContext.save()
         } catch {
             #if DEBUG
@@ -407,16 +412,21 @@ final class ShardCustodyManager {
     /// Inserts one `PendingShardRevoke` row for this `attributeID`. Skips if a
     /// row already exists (idempotent).
     func queueRevoke(attributeID: UUID, for ownerID: String) throws {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+        guard
+            let custodyKey = try self.keyManager.deriveShardCustodyKey()
+        else {
             throw CustodyError.keyDerivationFailed
         }
+        
         let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
         let alreadyQueued = pending.contains {
             (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == attributeID
         }
         guard !alreadyQueued else { return }
+        
         let rowID    = UUID()
-        let combined = try sealRow(PendingShardRevoke.Payload(ownerID: ownerID, attributeID: attributeID), using: custodyKey, id: rowID)
+        let combined = try self.sealRow(PendingShardRevoke.Payload(ownerID: ownerID, attributeID: attributeID), using: custodyKey, id: rowID)
+        
         self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -438,16 +448,22 @@ final class ShardCustodyManager {
         }
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
         var ops  = [OccultaBundle.ShardOperation]()
+        
         for row in rows {
             guard
                 let payload = try? self.openRow(row.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: row.id),
                 payload.ownerID == contactIdentifier
             else { continue }
+            
             self.modelContext.delete(row)
-            try? vaultManager.updateShardStatus(attrID: payload.attributeID, to: .revoked)
+            
+            try? vaultManager.updateShardStatus(attributeID: payload.attributeID, to: .revoked)
+            
             ops.append(OccultaBundle.ShardOperation(kind: .revoke, attributeID: payload.attributeID))
         }
+        
         guard !ops.isEmpty else { return nil }
+        
         try self.modelContext.save()
         return ops
     }
@@ -546,13 +562,17 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
+        
         let existing = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
         let alreadyQueued = existing.contains {
             (try? self.openRow($0.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: $0.id))?.signedAttribute.id == attribute.id
         }
+        
         guard !alreadyQueued else { return }
+        
         let rowID    = UUID()
-        let combined = try sealRow(PendingShardDistribute.Payload(contactIdentifier: contactIdentifier, signedAttribute: attribute, oldAttributeID: oldAttributeID), using: custodyKey, id: rowID)
+        let combined = try self.sealRow(PendingShardDistribute.Payload(contactIdentifier: contactIdentifier, signedAttribute: attribute, oldAttributeID: oldAttributeID), using: custodyKey, id: rowID)
+        
         self.modelContext.insert(PendingShardDistribute(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }

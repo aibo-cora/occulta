@@ -553,12 +553,14 @@ struct VaultShardSetup: View {
 
     private func markForDistribution() {
         self.marking = true
-        self.error   = nil
+        self.error = nil
+        
         do {
             // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
             // Contacts staying in the distribution get a .replace op; new ones get .distribute.
             var oldAttrIDs: [String: UUID] = [:]
-            if let existingMeta = try? vault.shardDistributionMetadata(for: entryID) {
+            
+            if let existingMeta = try? self.vault.shardDistributionMetadata(for: self.entryID) {
                 let newIDs  = Set(selected.map(\.identifier))
                 let removed = existingMeta.shards.filter {
                     !newIDs.contains($0.contactIdentifier)
@@ -567,10 +569,10 @@ struct VaultShardSetup: View {
                         && $0.status != .lost
                 }
                 for shard in removed {
-                    try? shardCustodyManager?.queueRevoke(attributeID: shard.attrID, for: shard.contactIdentifier)
+                    try? self.shardCustodyManager?.queueRevoke(attributeID: shard.attributeID, for: shard.contactIdentifier)
                 }
                 for shard in existingMeta.shards where newIDs.contains(shard.contactIdentifier) {
-                    oldAttrIDs[shard.contactIdentifier] = shard.attrID
+                    oldAttrIDs[shard.contactIdentifier] = shard.attributeID
                 }
             }
 
@@ -608,14 +610,16 @@ struct VaultShardSetup: View {
 
     private func revokeShard(_ record: ShardRecord) {
         do {
-            try vault.updateShardStatus(attrID: record.attrID, to: .revokePending)
-            try shardCustodyManager?.queueRevoke(attributeID: record.attrID, for: record.contactIdentifier)
+            try self.vault.updateShardStatus(attributeID: record.attributeID, to: .revokePending)
+            
+            try self.shardCustodyManager?.queueRevoke(attributeID: record.attributeID, for: record.contactIdentifier)
             // Reload metadata so the status chip updates immediately.
-            distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
+            self.distributionMeta = try? self.vault.shardDistributionMetadata(for: self.entryID)
             // Remove from selection so the UI reflects the change.
-            selectedIDs.remove(record.contactIdentifier)
-            snapshotIDs.remove(record.contactIdentifier)
-            confirmationMessage = nil
+            self.selectedIDs.remove(record.contactIdentifier)
+            self.snapshotIDs.remove(record.contactIdentifier)
+            
+            self.confirmationMessage = nil
         } catch {
             self.error = "Revoke failed: \(error.localizedDescription)"
         }

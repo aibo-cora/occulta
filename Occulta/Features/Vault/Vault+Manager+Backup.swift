@@ -282,7 +282,7 @@ extension VaultManager {
         let shards = (0..<n).map { i in
             ShardRecord(
                 contactIdentifier: recipients[i].identifier,
-                attrID:            attributes[i].id,
+                attributeID:            attributes[i].id,
                 status:            .pending,
                 distributedAt:     now
             )
@@ -316,7 +316,7 @@ extension VaultManager {
         let oldAttrIDs: [String: UUID]
         if let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey),
            let meta    = decoded.payload.shardMetadata {
-            oldAttrIDs = Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attrID) })
+            oldAttrIDs = Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attributeID) })
         } else {
             oldAttrIDs = [:]
         }
@@ -426,16 +426,16 @@ extension VaultManager {
 
     // MARK: - BEK shard status
 
-    /// Update the status of one BEK ShardRecord identified by `attrID`.
+    /// Update the status of one BEK ShardRecord identified by `attributeID`.
     ///
-    /// Called from `updateShardStatus(attrID:to:)` as a fallback when no
+    /// Called from `updateShardStatus(attributeID:)` as a fallback when no
     /// per-entry shard row matches. BEK and per-entry shards share the same
     /// attrID namespace; the caller need not know which kind a given attrID is.
-    func updateBEKShardStatus(attrID: UUID, to newStatus: ShardStatus) throws {
+    func updateBEKShardStatus(attributeID: UUID, to newStatus: ShardStatus) throws {
         let vaultKey = try self.currentKey()
         guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else { return }
         guard var meta = decoded.payload.shardMetadata else { return }
-        guard let idx  = meta.shards.firstIndex(where: { $0.attrID == attrID }) else { return }
+        guard let idx  = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { return }
 
         meta.shards[idx].status = newStatus
 
