@@ -701,6 +701,66 @@ keeps the shard protocol self-contained.
 
 ---
 
+## Recovery health monitoring
+
+### RecoveryHealthSummary
+
+`VaultManager.recoveryHealth: RecoveryHealthSummary?` is an `@Observable` property
+computed on every vault unlock, `deleteEntry`, `updateShardStatus`, and
+`prepareShards` call. It is `nil` when the vault is locked.
+
+`recomputeRecoveryHealth()` walks every `VaultEntry` with
+`shardDistributionEncrypted`, decrypts the metadata, and counts active shards
+(`.pending` or `.confirmed`). Entries whose active count falls below their
+threshold are collected into `RecoveryHealthSummary.affected`:
+
+```
+struct RecoveryHealthSummary {
+    enum EntryStatus { case degraded, critical }
+    struct AffectedEntry {
+        let entryID:   UUID
+        let label:     String
+        let entryType: VaultEntryType
+        let status:    EntryStatus   // critical = 0 active; degraded = 1…k-1 active
+        let active:    Int
+        let threshold: Int
+    }
+    let affected: [AffectedEntry]   // sorted: critical first, then degraded, both α
+}
+```
+
+Entries at or above threshold are healthy and do not appear in `affected`.
+
+### Vault tab Attention section
+
+When `recoveryHealth.affected` is non-empty and the filter is not set to
+`.shards`, `VaultTab` surfaces an **Attention** section above the normal entry
+list. Each affected entry is shown as a `VaultAffectedEntryRow`:
+
+- **Degraded** (amber): subtitle shows `N of K recovery pieces` — the user can
+  still redistribute to restore coverage.
+- **Critical** (red): subtitle shows `recovery unavailable` — all active shards
+  are gone; redistribution is required before recovery is possible.
+
+Tapping any row navigates to the entry's detail, where the user can redistribute
+shards. Entries already shown in the Attention section are excluded from the
+normal entry list below to avoid duplication.
+
+The section header colour follows the worst status in the set: red if any entry
+is critical, amber if all are merely degraded.
+
+### Update triggers
+
+| Event | Triggers recompute |
+|---|---|
+| Vault unlock | ✅ |
+| `prepareShards` (new distribution) | ✅ |
+| `updateShardStatus` (acknowledge / notFound) | ✅ |
+| `deleteEntry` | ✅ |
+| Vault lock | clears to nil |
+
+---
+
 ## Implementation status
 
 | Component                             | Status        |

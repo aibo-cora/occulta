@@ -280,12 +280,11 @@ struct VaultTab: View {
     private func unlockVault() {
         self.unlocking = true
         let ctx = LAContext()
-        ctx.evaluatePolicy(
-            .deviceOwnerAuthenticationWithBiometrics,
-            localizedReason: "Unlock your Vault"
-        ) { success, _ in
+        
+        ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock your Vault") { success, _ in
             DispatchQueue.main.async {
                 self.unlocking = false
+                
                 if success { self.vault.unlock(context: ctx) }
             }
         }

@@ -393,22 +393,23 @@ without attempting decryption.
 
 | Component | Status |
 |---|---|
-| BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | 🔲 |
-| BEK SSS split + shard delivery (reuse existing pipeline) | 🔲 |
+| BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | ✅ |
+| BEK SSS split + shard delivery (reuse existing pipeline) | ✅ |
 | BEK trustee picker (pre-populated from Global Trustees, GLOBAL badge) | 🔲 |
-| BEK shard collection via auto-handback on contact key re-exchange | 🔲 |
+| BEK shard collection via auto-handback on contact key re-exchange | ✅ |
 | Pending restore state (store .occbak, waiting-for-trustees UI) | 🔲 |
-| BEK reconstruction (Shamir.combine) + re-wrap under new device vaultKey | 🔲 |
-| `VaultBackup` / `VaultBackupEntry` Codable models | 🔲 |
-| Export: unwrap encryptedBEK + decrypt all entries + AES-GCM seal | 🔲 |
+| BEK reconstruction (Shamir.combine) + re-wrap under new device vaultKey | ✅ |
+| `VaultBackup` / `VaultBackupEntry` Codable models | ✅ |
+| Export: unwrap encryptedBEK + decrypt all entries + AES-GCM seal | ✅ |
 | Export: document picker + `.occbak` UTI registration | 🔲 |
-| Import: AES-GCM open + PEK regeneration + SwiftData insert | 🔲 |
+| Import: AES-GCM open + PEK regeneration + SwiftData insert | ✅ |
 | Post-import BEK shard redistribution prompt | 🔲 |
 | Post-import per-entry SSS redistribution prompt | 🔲 |
 | Post-import contact re-establishment prompt | 🔲 |
-| BEK rotation on trustee change + stale-backup warning | 🔲 |
+| BEK rotation (`rotateBEK()`) | ✅ |
+| Stale-backup warning after trustee change | 🔲 |
 | Export educational sheet (mandatory, no persistent dismiss) | 🔲 |
-| Export disabled when BEK below threshold | 🔲 |
+| Export disabled when BEK below threshold | ✅ |
 | BEK erosion warning (mirrors per-entry erosion banner) | 🔲 |
 | **Recovery dashboard** (required before ship — see Recovery dashboard section) | 🔲 |
 | Future: macOS companion app sync | 🔲 |
