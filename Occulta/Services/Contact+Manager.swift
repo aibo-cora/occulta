@@ -888,6 +888,7 @@ extension ContactManager {
         shardOperations: [OccultaBundle.ShardOperation]? = nil
     ) throws -> Data {
         guard data != nil || shardOperations != nil else { throw Errors.messageHasNoData }
+        
         if let data, data.isEmpty { throw Errors.messageHasNoData }
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 

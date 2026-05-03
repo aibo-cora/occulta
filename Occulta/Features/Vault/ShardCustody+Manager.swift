@@ -261,6 +261,7 @@ final class ShardCustodyManager {
     /// it on the next biometric unlock.
     private func handleAcknowledge(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
+        
         do {
             try vaultManager.updateShardStatus(attributeID: attributeID, to: .confirmed)
         } catch VaultManager.VaultError.locked {
@@ -268,6 +269,8 @@ final class ShardCustodyManager {
         } catch {
             // Entry not found or other unrecoverable error — silently drop.
         }
+        
+        try? self.deletePendingDistribute(attributeID: attributeID)
     }
 
     /// `.notFound` — trustee no longer has our shard; mark it `.lost`.
@@ -275,6 +278,7 @@ final class ShardCustodyManager {
     /// Same deferred-update pattern as `handleAcknowledge`.
     private func handleNotFound(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
+        
         do {
             try vaultManager.updateShardStatus(attributeID: attributeID, to: .lost)
         } catch VaultManager.VaultError.locked {
@@ -282,6 +286,31 @@ final class ShardCustodyManager {
         } catch {
             // Entry not found or other unrecoverable error — silently drop.
         }
+        
+        try? self.deletePendingDistribute(attributeID: attributeID)
+    }
+    
+    /// Delete the `PendingShardDistribute` row whose payload references `attributeID`.
+    /// Best-effort: a missing row is a no-op (the trustee may be acking a row that
+    /// was already drained or never queued under this device).
+    private func deletePendingDistribute(attributeID: UUID) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
+        var deletedAny = false
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
+                payload.signedAttribute.id == attributeID
+            else { continue }
+            
+            self.modelContext.delete(row)
+            
+            deletedAny = true
+        }
+        
+        if deletedAny { try self.modelContext.save() }
     }
 
     /// `.returnAcknowledged` — owner confirmed receipt of one shard; delete our custody row.
@@ -290,12 +319,16 @@ final class ShardCustodyManager {
     /// is called once after all ops in the batch are processed.
     private func handleReturnAcknowledged(op: OccultaBundle.ShardOperation) throws {
         guard let attributeID = op.attributeID else { throw CustodyError.invalidPayload }
+        
         var deletedAny = false
+        
         for decoded in try self.decryptAllCustodyShards()
             where decoded.payload.signedAttribute.id == attributeID {
             self.modelContext.delete(decoded.row)
+            
             deletedAny = true
         }
+        
         if deletedAny { try self.modelContext.save() }
     }
 
@@ -310,14 +343,19 @@ final class ShardCustodyManager {
         guard remaining.isEmpty else { return }
 
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
+        
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
+        
         var deletedAny = false
+        
         for row in rows {
             guard
                 let payload = try? self.openRow(row.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: row.id),
                 payload.contactIdentifier == ownerIdentifier
             else { continue }
+            
             self.modelContext.delete(row)
+            
             deletedAny = true
         }
         if deletedAny { try self.modelContext.save() }
@@ -364,7 +402,205 @@ final class ShardCustodyManager {
         self.modelContext.insert(GlobalShardConfig(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
+    
+    // MARK: Build shard operations
+    
+    func buildShardOperations(for contactID: String) throws -> [OccultaBundle.ShardOperation] {
+        let revokeOperations = try self.pendingRevokeOperations(for: contactID) ?? []
+        let returnOperations = try self.pendingReturnOperations(for: contactID) ?? []
+        let acknowledgeOperations = try self.pendingAcknowledgeOperation(for: contactID) ?? []
+        let shardAcknowledgeOperations = try self.pendingShardAcknowledgeOperations(for: contactID) ?? []
+        let distributionOperations = try self.pendingDistributeOperations(for: contactID) ?? []
+        let notFoundOperations = try self.pendingNotFoundOperations(for: contactID) ?? []
+        
+        let combines = revokeOperations + returnOperations + acknowledgeOperations + shardAcknowledgeOperations + distributionOperations + notFoundOperations
+        
+        return combines
+    }
 
+    private func pendingRevokeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard
+            let custodyKey = try self.keyManager.deriveShardCustodyKey()
+        else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
+        
+        var ops  = [OccultaBundle.ShardOperation]()
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: row.id),
+                payload.ownerID == contactIdentifier
+            else {
+                continue
+            }
+            
+            ops.append(OccultaBundle.ShardOperation(kind: .revoke, attributeID: payload.attributeID))
+        }
+        
+        guard !ops.isEmpty else { return nil }
+        
+        return ops
+    }
+
+    // MARK: - Auto-return delivery
+
+    /// Build `.handback` shard operations for every `CustodyShard` we hold for
+    /// `contactIdentifier`, provided a `PendingShardReturn` row exists for them.
+    ///
+    /// Returns ALL shards for the contact in one call — the bundle piggybacking
+    /// these ops must carry the full set, not a subset. Returns `nil` when no
+    /// `PendingShardReturn` exists or no matching shards can be decrypted.
+    private func pendingReturnOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard
+            let custodyKey = try self.keyManager.deriveShardCustodyKey()
+        else {
+            throw CustodyError.keyDerivationFailed
+        }
+
+        // Check for a pending return row for this contact.
+        let pendingRows = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
+        
+        let hasPending = pendingRows.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: $0.id))?.contactIdentifier == contactIdentifier
+        }
+        guard hasPending else { return nil }
+
+        // Build .handback operations from ALL matching custody shards.
+        let ops = try self.decryptAllCustodyShards()
+            .filter { $0.payload.ownerContactIdentifier == contactIdentifier }
+            .map { decoded in
+                OccultaBundle.ShardOperation(kind: .handback, attribute: decoded.payload.signedAttribute)
+            }
+        
+        return ops.isEmpty ? nil : ops
+    }
+
+    /// Build `.returnAcknowledged` operations for Bob if Alice has pending
+    /// `PendingReturnAcknowledge` rows for him (one per attributeID)
+    ///
+    /// Returns `nil` when no pending acks exist for this contact.
+    private func pendingAcknowledgeOperation(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard
+            let bufferKey = try self.keyManager.deriveRecoveryBufferKey()
+        else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingReturnAcknowledge>())
+        
+        var ops  = [OccultaBundle.ShardOperation]()
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingReturnAcknowledge.Payload.self, using: bufferKey, id: row.id),
+                payload.ownerID == contactIdentifier
+            else {
+                continue
+            }
+            ops.append(OccultaBundle.ShardOperation(kind: .returnAcknowledged, attributeID: payload.attributeID))
+        }
+        
+        guard !ops.isEmpty else { return nil }
+        
+        return ops
+    }
+
+    // MARK: - Shard-receipt acknowledgement (trustee → owner)
+
+    /// Build `.acknowledge` operations for every shard Bob owes to `ownerIdentifier`.
+    ///
+    /// Collects all matching rows (one per attributeID), deletes them, and emits
+    /// one `ShardOperation` per attributeID (fire-and-forget). If the bundle is
+    /// never delivered, Alice's ShardRecord remains `.pending`; the next outbound
+    /// message retries automatically because the rows were already deleted on this call.
+    ///
+    /// Returns `nil` when no pending acks exist for this contact.
+    private func pendingShardAcknowledgeOperations(for ownerIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard
+            let custodyKey = try self.keyManager.deriveShardCustodyKey()
+        else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardAcknowledge>())
+        
+        var ops  = [OccultaBundle.ShardOperation]()
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardAcknowledge.Payload.self, using: custodyKey, id: row.id),
+                payload.ownerID == ownerIdentifier
+            else {
+                continue
+            }
+            ops.append(OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: payload.attributeID))
+        }
+        
+        guard !ops.isEmpty else { return nil }
+        
+        return ops
+    }
+    
+    /// Build `.distribute` / `.replace` operations for shards owed to `contactIdentifier`.
+    ///
+    /// Collects all matching rows, deletes them, and emits one `ShardOperation`
+    /// per row (fire-and-forget). Returns `nil` when no pending distributes exist.
+    private func pendingDistributeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard
+            let custodyKey = try self.keyManager.deriveShardCustodyKey()
+        else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
+        
+        var ops  = [OccultaBundle.ShardOperation]()
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
+                payload.contactIdentifier == contactIdentifier
+            else {
+                continue
+            }
+            
+            ops.append(OccultaBundle.ShardOperation(
+                kind:        payload.oldAttributeID != nil ? .replace : .distribute,
+                attribute:   payload.signedAttribute,
+                attributeID: payload.oldAttributeID
+            ))
+        }
+        
+        guard !ops.isEmpty else { return nil }
+        
+        return ops
+    }
+    
+    /// Build `.notFound` operations for every missing-shard response owed to `ownerIdentifier`.
+    ///
+    /// Collects all matching rows (one per attributeID), deletes them, and emits
+    /// one `ShardOperation` per attributeID (fire-and-forget). Returns `nil` when no
+    /// pending not-found responses exist for this contact.
+    private func pendingNotFoundOperations(for ownerIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard
+            let custodyKey = try self.keyManager.deriveShardCustodyKey()
+        else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardNotFound>())
+        
+        var ops  = [OccultaBundle.ShardOperation]()
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardNotFound.Payload.self, using: custodyKey, id: row.id),
+                payload.ownerID == ownerIdentifier
+            else {
+                continue
+            }
+            
+            ops.append(OccultaBundle.ShardOperation(kind: .notFound, attributeID: payload.attributeID))
+        }
+        
+        guard !ops.isEmpty else { return nil }
+        
+        return ops
+    }
+    
     // MARK: - Revocation queuing
 
     /// Queue `.revoke` operations for every active shard in `metadata`.
@@ -424,131 +660,11 @@ final class ShardCustodyManager {
         }
         guard !alreadyQueued else { return }
         
-        let rowID    = UUID()
+        let rowID = UUID()
         let combined = try self.sealRow(PendingShardRevoke.Payload(ownerID: ownerID, attributeID: attributeID), using: custodyKey, id: rowID)
         
         self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
-    }
-
-    /// Build `.revoke` operations for any pending revocations owed to `contactIdentifier`.
-    ///
-    /// Collects all matching rows (one per attributeID), deletes them, and emits
-    /// one `ShardOperation` per attributeID (fire-and-forget). Trustees silently
-    /// delete the matching `CustodyShard` rows; there is no `.revokeAcknowledged`
-    /// response — no confirmation is needed because every `prepareShards` call
-    /// generates fresh shard bytes, making old shards mathematically inert.
-    ///
-    /// Writes `.revoked` to each affected `ShardRecord` so recovery health reflects
-    /// the actual distribution state. Best-effort: a no-op when the entry has been
-    /// deleted (the `ShardRecord` no longer exists).
-    func pendingRevokeOperations(for contactIdentifier: String, vaultManager: VaultManager) throws -> [OccultaBundle.ShardOperation]? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
-        var ops  = [OccultaBundle.ShardOperation]()
-        
-        for row in rows {
-            guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: row.id),
-                payload.ownerID == contactIdentifier
-            else { continue }
-            
-            self.modelContext.delete(row)
-            
-            try? vaultManager.updateShardStatus(attributeID: payload.attributeID, to: .revoked)
-            
-            ops.append(OccultaBundle.ShardOperation(kind: .revoke, attributeID: payload.attributeID))
-        }
-        
-        guard !ops.isEmpty else { return nil }
-        
-        try self.modelContext.save()
-        return ops
-    }
-
-    // MARK: - Auto-return delivery
-
-    /// Build `.handback` shard operations for every `CustodyShard` we hold for
-    /// `contactIdentifier`, provided a `PendingShardReturn` row exists for them.
-    ///
-    /// Returns ALL shards for the contact in one call — the bundle piggybacking
-    /// these ops must carry the full set, not a subset. Returns `nil` when no
-    /// `PendingShardReturn` exists or no matching shards can be decrypted.
-    func pendingReturnOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-
-        // Check for a pending return row for this contact.
-        let pendingRows = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
-        let hasPending  = pendingRows.contains {
-            (try? self.openRow($0.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: $0.id))?.contactIdentifier == contactIdentifier
-        }
-        guard hasPending else { return nil }
-
-        // Build .handback operations from ALL matching custody shards.
-        let ops = try self.decryptAllCustodyShards()
-            .filter { $0.payload.ownerContactIdentifier == contactIdentifier }
-            .map { decoded in
-                OccultaBundle.ShardOperation(kind: .handback, attribute: decoded.payload.signedAttribute)
-            }
-        return ops.isEmpty ? nil : ops
-    }
-
-    /// Build `.returnAcknowledged` operations for Bob if Alice has pending
-    /// `PendingReturnAcknowledge` rows for him (one per attributeID), then delete
-    /// those rows (fire-and-forget; retry on the next outbound bundle if the acks
-    /// were never delivered).
-    ///
-    /// Returns `nil` when no pending acks exist for this contact.
-    func pendingAcknowledgeOperation(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
-        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rows = try self.modelContext.fetch(FetchDescriptor<PendingReturnAcknowledge>())
-        var ops  = [OccultaBundle.ShardOperation]()
-        for row in rows {
-            guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PendingReturnAcknowledge.Payload.self, using: bufferKey, id: row.id),
-                payload.ownerID == contactIdentifier
-            else { continue }
-            self.modelContext.delete(row)
-            ops.append(OccultaBundle.ShardOperation(kind: .returnAcknowledged, attributeID: payload.attributeID))
-        }
-        guard !ops.isEmpty else { return nil }
-        try self.modelContext.save()
-        return ops
-    }
-
-    // MARK: - Shard-receipt acknowledgement (trustee → owner)
-
-    /// Build `.acknowledge` operations for every shard Bob owes to `ownerIdentifier`.
-    ///
-    /// Collects all matching rows (one per attributeID), deletes them, and emits
-    /// one `ShardOperation` per attributeID (fire-and-forget). If the bundle is
-    /// never delivered, Alice's ShardRecord remains `.pending`; the next outbound
-    /// message retries automatically because the rows were already deleted on this call.
-    ///
-    /// Returns `nil` when no pending acks exist for this contact.
-    func pendingShardAcknowledgeOperations(for ownerIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardAcknowledge>())
-        var ops  = [OccultaBundle.ShardOperation]()
-        for row in rows {
-            guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardAcknowledge.Payload.self, using: custodyKey, id: row.id),
-                payload.ownerID == ownerIdentifier
-            else { continue }
-            self.modelContext.delete(row)
-            ops.append(OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: payload.attributeID))
-        }
-        guard !ops.isEmpty else { return nil }
-        try self.modelContext.save()
-        return ops
     }
 
     // MARK: - Shard distribute queuing (owner → trustee)
@@ -575,33 +691,6 @@ final class ShardCustodyManager {
         
         self.modelContext.insert(PendingShardDistribute(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
-    }
-
-    /// Build `.distribute` / `.replace` operations for shards owed to `contactIdentifier`.
-    ///
-    /// Collects all matching rows, deletes them, and emits one `ShardOperation`
-    /// per row (fire-and-forget). Returns `nil` when no pending distributes exist.
-    func pendingDistributeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
-        var ops  = [OccultaBundle.ShardOperation]()
-        for row in rows {
-            guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
-                payload.contactIdentifier == contactIdentifier
-            else { continue }
-            self.modelContext.delete(row)
-            ops.append(OccultaBundle.ShardOperation(
-                kind:        payload.oldAttributeID != nil ? .replace : .distribute,
-                attribute:   payload.signedAttribute,
-                attributeID: payload.oldAttributeID
-            ))
-        }
-        guard !ops.isEmpty else { return nil }
-        try self.modelContext.save()
-        return ops
     }
 
     /// Insert a `PendingShardAcknowledge` row for `ownerIdentifier`.
@@ -633,8 +722,10 @@ final class ShardCustodyManager {
             throw CustodyError.keyDerivationFailed
         }
         let rowID    = UUID()
-        let combined = try sealRow(PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus), using: custodyKey, id: rowID)
+        let combined = try self.sealRow(PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus), using: custodyKey, id: rowID)
+        
         self.modelContext.insert(PendingShardStatusUpdate(id: rowID, encryptedPayload: combined))
+        
         try self.modelContext.save()
     }
 
@@ -654,30 +745,6 @@ final class ShardCustodyManager {
         let combined = try sealRow(PendingShardNotFound.Payload(ownerID: ownerIdentifier, attributeID: attributeID), using: custodyKey, id: rowID)
         self.modelContext.insert(PendingShardNotFound(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
-    }
-
-    /// Build `.notFound` operations for every missing-shard response owed to `ownerIdentifier`.
-    ///
-    /// Collects all matching rows (one per attributeID), deletes them, and emits
-    /// one `ShardOperation` per attributeID (fire-and-forget). Returns `nil` when no
-    /// pending not-found responses exist for this contact.
-    func pendingNotFoundOperations(for ownerIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardNotFound>())
-        var ops  = [OccultaBundle.ShardOperation]()
-        for row in rows {
-            guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardNotFound.Payload.self, using: custodyKey, id: row.id),
-                payload.ownerID == ownerIdentifier
-            else { continue }
-            self.modelContext.delete(row)
-            ops.append(OccultaBundle.ShardOperation(kind: .notFound, attributeID: payload.attributeID))
-        }
-        guard !ops.isEmpty else { return nil }
-        try self.modelContext.save()
-        return ops
     }
 
     /// Insert a `PendingReturnAcknowledge` row for `contactIdentifier`.
@@ -709,6 +776,7 @@ final class ShardCustodyManager {
     func scheduleReturnIfShardsCustodied(for contactIdentifier: String) {
         do {
             let shards = try self.decryptAllCustodyShards()
+            
             guard shards.contains(where: { $0.payload.ownerContactIdentifier == contactIdentifier }) else {
                 return // We hold no shards for this contact — nothing to return.
             }
@@ -723,10 +791,14 @@ final class ShardCustodyManager {
                 guard
                     let payload = try? self.openRow(row.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: row.id),
                     payload.contactIdentifier == contactIdentifier
-                else { continue }
+                else {
+                    continue
+                }
                 // Update the existing row: re-seal with a fresh scheduledAt.
                 row.encryptedPayload = try sealRow(PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: .now), using: custodyKey, id: row.id)
+                
                 try self.modelContext.save()
+                
                 return
             }
 

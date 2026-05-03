@@ -448,14 +448,10 @@ struct ComposableMessage: View {
                 let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
                 
-                var shardOps: [OccultaBundle.ShardOperation] = []
-                if let distributeOps = try? self.shardCustodyManager?.pendingDistributeOperations(for: identifier)                                        { shardOps += distributeOps }
-                if let returnOps     = try? self.shardCustodyManager?.pendingReturnOperations(for: identifier)                                            { shardOps += returnOps }
-                if let ackOps        = try? self.shardCustodyManager?.pendingAcknowledgeOperation(for: identifier)                                        { shardOps += ackOps }
-                if let ackOps        = try? self.shardCustodyManager?.pendingShardAcknowledgeOperations(for: identifier)                                  { shardOps += ackOps }
-                if let vm = self.vaultManager, let revokeOps = try? self.shardCustodyManager?.pendingRevokeOperations(for: identifier, vaultManager: vm)  { shardOps += revokeOps }
-                if let inquireOps    = try? self.vaultManager?.pendingInquireOperations(for: identifier)                                                   { shardOps += inquireOps }
-                if let notFoundOps   = try? self.shardCustodyManager?.pendingNotFoundOperations(for: identifier)                                           { shardOps += notFoundOps }
+                var shardOps: [OccultaBundle.ShardOperation] = try self.shardCustodyManager?.buildShardOperations(for: self.identifier) ?? []
+                if let inquireOps = try? self.vaultManager?.pendingInquireOperations(for: self.identifier) {
+                    shardOps += inquireOps
+                }
                 
                 let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
                 
