@@ -133,43 +133,6 @@ extension VaultManager {
         return attributes
     }
 
-    // MARK: - Outbound delivery
-
-    /// Prepare shards and encrypt each as a `.occ` bundle ready for sharing.
-    ///
-    /// Returns one `(contactIdentifier, occData)` tuple per recipient, in the
-    /// same order as `recipients`. The caller writes each blob to a temp `.occ`
-    /// file and presents the share sheet for the corresponding contact.
-    ///
-    /// Requires the vault unlocked. Requires each recipient to have ML-KEM key
-    /// material — `encryptBundle` throws `trusteeLacksQuantumMaterial` if absent.
-    func distributeShards(
-        for entryID: UUID,
-        threshold: Int,
-        recipients: [Contact.Profile],
-        contactManager: ContactManager
-    ) throws -> [(contactIdentifier: String, occData: Data)] {
-        // Capture old attrIDs per contact before prepareShards replaces the distribution.
-        // Contacts found here receive a .replace op; new contacts receive .distribute.
-        let oldAttrIDs: [String: UUID] = {
-            guard let meta = try? self.shardDistributionMetadata(for: entryID) else { return [:] }
-            return Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attrID) })
-        }()
-
-        let attributes = try self.prepareShards(for: entryID, threshold: threshold, recipients: recipients)
-
-        return try zip(recipients, attributes).map { contact, attribute in
-            let oldID = oldAttrIDs[contact.identifier]
-            let op    = OccultaBundle.ShardOperation(
-                kind:        oldID != nil ? .replace : .distribute,
-                attribute:   attribute,
-                attributeID: oldID
-            )
-            let occ = try contactManager.encryptBundle(for: contact.identifier, shardOperations: [op])
-            return (contact.identifier, occ)
-        }
-    }
-
     // MARK: - Shard status reader
 
     /// Read the ShardDistributionMetadata for an entry without modifying it.

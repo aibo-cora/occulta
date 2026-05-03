@@ -314,9 +314,7 @@ final class ShardCustodyManager {
         var deletedAny = false
         for row in rows {
             guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PendingShardReturn.Payload.self, from: plaintext),
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: row.id),
                 payload.contactIdentifier == ownerIdentifier
             else { continue }
             self.modelContext.delete(row)
@@ -334,12 +332,9 @@ final class ShardCustodyManager {
         }
         let rows = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
         for row in rows {
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(GlobalShardConfig.Payload.self, from: plaintext)
-            else { continue }
-            return payload
+            if let payload = try? self.openRow(row.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: row.id) {
+                return payload
+            }
         }
         return nil
     }
@@ -352,12 +347,7 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-        guard
-            let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-            let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-            let payload   = try? JSONDecoder().decode(GlobalShardConfig.Payload.self, from: plaintext)
-        else { return nil }
-        return payload
+        return try? self.openRow(row.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: row.id)
     }
 
     /// Persist the user's global trustee configuration.
@@ -369,12 +359,8 @@ final class ShardCustodyManager {
         }
         let existing = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
         for row in existing { self.modelContext.delete(row) }
-
-        let rowID    = UUID()
-        let bytes    = try JSONEncoder().encode(payload)
-        let aad      = Self.rowAAD(id: rowID)
-        let sealed   = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        let rowID = UUID()
+        let combined = try sealRow(payload, using: custodyKey, id: rowID)
         self.modelContext.insert(GlobalShardConfig(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -394,33 +380,18 @@ final class ShardCustodyManager {
     func queueRevokes(from metadata: ShardDistributionMetadata) {
         do {
             guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
-
             let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
 
             for shard in metadata.shards
                 where shard.status != .revoked
                    && shard.status != .revokePending
                    && shard.status != .lost {
-                let ownerID     = shard.contactIdentifier
-                let attributeID = shard.attrID
-
-                // Duplicate check: skip if a row for this attributeID already exists.
-                let alreadyQueued = pending.contains { row in
-                    guard
-                        let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                        let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                        let p         = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
-                    else { return false }
-                    return p.attributeID == attributeID
+                let alreadyQueued = pending.contains {
+                    (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == shard.attrID
                 }
                 guard !alreadyQueued else { continue }
-
-                let rowID   = UUID()
-                let payload = PendingShardRevoke.Payload(ownerID: ownerID, attributeID: attributeID)
-                let bytes   = try JSONEncoder().encode(payload)
-                let aad     = Self.rowAAD(id: rowID)
-                let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-                guard let combined = sealed.combined else { continue }
+                let rowID = UUID()
+                let combined = try sealRow(PendingShardRevoke.Payload(ownerID: shard.contactIdentifier, attributeID: shard.attrID), using: custodyKey, id: rowID)
                 self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
             }
             try self.modelContext.save()
@@ -439,24 +410,13 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
-        let alreadyQueued = pending.contains { row in
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let p         = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext)
-            else { return false }
-            return p.attributeID == attributeID
+        let alreadyQueued = pending.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == attributeID
         }
         guard !alreadyQueued else { return }
-
-        let rowID   = UUID()
-        let payload = PendingShardRevoke.Payload(ownerID: ownerID, attributeID: attributeID)
-        let bytes   = try JSONEncoder().encode(payload)
-        let aad     = Self.rowAAD(id: rowID)
-        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        let rowID    = UUID()
+        let combined = try sealRow(PendingShardRevoke.Payload(ownerID: ownerID, attributeID: attributeID), using: custodyKey, id: rowID)
         self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -476,20 +436,14 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
         var ops  = [OccultaBundle.ShardOperation]()
         for row in rows {
             guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PendingShardRevoke.Payload.self, from: plaintext),
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: row.id),
                 payload.ownerID == contactIdentifier
             else { continue }
-
             self.modelContext.delete(row)
-            // Mark the shard .revoked on Alice's side. No-op when the entry was
-            // deleted (updateShardStatus finds no matching ShardRecord and returns).
             try? vaultManager.updateShardStatus(attrID: payload.attributeID, to: .revoked)
             ops.append(OccultaBundle.ShardOperation(kind: .revoke, attributeID: payload.attributeID))
         }
@@ -513,13 +467,8 @@ final class ShardCustodyManager {
 
         // Check for a pending return row for this contact.
         let pendingRows = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
-        let hasPending  = pendingRows.contains { row in
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PendingShardReturn.Payload.self, from: plaintext)
-            else { return false }
-            return payload.contactIdentifier == contactIdentifier
+        let hasPending  = pendingRows.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: $0.id))?.contactIdentifier == contactIdentifier
         }
         guard hasPending else { return nil }
 
@@ -542,17 +491,13 @@ final class ShardCustodyManager {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingReturnAcknowledge>())
         var ops  = [OccultaBundle.ShardOperation]()
         for row in rows {
             guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: bufferKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PendingReturnAcknowledge.Payload.self, from: plaintext),
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingReturnAcknowledge.Payload.self, using: bufferKey, id: row.id),
                 payload.ownerID == contactIdentifier
             else { continue }
-
             self.modelContext.delete(row)
             ops.append(OccultaBundle.ShardOperation(kind: .returnAcknowledged, attributeID: payload.attributeID))
         }
@@ -575,19 +520,64 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardAcknowledge>())
         var ops  = [OccultaBundle.ShardOperation]()
         for row in rows {
             guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PendingShardAcknowledge.Payload.self, from: plaintext),
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardAcknowledge.Payload.self, using: custodyKey, id: row.id),
                 payload.ownerID == ownerIdentifier
             else { continue }
-
             self.modelContext.delete(row)
             ops.append(OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: payload.attributeID))
+        }
+        guard !ops.isEmpty else { return nil }
+        try self.modelContext.save()
+        return ops
+    }
+
+    // MARK: - Shard distribute queuing (owner → trustee)
+
+    /// Queue a `.distribute` or `.replace` op for `contactIdentifier`.
+    ///
+    /// Called from `markForDistribution` after `prepareShards`. One row per
+    /// `attributeID`; skips if a row already exists (idempotent).
+    /// `replacing` non-nil → `.replace` op; nil → `.distribute`.
+    func queueDistribute(attribute: SignedAttribute, for contactIdentifier: String, replacing oldAttributeID: UUID? = nil) throws {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let existing = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
+        let alreadyQueued = existing.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: $0.id))?.signedAttribute.id == attribute.id
+        }
+        guard !alreadyQueued else { return }
+        let rowID    = UUID()
+        let combined = try sealRow(PendingShardDistribute.Payload(contactIdentifier: contactIdentifier, signedAttribute: attribute, oldAttributeID: oldAttributeID), using: custodyKey, id: rowID)
+        self.modelContext.insert(PendingShardDistribute(id: rowID, encryptedPayload: combined))
+        try self.modelContext.save()
+    }
+
+    /// Build `.distribute` / `.replace` operations for shards owed to `contactIdentifier`.
+    ///
+    /// Collects all matching rows, deletes them, and emits one `ShardOperation`
+    /// per row (fire-and-forget). Returns `nil` when no pending distributes exist.
+    func pendingDistributeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
+        var ops  = [OccultaBundle.ShardOperation]()
+        for row in rows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
+                payload.contactIdentifier == contactIdentifier
+            else { continue }
+            self.modelContext.delete(row)
+            ops.append(OccultaBundle.ShardOperation(
+                kind:        payload.oldAttributeID != nil ? .replace : .distribute,
+                attribute:   payload.signedAttribute,
+                attributeID: payload.oldAttributeID
+            ))
         }
         guard !ops.isEmpty else { return nil }
         try self.modelContext.save()
@@ -601,24 +591,13 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardAcknowledge>())
-        let alreadyQueued = rows.contains { row in
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let p         = try? JSONDecoder().decode(PendingShardAcknowledge.Payload.self, from: plaintext)
-            else { return false }
-            return p.attributeID == attributeID
+        let alreadyQueued = rows.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardAcknowledge.Payload.self, using: custodyKey, id: $0.id))?.attributeID == attributeID
         }
         guard !alreadyQueued else { return }
-
-        let rowID   = UUID()
-        let payload = PendingShardAcknowledge.Payload(ownerID: ownerIdentifier, attributeID: attributeID)
-        let bytes   = try JSONEncoder().encode(payload)
-        let aad     = Self.rowAAD(id: rowID)
-        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        let rowID    = UUID()
+        let combined = try sealRow(PendingShardAcknowledge.Payload(ownerID: ownerIdentifier, attributeID: attributeID), using: custodyKey, id: rowID)
         self.modelContext.insert(PendingShardAcknowledge(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -633,13 +612,8 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
-        let rowID   = UUID()
-        let payload = PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus)
-        let bytes   = try JSONEncoder().encode(payload)
-        let aad     = Self.rowAAD(id: rowID)
-        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        let rowID    = UUID()
+        let combined = try sealRow(PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus), using: custodyKey, id: rowID)
         self.modelContext.insert(PendingShardStatusUpdate(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -651,24 +625,13 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardNotFound>())
-        let alreadyQueued = rows.contains { row in
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let p         = try? JSONDecoder().decode(PendingShardNotFound.Payload.self, from: plaintext)
-            else { return false }
-            return p.attributeID == attributeID
+        let alreadyQueued = rows.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingShardNotFound.Payload.self, using: custodyKey, id: $0.id))?.attributeID == attributeID
         }
         guard !alreadyQueued else { return }
-
-        let rowID   = UUID()
-        let payload = PendingShardNotFound.Payload(ownerID: ownerIdentifier, attributeID: attributeID)
-        let bytes   = try JSONEncoder().encode(payload)
-        let aad     = Self.rowAAD(id: rowID)
-        let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        let rowID    = UUID()
+        let combined = try sealRow(PendingShardNotFound.Payload(ownerID: ownerIdentifier, attributeID: attributeID), using: custodyKey, id: rowID)
         self.modelContext.insert(PendingShardNotFound(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -682,17 +645,13 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardNotFound>())
         var ops  = [OccultaBundle.ShardOperation]()
         for row in rows {
             guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(PendingShardNotFound.Payload.self, from: plaintext),
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardNotFound.Payload.self, using: custodyKey, id: row.id),
                 payload.ownerID == ownerIdentifier
             else { continue }
-
             self.modelContext.delete(row)
             ops.append(OccultaBundle.ShardOperation(kind: .notFound, attributeID: payload.attributeID))
         }
@@ -708,24 +667,13 @@ final class ShardCustodyManager {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingReturnAcknowledge>())
-        let alreadyQueued = rows.contains { row in
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: bufferKey, authenticating: row.aad()),
-                let p         = try? JSONDecoder().decode(PendingReturnAcknowledge.Payload.self, from: plaintext)
-            else { return false }
-            return p.attributeID == attributeID
+        let alreadyQueued = rows.contains {
+            (try? self.openRow($0.encryptedPayload, as: PendingReturnAcknowledge.Payload.self, using: bufferKey, id: $0.id))?.attributeID == attributeID
         }
         guard !alreadyQueued else { return }
-
-        let rowID   = UUID()
-        let payload = PendingReturnAcknowledge.Payload(ownerID: contactIdentifier, attributeID: attributeID)
-        let bytes   = try JSONEncoder().encode(payload)
-        let aad     = Self.rowAAD(id: rowID)
-        let sealed  = try AES.GCM.seal(bytes, using: bufferKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        let rowID    = UUID()
+        let combined = try sealRow(PendingReturnAcknowledge.Payload(ownerID: contactIdentifier, attributeID: attributeID), using: bufferKey, id: rowID)
         self.modelContext.insert(PendingReturnAcknowledge(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
     }
@@ -753,28 +701,18 @@ final class ShardCustodyManager {
             let existing = try self.modelContext.fetch(FetchDescriptor<PendingShardReturn>())
             for row in existing {
                 guard
-                    let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                    let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                    let payload   = try? JSONDecoder().decode(PendingShardReturn.Payload.self, from: plaintext),
+                    let payload = try? self.openRow(row.encryptedPayload, as: PendingShardReturn.Payload.self, using: custodyKey, id: row.id),
                     payload.contactIdentifier == contactIdentifier
                 else { continue }
                 // Update the existing row: re-seal with a fresh scheduledAt.
-                let updated  = PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: Date.now)
-                let bytes    = try JSONEncoder().encode(updated)
-                let sealed   = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
-                guard let combined = sealed.combined else { return }
-                row.encryptedPayload = combined
+                row.encryptedPayload = try sealRow(PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: .now), using: custodyKey, id: row.id)
                 try self.modelContext.save()
                 return
             }
 
             // No existing row — insert a new one.
-            let rowID   = UUID()
-            let payload = PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: Date.now)
-            let bytes   = try JSONEncoder().encode(payload)
-            let aad     = Self.rowAAD(id: rowID)
-            let sealed  = try AES.GCM.seal(bytes, using: custodyKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-            guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+            let rowID = UUID()
+            let combined = try sealRow(PendingShardReturn.Payload(contactIdentifier: contactIdentifier, scheduledAt: .now), using: custodyKey, id: rowID)
             self.modelContext.insert(PendingShardReturn(id: rowID, encryptedPayload: combined))
             try self.modelContext.save()
         } catch {
@@ -793,6 +731,19 @@ final class ShardCustodyManager {
         case encryptionFailed
     }
 
+    private func sealRow<T: Codable>(_ payload: T, using key: SymmetricKey, id: UUID) throws -> Data {
+        let bytes  = try JSONEncoder().encode(payload)
+        let sealed = try AES.GCM.seal(bytes, using: key, nonce: AES.GCM.Nonce(), authenticating: Self.rowAAD(id: id))
+        guard let combined = sealed.combined else { throw CustodyError.encryptionFailed }
+        return combined
+    }
+
+    private func openRow<T: Codable>(_ data: Data, as type: T.Type, using key: SymmetricKey, id: UUID) throws -> T {
+        let box       = try AES.GCM.SealedBox(combined: data)
+        let plaintext = try AES.GCM.open(box, using: key, authenticating: Self.rowAAD(id: id))
+        return try JSONDecoder().decode(type, from: plaintext)
+    }
+
     private struct DecodedCustodyShard {
         let row:     CustodyShard
         let payload: CustodyShard.Payload
@@ -804,16 +755,11 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-
         let rows = try self.modelContext.fetch(FetchDescriptor<CustodyShard>())
         var out  = [DecodedCustodyShard]()
         out.reserveCapacity(rows.count)
-
         for row in rows {
-            guard
-                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
-                let payload   = try? JSONDecoder().decode(CustodyShard.Payload.self, from: plaintext)
+            guard let payload = try? self.openRow(row.encryptedPayload, as: CustodyShard.Payload.self, using: custodyKey, id: row.id)
             else { continue }
             out.append(DecodedCustodyShard(row: row, payload: payload))
         }
