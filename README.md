@@ -602,4 +602,4 @@ Contributions are welcome. Please read `CODE_GENERATION_GUIDELINES.md` and `CRYP
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+GNU Affero General Public License v3.0. See [LICENSE](LICENSE) for details.
