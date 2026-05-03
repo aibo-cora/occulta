@@ -555,8 +555,9 @@ struct VaultShardSetup: View {
         self.marking = true
         self.error   = nil
         do {
-            // Queue revokes for any trustees being removed from this distribution
-            // BEFORE prepareShards overwrites the metadata (and their attrIDs are lost).
+            // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
+            // Contacts staying in the distribution get a .replace op; new ones get .distribute.
+            var oldAttrIDs: [String: UUID] = [:]
             if let existingMeta = try? vault.shardDistributionMetadata(for: entryID) {
                 let newIDs  = Set(selected.map(\.identifier))
                 let removed = existingMeta.shards.filter {
@@ -568,13 +569,23 @@ struct VaultShardSetup: View {
                 for shard in removed {
                     try? shardCustodyManager?.queueRevoke(attributeID: shard.attrID, for: shard.contactIdentifier)
                 }
+                for shard in existingMeta.shards where newIDs.contains(shard.contactIdentifier) {
+                    oldAttrIDs[shard.contactIdentifier] = shard.attrID
+                }
             }
 
-            _ = try self.vault.prepareShards(
+            let attributes = try self.vault.prepareShards(
                 for:        self.entryID,
                 threshold:  self.k,
                 recipients: self.selected
             )
+            for (contact, attribute) in zip(self.selected, attributes) {
+                try? shardCustodyManager?.queueDistribute(
+                    attribute: attribute,
+                    for:       contact.identifier,
+                    replacing: oldAttrIDs[contact.identifier]
+                )
+            }
             // Reload metadata and update snapshot so isDirty becomes false.
             self.distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
             let activeIDs = Set(
