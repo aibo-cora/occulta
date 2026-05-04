@@ -67,7 +67,7 @@ struct VaultEntryDetail: View {
                 guard let entry else { return }
                 
                 let metadata = try? self.vault.deleteEntry(id: entry.id)
-                if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata) }
+                if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata, vaultManager: self.vault) }
                 
                 self.dismiss()
             }

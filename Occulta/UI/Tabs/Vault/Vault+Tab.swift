@@ -224,7 +224,7 @@ struct VaultTab: View {
                         .onDelete { offsets in
                             for i in offsets {
                                 let metadata = try? self.vault.deleteEntry(id: normalEntries[i].id)
-                                if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata) }
+                                if let metadata { self.shardCustodyManager?.queueRevokes(from: metadata, vaultManager: self.vault) }
                             }
                         }
                     }

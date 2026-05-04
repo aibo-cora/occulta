@@ -17,9 +17,7 @@
 //
 //  Outbound operation queuing (`.acknowledge`, `.handback`, `.revoke`,
 //  `.returnAcknowledged`, `.notFound`) is handled via Pending* SwiftData models
-//  read before every outbound bundle: `pendingReturnOperations`,
-//  `pendingAcknowledgeOperation`, `pendingShardAcknowledgeOperations`,
-//  `pendingRevokeOperations`, `pendingNotFoundOperations`.
+//  read before every outbound bundle: `buildShardOperations`
 //
 
 import Foundation
@@ -496,10 +494,15 @@ final class ShardCustodyManager {
             else {
                 continue
             }
+            
             ops.append(OccultaBundle.ShardOperation(kind: .returnAcknowledged, attributeID: payload.attributeID))
+            
+            self.modelContext.delete(row)
         }
         
         guard !ops.isEmpty else { return nil }
+        
+        try self.modelContext.save()
         
         return ops
     }
@@ -531,17 +534,18 @@ final class ShardCustodyManager {
                 continue
             }
             ops.append(OccultaBundle.ShardOperation(kind: .acknowledge, attributeID: payload.attributeID))
+            
+            self.modelContext.delete(row)
         }
         
         guard !ops.isEmpty else { return nil }
+        
+        try self.modelContext.save()
         
         return ops
     }
     
     /// Build `.distribute` / `.replace` operations for shards owed to `contactIdentifier`.
-    ///
-    /// Collects all matching rows, deletes them, and emits one `ShardOperation`
-    /// per row (fire-and-forget). Returns `nil` when no pending distributes exist.
     private func pendingDistributeOperations(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation]? {
         guard
             let custodyKey = try self.keyManager.deriveShardCustodyKey()
@@ -594,9 +598,13 @@ final class ShardCustodyManager {
             }
             
             ops.append(OccultaBundle.ShardOperation(kind: .notFound, attributeID: payload.attributeID))
+            
+            self.modelContext.delete(row)
         }
         
         guard !ops.isEmpty else { return nil }
+        
+        try self.modelContext.save()
         
         return ops
     }
@@ -613,26 +621,31 @@ final class ShardCustodyManager {
     /// already have a pending row (duplicate check), and skips shards already in
     /// a terminal or in-flight revocation state: `.revoked`, `.revokePending`,
     /// `.lost`.
-    func queueRevokes(from metadata: ShardDistributionMetadata) {
+    func queueRevokes(from metadata: ShardDistributionMetadata, vaultManager: VaultManager?) {
         do {
-            guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else { return }
+            guard
+                let custodyKey = try self.keyManager.deriveShardCustodyKey()
+            else {
+                return
+            }
             let pending = try self.modelContext.fetch(FetchDescriptor<PendingShardRevoke>())
 
             for shard in metadata.shards
                 where shard.status != .revoked
                    && shard.status != .revokePending
                    && shard.status != .lost {
-                       
-                let alreadyQueued = pending.contains {
-                    (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == shard.attributeID
-                }
-                       
-                guard !alreadyQueued else { continue }
-                       
-                let rowID = UUID()
-                let combined = try self.sealRow(PendingShardRevoke.Payload(ownerID: shard.contactIdentifier, attributeID: shard.attributeID), using: custodyKey, id: rowID)
-                       
-                self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
+                       let alreadyQueued = pending.contains {
+                            (try? self.openRow($0.encryptedPayload, as: PendingShardRevoke.Payload.self, using: custodyKey, id: $0.id))?.attributeID == shard.attributeID
+                       }
+                               
+                       guard !alreadyQueued else { continue }
+                               
+                       let rowID = UUID()
+                       let combined = try self.sealRow(PendingShardRevoke.Payload(ownerID: shard.contactIdentifier, attributeID: shard.attributeID), using: custodyKey, id: rowID)
+                               
+                       self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
+                
+                       try vaultManager?.updateShardStatus(attributeID: shard.attributeID, to: .revokePending)
             }
             
             try self.modelContext.save()
@@ -647,7 +660,7 @@ final class ShardCustodyManager {
     ///
     /// Inserts one `PendingShardRevoke` row for this `attributeID`. Skips if a
     /// row already exists (idempotent).
-    func queueRevoke(attributeID: UUID, for ownerID: String) throws {
+    func queueRevoke(attributeID: UUID, for ownerID: String, vaultManager: VaultManager?) throws {
         guard
             let custodyKey = try self.keyManager.deriveShardCustodyKey()
         else {
@@ -665,6 +678,8 @@ final class ShardCustodyManager {
         
         self.modelContext.insert(PendingShardRevoke(id: rowID, encryptedPayload: combined))
         try self.modelContext.save()
+        
+        try vaultManager?.updateShardStatus(attributeID: attributeID, to: .revokePending)
     }
 
     // MARK: - Shard distribute queuing (owner → trustee)
