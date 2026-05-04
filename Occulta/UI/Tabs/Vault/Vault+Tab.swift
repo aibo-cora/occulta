@@ -223,7 +223,7 @@ struct VaultTab: View {
                         }
                         .onDelete { offsets in
                             for i in offsets {
-                                try? self.vault.deleteEntry(id: normalEntries[i].id)
+                                _ = try? self.vault.deleteEntry(id: normalEntries[i].id)
                             }
                         }
                     }

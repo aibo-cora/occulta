@@ -66,7 +66,7 @@ struct VaultEntryDetail: View {
             Button("Delete", role: .destructive) {
                 guard let entry else { return }
                 
-                try? self.vault.deleteEntry(id: entry.id)
+                _ = try? self.vault.deleteEntry(id: entry.id)
                 
                 self.dismiss()
             }
@@ -248,7 +248,8 @@ struct VaultEntryDetail: View {
     }
 
     private func shardSummary(for entryID: UUID) -> ShardSummary? {
-        guard let meta = try? vault.shardDistributionMetadata(for: entryID) else { return nil }
+        guard let meta = try? self.vault.shardDistributionMetadata(for: entryID) else { return nil }
+        
         return ShardSummary(
             threshold: meta.threshold,
             total:     meta.shards.count,
@@ -272,9 +273,12 @@ struct VaultEntryDetail: View {
     // MARK: - Shard erosion
 
     private var shardErosion: (active: Int, threshold: Int)? {
-        guard let meta = try? vault.shardDistributionMetadata(for: entryID) else { return nil }
+        guard let meta = try? self.vault.shardDistributionMetadata(for: self.entryID) else { return nil }
+        
         let active = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
+        
         guard active < meta.threshold else { return nil }
+        
         return (active, meta.threshold)
     }
 
