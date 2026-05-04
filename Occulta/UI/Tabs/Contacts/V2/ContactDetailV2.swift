@@ -358,6 +358,12 @@ private struct ComposeHeroV2: View {
                 let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
                 let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
                 let expected   = try? self.shardCustodyManager.flatMap { try $0.buildExpectedShards(for: self.identifier, vaultManager: self.vaultManager!) }
+                
+                #if DEBUG
+                debugPrint("Manifest: \(manifest_?.description ?? "nil")")
+                debugPrint("Expected: \(expected?.description ?? "nil")")
+                debugPrint("Shard ops: \(shardOps.isEmpty ? "none" : shardOps.map(\.kind.rawValue).joined(separator: "\n"))")
+                #endif
 
                 let encrypted = try self.contactManager.encryptBundle(
                     data:            encoded,

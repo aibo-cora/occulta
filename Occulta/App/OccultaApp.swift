@@ -322,6 +322,7 @@ struct OccultaApp: App {
                             sender:   sender
                         )
                     }
+                    
                     return nil
                 }
 
@@ -337,8 +338,6 @@ struct OccultaApp: App {
                         senderIdentifier: ownerID,
                         vaultManager:     self.vaultManager
                     )
-
-                    return nil
                 }
 
                 decrypted = (sealed.message, ownerID)

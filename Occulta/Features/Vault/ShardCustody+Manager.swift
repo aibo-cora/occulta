@@ -55,7 +55,13 @@ final class ShardCustodyManager {
         let hasOps      = (sealed.shardOperations?.isEmpty == false)
         let hasManifest = sealed.custodyManifest != nil
         let hasExpected = sealed.expectedShards  != nil
+        
         guard hasOps || hasManifest || hasExpected else { return false }
+        
+        #if DEBUG
+        debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
+        debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
+        #endif
 
         for op in sealed.shardOperations ?? [] {
             do {
