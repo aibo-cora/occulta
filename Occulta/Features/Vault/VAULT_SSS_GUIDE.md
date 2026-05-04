@@ -268,23 +268,22 @@ logic needed in the delivery path.
 
 ## Shard delivery envelope
 
-Each shard is delivered to a trustee as a `.occ` bundle using `longTermFallback`
-mode. The delivery envelope (inside `SealedPayload.shardOperations`) carries:
+Each shard is delivered as a `.occ` bundle using `longTermFallback + ML-KEM`.
 
-```
-newShard:    SignedAttribute   // the shard to store
-replacesID:  UUID?             // ID of an older shard this supersedes (nil on first distribution)
-```
+The `shardOperations` array carries data-carrying operations only:
 
-`replacesID` allows the recipient's app to automatically discard the old shard
-when the owner re-distributes after a content change. The old shard reconstructs
-a key that no longer encrypts anything (the PEK was rotated), so it is harmless
-— but automatic cleanup prevents accumulation of stale shards.
+| Kind | Payload |
+|---|---|
+| `.distribute` | `SignedAttribute` — shard to store (first distribution) |
+| `.replace` | `SignedAttribute` (new shard) + `attributeID` (ID of old shard to delete) |
+| `.handback` | `SignedAttribute` — owner's shard returned by trustee on key rotation |
 
-Trustees running an older build that does not process `replacesID` will retain
-the superseded shard indefinitely. This is safe: the old shard's reconstruction
-attempt produces the old PEK, which fails GCM authentication against the
-rotated entry. No plaintext is exposed and no action is required.
+`attributeID` in `.replace` allows the recipient to discard the superseded shard.
+Trustees on older builds that don't understand `attributeID` retain the superseded
+shard; it is harmless — the old PEK fails GCM authentication against the rotated entry.
+
+Operations no longer in the protocol (removed in favour of manifest fields):
+`.acknowledge`, `.revoke`, `.inquire`, `.notFound`, `.returnAcknowledged`.
 
 ---
 
@@ -388,21 +387,22 @@ finalisation is not possible in practice; no additional locking is needed.
 
 Valid transitions:
 
-| From             | To               | Trigger                                                    |
-|------------------|------------------|------------------------------------------------------------|
-| `.pending`       | `.confirmed`     | Trustee sends `.acknowledge`                               |
-| `.pending`       | `.lost`          | Trustee sends `.notFound`; trustee key change              |
-| `.pending`       | `.revokePending` | Owner queues a revoke (`queueRevoke`)                      |
-| `.confirmed`     | `.lost`          | Trustee becomes unreachable after confirmation             |
-| `.confirmed`     | `.revokePending` | Owner queues a revoke (`queueRevoke`)                      |
-| `.revokePending` | `.revoked`       | `.revoke` bundle sent (`pendingRevokeOperations`)          |
+| From         | To           | Trigger                                                                          |
+|--------------|--------------|----------------------------------------------------------------------------------|
+| `.pending`   | `.confirmed` | Trustee's `custodyManifest` includes this shard's ID                            |
+| `.pending`   | `.lost`      | Trustee's `custodyManifest` is non-nil, ID absent, no `PendingShardDistribute` row |
+| `.confirmed` | `.lost`      | Trustee's `custodyManifest` is non-nil, ID absent, no `PendingShardDistribute` row |
+| `.confirmed` | `.revoked`   | Owner removes this trustee; ID omitted from `expectedShards` going forward      |
+| `.pending`   | `.revoked`   | Owner removes this trustee before confirmation                                  |
 
 Invalid / rejected transitions:
 
-- `.lost → .confirmed` — a lost shard cannot be un-lost by a late acknowledgement.
-- `.revoked → any` — revocation is terminal; the shard must be re-distributed as a new record with a new `attrID`.
+- `.lost → .confirmed` — a lost shard cannot be un-lost by a late manifest appearance.
+- `.revoked → any` — revocation is terminal; redistribution creates a new `ShardRecord` with a new `attrID`.
 
-The transition `.confirmed → .lost` is valid because a trustee may lose their device after having previously acknowledged custody.
+The `.pending` → `.lost` transition requires a **non-nil manifest** (confirming the trustee is a capable build and has responded) **and** no active `PendingShardDistribute` row (confirming delivery is not still in flight). An absent ID in a nil manifest is inconclusive and triggers no status change.
+
+`.revokePending` remains in the enum for backward-compatible decoding of existing serialized data. New code never sets this status — revocation transitions directly to `.revoked`.
 
 ### Why custody-key-class access (no biometric)
 
@@ -422,27 +422,27 @@ the vault SE key.
 
 ## Shard revocation
 
-`.revoke` carries only the `attrID` — it is globally unique so no `entryID` is
-needed. Bob's inbound handler deletes the matching `CustodyShard` row immediately.
+Revocation is implicit — no `.revoke` operation is required.
 
 **What triggers revocation:**
 - Owner removes a trustee from the trustee list (user action).
-- Re-distribution of an entry: new shards supersede old ones; Alice sends
-  `.revoke` for each old `attrID` alongside or after the new `.distribute`.
+- Re-distribution: Alice distributes new shards to a different trustee set; old
+  trustee IDs are absent from future `expectedShards`, causing trustees to delete them.
 
-**Alice's side:** revocation is a two-step state transition:
-1. `queueRevoke` sets the `ShardRecord.status` to `.revokePending` and writes a
-   `PendingShardRevoke` row. The shard is already treated as inactive (excluded
-   from active-count calculations) at this point.
-2. `pendingRevokeOperations` generates the `.revoke` bundles and sets status to
-   `.revoked` atomically with returning the operations for delivery.
+**Alice's side:** on revocation, `ShardRecord.status` transitions directly to `.revoked`
+(no intermediate `.revokePending` state). Alice stops including the revoked shard ID
+in `expectedShards`. On Bob's next bundle to Alice, the ID is absent from his manifest
+(Bob deleted it based on `expectedShards`). The status is already terminal.
+
+**Bob's side:** on receiving `expectedShards` that omits an ID he holds (with matching
+fingerprint), `processExpectedShards` deletes the `CustodyShard` row immediately.
 
 `.revoked` is a terminal state — the shard must be re-distributed as a new
 record with a new `attrID` to restore coverage.
 
 **Threshold erosion:** when `.lost` or `.revoked` records reduce the active
 shard count below `threshold`, the entry detail view shows an inline warning
-prompting redistribution. Active = `sent` + `confirmed` shards only.
+prompting redistribution. Active = `.pending` + `.confirmed` shards only.
 
 ---
 
@@ -495,29 +495,29 @@ column.
 
 ## Inbound bundle processing order
 
-A single `SealedPayload` may carry `[ShardOperation]?` — a list rather than a
-single operation. All operations in the list are processed in the order below.
-This allows multiple shards (e.g. from several vault entries) to be returned in
-one bundle without multiple round trips.
+Every `SealedPayload` may carry three shard-related fields:
 
-When a bundle carrying one or more `ShardOperation`s arrives:
+- `shardOperations: [ShardOperation]?` — data-carrying operations (`.distribute`, `.replace`, `.handback`).
+- `custodyManifest: [UUID]?` — trustee reporting which shards it currently holds.
+- `expectedShards: [UUID]?` — owner declaring which shards it expects the trustee to hold.
 
-1. **Revocations** (`.revoke`) — delete `CustodyShard` immediately; no further action.
-2. **Distributions** (`.distribute`) — store new `CustodyShard`; if `replacesID != nil`,
-   delete the old shard with that id.
-3. **Handbacks** (`.handback`) — hand shard bytes to the reconstruction flow; queue a
-   `PendingReturnAcknowledge` record so Alice confirms receipt in her next outbound bundle.
-4. **Return acknowledgements** (`.returnAcknowledged`) — trustee receives confirmation
-   that owner stored the returned shards; delete matching `CustodyShard` rows and the
-   `PendingShardReturn` record for those `attrID`s.
-5. **Acknowledgments** (`.acknowledge`) — update `ShardRecord.status` to `.confirmed`.
-6. **Not-found** (`.notFound`) — mark `ShardRecord.status` as `.lost`.
-7. **Inquiries** (`.inquire`) — check whether the probed `CustodyShard` exists; queue
-   `.acknowledge` (found) or `.notFound` (not found) for the next outbound bundle.
+Processing order when a bundle arrives:
 
-Processing is crash-safe: `PendingShardReturn` rows are retained until the owner
-confirms receipt via `.returnAcknowledged`. Undelivered returns are retried on the
-next outbound bundle to the owner.
+1. **`shardOperations`** — handled in order:
+   - `.distribute` — store new `CustodyShard`; if sender's fingerprint differs from existing shards for this contact, delete all mismatch-fingerprint shards (owner completed recovery and is redistributing).
+   - `.replace` — store new `CustodyShard`, delete the shard with `attributeID` (superseded). Same mismatch cleanup as distribute.
+   - `.handback` — hand shard bytes to the reconstruction flow via `acceptReturnedShard`. No acknowledgement queued; see "Owner key rotation" below.
+
+2. **`custodyManifest`** (owner-side processing) — for each active `ShardRecord` for this sender:
+   - ID present in manifest → mark `.confirmed`; delete `PendingShardDistribute` row.
+   - ID absent, manifest non-nil, no distribute row → mark `.lost`.
+   - ID absent, distribute row exists → delivery in progress; no change.
+   - Manifest `nil` → no-op (old-build sender).
+
+3. **`expectedShards`** (trustee-side processing) — for each `CustodyShard` held for this sender whose fingerprint **matches** the sender's current public key:
+   - ID in expected list → keep.
+   - ID not in expected list → delete (implicit revoke).
+   Mismatch-fingerprint shards are never deleted by this step.
 
 ---
 
@@ -528,8 +528,9 @@ has changed. Since Occulta has no in-app identity key rotation, this can only me
 Bob is on a new device. A new device is a clean app install: Bob's SwiftData store
 is empty, so his `CustodyShard` rows no longer exist.
 
-Alice detects the fingerprint change and marks that shard's `ShardRecord.status` as
-`.lost` — no explicit "I lost my shard" message type is needed.
+Bob's first outbound bundle to Alice after the exchange will carry `custodyManifest: []`.
+Alice sees the expected shard ID absent from a non-nil manifest, with no
+`PendingShardDistribute` row (the distribute was previously confirmed) → marks `.lost`.
 
 Note: `Contact.Profile.identifier` is a stable SwiftData UUID created on init and
 does not change across key re-exchanges. Alice's `ShardDistributionMetadata` remains
@@ -544,160 +545,92 @@ Alice's key fingerprint differs from the previously stored one. This is an unamb
 signal that Alice lost her device and vault — key exchange is proximity-only, so a
 changed fingerprint cannot be injected remotely.
 
-Bob's app responds automatically:
+Bob's app responds automatically, with no separate scheduling model:
 
-1. **Trigger** — on key exchange completion, compare the incoming fingerprint against
-   the stored one. If they differ, look up all `CustodyShard` rows where
-   `ownerContactIdentifier` matches Alice's contact identifier.
-2. **Schedule** — upsert one `PendingShardReturn` row per matching contact (not per
-   shard — the pending record covers all shards for that contact). If a row for
-   this contact already exists (Alice re-exchanged again before delivery), update
-   `scheduledAt` rather than inserting a second row. Encrypted at rest under the
-   shard custody key: `Payload { contactIdentifier, scheduledAt }`, AAD = id-only.
-3. **Deliver** — before any outbound bundle is sent to Alice, check for a
-   `PendingShardReturn` for her. If found, generate `.handback` operations for **all**
-   matching `CustodyShard` rows and include them in `SealedPayload.shardOperations`.
-   All shards for the contact travel in the same bundle — partial returns are not
-   allowed. `ContactManager.encryptBundle` enforces ML-KEM when `shardOperations`
-   contains `.handback` ops: if Alice's new key lacks quantum material the call
-   throws `trusteeLacksQuantumMaterial` (cannot happen in practice — UWB exchange
-   always produces quantum material — but the gate is explicit in code).
-4. **Confirm** — Alice receives the `.handback` operations, stores each in
-   `ReconstructShard`, and queues a `PendingReturnAcknowledge` record: `Payload
-   { contactIdentifier, attrIDs: [UUID] }`, sealed under the recovery buffer key,
-   AAD = id-only. In her next outbound bundle to Bob, she includes a
-   `.returnAcknowledged` operation carrying those `attrID`s. `PendingReturnAcknowledge`
-   is deleted on send (not on Bob's confirmation). If Bob never receives it and
-   resends, Alice re-inserts the shards idempotently — re-reconstruction produces
-   the same PEK and re-wrapping is safe. The retry cycle terminates when Bob
-   receives one acknowledgement and deletes his custody rows.
-5. **Cleanup** — Bob receives `.returnAcknowledged`, matches the `attrID`s against
-   his `CustodyShard` rows, deletes the confirmed rows, and deletes the
-   `PendingShardReturn` record. Bob never deletes a shard until he has explicit
-   confirmation that Alice stored it.
-
-### Why delivery is deferred to the next message
-
-Injecting the shard return into the key exchange handshake would couple two distinct
-operations and complicate failure handling. Alice may not have her vault initialised
-at the moment of exchange (she just got her new device). Deferral gives Alice time to
-set up, and uses the existing outbound bundle pipeline without modification to the
-exchange protocol.
-
+1. **Detection** — at bundle build time, `buildShardOperations` inspects every
+   `CustodyShard` for Alice. Any shard whose stored `ownerKeyFingerprint` differs
+   from Alice's current key fingerprint is a **mismatch shard**.
+2. **Deliver** — mismatch shards are included as `.handback(signedAttribute)` in
+   every outbound bundle to Alice. Bob does not delete these rows pre-emptively.
+   `encryptBundle` enforces ML-KEM when `.handback` ops are present.
+3. **Alice receives `.handback`** — `acceptReturnedShard` stores each shard in the
+   `ReconstructShard` buffer (sealed under the recovery buffer key, no biometric).
+   `tryFinalizeReconstruction` is triggered opportunistically.
+4. **Cleanup** — when Alice successfully redistributes (sends `.distribute` with her
+   new fingerprint), `handleDistribute` detects the fingerprint change and deletes
+   all mismatch-fingerprint shards for Alice's contact. No explicit acknowledgement
+   is needed. Bob stops including `.handback` ops because the mismatch rows are gone.
 
 ### Key notes
 
-- `PendingShardReturn` is deleted only after `.returnAcknowledged` is received,
-  not on send. If Alice's app never acknowledges (crash, new device again), Bob
-  retries on his next outbound bundle to Alice.
+- No `PendingShardReturn` model. Mismatch detection is a live computation at build time.
+- No `.returnAcknowledged` operation. Cleanup is triggered by the new `.distribute`.
 - If Bob holds shards for Alice across multiple vault entries, all are returned in
-  a single bundle (one `.handback` operation per shard, all in `shardOperations`).
+  one or more bundles (one `.handback` per shard, all in `shardOperations`).
 - The returned `SignedAttribute`s were signed with Alice's old SE key. Verification
   fails on Alice's new device by design — GCM authentication on reconstruction is
   the integrity check (see "Signature verification after device loss").
+- If Alice re-exchanges again before sending a `.distribute` (she's still recovering),
+  Bob's fingerprint check still fires and `.handback` ops keep retrying idempotently.
+  `acceptReturnedShard` deduplicates by `signedAttribute.id`.
 
 ---
 
 ## Shard custody reconciliation
 
-### The gap
+### The approach: manifest-based (push, continuous)
 
-Alice's `ShardRecord.status` can silently diverge from reality. The current system
-detects shard loss through two signals:
+Every outbound bundle carries two optional reconciliation fields:
 
-1. **Key fingerprint change** — `contactKeyRotated` fires, `scheduleReturnIfShardsCustodied`
-   upserts a `PendingShardReturn`, Bob's next outbound bundle carries `.handback`.
-2. **Explicit `.notFound`** — Bob's app sends this when asked for a shard it no longer holds.
+| Field | Direction | Contents |
+|---|---|---|
+| `custodyManifest: [UUID]?` | trustee → owner | All shard IDs currently held for this owner |
+| `expectedShards: [UUID]?` | owner → trustee | All shard IDs owner expects trustee to hold |
 
-Neither signal fires for **silent data loss**: Bob deletes and reinstalls the app.
-His SE key survives app deletion (Keychain items are not removed on uninstall), so
-his public key fingerprint is unchanged. `contactKeyRotated` never fires. Bob's new
-install has no `CustodyShard` rows and no knowledge of what it held, so no
-`.notFound` is ever sent. Alice's `ShardRecord.status` stays `.confirmed` indefinitely.
+These fields piggyback on every bundle — including normal message bundles — at zero
+protocol overhead (they are optional JSON fields; `nil` means no shard relationship
+with this contact or old-build sender).
 
-The same failure occurs if a SwiftData migration wipes Bob's store without changing
-his SE key — a realistic risk during app updates with schema changes.
+**How Alice's status updates:** on every incoming bundle from Bob, `processCustodyManifest`
+walks Alice's `ShardDistributionMetadata` for shards assigned to Bob. Presence
+confirms custody (`.confirmed`); absence with no in-flight distribute row marks loss
+(`.lost`). No explicit `.acknowledge` or `.notFound` operation required.
 
-**Consequence:** the erosion warning in the entry detail view shows a false-healthy
-state. Alice does not redistribute. She discovers the real shard count only when
-attempting recovery on a new device — the worst possible moment.
+**How Bob's custody is kept clean:** on every incoming bundle from Alice,
+`processExpectedShards` walks Bob's `CustodyShard` rows for Alice. Any matching-
+fingerprint shard whose ID is absent from `expectedShards` is deleted immediately
+(implicit revoke). No explicit `.revoke` operation required.
 
-This is not a cryptographic vulnerability. The vault and the PEK are unaffected.
-The consequence is missed redistribution prompts leading to undetected erosion below
-threshold.
-
-### Solution: pull-based shard inquiry
-
-Two `ShardOperation` kinds handle reconciliation:
-
-| Kind | Direction | Payload |
-|------|-----------|---------|
-| `.inquire` | owner → trustee | `attributeID: UUID` |
-| `.notFound` | trustee → owner | `attributeID: UUID` (existing handler) |
-
-**Owner side:** `VaultManager.pendingInquireOperations(for:)` is called before every
-outbound bundle. It walks every entry's `ShardDistributionMetadata` and appends a
-`.inquire` operation for each stale `ShardRecord` belonging to the recipient contact:
-
-- `status == .pending` and `distributedAt` is more than **7 days** ago.
-- `status == .confirmed` and `lastProbedAt` is nil or more than **90 days** ago.
-
-`lastProbedAt` is stamped and re-sealed immediately so the timer resets even if the
-bundle is never delivered. No new bundle is created; probes piggyback on normal traffic.
-
-**Trustee side:** `handleInquire` checks whether a `CustodyShard` row with a matching
-`signedAttribute.id` exists.
-- Found → queue `.acknowledge` (reuses `queueShardAcknowledge`).
-- Not found → queue `.notFound` via `PendingShardNotFound` (upsert, same pattern as
-  `PendingShardAcknowledge`). `pendingNotFoundOperations(for:)` drains the queue before
-  the next outbound bundle to the owner.
-
-`handleNotFound` already marks the `ShardRecord` `.lost`; no changes were needed there.
-
-**Why pull, not push:** a push inventory (Bob piggybacks all held attrIDs on every
-outbound message) requires Bob's `encryptBundle` to access `ShardCustodyManager`
-on every send, coupling shard state to normal messaging. It also leaks the custody
-set size to anyone observing message frequency. Pull scopes the probe to contacts
-where Alice has an outstanding distribution, fires only when a record is stale, and
-keeps the shard protocol self-contained.
+**Why push is better here than the earlier pull approach (`.inquire`):**
+- Every bundle exchange is an implicit reconciliation — no stale-after-N-days heuristic.
+- Silent data loss (Bob reinstalls without key change) is detected on Bob's next
+  outbound bundle via `custodyManifest: []`, rather than requiring Alice to probe.
+- No `PendingShardNotFound`, `PendingShardAcknowledge`, `PendingShardRevoke` models.
+  Status is derived from live manifest data, not queued operations.
 
 ### What this does not fix
 
-- **Bob never opens the app.** No client-side mechanism can probe a silent peer.
-  This requires a server-side presence signal, which is out of scope.
-- **Lost `.revoke` bundles.** Bob holds a stale shard Alice has rotated away.
-  The inquiry doesn't cover this — Alice's active attrID for Bob is the new one;
-  she inquires about the new one, Bob responds `.notFound`, Alice marks it `.lost`
-  and redistributes. The old shard in Bob's store is harmless (fails GCM auth) but
-  accumulates as dead storage. Fix: retry `.revoke` for the old attrID alongside
-  the `.inquire` for the new one.
-- **Trustees Alice rarely or never messages.** Probes piggyback on normal outbound
-  traffic. A trustee Alice has no reason to contact independently — someone added
-  purely as a shard holder — will never be probed. Their shard could be silently
-  dead (device loss, app uninstall, key rotation with no re-exchange) while Alice's
-  recovery health continues to show it `.confirmed`.
+- **Bob never opens the app.** No client-side mechanism can query a completely silent
+  peer. This is unchanged from the pull approach.
+- **Trustees Alice rarely or never messages.** `custodyManifest` and `expectedShards`
+  piggyback on natural traffic. A trustee Alice never messages will never be reconciled
+  until the next exchange. A "Check Coverage" button that sends protocol-only bundles
+  to all trustees of an entry is the planned fix; it is not yet implemented.
+- **Old-build trustees.** A trustee running a build without manifest support sends
+  `nil` for `custodyManifest`. Alice treats `nil` as "no update" — stale `.confirmed`
+  status is possible until the trustee upgrades.
 
-  The fix is a standalone "Check Coverage" trigger in `VaultShardSetup` that calls
-  `pendingInquireOperations(for:)` for every trustee of that entry and presents the
-  resulting `.occ` bundles for sharing via the standard share-sheet flow. This was
-  deliberately deferred: there is no background send channel — every `.occ` delivery
-  requires a user-initiated share-sheet action — so an automatic trigger on app
-  resume or vault unlock would produce the identical UX as an explicit button, but
-  without the user's awareness. An explicit "Check Coverage" button is therefore
-  the correct design; it is not yet implemented.
+### `PendingShardDistribute` lifecycle
 
-### Design notes
+Unlike the old fire-and-forget pattern, `PendingShardDistribute` rows now persist
+until the shard is confirmed via `custodyManifest`:
 
-- Old builds that don't know `.inquire` decode it as `.unsupported` and skip it —
-  backward compatibility is handled by the existing `init(from:)` fallback.
-- The trustee handler for `.inquire` requires no vault unlock — it only scans
-  decrypted attrIDs using the shard custody key (device-unlock level, no biometric).
-- Reconciliation is one-sided by design. Bob's `CustodyShard` rows are already kept
-  correct by `.revoke` and `replacesID`. Alice's `ShardRecord` is the only state
-  machine that can silently diverge.
-- `ShardRecord` carries two new optional fields: `distributedAt` (set in
-  `prepareShards`) and `lastProbedAt` (set in `pendingInquireOperations`). Both
-  default to `nil` for backward-compatible JSON decoding of existing records.
+- **Inserted** by `queueDistribute` after `prepareShards`.
+- **Included** in every outbound bundle to the trustee (automatic retry on bundle loss).
+- **Deleted** when the shard ID appears in the trustee's `custodyManifest` (Alice marks `.confirmed`).
+
+This guarantees delivery: if a distribute bundle is lost in transit, the next bundle
+will retry automatically. The trustee deduplicates on receive.
 
 ---
 
@@ -799,13 +732,17 @@ is critical, amber if all are merely degraded.
 | Auto-return trigger + delivery hook   | ✅ Done |
 | Return acknowledge send + cleanup     | ✅ Done |
 | Feature flag (hidden until done)      | ✅ Done        |
-| ShardRecord.distributedAt / lastProbedAt fields         | ✅ Done     |
-| PendingShardNotFound SwiftData model                    | ✅ Done     |
-| `.inquire` ShardOperation kind                          | ✅ Done     |
-| pendingInquireOperations (VaultManager)                 | ✅ Done     |
-| handleInquire + queueShardNotFound (ShardCustodyManager)| ✅ Done     |
-| pendingNotFoundOperations (ShardCustodyManager)         | ✅ Done     |
-| Shard custody reconciliation (`.inquire` / `.notFound`) | ✅ Done     |
+| ShardRecord.distributedAt field                         | ✅ Done     |
+| custodyManifest field on SealedPayload                  | ✅ Done     |
+| expectedShards field on SealedPayload                   | ✅ Done     |
+| processCustodyManifest (ShardCustodyManager)            | ✅ Done     |
+| processExpectedShards (ShardCustodyManager)             | ✅ Done     |
+| buildCustodyManifest (ShardCustodyManager)              | ✅ Done     |
+| buildExpectedShards (ShardCustodyManager)               | ✅ Done     |
+| Fingerprint-mismatch handback (build-time, no model)   | ✅ Done     |
+| Mismatch-shard cleanup on new distribute                | ✅ Done     |
+| PendingShardDistribute delete-on-confirm lifecycle      | ✅ Done     |
+| Manifest-based status update (locked-vault replay)      | ✅ Done     |
 | Backup scope warning in VaultShardSetup + VaultEntryDetail | ✅ Done |
 | AAD field discrimination (VaultField discriminator byte, B1) | ✅ Done |
 | entryType encrypted in SealedLabelPayload — no plaintext column (B2) | ✅ Done |
