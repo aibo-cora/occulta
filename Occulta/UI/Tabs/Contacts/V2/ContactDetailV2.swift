@@ -354,12 +354,18 @@ private struct ComposeHeroV2: View {
                 let basket  = Basket(files: files)
                 let encoded = try JSONEncoder().encode(basket)
                 
-                var shardOps: [OccultaBundle.ShardOperation] = try self.shardCustodyManager?.buildShardOperations(for: self.identifier) ?? []
-                if let inquireOps = try? self.vaultManager?.pendingInquireOperations(for: self.identifier) {
-                    shardOps += inquireOps
-                }
-                
-                let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
+                let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: self.identifier)
+                let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
+                let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
+                let expected   = try? self.shardCustodyManager.flatMap { try $0.buildExpectedShards(for: self.identifier, vaultManager: self.vaultManager!) }
+
+                let encrypted = try self.contactManager.encryptBundle(
+                    data:            encoded,
+                    for:             self.identifier,
+                    shardOperations: shardOps.isEmpty ? nil : shardOps,
+                    custodyManifest: manifest_,
+                    expectedShards:  expected
+                )
 
                 guard !encrypted.isEmpty else {
                     self.showError("Encryption failed. Try again.")

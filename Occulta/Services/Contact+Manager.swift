@@ -885,16 +885,21 @@ extension ContactManager {
     func encryptBundle(
         data: Data? = nil,
         for identifier: String,
-        shardOperations: [OccultaBundle.ShardOperation]? = nil
+        shardOperations: [OccultaBundle.ShardOperation]? = nil,
+        custodyManifest: [UUID]? = nil,
+        expectedShards: [UUID]? = nil
     ) throws -> Data {
-        guard data != nil || shardOperations != nil else { throw Errors.messageHasNoData }
+        guard data != nil || shardOperations != nil || custodyManifest != nil || expectedShards != nil else { throw Errors.messageHasNoData }
         
         if let data, data.isEmpty { throw Errors.messageHasNoData }
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
-        // Shard mode when any op carries a SignedAttribute (the actual shard bytes),
-        // or when there is no user message at all (protocol-only bundle).
-        let shardMode = data == nil || shardOperations?.contains(where: { $0.attribute != nil }) == true
+        // Shard mode when any op carries a SignedAttribute, manifest fields are present,
+        // or there is no user message at all (protocol-only bundle).
+        let shardMode = data == nil
+            || shardOperations?.contains(where: { $0.attribute != nil }) == true
+            || custodyManifest != nil
+            || expectedShards != nil
 
         // ── 1. Resolve recipient key material ─────────────────────────────
         let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(
@@ -927,7 +932,9 @@ extension ContactManager {
         let sealedPayload = OccultaBundle.SealedPayload(
             message:         messageData,
             prekeyBatch:     outboundBatch,
-            shardOperations: shardOperations
+            shardOperations: shardOperations,
+            custodyManifest: custodyManifest,
+            expectedShards:  expectedShards
         )
         let encoded = try JSONEncoder().encode(sealedPayload)
 

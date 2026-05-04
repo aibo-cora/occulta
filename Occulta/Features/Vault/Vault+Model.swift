@@ -59,11 +59,7 @@ struct ShardRecord: Codable {
     let attributeID: UUID
     var status: ShardStatus
     /// When the shard was first distributed (bundle handed to the .occ pipeline).
-    /// Used to age `.pending` shards: stale after 7 days with no `.acknowledge`.
     var distributedAt: Date? = nil
-    /// When the owner last probed this trustee with a `.inquire` operation.
-    /// Used to throttle probes: do not re-probe within 90 days of last probe.
-    var lastProbedAt: Date? = nil
 }
 
 /// Tracks a Shamir split for one VaultEntry.

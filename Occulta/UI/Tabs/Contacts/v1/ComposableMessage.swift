@@ -448,12 +448,23 @@ struct ComposableMessage: View {
                 let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
                 
-                var shardOps: [OccultaBundle.ShardOperation] = try self.shardCustodyManager?.buildShardOperations(for: self.identifier) ?? []
-                if let inquireOps = try? self.vaultManager?.pendingInquireOperations(for: self.identifier) {
-                    shardOps += inquireOps
+                let contactPub = try? self.contactManager?.currentPublicKey(forIdentifier: self.identifier)
+                let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
+                let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
+                let expected: [UUID]?
+                if let custody = self.shardCustodyManager, let vm = self.vaultManager {
+                    expected = try? custody.buildExpectedShards(for: self.identifier, vaultManager: vm)
+                } else {
+                    expected = nil
                 }
-                
-                let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: identifier, shardOperations: shardOps.isEmpty ? nil : shardOps)
+
+                let encryptedData = try self.contactManager?.encryptBundle(
+                    data:            encoded,
+                    for:             identifier,
+                    shardOperations: shardOps.isEmpty ? nil : shardOps,
+                    custodyManifest: manifest_,
+                    expectedShards:  expected
+                )
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false

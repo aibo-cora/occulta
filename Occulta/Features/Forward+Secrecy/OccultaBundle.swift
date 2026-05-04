@@ -169,16 +169,11 @@ struct OccultaBundle: Codable {
     ///
     /// Field usage by kind:
     ///
-    /// | kind                | attribute          | attributeID             |
-    /// |---------------------|--------------------|-------------------------|
-    /// | .distribute         | ✅ new shard       | —                       |
-    /// | .replace            | ✅ new shard       | ✅ old shard to delete  |
-    /// | .acknowledge        | —                  | ✅ shard confirmed      |
-    /// | .revoke             | —                  | ✅ shard to discard     |
-    /// | .inquire            | —                  | ✅ shard to probe       |
-    /// | .handback           | ✅ shard returned  | —                       |
-    /// | .notFound           | —                  | ✅ shard not found      |
-    /// | .returnAcknowledged | —                  | ✅ shard owner received |
+    /// | kind        | attribute          | attributeID            |
+    /// |-------------|--------------------|------------------------|
+    /// | .distribute | ✅ new shard       | —                      |
+    /// | .replace    | ✅ new shard       | ✅ old shard to delete |
+    /// | .handback   | ✅ shard returned  | —                      |
     ///
     /// Old builds that don't know about shards silently ignore `shardOperations`
     /// and render `SealedPayload.message` as regular text — same pattern as
@@ -190,21 +185,10 @@ struct OccultaBundle: Codable {
             case distribute
             /// Owner → trustee: here is a replacement shard; discard `attributeID`.
             case replace
-            /// Trustee → owner: shard received and stored.
-            case acknowledge
-            /// Owner → trustee: discard this shard (PEK rotated or trustee removed).
-            case revoke
-            /// Owner → trustee: probe whether the trustee still holds a specific shard.
-            case inquire
             /// Trustee → owner: here is your shard back (auto-return on key change).
             ///
-            /// Named `.handback` rather than `.return` (a Swift reserved word) or
-            /// `.respond` (which implied a prior `.request` that no longer exists).
+            /// Named `.handback` rather than `.return` (a Swift reserved word).
             case handback
-            /// Trustee → owner: I don't have a shard with this ID.
-            case notFound
-            /// Owner → trustee: I received this shard — you may delete the custody row.
-            case returnAcknowledged
             /// A kind this build does not understand. Decoded from unknown raw values.
             /// The handler skips it silently so bundles from newer builds don't break older ones.
             case unsupported
@@ -218,8 +202,7 @@ struct OccultaBundle: Codable {
         let kind: Kind
         /// The `SignedAttribute` shard payload. Non-nil for `.distribute`, `.replace`, and `.handback`.
         let attribute: SignedAttribute?
-        /// A single shard ID. Non-nil for `.replace` (old shard to delete), `.acknowledge`,
-        /// `.revoke`, `.notFound`, and `.returnAcknowledged`.
+        /// A single shard ID. Non-nil for `.replace` (old shard to delete).
         let attributeID: UUID?
 
         init(
@@ -282,16 +265,30 @@ struct OccultaBundle: Codable {
         /// Added in v1.6.0.
         let shardOperations: [ShardOperation]?
 
+        /// IDs of all custody shards this sender currently holds for the recipient.
+        /// `nil` = old build (no-op for receiver). `[]` = holds nothing.
+        /// Trustee → owner direction only. Added in v1.7.0.
+        let custodyManifest: [UUID]?
+
+        /// IDs the owner expects this trustee to hold. Absence of an ID is an implicit
+        /// revoke signal for same-fingerprint shards. `nil` = old build (no-op).
+        /// Owner → trustee direction only. Added in v1.7.0.
+        let expectedShards: [UUID]?
+
         init(
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
             identityChallenge: IdentityChallengeEnvelope? = nil,
-            shardOperations: [ShardOperation]? = nil
+            shardOperations: [ShardOperation]? = nil,
+            custodyManifest: [UUID]? = nil,
+            expectedShards: [UUID]? = nil
         ) {
             self.message           = message
             self.prekeyBatch       = prekeyBatch
             self.identityChallenge = identityChallenge
             self.shardOperations   = shardOperations
+            self.custodyManifest   = custodyManifest
+            self.expectedShards    = expectedShards
         }
 
         /// A versioned batch of the sender's prekey public keys.

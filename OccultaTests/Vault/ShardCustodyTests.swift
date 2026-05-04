@@ -238,13 +238,13 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     }
 }
 
-// MARK: - .revoke
+// MARK: - Implicit revoke via expectedShards
 
-@Suite("ShardCustodyManager — .revoke")
-@MainActor struct RevokeTests {
+@Suite("ShardCustodyManager — implicit revoke via expectedShards")
+@MainActor struct ImplicitRevokeTests {
 
-    @Test(".revoke deletes the matching CustodyShard")
-    func revokeDeletes() throws {
+    @Test("processExpectedShards removes same-fingerprint shard absent from list")
+    func expectedShardsDeletesAbsent() throws {
         let alice = TestKeyManager()
         let (custody, _, container) = try makeBob()
         let alicePub = try alice.retrieveIdentity()
@@ -259,26 +259,54 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         )
         #expect(try custodyShardCount(in: container) == 1)
 
+        // Empty expectedShards for Alice → implicit revoke of her shard.
+        try custody.processExpectedShards([], from: "alice", senderPublicKey: alicePub)
+        #expect(try custodyShardCount(in: container) == 0)
+    }
+
+    @Test("processExpectedShards retains shard that IS in the list")
+    func expectedShardsRetainsPresent() throws {
+        let alice = TestKeyManager()
+        let (custody, _, container) = try makeBob()
+        let alicePub = try alice.retrieveIdentity()
+        let aliceVault = try makeAlice().vault
+
+        let attr = try makeShardAttr(signer: alice)
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .revoke, attributeID:attr.id)),
+            sealed:           sealedOp(.init(kind: .distribute, attribute: attr)),
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     aliceVault
         )
-        #expect(try custodyShardCount(in: container) == 0)
+        #expect(try custodyShardCount(in: container) == 1)
+
+        // Shard IS in expectedShards → retained.
+        try custody.processExpectedShards([attr.id], from: "alice", senderPublicKey: alicePub)
+        #expect(try custodyShardCount(in: container) == 1)
     }
 
-    @Test(".revoke for an unknown attrID is a no-op")
-    func revokeUnknownIsNoop() throws {
+    @Test("processExpectedShards does not delete mismatch-fingerprint shards")
+    func expectedShardsSparesMismatch() throws {
         let alice = TestKeyManager()
+        let alice2 = TestKeyManager() // Alice's new key
         let (custody, _, container) = try makeBob()
+        let alicePub = try alice.retrieveIdentity()
+        let alice2Pub = try alice2.retrieveIdentity()
+        let aliceVault = try makeAlice().vault
+
+        let attr = try makeShardAttr(signer: alice)
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .revoke, attributeID:UUID())),
-            senderPublicKey:  try alice.retrieveIdentity(),
+            sealed:           sealedOp(.init(kind: .distribute, attribute: attr)),
+            senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     aliceVault
         )
-        #expect(try custodyShardCount(in: container) == 0)
+        #expect(try custodyShardCount(in: container) == 1)
+
+        // Alice2 sends expectedShards: [] but with a DIFFERENT public key (fingerprint mismatch).
+        // Bob must NOT delete the old shard — it's a mismatch shard, immune to implicit revoke.
+        try custody.processExpectedShards([], from: "alice", senderPublicKey: alice2Pub)
+        #expect(try custodyShardCount(in: container) == 1)
     }
 }
 

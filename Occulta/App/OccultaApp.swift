@@ -37,11 +37,6 @@ struct OccultaApp: App {
                 CustodyShard.self,
                 ReconstructShard.self,
                 PendingShardDistribute.self,
-                PendingShardReturn.self,
-                PendingReturnAcknowledge.self,
-                PendingShardRevoke.self,
-                PendingShardAcknowledge.self,
-                PendingShardNotFound.self,
                 PendingShardStatusUpdate.self,
                 GlobalShardConfig.self,
                 BackupEncryptionKey.self,
@@ -272,11 +267,10 @@ struct OccultaApp: App {
                     }
                 }
                 // Key-rotation → two-sided response:
-                // • Bob's path: if we hold shards for this contact, schedule auto-return.
-                // • Alice's path: mark any shards we distributed TO this contact as .lost —
-                //   their stored shard bytes are cryptographically unreachable under the new key.
+                // Alice's path: mark any shards distributed TO this contact as .lost.
+                // Bob's path: mismatch-fingerprint shards are returned via .handback on
+                // the next outbound bundle (detected at build time, no scheduling needed).
                 .onReceive(self.contactManager.contactKeyRotated) { identifier in
-                    self.shardCustodyManager.scheduleReturnIfShardsCustodied(for: identifier)
                     self.vaultManager.markShardsLost(forContact: identifier)
                 }
             }
@@ -451,13 +445,18 @@ struct OccultaApp: App {
             let basket = Basket(files: files, date: Date())
             var basketData = try JSONEncoder().encode(basket)
 
-            var shardOps: [OccultaBundle.ShardOperation] = try self.shardCustodyManager.buildShardOperations(for: manifest.contactIdentifier)
-            if let inquireOps = try? self.vaultManager.pendingInquireOperations(for: manifest.contactIdentifier) {
-                shardOps += inquireOps
-            }
-            
+            let contactID  = manifest.contactIdentifier
+            let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
+            let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
+            let manifest_  = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
+            let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
+
             let occData = try self.contactManager.encryptBundle(
-                data: basketData, for: manifest.contactIdentifier, shardOperations: shardOps.isEmpty ? nil : shardOps
+                data:            basketData,
+                for:             contactID,
+                shardOperations: shardOps.isEmpty ? nil : shardOps,
+                custodyManifest: manifest_,
+                expectedShards:  expected
             )
 
             // Zero all plaintext buffers before deallocation.
