@@ -273,6 +273,32 @@ extension VaultManager {
         if changed { try? self.modelContext.save() }
     }
 
+    // MARK: - Potentially lost shards
+
+    /// Check shards that disappeared from a trustee's custodyManifest while the vault
+    /// was locked and mark confirmed ones as .lost.
+    ///
+    /// Called from unlock() after drainPendingShardStatusUpdates() so all queued
+    /// .confirmed transitions are applied first — ensuring .lost only replaces
+    /// .confirmed, never .pending (can't lose something the trustee never had).
+    ///
+    /// All PotentiallyLostShard rows are deleted regardless of outcome; the vault
+    /// is now unlocked and serves as the authoritative source of truth.
+    func drainPotentiallyLostShards() {
+        let rows = (try? self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())) ?? []
+        guard !rows.isEmpty else { return }
+
+        for row in rows where row.isAbsent {
+            let records = self.shardRecordsForTrustee(row.contactIdentifier)
+            if records.first(where: { $0.attributeID == row.attributeID })?.status == .confirmed {
+                try? self.updateShardStatus(attributeID: row.attributeID, to: .lost)
+            }
+        }
+
+        for row in rows { self.modelContext.delete(row) }
+        try? self.modelContext.save()
+    }
+
     // MARK: - Recovery health
 
     /// Recompute `recoveryHealth` by walking every entry's shard distribution.

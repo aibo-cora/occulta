@@ -38,6 +38,7 @@ struct OccultaApp: App {
                 ReconstructShard.self,
                 PendingShardDistribute.self,
                 PendingShardStatusUpdate.self,
+                PotentiallyLostShard.self,
                 GlobalShardConfig.self,
                 BackupEncryptionKey.self,
             ])

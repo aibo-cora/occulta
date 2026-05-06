@@ -190,43 +190,47 @@ final class ShardCustodyManager {
 
     /// Process trustee's `custodyManifest` — the IDs of all shards they currently hold.
     ///
-    /// - ID in manifest + active record: mark `.confirmed`, delete distribute row.
-    /// - ID not in manifest + no distribute row in flight: mark `.lost`.
-    /// - ID not in manifest + distribute row exists: delivery in flight; no change.
-    /// - Vault locked: queue `.confirmed` for manifest IDs; skip `.lost` detection
-    ///   (manifests are re-sent on next bundle, so lazy detection is safe).
+    /// Confirm in-flight shards whose IDs appear in the manifest (direct vault update
+    /// if unlocked, queued via PendingShardStatusUpdate if locked). Insert a
+    /// PotentiallyLostShard row for each newly confirmed shard so future absence
+    /// can be detected at vault unlock.
+    ///
+    /// Update the isAbsent flag on all existing PotentiallyLostShard rows for this
+    /// contact — true when absent from this manifest, false when present. VaultManager
+    /// processes absent rows and marks them .lost the next time the vault unlocks.
     func processInboundManifest(_ manifest: [UUID], from senderIdentifier: String, vaultManager: VaultManager) throws {
-        /// Received shard manifest, shards being help by contact.
         let manifestSet = Set(manifest)
 
         guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return }
         let distributeRows = (try? self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())) ?? []
 
-        /// All shard IDs for this particular contact.
         let inFlightIDs: Set<UUID> = Set(distributeRows.compactMap {
             guard let payload = try? self.openRow($0.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: $0.id),
                   payload.contactIdentifier == senderIdentifier else { return nil }
             return payload.signedAttribute.id
         })
-        /// This will always be empty because every time we open a file for decryption, the vault is locked (security feature)
-        let trusteeShards = vaultManager.shardRecordsForTrustee(senderIdentifier)
-        
-        /// Reconcile received manifest with our own.
-        
-        for inFlightId in inFlightIDs {
-            if manifestSet.contains(inFlightId) {
-                do {
-                    try vaultManager.updateShardStatus(attributeID: inFlightId, to: .confirmed)
-                } catch VaultManager.VaultError.locked {
-                    try? self.queueShardStatusUpdate(attributeID: inFlightId, newStatus: .confirmed)
-                } catch {}
-                
-                try? self.deletePendingDistribute(attributeID: inFlightId, using: custodyKey, rows: distributeRows)
-            } else {
-                /// The manifest does not contain this ID
-                /// We need to take care of the `.lost` case
-            }
+
+        // Confirm in-flight shards that appear in the manifest.
+        for inFlightId in inFlightIDs where manifestSet.contains(inFlightId) {
+            do {
+                try vaultManager.updateShardStatus(attributeID: inFlightId, to: .confirmed)
+            } catch VaultManager.VaultError.locked {
+                try? self.queueShardStatusUpdate(attributeID: inFlightId, newStatus: .confirmed)
+            } catch {}
+
+            // Record delivery so future absence can be caught at vault unlock.
+            self.modelContext.insert(PotentiallyLostShard(attributeID: inFlightId, contactIdentifier: senderIdentifier))
+            try? self.deletePendingDistribute(attributeID: inFlightId, using: custodyKey, rows: distributeRows)
         }
+
+        // Update absence flag on all watched shards for this contact.
+        let watchedRows = (try? self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())) ?? []
+        var changed = false
+        for row in watchedRows where row.contactIdentifier == senderIdentifier {
+            let absent = !manifestSet.contains(row.attributeID)
+            if row.isAbsent != absent { row.isAbsent = absent; changed = true }
+        }
+        if changed { try? self.modelContext.save() }
     }
 
     /// Process owner's `expectedShards` — IDs the owner expects this trustee to hold.

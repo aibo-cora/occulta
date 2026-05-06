@@ -125,8 +125,9 @@ final class VaultManager {
         self.resetInactivityTimer()
         // Drain reconstruction buffer entries that crossed threshold while locked.
         self.tryFinalizeAllReconstructions()
-        // Replay shard status updates (acknowledge/notFound) that arrived while locked.
+        // Replay shard status updates that arrived while locked, then check for losses.
         self.drainPendingShardStatusUpdates()
+        self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
     }
 
