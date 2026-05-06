@@ -169,34 +169,77 @@ struct OccultaApp: App {
                         }
                 }
                 .onOpenURL { url in
-                    // Handle share extension handoff (outbound) and inbound .occ routing.
+                    let fileLocation: URL
+                    var openedThroughShareExtension = false
+                    
                     if url.scheme == "occulta",
-                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                       let sessionID = components.queryItems?.first(where: { $0.name == "session" })?.value {
+                       let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                        // Handle share extension handoff (outbound) and inbound .occ routing.
+                        
+                        guard
+                            let rawSessionID = components.queryItems?.first(where: { $0.name == "session" })?.value,
+                            let sessionUUID = UUID(uuidString: rawSessionID)
+                        else {
+                            return
+                        }
+                        
+                        let sessionID = sessionUUID.uuidString  // guaranteed: only [0-9a-fA-F-], no path separators
+                        
                         switch url.host {
                         case "inbound":
-                            Task { await self.processInboundSession(sessionID: sessionID) }
-                        default:
-                            Task { await self.processShareSession(sessionID: sessionID) }
-                        }
-                        return
-                    }
+                            /// Process an inbound `.occ` file handed off from the share extension via
+                            /// `occulta://inbound?session=<uuid>`.
+                            ///
+                            /// Reads `group.com.occulta.shared/inbound/<uuid>.occ`
+                            ///
+                            guard let containerURL = FileManager.default
+                                .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
+                            else { return }
 
-                    let accessing = url.startAccessingSecurityScopedResource()
+                            let fileURL = containerURL
+                                .appendingPathComponent("inbound")
+                                .appendingPathComponent("\(sessionID).occ")
+                            
+                            fileLocation = fileURL
+                            openedThroughShareExtension = true
+                            
+                            break
+                        case "share":
+                            self.processShareSession(sessionID: sessionID)
+                            
+                            return
+                        default:
+                            return  // unknown host — ignore silently
+                        }
+                    } else {
+                        fileLocation = url
+                    }
                     
                     Task {
-                        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                        defer {
+                            if openedThroughShareExtension {
+                                try? FileManager.default.removeItem(at: fileLocation)
+                            }
+                        }
+                        /// This is the case when we open occulta files that are located in `Files`
+                        /// "file://"
+                        let accessing = fileLocation.startAccessingSecurityScopedResource()
+                        
+                        defer {
+                            if accessing {
+                                fileLocation.stopAccessingSecurityScopedResource()
+                            }
+                        }
                         
                         do {
                             /// Contents of the encrypted file we opened.
-                            let (data, _) = try await URLSession.shared.data(from: url)
+                            let (data, _) = try await URLSession.shared.data(from: fileLocation)
                             
                             if let ownedBasket = try await self.buildOwnedBasket(from: data) {
                                 self.openedFileContents = ownedBasket
+                            } else {
+                                /// Identity challenge - processed separately.
                             }
-                            // If nil, the bundle was an identity-challenge and
-                            // the IdentityChallenge.Coordinator has taken over
-                            // presentation (approval sheet or result sheet).
                         } catch ContactManager.Errors.messageHasNoData {
                             self.errorMessage = "This message contains no data."
                             self.showError = true
@@ -402,7 +445,7 @@ struct OccultaApp: App {
     /// Reads the encrypted manifest, EXIF-strips images, encrypts via the full FS path,
     /// and presents the resulting `.occ` file for sharing. The entire flow is wrapped in
     /// do/catch — any failure deletes the session directory immediately.
-    private func processShareSession(sessionID: String) async {
+    private func processShareSession(sessionID: String) {
         guard let containerURL = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
         else { return }
@@ -485,51 +528,10 @@ struct OccultaApp: App {
 
             // 6. Present share sheet
             self.shareResult = ShareResult(url: occURL)
-
         } catch {
             // Plaintext cleanup on ANY failure — non-negotiable
             try? FileManager.default.removeItem(at: sessionDir)
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
-            self.showError = true
-        }
-    }
-
-    /// Process an inbound `.occ` file handed off from the share extension via
-    /// `occulta://inbound?session=<uuid>`.
-    ///
-    /// Reads `group.com.occulta.shared/inbound/<uuid>.occ`, feeds the bytes
-    /// through the same `buildOwnedBasket` pipeline used for Files.app opens,
-    /// then routes the result:
-    /// - Non-nil basket → `openedFileContents` (regular message / file sheet).
-    /// - Nil → `IdentityChallenge.Coordinator` has taken over presentation.
-    /// - Error → surfaces via `showError`.
-    ///
-    /// The `.occ` file is deleted from the shared container on success or failure.
-    private func processInboundSession(sessionID: String) async {
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
-        else { return }
-
-        let fileURL = containerURL
-            .appendingPathComponent("inbound")
-            .appendingPathComponent("\(sessionID).occ")
-
-        defer { try? FileManager.default.removeItem(at: fileURL) }
-
-        do {
-            let data = try Data(contentsOf: fileURL)
-            if let basket = try await self.buildOwnedBasket(from: data) {
-                self.openedFileContents = basket
-            }
-            // If nil, IdentityChallenge.Coordinator has taken over via its sheets.
-        } catch ContactManager.Errors.messageHasNoData {
-            self.errorMessage = "This message contains no data."
-            self.showError = true
-        } catch ContactManager.Errors.noPublicKeyToEncryptWith {
-            self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
-            self.showError = true
-        } catch {
-            self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
         }
     }
