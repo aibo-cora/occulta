@@ -289,6 +289,7 @@ final class VaultManager {
     /// Internal (not private) so Vault+Manager+Shards.swift can access it.
     func currentKey() throws -> SymmetricKey {
         guard let ctx = self.authContext else { throw VaultError.locked }
+        
         do {
             guard let key = try self.keyManager.deriveVaultKey(context: ctx) else {
                 self.lock()
@@ -296,12 +297,14 @@ final class VaultManager {
                 throw VaultError.keyDerivationFailed
             }
             self.resetInactivityTimer()
+            
             return key
         } catch let error as VaultError {
             throw error
         } catch {
             // SE refused — context invalidated, biometric set changed, device restarted.
             self.lock()
+            
             throw VaultError.locked
         }
     }

@@ -325,6 +325,11 @@ struct OccultaApp: App {
                     
                     return nil
                 }
+                
+                #if DEBUG
+                debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
+                debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
+                #endif
 
                 // Shard-protocol traffic rides on the same envelope. Route on
                 // sealed.shardOperations; ShardCustodyManager handles all ops

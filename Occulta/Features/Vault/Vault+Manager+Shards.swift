@@ -230,6 +230,7 @@ extension VaultManager {
             entry.shardDistributionEncrypted = combined
             try self.modelContext.save()
             self.recomputeRecoveryHealth()
+            
             return
         }
 
@@ -332,6 +333,7 @@ extension VaultManager {
     /// Returns an empty array when the vault is locked or no matching shards exist.
     func shardRecordsForTrustee(_ contactIdentifier: String) -> [(attributeID: UUID, status: ShardStatus)] {
         guard let vaultKey = try? self.currentKey() else { return [] }
+        
         let entries = (try? self.fetchAllEntries()) ?? []
         var result: [(attributeID: UUID, status: ShardStatus)] = []
 

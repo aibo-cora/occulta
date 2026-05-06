@@ -57,11 +57,6 @@ final class ShardCustodyManager {
         let hasExpected = sealed.expectedShards  != nil
         
         guard hasOps || hasManifest || hasExpected else { return false }
-        
-        #if DEBUG
-        debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
-        debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
-        #endif
 
         for op in sealed.shardOperations ?? [] {
             do {
@@ -225,6 +220,7 @@ final class ShardCustodyManager {
             } else {
                 guard status == .pending || status == .confirmed else { continue }
                 guard !inFlightIDs.contains(attrID) else { continue }
+                
                 do {
                     try vaultManager.updateShardStatus(attributeID: attrID, to: .lost)
                 } catch VaultManager.VaultError.locked {
