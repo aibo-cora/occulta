@@ -196,36 +196,35 @@ final class ShardCustodyManager {
     /// - Vault locked: queue `.confirmed` for manifest IDs; skip `.lost` detection
     ///   (manifests are re-sent on next bundle, so lazy detection is safe).
     func processInboundManifest(_ manifest: [UUID], from senderIdentifier: String, vaultManager: VaultManager) throws {
+        /// Received shard manifest, shards being help by contact.
         let manifestSet = Set(manifest)
 
         guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return }
         let distributeRows = (try? self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())) ?? []
 
+        /// All shard IDs for this particular contact.
         let inFlightIDs: Set<UUID> = Set(distributeRows.compactMap {
             guard let payload = try? self.openRow($0.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: $0.id),
                   payload.contactIdentifier == senderIdentifier else { return nil }
             return payload.signedAttribute.id
         })
-
+        /// This will always be empty because every time we open a file for decryption, the vault is locked (security feature)
         let trusteeShards = vaultManager.shardRecordsForTrustee(senderIdentifier)
-
-        for (attrID, status) in trusteeShards {
-            if manifestSet.contains(attrID) {
+        
+        /// Reconcile received manifest with our own.
+        
+        for inFlightId in inFlightIDs {
+            if manifestSet.contains(inFlightId) {
                 do {
-                    try vaultManager.updateShardStatus(attributeID: attrID, to: .confirmed)
+                    try vaultManager.updateShardStatus(attributeID: inFlightId, to: .confirmed)
                 } catch VaultManager.VaultError.locked {
-                    try? self.queueShardStatusUpdate(attributeID: attrID, newStatus: .confirmed)
+                    try? self.queueShardStatusUpdate(attributeID: inFlightId, newStatus: .confirmed)
                 } catch {}
-                try? self.deletePendingDistribute(attributeID: attrID, using: custodyKey, rows: distributeRows)
-            } else {
-                guard status == .pending || status == .confirmed else { continue }
-                guard !inFlightIDs.contains(attrID) else { continue }
                 
-                do {
-                    try vaultManager.updateShardStatus(attributeID: attrID, to: .lost)
-                } catch VaultManager.VaultError.locked {
-                    break // Vault locked; skip remaining lost detection (re-healed next bundle).
-                } catch {}
+                try? self.deletePendingDistribute(attributeID: inFlightId, using: custodyKey, rows: distributeRows)
+            } else {
+                /// The manifest does not contain this ID
+                /// We need to take care of the `.lost` case
             }
         }
     }
@@ -430,6 +429,7 @@ final class ShardCustodyManager {
         let rowID    = UUID()
         let combined = try self.sealRow(PendingShardStatusUpdate.Payload(attributeID: attributeID, newStatus: newStatus), using: custodyKey, id: rowID)
         self.modelContext.insert(PendingShardStatusUpdate(id: rowID, encryptedPayload: combined))
+        
         try self.modelContext.save()
     }
 
