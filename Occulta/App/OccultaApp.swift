@@ -186,10 +186,11 @@ struct OccultaApp: App {
                     
                     Task {
                         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                        /// Contents of the encrypted file we opened.
-                        let (data, _) = try await URLSession.shared.data(from: url)
                         
                         do {
+                            /// Contents of the encrypted file we opened.
+                            let (data, _) = try await URLSession.shared.data(from: url)
+                            
                             if let ownedBasket = try await self.buildOwnedBasket(from: data) {
                                 self.openedFileContents = ownedBasket
                             }

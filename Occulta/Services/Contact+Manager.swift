@@ -892,22 +892,18 @@ extension ContactManager {
         guard data != nil || shardOperations != nil || custodyManifest != nil || expectedShards != nil else { throw Errors.messageHasNoData }
         
         if let data, data.isEmpty { throw Errors.messageHasNoData }
+        
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
-        // Shard mode when any op carries a SignedAttribute, manifest fields are present,
-        // or there is no user message at all (protocol-only bundle).
-        let shardMode = data == nil
-            || shardOperations?.contains(where: { $0.attribute != nil }) == true
-            || custodyManifest != nil
-            || expectedShards != nil
+        /// We are forcing long term key to be used in the event when a bundle carries shard data.
+        /// This is a precaution because when we have prekey public material, which travels on the wire, there is a higher threat from QC calculating the private part.
+        let isCarryingShard = shardOperations?.contains(where: { $0.attribute != nil }) == true
 
         // ── 1. Resolve recipient key material ─────────────────────────────
-        let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(
-            for: contact, requireQuantum: shardMode
-        )
+        let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact, requireQuantum: isCarryingShard)
 
         #if DEBUG
-        let modeTag = shardMode ? "shard (longTermFallback + ML-KEM)" : "message"
+        let modeTag = isCarryingShard ? "shard (longTermFallback + ML-KEM)" : "message"
         debugPrint("Sealing \(modeTag) bundle, quantum: \(quantumMaterial != nil)")
         #endif
 
@@ -918,12 +914,17 @@ extension ContactManager {
         var contactPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
 
-        if !shardMode {
+        if !isCarryingShard {
             try contact.configureForwardSecrecy()
+            
+            #if DEBUG
             debugPrint("Encrypting message for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
+            #endif
+            
             if let blob = try contact.popOldestPrekeyData() {
                 contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
             }
+            
             outboundBatch = try contact.loadPendingBatch()
         }
 
@@ -945,11 +946,14 @@ extension ContactManager {
             recipientMaterial: recipientMaterial,
             quantumMaterial:   quantumMaterial
         )
+        let encodedBundle = try bundle.encoded()
+        
+        if contactPrekey != nil {
+            // Persist prekey state only when it was mutated (message mode).
+            try self.modelContext.save()
+        }
 
-        // Persist prekey state only when it was mutated (message mode).
-        if !shardMode { try self.modelContext.save() }
-
-        return try bundle.encoded()
+        return encodedBundle
     }
 }
  
@@ -975,11 +979,9 @@ extension ContactManager {
     ///
     /// - `requireQuantum`: when `true`, throws `trusteeLacksQuantumMaterial` if the
     ///   contact has no quantum key material. Shard mode always passes `true`.
-    private func resolveKeyMaterial(
-        for contact: Contact.Profile,
-        requireQuantum: Bool = false
-    ) throws -> (recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial?) {
+    private func resolveKeyMaterial(for contact: Contact.Profile, requireQuantum: Bool = false) throws -> (recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial?) {
         let cryptoOps = Manager.Crypto()
+        
         guard
             let keyRecord         = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
             let recipientMaterial = try? cryptoOps.decrypt(data: keyRecord.material),
@@ -987,6 +989,7 @@ extension ContactManager {
         else { throw Errors.contactHasNoKeys }
 
         let quantumMaterial: QuantumKeyMaterial?
+        
         if let encrypted = keyRecord.quantumKeyMaterialEncrypted,
            let decrypted = try? cryptoOps.decrypt(data: encrypted) {
             quantumMaterial = try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decrypted)
