@@ -13,14 +13,15 @@
 //    is deleted.
 //  - isAbsent is set to true when a subsequent manifest does not include the ID,
 //    and reset to false when a manifest includes it again.
-//  - All rows for a contact are deleted at vault unlock. Absent rows (isAbsent == true)
-//    with status .confirmed trigger an updateShardStatus(.lost) before deletion.
+//  - All rows are deleted at vault unlock. Absent rows (isAbsent == true) with
+//    vault status .confirmed trigger updateShardStatus(.lost) before deletion.
 //
-//  Privacy model:
-//  - attributeID and contactIdentifier are stored in plaintext. Neither field reveals
-//    vault entry content — attributeID is an opaque UUID and contactIdentifier is
-//    already present in other non-encrypted indexes. Cold-disk forensics learns
-//    "N shards are being watched for a given contact" — no vault content is exposed.
+//  Privacy model — encryption at rest:
+//  - Plaintext column (id) carries no identifying data.
+//  - attributeID, contactIdentifier, and isAbsent live inside encryptedPayload,
+//    sealed under the shard custody key with AAD = aad().
+//  - Key derivation requires no biometrics, so rows can be sealed and updated
+//    while the vault is locked (during inbound bundle processing).
 //
 
 import Foundation
@@ -31,19 +32,24 @@ final class PotentiallyLostShard {
 
     var id: UUID = UUID()
 
-    /// Shard attributeID that was confirmed delivered (distribute row deleted).
-    var attributeID: UUID
+    /// Sealed `Payload`: nonce(12B) ∥ ciphertext ∥ tag(16B) — CryptoKit .combined.
+    /// AAD = aad(). Key = `KeyManagerProtocol.deriveShardCustodyKey()`.
+    var encryptedPayload: Data = Data()
 
-    /// Contact whose custodyManifest confirmed delivery.
-    var contactIdentifier: String
+    init(id: UUID = UUID(), encryptedPayload: Data) {
+        self.id               = id
+        self.encryptedPayload = encryptedPayload
+    }
 
-    /// Set to true when a subsequent manifest for this contact does not include
-    /// attributeID. Reset to false when a manifest includes it again.
-    /// Rows where isAbsent == true are checked against vault status at unlock.
-    var isAbsent: Bool = false
+    func aad() -> Data {
+        self.id.uuidString.data(using: .utf8)!
+    }
 
-    init(attributeID: UUID, contactIdentifier: String) {
-        self.attributeID       = attributeID
-        self.contactIdentifier = contactIdentifier
+    struct Payload: Codable {
+        let attributeID:       UUID
+        let contactIdentifier: String
+        /// true after a manifest for this contact did not include attributeID.
+        /// Reset to false when a manifest includes it again.
+        var isAbsent: Bool
     }
 }

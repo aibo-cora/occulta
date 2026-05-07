@@ -288,10 +288,23 @@ extension VaultManager {
         let rows = (try? self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())) ?? []
         guard !rows.isEmpty else { return }
 
-        for row in rows where row.isAbsent {
-            let records = self.shardRecordsForTrustee(row.contactIdentifier)
-            if records.first(where: { $0.attributeID == row.attributeID })?.status == .confirmed {
-                try? self.updateShardStatus(attributeID: row.attributeID, to: .lost)
+        guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else {
+            for row in rows { self.modelContext.delete(row) }
+            try? self.modelContext.save()
+            return
+        }
+
+        for row in rows {
+            guard
+                let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                let plaintext = try? AES.GCM.open(box, using: custodyKey, authenticating: row.aad()),
+                let payload   = try? JSONDecoder().decode(PotentiallyLostShard.Payload.self, from: plaintext),
+                payload.isAbsent
+            else { continue }
+
+            let records = self.shardRecordsForTrustee(payload.contactIdentifier)
+            if records.first(where: { $0.attributeID == payload.attributeID })?.status == .confirmed {
+                try? self.updateShardStatus(attributeID: payload.attributeID, to: .lost)
             }
         }
 

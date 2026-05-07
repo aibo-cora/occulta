@@ -219,16 +219,29 @@ final class ShardCustodyManager {
             } catch {}
 
             // Record delivery so future absence can be caught at vault unlock.
-            self.modelContext.insert(PotentiallyLostShard(attributeID: inFlightId, contactIdentifier: senderIdentifier))
+            let rowID = UUID()
+            if let combined = try? self.sealRow(
+                PotentiallyLostShard.Payload(attributeID: inFlightId, contactIdentifier: senderIdentifier, isAbsent: false),
+                using: custodyKey, id: rowID
+            ) {
+                self.modelContext.insert(PotentiallyLostShard(id: rowID, encryptedPayload: combined))
+            }
             try? self.deletePendingDistribute(attributeID: inFlightId, using: custodyKey, rows: distributeRows)
         }
 
         // Update absence flag on all watched shards for this contact.
         let watchedRows = (try? self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())) ?? []
         var changed = false
-        for row in watchedRows where row.contactIdentifier == senderIdentifier {
-            let absent = !manifestSet.contains(row.attributeID)
-            if row.isAbsent != absent { row.isAbsent = absent; changed = true }
+        for row in watchedRows {
+            guard var payload = try? self.openRow(row.encryptedPayload, as: PotentiallyLostShard.Payload.self, using: custodyKey, id: row.id),
+                  payload.contactIdentifier == senderIdentifier else { continue }
+            let absent = !manifestSet.contains(payload.attributeID)
+            guard payload.isAbsent != absent else { continue }
+            payload.isAbsent = absent
+            if let combined = try? self.sealRow(payload, using: custodyKey, id: row.id) {
+                row.encryptedPayload = combined
+                changed = true
+            }
         }
         if changed { try? self.modelContext.save() }
     }
