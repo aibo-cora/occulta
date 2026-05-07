@@ -116,6 +116,7 @@ extension VaultManager {
     /// BEK shard distribution metadata, or `nil` if BEK has not been distributed yet.
     func bekShardMetadata() throws -> ShardDistributionMetadata? {
         let vaultKey = try self.currentKey()
+        
         return try self.fetchDecodedBEK(vaultKey: vaultKey)?.payload.shardMetadata
     }
 

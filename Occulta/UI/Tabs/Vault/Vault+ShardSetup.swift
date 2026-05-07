@@ -577,17 +577,20 @@ struct VaultShardSetup: View {
     /// - New entry (no distribution): seed selectedIDs from the global trustee config
     ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
-        distributionMeta = loadDistributionMetadata()
-        if let meta = distributionMeta {
+        if case .backup = self.mode { try? self.vault.setupBEK() }
+        
+        self.distributionMeta = self.loadDistributionMetadata()
+        
+        if let meta = self.distributionMeta {
             let activeIDs = Set(meta.shards
                 .filter { Self.activeStatuses.contains($0.status) }
                 .map { $0.contactIdentifier })
-            selectedIDs       = activeIDs
-            threshold         = meta.threshold
-            snapshotIDs       = activeIDs
-            snapshotThreshold = meta.threshold
-        } else if !globalTrusteeIDs.isEmpty {
-            selectedIDs = globalTrusteeIDs
+            self.selectedIDs       = activeIDs
+            self.threshold         = meta.threshold
+            self.snapshotIDs       = activeIDs
+            self.snapshotThreshold = meta.threshold
+        } else if !self.globalTrusteeIDs.isEmpty {
+            self.selectedIDs = self.globalTrusteeIDs
         }
     }
 
@@ -628,8 +631,9 @@ struct VaultShardSetup: View {
             }
             // Reload metadata and update snapshot so isDirty becomes false.
             self.distributionMeta = self.loadDistributionMetadata()
+            
             let activeIDs = Set(
-                distributionMeta?.shards
+                self.distributionMeta?.shards
                     .filter { Self.activeStatuses.contains($0.status) }
                     .map { $0.contactIdentifier } ?? []
             )
