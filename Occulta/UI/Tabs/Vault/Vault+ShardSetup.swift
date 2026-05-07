@@ -33,6 +33,10 @@ struct VaultShardSetup: View {
     @State private var confirmationMessage: String? = nil
     @State private var revokeTarget: ShardRecord? = nil
 
+    // Export flow — backup mode only. Button sets showExportEducation = true.
+    @State private var showExportEducation = false
+    @State private var exportFileURL: URL? = nil
+
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
 
@@ -125,6 +129,19 @@ struct VaultShardSetup: View {
         }
         .safeAreaInset(edge: .bottom) { ctaBar }
         .onAppear { self.seedInitialState() }
+        // Export education sheet — backup mode only, triggered by export button (future).
+        .sheet(isPresented: $showExportEducation) {
+            BackupExportEducationView {
+                self.startExport()
+            }
+        }
+        // Document picker — presented after education sheet confirms.
+        .sheet(item: $exportFileURL) { url in
+            BackupDocumentExporter(fileURL: url) {
+                try? FileManager.default.removeItem(at: url)
+                self.exportFileURL = nil
+            }
+        }
         .confirmationDialog(
             "Revoke Shard",
             isPresented: Binding(
@@ -527,6 +544,20 @@ struct VaultShardSetup: View {
         }
         .frame(width: size, height: size)
         .overlay(Circle().strokeBorder(Color(.systemBackground), lineWidth: 2))
+    }
+
+    // MARK: - Export (backup mode)
+
+    /// Called by BackupExportEducationView.onConfirm after the user acknowledges the sheet.
+    private func startExport() {
+        do {
+            let data = try vault.exportBackup()
+            let url  = VaultManager.tempBackupURL()
+            try data.write(to: url, options: .completeFileProtection)
+            self.exportFileURL = url
+        } catch {
+            self.error = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Helpers
