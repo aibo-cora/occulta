@@ -167,7 +167,17 @@ struct VaultTab: View {
         let affected       = self.vault.recoveryHealth?.affected ?? []
         let affectedIDs    = Set(affected.map(\.entryID))
         let normalEntries  = self.entries.filter { !affectedIDs.contains($0.id) }
+
+        // BEK erosion: non-nil when distribution exists but confirmed < threshold.
+        let bekAffected: (confirmed: Int, threshold: Int)? = {
+            if case .waitingForConfirmations(let c, let t) = self.vault.bekSetupState {
+                return (c, t)
+            }
+            return nil
+        }()
+
         let hasCritical    = affected.contains { $0.status == .critical }
+                          || bekAffected.map { $0.confirmed == 0 } ?? false
         let attentionColor = hasCritical ? Color.red : Color.occultaWarn
 
         return List {
@@ -182,9 +192,16 @@ struct VaultTab: View {
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
 
-            // Attention section — entries with degraded or critical coverage
-            if self.filter != .shards, !affected.isEmpty {
+            // Attention section — entries with degraded or critical coverage + BEK erosion
+            if self.filter != .shards, !affected.isEmpty || bekAffected != nil {
                 Section {
+                    if let bek = bekAffected {
+                        NavigationLink {
+                            VaultShardSetup(mode: .backup)
+                        } label: {
+                            VaultBEKAttentionRow(confirmed: bek.confirmed, threshold: bek.threshold)
+                        }
+                    }
                     ForEach(affected, id: \.entryID) { item in
                         NavigationLink(value: item.entryID) {
                             VaultAffectedEntryRow(item: item)
@@ -200,7 +217,7 @@ struct VaultTab: View {
                             .tracking(1.6)
                             .foregroundStyle(attentionColor)
                         Spacer()
-                        Text("\(affected.count)")
+                        Text("\(affected.count + (bekAffected != nil ? 1 : 0))")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
@@ -399,6 +416,52 @@ private struct VaultBackupRow: View {
         }
         .padding(.vertical, 3)
         .opacity(state == .notSetup ? 0.45 : 1.0)
+    }
+}
+
+// MARK: - BEK Attention Row
+
+private struct VaultBEKAttentionRow: View {
+    let confirmed: Int
+    let threshold: Int
+
+    private var isCritical: Bool { confirmed == 0 }
+    private var accentColor: Color { isCritical ? .red : .occultaWarn }
+
+    private var subtitleText: String {
+        isCritical
+            ? "backup recovery unavailable"
+            : "\(confirmed) of \(threshold) backup recovery pieces"
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "archivebox")
+                    .font(.system(size: 16))
+                    .foregroundStyle(accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Backup Recovery")
+                    .font(.system(size: 16, weight: .medium))
+                    .lineLimit(1)
+                Text(subtitleText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(accentColor)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Image(systemName: isCritical ? "exclamationmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(accentColor)
+        }
+        .padding(.vertical, 3)
     }
 }
 
