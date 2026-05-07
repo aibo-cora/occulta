@@ -250,6 +250,17 @@ struct VaultTab: View {
                 }
             }
 
+            // Backup recovery row — always visible in personal/all filter
+            if self.filter != .shards {
+                Section {
+                    NavigationLink {
+                        VaultShardSetup(mode: .backup)
+                    } label: {
+                        VaultBackupRow(state: self.vault.bekSetupState)
+                    }
+                }
+            }
+
             if self.ssEnabled {
                 if self.filter != .personal {
                     Section {
@@ -336,6 +347,58 @@ private struct VaultEntryRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 5))
         }
         .padding(.vertical, 3)
+    }
+}
+
+// MARK: - Backup Recovery Row
+
+private struct VaultBackupRow: View {
+    let state: VaultManager.BEKSetupState
+
+    private var subtitle: String {
+        switch state {
+        case .notSetup:
+            return "Set up to enable export"
+        case .waitingForConfirmations(let confirmed, let threshold):
+            return "\(confirmed) of \(threshold) trustees confirmed"
+        case .ready:
+            return "Ready to export"
+        }
+    }
+
+    private var accentColor: Color {
+        switch state {
+        case .notSetup:                  .secondary
+        case .waitingForConfirmations:   .occultaWarn
+        case .ready:                     .occultaVerified
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "archivebox")
+                    .font(.system(size: 16))
+                    .foregroundStyle(accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Backup Recovery")
+                    .font(.system(size: 16, weight: .medium))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(accentColor)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 3)
+        .opacity(state == .notSetup ? 0.45 : 1.0)
     }
 }
 

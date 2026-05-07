@@ -151,7 +151,7 @@ struct VaultNewEntrySheet: View {
             }
             .navigationDestination(isPresented: $navigateToShards) {
                 if let id = self.shardEntryID {
-                    VaultShardSetup(entryID: id)
+                    VaultShardSetup(mode: .entry(id))
                 }
             }
         }

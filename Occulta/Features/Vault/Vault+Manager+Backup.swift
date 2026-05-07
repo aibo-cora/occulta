@@ -96,6 +96,29 @@ extension VaultManager {
         return decoded.bek
     }
 
+    // MARK: - BEK setup state (read by VaultTab)
+
+    enum BEKSetupState: Equatable {
+        case notSetup
+        case waitingForConfirmations(confirmed: Int, threshold: Int)
+        case ready
+    }
+
+    /// Current BEK distribution state. Returns `.notSetup` when locked or BEK absent.
+    var bekSetupState: BEKSetupState {
+        guard let meta = try? self.bekShardMetadata() else { return .notSetup }
+        let confirmed = meta.shards.filter { $0.status == .confirmed }.count
+        return confirmed >= meta.threshold
+            ? .ready
+            : .waitingForConfirmations(confirmed: confirmed, threshold: meta.threshold)
+    }
+
+    /// BEK shard distribution metadata, or `nil` if BEK has not been distributed yet.
+    func bekShardMetadata() throws -> ShardDistributionMetadata? {
+        let vaultKey = try self.currentKey()
+        return try self.fetchDecodedBEK(vaultKey: vaultKey)?.payload.shardMetadata
+    }
+
     // MARK: - Export
 
     /// Decrypt all vault entries and seal them under the BEK as a `.occbak` file.

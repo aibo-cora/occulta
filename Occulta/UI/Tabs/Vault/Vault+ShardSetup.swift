@@ -9,7 +9,12 @@ import SwiftUI
 import SwiftData
 
 struct VaultShardSetup: View {
-    let entryID: UUID
+    enum Mode {
+        case entry(UUID)
+        case backup
+    }
+
+    let mode: Mode
 
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
@@ -89,7 +94,7 @@ struct VaultShardSetup: View {
                 infoNote
                     .padding(.horizontal, 16)
 
-                backupNote
+                contextNote
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
 
@@ -105,7 +110,12 @@ struct VaultShardSetup: View {
             }
             .padding(.top, 8)
         }
-        .navigationTitle("Shard Distribution")
+        .navigationTitle({
+            switch mode {
+            case .entry: "Shard Distribution"
+            case .backup: "Backup Recovery"
+            }
+        }())
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -390,25 +400,39 @@ struct VaultShardSetup: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - Backup note
+    // MARK: - Context note
 
-    private var backupNote: some View {
-        HStack(alignment: .top, spacing: 8) {
+    private var contextNote: some View {
+        let amber   = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
+        let amberBg = VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00))
+
+        let title: String
+        let body:  String
+        switch mode {
+        case .entry:
+            title = "Key recovery only"
+            body  = "Shards protect your encryption key — not the entry content. To recover your content after device loss, export a separate vault backup."
+        case .backup:
+            title = "Export gate"
+            body  = "Export becomes available once \(k) trustees confirm receipt. A trustee who hasn't confirmed cannot return their piece during recovery."
+        }
+
+        return HStack(alignment: .top, spacing: 8) {
             Text("⚠️")
                 .font(.system(size: 14))
             VStack(alignment: .leading, spacing: 4) {
-                Text("Key recovery only")
+                Text(title)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)))
-                Text("Shards protect your encryption key — not the entry content. To recover your content after device loss, export a separate vault backup.")
+                    .foregroundStyle(amber)
+                Text(body)
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)).opacity(0.85))
+                    .foregroundStyle(amber.opacity(0.85))
                     .lineSpacing(2)
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)))
+        .background(amberBg)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
@@ -526,6 +550,24 @@ struct VaultShardSetup: View {
         }
     }
 
+    // MARK: - Mode helpers
+
+    /// Load the current shard distribution metadata for whichever mode we're in.
+    private func loadDistributionMetadata() -> ShardDistributionMetadata? {
+        switch mode {
+        case .entry(let id): return try? vault.shardDistributionMetadata(for: id)
+        case .backup:        return try? vault.bekShardMetadata()
+        }
+    }
+
+    /// Call the correct prepare function for the current mode.
+    private func performPrepareShards() throws -> [SignedAttribute] {
+        switch mode {
+        case .entry(let id): return try vault.prepareShards(for: id, threshold: k, recipients: selected)
+        case .backup:        return try vault.prepareBEKShards(threshold: k, recipients: selected)
+        }
+    }
+
     // MARK: - Initial state seeding
 
     /// Populate working state on first appear.
@@ -535,7 +577,7 @@ struct VaultShardSetup: View {
     /// - New entry (no distribution): seed selectedIDs from the global trustee config
     ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
-        distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
+        distributionMeta = loadDistributionMetadata()
         if let meta = distributionMeta {
             let activeIDs = Set(meta.shards
                 .filter { Self.activeStatuses.contains($0.status) }
@@ -560,7 +602,7 @@ struct VaultShardSetup: View {
             // Contacts staying in the distribution get a .replace op; new ones get .distribute.
             var oldAttrIDs: [String: UUID] = [:]
             
-            if let existingMeta = try? self.vault.shardDistributionMetadata(for: self.entryID) {
+            if let existingMeta = self.loadDistributionMetadata() {
                 let newIDs  = Set(selected.map(\.identifier))
                 let removed = existingMeta.shards.filter {
                     !newIDs.contains($0.contactIdentifier)
@@ -576,11 +618,7 @@ struct VaultShardSetup: View {
                 }
             }
 
-            let attributes = try self.vault.prepareShards(
-                for:        self.entryID,
-                threshold:  self.k,
-                recipients: self.selected
-            )
+            let attributes = try self.performPrepareShards()
             for (contact, attribute) in zip(self.selected, attributes) {
                 try? shardCustodyManager?.queueDistribute(
                     attribute: attribute,
@@ -589,7 +627,7 @@ struct VaultShardSetup: View {
                 )
             }
             // Reload metadata and update snapshot so isDirty becomes false.
-            self.distributionMeta = try? vault.shardDistributionMetadata(for: entryID)
+            self.distributionMeta = self.loadDistributionMetadata()
             let activeIDs = Set(
                 distributionMeta?.shards
                     .filter { Self.activeStatuses.contains($0.status) }
@@ -612,7 +650,7 @@ struct VaultShardSetup: View {
         do {
             try self.vault.updateShardStatus(attributeID: record.attributeID, to: .revoked)
             // Reload metadata so the status chip updates immediately.
-            self.distributionMeta = try? self.vault.shardDistributionMetadata(for: self.entryID)
+            self.distributionMeta = self.loadDistributionMetadata()
             // Remove from selection so the UI reflects the change.
             self.selectedIDs.remove(record.contactIdentifier)
             self.snapshotIDs.remove(record.contactIdentifier)

@@ -145,7 +145,7 @@ struct VaultShardHealth: View {
         Section("Entries") {
             ForEach(decoded, id: \.entry.id) { entry, meta, label, type in
                 NavigationLink {
-                    VaultShardSetup(entryID: entry.id)
+                    VaultShardSetup(mode: .entry(entry.id))
                 } label: {
                     self.healthRow(meta: meta, label: label, type: type)
                 }

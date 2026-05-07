@@ -189,7 +189,7 @@ struct VaultEntryDetail: View {
                 Divider().padding(.leading, 16)
 
                 NavigationLink {
-                    VaultShardSetup(entryID: entry.id)
+                    VaultShardSetup(mode: .entry(entry.id))
                 } label: {
                     self.metaRow(title: "Shamir Shards") {
                         if let s = self.shardSummary(for: entry.id) {
@@ -359,7 +359,7 @@ struct VaultEntryDetail: View {
             .buttonStyle(.plain)
 
             NavigationLink {
-                VaultShardSetup(entryID: entry.id)
+                VaultShardSetup(mode: .entry(entry.id))
             } label: {
                 self.actionButton("Manage Shards", style: .primary)
             }
