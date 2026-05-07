@@ -182,8 +182,17 @@ master key, exactly as if the entries were created new.
 6. Write to a `.occbak` file via `UIDocumentPickerViewController` (user chooses
    destination). App does not choose on behalf of the user.
 
-Export is blocked if `encryptedBEK` does not exist (BEK not yet set up) or if
-the BEK shard distribution falls below threshold.
+Export is blocked unless **k or more BEK shards are in `.confirmed` status**
+(trustee's app has acknowledged receipt). `.pending` shards do not count toward
+the threshold — a trustee who hasn't confirmed cannot return their shard during
+recovery, making the backup unrecoverable. Export is also blocked if
+`encryptedBEK` does not exist (BEK not yet set up).
+
+The export button has two distinct disabled states:
+- **Not set up**: `shardMetadata == nil` → *"Set up backup recovery first"*
+  with a CTA to the BEK trustee picker.
+- **Coverage insufficient**: fewer than `k` shards are `.confirmed` → *"Waiting
+  for trustees to confirm — N of K confirmed"* with a CTA to the trustee picker.
 
 ---
 
@@ -297,6 +306,60 @@ and redistribute. The UI warns:
 
 ---
 
+## Backup row in vault list
+
+The BEK setup and backup status surface as a **persistent row at the bottom of
+the vault entry list**, separated from normal entries by a small spacing gap.
+It is not a vault entry — it carries no PEK, no label, no content. It is a
+first-class UI fixture that graduates through four states:
+
+| State | Appearance | Tap action |
+|---|---|---|
+| Not set up | Low opacity, subtitle: *"Set up backup recovery"* | Opens BEK shard setup sheet |
+| Waiting for trustees | Amber, subtitle: *"Waiting for trustees — N of K confirmed"* | Opens trustee status sheet |
+| Ready (k confirmed, not yet exported) | Normal opacity, badge or subtle indicator | Opens export flow (future) |
+| Exported at least once | Normal, subtitle: last export date | Opens export flow (future) |
+
+The row is **always visible** while the vault is unlocked — it does not disappear
+after setup. This keeps backup as a first-class vault feature rather than a
+buried settings item, and ensures users can always see their current backup
+health at a glance.
+
+### Visual design
+
+- Same row height as a vault entry row.
+- Icon: distinct from entry icons (e.g. a shield or archive glyph).
+- Lowered opacity (`0.45`) in the *Not set up* state to signal inactivity.
+- Amber tint on icon and subtitle text in the *Waiting* state (mirrors the
+  existing Attention section colour language).
+- A small top spacing (`24 pt`) separates it from the last real entry.
+- No swipe actions.
+
+### BEK shard setup view
+
+Opened by tapping the row in the *Not set up* or *Waiting* states.
+Pushed as a **navigation destination** inside the vault `NavigationStack` —
+consistent with how per-entry shard setup is presented, and avoids sheet
+presentation complexity. Back button dismisses.
+
+Reuses the existing per-entry shard setup view components:
+
+- **Trustee picker** — same contact list with Global Trustee filter and GLOBAL
+  badge. Pre-populated from Global Trustees.
+- **Threshold stepper** — identical to per-entry setup.
+- **Per-trustee delivery status** — same confirmed / pending indicators.
+
+Differences from the per-entry sheet:
+- Header copy explains this is for the **backup file**, not a specific entry.
+- An inline banner (amber) explains that export is locked until k trustees
+  confirm: *"You'll be able to export your backup once N trustees confirm
+  receipt of their recovery piece."*
+- No entry name or entry icon — the sheet title is *"Backup Recovery"*.
+
+The export action is **not present** in this sheet at this stage.
+
+---
+
 ## Export UI requirements
 
 Export is a Settings action, not a feature flag. It requires:
@@ -395,7 +458,8 @@ without attempting decryption.
 |---|---|
 | BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | ✅ |
 | BEK SSS split + shard delivery (reuse existing pipeline) | ✅ |
-| BEK trustee picker (pre-populated from Global Trustees, GLOBAL badge) | 🔲 |
+| Backup row in vault list (4 states, graduated appearance) | 🔲 |
+| BEK shard setup view (navigation destination, reuses per-entry components) | 🔲 |
 | BEK shard collection via auto-handback on contact key re-exchange | ✅ |
 | Pending restore state (store .occbak, waiting-for-trustees UI) | 🔲 |
 | BEK reconstruction (Shamir.combine) + re-wrap under new device vaultKey | ✅ |
@@ -409,7 +473,7 @@ without attempting decryption.
 | BEK rotation (`rotateBEK()`) | ✅ |
 | Stale-backup warning after trustee change | 🔲 |
 | Export educational sheet (mandatory, no persistent dismiss) | 🔲 |
-| Export disabled when BEK below threshold | ✅ |
+| Export disabled until k BEK shards are `.confirmed` | ✅ logic / 🔲 UX |
 | BEK erosion warning (mirrors per-entry erosion banner) | 🔲 |
 | **Recovery dashboard** (required before ship — see Recovery dashboard section) | 🔲 |
 | Future: macOS companion app sync | 🔲 |
