@@ -376,15 +376,12 @@ struct OccultaApp: App {
                 debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
                 #endif
 
-                // Shard-protocol traffic rides on the same envelope. Route on
-                // sealed.shardOperations; ShardCustodyManager handles all ops
-                // (.distribute / .acknowledge / .revoke / .handback /
-                // .notFound / .returnAcknowledged) and decides what to persist.
-                if let ops = sealed.shardOperations, !ops.isEmpty,
-                   let senderPub = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                // Handle shard operations and manifest reconciliation.
+                
+                if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                     _ = self.shardCustodyManager.handleInbound(
                         sealed:           sealed,
-                        senderPublicKey:  senderPub,
+                        senderPublicKey:  senderPublicKey,
                         senderIdentifier: ownerID,
                         vaultManager:     self.vaultManager
                     )
