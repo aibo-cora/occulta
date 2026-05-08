@@ -415,37 +415,59 @@ Export is a Settings action, not a feature flag. It requires:
 
 ## Recovery dashboard
 
-The recovery dashboard is the primary UI from the moment the user initiates a
-restore until the vault is fully rebuilt. Because shard collection requires
-physical proximity exchanges that may span multiple days, the vault tab must
-surface persistent, actionable restore progress rather than a generic loading
-state.
+The recovery dashboard is the persistent section shown in the vault list from
+the moment a `.occbak` file is stored until reconstruction completes. Because
+shard collection requires physical proximity exchanges that may span multiple
+days, the section survives app restarts and updates in real time as shards arrive.
+
+### What the app knows during restore
+
+Before BEK reconstruction succeeds, the threshold, total trustee count, and
+trustee identities are all unknown. The manifest that would carry this information
+— `ShardDistributionMetadata` inside the `BackupEncryptionKey` row — existed only
+on the old device. Embedding it in the `.occbak` file would require either cleartext
+(ruled out) or sealing it under a key the new device doesn't have yet (circular).
+
+The GCM oracle (`AES.GCM.open` authentication) is the only signal available:
+reconstruction is attempted after every shard arrival; success means done.
+
+**Available during restore:**
+
+| Data point | Available |
+|---|---|
+| Number of shards received so far | ✅ |
+| Whether reconstruction has succeeded | ✅ |
+| Threshold (k) | ✗ |
+| Total trustees (n) | ✗ |
+| Which trustee sent a given shard | ✗ |
+| How many more shards are needed | ✗ |
 
 ### Requirements
 
-- **Persistent**: shown in place of the vault until reconstruction completes.
-  Survives app restarts — pending restore state is persisted.
-- **Per-trustee status**: list each trustee with a simple reached / not yet
-  indicator. Showing which trustees to prioritise is more useful than a raw
-  shard count.
+- **Persistent**: shown as a section in the vault list (not in place of it — the
+  vault is usable immediately for new entries). Survives app restarts.
+- **Count only**: display the raw received count. Do not imply a known total or
+  threshold — neither is available. "N recovery pieces collected" is the correct
+  and complete representation.
 - **Plain language only**: no crypto terminology. Call shards "recovery pieces".
   Do not name the cryptographic mechanism.
-- **Auto-advance**: when the threshold is reached, transition to "Rebuilding
-  vault…" automatically — do not require a manual tap.
-- **Rebuilding progress**: brief sequential steps shown during reconstruction
-  and import (collect → rebuild → redistribute), each checked off as it
-  completes.
-- **Unreachable trustee fallback**: a way to mark a trustee as unreachable
-  so the user understands they must reach the remaining trustees to meet
-  threshold. Does not change the cryptographic threshold — informs the user
-  which trustees they still need.
+- **Auto-advance**: reconstruction is attempted automatically after every shard
+  arrival and on every unlock. No manual tap required — the section disappears
+  when reconstruction succeeds.
 
 ### What it must not do
 
-- Reveal which shard index belongs to which trustee.
+- Show a progress bar, dots, or fraction (e.g. "2 of 3") — the denominator is
+  unknown and displaying one would be fabricated.
 - Use the words "shard", "BEK", "Shamir", "threshold", or "encryption key".
 - Require any action between shard collection and vault reconstruction — the
-  transition must be fully automatic once k pieces are in.
+  transition must be fully automatic once enough pieces are in.
+
+### Implementation status
+
+Implemented as the "Recovery in Progress" section in `Vault+Tab.swift`. Spinner
+header, received-count subtitle, footer guidance. Section disappears when
+`pendingRestoreActive` transitions to `false` after successful `attemptBEKRestore`.
 
 ---
 
@@ -505,5 +527,5 @@ without attempting decryption.
 | Post-restore prompts (`VaultPostRestoreSheet`): contacts + BEK redistribution + entry shards | ✅ |
 | Stale-backup tracking: 3 signals, sealed metadata, rows in Attention section | ✅ |
 | BEK rotation (`rotateBEK()`) | ✅ |
-| **Recovery dashboard — per-trustee status, unreachable trustee fallback** | 🔲 |
+| Recovery dashboard (count-based; per-trustee status infeasible — see Recovery dashboard section) | ✅ |
 | Future: macOS companion app sync | 🔲 |
