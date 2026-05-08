@@ -61,12 +61,12 @@ enum ShamirSecretSharing {
         case invalidParameters
         /// Secret must be exactly 32 bytes.
         case invalidSecretLength
-        /// `reconstruct()` received an empty share array or a share array whose
-        /// length is below the threshold.
+        /// `reconstruct()` received fewer than two shares.
         ///
+        /// SSS requires at least two points to define a polynomial. A single share
+        /// trivially evaluates to a deterministic value that is NOT the secret.
         /// Note: `VaultManager.reconstructEntry` enforces the threshold guard before
         /// calling `reconstruct`, providing a clear early error for the normal path.
-        /// This case fires when `reconstruct` is called directly with an empty array.
         case insufficientShares
         /// A share has the wrong length (expected 33 bytes each) or shares have
         /// inconsistent lengths.
@@ -134,11 +134,13 @@ enum ShamirSecretSharing {
     ///
     /// ⚠️ Caller must zero this buffer after re-encrypting the vault entry.
     static func reconstruct(shares: [[UInt8]]) throws -> Data {
-        guard !shares.isEmpty           else { throw Error.insufficientShares }
+        guard shares.count >= 2        else { throw Error.insufficientShares }
         guard shares[0].count == 33    else { throw Error.invalidShareFormat }
         guard shares.allSatisfy({ $0.count == 33 }) else { throw Error.invalidShareFormat }
 
         let xCoords = shares.map { $0[0] }
+        // x=0 is the secret itself; a share with that coordinate bypasses the threshold.
+        guard !xCoords.contains(0)     else { throw Error.invalidShareFormat }
         guard Set(xCoords).count == xCoords.count else { throw Error.duplicateXCoordinate }
 
         var secret = [UInt8](repeating: 0, count: 32)

@@ -50,6 +50,31 @@ enum ShardStatus: String, Codable {
     case lost
 }
 
+extension ShardStatus {
+    /// Returns `true` when transitioning from `current` to `next` is a legal
+    /// state machine step.
+    ///
+    /// Valid transitions:
+    ///   pending       → confirmed | lost
+    ///   confirmed     → revokePending | lost
+    ///   revokePending → revoked | confirmed  (confirmed = revoke cancelled)
+    ///   revoked       → (terminal — no outgoing transitions)
+    ///   lost          → (terminal — no outgoing transitions)
+    ///
+    /// Any other transition (e.g. revoked → confirmed, confirmed → pending) is
+    /// rejected to prevent inbound traffic from un-revoking a shard or degrading
+    /// a healthy one.
+    static func isValidTransition(from current: ShardStatus, to next: ShardStatus) -> Bool {
+        switch current {
+        case .pending:       return next == .confirmed    || next == .lost
+        case .confirmed:     return next == .revokePending || next == .lost
+        case .revokePending: return next == .revoked      || next == .confirmed
+        case .revoked:       return false
+        case .lost:          return false
+        }
+    }
+}
+
 /// One shard's delivery record within a ShardDistributionMetadata.
 struct ShardRecord: Codable {
     /// `Contact.Profile.identifier` — a stable SwiftData UUID, not derived from the key fingerprint.

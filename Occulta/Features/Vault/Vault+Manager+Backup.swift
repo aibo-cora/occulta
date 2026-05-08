@@ -164,9 +164,12 @@ extension VaultManager {
             throw BackupError.bekNotSetup
         }
 
-        // Guard: active shard count must meet threshold before allowing export.
+        // Guard: confirmed shard count must meet a valid threshold before allowing export.
+        // Only .confirmed shards count — .pending delivery is unconfirmed and may be lost.
+        // threshold < 2 indicates corrupted metadata (split() rejects k < 2 at generation time).
         if let meta = decoded.payload.shardMetadata {
-            let active = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
+            guard meta.threshold >= 2 else { throw BackupError.belowThreshold }
+            let active = meta.shards.filter { $0.status == .confirmed }.count
             guard active >= meta.threshold else { throw BackupError.belowThreshold }
         } else {
             throw BackupError.belowThreshold
@@ -245,6 +248,10 @@ extension VaultManager {
         let backup = try JSONDecoder().decode(VaultBackup.self, from: json)
 
         for backupEntry in backup.entries {
+            // Skip entries that already exist — prevents double-insertion on interrupted
+            // restore (e.g. app crash after some entries were saved but before file cleanup).
+            if (try? self.fetchEntry(by: backupEntry.id)) != nil { continue }
+
             let entryType   = VaultEntryType(rawValue: UInt8(backupEntry.entryType)) ?? .note
             let labelString = String(data: backupEntry.label, encoding: .utf8) ?? ""
 
@@ -503,6 +510,10 @@ extension VaultManager {
         guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else { return }
         guard var meta = decoded.payload.shardMetadata else { return }
         guard let idx  = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { return }
+
+        // Reject illegal state machine transitions — prevents inbound traffic from
+        // un-revoking a BEK shard or moving confirmed back to pending.
+        guard ShardStatus.isValidTransition(from: meta.shards[idx].status, to: newStatus) else { return }
 
         meta.shards[idx].status = newStatus
 

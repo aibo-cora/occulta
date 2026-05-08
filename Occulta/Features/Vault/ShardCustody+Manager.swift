@@ -179,9 +179,26 @@ final class ShardCustodyManager {
     // MARK: - Owner path: inbound
 
     /// `.handback` — trustee returned one of our shards after detecting a fingerprint mismatch.
+    ///
+    /// Verifies the shard's ECDSA signature against our own current identity key.
+    /// On a new device (identity key rotated), old signatures cannot be verified —
+    /// in that case we allow the shard through ONLY when a pending restore is active,
+    /// because the GCM oracle in `reconstructBEK` / `reconstructEntry` is the real
+    /// integrity check. When no restore is active a verification failure means the
+    /// shard is either from a different distribution generation or tampered, and we reject.
     private func handleHandback(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
+        }
+        if let ownKey = try? self.keyManager.retrieveIdentity(),
+           !attribute.verify(against: ownKey) {
+            // Hard-reject unless we're in a pending restore (new-device, key rotated).
+            guard vaultManager.pendingRestoreActive else {
+                throw CustodyError.signatureRejected
+            }
+            #if DEBUG
+            debugPrint("handleHandback: signature verification failed — allowing through for pending restore.")
+            #endif
         }
         try vaultManager.acceptReturnedShard(attribute)
     }

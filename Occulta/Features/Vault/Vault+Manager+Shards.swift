@@ -221,6 +221,11 @@ extension VaultManager {
             else { continue }
 
             guard let idx = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { continue }
+
+            // Reject illegal state machine transitions — prevents inbound traffic from
+            // un-revoking a shard or degrading a confirmed one back to pending.
+            guard ShardStatus.isValidTransition(from: meta.shards[idx].status, to: newStatus) else { return }
+
             meta.shards[idx].status = newStatus
 
             let updated = try JSONEncoder().encode(meta)
@@ -333,7 +338,20 @@ extension VaultManager {
                 let box       = try? AES.GCM.SealedBox(combined: cipher),
                 let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: entry.aad(for: .shardDistribution)),
                 let meta      = try? JSONDecoder().decode(ShardDistributionMetadata.self, from: plaintext)
-            else { continue }
+            else {
+                // Shard distribution data exists but is unreadable — tampered or corrupt.
+                // Surface as critical so the user knows this entry's recovery is broken.
+                let labelPayload  = try? self.decryptLabelPayload(for: entry)
+                affected.append(RecoveryHealthSummary.AffectedEntry(
+                    entryID:   entry.id,
+                    label:     labelPayload?.label ?? "–",
+                    entryType: labelPayload?.type  ?? .note,
+                    status:    .critical,
+                    active:    0,
+                    threshold: 1
+                ))
+                continue
+            }
 
             let active = meta.shards.filter {
                 $0.status == .pending || $0.status == .confirmed
