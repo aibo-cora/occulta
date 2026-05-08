@@ -53,6 +53,23 @@ final class VaultManager {
     /// after every shard status mutation.
     var recoveryHealth: RecoveryHealthSummary? = nil
 
+    // MARK: - Pending restore
+
+    /// `true` while a `.occbak` file is stored locally awaiting BEK shard collection.
+    /// Seeded from the filesystem on every unlock so it survives app restarts.
+    var pendingRestoreActive: Bool = false
+
+    /// Number of BEK restore shards collected so far. Updated on each shard arrival
+    /// and on vault unlock. Drives the progress counter in the vault list.
+    var pendingRestoreShardCount: Int = 0
+
+    // MARK: - Backup staleness
+
+    /// Non-nil when an export has been done on this device and the vault state has
+    /// drifted from what was exported. `nil` when locked, or no export exists yet.
+    /// Updated on every unlock and immediately after a successful export.
+    var backupStaleness: BackupStalenessReport? = nil
+
     // MARK: - Inactivity timer
 
     /// Inactivity timeout before automatic lock. Injected so tests can use short values.
@@ -129,6 +146,11 @@ final class VaultManager {
         self.drainPendingShardStatusUpdates()
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
+        self.refreshBackupStaleness()
+        // Sync pending-restore state from filesystem and attempt reconstruction
+        // if enough shards have arrived since the last unlock.
+        self.refreshPendingRestoreState()
+        self.attemptBEKRestore()
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.

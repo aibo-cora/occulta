@@ -76,6 +76,14 @@ extension VaultManager {
 
         // ── 4. Opportunistic finalise ────────────────────────────────────
         try? self.tryFinalizeReconstruction(entryID: entryID)
+
+        // ── 5. BEK restore — store shard + attempt reconstruction ────────
+        // Only active when a .occbak file is awaiting recovery. storeRestoreShard
+        // is safe while locked (recovery buffer key); attemptBEKRestore no-ops if locked.
+        if self.pendingRestoreActive {
+            try? self.storeRestoreShard(attribute)
+            self.attemptBEKRestore()
+        }
     }
 
     /// Attempt to finalise reconstruction for one entry: collect buffered shards,

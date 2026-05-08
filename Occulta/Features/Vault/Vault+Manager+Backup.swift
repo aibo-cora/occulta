@@ -61,6 +61,37 @@ extension VaultManager {
         let content:   Data   // plaintext entry content
     }
 
+    // MARK: - Backup export metadata (staleness tracking)
+
+    /// Snapshot sealed under the vault key and written alongside each export.
+    /// Used to determine whether the vault state has drifted since the last backup.
+    /// Never stored in plaintext — always AES-GCM sealed with backupExportMetaAAD.
+    struct BackupExportMetadata: Codable {
+        /// When the export was performed.
+        let exportedAt:     Date
+        /// BEK distributionID at export time. A mismatch means rotateBEK() was called.
+        let distributionID: UUID
+        /// Trustee count at export time. A count change means trustees were added/removed.
+        /// NOTE: count-based — does not detect a same-size trustee swap in V1.
+        let shardCount:     Int
+        /// Vault entry count at export time. A higher current count means new entries exist.
+        let entryCount:     Int
+    }
+
+    /// Reasons the last backup may no longer cover the current vault state.
+    /// All three fields are independent — multiple reasons can be true simultaneously.
+    struct BackupStalenessReport {
+        /// `rotateBEK()` was called since the last export. The existing file is
+        /// permanently unrestorable — the old BEK no longer exists.
+        let bekRotated:        Bool
+        /// Number of vault entries created after the last export. Zero = none.
+        let newEntryCount:     Int
+        /// The trustee set size differs from what was in place at export time.
+        let trusteeSetChanged: Bool
+
+        var isStale: Bool { bekRotated || newEntryCount > 0 || trusteeSetChanged }
+    }
+
     // MARK: - BEK setup
 
     /// Generate and persist a new BEK if one does not already exist. No-op if present.
@@ -172,6 +203,18 @@ extension VaultManager {
 
         var result = Self.backupMagic
         result.append(combined)
+
+        // Seal a snapshot of the vault state at export time. Used by
+        // refreshBackupStaleness() to detect drift on subsequent unlocks.
+        let exportMeta = BackupExportMetadata(
+            exportedAt:     Date(),
+            distributionID: decoded.payload.distributionID,
+            shardCount:     decoded.payload.shardMetadata?.shards.count ?? 0,
+            entryCount:     entries.count
+        )
+        try self.writeBackupExportMetadata(exportMeta, vaultKey: vaultKey)
+        self.refreshBackupStaleness()
+
         return result
     }
 
@@ -471,6 +514,172 @@ extension VaultManager {
             ),
             vaultKey: vaultKey
         )
+    }
+
+    // MARK: - Pending restore
+
+    private static let pendingRestoreURL: URL =
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("pending-restore.occbak")
+
+    private static let pendingRestoreShardsURL: URL =
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("pending-restore-shards.dat")
+
+    private static let pendingRestoreShardsAAD: Data =
+        Data("occulta.pending-bek-restore-shards".utf8)
+
+    /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem.
+    /// Called on every vault unlock so state is correct after app restarts.
+    func refreshPendingRestoreState() {
+        self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
+        self.pendingRestoreShardCount = self.pendingRestoreActive
+            ? ((try? self.loadRestoreShards())?.count ?? 0)
+            : 0
+    }
+
+    /// Validate and persist an incoming `.occbak` file. Marks restore as active.
+    /// Called when the user opens a `.occbak` file from Files.
+    func storePendingRestore(_ data: Data) throws {
+        guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
+        try data.write(to: Self.pendingRestoreURL, options: [.atomic, .completeFileProtection])
+        self.pendingRestoreActive     = true
+        self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
+    }
+
+    /// Append one incoming BEK shard to the restore-shard file. Deduplicates by id.
+    /// Safe to call while the vault is locked — uses the recovery buffer key.
+    func storeRestoreShard(_ attribute: SignedAttribute) throws {
+        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        var shards = (try? self.loadRestoreShards()) ?? []
+        guard !shards.contains(where: { $0.id == attribute.id }) else { return }
+        shards.append(attribute)
+
+        let plain  = try JSONEncoder().encode(shards)
+        let sealed = try AES.GCM.seal(
+            plain, using: bufferKey,
+            nonce: AES.GCM.Nonce(),
+            authenticating: Self.pendingRestoreShardsAAD
+        )
+        guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+        try combined.write(to: Self.pendingRestoreShardsURL, options: [.atomic, .completeFileProtection])
+        self.pendingRestoreShardCount = shards.count
+    }
+
+    /// Attempt BEK reconstruction from all collected restore shards.
+    ///
+    /// Groups shards by `entryID` and tries `reconstructBEK` on each group.
+    /// `AES.GCM` authentication inside `reconstructBEK` is the oracle — the
+    /// correct group decrypts successfully; all others throw. Runs silently
+    /// when not enough shards are present. Requires vault to be unlocked.
+    func attemptBEKRestore() {
+        guard self.isUnlocked, self.pendingRestoreActive else { return }
+        guard let backupData = try? Data(contentsOf: Self.pendingRestoreURL) else { return }
+        guard let shards     = try? self.loadRestoreShards(), !shards.isEmpty else { return }
+
+        // Update counter as a side effect (covers the on-unlock path).
+        self.pendingRestoreShardCount = shards.count
+
+        var groups: [UUID: [SignedAttribute]] = [:]
+        for shard in shards {
+            guard let eid = shard.entryID else { continue }
+            groups[eid, default: []].append(shard)
+        }
+
+        for (_, group) in groups {
+            do {
+                // reconstructBEK: Shamir combine → GCM oracle → persist BEK row.
+                try self.reconstructBEK(shards: group, backupData: backupData, ownerIdentity: nil)
+                // importBackup: read persisted BEK row → decrypt file → insert entries.
+                try self.importBackup(backupData)
+            } catch {
+                continue    // Wrong group or not enough shards — try next.
+            }
+
+            // Success — clean up both restore files and reset state.
+            try? FileManager.default.removeItem(at: Self.pendingRestoreShardsURL)
+            try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
+            self.pendingRestoreActive     = false
+            self.pendingRestoreShardCount = 0
+            // Signal the vault list to show post-restore guidance on next unlock.
+            UserDefaults.standard.set(true, forKey: "vault.postRestoreActionNeeded")
+            return
+        }
+    }
+
+    /// Decrypt the restore-shard file. Returns empty array when the file is absent.
+    private func loadRestoreShards() throws -> [SignedAttribute] {
+        guard FileManager.default.fileExists(atPath: Self.pendingRestoreShardsURL.path) else {
+            return []
+        }
+        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        let combined = try Data(contentsOf: Self.pendingRestoreShardsURL)
+        let box      = try AES.GCM.SealedBox(combined: combined)
+        let plain    = try AES.GCM.open(box, using: bufferKey, authenticating: Self.pendingRestoreShardsAAD)
+        return try JSONDecoder().decode([SignedAttribute].self, from: plain)
+    }
+
+    // MARK: - Export metadata helpers
+
+    private static let backupExportMetaURL: URL =
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("backup-export-meta.dat")
+
+    private static let backupExportMetaAAD: Data =
+        Data("occulta.backup-export-meta-v1".utf8)
+
+    /// Recompute `backupStaleness` by comparing the sealed export snapshot against
+    /// current vault state. Called on every unlock and after each successful export.
+    /// Sets `backupStaleness` to `nil` when no export has been done on this device.
+    func refreshBackupStaleness() {
+        guard let vaultKey = try? self.currentKey() else {
+            self.backupStaleness = nil
+            return
+        }
+        guard let meta = try? self.loadBackupExportMetadata(vaultKey: vaultKey) else {
+            self.backupStaleness = nil
+            return
+        }
+
+        let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey)
+
+        let bekRotated        = decoded.map { $0.payload.distributionID != meta.distributionID } ?? false
+        let currentEntryCount = (try? self.modelContext.fetchCount(FetchDescriptor<VaultEntry>())) ?? 0
+        let newEntryCount     = max(0, currentEntryCount - meta.entryCount)
+        let currentShardCount = decoded?.payload.shardMetadata?.shards.count ?? 0
+        let trusteeSetChanged = currentShardCount != meta.shardCount
+
+        let report = BackupStalenessReport(
+            bekRotated:        bekRotated,
+            newEntryCount:     newEntryCount,
+            trusteeSetChanged: trusteeSetChanged
+        )
+        self.backupStaleness = report.isStale ? report : nil
+    }
+
+    private func writeBackupExportMetadata(_ meta: BackupExportMetadata, vaultKey: SymmetricKey) throws {
+        let plain  = try JSONEncoder().encode(meta)
+        let sealed = try AES.GCM.seal(
+            plain, using: vaultKey,
+            nonce: AES.GCM.Nonce(),
+            authenticating: Self.backupExportMetaAAD
+        )
+        guard let combined = sealed.combined else { throw BackupError.encryptionFailed }
+        try combined.write(to: Self.backupExportMetaURL, options: [.atomic, .completeFileProtection])
+    }
+
+    private func loadBackupExportMetadata(vaultKey: SymmetricKey) throws -> BackupExportMetadata {
+        let combined = try Data(contentsOf: Self.backupExportMetaURL)
+        let box      = try AES.GCM.SealedBox(combined: combined)
+        let plain    = try AES.GCM.open(box, using: vaultKey, authenticating: Self.backupExportMetaAAD)
+        return try JSONDecoder().decode(BackupExportMetadata.self, from: plain)
     }
 
     // MARK: - Private helpers

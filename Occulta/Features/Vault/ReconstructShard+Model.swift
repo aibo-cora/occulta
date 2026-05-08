@@ -7,10 +7,10 @@
 //  deleted in bulk once a per-entry threshold is reached and reconstruction
 //  succeeds.
 //
-//  Scope: this model handles per-entry PEK recovery only (the payload carries
-//  an `entryID`). It is NOT used for vault-level BEK reconstruction on a new
-//  device — that path collects KEY_B shards via the auto-handback flow
-//  triggered by proximity re-exchange. See VAULT_BACKUP_GUIDE.md.
+//  Scope: this model handles per-entry PEK recovery. BEK restore shards that
+//  arrive during device recovery are stored in a separate encrypted file
+//  (pending-restore-shards.dat) to isolate their lifecycle from per-entry
+//  cleanup. See VAULT_BACKUP_GUIDE.md and Vault+Manager+Backup.swift.
 //
 //  Privacy model — encryption at rest:
 //  - The target entryID, the SignedAttribute.id (`attrID`), and the full

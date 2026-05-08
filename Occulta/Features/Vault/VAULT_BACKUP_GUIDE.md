@@ -264,7 +264,11 @@ now stale — they reference PEKs that no longer exist on this device.
 > "Your vault was restored. Trustees holding per-entry recovery shards need to
 > receive new shards — the previous ones are no longer valid."
 
-Prompts 2 and 3 are shown on first vault unlock after import.
+All three prompts are surfaced in `VaultPostRestoreSheet`, shown automatically on
+the first vault unlock after a successful restore. The sheet persists across app
+restarts (backed by a `UserDefaults` flag) until the user taps **Done**. Tapping
+"Set up backup recovery" from the sheet dismisses it and pushes
+`VaultShardSetup(mode: .backup)` directly onto the vault `NavigationStack`.
 
 ---
 
@@ -288,6 +292,33 @@ and redistribute. The UI warns:
 
 > "Changing your trustees requires a new backup export. Your previous backup can
 > still be recovered using shards held by your previous trustees."
+
+---
+
+## Backup staleness
+
+After every successful export, a `BackupExportMetadata` snapshot is sealed under
+the vault key (`AES-GCM`, AAD: `"occulta.backup-export-meta-v1"`) and written to
+`Application Support/backup-export-meta.dat` with `.completeFileProtection`.
+No plaintext leaves the app at any point.
+
+On each vault unlock, `refreshBackupStaleness()` decrypts the snapshot and compares
+it against current state, producing a `BackupStalenessReport` with three independent
+signals:
+
+| Signal | Trigger | Severity |
+|---|---|---|
+| `bekRotated` | Current `distributionID ≠ snapshot distributionID` | Critical (red) — existing file unrestorable |
+| `newEntryCount` | Current entry count > snapshot entry count | Warning (amber) — entries missing from backup |
+| `trusteeSetChanged` | Current shard count ≠ snapshot shard count | Warning (amber) — coverage may have shifted |
+
+Each active signal renders as a separate row in the **Needs Attention** section of
+the vault list. Tapping any row opens the export educational sheet. All three
+warnings clear automatically after the next successful export.
+
+`backupStaleness` is `nil` when the vault is locked, no export has been done on
+this device, or all three signals are false. After a restore, the flag starts `nil`
+until the user performs a fresh export on the new device.
 
 ---
 
@@ -458,22 +489,21 @@ without attempting decryption.
 |---|---|
 | BEK generation + vaultKey wrapping → `encryptedBEK` SwiftData singleton | ✅ |
 | BEK SSS split + shard delivery (reuse existing pipeline) | ✅ |
-| Backup row in vault list (4 states, graduated appearance) | 🔲 |
-| BEK shard setup view (navigation destination, reuses per-entry components) | 🔲 |
+| Backup row in vault list (graduated appearance, 3 states) | ✅ |
+| BEK shard setup view (`VaultShardSetup(mode: .backup)`) | ✅ |
 | BEK shard collection via auto-handback on contact key re-exchange | ✅ |
-| Pending restore state (store .occbak, waiting-for-trustees UI) | 🔲 |
-| BEK reconstruction (Shamir.combine) + re-wrap under new device vaultKey | ✅ |
+| Pending restore: `pending-restore.occbak` + shard file + vault-list progress section | ✅ |
+| BEK reconstruction (Shamir.combine + GCM oracle) + re-wrap under new device vaultKey | ✅ |
 | `VaultBackup` / `VaultBackupEntry` Codable models | ✅ |
 | Export: unwrap encryptedBEK + decrypt all entries + AES-GCM seal | ✅ |
-| Export: document picker + `.occbak` UTI registration | 🔲 |
-| Import: AES-GCM open + PEK regeneration + SwiftData insert | ✅ |
-| Post-import BEK shard redistribution prompt | 🔲 |
-| Post-import per-entry SSS redistribution prompt | 🔲 |
-| Post-import contact re-establishment prompt | 🔲 |
+| Export: `UIDocumentPickerViewController` via `BackupPickerPresenter` + `.occbak` UTI | ✅ |
+| Export: section-footer trigger below Backup Recovery row | ✅ |
+| Export educational sheet (mandatory, no persistent dismiss) | ✅ |
+| Export disabled until k BEK shards are `.confirmed` | ✅ |
+| Import: AES-GCM open + fresh PEK regeneration + SwiftData insert | ✅ |
+| BEK erosion warning in Attention section (`VaultBEKAttentionRow`) | ✅ |
+| Post-restore prompts (`VaultPostRestoreSheet`): contacts + BEK redistribution + entry shards | ✅ |
+| Stale-backup tracking: 3 signals, sealed metadata, rows in Attention section | ✅ |
 | BEK rotation (`rotateBEK()`) | ✅ |
-| Stale-backup warning after trustee change | 🔲 |
-| Export educational sheet (mandatory, no persistent dismiss) | 🔲 |
-| Export disabled until k BEK shards are `.confirmed` | ✅ logic / 🔲 UX |
-| BEK erosion warning (mirrors per-entry erosion banner) | 🔲 |
-| **Recovery dashboard** (required before ship — see Recovery dashboard section) | 🔲 |
+| **Recovery dashboard — per-trustee status, unreachable trustee fallback** | 🔲 |
 | Future: macOS companion app sync | 🔲 |

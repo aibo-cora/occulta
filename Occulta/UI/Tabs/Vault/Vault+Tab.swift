@@ -81,9 +81,14 @@ struct VaultTab: View {
 
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
 
+    @AppStorage("vault.postRestoreActionNeeded") private var postRestoreActionNeeded = false
+
     @State private var filter: Filter = .all
     @State private var showNewEntry = false
     @State private var unlocking = false
+    @State private var showExportEducation = false
+    @State private var showPostRestoreSheet = false
+    @State private var showBEKSetup = false
 
     private enum Filter: String, CaseIterable {
         case all      = "All"
@@ -116,6 +121,31 @@ struct VaultTab: View {
             }
             .navigationDestination(for: UUID.self) { id in
                 VaultEntryDetail(entryID: id)
+            }
+            .navigationDestination(isPresented: $showExportEducation) {
+                BackupExportEducationView { self.startExport() }
+            }
+            .navigationDestination(isPresented: $showBEKSetup) {
+                VaultShardSetup(mode: .backup)
+            }
+            .sheet(isPresented: $showPostRestoreSheet) {
+                VaultPostRestoreSheet {
+                    self.postRestoreActionNeeded = false
+                } onSetupBackup: {
+                    self.postRestoreActionNeeded = false
+                    self.showPostRestoreSheet    = false
+                    self.showBEKSetup            = true
+                }
+            }
+            .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
+                if isUnlocked && self.postRestoreActionNeeded {
+                    self.showPostRestoreSheet = true
+                }
+            }
+            .onChange(of: self.postRestoreActionNeeded) { _, newValue in
+                if newValue && self.vault.isUnlocked {
+                    self.showPostRestoreSheet = true
+                }
             }
         }
     }
@@ -176,8 +206,14 @@ struct VaultTab: View {
             return nil
         }()
 
+        let stale      = self.vault.backupStaleness
+        let staleCount = stale.map {
+            ($0.bekRotated ? 1 : 0) + ($0.newEntryCount > 0 ? 1 : 0) + ($0.trusteeSetChanged ? 1 : 0)
+        } ?? 0
+
         let hasCritical    = affected.contains { $0.status == .critical }
                           || bekAffected.map { $0.confirmed == 0 } ?? false
+                          || stale?.bekRotated == true
         let attentionColor = hasCritical ? Color.red : Color.occultaWarn
 
         return List {
@@ -192,9 +228,81 @@ struct VaultTab: View {
                 .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
 
-            // Attention section — entries with degraded or critical coverage + BEK erosion
-            if self.filter != .shards, !affected.isEmpty || bekAffected != nil {
+            // Pending restore section — shown while a .occbak file awaits BEK shard collection
+            if self.vault.pendingRestoreActive {
                 Section {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 9)
+                                .fill(Color.occultaAccent.opacity(0.12))
+                                .frame(width: 36, height: 36)
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 16))
+                                .foregroundStyle(Color.occultaAccent)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Restoring your vault")
+                                .font(.system(size: 16, weight: .medium))
+                            Text("\(self.vault.pendingRestoreShardCount) recovery pieces collected")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Color.occultaAccent)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
+                } header: {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                            .tint(Color.occultaAccent)
+                        Text("Recovery in Progress")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .tracking(1.6)
+                            .foregroundStyle(Color.occultaAccent)
+                    }
+                } footer: {
+                    Text("Open Occulta near your trustees to collect recovery pieces.")
+                        .font(.system(size: 10, design: .monospaced))
+                }
+            }
+
+            // Attention section — entries with degraded or critical coverage + BEK erosion + stale backup
+            if self.filter != .shards, !affected.isEmpty || bekAffected != nil || staleCount > 0 {
+                Section {
+                    // Stale backup rows — one per active staleness reason
+                    if let s = stale {
+                        if s.bekRotated {
+                            Button { self.showExportEducation = true } label: {
+                                VaultBackupStaleRow(
+                                    title:      "Backup can't be restored",
+                                    subtitle:   "Backup key changed — re-export required",
+                                    isCritical: true
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if s.newEntryCount > 0 {
+                            Button { self.showExportEducation = true } label: {
+                                VaultBackupStaleRow(
+                                    title:      "\(s.newEntryCount) \(s.newEntryCount == 1 ? "entry" : "entries") not in backup",
+                                    subtitle:   "Export a new backup to include them",
+                                    isCritical: false
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if s.trusteeSetChanged {
+                            Button { self.showExportEducation = true } label: {
+                                VaultBackupStaleRow(
+                                    title:      "Trustee set changed",
+                                    subtitle:   "Backup coverage has shifted — re-export",
+                                    isCritical: false
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
                     if let bek = bekAffected {
                         NavigationLink {
                             VaultShardSetup(mode: .backup)
@@ -217,7 +325,7 @@ struct VaultTab: View {
                             .tracking(1.6)
                             .foregroundStyle(attentionColor)
                         Spacer()
-                        Text("\(affected.count + (bekAffected != nil ? 1 : 0))")
+                        Text("\(affected.count + (bekAffected != nil ? 1 : 0) + staleCount)")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
@@ -275,6 +383,16 @@ struct VaultTab: View {
                     } label: {
                         VaultBackupRow(state: self.vault.bekSetupState)
                     }
+                } footer: {
+                    if self.vault.bekSetupState == .ready {
+                        Button {
+                            self.showExportEducation = true
+                        } label: {
+                            Label("Export backup file", systemImage: "square.and.arrow.up")
+                                .font(.system(size: 12, design: .monospaced))
+                        }
+                        .tint(Color.occultaAccent)
+                    }
                 }
             }
 
@@ -303,6 +421,20 @@ struct VaultTab: View {
     }
 
     // MARK: Helpers
+
+    private func startExport() {
+        do {
+            let data = try vault.exportBackup()
+            let url  = VaultManager.tempBackupURL()
+            try data.write(to: url, options: .completeFileProtection)
+            BackupPickerPresenter.present(fileURL: url) {
+                try? FileManager.default.removeItem(at: url)
+                self.showExportEducation = false
+            }
+        } catch {
+            // TODO: surface export error
+        }
+    }
 
     private func unlockVault() {
         self.unlocking = true
@@ -457,6 +589,43 @@ private struct VaultBEKAttentionRow: View {
 
             Spacer()
 
+            Image(systemName: isCritical ? "exclamationmark.circle.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(accentColor)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+// MARK: - Backup Stale Row
+
+private struct VaultBackupStaleRow: View {
+    let title:      String
+    let subtitle:   String
+    let isCritical: Bool
+
+    private var accentColor: Color { isCritical ? .red : .occultaWarn }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(.secondarySystemFill))
+                    .frame(width: 36, height: 36)
+                Image(systemName: "archivebox")
+                    .font(.system(size: 16))
+                    .foregroundStyle(accentColor)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 16, weight: .medium))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(accentColor)
+                    .lineLimit(1)
+            }
+            Spacer()
             Image(systemName: isCritical ? "exclamationmark.circle.fill" : "exclamationmark.triangle.fill")
                 .font(.system(size: 14))
                 .foregroundStyle(accentColor)

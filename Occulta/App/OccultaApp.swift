@@ -235,7 +235,13 @@ struct OccultaApp: App {
                         do {
                             /// Contents of the encrypted file we opened.
                             let (data, _) = try await URLSession.shared.data(from: fileLocation)
-                            
+
+                            // .occbak — vault backup restore file.
+                            if fileLocation.pathExtension == "occbak" {
+                                try self.vaultManager.storePendingRestore(data)
+                                return
+                            }
+
                             if let ownedBasket = try await self.buildOwnedBasket(from: data) {
                                 self.openedFileContents = ownedBasket
                             } else {
