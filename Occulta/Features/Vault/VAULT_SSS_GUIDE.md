@@ -634,9 +634,27 @@ will retry automatically. The trustee deduplicates on receive.
 
 ---
 
-## Recovery health monitoring
+## Vault health monitoring
 
-### RecoveryHealthSummary
+Health monitoring runs on the **current device** after vault unlock. It answers
+"is my recovery setup in good shape right now?" — it is not part of the
+new-device recovery flow (that is the `ReconstructShard` / `tryFinalizeReconstruction`
+system documented above).
+
+Three independent signals are surfaced:
+
+| Signal | Property | Requires vault unlock |
+|---|---|---|
+| Per-entry key (PEK) shard health | `recoveryHealth` | ✅ |
+| Backup encryption key (BEK) status | `bekSetupState` | ✅ |
+| Vault backup staleness | `backupStaleness` | ✅ |
+
+All three are `nil` / `.notSetup` when the vault is locked and are recomputed
+together on every relevant state change.
+
+---
+
+### PEK shard health — `RecoveryHealthSummary`
 
 `VaultManager.recoveryHealth: RecoveryHealthSummary?` is an `@Observable` property
 computed on every vault unlock, `deleteEntry`, `updateShardStatus`, and
@@ -664,7 +682,7 @@ struct RecoveryHealthSummary {
 
 Entries at or above threshold are healthy and do not appear in `affected`.
 
-### Vault tab Attention section
+#### Vault tab Attention section
 
 When `recoveryHealth.affected` is non-empty and the filter is not set to
 `.shards`, `VaultTab` surfaces an **Attention** section above the normal entry
@@ -682,7 +700,7 @@ normal entry list below to avoid duplication.
 The section header colour follows the worst status in the set: red if any entry
 is critical, amber if all are merely degraded.
 
-### Update triggers
+#### PEK update triggers
 
 | Event | Triggers recompute |
 |---|---|
@@ -691,6 +709,90 @@ is critical, amber if all are merely degraded.
 | `updateShardStatus` (acknowledge / notFound) | ✅ |
 | `deleteEntry` | ✅ |
 | Vault lock | clears to nil |
+
+---
+
+### BEK status — `BEKSetupState`
+
+`VaultManager.bekSetupState: BEKSetupState` reflects the current distribution
+state of the Backup Encryption Key. The BEK encrypts `.occbak` export files;
+its shards are what allow Alice to restore a backup on a new device without
+her original SE key.
+
+```
+enum BEKSetupState: Equatable {
+    case notSetup                                          // no BEK in SwiftData
+    case waitingForConfirmations(confirmed: Int, threshold: Int)  // BEK exists, below threshold
+    case ready                                             // confirmed ≥ threshold
+}
+```
+
+State derivation:
+
+```
+bekSetupState:
+  → try bekShardMetadata()          // decrypt BackupEncryptionKey row
+  → nil                  → .notSetup
+  → meta.confirmed < k   → .waitingForConfirmations(confirmed, threshold)
+  → meta.confirmed ≥ k   → .ready
+```
+
+`confirmed` counts only `.confirmed` shards (not `.pending`). A BEK shard is
+confirmed when the trustee's `custodyManifest` includes it — the same manifest
+mechanism used for PEK shards.
+
+**Why `.notSetup` is critical:** an unset BEK means any exported backup file is
+undecryptable without Alice's original SE key. If that device is lost, the
+backup is permanently inaccessible. Users should be prompted to export a backup
+and distribute BEK shards before they consider their vault protected.
+
+`bekSetupState` is a computed property — it reads the sealed `BackupEncryptionKey`
+row on every call. It is not cached; call sites should avoid tight loops.
+
+---
+
+### Backup staleness — `BackupStalenessReport`
+
+`VaultManager.backupStaleness: BackupStalenessReport?` is `nil` when the vault
+is locked, when no backup has ever been exported from this device, or when the
+backup is fully current. A non-nil value means the last exported `.occbak` file
+no longer faithfully represents the vault's current state.
+
+```
+struct BackupStalenessReport {
+    let bekRotated:        Bool   // rotateBEK() called since last export — file permanently unrestorable
+    let newEntryCount:     Int    // entries created after last export
+    let trusteeSetChanged: Bool   // trustee count differs from export snapshot
+
+    var isStale: Bool { bekRotated || newEntryCount > 0 || trusteeSetChanged }
+}
+```
+
+Staleness is computed by `refreshBackupStaleness()`, called from `exportBackup()`
+and on vault unlock. It compares the sealed `VaultSnapshot` recorded at last
+export against the current SwiftData state.
+
+**Severity ordering for UI surfaces:**
+
+| Reason | Severity | User action |
+|---|---|---|
+| `bekRotated` | Critical — existing file unrestorable | Export a new backup immediately |
+| `newEntryCount > 0` | Warning — entries missing from backup | Export a new backup |
+| `trusteeSetChanged` | Warning — distribution drift | Export a new backup |
+
+`bekRotated` takes priority: if the BEK has been rotated, the current file
+cannot be decrypted regardless of other conditions, and no partial recovery is
+possible from it.
+
+#### Staleness update triggers
+
+| Event | Action |
+|---|---|
+| `exportBackup()` | Resets staleness — writes new `VaultSnapshot` |
+| Vault unlock | `refreshBackupStaleness()` called — updates `backupStaleness` |
+| `rotateBEK()` | Sets `bekRotated = true` in the snapshot diff |
+| New entry added | Increments `newEntryCount` on next `refreshBackupStaleness()` |
+| Vault lock | `backupStaleness` stays at last computed value (read from `@Observable`) |
 
 ---
 
@@ -721,7 +823,10 @@ is critical, amber if all are merely degraded.
 | New-device recovery (no SE key)       | ✅ Done        |
 | Shard distribution UI (V4 Trust-first, ML-KEM gate) | ✅ Done |
 | Threshold erosion warning (entry detail) | ✅ Done     |
-| Aggregate recovery health indicator (vault tab attention section) | ✅ Done |
+| Aggregate PEK health indicator (vault tab attention section) | ✅ Done |
+| BEKSetupState health signal (bekSetupState)                  | ✅ Done |
+| Backup staleness report (backupStaleness / BackupStalenessReport) | ✅ Done |
+| Vault health dashboard (VaultRecoverySettings — BEK + PEK + backup) | ✅ Done |
 | ownerContactIdentifier in CustodyShard.Payload | ✅ Done |
 | [ShardOperation]? on SealedPayload (multi-shard bundles) | ✅ Done |
 | .returnAcknowledged ShardOperation kind | ✅ Done |
