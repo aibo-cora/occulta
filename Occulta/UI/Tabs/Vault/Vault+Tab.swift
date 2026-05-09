@@ -81,7 +81,8 @@ struct VaultTab: View {
     @Query private var rawCustodyShards: [CustodyShard]
     @Query private var allContacts: [Contact.Profile]
 
-    @AppStorage("vault.postRestoreActionNeeded") private var postRestoreActionNeeded = false
+    @AppStorage("vault.postRestoreActionNeeded")    private var postRestoreActionNeeded    = false
+    @AppStorage("vault.sss.firstEntryPromptShown") private var firstEntryPromptShown    = false
 
     @State private var filter: Filter = .all
     @State private var showNewEntry = false
@@ -89,6 +90,10 @@ struct VaultTab: View {
     @State private var showExportEducation = false
     @State private var showPostRestoreSheet = false
     @State private var showBEKSetup = false
+    @State private var showFirstEntrySheet = false
+    @State private var showFirstEntryShards = false
+    @State private var firstEntryShardID: UUID? = nil
+    @State private var firstEntryLabel = ""
 
     private enum Filter: String, CaseIterable {
         case all      = "All"
@@ -146,6 +151,31 @@ struct VaultTab: View {
                 if newValue && self.vault.isUnlocked {
                     self.showPostRestoreSheet = true
                 }
+            }
+            .sheet(isPresented: $showFirstEntrySheet) {
+                VaultFirstEntrySheet(
+                    entryLabel: self.firstEntryLabel,
+                    onSetupNow: {
+                        self.firstEntryPromptShown = true
+                        self.showFirstEntryShards  = true
+                    },
+                    onLater: {
+                        self.firstEntryPromptShown = true
+                    }
+                )
+            }
+            .navigationDestination(isPresented: $showFirstEntryShards) {
+                if let id = self.firstEntryShardID {
+                    VaultShardSetup(mode: .entry(id))
+                }
+            }
+            .onChange(of: self.entries.count) { oldCount, newCount in
+                guard oldCount == 0, newCount == 1, !self.firstEntryPromptShown else { return }
+                if let entry = self.entries.first {
+                    self.firstEntryShardID = entry.id
+                    self.firstEntryLabel   = (try? self.vault.decryptLabelPayload(for: entry))?.label ?? "your entry"
+                }
+                self.showFirstEntrySheet = true
             }
         }
     }
