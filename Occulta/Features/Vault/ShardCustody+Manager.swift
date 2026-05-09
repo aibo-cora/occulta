@@ -348,6 +348,21 @@ final class ShardCustodyManager {
             .map    { $0.attributeID }
     }
 
+    // MARK: - Trustee display
+
+    /// How many shards this device holds per owner, keyed by owner contact identifier.
+    ///
+    /// Used by the "Custodian Shards" section in VaultTab. Returns an empty array when
+    /// no shards are held or when decryption fails.
+    func heldShards() -> [(ownerContactIdentifier: String?, count: Int)] {
+        let shards = (try? self.decryptAllCustodyShards()) ?? []
+        var groups: [String?: Int] = [:]
+        for shard in shards {
+            groups[shard.payload.ownerContactIdentifier, default: 0] += 1
+        }
+        return groups.map { ($0.key, $0.value) }
+    }
+
     // MARK: - Shard distribute queuing (owner → trustee)
 
     /// Queue a `.distribute` or `.replace` op for `contactIdentifier`.

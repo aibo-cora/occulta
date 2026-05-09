@@ -80,6 +80,8 @@ struct VaultTab: View {
     @AppStorage("vault.sss.enabled") private var ssEnabled = false
 
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
+    @Query private var rawCustodyShards: [CustodyShard]
+    @Query private var allContacts: [Contact.Profile]
 
     @AppStorage("vault.postRestoreActionNeeded") private var postRestoreActionNeeded = false
 
@@ -399,10 +401,34 @@ struct VaultTab: View {
             if self.ssEnabled {
                 if self.filter != .personal {
                     Section {
-                        Text("Shards appear here once you get one from a contact for custody via .occ.")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .listRowBackground(Color.clear)
+                        if self.rawCustodyShards.isEmpty {
+                            Text("Shards appear here once you get one from a contact for custody via .occ.")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .listRowBackground(Color.clear)
+                        } else {
+                            ForEach(self.custodianRows, id: \.ownerIdentifier) { row in
+                                HStack(spacing: 12) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 9)
+                                            .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255).opacity(0.15))
+                                            .frame(width: 36, height: 36)
+                                        Image(systemName: "shield.fill")
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(row.ownerName)
+                                            .font(.system(size: 16, weight: .medium))
+                                        Text("\(row.count) shard\(row.count == 1 ? "" : "s") in custody")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 3)
+                            }
+                        }
                     } header: {
                         HStack(spacing: 6) {
                             Circle()
@@ -421,6 +447,31 @@ struct VaultTab: View {
     }
 
     // MARK: Helpers
+
+    private struct CustodianRow {
+        let ownerIdentifier: String
+        let ownerName: String
+        let count: Int
+    }
+
+    private var custodianRows: [CustodianRow] {
+        guard let mgr = self.shardCustodyManager else { return [] }
+        return mgr.heldShards()
+            .compactMap { info -> CustodianRow? in
+                let identifier = info.ownerContactIdentifier ?? ""
+                let contact = self.allContacts.first { $0.identifier == identifier }
+                let name: String
+                if let c = contact {
+                    let given  = c.givenName.decrypt()
+                    let family = c.familyName.decrypt()
+                    name = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
+                } else {
+                    name = identifier.isEmpty ? "Unknown" : identifier
+                }
+                return CustodianRow(ownerIdentifier: identifier, ownerName: name, count: info.count)
+            }
+            .sorted { $0.ownerName < $1.ownerName }
+    }
 
     private func startExport() {
         do {
