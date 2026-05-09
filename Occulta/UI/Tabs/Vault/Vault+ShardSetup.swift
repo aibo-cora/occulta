@@ -411,7 +411,7 @@ struct VaultShardSetup: View {
         switch mode {
         case .entry:
             title = "Key recovery only"
-            body  = "Shards protect your encryption key — not the entry content. To recover your content after device loss, export a separate vault backup."
+            body  = "Shards protect your encryption key — not the entry content. Export a separate vault backup to recover content after device loss. Any k trustees together can reconstruct your key — pick people who are independent of each other."
         case .backup:
             title = "Export gate"
             body  = "Export becomes available once \(k) trustees confirm receipt. A trustee who hasn't confirmed cannot return their piece during recovery."
