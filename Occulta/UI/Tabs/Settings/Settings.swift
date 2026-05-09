@@ -21,10 +21,6 @@ struct Settings: View {
                     ContactListSettings()
                 }
 
-                NavigationLink("Vault Recovery") {
-                    VaultRecoverySettings()
-                }
-
                 NavigationLink("Project Info") {
                     ProjectInfo()
                 }
