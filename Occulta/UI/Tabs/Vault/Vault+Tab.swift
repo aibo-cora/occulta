@@ -398,46 +398,46 @@ struct VaultTab: View {
                 }
             }
 
-            if self.ssEnabled {
-                if self.filter != .personal {
-                    Section {
-                        if self.rawCustodyShards.isEmpty {
-                            Text("Shards appear here once you get one from a contact for custody via .occ.")
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .listRowBackground(Color.clear)
-                        } else {
-                            ForEach(self.custodianRows, id: \.ownerIdentifier) { row in
-                                HStack(spacing: 12) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 9)
-                                            .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255).opacity(0.15))
-                                            .frame(width: 36, height: 36)
-                                        Image(systemName: "shield.fill")
-                                            .font(.system(size: 15))
-                                            .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
-                                    }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(row.ownerName)
-                                            .font(.system(size: 16, weight: .medium))
-                                        Text("\(row.count) shard\(row.count == 1 ? "" : "s") in custody")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
+            // Show when there are actual shards to hold — independent of the owner's
+            // own SSS setting. A trustee doesn't need SSS enabled to hold shards.
+            if self.filter != .personal && (self.ssEnabled || !self.rawCustodyShards.isEmpty) {
+                Section {
+                    if self.rawCustodyShards.isEmpty {
+                        Text("Shards appear here once you get one from a contact for custody via .occ.")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(self.custodianRows, id: \.ownerIdentifier) { row in
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 9)
+                                        .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255).opacity(0.15))
+                                        .frame(width: 36, height: 36)
+                                    Image(systemName: "shield.fill")
+                                        .font(.system(size: 15))
+                                        .foregroundStyle(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
                                 }
-                                .padding(.vertical, 3)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.ownerName)
+                                        .font(.system(size: 16, weight: .medium))
+                                    Text("\(row.count) shard\(row.count == 1 ? "" : "s") in custody")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
                             }
+                            .padding(.vertical, 3)
                         }
-                    } header: {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
-                                .frame(width: 7, height: 7)
-                            Text("Custodian Shards")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                .tracking(1.6)
-                        }
+                    }
+                } header: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color(red: 0x3C/255, green: 0x34/255, blue: 0x89/255))
+                            .frame(width: 7, height: 7)
+                        Text("Custodian Shards")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .tracking(1.6)
                     }
                 }
             }
@@ -456,7 +456,7 @@ struct VaultTab: View {
 
     private var custodianRows: [CustodianRow] {
         guard let mgr = self.shardCustodyManager else { return [] }
-        return mgr.heldShards()
+        return mgr.heldShards(from: self.rawCustodyShards)
             .compactMap { info -> CustodianRow? in
                 let identifier = info.ownerContactIdentifier ?? ""
                 let contact = self.allContacts.first { $0.identifier == identifier }

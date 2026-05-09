@@ -352,13 +352,16 @@ final class ShardCustodyManager {
 
     /// How many shards this device holds per owner, keyed by owner contact identifier.
     ///
-    /// Used by the "Custodian Shards" section in VaultTab. Returns an empty array when
-    /// no shards are held or when decryption fails.
-    func heldShards() -> [(ownerContactIdentifier: String?, count: Int)] {
-        let shards = (try? self.decryptAllCustodyShards()) ?? []
+    /// Accepts the raw rows from the view's `@Query` to avoid a second ModelContext
+    /// fetch — the `@Query` context is always in sync with the persistent store.
+    /// Returns an empty array when decryption fails.
+    func heldShards(from rows: [CustodyShard]) -> [(ownerContactIdentifier: String?, count: Int)] {
+        guard let custodyKey = try? self.keyManager.deriveShardCustodyKey() else { return [] }
         var groups: [String?: Int] = [:]
-        for shard in shards {
-            groups[shard.payload.ownerContactIdentifier, default: 0] += 1
+        for row in rows {
+            guard let payload = try? self.openRow(row.encryptedPayload, as: CustodyShard.Payload.self, using: custodyKey, id: row.id)
+            else { continue }
+            groups[payload.ownerContactIdentifier, default: 0] += 1
         }
         return groups.map { ($0.key, $0.value) }
     }
