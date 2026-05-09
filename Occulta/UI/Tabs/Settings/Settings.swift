@@ -21,7 +21,7 @@ struct Settings: View {
                     ContactListSettings()
                 }
 
-                NavigationLink("Secret Sharing") {
+                NavigationLink("Vault Recovery") {
                     VaultRecoverySettings()
                 }
 

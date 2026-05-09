@@ -77,8 +77,6 @@ struct VaultTab: View {
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
 
-    @AppStorage("vault.sss.enabled") private var ssEnabled = false
-
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
     @Query private var rawCustodyShards: [CustodyShard]
     @Query private var allContacts: [Contact.Profile]
@@ -398,9 +396,7 @@ struct VaultTab: View {
                 }
             }
 
-            // Show when there are actual shards to hold — independent of the owner's
-            // own SSS setting. A trustee doesn't need SSS enabled to hold shards.
-            if self.filter != .personal && (self.ssEnabled || !self.rawCustodyShards.isEmpty) {
+            if self.filter != .personal && !self.rawCustodyShards.isEmpty {
                 Section {
                     if self.rawCustodyShards.isEmpty {
                         Text("Shards appear here once you get one from a contact for custody via .occ.")

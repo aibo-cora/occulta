@@ -9,15 +9,10 @@ struct VaultNewEntrySheet: View {
     @Environment(VaultManager.self) private var vault
     @Environment(\.dismiss) private var dismiss
 
-    @AppStorage("vault.sss.enabled") private var ssEnabled = false
-
     @State private var selectedType: VaultEntryType = .seedPhrase
     @State private var label = ""
     @State private var content = ""
     @State private var error: String? = nil
-    @State private var shardEntryID: UUID? = nil
-    @State private var navigateToShards = false
-
     private var canSave: Bool {
         !self.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && !self.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -95,38 +90,6 @@ struct VaultNewEntrySheet: View {
                             .foregroundStyle(Color.occultaDanger)
                     }
 
-                    if self.ssEnabled {
-                        Button { self.saveAndSetupShards() } label: {
-                            HStack(spacing: 12) {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.white.opacity(0.2))
-                                        .frame(width: 42, height: 42)
-                                    Text("🔮")
-                                        .font(.system(size: 20))
-                                }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Create Shamir shards")
-                                        .font(.system(size: 15, weight: .bold))
-                                    Text("split · distribute · recover")
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .opacity(0.85)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .opacity(0.8)
-                            }
-                            .foregroundStyle(.white)
-                            .padding(14)
-                            .background(self.canSave ? Color.occultaAccent : Color.secondary.opacity(0.50))
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .shadow(color: self.canSave ? Color.occultaAccent.opacity(0.28) : .clear, radius: 8, y: 4)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(self.canSave == false)
-                    }
-
                     Text("Content is encrypted with your SE key before being written to disk.")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
@@ -147,11 +110,6 @@ struct VaultNewEntrySheet: View {
                     Button("Save") { self.save() }
                         .tint(.occultaAccent)
                         .disabled(!self.canSave)
-                }
-            }
-            .navigationDestination(isPresented: $navigateToShards) {
-                if let id = self.shardEntryID {
-                    VaultShardSetup(mode: .entry(id))
                 }
             }
         }
@@ -217,17 +175,4 @@ struct VaultNewEntrySheet: View {
         }
     }
 
-    private func saveAndSetupShards() {
-        self.error = nil
-        do {
-            let data = self.content.data(using: .utf8) ?? Data()
-            let entry = try self.vault.addEntry(label: self.label, content: data, type: self.selectedType)
-            self.shardEntryID = entry.id
-            self.navigateToShards = true
-        } catch VaultManager.VaultError.locked {
-            self.error = "Vault locked — unlock and try again."
-        } catch {
-            self.error = "Failed to save: \(error.localizedDescription)"
-        }
-    }
 }
