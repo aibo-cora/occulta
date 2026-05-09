@@ -335,9 +335,14 @@ final class ShardCustodyManager {
 
     /// IDs the owner expects `trusteeIdentifier` to hold. Sent in every outbound bundle.
     ///
+    /// Throws `CustodyError.keyDerivationFailed` when the vault is locked. Callers use
+    /// `try?` so the field is omitted (nil) from the bundle — an empty array would signal
+    /// "expect nothing" and cause the trustee to delete all shards they hold.
+    ///
     /// Includes `.pending` and `.confirmed` shards only — `.lost` and `.revoked` are
     /// already terminal and must not be re-sent (they would un-revoke on the trustee).
     func buildExpectedShards(for trusteeIdentifier: String, vaultManager: VaultManager) throws -> [UUID] {
+        guard vaultManager.isUnlocked else { throw CustodyError.keyDerivationFailed }
         return vaultManager.shardRecordsForTrustee(trusteeIdentifier)
             .filter { $0.status == .pending || $0.status == .confirmed }
             .map    { $0.attributeID }
