@@ -241,6 +241,7 @@ extension VaultManager {
 
         // No per-entry shard matched — check BEK shard metadata.
         try? self.updateBEKShardStatus(attributeID: attributeID, to: newStatus)
+        self.recomputeRecoveryHealth()
     }
 
     // MARK: - Deferred status updates
@@ -319,16 +320,26 @@ extension VaultManager {
 
     // MARK: - Recovery health
 
-    /// Recompute `recoveryHealth` by walking every entry's shard distribution.
+    /// Count of shards in a distribution that are still active (pending or confirmed).
+    /// Shared by PEK and BEK erosion logic so the definition of "active" is one place.
+    private func activeShardCount(in meta: ShardDistributionMetadata) -> Int {
+        meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
+    }
+
+    /// Recompute `recoveryHealth` (PEK) and `bekErosion` (BEK) in one pass.
     ///
     /// Best-effort: silently skips entries that fail to decrypt (corrupted or
-    /// from a concurrent lock). Sets `recoveryHealth = nil` if the vault is locked.
-    /// Called from unlock, deleteEntry, updateShardStatus, and prepareShards.
+    /// from a concurrent lock). Sets both properties to nil if the vault is locked.
+    /// Called from unlock, deleteEntry, updateShardStatus, prepareShards,
+    /// prepareBEKShards, and updateBEKShardStatus.
     func recomputeRecoveryHealth() {
         guard let vaultKey = try? self.currentKey() else {
             self.recoveryHealth = nil
+            self.bekErosion     = nil
             return
         }
+
+        // — PEK health —
         let entries = (try? self.fetchAllEntries()) ?? []
         var affected: [RecoveryHealthSummary.AffectedEntry] = []
 
@@ -353,32 +364,35 @@ extension VaultManager {
                 continue
             }
 
-            let active = meta.shards.filter {
-                $0.status == .pending || $0.status == .confirmed
-            }.count
+            let active = self.activeShardCount(in: meta)
             guard active < meta.threshold else { continue }
 
             let payload   = try? self.decryptLabelPayload(for: entry)
-            let label     = payload?.label ?? "–"
-            let entryType = payload?.type  ?? .note
             let status: RecoveryHealthSummary.EntryStatus = active == 0 ? .critical : .degraded
             affected.append(RecoveryHealthSummary.AffectedEntry(
                 entryID:   entry.id,
-                label:     label,
-                entryType: entryType,
+                label:     payload?.label ?? "–",
+                entryType: payload?.type  ?? .note,
                 status:    status,
                 active:    active,
                 threshold: meta.threshold
             ))
         }
 
-        // Critical first, then degraded; alphabetical within each group.
         affected.sort {
             if $0.status == $1.status { return $0.label < $1.label }
             return $0.status == .critical
         }
 
         self.recoveryHealth = RecoveryHealthSummary(affected: affected)
+
+        // — BEK erosion —
+        if let meta = try? self.bekShardMetadata() {
+            let active = self.activeShardCount(in: meta)
+            self.bekErosion = active < meta.threshold ? (active, meta.threshold) : nil
+        } else {
+            self.bekErosion = nil
+        }
     }
 
     // MARK: - Trustee record lookup

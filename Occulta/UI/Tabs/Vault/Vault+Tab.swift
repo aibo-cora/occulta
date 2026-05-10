@@ -198,16 +198,9 @@ struct VaultTab: View {
         let affectedIDs    = Set(affected.map(\.entryID))
         let normalEntries  = self.entries.filter { !affectedIDs.contains($0.id) }
 
-        // BEK erosion: mirrors PEK logic — count pending+confirmed, not just confirmed.
-        // Pending shards are in-flight and count toward coverage; the warning only
-        // fires when the active total falls below threshold (trustee loss / revocation).
-        let bekAffected: (active: Int, threshold: Int)? = {
-            guard let meta = try? self.vault.bekShardMetadata() else { return nil }
-            let active = meta.shards.filter {
-                $0.status == .pending || $0.status == .confirmed
-            }.count
-            return active < meta.threshold ? (active, meta.threshold) : nil
-        }()
+        // BEK erosion: read the stored property computed by recomputeRecoveryHealth().
+        // Same pending+confirmed logic as PEK — no crypto calls at render time.
+        let bekAffected = self.vault.bekErosion
 
         let stale      = self.vault.backupStaleness
         let staleCount = stale.map {

@@ -371,6 +371,7 @@ extension VaultManager {
             vaultKey: vaultKey
         )
 
+        self.recomputeRecoveryHealth()
         return attributes
     }
 

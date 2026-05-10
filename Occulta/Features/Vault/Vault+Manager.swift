@@ -53,6 +53,11 @@ final class VaultManager {
     /// after every shard status mutation.
     var recoveryHealth: RecoveryHealthSummary? = nil
 
+    /// BEK erosion state: non-nil when a BEK distribution exists and
+    /// active (pending + confirmed) shards fall below threshold.
+    /// `nil` when the vault is locked, no BEK is distributed, or coverage is met.
+    var bekErosion: (active: Int, threshold: Int)? = nil
+
     // MARK: - Pending restore
 
     /// `true` while a `.occbak` file is stored locally awaiting BEK shard collection.
@@ -163,6 +168,7 @@ final class VaultManager {
         self.authContext?.invalidate()
         self.authContext     = nil
         self.recoveryHealth  = nil
+        self.bekErosion      = nil
     }
 
     // MARK: - Create
