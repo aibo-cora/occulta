@@ -2,6 +2,8 @@
 
 > **The cryptographic address book the world has been missing.**
 
+[**Download on the App Store →**](https://apps.apple.com/us/app/occulta/id6758548781)
+
 In a world where your contacts and trust are locked inside messaging apps, Occulta gives you true control. Collect verified public keys from friends, family, and colleagues through secure, in-person exchanges using Nearby Interaction — no servers, no phone numbers, no intermediaries.
 
 Once exchanged, encrypt any file, photo, video, or document for anyone in your collection — and share it however you want: AirDrop, email, iMessage, any chat app. Your data stays hidden from analysis and sale.
@@ -19,6 +21,8 @@ Because Occulta requires no phone number, no server account, and no password, th
 - [Key Exchange Flow](#key-exchange-flow)
 - [Encryption Flow](#encryption-flow)
 - [Vault & Secret Sharing](#vault--secret-sharing)
+  - [Recovery Health Monitoring](#recovery-health-monitoring)
+  - [Shard Indicator](#shard-indicator)
 - [Account Takeover Resistance](#account-takeover-resistance)
 - [Security Properties](#security-properties)
 - [Threat Model](#threat-model)
@@ -443,6 +447,20 @@ Device-unlock (not biometric) allows shard bundles to be stored automatically on
 | Shard mixing across entries | GCM authentication rejects incompatible shares |
 | HNDL (quantum adversary archives bundles) | Mandatory ML-KEM-1024 in session key |
 | Trustee device loss | Owner detects fingerprint change → marks shard `.lost`; UI prompts redistribution |
+
+### Recovery health monitoring
+
+The Vault tab surfaces three readiness signals inline — no separate settings screen required.
+
+**Per-entry key (PEK) health** — entries whose shard distribution has fallen below threshold (trustees lost devices, shards revoked) appear in a "Needs Attention" section with a critical or degraded label. Only active (`.pending` / `.confirmed`) shards count toward coverage.
+
+**Backup encryption key (BEK) status** — a permanent row in the vault list tracks whether the BEK has been distributed and how many trustees have confirmed receipt. Vault export is gated on reaching threshold confirmation.
+
+**Backup staleness** — three conditions invalidate an existing backup and surface as tappable rows: new entries added since last export, BEK rotated (existing backup permanently unrestorable), or trustee set changed. Each routes directly to the export flow.
+
+### Shard indicator
+
+Every entry in the vault list carries a 🔮 glyph in its trailing position. When no shard distribution has been configured the glyph is grayscale and dimmed — a passive cue that the entry's encryption key has no recovery path. Once any distribution is marked for delivery the glyph switches to full colour with a soft purple glow. No notification, no modal — the indicator updates automatically as shard state changes.
 
 ---
 
