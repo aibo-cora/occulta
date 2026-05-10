@@ -537,11 +537,16 @@ private struct VaultEntryRow: View {
 
             Spacer()
 
-            if !self.hasShards {
-                Image(systemName: "shield.slash")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary.opacity(0.5))
-            }
+            Text("🔮")
+                .font(.system(size: 13))
+                .grayscale(self.hasShards ? 0 : 1)
+                .opacity(self.hasShards ? 1 : 0.3)
+                .shadow(
+                    color: self.hasShards
+                        ? VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)).opacity(0.55)
+                        : .clear,
+                    radius: 4
+                )
 
             Text("SE")
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
