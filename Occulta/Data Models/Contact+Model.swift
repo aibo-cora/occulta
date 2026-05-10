@@ -51,6 +51,11 @@ extension Contact {
         var contactPublicKeys: [Key]? = []
         /// Encrypted forward secrecy metadata.
         var forwardSecrecyEncrypted: Data?
+
+        /// Encrypted JSON-encoded [SignedAttribute] blob (Issue #6).
+        /// nil until the contact has shared at least one signed attribute.
+        /// SwiftData lightweight migration: new optional column, no plan required.
+        var signedAttributes: Data? = nil
         
         /// Tracks which encryption scheme protects this record's fields.
         /// Default is 1 (v1_identityDerived) for backward compatibility with

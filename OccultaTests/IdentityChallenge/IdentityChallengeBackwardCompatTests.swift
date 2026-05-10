@@ -214,7 +214,8 @@ private struct _Party {
         self.view = IdentityChallenge.ContactView(
             identifier: name,
             publicKey:  try! km.retrieveIdentity(),
-            displayName: name
+            displayName: name,
+            quantumKeyMaterial: nil
         )
     }
 }
