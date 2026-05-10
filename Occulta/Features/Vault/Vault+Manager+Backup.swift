@@ -292,7 +292,6 @@ extension VaultManager {
         }
 
         try self.modelContext.save()
-        self.recomputeRecoveryHealth()
     }
 
     // MARK: - BEK shard distribution
@@ -371,7 +370,6 @@ extension VaultManager {
             vaultKey: vaultKey
         )
 
-        self.recomputeRecoveryHealth()
         return attributes
     }
 

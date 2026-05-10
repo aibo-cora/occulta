@@ -15,6 +15,7 @@
 //
 
 import Foundation
+import Combine
 import SwiftData
 import CryptoKit
 import UIKit
@@ -83,6 +84,9 @@ final class VaultManager {
     @ObservationIgnored
     private var inactivityTimer: Timer?
 
+    @ObservationIgnored
+    private var cancellables = Set<AnyCancellable>()
+
     // MARK: - Errors
 
     enum VaultError: Error {
@@ -121,18 +125,31 @@ final class VaultManager {
         // Condition 3: app loses active focus (incoming call, Control Center, banner)
         // Condition 4: inactivity — handled by inactivityTimer (resetInactivityTimer)
         // Condition 5: derivation failure — handled inside currentKey()
-        let lockNames: [Notification.Name] = [
+        for name in [
             UIApplication.didEnterBackgroundNotification,
             UIApplication.protectedDataWillBecomeUnavailableNotification,
             UIApplication.willResignActiveNotification
-        ]
-        for name in lockNames {
-            NotificationCenter.default.addObserver(
-                forName: name, object: nil, queue: .main
-            ) { [weak self] _ in
-                self?.lock()
-            }
+        ] {
+            NotificationCenter.default.publisher(for: name)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.lock() }
+                .store(in: &self.cancellables)
         }
+
+        // ── Auto-recompute on any ModelContext save ───────────────────────────
+        // We don't discriminate which ModelContext caused the notification —
+        // saves from other managers (ContactManager, ExchangeManager) may also
+        // fire it while the vault is unlocked, but extra recomputes are harmless
+        // since recomputeRecoveryHealth() exits cheaply when no shard data exists.
+        // The guard on isUnlocked is for correctness: currentKey() would throw
+        // when locked, and recoveryHealth/bekErosion are already nil from lock().
+        NotificationCenter.default.publisher(for: ModelContext.didSave)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, self.isUnlocked else { return }
+                self.recomputeRecoveryHealth()
+            }
+            .store(in: &self.cancellables)
     }
 
     // MARK: - Unlock / lock
@@ -302,7 +319,6 @@ final class VaultManager {
 
         self.modelContext.delete(entry)
         try self.modelContext.save()
-        self.recomputeRecoveryHealth()
 
         return metadata
     }

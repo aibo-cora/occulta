@@ -128,7 +128,6 @@ extension VaultManager {
         
         entry.shardDistributionEncrypted = combined
         try self.modelContext.save()
-        self.recomputeRecoveryHealth()
 
         return attributes
     }
@@ -196,7 +195,6 @@ extension VaultManager {
 
         if changed {
             try? self.modelContext.save()
-            self.recomputeRecoveryHealth()
         }
     }
 
@@ -234,14 +232,12 @@ extension VaultManager {
 
             entry.shardDistributionEncrypted = combined
             try self.modelContext.save()
-            self.recomputeRecoveryHealth()
-            
+
             return
         }
 
         // No per-entry shard matched — check BEK shard metadata.
         try? self.updateBEKShardStatus(attributeID: attributeID, to: newStatus)
-        self.recomputeRecoveryHealth()
     }
 
     // MARK: - Deferred status updates
@@ -330,8 +326,8 @@ extension VaultManager {
     ///
     /// Best-effort: silently skips entries that fail to decrypt (corrupted or
     /// from a concurrent lock). Sets both properties to nil if the vault is locked.
-    /// Called from unlock, deleteEntry, updateShardStatus, prepareShards,
-    /// prepareBEKShards, and updateBEKShardStatus.
+    /// Called directly from unlock() (no save occurs there) and automatically
+    /// via the ModelContext.didSave observer for all other mutations.
     func recomputeRecoveryHealth() {
         guard let vaultKey = try? self.currentKey() else {
             self.recoveryHealth = nil
