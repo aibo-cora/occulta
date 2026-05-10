@@ -32,5 +32,4 @@ Carthage/Build/
 *.swp
 
 # Claude
-.claude/settings.json
-.claude/worktrees/
+.claude*
