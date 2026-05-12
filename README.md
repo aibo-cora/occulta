@@ -522,7 +522,6 @@ If you need to confirm a contact hasn't been replaced since your last exchange, 
 | Remote account takeover | ✅ No attack surface | No phone number, server account, or password |
 | Identity re-verification | ✅ Challenge-response | Signed ECDSA challenge; proves SE key continuity without re-exchange |
 | Backward compatibility | ✅ Classical fallback | v1 peers and iOS < 26 exchange classically, no breakage |
-| Backup passphrase KDF | ⚠️ SHA-256 (single round) | Should be PBKDF2/Argon2id |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
 
 ---
@@ -549,7 +548,6 @@ If you need to confirm a contact hasn't been replaced since your last exchange, 
 - An attacker physically present at a key exchange who can observe and intercept the MC channel before NI proximity is confirmed (mitigated but not eliminated by the peer ID guard and Diceware verification)
 - Compromise of the device itself (unlocked phone, jailbreak, MDM) — an attacker with full device access can decrypt the SwiftData store and extract ML-KEM shared secrets, breaking the PQ protection for that contact
 - Loss of your iPhone — contact keys are device-local with no automatic backup
-- Weak passphrases used with the contact export feature
 - Future message confidentiality after device compromise — forward secrecy protects past messages, not future ones
 - Contacts exchanged before the PQ upgrade remain classical-only until re-exchanged in person
 - A quantum attacker targeting classical-only contacts — prekeys and messages are protected by P-256 ECDH only
@@ -579,7 +577,7 @@ Occulta/
 ├── Models/
 │   ├── Contact+Model.swift        # SwiftData schema (Profile, Key, PhoneNumber, …)
 │   ├── Identity.swift             # Local device identity record
-│   └── Transfers.swift            # Basket, File, EncryptedFile
+│   └── Transfers.swift            # Basket, File, OwnedBasket
 │
 ├── Protocols/
 │   └── KeyManagerProtocol.swift   # Abstraction for testing (TestKeyManager)

@@ -118,8 +118,6 @@ struct OccultaApp: App {
     }
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
-    /// Encrypted contacts database.
-    @State private var openedEncryptedFileContents: EncryptedFile?
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
@@ -268,9 +266,6 @@ struct OccultaApp: App {
                     /// Dismiss
                 } content: { data in
                     ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
-                }
-                .sheet(item: self.$openedEncryptedFileContents) { encryptedContactsFile in
-                    Import.Contacts(encryptedFile: encryptedContactsFile)
                 }
                 .sheet(item: self.$shareResult) { result in
                     ShareActivityView(url: result.url)

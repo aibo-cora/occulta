@@ -142,41 +142,6 @@ struct Settings: View {
         }
     }
     
-    private struct Export: View {
-        @State private var showingExportOptions = false
-        /// Stored contacts.
-        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-        
-        var body: some View {
-            if FeatureFlags.isEnabled(.usePassphraseToExportContacts) {
-                if self.contacts.isEmpty {
-                    Text("You will be able to export contacts here once you have added some.")
-                        .font(.caption)
-                        .padding()
-                } else {
-                    VStack(spacing: 20) {
-                        Text("Create a file with your contacts encrypted using a passphrase.")
-                            .multilineTextAlignment(.center)
-                            .font(.caption)
-                        
-                        Button {
-                            self.showingExportOptions = true
-                        } label: {
-                            Text("Export Contacts")
-                        }
-                        .navigationTitle("Settings")
-                        .sheet(isPresented: self.$showingExportOptions) {
-                            
-                        } content: {
-                            Export()
-                        }
-                        .prominentButtonStyle()
-                    }
-                    .padding()
-                }
-            }
-        }
-    }
 }
 
 #Preview {

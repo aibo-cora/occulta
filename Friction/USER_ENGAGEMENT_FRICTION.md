@@ -142,13 +142,7 @@ to the container with no fallback.
 | Flag | State | Implication |
 |------|-------|-------------|
 | `enableShamirShardSharing` | `false` | SSS entirely hidden from users |
-| `usePassphraseToExportContacts` | `false` | No contact export exists |
-| `allowSynchingBetweenDevices` | `true` | Flag is on but entitlement is disabled — feature silently does nothing |
 | `signature` | `false` | Signing tab hidden |
-
-`allowSynchingBetweenDevices` being `true` in `features.plist` while disabled
-in entitlements is a live inconsistency — the flag reports the feature as
-enabled but it cannot function.
 
 ---
 
@@ -159,8 +153,6 @@ enabled but it cannot function.
 | Message history | `@State var messages` — resets on every view appearance |
 | Inbox | No persisted inbound message store in any model |
 | Notifications | No `UNUserNotificationCenter` usage found |
-| Contact export | Gated behind `usePassphraseToExportContacts = false` |
-| Device migration | `allowSynchingBetweenDevices` disabled in entitlements |
 | Key rotation UI | Documented as unresolved in `OccultaApp.swift:13` |
 | SSS shard acknowledgement | `TODO Phase 2` in `ShardCustody+Manager.swift:105` — `.acknowledge` is never sent; every `ShardRecord` stays `.sent` permanently |
 

@@ -84,20 +84,3 @@ struct FileTransferable: Transferable {
     }
 }
 
-/// Container with encrypted contents.
-struct EncryptedFile: Transferable, Identifiable {
-    var id: UUID = UUID()
-    let content: Data
-    
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .data) { file in
-            let id = UUID().uuidString.components(separatedBy: "-").last ?? "encrypted.file"
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(id).occ")
-            
-            try file.content.write(to: tempURL)
-            
-            return SentTransferredFile(tempURL)
-        }
-    }
-}

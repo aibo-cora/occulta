@@ -783,53 +783,7 @@ extension ContactManager {
     }
 }
 
-// MARK: Porting
-
 extension ContactManager {
-    /// Retrieves all of our contacts from the local database. Then, creates mutable copies of `Contact.Draft` decrypting all values. Encrypts these copies with a `SymmetricKey` which is derived from the passphrase.
-    /// - Parameter passphrase: Passphrase generated to derive a `SymmetricKey`.
-    /// - Returns: Encrypted `Contact.Export` object.
-    func prepareForExporting(using passphrase: String) throws -> Data {
-        let cryptoOps: CryptoProtocol = Manager.Crypto()
-        /// All of our contacts.
-        let storedContacts = try self.fetchAllContacts()
-        /// We need to decrypt them so we can encrypt it again with a new key that a new device would understand.
-        let decryptedMutableContacts = storedContacts.compactMap { try? self.convertToMutableCopy(using: $0.identifier) }
-        
-        let encodedContacts = try JSONEncoder().encode(decryptedMutableContacts)
-        
-        let fileContents = File(content: encodedContacts, format: .contacts)
-        let basket = Basket(files: [fileContents])
-        
-        let encodedBasketContents = try JSONEncoder().encode(basket)
-        
-        guard
-            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedBasketContents, using: passphrase)
-        else {
-            throw Errors.encryptionFailed
-        }
-        
-        return encryptedContacts
-    }
-
-    func decrypt(data: Data?, using passphrase: String) throws -> Data {
-        let cryptoOps: CryptoProtocol = Manager.Crypto()
-        
-        guard
-            let data
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        guard
-            let encodedContacts = try cryptoOps.decrypt(contacts: data, using: passphrase)
-        else {
-            throw ContactManager.Errors.decryptionFailed
-        }
-        
-        return encodedContacts
-    }
-    
     /// Find the rightful owner of the message, the originator, and decrypt it using the right key.
     /// - Parameter text: Encrypted text.
     /// - Returns: Plaintext.

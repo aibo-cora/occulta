@@ -173,8 +173,6 @@ Unit tests use `TestKeyManager` (in-memory P-256, no SE access) injected via `Ke
 
 Runtime flags in `features.plist`, read via `FeatureFlags.isEnabled(_:)` at launch. Current notable flags:
 - `signature` — ECDSA signing tab (off)
-- `usePassphraseToExportContacts` — passphrase-based export (off; SHA-256 single-round, security concern)
-- `allowSynchingBetweenDevices` — iCloud sync (disabled in entitlements until reliable)
 - `useComposableMessage` / `useMultipleRecipientMessageFormat` — message composer (on)
 
 ### Branches
