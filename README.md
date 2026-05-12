@@ -2,9 +2,13 @@
 
 > **The cryptographic address book the world has been missing.**
 
+[**Download on the App Store →**](https://apps.apple.com/us/app/occulta/id6758548781)
+
 In a world where your contacts and trust are locked inside messaging apps, Occulta gives you true control. Collect verified public keys from friends, family, and colleagues through secure, in-person exchanges using Nearby Interaction — no servers, no phone numbers, no intermediaries.
 
 Once exchanged, encrypt any file, photo, video, or document for anyone in your collection — and share it however you want: AirDrop, email, iMessage, any chat app. Your data stays hidden from analysis and sale.
+
+Because Occulta requires no phone number, no server account, and no password, there is no account to take over remotely. Your cryptographic identity is a P-256 key pair bound to your device's Secure Enclave — it cannot be SIM-swapped, phished, or provider-hijacked from a distance. Every trust relationship requires physical presence to establish, and the same to replace.
 
 ---
 
@@ -16,6 +20,10 @@ Once exchanged, encrypt any file, photo, video, or document for anyone in your c
 - [Forward Secrecy](#forward-secrecy)
 - [Key Exchange Flow](#key-exchange-flow)
 - [Encryption Flow](#encryption-flow)
+- [Vault & Secret Sharing](#vault--secret-sharing)
+  - [Recovery Health Monitoring](#recovery-health-monitoring)
+  - [Shard Indicator](#shard-indicator)
+- [Account Takeover Resistance](#account-takeover-resistance)
 - [Security Properties](#security-properties)
 - [Threat Model](#threat-model)
 - [Architecture](#architecture)
@@ -364,6 +372,131 @@ Decryption mirrors this: the recipient reconstructs the session key using their 
 
 ---
 
+## Vault & Secret Sharing
+
+Occulta Vault stores encrypted entries (label + content). Each entry has its own randomly generated **per-entry key (PEK)** — the vault master key only wraps the PEK, not the content directly. This means recovery can be scoped per entry: different entries can have different trustees and different thresholds.
+
+### Encryption model
+
+```
+vault key (SE-derived)
+  └── encryptedEntryKey  →  per-entry key (PEK, 32 random bytes)
+        ├── encryptedLabel    (AES-GCM, AAD = entry.aad())
+        └── encryptedContent  (AES-GCM, AAD = entry.aad())
+```
+
+### Shamir's Secret Sharing
+
+The PEK is split using SSS over GF(2⁸) (Lagrange interpolation, field polynomial 0x11B). A threshold-of-n split produces n shards; any k ≥ threshold reconstruct the PEK. With fewer than k shards an attacker learns nothing about the PEK — information-theoretic security, not computational.
+
+Splitting is per-entry. Different entries use independent random polynomials; shards from different distributions are incompatible and fail GCM authentication if mixed.
+
+### Shard signing
+
+Each shard is wrapped in a `SignedAttribute(category: .shard)` signed by the owner's SE identity key. The v2 signing payload binds:
+
+```
+"occulta-signed-attribute-v2" ∥ attrID ∥ "shard" ∥ entryID
+∥ createdAt UInt64 BE ∥ expiry flag ∥ shardBytes
+```
+
+`entryID` binding prevents a shard from a previous PEK generation from being accepted against a rotated entry. `createdAt`/`expiresAt` in the payload prevent a trustee from extending validity by editing stored JSON — any modification invalidates the ECDSA signature.
+
+On a new device the owner's SE key is gone; signature verification is skipped. GCM authentication on reconstruction substitutes as the integrity check.
+
+### Shard delivery
+
+Shards are delivered as `.occ` bundles using `longTermFallback` + **mandatory ML-KEM**. A contact without ML-KEM key material cannot be selected as a trustee. This gates every shard bundle behind a session key that requires breaking ML-KEM-1024 in addition to P-256 to recover — the only practical defence against harvest-now-decrypt-later attacks. Forward secrecy is not used for shard traffic; `longTermFallback` + ML-KEM provides equivalent practical security for this threat model without consuming prekeys.
+
+### What a trustee stores
+
+A trustee stores a `CustodyShard` row containing only:
+- A random per-row `id` (plaintext SwiftData key).
+- An `encryptedPayload` blob — AES-GCM seal of `{ ownerKeyFingerprint, ownerContactIdentifier, signedAttribute }` under the shard custody key, AAD = `id`.
+
+No plaintext column links a shard to a specific contact. Cold-disk forensics learns "N shards stored" — nothing about ownership, timing, or which entries are covered.
+
+### Shard custody key
+
+A dedicated SE key (tag `"shard.custody.occulta"`, device-unlock level, no biometric) is used exclusively for shard operations. Two symmetric keys are HKDF-derived from it:
+
+| Symmetric key       | HKDF info                         | Seals            |
+|---------------------|-----------------------------------|------------------|
+| Shard custody key   | `Occulta-v1-shard-custody-2026`   | CustodyShard     |
+| Recovery buffer key | `Occulta-v1-recovery-buffer-2026` | ReconstructShard |
+
+Device-unlock (not biometric) allows shard bundles to be stored automatically on receipt without requiring the user to open the app.
+
+### Reconstruction
+
+1. Trustees detect Alice's key change during proximity exchange and auto-return shards via `.handback` operations in the next outbound bundle.
+2. Alice's app buffers arriving shards in `ReconstructShard` (encrypted under the recovery buffer key).
+3. When ≥ k shards are buffered, `tryFinalizeReconstruction` runs automatically.
+4. Old device: verify each shard's ECDSA signature. New device: skip, rely on GCM.
+5. `ShamirSecretSharing.reconstruct(shares:)` → 32-byte PEK.
+6. `AES.GCM.open(encryptedContent, using: PEK)` — success confirms shard integrity.
+7. Re-wrap PEK under current vault key; zero PEK bytes immediately.
+
+### Threat model
+
+| Threat | Defence |
+|--------|---------|
+| < k shards | Information-theoretically zero leakage |
+| Stale shards (old PEK) | GCM decryption fails immediately |
+| Tampered shard | ECDSA fails (normal); GCM fails on new device |
+| Shard mixing across entries | GCM authentication rejects incompatible shares |
+| HNDL (quantum adversary archives bundles) | Mandatory ML-KEM-1024 in session key |
+| Trustee device loss | Owner detects fingerprint change → marks shard `.lost`; UI prompts redistribution |
+
+### Recovery health monitoring
+
+The Vault tab surfaces three readiness signals inline — no separate settings screen required.
+
+**Per-entry key (PEK) health** — entries whose shard distribution has fallen below threshold (trustees lost devices, shards revoked) appear in a "Needs Attention" section with a critical or degraded label. Only active (`.pending` / `.confirmed`) shards count toward coverage.
+
+**Backup encryption key (BEK) status** — a permanent row in the vault list tracks whether the BEK has been distributed and how many trustees have confirmed receipt. Vault export is gated on reaching threshold confirmation.
+
+**Backup staleness** — three conditions invalidate an existing backup and surface as tappable rows: new entries added since last export, BEK rotated (existing backup permanently unrestorable), or trustee set changed. Each routes directly to the export flow.
+
+### Shard indicator
+
+Every entry in the vault list carries a 🔮 glyph in its trailing position. When no shard distribution has been configured the glyph is grayscale and dimmed — a passive cue that the entry's encryption key has no recovery path. Once any distribution is marked for delivery the glyph switches to full colour with a soft purple glow. No notification, no modal — the indicator updates automatically as shard state changes.
+
+---
+
+## Account Takeover Resistance
+
+Most end-to-end encrypted tools bind identity to something that can be stolen remotely:
+
+| Tool | Identity anchor | Remote takeover path |
+|---|---|---|
+| Signal | Phone number | SIM-swap → register new device → contacts see attacker's key |
+| iMessage | Apple ID | Apple ID compromise → new device added → transparent to contacts |
+| PGP | Email address | No key server authentication; key can be uploaded under any UID |
+
+These are not flaws in the cryptography — they are consequences of requiring identity to be remotely accessible. Occulta removes the attack surface at the architecture level.
+
+**What Occulta uses as identity:** a P-256 key pair generated inside your device's Secure Enclave. The private key never leaves the chip. There is no phone number, no account, no password, no server that knows who you are.
+
+**What this means in practice:**
+
+- A SIM-swap attack gives an attacker your phone number. Occulta does not know your phone number.
+- An Apple ID or Google account compromise gives an attacker your cloud identity. Occulta has no cloud account.
+- A provider receiving a legal demand to insert a surveillance key has no server to compel. There is no server.
+- A credential phishing attack has no password to steal.
+
+The only way to substitute a key in Occulta is to be physically present (≤ 25 cm) during an exchange and defeat the UWB proximity gate, the peer ID guard, *and* the Diceware out-of-band word verification simultaneously — which requires the target to cooperate or be deceived in person.
+
+**This is a complement to Signal, not a replacement.** Signal is the right tool when your contact is across the world and you need an accessible encrypted channel today. Occulta is the right tool when you can meet once, establish a hardware-bound trust anchor, and then send documents over any channel indefinitely without worrying that the other end has been remotely compromised.
+
+**Concrete scenario:** A journalist exchanges keys with a source in person. From that point on, any file dropped into an `.occ` bundle is encrypted to a key that lives in the source's Secure Enclave. Even if the source's Signal account is SIM-swapped, their iCloud is subpoenaed, or their phone number is ported — none of that touches the hardware key the journalist holds. The source's device is the trust anchor.
+
+### Re-verification
+
+If you need to confirm a contact hasn't been replaced since your last exchange, Occulta includes a signed identity challenge protocol — a challenge-response bundle signed by the contact's SE key that proves they still hold the same private key without requiring a physical re-exchange. This is available for any contact in your collection.
+
+---
+
 ## Security Properties
 
 | Property | Status | Notes |
@@ -386,6 +519,8 @@ Decryption mirrors this: the recipient reconstructs the session key using their 
 | MITM during exchange | ✅ Diceware verification + peer ID guard | Human-verifiable, nonce-freshened |
 | Proximity spoofing | ✅ UWB hardware enforcement | ≤ 0.25m threshold |
 | Server-side exposure | ✅ None | No backend exists |
+| Remote account takeover | ✅ No attack surface | No phone number, server account, or password |
+| Identity re-verification | ✅ Challenge-response | Signed ECDSA challenge; proves SE key continuity without re-exchange |
 | Backward compatibility | ✅ Classical fallback | v1 peers and iOS < 26 exchange classically, no breakage |
 | Backup passphrase KDF | ⚠️ SHA-256 (single round) | Should be PBKDF2/Argon2id |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
@@ -401,6 +536,9 @@ Decryption mirrors this: the recipient reconstructs the session key using their 
 - A network attacker intercepting your encrypted files in transit
 - Someone finding an encrypted file on your device or in email
 - A remote attacker with no physical access substituting keys
+- SIM-swap and phone number hijacking (no phone number exists in the system)
+- Server-side account compromise or provider-compelled key insertion (no server exists)
+- Credential phishing (no password)
 - A passive observer correlating messages to relationships via wire metadata
 - Compromise of long-term keys exposing past messages (forward secrecy)
 - A quantum adversary recording public keys today for future decryption (hybrid PQ key agreement)
@@ -482,4 +620,4 @@ Contributions are welcome. Please read `CODE_GENERATION_GUIDELINES.md` and `CRYP
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+GNU Affero General Public License v3.0. See [LICENSE](LICENSE) for details.

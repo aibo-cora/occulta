@@ -10,6 +10,8 @@ extension URL: @retroactive Identifiable {
 
 struct ComposableMessage: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager?
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(VaultManager.self) private var vaultManager: VaultManager?
     
     let identifier: String
     let filename = "message.occ"
@@ -445,7 +447,24 @@ struct ComposableMessage: View {
                 
                 let basket = Basket(files: processed)
                 let encoded = try JSONEncoder().encode(basket)
-                let encryptedData = try self.contactManager?.encryptBundle(data: encoded, for: identifier)
+                
+                let contactPub = try? self.contactManager?.currentPublicKey(forIdentifier: self.identifier)
+                let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
+                let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
+                let expected: [UUID]?
+                if let custody = self.shardCustodyManager, let vm = self.vaultManager {
+                    expected = try? custody.buildExpectedShards(for: self.identifier, vaultManager: vm)
+                } else {
+                    expected = nil
+                }
+
+                let encryptedData = try self.contactManager?.encryptBundle(
+                    data:            encoded,
+                    for:             identifier,
+                    shardOperations: shardOps.isEmpty ? nil : shardOps,
+                    custodyManifest: manifest_,
+                    expectedShards:  expected
+                )
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false

@@ -245,7 +245,7 @@ extension IdentityChallenge {
                         .font(.system(size: 48))
                         .foregroundStyle(.blue)
 
-                    Text("\(self.incoming.pending.challenger.displayName) is verifying your identity")
+                    Text("\(self.incoming.pending.challengerName) is verifying your identity")
                         .font(.title3.bold())
                         .multilineTextAlignment(.center)
 
