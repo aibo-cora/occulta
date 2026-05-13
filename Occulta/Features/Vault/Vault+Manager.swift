@@ -264,6 +264,23 @@ final class VaultManager {
         try modelContext.save()
     }
 
+    func deleteAllData() throws {
+        try deleteAll(BackupEncryptionKey.self)
+        try deleteAll(CustodyShard.self)
+        try deleteAll(PendingShardDistribute.self)
+        try deleteAll(PendingShardStatusUpdate.self)
+        try deleteAll(ReconstructShard.self)
+        try deleteAll(GlobalShardConfig.self)
+        try deleteAll(PotentiallyLostShard.self)
+        try deleteAllEntries()
+    }
+
+    private func deleteAll<T: PersistentModel>(_ type: T.Type) throws {
+        let items = try modelContext.fetch(FetchDescriptor<T>())
+        for item in items { modelContext.delete(item) }
+        try modelContext.save()
+    }
+
     /// Find a single vault entry by its UUID.
     ///
     /// - Returns: The matching `VaultEntry`, or `nil` if none exists.

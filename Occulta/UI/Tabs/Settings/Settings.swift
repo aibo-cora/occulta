@@ -119,8 +119,9 @@ struct Settings: View {
                 Text("This cannot be undone.").italic()
 
                 Button("Delete", role: .destructive) {
+                    Manager.PrekeyManager().deleteAllKeys()
                     try? self.contactManager.deleteAllContacts()
-                    try? self.vaultManager.deleteAllEntries()
+                    try? self.vaultManager.deleteAllData()
                     Manager.Key().deleteAllKeys()
                 }
                 .prominentButtonStyle()
