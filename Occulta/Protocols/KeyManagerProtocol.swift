@@ -76,6 +76,14 @@ protocol KeyManagerProtocol {
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveRecoveryBufferKey() throws -> SymmetricKey?
+
+    /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// No LAContext needed — device-unlock level, no biometric.
+    /// Used by PINManager to wrap/unwrap PIN sentinels in SecureModeConfig.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveSecureModeKey() throws -> SymmetricKey?
 }
 
 // MARK: - TestKeyManager
@@ -98,6 +106,10 @@ final class TestKeyManager: KeyManagerProtocol {
     /// Separate key pair simulating the dedicated shard custody SE key.
     private let shardCustodyPrivateKey: SecKey
     private let shardCustodyPublicKeyData: Data
+
+    /// Separate key pair simulating the dedicated Secure Mode PIN SE key.
+    private let secureModePrivateKey: SecKey
+    private let secureModePublicKeyData: Data
 
     /// Simulates the random Keychain component for the local DB hybrid key (32 bytes).
     private let randomComponent: Data
@@ -152,6 +164,12 @@ final class TestKeyManager: KeyManagerProtocol {
         let shardCustodyPub  = SecKeyCopyPublicKey(shardCustodyPriv)!
         self.shardCustodyPrivateKey    = shardCustodyPriv
         self.shardCustodyPublicKeyData = SecKeyCopyExternalRepresentation(shardCustodyPub, nil)! as Data
+
+        // Separate Secure Mode PIN key pair (simulates dedicated secureModePin SE key)
+        let secureModePriv = SecKeyCreateRandomKey(attrs, &err)!
+        let secureModePub  = SecKeyCopyPublicKey(secureModePriv)!
+        self.secureModePrivateKey    = secureModePriv
+        self.secureModePublicKeyData = SecKeyCopyExternalRepresentation(secureModePub, nil)! as Data
 
         // Random component (simulates Keychain-stored random bytes)
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -271,6 +289,24 @@ final class TestKeyManager: KeyManagerProtocol {
     /// info, distinct symmetric key.
     func deriveRecoveryBufferKey() throws -> SymmetricKey? {
         try self.deriveCustodySEKey(info: SaltInfo.kRecoveryBufferKeyInfo)
+    }
+
+    func deriveSecureModeKey() throws -> SymmetricKey? {
+        guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
+        var err: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                secureModePrivateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &err
+            ) as? Data
+        else { return nil }
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: secureModePublicKeyData,
+            info: SaltInfo.kSecureModeKeyInfo,
+            outputByteCount: 32
+        )
     }
 
     private func deriveCustodySEKey(info: Data) throws -> SymmetricKey? {

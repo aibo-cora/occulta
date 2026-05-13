@@ -37,6 +37,10 @@ struct SaltInfo {
     /// with device-unlock-level access (no biometric). Used to seal CustodyShard
     /// records locally — fully automatic, no user friction.
     static let kShardCustodyKeyInfo = "Occulta-v1-shard-custody-2026".data(using: .utf8)!
+    /// Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF. Dedicated SE key
+    /// with device-unlock-level access (no biometric). Used to wrap PIN sentinels in
+    /// SecureModeConfig. Domain-separated from all other key paths.
+    static let kSecureModeKeyInfo = "Occulta-v1-secure-mode-pin-2026".data(using: .utf8)!
     /// Recovery buffer key: same SE key as shard custody, distinct HKDF info →
     /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
     /// transient buffer of returned shards Alice's device collects during
@@ -47,7 +51,7 @@ struct SaltInfo {
 
 // MARK: - SE Key Inventory
 //
-// Manager.Key manages four distinct Secure Enclave P-256 key objects:
+// Manager.Key manages five distinct Secure Enclave P-256 key objects:
 //
 //  Tag                                      │ Biometric gate │ Purpose
 //  ─────────────────────────────────────────┼────────────────┼──────────────────────────────────────
@@ -55,6 +59,7 @@ struct SaltInfo {
 //  "local.db.se.key.occulta"                │ No             │ Local DB hybrid key ECDH component
 //  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault PEK derivation
 //  "shard.custody.occulta"                  │ No             │ Shard custody records + recovery buffer
+//  "secure.mode.pin"                        │ No             │ Secure Mode PIN sentinel encryption
 //
 // All four keys carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
 // never synced to iCloud Keychain.
@@ -70,14 +75,15 @@ extension Manager {
     class Key {
         let tag: String
 
-        init() { self.tag = Tags.identity }
+        init() { self.tag = Tags.identity.rawValue }
         init(testingTag tag: String) { self.tag = tag }
 
-        private enum Tags {
-            static let identity     = "master.key.privacy.turtles.are.cute"
-            static let localDB      = "local.db.se.key.occulta"
-            static let vault        = "vault.key.occulta.v1"
-            static let shardCustody = "shard.custody.occulta"
+        private enum Tags: String, CaseIterable {
+            case identity      = "master.key.privacy.turtles.are.cute"
+            case localDB       = "local.db.se.key.occulta"
+            case vault         = "vault.key.occulta.v1"
+            case shardCustody  = "shard.custody.occulta"
+            case secureModePin = "secure.mode.pin"
         }
 
         // MARK: - SE key creation
@@ -452,7 +458,7 @@ extension Manager.Key: KeyManagerProtocol {
     private func retrieveLocalDBPrivateKey() throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: Tags.localDB.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
@@ -494,7 +500,7 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent: true,
-                kSecAttrApplicationTag: Tags.localDB.data(using: .utf8)!,
+                kSecAttrApplicationTag: Tags.localDB.rawValue.data(using: .utf8)!,
                 kSecAttrAccessControl: access
             ]
         ]
@@ -640,7 +646,7 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent:    true,
-                kSecAttrApplicationTag: Tags.vault.data(using: .utf8)!,
+                kSecAttrApplicationTag: Tags.vault.rawValue.data(using: .utf8)!,
                 kSecAttrAccessControl:  access
             ]
         ]
@@ -660,7 +666,7 @@ extension Manager.Key: KeyManagerProtocol {
     private func retrieveVaultPrivateKey(context: LAContext) throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String:                    kSecClassKey,
-            kSecAttrApplicationTag as String:       Tags.vault.data(using: .utf8)!,
+            kSecAttrApplicationTag as String:       Tags.vault.rawValue.data(using: .utf8)!,
             kSecAttrKeyType as String:              kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String:                true,
             kSecAttrTokenID as String:              kSecAttrTokenIDSecureEnclave,
@@ -742,7 +748,7 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent:    true,
-                kSecAttrApplicationTag: Tags.shardCustody.data(using: .utf8)!,
+                kSecAttrApplicationTag: Tags.shardCustody.rawValue.data(using: .utf8)!,
                 kSecAttrAccessControl:  access
             ]
         ]
@@ -762,7 +768,7 @@ extension Manager.Key: KeyManagerProtocol {
     private func retrieveShardCustodyPrivateKey() throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: Tags.shardCustody.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: Tags.shardCustody.rawValue.data(using: .utf8)!,
             kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String:          true,
             kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
@@ -856,39 +862,101 @@ extension Manager.Key: KeyManagerProtocol {
         )
     }
 
+    // MARK: - Secure Mode PIN SE key
+
+    /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// No LAContext needed — device-unlock level access, no biometric.
+    /// Used by PINManager to wrap/unwrap PIN sentinels stored in SecureModeConfig.
+    ///
+    /// The returned SymmetricKey is scope-bounded — callers must not store it.
+    func deriveSecureModeKey() throws -> SymmetricKey? {
+        guard let priv        = try self.retrieveSecureModePINPrivateKey() else { return nil }
+        guard let fixedPubKey = self.convert(material: fixedX963)          else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                priv, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        guard
+            let pub     = self.retrivePublicKey(using: priv),
+            let pubData = self.convert(key: pub)
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: pubData,
+            info: SaltInfo.kSecureModeKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    private func retrieveSecureModePINPrivateKey() throws -> SecKey? {
+        let query: [String: Any] = [
+            kSecClass as String:              kSecClassKey,
+            kSecAttrApplicationTag as String: Tags.secureModePin.rawValue.data(using: .utf8)!,
+            kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
+            kSecReturnRef as String:          true,
+            kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
+        ]
+        var item: CFTypeRef?
+
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            return (item as! SecKey)
+        case errSecItemNotFound:
+            try self.createSecureModePINKey()
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
+            return (item as! SecKey)
+        case let status:
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+    }
+
+    private func createSecureModePINKey() throws {
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.privateKeyUsage],
+            &error
+        ) else { throw error!.takeRetainedValue() as Error }
+
+        let attributes: NSDictionary = [
+            kSecAttrKeyType:       kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits: 256,
+            kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs: [
+                kSecAttrIsPermanent:    true,
+                kSecAttrApplicationTag: Tags.secureModePin.rawValue.data(using: .utf8)!,
+                kSecAttrAccessControl:  access
+            ]
+        ]
+        var createError: Unmanaged<CFError>?
+        guard SecKeyCreateRandomKey(attributes, &createError) != nil else {
+            throw createError!.takeRetainedValue() as Error
+        }
+    }
+
     // MARK: - Cleanup
 
-    /// Deletes all four SE keys and the local DB random Keychain component.
+    /// Deletes all SE keys enumerated in Tags and the local DB random Keychain component.
+    /// Adding a new case to Tags automatically includes it here — no manual update needed.
     /// After this call every encrypted blob in Occulta is permanently unreadable.
     @discardableResult
     func deleteAllKeys() -> Bool {
-        deleteIdentityKey()     &&
-        deleteLocalDBKeys()     &&
-        deleteVaultKey()        &&
-        deleteShardCustodyKey()
-    }
-
-    @discardableResult private func deleteIdentityKey() -> Bool {
-        delete(using: self.tag)
-    }
-
-    @discardableResult private func deleteLocalDBKeys() -> Bool {
-        let seDeleted = delete(using: Tags.localDB)
+        let seDeleted = Tags.allCases.allSatisfy { delete(using: $0.rawValue) }
         let keychainQuery: [String: Any] = [
-            kSecClass as String:    kSecClassGenericPassword,
+            kSecClass as String:       kSecClassGenericPassword,
             kSecAttrAccount as String: Self.localDBRandomKeychainAccount
         ]
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
-        let keychainDeleted = keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound
-        return seDeleted && keychainDeleted
-    }
-
-    @discardableResult private func deleteVaultKey() -> Bool {
-        delete(using: Tags.vault)
-    }
-
-    @discardableResult private func deleteShardCustodyKey() -> Bool {
-        delete(using: Tags.shardCustody)
+        return seDeleted && (keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound)
     }
 }
 
