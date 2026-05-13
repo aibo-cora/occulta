@@ -70,8 +70,15 @@ extension Manager {
     class Key {
         let tag: String
 
-        init() { self.tag = "master.key.privacy.turtles.are.cute" }
+        init() { self.tag = Tags.identity }
         init(testingTag tag: String) { self.tag = tag }
+
+        private enum Tags {
+            static let identity     = "master.key.privacy.turtles.are.cute"
+            static let localDB      = "local.db.se.key.occulta"
+            static let vault        = "vault.key.occulta.v1"
+            static let shardCustody = "shard.custody.occulta"
+        }
 
         // MARK: - SE key creation
 
@@ -195,11 +202,6 @@ extension Manager {
             return status == errSecSuccess || status == errSecItemNotFound
         }
 
-        /// Delete the SE identity key (tag: `self.tag`).
-        ///
-        /// - Returns: `true` on success or if the key was already absent.
-        @discardableResult
-        func deleteIdentity() -> Bool { self.delete(using: self.tag) }
 
         // MARK: - Transport session key — long-term identity path (kTransportKeyInfo)
 
@@ -397,8 +399,6 @@ extension Manager.Key: KeyManagerProtocol {
 
     // MARK: - Tags and identifiers
 
-    /// SE key tag — dedicated to local DB encryption, separate from identity key.
-    private static let localDBSEKeyTag = "local.db.se.key.occulta"
 
     /// Keychain account identifier for the random symmetric component.
     private static let localDBRandomKeychainAccount = "local.db.random.key.occulta"
@@ -452,7 +452,7 @@ extension Manager.Key: KeyManagerProtocol {
     private func retrieveLocalDBPrivateKey() throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: Self.localDBSEKeyTag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: Tags.localDB.data(using: .utf8)!,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
@@ -494,7 +494,7 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent: true,
-                kSecAttrApplicationTag: Self.localDBSEKeyTag.data(using: .utf8)!,
+                kSecAttrApplicationTag: Tags.localDB.data(using: .utf8)!,
                 kSecAttrAccessControl: access
             ]
         ]
@@ -589,12 +589,11 @@ extension Manager.Key: KeyManagerProtocol {
     // MARK: - Vault SE key
 
     /// Dedicated SE key tag for vault derivation — separate from identity and local DB keys.
-    private static let vaultSEKeyTag = "vault.key.occulta.v1"
 
     // CRYPTO_REVIEW_CHECKLIST — Vault Key Derivation Path (v2)
     // ══════════════════════════════════════════════════════════
     // 1. Key ownership map
-    //    - Vault SE key: dedicated P-256 key in SE (tag: vaultSEKeyTag). Single owner.
+    //    - Vault SE key: dedicated P-256 key in SE (tag: Tags.vault). Single owner.
     //    - Private half: hardware-bound, never extractable.
     //    - Public half: never stored, never exported — no harvest surface for QC.
     //    - Static peer: P-256 generator G — a universal constant, not a secret.
@@ -641,7 +640,7 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent:    true,
-                kSecAttrApplicationTag: Self.vaultSEKeyTag.data(using: .utf8)!,
+                kSecAttrApplicationTag: Tags.vault.data(using: .utf8)!,
                 kSecAttrAccessControl:  access
             ]
         ]
@@ -661,7 +660,7 @@ extension Manager.Key: KeyManagerProtocol {
     private func retrieveVaultPrivateKey(context: LAContext) throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String:                    kSecClassKey,
-            kSecAttrApplicationTag as String:       Self.vaultSEKeyTag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String:       Tags.vault.data(using: .utf8)!,
             kSecAttrKeyType as String:              kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String:                true,
             kSecAttrTokenID as String:              kSecAttrTokenIDSecureEnclave,
@@ -722,7 +721,6 @@ extension Manager.Key: KeyManagerProtocol {
     // MARK: - Shard custody SE key
 
     /// Dedicated SE key tag for shard custody — no biometric, device-unlock level.
-    private static let shardCustodySEKeyTag = "shard.custody.occulta"
 
     /// Create the shard custody P-256 key in the Secure Enclave.
     ///
@@ -744,7 +742,7 @@ extension Manager.Key: KeyManagerProtocol {
             kSecAttrTokenID:       kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs: [
                 kSecAttrIsPermanent:    true,
-                kSecAttrApplicationTag: Self.shardCustodySEKeyTag.data(using: .utf8)!,
+                kSecAttrApplicationTag: Tags.shardCustody.data(using: .utf8)!,
                 kSecAttrAccessControl:  access
             ]
         ]
@@ -764,7 +762,7 @@ extension Manager.Key: KeyManagerProtocol {
     private func retrieveShardCustodyPrivateKey() throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: Self.shardCustodySEKeyTag.data(using: .utf8)!,
+            kSecAttrApplicationTag as String: Tags.shardCustody.data(using: .utf8)!,
             kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String:          true,
             kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
@@ -860,20 +858,37 @@ extension Manager.Key: KeyManagerProtocol {
 
     // MARK: - Cleanup
 
-    /// Delete both components of the hybrid local DB key.
-    /// Call only during full identity reset.
+    /// Deletes all four SE keys and the local DB random Keychain component.
+    /// After this call every encrypted blob in Occulta is permanently unreadable.
     @discardableResult
-    func deleteLocalDBKey() -> Bool {
-        let seDeleted = self.delete(using: Self.localDBSEKeyTag)
+    func deleteAllKeys() -> Bool {
+        deleteIdentityKey()     &&
+        deleteLocalDBKeys()     &&
+        deleteVaultKey()        &&
+        deleteShardCustodyKey()
+    }
 
+    @discardableResult private func deleteIdentityKey() -> Bool {
+        delete(using: self.tag)
+    }
+
+    @discardableResult private func deleteLocalDBKeys() -> Bool {
+        let seDeleted = delete(using: Tags.localDB)
         let keychainQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
+            kSecClass as String:    kSecClassGenericPassword,
             kSecAttrAccount as String: Self.localDBRandomKeychainAccount
         ]
         let keychainStatus = SecItemDelete(keychainQuery as CFDictionary)
         let keychainDeleted = keychainStatus == errSecSuccess || keychainStatus == errSecItemNotFound
-
         return seDeleted && keychainDeleted
+    }
+
+    @discardableResult private func deleteVaultKey() -> Bool {
+        delete(using: Tags.vault)
+    }
+
+    @discardableResult private func deleteShardCustodyKey() -> Bool {
+        delete(using: Tags.shardCustody)
     }
 }
 

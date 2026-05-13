@@ -111,18 +111,17 @@ struct Settings: View {
     
     private struct ManageContacts: View {
         @Environment(ContactManager.self) private var contactManager: ContactManager
-        
+        @Environment(VaultManager.self)   private var vaultManager:   VaultManager
+
         var body: some View {
             VStack(spacing: 20) {
-                Text("Delete **entire** contact database, private keys and stored messages.")
+                Text("Delete **entire** contact database, vault, private keys and stored messages.")
                 Text("This cannot be undone.").italic()
-                
+
                 Button("Delete", role: .destructive) {
-                    /// Delete contacts and all metadata.
                     try? self.contactManager.deleteAllContacts()
-                    /// Delete identity key.
-                    Manager.Key().deleteIdentity()
-                    Manager.Key().deleteLocalDBKey()
+                    try? self.vaultManager.deleteAllEntries()
+                    Manager.Key().deleteAllKeys()
                 }
                 .prominentButtonStyle()
             }

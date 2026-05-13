@@ -258,6 +258,12 @@ final class VaultManager {
         return try self.modelContext.fetch(descriptor)
     }
 
+    func deleteAllEntries() throws {
+        let entries = try fetchAllEntries()
+        for entry in entries { modelContext.delete(entry) }
+        try modelContext.save()
+    }
+
     /// Find a single vault entry by its UUID.
     ///
     /// - Returns: The matching `VaultEntry`, or `nil` if none exists.
