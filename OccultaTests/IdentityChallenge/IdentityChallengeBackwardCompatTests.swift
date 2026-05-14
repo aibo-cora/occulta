@@ -99,7 +99,9 @@ private struct OldSealedPayload: Codable {
 
     @Test func challengeBundle_wireVersionIsV3fs() throws {
         let (c, r) = Self.makeParties()
-        let bundle = try c.mgr.createChallenge(for: r.view)
+        let bundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
 
         // Inspect raw JSON: old parsers must see a familiar version string.
         let json = try JSONSerialization.jsonObject(with: bundle.encoded()) as? [String: Any]
@@ -108,7 +110,9 @@ private struct OldSealedPayload: Codable {
 
     @Test func challengeBundle_wireModeIsLongTermFallback() throws {
         let (c, r) = Self.makeParties()
-        let bundle = try c.mgr.createChallenge(for: r.view)
+        let bundle = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
         let json = try JSONSerialization.jsonObject(with: bundle.encoded()) as? [String: Any]
         let secrecy = json?["secrecy"] as? [String: Any]
         #expect(secrecy?["mode"] as? String == "longTermFallback")
@@ -116,9 +120,14 @@ private struct OldSealedPayload: Codable {
 
     @Test func responseBundle_wireVersionAndMode() throws {
         let (c, r) = Self.makeParties()
-        let challenge = try c.mgr.createChallenge(for: r.view)
-        let pending   = try r.mgr.decryptChallenge(bundle: challenge, contacts: [c.view])
-        let response  = try r.mgr.respond(to: pending)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
+        let pending = try r.mgr.decryptChallenge(
+            bundle: challenge,
+            senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+        )
+        let response = try r.mgr.respond(to: pending)
 
         let json    = try JSONSerialization.jsonObject(with: response.encoded()) as? [String: Any]
         let secrecy = json?["secrecy"] as? [String: Any]
@@ -161,7 +170,9 @@ private struct OldSealedPayload: Codable {
         // Build a bundle manually in the unsupported state and hand it to the
         // identity manager. It must reject before touching crypto.
         let (c, r) = Self.makeParties()
-        let challenge = try c.mgr.createChallenge(for: r.view)
+        let challenge = try c.mgr.createChallenge(
+            recipientKey: r.publicKey, recipientQuantum: nil, contactID: r.identifier
+        )
         // Round-trip through JSON with a rewritten version to trigger `.unsupported`.
         var obj = try JSONSerialization.jsonObject(with: challenge.encoded()) as! [String: Any]
         obj["version"] = "v99future"
@@ -170,7 +181,10 @@ private struct OldSealedPayload: Codable {
 
         #expect(decoded.version == .unsupported)
         #expect(throws: IdentityChallenge.ManagerError.malformedBundle) {
-            _ = try r.mgr.decryptChallenge(bundle: decoded, contacts: [c.view])
+            _ = try r.mgr.decryptChallenge(
+                bundle: decoded,
+                senderKey: c.publicKey, senderQuantum: nil, senderID: c.identifier, senderName: c.identifier
+            )
         }
     }
 
@@ -201,21 +215,18 @@ private struct OldSealedPayload: Codable {
 
 @MainActor
 private struct _Party {
-    let km:    TestKeyManager
-    let mgr:   IdentityChallenge.Manager
-    let view:  IdentityChallenge.ContactView
+    let km:         TestKeyManager
+    let mgr:        IdentityChallenge.Manager
+    let identifier: String
+    let publicKey:  Data
 
     init(name: String) {
         let km = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
         let store = IdentityChallenge.OutstandingChallengeStore()
-        self.km  = km
-        self.mgr = IdentityChallenge.Manager(crypto: crypto, store: store)
-        self.view = IdentityChallenge.ContactView(
-            identifier: name,
-            publicKey:  try! km.retrieveIdentity(),
-            displayName: name,
-            quantumKeyMaterial: nil
-        )
+        self.km         = km
+        self.mgr        = IdentityChallenge.Manager(crypto: crypto, store: store)
+        self.identifier = name
+        self.publicKey  = try! km.retrieveIdentity()
     }
 }

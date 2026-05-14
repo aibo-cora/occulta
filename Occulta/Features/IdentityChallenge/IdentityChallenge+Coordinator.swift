@@ -98,45 +98,84 @@ extension IdentityChallenge {
             for contact: Contact.Profile,
             contextNote: String?
         ) throws {
-            guard let view = Self.contactView(for: contact) else {
+            let crypto = Occulta.Manager.Crypto()
+            guard
+                let keyRecord    = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                let recipientKey = try? crypto.decrypt(data: keyRecord.material)
+            else {
                 throw IdentityChallenge.ManagerError.noIdentity
             }
-            let bundle = try self.manager.createChallenge(for: view, contextNote: contextNote)
-            let url    = try Self.writeOCC(bundle.encoded(), kind: "challenge")
+            let quantum: QuantumKeyMaterial? = {
+                guard
+                    let enc = keyRecord.quantumKeyMaterialEncrypted,
+                    let dec = try? crypto.decrypt(data: enc)
+                else { return nil }
+                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+            }()
+            let displayName = contact.givenName.decrypt()
+            let bundle = try self.manager.createChallenge(
+                recipientKey:     recipientKey,
+                recipientQuantum: quantum,
+                contactID:        contact.identifier,
+                contextNote:      contextNote
+            )
+            let url = try Self.writeOCC(bundle.encoded(), kind: "challenge")
             self.outboundShare = OutboundShare(
-                url:          url,
-                contactID:    contact.identifier,
-                contactName:  view.displayName,
-                contextNote:  contextNote?.isEmpty == false ? contextNote : nil,
-                kind:         .challenge
+                url:         url,
+                contactID:   contact.identifier,
+                contactName: displayName.isEmpty ? "Unknown" : displayName,
+                contextNote: contextNote?.isEmpty == false ? contextNote : nil,
+                kind:        .challenge
             )
         }
 
         // MARK: - Inbound: route a decrypted SealedPayload
 
         /// Called by the inbound `.occ` pipeline in `OccultaApp` when the
-        /// decoded `SealedPayload.identityChallenge` is non-nil. Reconstitutes
-        /// the `OccultaBundle` so the `Manager` can re-open it through its own
-        /// ECDSA/AAD checks — we do NOT trust the pre-decrypted payload alone.
+        /// decoded `SealedPayload.identityChallenge` is non-nil. The sender's
+        /// `Contact.Profile` is resolved at the call site (by `ownerID` from
+        /// `decryptSealed`) and passed in directly.
         ///
-        /// - Returns: `true` if the bundle was routed to identity-challenge
-        ///   handling (approval sheet or verification result was presented).
-        ///   `false` means the caller should fall back to regular message
-        ///   handling (envelope was absent).
+        /// Re-opens the bundle through its own ECDSA/AAD checks as
+        /// defense-in-depth — we do NOT trust the pre-decrypted payload alone.
+        ///
+        /// - Returns: `true` if the bundle was consumed by identity-challenge
+        ///   handling. `false` if the envelope was absent (caller falls through
+        ///   to regular message handling).
         @discardableResult
-        func handleInbound(
-            bundle: OccultaBundle,
-            sealed: OccultaBundle.SealedPayload,
-            contactManager: ContactManager
+        func handleInboundChallenge(
+            bundle:   OccultaBundle,
+            envelope: IdentityChallengeEnvelope,
+            sender:   Contact.Profile
         ) -> Bool {
-            guard let envelope = sealed.identityChallenge else { return false }
-
-            let contactViews = Self.allContactViews(contactManager: contactManager)
+            let crypto = Occulta.Manager.Crypto()
+            guard
+                let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+                let senderKey = try? crypto.decrypt(data: keyRecord.material)
+            else {
+                self.errorMessage = "Could not open identity verification request."
+                return true
+            }
+            let senderQuantum: QuantumKeyMaterial? = {
+                guard
+                    let enc = keyRecord.quantumKeyMaterialEncrypted,
+                    let dec = try? crypto.decrypt(data: enc)
+                else { return nil }
+                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+            }()
+            let senderID   = sender.identifier
+            let senderName = { let n = sender.givenName.decrypt(); return n.isEmpty ? "Unknown" : n }()
 
             switch envelope.kind {
             case .challenge:
                 do {
-                    let pending = try self.manager.decryptChallenge(bundle: bundle, contacts: contactViews)
+                    let pending = try self.manager.decryptChallenge(
+                        bundle:        bundle,
+                        senderKey:     senderKey,
+                        senderQuantum: senderQuantum,
+                        senderID:      senderID,
+                        senderName:    senderName
+                    )
                     self.incomingChallenge = IncomingChallenge(pending: pending)
                 } catch {
                     self.errorMessage = "Could not open identity verification request."
@@ -145,25 +184,26 @@ extension IdentityChallenge {
 
             case .response:
                 do {
-                    let (ok, note) = try self.manager.verifyResponse(bundle: bundle, contacts: contactViews)
-                    // Best-effort: match the responder back to a contact name.
-                    let sender = Self.matchSender(bundle: bundle, contactViews: contactViews)
-                    let name   = sender?.displayName ?? "This contact"
-                    let id     = sender?.identifier ?? ""
-                    if ok && !id.isEmpty {
-                        self.verifiedAt[id] = Date()
+                    let (ok, note) = try self.manager.verifyResponse(
+                        bundle:        bundle,
+                        senderKey:     senderKey,
+                        senderQuantum: senderQuantum,
+                        senderID:      senderID
+                    )
+                    if ok {
+                        self.verifiedAt[senderID] = Date()
                     }
                     self.verificationOutcome = VerificationOutcome(
                         passed:      ok,
-                        contactID:   id,
-                        contactName: name,
+                        contactID:   senderID,
+                        contactName: senderName,
                         contextNote: note
                     )
                 } catch {
                     self.verificationOutcome = VerificationOutcome(
                         passed:      false,
-                        contactID:   "",
-                        contactName: "This contact",
+                        contactID:   senderID,
+                        contactName: senderName,
                         contextNote: nil
                     )
                 }
@@ -203,8 +243,8 @@ extension IdentityChallenge {
                         let url    = try Self.writeOCC(bundle.encoded(), kind: "response")
                         self.outboundShare = OutboundShare(
                             url:         url,
-                            contactID:   pending.challenger.identifier,
-                            contactName: pending.challenger.displayName,
+                            contactID:   pending.challengerID,
+                            contactName: pending.challengerName,
                             contextNote: nil,
                             kind:        .response
                         )
@@ -238,55 +278,11 @@ extension IdentityChallenge {
 
         // MARK: - Helpers
 
-        /// Build a `ContactView` from a SwiftData profile — decrypts the
-        /// latest non-expired public key and the display name.
-        static func contactView(for contact: Contact.Profile) -> IdentityChallenge.ContactView? {
-            let crypto = Occulta.Manager.Crypto()
-            guard
-                let keyRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
-                let pubKey    = try? crypto.decrypt(data: keyRecord.material)
-            else { return nil }
-            let name = contact.givenName.decrypt()
-            let quantumMaterial: QuantumKeyMaterial? = {
-                guard
-                    let encrypted = keyRecord.quantumKeyMaterialEncrypted,
-                    let decrypted = try? crypto.decrypt(data: encrypted)
-                else { return nil }
-                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: decrypted)
-            }()
-            return IdentityChallenge.ContactView(
-                identifier:         contact.identifier,
-                publicKey:          pubKey,
-                displayName:        name.isEmpty ? "Unknown" : name,
-                quantumKeyMaterial: quantumMaterial
-            )
-        }
-
-        private static func allContactViews(contactManager: ContactManager) -> [IdentityChallenge.ContactView] {
-            guard let contacts = try? contactManager.fetchAllContacts() else { return [] }
-            return contacts.compactMap { Self.contactView(for: $0) }
-        }
-
-        private static func matchSender(
-            bundle: OccultaBundle,
-            contactViews: [IdentityChallenge.ContactView]
-        ) -> IdentityChallenge.ContactView? {
-            for view in contactViews {
-                let fp = OccultaBundle.SecrecyContext.fingerprint(
-                    for: view.publicKey,
-                    nonce: bundle.fingerprintNonce
-                )
-                if fp == bundle.senderFingerprint { return view }
-            }
-            return nil
-        }
-
         /// Write bundle bytes to a temp `.occ` file ready for share sheet.
         private static func writeOCC(_ data: Data, kind: String) throws -> URL {
             let name = (UUID().uuidString.components(separatedBy: "-").last ?? "unknown") + ".occ"
             let url  = FileManager.default.temporaryDirectory.appendingPathComponent(name)
             try data.write(to: url)
-            
             return url
         }
     }

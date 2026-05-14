@@ -13,11 +13,13 @@ struct VaultEntryDetail: View {
     let entryID: UUID
 
     @Environment(VaultManager.self) private var vault
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(\.dismiss) private var dismiss
 
     @Query private var entries: [VaultEntry]
 
     @State private var cachedLabel     = ""
+    @State private var cachedType      = VaultEntryType.note
     @State private var showDeleteAlert = false
     @GestureState private var isHeld   = false
 
@@ -35,6 +37,9 @@ struct VaultEntryDetail: View {
                     self.hero(entry: entry)
                     self.contentCard(entry: entry)
                     self.metaCard(entry: entry)
+                    if let erosion = self.shardErosion {
+                        self.erosionBanner(active: erosion.active, threshold: erosion.threshold)
+                    }
                     self.provenance
                 }
                 .padding(16)
@@ -57,19 +62,11 @@ struct VaultEntryDetail: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button { self.showDeleteAlert = true } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(Color.occultaDanger)
-                }
-            }
-        }
         .alert("Delete Entry?", isPresented: self.$showDeleteAlert) {
             Button("Delete", role: .destructive) {
                 guard let entry else { return }
                 
-                try? self.vault.deleteEntry(id: entry.id)
+                _ = try? self.vault.deleteEntry(id: entry.id)
                 
                 self.dismiss()
             }
@@ -78,9 +75,17 @@ struct VaultEntryDetail: View {
             Text("This permanently removes the encrypted entry. Distributed shards remain valid.")
         }
         .onAppear {
-            if let entry {
-                self.cachedLabel = (try? self.vault.decryptLabel(for: entry)) ?? entry.type.displayName
+            if let entry, let payload = try? self.vault.decryptLabelPayload(for: entry) {
+                self.cachedLabel = payload.label
+                self.cachedType  = payload.type
             }
+        }
+        .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
+            guard !isUnlocked else { return }
+            // Vault locked while detail is visible — clear the cached plaintext label
+            // and navigate back so Face ID is required to re-enter.
+            self.cachedLabel = ""
+            self.dismiss()
         }
     }
 
@@ -90,16 +95,16 @@ struct VaultEntryDetail: View {
         HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(entry.type.tileBackground)
+                    .fill(self.cachedType.tileBackground)
                     .frame(width: 52, height: 52)
-                Text(entry.type.emoji)
+                Text(self.cachedType.emoji)
                     .font(.system(size: 26))
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(self.cachedLabel)
                     .font(.system(size: 20, weight: .bold))
                     .tracking(-0.3)
-                Text(entry.type.displayName)
+                Text(self.cachedType.displayName)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .tracking(0.5)
@@ -184,12 +189,26 @@ struct VaultEntryDetail: View {
                 Divider().padding(.leading, 16)
 
                 NavigationLink {
-                    VaultShardSetup(entryID: entry.id)
+                    VaultShardSetup(mode: .entry(entry.id))
                 } label: {
                     self.metaRow(title: "Shamir Shards") {
-                        Text("Active — tap to manage")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.primary)
+                        if let s = self.shardSummary(for: entry.id) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("any \(s.threshold) of \(s.total)")
+                                    .font(.system(size: 13, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                HStack(spacing: 4) {
+                                    if s.confirmed > 0 { self.statusPill("\(s.confirmed) confirmed", Color.occultaVerified) }
+                                    if s.pending   > 0 { self.statusPill("\(s.pending) pending",   Color.orange) }
+                                    if s.revoking  > 0 { self.statusPill("\(s.revoking) revoking", Color.red) }
+                                    if s.lost      > 0 { self.statusPill("\(s.lost) lost",         Color.red) }
+                                }
+                            }
+                        } else {
+                            Text("Shards configured")
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .buttonStyle(.plain)
@@ -215,6 +234,73 @@ struct VaultEntryDetail: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    // MARK: - Shard status helpers
+
+    private struct ShardSummary {
+        let threshold: Int
+        let total: Int
+        let confirmed: Int
+        let pending: Int
+        let revoking: Int
+        let lost: Int
+    }
+
+    private func shardSummary(for entryID: UUID) -> ShardSummary? {
+        guard let meta = try? self.vault.shardDistributionMetadata(for: entryID) else { return nil }
+        
+        return ShardSummary(
+            threshold: meta.threshold,
+            total:     meta.shards.count,
+            confirmed: meta.shards.filter { $0.status == .confirmed }.count,
+            pending:   meta.shards.filter { $0.status == .pending }.count,
+            revoking:  meta.shards.filter { $0.status == .revokePending }.count,
+            lost:      meta.shards.filter { $0.status == .lost }.count
+        )
+    }
+
+    private func statusPill(_ label: String, _ color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.13))
+            .foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    // MARK: - Shard erosion
+
+    private var shardErosion: (active: Int, threshold: Int)? {
+        guard let meta = try? self.vault.shardDistributionMetadata(for: self.entryID) else { return nil }
+        
+        let active = meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
+        
+        guard active < meta.threshold else { return nil }
+        
+        return (active, meta.threshold)
+    }
+
+    private func erosionBanner(active: Int, threshold: Int) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Recovery at risk")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)))
+                Text("\(active) of \(threshold) required trustees have active shards — below threshold. Redistribute to restore recovery coverage.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)).opacity(0.85))
+                    .lineSpacing(2)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - Provenance note (green info block per spec)
@@ -273,7 +359,7 @@ struct VaultEntryDetail: View {
             .buttonStyle(.plain)
 
             NavigationLink {
-                VaultShardSetup(entryID: entry.id)
+                VaultShardSetup(mode: .entry(entry.id))
             } label: {
                 self.actionButton("Manage Shards", style: .primary)
             }

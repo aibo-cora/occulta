@@ -30,3 +30,6 @@ Carthage/Build/
 # macOS metadata
 .DS_Store
 *.swp
+
+# Claude
+.claude*

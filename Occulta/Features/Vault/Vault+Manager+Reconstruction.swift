@@ -50,7 +50,6 @@ extension VaultManager {
     ) throws {
         let vaultKey    = try self.currentKey()
         guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
-        let aad         = entry.aad()
 
         // ── 1. Bind all shards to this entry ─────────────────────────────────
         guard shards.allSatisfy({ $0.entryID == entryID && $0.category == .shard }) else {
@@ -66,6 +65,17 @@ extension VaultManager {
 
         // ── 3. Reconstruct candidate PEK ─────────────────────────────────────
         let rawShares = shards.map { Array($0.value) }
+
+        // Enforce threshold before handing to SSS. With fewer than k shares,
+        // Lagrange interpolation silently produces garbage — GCM would catch it
+        // eventually, but throwing here gives a clear, early failure.
+        // tryFinalizeReconstruction already guards this for the normal path;
+        // this check protects any direct callers of reconstructEntry.
+        if let meta = try? self.shardDistributionMetadata(for: entryID),
+           rawShares.count < meta.threshold {
+            throw VaultError.decryptionFailed
+        }
+
         var candidateData: Data
         do {
             candidateData = try ShamirSecretSharing.reconstruct(shares: rawShares)
@@ -80,7 +90,8 @@ extension VaultManager {
         // ── 4. GCM authentication — integrity check ───────────────────────────
         // A wrong PEK produces a random value; the 128-bit GCM tag rejects it.
         let contentBox = try AES.GCM.SealedBox(combined: entry.encryptedContent)
-        guard (try? AES.GCM.open(contentBox, using: candidatePEK, authenticating: aad)) != nil else {
+        guard (try? AES.GCM.open(contentBox, using: candidatePEK,
+                                  authenticating: entry.aad(for: .content))) != nil else {
             throw VaultError.decryptionFailed
         }
 
@@ -89,7 +100,7 @@ extension VaultManager {
             candidateData,
             using:          vaultKey,
             nonce:          AES.GCM.Nonce(),
-            authenticating: aad
+            authenticating: entry.aad(for: .entryKey)
         )
         guard let combinedKey = sealedKey.combined else { throw VaultError.encryptionFailed }
 

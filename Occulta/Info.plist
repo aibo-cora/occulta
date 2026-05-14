@@ -16,6 +16,18 @@
 				<string>com.github.aibo-cora.occulta</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Occulta Vault Backup</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.github.aibo-cora.occulta.backup</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
@@ -60,6 +72,29 @@
 				<key>public.mime-type</key>
 				<array>
 					<string>application/x-occulta</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Occulta Vault Backup</string>
+			<key>UTTypeIcons</key>
+			<dict/>
+			<key>UTTypeIdentifier</key>
+			<string>com.github.aibo-cora.occulta.backup</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>occbak</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/x-occulta-backup</string>
 				</array>
 			</dict>
 		</dict>

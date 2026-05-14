@@ -34,10 +34,37 @@ struct SaltInfo {
     /// Domain-separated from all transport and local-DB paths.
     static let kVaultKeyInfo = "Occulta-v1-vault-2026".data(using: .utf8)!
     /// Shard custody key: ECDH(shard_custody_SE_priv, G) → HKDF. Dedicated SE key
-    /// with device-unlock-level access (no biometric). Used to encrypt HeldShard
+    /// with device-unlock-level access (no biometric). Used to seal CustodyShard
     /// records locally — fully automatic, no user friction.
     static let kShardCustodyKeyInfo = "Occulta-v1-shard-custody-2026".data(using: .utf8)!
+    /// Recovery buffer key: same SE key as shard custody, distinct HKDF info →
+    /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
+    /// transient buffer of returned shards Alice's device collects during
+    /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
+    /// blob and a reconstruct blob are never decryptable with the same key.
+    static let kRecoveryBufferKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
 }
+
+// MARK: - SE Key Inventory
+//
+// Manager.Key manages four distinct Secure Enclave P-256 key objects:
+//
+//  Tag                                      │ Biometric gate │ Purpose
+//  ─────────────────────────────────────────┼────────────────┼──────────────────────────────────────
+//  "master.key.privacy.turtles.are.cute"    │ No             │ Identity — ECDSA signing, ECDH transport
+//  "local.db.se.key.occulta"                │ No             │ Local DB hybrid key ECDH component
+//  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault PEK derivation
+//  "shard.custody.occulta"                  │ No             │ Shard custody records + recovery buffer
+//
+// All four keys carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
+// never synced to iCloud Keychain.
+//
+// The vault SE key requires a pre-evaluated `LAContext`; the other three operate
+// automatically while the device is unlocked.
+//
+// The shard custody key is reused as the base for the recovery buffer key — the two
+// derived symmetric keys are domain-separated by `kShardCustodyKeyInfo` vs
+// `kRecoveryBufferKeyInfo` in HKDF.
 
 extension Manager {
     class Key {
@@ -114,6 +141,11 @@ extension Manager {
 
         // MARK: - SE retrieval
 
+        /// Retrieve the SE identity private key by tag, creating it if absent.
+        ///
+        /// **SE operations:** `SecItemCopyMatching` + conditionally `SecKeyCreateRandomKey`.
+        ///
+        /// - Returns: The private key reference, or `nil` if the SE is unavailable.
         func retrievePrivateKey() throws -> SecKey? {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassKey,
@@ -137,10 +169,19 @@ extension Manager {
             }
         }
 
+        /// Copy the public key from a private key reference via `SecKeyCopyPublicKey`.
+        ///
+        /// - Returns: Public key reference, or `nil` if `key` is nil or the copy fails.
+        ///
+        /// Note: the method name contains a typo ("retrive"). Call sites use this name;
+        /// rename only when all references can be updated atomically.
         func retrivePublicKey(using key: SecKey?) -> SecKey? {
             key.flatMap { SecKeyCopyPublicKey($0) }
         }
 
+        /// Delete the SE key with the given application tag.
+        ///
+        /// - Returns: `true` if the key was deleted or did not exist; `false` on unexpected error.
         @discardableResult
         func delete(using tag: String) -> Bool {
             let query: [String: Any] = [
@@ -154,6 +195,9 @@ extension Manager {
             return status == errSecSuccess || status == errSecItemNotFound
         }
 
+        /// Delete the SE identity key (tag: `self.tag`).
+        ///
+        /// - Returns: `true` on success or if the key was already absent.
         @discardableResult
         func deleteIdentity() -> Bool { self.delete(using: self.tag) }
 
@@ -293,6 +337,10 @@ extension Manager {
 // MARK: - Helpers
 
 extension Manager.Key {
+    /// Export a `SecKey` to its x963 external representation.
+    ///
+    /// For P-256 public keys the result is 65 bytes (`0x04 ∥ x ∥ y`).
+    /// - Returns: Raw key bytes, or `nil` if `key` is nil or the export fails.
     func convert(key: SecKey?) -> Data? {
         key.flatMap { SecKeyCopyExternalRepresentation($0, nil) as Data? }
     }
@@ -312,6 +360,12 @@ extension Manager.Key {
         return SecKeyCreateWithData(data as CFData, attributes as CFDictionary, &error)
     }
 
+    /// Retrieve and export the identity public key as x963 `Data` (65 bytes).
+    ///
+    /// **SE operations:** `retrievePrivateKey` (read), `SecKeyCopyPublicKey` (derive public),
+    /// `SecKeyCopyExternalRepresentation` (export).
+    ///
+    /// - Throws: `.noIdentityAvailable` if the SE key is absent or cannot be exported.
     func retrieveIdentity() throws -> Data {
         guard
             let priv = try self.retrievePrivateKey(),
@@ -701,6 +755,12 @@ extension Manager.Key: KeyManagerProtocol {
     }
 
     /// Retrieve the shard custody SE private key, creating it on first use.
+    ///
+    /// **SE operations:** `SecItemCopyMatching` + conditionally `SecKeyCreateRandomKey`.
+    ///
+    /// No `LAContext` is passed — access control is device-unlock level, so no biometric
+    /// prompt is required. Throws an `NSError` (NSOSStatusErrorDomain) on unexpected
+    /// Keychain failure.
     private func retrieveShardCustodyPrivateKey() throws -> SecKey? {
         let query: [String: Any] = [
             kSecClass as String:              kSecClassKey,
@@ -755,6 +815,45 @@ extension Manager.Key: KeyManagerProtocol {
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: custodyPubData,
             info: SaltInfo.kShardCustodyKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Recovery buffer key
+
+    /// Derive the recovery buffer key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256
+    /// with `kRecoveryBufferKeyInfo`. Reuses the shard custody SE key (same access
+    /// policy: device-unlock, no biometric) but produces a distinct symmetric key
+    /// via HKDF domain separation.
+    ///
+    /// Used to seal ReconstructShard rows — the transient buffer of returned
+    /// shards collected during reconstruction.
+    ///
+    /// The returned SymmetricKey is scope-bounded — callers must not store it.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveRecoveryBufferKey() throws -> SymmetricKey? {
+        guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
+        guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
+
+        var error: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                custodyPriv, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &error
+            ) as? Data
+        else { return nil }
+
+        guard
+            let custodyPub     = self.retrivePublicKey(using: custodyPriv),
+            let custodyPubData = self.convert(key: custodyPub)
+        else { return nil }
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: custodyPubData,
+            info: SaltInfo.kRecoveryBufferKeyInfo,
             outputByteCount: 32
         )
     }

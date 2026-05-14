@@ -57,11 +57,24 @@ enum ShamirSecretSharing {
     // MARK: Errors
 
     enum Error: Swift.Error {
-        case invalidParameters      // k < 2, n < k, or n > 255
-        case invalidSecretLength    // secret must be exactly 32 bytes
-        case insufficientShares     // reconstruct() received an empty array
-        case invalidShareFormat     // shares have wrong or inconsistent length
-        case duplicateXCoordinate   // two shares share the same x-coordinate
+        /// `k < 2`, `n < k`, or `n > 255`.
+        case invalidParameters
+        /// Secret must be exactly 32 bytes.
+        case invalidSecretLength
+        /// `reconstruct()` received fewer than two shares.
+        ///
+        /// SSS requires at least two points to define a polynomial. A single share
+        /// trivially evaluates to a deterministic value that is NOT the secret.
+        /// Note: `VaultManager.reconstructEntry` enforces the threshold guard before
+        /// calling `reconstruct`, providing a clear early error for the normal path.
+        case insufficientShares
+        /// A share has the wrong length (expected 33 bytes each) or shares have
+        /// inconsistent lengths.
+        case invalidShareFormat
+        /// Two shares carry the same x-coordinate — Lagrange interpolation is
+        /// undefined and the call is rejected.
+        case duplicateXCoordinate
+        /// `SecRandomCopyBytes` failed during polynomial coefficient generation.
         case randomGenerationFailed
     }
 
@@ -121,11 +134,13 @@ enum ShamirSecretSharing {
     ///
     /// ⚠️ Caller must zero this buffer after re-encrypting the vault entry.
     static func reconstruct(shares: [[UInt8]]) throws -> Data {
-        guard !shares.isEmpty           else { throw Error.insufficientShares }
+        guard shares.count >= 2        else { throw Error.insufficientShares }
         guard shares[0].count == 33    else { throw Error.invalidShareFormat }
         guard shares.allSatisfy({ $0.count == 33 }) else { throw Error.invalidShareFormat }
 
         let xCoords = shares.map { $0[0] }
+        // x=0 is the secret itself; a share with that coordinate bypasses the threshold.
+        guard !xCoords.contains(0)     else { throw Error.invalidShareFormat }
         guard Set(xCoords).count == xCoords.count else { throw Error.duplicateXCoordinate }
 
         var secret = [UInt8](repeating: 0, count: 32)

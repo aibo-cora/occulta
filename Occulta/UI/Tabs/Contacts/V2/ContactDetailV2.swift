@@ -173,6 +173,9 @@ private struct ComposeHeroV2: View {
     let firstName: String
 
     @Environment(ContactManager.self) private var contactManager
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(VaultManager.self) private var vaultManager: VaultManager?
+    
     @State private var messageText = ""
     @State private var attachments: [Occulta.File] = []
     @State private var selectedMediaItems: [PhotosPickerItem] = []
@@ -348,9 +351,27 @@ private struct ComposeHeroV2: View {
                     }
                 }
 
-                let basket    = Basket(files: files)
-                let encoded   = try JSONEncoder().encode(basket)
-                let encrypted = try self.contactManager.encryptBundle(data: encoded, for: self.identifier)
+                let basket  = Basket(files: files)
+                let encoded = try JSONEncoder().encode(basket)
+                
+                let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: self.identifier)
+                let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
+                let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
+                let expected   = try? self.shardCustodyManager.flatMap { try $0.buildExpectedShards(for: self.identifier, vaultManager: self.vaultManager!) }
+                
+                #if DEBUG
+                debugPrint("Manifest: \(manifest_?.description ?? "nil")")
+                debugPrint("Expected: \(expected?.description ?? "nil")")
+                debugPrint("Shard ops: \(shardOps.isEmpty ? "none" : shardOps.map(\.kind.rawValue).joined(separator: "\n"))")
+                #endif
+
+                let encrypted = try self.contactManager.encryptBundle(
+                    data:            encoded,
+                    for:             self.identifier,
+                    shardOperations: shardOps.isEmpty ? nil : shardOps,
+                    custodyManifest: manifest_,
+                    expectedShards:  expected
+                )
 
                 guard !encrypted.isEmpty else {
                     self.showError("Encryption failed. Try again.")
