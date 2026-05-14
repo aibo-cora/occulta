@@ -25,11 +25,35 @@ final class SecureModeConfig {
     var salt: Data
     /// Number of consecutive duress PIN entries before full wipe.
     var wipeThreshold: Int
+    /// Whether the activation sequence has been completed (sensitive data removed from SwiftData).
+    var isActivated: Bool = false
+    /// Encrypted JSON-encoded [String] of contact identifiers marked as safe.
+    /// Nil until the user classifies at least one contact.
+    var safeContactIDsEncrypted: Data? = nil
 
     init(sealedNormalVerifier: Data, sealedDuressVerifier: Data, salt: Data, wipeThreshold: Int) {
         self.sealedNormalVerifier = sealedNormalVerifier
         self.sealedDuressVerifier = sealedDuressVerifier
         self.salt                 = salt
         self.wipeThreshold        = wipeThreshold
+    }
+
+    // MARK: - Safe contact membership
+
+    /// Decrypts the safe-ID blob and checks membership. Plaintext lives only for the
+    /// duration of this call — nothing is retained by the caller.
+    func isSafeContact(_ identifier: String) -> Bool {
+        guard
+            let encrypted = self.safeContactIDsEncrypted,
+            let decrypted = encrypted.decrypt(),
+            let ids       = try? JSONDecoder().decode([String].self, from: decrypted)
+        else { return false }
+        return ids.contains(identifier)
+    }
+
+    /// Encodes and encrypts a new set of safe contact identifiers, replacing the existing blob.
+    func updateSafeContacts(_ ids: Set<String>) throws {
+        let data = try JSONEncoder().encode(Array(ids))
+        self.safeContactIDsEncrypted = try data.encrypt()
     }
 }

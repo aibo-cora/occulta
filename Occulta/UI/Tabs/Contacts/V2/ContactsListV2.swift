@@ -14,13 +14,21 @@ struct ContactsV2: View {
     @AppStorage("showFingerprints")  private var showFingerprints  = true
     @AppStorage("showTrustSummary")  private var showTrustSummary  = true
 
-    @Environment(\.modelContext)       private var modelContext
-    @Environment(ContactManager.self)  private var contactManager
+    @Environment(\.modelContext)          private var modelContext
+    @Environment(ContactManager.self)     private var contactManager
+    @Environment(SecureModeManager.self)  private var secureModeManager
 
     @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
 
+    private var visibleContacts: [Contact.Profile] {
+        guard self.secureModeManager.isDuressActive else { return self.contacts }
+        guard let config = try? self.modelContext.fetch(FetchDescriptor<SecureModeConfig>()).first
+        else { return [] }
+        return self.contacts.filter { config.isSafeContact($0.identifier) }
+    }
+
     private var sortedContacts: [Contact.Profile] {
-        let source = self.searchText.isEmpty ? self.contacts : self.contacts.filter {
+        let source = self.searchText.isEmpty ? self.visibleContacts : self.visibleContacts.filter {
             $0.givenName.decrypt().localizedStandardContains(self.searchText)
             || $0.familyName.decrypt().localizedStandardContains(self.searchText)
             || $0.organizationName.decrypt().localizedStandardContains(self.searchText)
@@ -80,7 +88,7 @@ struct ContactsV2: View {
 
                     if self.searchText.isEmpty {
                         Section {
-                            Text("\(self.contacts.count) contacts · encrypted at rest")
+                            Text("\(self.visibleContacts.count) contacts · encrypted at rest")
                                 .font(.system(size: 10, weight: .regular, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .center)

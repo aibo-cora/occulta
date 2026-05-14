@@ -18,6 +18,7 @@ struct OccultaApp: App {
     @State private var identityChallenge = IdentityChallenge.Coordinator()
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
+    @State private var secureModeManager: SecureModeManager
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
     
@@ -56,6 +57,7 @@ struct OccultaApp: App {
         self.sharedModelContainer = sharedModelContainer
         self.contactManager      = ContactManager(modelContainer: sharedModelContainer)
         self.vaultManager        = VaultManager(modelContainer: sharedModelContainer)
+        self.secureModeManager   = SecureModeManager(modelContainer: sharedModelContainer)
         self.shardCustodyManager = ShardCustodyManager(
             modelContainer: sharedModelContainer,
             keyManager:     Manager.Key()
@@ -327,6 +329,7 @@ struct OccultaApp: App {
         .environment(self.identityChallenge)
         .environment(self.vaultManager)
         .environment(self.shardCustodyManager)
+        .environment(self.secureModeManager)
     }
     
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
