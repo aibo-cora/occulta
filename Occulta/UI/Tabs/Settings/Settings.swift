@@ -28,6 +28,10 @@ struct Settings: View {
                 NavigationLink("Manage Contacts") {
                     ManageContacts()
                 }
+
+                NavigationLink("Security") {
+                    SecuritySettings()
+                }
             }
             
             VStack {
@@ -126,6 +130,41 @@ struct Settings: View {
         }
     }
     
+    private struct SecuritySettings: View {
+        @Environment(Manager.Security.self) private var security
+        @Environment(\.dismiss) private var dismiss
+
+        @State private var showingPINSheet = false
+
+        private var pinEnabledBinding: Binding<Bool> {
+            Binding(
+                get: { self.security.requiresPIN },
+                set: { _ in self.showingPINSheet = true }
+            )
+        }
+
+        var body: some View {
+            List {
+                Toggle("Enable PIN", isOn: self.pinEnabledBinding)
+            }
+            .navigationTitle("Security")
+            .sheet(isPresented: self.$showingPINSheet) {
+                if self.security.requiresPIN {
+                    PINEntry(onNormal: { pin in
+                        try? self.security.deactivatePIN(confirmingNormalPIN: pin)
+                        self.showingPINSheet = false
+                    })
+                    .environment(self.security)
+                } else {
+                    PINEntry(onNormal: { _ in
+                        self.showingPINSheet = false
+                    })
+                    .environment(self.security)
+                }
+            }
+        }
+    }
+
     private struct ResetMasterKey: View {
         var body: some View {
             #if DEBUG || targetEnvironment(simulator)

@@ -12,7 +12,7 @@ struct PINEntry: View {
 
     // MARK: Callbacks
 
-    var onNormal: () -> Void = {}
+    var onNormal: (String) -> Void = { _ in }
     var onDuress: () -> Void = {}
     var onWipe:   () -> Void = {}
 
@@ -99,6 +99,13 @@ struct PINEntry: View {
     private func submit() {
         self.isVerifying = true
         let pin   = self.digits.map { String($0) }.joined()
+
+        if self.security.state == .noPIN {
+            try? self.security.configurePIN(pin)
+            self.onNormal(pin)
+            return
+        }
+
         let start = Date()
 
         // verify() always attempts both sentinel checks regardless of outcome,
@@ -109,14 +116,14 @@ struct PINEntry: View {
         let remaining = max(0, self.gateDuration - elapsed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
-            self.route(result)
+            self.route(result, pin: pin)
         }
     }
 
-    private func route(_ result: PINVerifyResult) {
+    private func route(_ result: PINVerifyResult, pin: String) {
         switch result {
         case .normal:
-            self.onNormal()
+            self.onNormal(pin)
         case .duress:
             self.onDuress()
         case .wrong:
