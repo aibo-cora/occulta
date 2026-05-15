@@ -110,8 +110,7 @@ struct Settings: View {
     }
     
     private struct ManageContacts: View {
-        @Environment(ContactManager.self) private var contactManager: ContactManager
-        @Environment(VaultManager.self)   private var vaultManager:   VaultManager
+        @Environment(Manager.App.self) private var appManager: Manager.App
 
         var body: some View {
             VStack(spacing: 20) {
@@ -119,10 +118,7 @@ struct Settings: View {
                 Text("This cannot be undone.").italic()
 
                 Button("Delete", role: .destructive) {
-                    Manager.PrekeyManager().deleteAllKeys()
-                    try? self.contactManager.deleteAllContacts()
-                    try? self.vaultManager.deleteAllData()
-                    Manager.Key().deleteAllKeys()
+                    try? self.appManager.eraseAllData()
                 }
                 .prominentButtonStyle()
             }

@@ -19,6 +19,7 @@ struct OccultaApp: App {
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var secureModeManager: SecureModeManager
+    @State private var appManager: Manager.App
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
     
@@ -54,10 +55,14 @@ struct OccultaApp: App {
             }
         }()
         
+        let contactManager = ContactManager(modelContainer: sharedModelContainer)
+        let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
+
         self.sharedModelContainer = sharedModelContainer
-        self.contactManager      = ContactManager(modelContainer: sharedModelContainer)
-        self.vaultManager        = VaultManager(modelContainer: sharedModelContainer)
+        self.contactManager      = contactManager
+        self.vaultManager        = vaultManager
         self.secureModeManager   = SecureModeManager(modelContainer: sharedModelContainer)
+        self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(
             modelContainer: sharedModelContainer,
             keyManager:     Manager.Key()
@@ -330,6 +335,7 @@ struct OccultaApp: App {
         .environment(self.vaultManager)
         .environment(self.shardCustodyManager)
         .environment(self.secureModeManager)
+        .environment(self.appManager)
     }
     
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
