@@ -16,8 +16,8 @@ struct ComposableMessage: View {
     let identifier: String
     let filename = "message.occ"
     
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-    
+    @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
+
     init(identifier: String) {
         self.identifier = identifier
         

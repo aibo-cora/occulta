@@ -12,8 +12,8 @@ extension Contact {
     struct Info: View {
         let identifier: String
         
-        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-        
+        @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
+
         @Environment(\.modelContext) var modelContext
         
         /// First name of the contact
@@ -60,13 +60,12 @@ extension Contact {
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Environment(\.dismiss) private var dismiss
         
-        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-        
-        /// First name of the contact
+        @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
+
         var name: String {
             self.contacts.first?.givenName.decrypt() ?? "Anonymous"
         }
-        
+
         /// If we do not have a public key from our contact, we need to start an exchange.
         var needsExchange: Bool {
             let keys = self.contacts.first?.contactPublicKeys

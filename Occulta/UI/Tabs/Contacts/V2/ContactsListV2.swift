@@ -18,7 +18,7 @@ struct ContactsV2: View {
     @Environment(ContactManager.self)     private var contactManager
     @Environment(SecureModeManager.self)  private var secureModeManager
 
-    @Query(filter: #Predicate<Contact.Profile> { $0.isDeleted == nil }, sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
     private var visibleContacts: [Contact.Profile] {
         guard self.secureModeManager.isDuressActive else { return self.contacts }

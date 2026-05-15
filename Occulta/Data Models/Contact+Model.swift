@@ -70,7 +70,8 @@ extension Contact {
         /// a fixed sentinel — no date or identity information is stored here.
         /// Soft-deleted rows are never shown in any view. Cap: 50 rows; when full,
         /// one existing soft-deleted row is hard-deleted before a new one is written.
-        var isDeleted: Data? = nil
+        /// Named `deletionToken` (not `isDeleted`) to avoid shadowing NSManagedObject.isDeleted.
+        var deletionToken: Data? = nil
         
         // MARK: - Full Designated Initializer
         
@@ -273,7 +274,7 @@ extension Contact.Profile {
     /// Excludes soft-deleted rows. Use this with @Query wherever a full contact list is needed.
     static var descriptor: FetchDescriptor<Contact.Profile> {
         FetchDescriptor(
-            predicate: #Predicate { $0.isDeleted == nil },
+            predicate: #Predicate { $0.deletionToken == nil },
             sortBy: [SortDescriptor(\.familyName)]
         )
     }

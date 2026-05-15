@@ -346,7 +346,7 @@ class ContactManager {
     
     /// Fetches all contacts from the SwiftData context.
     func fetchAllContacts() throws -> [Contact.Profile] {
-        let predicate = #Predicate<Contact.Profile> { $0.isDeleted == nil }
+        let predicate = #Predicate<Contact.Profile> { $0.deletionToken == nil }
         let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate, sortBy: [SortDescriptor(\.familyName)])
         return try self.modelContext.fetch(descriptor)
     }
@@ -391,7 +391,7 @@ class ContactManager {
             self.modelContext.delete(victim)
         }
 
-        contact.isDeleted = try Data([1]).encrypt()
+        contact.deletionToken = try Data([1]).encrypt()
         try self.modelContext.save()
         self.syncShareIndex()
     }
@@ -400,12 +400,14 @@ class ContactManager {
     func deleteAllContacts() throws {
         try self.modelContext.delete(model: Contact.Profile.self)
         try self.modelContext.save()
+        
         self.syncShareIndex()
     }
 
     private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
-        let predicate = #Predicate<Contact.Profile> { $0.isDeleted != nil }
+        let predicate = #Predicate<Contact.Profile> { $0.deletionToken != nil }
         let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
+        
         return try self.modelContext.fetch(descriptor)
     }
 }
