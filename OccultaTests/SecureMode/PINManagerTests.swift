@@ -12,195 +12,290 @@ import SwiftData
 // MARK: - Helpers
 
 @MainActor
-private func makeContext() throws -> ModelContext {
+private func makeContainer() throws -> ModelContainer {
     let schema = Schema([SecureModeConfig.self])
     let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: schema, configurations: [config])
-    return ModelContext(container)
+    return try ModelContainer(for: schema, configurations: [config])
 }
 
-// MARK: - Configure
+@MainActor
+private func makeSecurity() throws -> Manager.Security {
+    return try Manager.Security(modelContainer: makeContainer(), keyManager: TestKeyManager())
+}
+
+// MARK: - State transitions
 
 @MainActor
-@Suite("PINManager — Configure")
-struct PINManagerConfigureTests {
+@Suite("Security — State transitions")
+struct SecurityStateTests {
 
-    @Test func configure_insertsConfig() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 3, in: context)
-
-        let configs = try context.fetch(FetchDescriptor<SecureModeConfig>())
-        #expect(configs.count == 1)
-        #expect(configs[0].wipeThreshold == 3)
-        #expect(!configs[0].salt.isEmpty)
+    @Test func noPIN_verify_throwsNotConfigured() throws {
+        let s = try makeSecurity()
+        #expect(throws: Manager.Security.SecurityError.notConfigured) {
+            try s.verify("000000")
+        }
     }
 
-    @Test func configure_replacesExistingConfig() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1111", duressPIN: "2222", wipeThreshold: 2, in: context)
-        try pm.configure(normalPIN: "3333", duressPIN: "4444", wipeThreshold: 5, in: context)
-
-        let configs = try context.fetch(FetchDescriptor<SecureModeConfig>())
-        #expect(configs.count == 1)
-        #expect(configs[0].wipeThreshold == 5)
+    @Test func configurePIN_transitionsToPinOnly() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        #expect(s.state == .pinOnly)
     }
 
-    @Test func configure_resetsCounters() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
+    @Test func configurePIN_insertsExactlyOneConfig() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("123456")
+        let context = ModelContext(container)
+        let configs = try context.fetch(FetchDescriptor<SecureModeConfig>())
+        #expect(configs.count == 1)
+    }
 
-        try pm.configure(normalPIN: "0000", duressPIN: "9999", wipeThreshold: 3, in: context)
-        _ = try pm.verify("bad", in: context)
-        _ = try pm.verify("bad", in: context)
+    @Test func configurePIN_twice_replacesExistingConfig() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        try s.configurePIN("111111")
+        try s.configurePIN("222222")
+        let context = ModelContext(container)
+        let configs = try context.fetch(FetchDescriptor<SecureModeConfig>())
+        #expect(configs.count == 1)
+    }
 
-        try pm.configure(normalPIN: "0000", duressPIN: "9999", wipeThreshold: 3, in: context)
-        #expect(pm.wrongPINCount == 0)
-        #expect(pm.consecutiveDuressCount == 0)
+    @Test func deactivatePIN_fromPinOnly_transitionsToNoPIN() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.deactivatePIN(confirmingNormalPIN: "123456")
+        #expect(s.state == .noPIN)
+    }
+
+    @Test func deactivatePIN_wrongPIN_throwsIncorrectPIN() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
+            try s.deactivatePIN(confirmingNormalPIN: "000000")
+        }
+    }
+
+    @Test func deactivatePIN_fromActive_throwsInvalidStateTransition() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
+            try s.deactivatePIN(confirmingNormalPIN: "123456")
+        }
+    }
+
+    @Test func activateSecureMode_fromNoPIN_throwsInvalidStateTransition() throws {
+        let s = try makeSecurity()
+        #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
+            try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        }
+    }
+
+    @Test func activateSecureMode_wrongNormalPIN_throwsIncorrectPIN() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
+            try s.activateSecureMode(confirmingNormalPIN: "000000", duressPIN: "999999")
+        }
+    }
+
+    @Test func activateSecureMode_fromPinOnly_transitionsToActive() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        #expect(s.state == .active)
+    }
+
+    @Test func deactivateSecureMode_fromActive_transitionsToPinOnly() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.deactivateSecureMode(confirmingNormalPIN: "123456")
+        #expect(s.state == .pinOnly)
+    }
+
+    @Test func deactivateSecureMode_fromDuress_transitionsToPinOnly() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("999999")   // → .duress
+        try s.deactivateSecureMode(confirmingNormalPIN: "123456")
+        #expect(s.state == .pinOnly)
+    }
+
+    @Test func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
+            try s.deactivateSecureMode(confirmingNormalPIN: "123456")
+        }
     }
 }
 
-// MARK: - Verify: correct PINs
+// MARK: - Verify: pinOnly
 
 @MainActor
-@Suite("PINManager — Verify correct PINs")
-struct PINManagerVerifyCorrectTests {
+@Suite("Security — Verify (pinOnly)")
+struct SecurityVerifyPinOnlyTests {
 
-    @Test func normalPIN_returnsNormal() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 3, in: context)
-        #expect(try pm.verify("1234", in: context) == .normal)
-    }
-
-    @Test func duressPIN_returnsDuress() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 3, in: context)
-        #expect(try pm.verify("5678", in: context) == .duress)
+    @Test func correctNormal_returnsNormal() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        #expect(try s.verify("123456") == .normal)
     }
 
     @Test func wrongPIN_returnsWrong() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        #expect(try s.verify("000000") == .wrong)
+    }
 
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 3, in: context)
-        #expect(try pm.verify("0000", in: context) == .wrong)
+    @Test func threeWrongPINs_returnsWrong_noWipe() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        _ = try s.verify("000000")
+        _ = try s.verify("000000")
+        // Third wrong attempt must not wipe — pinOnly has no wipe threshold.
+        #expect(try s.verify("000000") == .wrong)
     }
 }
 
-// MARK: - Verify: counter logic
+// MARK: - Verify: active / duress
 
 @MainActor
-@Suite("PINManager — Counter logic")
-struct PINManagerCounterTests {
+@Suite("Security — Verify (active/duress)")
+struct SecurityVerifyActiveTests {
 
-    @Test func normalPIN_resetsBothCounters() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 5, in: context)
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("0000", in: context)
-
-        _ = try pm.verify("1234", in: context)
-        #expect(pm.wrongPINCount == 0)
-        #expect(pm.consecutiveDuressCount == 0)
+    @Test func active_correctNormal_returnsNormal() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        #expect(try s.verify("123456") == .normal)
     }
 
-    @Test func duressPIN_resetsWrongCounter() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 5, in: context)
-        _ = try pm.verify("0000", in: context)
-        _ = try pm.verify("0000", in: context)
-        #expect(pm.wrongPINCount == 2)
-
-        _ = try pm.verify("5678", in: context)
-        #expect(pm.wrongPINCount == 0)
-        #expect(pm.consecutiveDuressCount == 1)
+    @Test func active_duressPIN_returnsDuress_transitionsToDuress() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        #expect(try s.verify("999999") == .duress)
+        #expect(s.state == .duress)
     }
 
-    @Test func wrongPIN_resetsDuressCounter() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 5, in: context)
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("5678", in: context)
-        #expect(pm.consecutiveDuressCount == 2)
-
-        _ = try pm.verify("0000", in: context)
-        #expect(pm.consecutiveDuressCount == 0)
-        #expect(pm.wrongPINCount == 1)
+    @Test func active_threeWrongPINs_returnsWipe() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("000000")
+        _ = try s.verify("000000")
+        #expect(try s.verify("000000") == .wipe)
     }
-}
 
-// MARK: - Verify: wipe thresholds
+    @Test func duress_correctNormal_returnsNormal_transitionsToActive() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("999999")   // → .duress
+        #expect(try s.verify("123456") == .normal)
+        #expect(s.state == .active)
+    }
 
-@MainActor
-@Suite("PINManager — Wipe thresholds")
-struct PINManagerWipeTests {
+    @Test func duress_duressPIN_returnsDuress() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("999999")   // → .duress, count=1
+        #expect(try s.verify("999999") == .duress)
+    }
 
-    @Test func threeWrongPINs_returnsWipe() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 5, in: context)
-        _ = try pm.verify("0000", in: context)
-        _ = try pm.verify("0000", in: context)
-        #expect(try pm.verify("0000", in: context) == .wipe)
+    @Test func duress_wrongPIN_returnsWrong() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("999999")   // → .duress
+        #expect(try s.verify("000000") == .wrong)
     }
 
     @Test func consecutiveDuressHitsThreshold_returnsWipe() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("999999")   // count=1 → .duress
+        _ = try s.verify("999999")   // count=2 → .duress
+        #expect(try s.verify("999999") == .wipe)  // count=3, threshold=3
+    }
+}
 
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 3, in: context)
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("5678", in: context)
-        #expect(try pm.verify("5678", in: context) == .wipe)
+// MARK: - Counter cross-reset
+
+@MainActor
+@Suite("Security — Counter cross-reset")
+struct SecurityCounterTests {
+
+    @Test func normalPIN_resetsWrongCounter_preventsEarlyWipe() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("000000")
+        _ = try s.verify("000000")
+        _ = try s.verify("123456")   // normal → resets wrong counter
+        _ = try s.verify("000000")
+        _ = try s.verify("000000")
+        // Only 2 wrongs since last reset — must not wipe yet.
+        #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
     }
 
-    @Test func duressCounterResetsOnWrong_preventsEarlyWipe() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
-
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 3, in: context)
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("0000", in: context)   // resets duress counter
-        _ = try pm.verify("5678", in: context)
-        _ = try pm.verify("5678", in: context)
-        #expect(try pm.verify("5678", in: context) == .wipe)
+    @Test func duressPIN_resetsWrongCounter() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("000000")
+        _ = try s.verify("000000")
+        _ = try s.verify("999999")   // duress → resets wrong counter
+        _ = try s.verify("000000")
+        _ = try s.verify("000000")
+        // Only 2 wrongs since reset — not yet wipe.
+        #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
     }
 
-    @Test func wrongCounterResetsOnDuress_preventsEarlyWipe() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
+    @Test func wrongPIN_resetsDuressCounter_preventsEarlyWipe() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        _ = try s.verify("999999")   // count=1
+        _ = try s.verify("999999")   // count=2
+        _ = try s.verify("000000")   // wrong → resets duress counter
+        _ = try s.verify("999999")   // count=1
+        _ = try s.verify("999999")   // count=2
+        #expect(try s.verify("999999") == .wipe)  // count=3, threshold=3
+    }
+}
 
-        try pm.configure(normalPIN: "1234", duressPIN: "5678", wipeThreshold: 5, in: context)
-        _ = try pm.verify("0000", in: context)
-        _ = try pm.verify("0000", in: context)
-        _ = try pm.verify("5678", in: context)   // resets wrong counter
-        _ = try pm.verify("0000", in: context)
-        _ = try pm.verify("0000", in: context)
-        #expect(try pm.verify("0000", in: context) == .wipe)
+// MARK: - Safe contacts
+
+@MainActor
+@Suite("Security — Safe contacts")
+struct SecuritySafeContactTests {
+
+    @Test func updateAndFetch_roundTrip() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        let ids: Set<String> = ["abc", "def", "ghi"]
+        try s.updateSafeContacts(ids)
+        #expect(s.safeContactIDs() == ids)
     }
 
-    @Test func notConfigured_throwsError() throws {
-        let context = try makeContext()
-        let pm      = Manager.PINManager(keyManager: TestKeyManager())
+    @Test func isSafeContact_unknownID_returnsFalse() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.updateSafeContacts(["abc"])
+        #expect(s.isSafeContact("xyz") == false)
+    }
 
-        #expect(throws: Manager.PINManager.PINError.notConfigured) {
-            try pm.verify("1234", in: context)
-        }
+    @Test func isSafeContact_knownID_returnsTrue() throws {
+        let s = try makeSecurity()
+        try s.configurePIN("123456")
+        try s.updateSafeContacts(["abc", "def"])
+        #expect(s.isSafeContact("abc") == true)
     }
 }

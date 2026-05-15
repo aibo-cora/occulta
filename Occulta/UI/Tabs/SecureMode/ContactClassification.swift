@@ -10,14 +10,12 @@ struct ContactClassification: View {
 
     var onContinue: () -> Void = {}
 
-    @Environment(\.dismiss)      private var dismiss
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss)        private var dismiss
+    @Environment(Manager.Security.self) private var security
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
-    /// Decrypted in-memory set for the duration of this sheet only.
     @State private var safeIDs: Set<String> = []
-    @State private var config:  SecureModeConfig? = nil
 
     var body: some View {
         NavigationStack {
@@ -91,20 +89,11 @@ struct ContactClassification: View {
     // MARK: - Persistence
 
     private func loadSafeIDs() {
-        guard let config = try? self.modelContext.fetch(FetchDescriptor<SecureModeConfig>()).first else { return }
-        self.config = config
-        guard
-            let encrypted = config.safeContactIDsEncrypted,
-            let decrypted = encrypted.decrypt(),
-            let ids       = try? JSONDecoder().decode([String].self, from: decrypted)
-        else { return }
-        self.safeIDs = Set(ids)
+        self.safeIDs = self.security.safeContactIDs()
     }
 
     private func save() {
-        guard let config = self.config else { return }
-        try? config.updateSafeContacts(self.safeIDs)
-        try? self.modelContext.save()
+        try? self.security.updateSafeContacts(self.safeIDs)
     }
 }
 
@@ -217,6 +206,11 @@ private struct LegendItem: View {
 // MARK: - Preview
 
 #Preview {
+    let container = try! ModelContainer(
+        for: Schema([Contact.Profile.self, SecureModeConfig.self]),
+        configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+    )
     ContactClassification()
-        .modelContainer(for: [Contact.Profile.self, SecureModeConfig.self], inMemory: true)
+        .modelContainer(container)
+        .environment(Manager.Security(modelContainer: container))
 }

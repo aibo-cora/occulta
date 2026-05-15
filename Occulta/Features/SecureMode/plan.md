@@ -2,88 +2,159 @@
 
 ## Implementation Order
 
-**Phase 1 (ship-ready): Single-layer flat duress.** Steps 1–5 implement a fully functional duress PIN → decoy view with blob backup/restore and panic wipe. The plausible deniability stack (arbitrary-depth nesting) is designed but not built in Phase 1. The single-layer path covers 80% of the value and is the foundation everything else rests on; it must be rock-solid before stacking is added.
+**Phase 1 (ship-ready): Single-layer flat duress.** Steps 1–5 implement a fully functional PIN lock → duress PIN → decoy view with blob backup/restore and panic wipe. The plausible deniability stack (arbitrary-depth nesting) is designed but not built in Phase 1. The single-layer path covers 80% of the value and is the foundation everything else rests on; it must be rock-solid before stacking is added.
 
 **Phase 2 (post-ship): Multi-layer stacking.** The `sealedCurrentNormal/Duress` verifier pair and the append-only blob stack are additive changes that build on Phase 1 without modifying its core flows. Phase 2 begins after Phase 1 has been tested end-to-end under adversarial conditions.
 
 ---
 
-## Step 1 — PIN Infrastructure
+## Core Architecture — `Manager.Security`
 
-- [ ] Convert `Tags` in `Manager.Key` from static-let namespace to `enum Tags: String, CaseIterable` — adding `secureModePin = "secure.mode.pin"`. Any tag added to the enum is automatically included in `deleteAllKeys()` by construction.
-- [ ] Simplify `deleteAllKeys()` to iterate `Tags.allCases` — remove the four individual private delete functions. One explicit special case remains: the localDB Keychain random component.
-- [ ] Add `kSecureModeKeyInfo` to `SaltInfo`. Add `deriveSecureModeKey()` to `Manager.Key` following the same `ECDH(seKey, G)` → HKDF pattern as vault and shardCustody keys. No biometric gate.
-- [ ] Add `deriveSecureModeKey() throws -> SymmetricKey?` to `KeyManagerProtocol`. Add in-memory key pair for it in `TestKeyManager`.
-- [ ] Create `SecureModeConfig` SwiftData model:
-  - `sealedNormalVerifier: Data` — Layer 1 normal PIN verifier, **permanent master unwind key**
-  - `sealedDuressVerifier: Data` — Layer 1 duress PIN verifier, permanent
-  - `sealedCurrentNormalVerifier: Data?` — current layer's normal PIN verifier (nil = Layer 1)
-  - `sealedCurrentDuressVerifier: Data?` — current layer's duress PIN verifier (nil = Layer 1)
-  - `salt: Data` — 32-byte PBKDF2 salt, stored plaintext, shared across all layers
-  - `wipeThreshold: Int`
-  - **No `stackDepth` field.** Storing depth as a plaintext integer is a forensic artifact — an examiner reading the SwiftData store would immediately know how many hidden layers exist. Stack depth is implicit in the blob structure (count the payloads); no separate field is needed.
-  - Where each `sentinelBox = AES-GCM(HKDF(PBKDF2(pin, salt), label), knownConstant)`; `label` encodes the layer role (e.g., `"secure-mode-normal-l1"`, `"secure-mode-duress-l1"`, `"secure-mode-normal-current"`, …)
-- [ ] Add `SecureModeConfig.self` to the schema in `OccultaApp.swift`. Add `try deleteAll(SecureModeConfig.self)` to `VaultManager.deleteAllData()`.
-- [ ] Implement PBKDF2-SHA256 via `CommonCrypto` (`CCKeyDerivationPBKDF`, 600k iterations) — no external dependencies.
-- [ ] Implement `PINManager` (`Manager.PINManager`):
-  - `configure(normalPIN:duressPIN:wipeThreshold:in:)` — builds and stores sentinels
-  - `verify(_ pin: in:) -> PINVerifyResult` — returns `.normal / .duress / .wrong / .wipe`
-  - `.wipe` returned when wrong-PIN counter hits 3 OR consecutive-duress counter hits N
-  - Wrong PIN: resets duress counter, increments wrong counter
-  - Duress PIN: resets wrong counter, increments duress counter
-  - Normal PIN: resets both counters
-  - All counters in-memory only — never persisted
-- [ ] Unit tests via `KeyManagerProtocol` + in-memory `ModelContainer`
+`Manager.Security` is the single umbrella for all app-security hardening. It consolidates what was previously three separate types (`SecureModeManager`, `Manager.PINManager`, `SecureModeConfig`) into one `@Observable` class owned by `OccultaApp` and injected via `.environment`.
+
+**Why one type:**
+- All three were tightly coupled — `SecureModeManager` read `SecureModeConfig` at init, `PINManager` read and wrote `SecureModeConfig` on every verify, both shared the same SE key derivation path. Keeping them separate forced callers to coordinate all three and created gaps (counter lifetime on view, externally settable state machine).
+- `PINManager`'s PBKDF2/AES logic is preserved as a private internal type inside `Manager.Security` for testability, but it is not a public type.
+
+**State machine:**
+
+```
+.noPIN   — no PIN configured; app opens directly
+.pinOnly — PIN set, Secure Mode not activated; PINEntry on every scene activation
+.active  — Secure Mode active; PINEntry on every scene activation; full data visible
+.duress  — duress PIN entered; decoy view; hidden contacts locked; hidden vault locked
+```
+
+Transitions are owned exclusively by `Manager.Security.verify()` — no external caller can set state directly. The only exception is `activateSecureMode()` and `deactivatePIN()` which are privileged operations that modify persisted config and transition state atomically.
+
+**`Manager.Security` public interface:**
+
+```swift
+// Setup
+func configurePIN(_ pin: String) throws            // .noPIN → .pinOnly
+func activateSecureMode(confirmingNormalPIN: String, duressPIN: String) throws  // .pinOnly → .active
+func deactivateSecureMode(confirmingNormalPIN: String) throws   // .active → .pinOnly (Step 4 unwind)
+func deactivatePIN(confirmingNormalPIN: String) throws          // .pinOnly → .noPIN
+
+// Verification (owns all state transitions)
+func verify(_ pin: String) throws -> PINVerifyResult
+
+// Safe contact membership (used by ContactsListV2 in .duress)
+func isSafeContact(_ identifier: String) -> Bool
+func updateSafeContacts(_ ids: Set<String>) throws
+```
+
+**Interface contracts:**
+
+- `deactivatePIN` is only valid in `.pinOnly`. Calling it in `.active` or `.duress` throws — the caller must deactivate Secure Mode first. This prevents accidentally removing the PIN without completing the full unwind.
+
+- `verify()` in `.noPIN` throws `.notConfigured` rather than returning `.normal`. `PINEntry` should never appear in `.noPIN` state, so a call to `verify()` from that state is a caller contract violation — making it visible via throw is safer than silently passing through.
+
+- `activateSecureMode` is two-phase: (1) verify `confirmingNormalPIN` against the existing verifier — throws immediately if wrong; (2) run key rotation (Step 4). If key rotation fails partway through, the `SecureModeOperation` resume/rollback record handles recovery on next launch. Phase 1 implementation may throw and leave the DB in a known partial state without the resume record — that gets added in Step 4.
+
+**Wipe threshold behaviour by state:**
+- `.noPIN` — no PIN, no wipe
+- `.pinOnly` — wrong PIN counter increments; NO wipe threshold (user hasn't opted into Secure Mode)
+- `.active` / `.duress` — full counter logic: 3 wrong → wipe; N consecutive duress → wipe
+
+**`Manager.Security` owns its own `ModelContext`** derived from the shared `ModelContainer`, consistent with `ContactManager` and `VaultManager`. No caller passes a context to it.
+
+**Dependency graph:**
+
+```
+OccultaApp
+├── Manager.Security(@Observable)  ← new umbrella
+│   ├── ModelContext               ← own context, derived from sharedModelContainer
+│   ├── [private] PINManager       ← PBKDF2/AES logic, no longer public
+│   └── reads/writes SecureModeConfig (@Model)
+│       ├── sealedNormalVerifier: Data
+│       ├── sealedDuressVerifier: Data?    ← optional; nil in .pinOnly state
+│       ├── salt: Data
+│       ├── wipeThreshold: Int
+│       ├── isPINEnabled: Bool             ← replaces isActivated
+│       ├── isSecureModeActivated: Bool
+│       └── safeContactIDsEncrypted: Data?
+├── Manager.App(@Observable)
+│   ├── ref → ContactManager
+│   └── ref → VaultManager
+│       eraseAllData() called by Manager.Security on .wipe
+├── ContactManager, VaultManager, ShardCustodyManager (unchanged)
+└── .environment() injects all downward
+
+PINEntry (View)
+├── @Environment Manager.Security   ← replaces direct PINManager instantiation
+└── onNormal / onDuress / onWipe closures wired at call site
+```
 
 ---
 
-## Step 2 — PIN Entry UI
+## Step 1 — PIN Infrastructure ✅ (partial — needs restructuring)
 
-- [ ] `PINEntry` SwiftUI view — neutral appearance, no branding that reveals mode
-- [ ] Single code path for all three outcomes — identical animations, haptics, and timing regardless of `.normal / .duress / .wrong` result
-- [ ] Fixed-duration gate (≥ 500 ms) applied to all outcomes before the result is acted on. `.wrong` runs a synthetic PBKDF2 round to consume the same wall time as the SE operations in `.duress` / `.normal`. Measurable latency difference between paths would be an oracle.
-- [ ] Route on result: `.normal` → full app, `.duress` → decoy view, `.wrong` → increment counter, `.wipe` → trigger full panic wipe then present clean state
-- [ ] Sit behind debug flag — not wired into app launch yet
+**Done:**
+- [x] `Tags` enum `CaseIterable`, `secureModePin` case
+- [x] `deleteAllKeys()` iterates `Tags.allCases`
+- [x] `deriveSecureModeKey()` on `Manager.Key` and `KeyManagerProtocol`
+- [x] `TestKeyManager` in-memory implementation
+- [x] `SecureModeConfig` SwiftData model (needs schema update below)
+- [x] `PINManager` PBKDF2/AES logic and unit tests
+- [x] `OccultaApp` schema includes `SecureModeConfig`
+- [x] `Manager.App` with `eraseAllData()`
+- [x] Soft-delete (`deletionToken`) on `Contact.Profile`
+- [x] `Contact.Profile.descriptor` centralising `deletionToken == nil` filter
+- [x] PQ migration hardening (v1-only predicate, skip soft-deleted rows)
+
+**Remaining:**
+- [ ] `SecureModeConfig` schema update: `sealedDuressVerifier: Data?` (was non-optional), rename `isActivated` → `isPINEnabled: Bool` + add `isSecureModeActivated: Bool`
+- [ ] Build `Manager.Security` consolidating `SecureModeManager` + `PINManager` — own `ModelContext`, private `PINManager`, state machine `.noPIN / .pinOnly / .active / .duress`
+- [ ] `Manager.Security.configurePIN(_:)` — builds `sealedNormalVerifier`, inserts config, transitions `.noPIN → .pinOnly`
+- [ ] `Manager.Security.activateSecureMode(confirmingNormalPIN:duressPIN:)` — verifies existing normal PIN, builds `sealedDuressVerifier`, runs key rotation (Step 4), transitions `.pinOnly → .active`
+- [ ] `Manager.Security.verify(_:)` owns all state transitions; wipe fires only in `.active` / `.duress`
+- [ ] `Manager.Security.deactivatePIN(confirmingNormalPIN:)` — `.pinOnly → .noPIN`
+- [ ] `Manager.Security.deactivateSecureMode(confirmingNormalPIN:)` — full unwind (Step 4), `.active → .pinOnly`
+- [ ] Replace `SecureModeManager` in `OccultaApp` with `Manager.Security`; remove standalone `SecureModeManager` and public `PINManager`
+- [ ] Unit tests via `TestKeyManager` + in-memory `ModelContainer`
+
+---
+
+## Step 2 — PIN Entry UI ✅ (mostly done)
+
+- [x] `PINEntry` SwiftUI view — neutral black appearance, no branding
+- [x] 6-digit keypad with `isVerifying` lock preventing double-submission
+- [x] Fixed 500ms gate equalising timing across all outcomes
+- [x] Routes on result: `.normal` → `onNormal()`, `.duress` → `onDuress()`, `.wrong` → shake + retry, `.wipe` → `onWipe()`
+- [ ] `PINEntry` reads `Manager.Security` from environment instead of instantiating `PINManager` directly — counter lifetime moves off the view
+- [ ] Wire `onWipe` to `Manager.App.eraseAllData()`
+- [ ] Shown when `Manager.Security.state != .noPIN` — not only when Secure Mode is active. A user with only PIN lock enabled sees the same screen as a user with Secure Mode active.
 
 ---
 
 ## Step 3 — Contact Classification + Decoy View
 
-- [x] Safe contact IDs stored as `safeContactIDsEncrypted: Data?` on `SecureModeConfig` — encrypted JSON `[String]`, never plaintext. Default: all contacts are sensitive (absent from the safe list). Existing contacts and new contacts created after activation default to sensitive.
-- [x] Classification UI — pre-populated by decrypting `safeContactIDsEncrypted` on appear; re-encrypted on save. Each push can reclassify within the currently-visible safe set.
-- [ ] `SecureModeManager` (`@Observable`):
-  - `isActive: Bool`
-  - `isDuressActive: Bool`
-  - State machine: `.inactive / .active / .duress`
-- [ ] Decoy view: filter contact list to contacts that **decrypt successfully with the current SE key**. Safe contacts were re-encrypted with the new key during activation; sensitive contacts were not — their rows remain in SwiftData but decryption returns nil. No explicit safe-list lookup is needed at runtime; the key state is the filter.
-- [ ] Vault tab remains visible in decoy view — shows as empty. Vault rows remain in SwiftData but are locked (encrypted with the deleted vault SE key); all decryption attempts return nil.
-- [ ] Safe contacts remain fully operational in decoy view (send, receive, decrypt `.occ`)
-- [ ] **Inbound `.occ` from hidden contacts suppressed in duress mode.** In normal mode, a file from an unrecognized sender surfaces an "unknown sender" prompt. In duress mode, this prompt must not appear — a coercer who sees unknown sender activity may probe it. Inbound `.occ` files that fail fingerprint resolution in duress mode are silently queued without surfacing any UI. On return to normal mode (full unwind), the queue is processed normally. The queue itself is stored encrypted; its existence is not surfaced anywhere in duress mode.
-- [ ] **Soft-delete (forensic hardening, no UI).** When a user deletes a contact, mark the row with `isDeleted: Data?` (encrypted, non-nil = deleted) rather than removing it from SwiftData. Never shown in any view. No recovery path. Cap at 50 soft-deleted rows; when full and a new contact is deleted, hard-delete any one existing soft-deleted row — one DELETE per user-initiated action at capacity, no sorting required. This ships for all users regardless of Secure Mode.
-
-  Soft-deleted rows exist in two natural states depending on key history:
-  - **Decryptable:** contact was deleted after the most recent key rotation — encrypted with the current DB key, `isDeleted` non-nil, content readable if the SE key is present.
-  - **Locked:** contact was deleted before a key rotation — encrypted with an old (gone) DB key, `isDeleted` non-nil (visible), content unreadable. Indistinguishable from Secure Mode locked rows to a forensic examiner, but distinguishable by the non-nil `isDeleted` marker.
-
-  During Secure Mode activation, soft-deleted contacts require **no special handling**. They are not re-encrypted (they are already deleted — no reason to maintain them). They lock naturally alongside sensitive contacts when the old SE key is deleted. An examiner who sees locked rows with `isDeleted != nil` has a complete innocent explanation: deleted contacts that predate a key rotation were never re-encrypted because there was no functional reason to do so.
-
-  **Future hardening — routine key rotation:** on first launch after each app version increment, and annually on first launch if no update has occurred in 12 months, perform a background DB key rotation for all users: generate a new SE key, re-encrypt all active contact fields under the new DB key, delete the old SE key. Soft-deleted rows are skipped (same as Secure Mode activation — they lock naturally). Cost per rotation: one SE ECDH operation + O(n) AES-GCM re-encryptions, runs in seconds in the background on first launch after update. Result: every user's Keychain history contains rotation timestamps spanning multiple app versions and calendar dates. A rotation timestamp at any given moment becomes statistically indistinguishable from routine maintenance. Do not rotate during active use — background only, on launch.
-- [ ] **Decryption-failure contract — enforced at `ContactManager`.** The gate is `String.decryptedValue: String?` — a computed property on the encrypted string type:
+- [x] Safe contact IDs stored as `safeContactIDsEncrypted: Data?` on `SecureModeConfig`
+- [x] Classification UI — pre-populated by decrypting on appear; re-encrypted on save
+- [ ] Settings flow:
+  - `.noPIN` → "Enable PIN Lock" button (leads to PIN setup)
+  - `.pinOnly` → "PIN Lock enabled" + "Activate Secure Mode" button + "Disable PIN Lock" button
+  - `.active` → "Deactivate Secure Mode" (leads to normal-PIN confirmation + full unwind)
+  - `.duress` → "Enable PIN Lock" (identical to `.noPIN` — never reveals Secure Mode is active)
+- [ ] Decoy view: filter contact list to contacts that decrypt successfully with current SE key. Safe contacts were re-encrypted during activation; sensitive contacts were not — decryption returns nil. No explicit safe-list lookup at runtime; the key state is the filter.
+- [ ] Vault tab visible in decoy view — shows as empty. Vault rows locked in-place (encrypted with deleted vault SE key).
+- [ ] Safe contacts fully operational in decoy view (send, receive, decrypt `.occ`)
+- [ ] **Inbound `.occ` from hidden contacts suppressed in duress mode.** Silently queued without surfacing any UI. Queue stored encrypted; existence not surfaced in duress mode. Processed on return to normal.
+- [ ] **Decryption-failure contract — enforced at `ContactManager`.** Gate is `String.decryptedValue: String?`:
 
   ```swift
-  /// Decrypts and returns the plaintext under the current device key.
-  /// Returns nil if this field belongs to a hidden Secure Mode layer (key rotated away).
-  /// Treat nil as "does not exist" — never substitute a placeholder, log the failure, or branch visibly on it.
+  /// Returns plaintext under the current device key, or nil if this field
+  /// belongs to a hidden Secure Mode layer (key rotated away).
+  /// Treat nil as "does not exist" — never substitute a placeholder or log the failure.
   var decryptedValue: String? { ... }
   ```
 
-  The existing `decrypt() -> String` remains for display-only paths where an empty string is an acceptable fallback (e.g., initials rendering). `decryptedValue` is strictly for gating — any path that determines whether a contact is visible must use it.
+  Existing `decrypt() -> String` retained for display-only paths where empty string is acceptable. `decryptedValue` is strictly for gating visibility.
 
-  `ContactManager` is the single abstraction between SwiftData and all UI and business logic. The contract is enforced there: `ContactManager` never returns a contact whose `decryptedValue` fields return nil. Any view or service that routes through `ContactManager` gets the contract for free. The audit question becomes "does every data path go through `ContactManager`?" rather than "does every call site handle nil correctly?" Paths that bypass `ContactManager` and read SwiftData directly are the audit target. Requirements at every path: no distinctive error logs, no crashes, no UI strings that reveal a failure, no timing differences between a locked record and a never-existing one. Audit scope: contact list rendering, search, Share Index sync, inbound bundle fingerprint resolution, notification payloads, autocomplete/recents, and any share extension path that touches contact identity.
+  **Share Extension is an out-of-process boundary.** Must never enumerate contact names or identifiers from raw SwiftData rows. All contact access in the extension routes through a shared helper enforcing the same contract.
 
-  **Share Extension is an out-of-process boundary.** The extension runs in its own process with its own SwiftData context, completely outside `SecureModeManager`. It must never enumerate contact names, identifiers, or thumbnails from raw SwiftData rows. All contact access in the extension must route through a shared helper that enforces the same `decryptedValue` contract. A share extension that builds a contact picker directly from SwiftData exposes full contact counts and names regardless of Secure Mode state.
-
-  **Create `SECURE_MODE_DECRYPT_CONTRACT.md`** as a living checklist. Index every call site that reads `decryptedValue` by data-access layer; note whether the path is constant-time, whether it crosses a process boundary (Share Extension, widget), and whether it is covered by the activation test. Update on every new data path addition.
+  **Create `SECURE_MODE_DECRYPT_CONTRACT.md`** — living checklist of every `decryptedValue` call site, indexed by layer, process boundary, and test coverage.
 
 ---
 
@@ -98,7 +169,7 @@ A coercer demands access at PIN-point. The goal is that no matter how many PIN e
 1. **Arbitrary depth.** There is no cap on the number of layers. Capping at 2 (as VeraCrypt does) is a smoking gun: a coercer who tries to activate another layer and finds it unavailable immediately knows hidden layers exist. Every layer must present an identical "Activate Secure Mode" option.
 2. **PIN entry on every foreground.** `PINEntry` is presented on every launch and every `scenePhase` `.active` transition. The screen is indistinguishable regardless of depth.
 3. **Deactivation only via PIN screen.** There is no "Deactivate" button in Settings. The only way to unwind a layer is to enter the correct normal PIN at the PIN screen. This prevents accidental data restoration under coercion.
-4. **Settings button is 3-state but appears 2-state.** `.inactive` → "Activate Secure Mode". `.active` → "Deactivate Secure Mode". `.duress` → **"Activate Secure Mode"** (identical to `.inactive`, never reveals that a layer is already active). Tapping Activate in duress mode runs the normal activation flow, pushing a new layer.
+4. **Settings button is 3-state but appears 2-state.** `.pinOnly` / `.inactive` → "Activate Secure Mode". `.active` → "Deactivate Secure Mode". `.duress` → **"Activate Secure Mode"** (identical to `.pinOnly`, never reveals that a layer is already active). Tapping Activate in duress mode runs the normal activation flow, pushing a new layer.
 
 ### Data model changes to `SecureModeConfig`
 
@@ -169,51 +240,56 @@ Same as repeated pop N times but in a single atomic pass: decrypt all stack payl
   - **Exported** (AirDrop / Files / vault backup): passphrase-derived key only — `AES-GCM(HKDF(PBKDF2(passphrase, salt, 600k), "blob-key"), content)`. No SE binding; offline resistance comes from passphrase strength. Reuses `PassphraseManager` — same pattern as existing contact export. The vault backup feature should use this same format.
 - [ ] Each payload is padded to the nearest fixed bucket boundary before encryption. Bucket sizes are powers of 2 (e.g., 64 KB, 128 KB, 256 KB). File size reveals only the bucket tier, not the exact contact or vault entry count.
 - [ ] Blob file has no header, no magic bytes, no version field, no layer count. The file name is a UUID with `.occbak` extension — indistinguishable from routine vault backup.
-- [ ] Continuous background blob maintenance — triggered by `ModelContext.didSave` (same notification used by `VaultManager`), incremental updates only. Blob exists with natural timestamps long before activation. **Debounced:** coalesce writes within a 30-second window — one blob write per burst of saves, not one per save. Mass contact edits must not produce a burst of blob rewrites. **Activation constraint:** during the key-rotation batch (step 3→7 of the activation sequence), all `ModelContext.didSave` observers that log counts or object identifiers must be temporarily suspended before the batch begins and resubscribed after it completes. The batch emits UPDATE notifications for every re-keyed contact row; any observer that captures row counts or identifiers from those notifications makes the activation event recoverable from that log.
-- [ ] **No-op blob writes on a schedule.** In addition to data-driven updates, rewrite the blob with fresh random padding on a periodic schedule (e.g., every 24 hours of active app use) even when no sensitive data has changed. This decouples the blob's Last Modified timestamp from any meaningful event. A blob last written 3 minutes before device seizure is a signal; a blob written on a rolling daily schedule is not.
+- [ ] Continuous background blob maintenance — triggered by `ModelContext.didSave`, incremental updates only. Blob exists with natural timestamps long before activation. **Debounced:** coalesce writes within a 30-second window. **Activation constraint:** during the key-rotation batch, all `ModelContext.didSave` observers that log counts or object identifiers must be temporarily suspended before the batch begins and resubscribed after it completes.
+- [ ] **No-op blob writes on a schedule.** Rewrite the blob with fresh random padding every 24 hours of active app use even when no sensitive data has changed. Decouples blob's Last Modified timestamp from any meaningful event.
 - [ ] **Activation sequence — key rotation, no row deletion:**
   1. Generate a new SE key for this layer
   2. Read `safeContactIDsEncrypted` while the old SE key is still live → get the safe contact ID set
-  3. Serialize each sensitive contact (not in safe set, `isDeleted = nil`): persistent model ID + plaintext fields → blob payload. Soft-deleted contacts (`isDeleted != nil`) are skipped — they are not re-encrypted and lock naturally in step 7 alongside sensitive contacts.
-  4. Serialize vault entries → blob payload (vault rows remain in SwiftData but will be locked)
-  5. Re-encrypt each safe contact's fields under the new DB key (derived from the new SE key)
-  6. Re-encrypt `safeContactIDsEncrypted` under the new DB key (needed if a second layer is ever activated)
+  3. Serialize each sensitive contact (`deletionToken == nil`, not in safe set): persistent model ID + plaintext fields → blob payload. Soft-deleted contacts (`deletionToken != nil`) are skipped — lock naturally in step 7.
+  4. Serialize vault entries → blob payload
+  5. Re-encrypt each safe contact's fields under the new DB key
+  6. Re-encrypt `safeContactIDsEncrypted` under the new DB key
   7. Delete the old SE key — sensitive contact rows, vault rows, and all data encrypted under the old DB key become locked ciphertext in-place. **No rows are deleted. No WAL deletion event occurs.**
   8. Build new layer's verifiers and update `SecureModeConfig`
 
 - [ ] **Deactivation sequence (normal PIN, any depth):**
   1. Decrypt blob payload
-  2. For each (persistentModelID, contactData) in blob: fetch the existing SwiftData row by ID and **UPDATE** its fields with data re-encrypted under the new DB key. WAL shows UPDATE operations, indistinguishable from normal contact sync.
+  2. For each (persistentModelID, contactData): fetch the existing SwiftData row by ID and **UPDATE** its fields with data re-encrypted under the new DB key.
   3. Generate new vault SE key; restore vault entries to SwiftData via UPDATE
   4. Generate fresh prekeys for restored contacts
   5. Remove blob payload; update `SecureModeConfig` verifiers
 
 - [ ] **Full unwind (Layer 1 normal PIN from any depth):** same as above but processes all stack payloads in a single atomic pass before clearing verifiers and deleting the blob file.
 
-- [ ] `SecureModeOperation` SwiftData record — tracks activation/deactivation intent and current stage. Written before operation begins, deleted on clean completion. On next launch, incomplete record → resume or rollback automatically. **Design constraints:** all fields must be encrypted (consistent with the rest of the data model); the record's existence must not reveal the operation type — it should be structurally indistinguishable from a routine maintenance task record. An interrupted activation that leaves this record visible should not confirm to a forensic examiner that Secure Mode was being activated.
+- [ ] `SecureModeOperation` SwiftData record — tracks activation/deactivation intent and current stage. Written before operation begins, deleted on clean completion. On next launch, incomplete record → resume or rollback automatically. All fields encrypted; record's existence must not reveal the operation type.
 - [ ] Blob stored in the App Group container (`group.com.occulta.shared`) with `.completeFileProtection`.
-- [ ] Optional: offer manual blob export (AirDrop / Files) as the last step before activation. If the app is deleted while active, the on-device blob is gone; an off-device copy is the only recovery path. Exported blob uses passphrase-based encryption (see above). **Note:** this overlaps directly with the planned vault backup feature — both use passphrase-derived encryption via `PassphraseManager`. Design them together; the export UI and file format should be shared.
+- [ ] Optional: offer manual blob export (AirDrop / Files) as the last step before activation.
 
 ---
 
 ## Step 5 — App Integration + Panic Trigger Accessibility
 
-- [ ] Wire `PINEntry` as app entry point when `SecureModeManager.isActive` (any depth, any state)
-- [ ] Present `PINEntry` on **every** `scenePhase` `.active` transition — not just launch. The screen is indistinguishable at every depth.
-- [ ] `onOpenURL` handler respects Secure Mode state — inbound `.occ` files are queued until PIN is entered; fingerprint lookup for contacts hidden at the current depth returns "unknown sender"
-- [ ] **Decryption-failure audit.** Before shipping, audit every query path in the app against the contract defined in Step 3: `decryptedValue == nil` is "does not exist," never "error." Specific paths to verify: `ContactManager` fetch and search, `ExchangeManager` fingerprint resolution, `IdentityChallenge` sender lookup, Share Extension contact index sync, notification content (no contact name or fingerprint leaks for locked records), and any SwiftUI view that accesses contact fields directly. Write a test that activates Secure Mode in-memory, hides a contact, and asserts that every query path returns the same result as if the contact had never been created.
-- [ ] Settings Secure Mode button follows the 3-state logic: `.inactive` → "Activate Secure Mode"; `.active` → "Deactivate Secure Mode" (leads to full-unwind PIN confirmation); `.duress` → "Activate Secure Mode" (indistinguishable from inactive — pushes a new layer)
-- [ ] "Deactivate" in Settings presents a PIN entry confirming Layer 1 normal PIN before unwinding — prevents accidental deactivation under observation
-- [ ] Surface existing panic wipe (prekeys → contacts → vault → SE keys) via accessible trigger — back tap or shake — reachable outside of Settings → Manage Contacts
-- [ ] **Forward constraint — notifications.** Occulta does not currently use `UNUserNotificationCenter`. If notifications are added in any future feature, they must respect Secure Mode state: never surface contact names, fingerprints, file activity, or any derivable identifier for contacts that fail to decrypt. This constraint applies to notification titles, bodies, subtitles, and app-switcher previews.
+- [ ] Wire `PINEntry` as app entry point when `Manager.Security.state != .noPIN`
+- [ ] Present `PINEntry` on **every** `scenePhase` `.active` transition
+- [ ] `PINEntry` reads `Manager.Security` from environment; `verify()` call drives all state transitions
+- [ ] `onWipe` closure wired to `Manager.App.eraseAllData()`
+- [ ] `onOpenURL` handler respects Secure Mode state — inbound `.occ` files queued until PIN entered; fingerprint lookup for hidden contacts returns "unknown sender"
+- [ ] **Decryption-failure audit.** Before shipping, audit every query path: `ContactManager` fetch and search, `ExchangeManager` fingerprint resolution, `IdentityChallenge` sender lookup, Share Extension contact index sync, notification content. Write a test that activates Secure Mode in-memory, hides a contact, and asserts every query path returns the same result as if the contact had never been created.
+- [ ] Settings Secure Mode button follows 4-state logic:
+  - `.noPIN` → "Enable PIN Lock"
+  - `.pinOnly` → "PIN Lock On" + "Activate Secure Mode"
+  - `.active` → "Deactivate Secure Mode"
+  - `.duress` → "Enable PIN Lock" (identical to `.noPIN` — never reveals a layer is active)
+- [ ] Surface existing panic wipe via accessible trigger — back tap or shake — reachable outside Settings
+- [ ] **Forward constraint — notifications.** If notifications are added in any future feature, they must never surface contact names, fingerprints, or any derivable identifier for contacts that fail to decrypt.
 
 ---
 
 ## Known Limitations
 
-- **Row count mismatch.** More rows exist in SwiftData than the app displays. These fall into two observable categories: rows with `isDeleted != nil` (soft-deleted contacts — a documented app behavior) and rows with `isDeleted = nil` that cannot be decrypted (attributable to key rotation or migration via the existing `encryptionScheme` versioning field). Neither category is uniquely attributable to Secure Mode. A forensic examiner sees two distinct classes of "extra rows," each with a plausible innocent explanation. This is explicitly preferred over mass DELETE traces, which are unambiguous and precisely timestamped.
-- **SE key rotation is observable.** A forensic examiner checking the Keychain will see that a new SE key was created and an old one was deleted. The timestamp of this event is correlatable with activation. This is unavoidable — the key deletion is the mechanism. It is a subtler signal than mass database deletions and lacks the corroboration that a mass DELETE would provide.
-- **The blob file exists.** Even UUID-named and naturally timestamped via continuous background maintenance, the presence of an `.occbak` file in the App Group container proves something is being protected. Its size (padded to bucket boundaries) does not reveal content volume.
-- **App deletion while Secure Mode is active is unrecoverable.** The App Group container is deleted with the app (all extensions ship in the same bundle, so no app remains to claim the group). The blob is gone. Locked contact rows are also gone. Users must be warned before activation that app deletion is equivalent to a permanent wipe of all hidden data. An off-device exported blob is the only recovery path.
+- **Row count mismatch.** More rows exist in SwiftData than the app displays. Soft-deleted rows (`deletionToken != nil`) and locked rows (`deletionToken == nil`, undecryptable) each have a plausible innocent explanation. Neither is uniquely attributable to Secure Mode.
+- **SE key rotation is observable.** A forensic examiner checking the Keychain will see a new SE key created and an old one deleted. Timestamp is correlatable with activation. Unavoidable — the key deletion is the mechanism.
+- **The blob file exists.** UUID-named and continuously maintained, but its presence in the App Group container proves something is being protected.
+- **App deletion while Secure Mode is active is unrecoverable.** The App Group container is deleted with the app. Users must be warned before activation that app deletion is equivalent to a permanent wipe of all hidden data.
 - **Secure Mode substantially raises the bar against coercion and mid-tier adversaries. It is not state-actor proof.**
 - Users in high-risk environments should power off the device and enable Lockdown Mode before anticipated encounters, carry minimal sensitive data, and treat Secure Mode as one layer in a broader operational security posture.

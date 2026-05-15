@@ -18,7 +18,7 @@ struct PINEntry: View {
 
     // MARK: Dependencies
 
-    @Environment(\.modelContext) private var modelContext
+    @Environment(Manager.Security.self) private var security
 
     // MARK: State
 
@@ -26,9 +26,8 @@ struct PINEntry: View {
     @State private var shakeOffset: CGFloat = 0
     @State private var isVerifying: Bool    = false
 
-    private let pinManager:    Manager.PINManager = .init()
-    private let pinLength:     Int                = 6
-    private let gateDuration:  TimeInterval       = 0.5
+    private let pinLength:    Int           = 6
+    private let gateDuration: TimeInterval  = 0.5
 
     var body: some View {
         ZStack {
@@ -104,7 +103,7 @@ struct PINEntry: View {
 
         // verify() always attempts both sentinel checks regardless of outcome,
         // so all paths do equivalent crypto work. The gate pads any remaining gap.
-        let result = (try? self.pinManager.verify(pin, in: self.modelContext)) ?? .wrong
+        let result = (try? self.security.verify(pin)) ?? .wrong
 
         let elapsed   = Date().timeIntervalSince(start)
         let remaining = max(0, self.gateDuration - elapsed)
@@ -177,6 +176,11 @@ private struct KeypadButton: View {
 // MARK: - Preview
 
 #Preview {
+    let container = try! ModelContainer(
+        for: Schema([SecureModeConfig.self]),
+        configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+    )
     PINEntry()
-        .modelContainer(for: SecureModeConfig.self, inMemory: true)
+        .modelContainer(container)
+        .environment(Manager.Security(modelContainer: container))
 }

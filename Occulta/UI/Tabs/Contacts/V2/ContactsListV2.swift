@@ -16,15 +16,13 @@ struct ContactsV2: View {
 
     @Environment(\.modelContext)          private var modelContext
     @Environment(ContactManager.self)     private var contactManager
-    @Environment(SecureModeManager.self)  private var secureModeManager
+    @Environment(Manager.Security.self)   private var security
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
     private var visibleContacts: [Contact.Profile] {
-        guard self.secureModeManager.isDuressActive else { return self.contacts }
-        guard let config = try? self.modelContext.fetch(FetchDescriptor<SecureModeConfig>()).first
-        else { return [] }
-        return self.contacts.filter { config.isSafeContact($0.identifier) }
+        guard self.security.isDuressActive else { return self.contacts }
+        return self.contacts.filter { self.security.isSafeContact($0.identifier) }
     }
 
     private var sortedContacts: [Contact.Profile] {
