@@ -13,7 +13,7 @@ struct ContactClassification: View {
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var modelContext
 
-    @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
     /// Decrypted in-memory set for the duration of this sheet only.
     @State private var safeIDs: Set<String> = []

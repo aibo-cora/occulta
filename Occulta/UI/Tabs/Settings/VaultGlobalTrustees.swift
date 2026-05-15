@@ -16,7 +16,7 @@ import SwiftData
 struct VaultGlobalTrustees: View {
 
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []

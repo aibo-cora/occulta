@@ -20,7 +20,7 @@ struct VaultShardSetup: View {
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(\.dismiss) private var dismiss
 
-    @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Query private var globalConfigRows: [GlobalShardConfig]
 
     @State private var selectedIDs: Set<String> = []

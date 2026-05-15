@@ -268,6 +268,17 @@ extension Contact.Profile {
     }
 }
 
+extension Contact.Profile {
+    /// Standard fetch descriptor for all UI list contexts.
+    /// Excludes soft-deleted rows. Use this with @Query wherever a full contact list is needed.
+    static var descriptor: FetchDescriptor<Contact.Profile> {
+        FetchDescriptor(
+            predicate: #Predicate { $0.isDeleted == nil },
+            sortBy: [SortDescriptor(\.familyName)]
+        )
+    }
+}
+
 enum Scopes: Codable {
     /// Key can encrypt and decrypt.
     case crypto

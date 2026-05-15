@@ -79,7 +79,7 @@ struct VaultTab: View {
 
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
     @Query private var rawCustodyShards: [CustodyShard]
-    @Query private var allContacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
 
     @AppStorage("vault.postRestoreActionNeeded") private var postRestoreActionNeeded = false
 
