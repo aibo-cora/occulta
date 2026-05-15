@@ -346,8 +346,8 @@ class ContactManager {
     
     /// Fetches all contacts from the SwiftData context.
     func fetchAllContacts() throws -> [Contact.Profile] {
-        let descriptor = FetchDescriptor<Contact.Profile>(sortBy: [SortDescriptor(\.familyName)])
-        
+        let predicate = #Predicate<Contact.Profile> { $0.isDeleted == nil }
+        let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate, sortBy: [SortDescriptor(\.familyName)])
         return try self.modelContext.fetch(descriptor)
     }
     
@@ -377,33 +377,36 @@ class ContactManager {
     
     // MARK: - Delete
     
-    /// Deletes a contact by its identifier.
+    /// Soft-deletes a contact by marking it with an encrypted sentinel.
+    /// The row remains in SwiftData but is excluded from all public queries.
+    /// Enforces a cap of 50 soft-deleted rows: if the cap is reached, one
+    /// existing soft-deleted row is hard-deleted before the new marker is written.
     func deleteContact(identifier: String) throws {
-        debugPrint("Deleting contact with identifier: \(identifier)")
-        
-        guard
-            let contact = try self.fetchContact(by: identifier)
-        else {
+        guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
         }
-        
-        self.modelContext.delete(contact)
-        try modelContext.save()
+
+        let softDeleted = try self.fetchSoftDeletedContacts()
+        if softDeleted.count >= 50, let victim = softDeleted.first {
+            self.modelContext.delete(victim)
+        }
+
+        contact.isDeleted = try Data([1]).encrypt()
+        try self.modelContext.save()
         self.syncShareIndex()
     }
 
-    /// Deletes all contacts.
+    /// Hard-deletes all contacts, including soft-deleted rows. Used for panic wipe only.
     func deleteAllContacts() throws {
-        let contacts = try self.fetchAllContacts()
-
-        for contact in contacts {
-            debugPrint("Deleting contact with identifier: \(contact.identifier)")
-
-            self.modelContext.delete(contact)
-        }
-
+        try self.modelContext.delete(model: Contact.Profile.self)
         try self.modelContext.save()
         self.syncShareIndex()
+    }
+
+    private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
+        let predicate = #Predicate<Contact.Profile> { $0.isDeleted != nil }
+        let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
+        return try self.modelContext.fetch(descriptor)
     }
 }
 

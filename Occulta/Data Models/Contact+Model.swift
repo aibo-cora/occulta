@@ -64,6 +64,13 @@ extension Contact {
         /// SwiftData handles the schema addition automatically — new column
         /// with a default value is a lightweight migration.
         var encryptionScheme: Int = EncryptionScheme.v1_identityDerived.rawValue
+
+        /// Non-nil means this contact has been soft-deleted. The field is encrypted;
+        /// only its nil/non-nil status is meaningful at the query layer. Content is
+        /// a fixed sentinel — no date or identity information is stored here.
+        /// Soft-deleted rows are never shown in any view. Cap: 50 rows; when full,
+        /// one existing soft-deleted row is hard-deleted before a new one is written.
+        var isDeleted: Data? = nil
         
         // MARK: - Full Designated Initializer
         
