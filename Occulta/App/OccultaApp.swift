@@ -19,6 +19,7 @@ struct OccultaApp: App {
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
+    @State private var isLocked: Bool
     @State private var appManager: Manager.App
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
@@ -61,7 +62,9 @@ struct OccultaApp: App {
         self.sharedModelContainer = sharedModelContainer
         self.contactManager      = contactManager
         self.vaultManager        = vaultManager
-        self.security            = Manager.Security(modelContainer: sharedModelContainer)
+        let security             = Manager.Security(modelContainer: sharedModelContainer)
+        self.security            = security
+        self._isLocked           = State(initialValue: security.requiresPIN)
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(
             modelContainer: sharedModelContainer,
@@ -318,6 +321,10 @@ struct OccultaApp: App {
                         // delete stale/orphaned session directories from the shared container.
                         self.contactManager.syncShareIndex()
                         self.contactManager.cleanupPendingSessions()
+
+                        if self.security.requiresPIN {
+                            self.isLocked = true
+                        }
                     }
                 }
                 // Key-rotation → two-sided response:
@@ -327,6 +334,17 @@ struct OccultaApp: App {
                 .onReceive(self.contactManager.contactKeyRotated) { identifier in
                     self.vaultManager.markShardsLost(forContact: identifier)
                 }
+                .overlay {
+                    if self.isLocked {
+                        PINEntry(
+                            onNormal: { _ in self.isLocked = false },
+                            onDuress: {},
+                            onWipe:   {}
+                        )
+                        .environment(self.security)
+                    }
+                }
+                .animation(.none, value: self.isLocked)
             }
         }
         .modelContainer(self.sharedModelContainer)
