@@ -90,6 +90,9 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] `OccultaApp` schema includes `SecureModeConfig`
 - [x] `Manager.App` with `eraseAllData()`
 - [x] Unit tests via `TestKeyManager` + in-memory `ModelContainer` (29 tests)
+- [ ] **[security]** Rename SE key tag from `"secure.mode.pin"` to an opaque string (UUID or similar). The current tag explicitly names the feature — Keychain enumeration by a forensic tool directly reveals Secure Mode infrastructure. The master identity key uses `"master.key.privacy.turtles.are.cute"` (opaque); the Secure Mode key should follow the same pattern.
+- [ ] **[security]** Rename `SecureModeConfig` to an opaque class name (e.g. `AppLayerConfig`). SwiftData derives the SQLite table name from the class name — `ZSECUREMODECONFIG` in a raw database dump directly names the feature. Renaming to something non-descriptive changes the table name to `ZAPPLAYERCONFIG` or similar. Class is only referenced internally; surgical rename with no public API impact. Requires a SwiftData migration (lightweight: rename only).
+- [ ] **[security]** Set `NSPersistentStoreFileProtectionKey: FileProtectionType.complete` on the SwiftData persistent store. The current default (`completeUntilFirstUserAuthentication`) leaves the SQLite file readable after first device unlock even when the screen is locked. SwiftData's `ModelConfiguration` doesn't expose this — requires setting file attributes on the store URL post-creation via `FileManager.setAttributes`. Note: all field values are additionally encrypted at the app level, so the exposure is schema + row count, not plaintext data.
 
 ---
 
@@ -103,6 +106,8 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] Reads `Manager.Security` from environment; counter lifetime off the view
 - [x] `onNormal: (String) -> Void` (widened from `()` so Settings can pass PIN to `deactivatePIN`)
 - [x] App launch gate in `OccultaApp` — `isLocked` state, `.overlay` on `TabView`, no animation, locks on every `scenePhase == .active`
+- [ ] **[security]** Also set `isLocked = true` on `scenePhase == .inactive`. iOS captures the app-switcher screenshot on `.inactive` (before going to background), while the current implementation only locks on `.active` (returning to foreground). Every time the user backgrounds the app, the live screen content is frozen in the app switcher and readable without unlocking.
+- [ ] **[security]** Zero PIN digits after use. Replace `[Int]` digits storage with a `Data`-backed buffer; after `submit()` routes the result, zero the buffer with `memset`. Removes PIN heap residue. Low practical exploit risk given SE binding, but correct hygiene and removes the finding from security audits.
 - [ ] `onWipe` wired to `Manager.App.eraseAllData()` — **deferred; dry-test first**
 
 ---
@@ -115,6 +120,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [ ] "Activate Secure Mode" button — visible when `state == .pinOnly`. Taps into a dedicated sheet using `PINEntry` with a `mode` argument:
   - Mode `.confirmThenSet`: first entry confirms normal PIN, second entry sets duress PIN (with confirm step)
   - Calls `activateSecureMode(confirmingNormalPIN:duressPIN:)` on success
+- [ ] **[security]** Add `checkNormalPIN(_ pin: String) -> Bool` to `Manager.Security` — thin wrapper around `PINManager.checkVerifier` with no counter mutation. Replace the `security.verify()` call in `PINEntry.submitConfirmPhase` with this method. Using `verify()` for Settings-level PIN confirmation incorrectly increments `wrongPINCount` on each wrong attempt, which is semantically wrong (a Settings confirmation is not a lock-screen attack attempt) and pollutes the in-memory counter state.
 - [ ] "Deactivate Secure Mode" button — visible when `state == .active`. Sheet with `PINEntry` in normal verify mode; calls `deactivateSecureMode(confirmingNormalPIN:)` on success
 - [ ] `state == .duress` → Settings → Security shows "Enable PIN" toggle in `on` state only — never reveals Secure Mode exists
 
@@ -123,6 +129,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] `safeContactIDsEncrypted` stored and encrypted on `SecureModeConfig`
 - [x] `isSafeContact(_:)`, `safeContactIDs()`, `updateSafeContacts(_:)` on `Manager.Security`
 - [ ] UI in Settings → Security to designate which contacts are "safe" (visible in decoy view)
+- [ ] **[security]** Pre-populate `safeContactIDsEncrypted` with an empty encrypted array in `configurePIN()` — when PIN is first set, not when safe contacts are later designated. Currently the field is nil until the user visits the safe-contact picker, so its non-nil state reveals active Secure Mode use. Pre-populating makes the field present for all users with PIN enabled, collapsing the signal.
 
 ### Decoy view
 
@@ -131,6 +138,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [ ] `onDuress` in `OccultaApp` wired: set `isLocked = false` (decoy view is the real app filtered — no special navigation)
 - [ ] Inbound `.occ` from hidden contacts silently suppressed in duress mode; queued encrypted; processed on return to `.active`
 - [ ] Safe contacts fully operational in decoy view (send, receive, decrypt `.occ`)
+- [ ] **[security]** `ExchangeManager` must gate on `security.isDuressActive` before accepting or initiating any UWB/Multipeer key exchange. Currently `ExchangeManager` has zero Secure Mode awareness. In duress mode, coming within range of a hidden contact's device would either surface a new contact the coercer can see, or attempt a re-exchange with an undecryptable contact — both break the decoy. Fix: inject `Manager.Security` into `ExchangeManager`; suppress discovery and reject all incoming session invitations when `isDuressActive`.
 
 ---
 
@@ -145,6 +153,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [ ] Blob encryption: `AES-GCM(HKDF(seKey, info: "blob-key"), content)`. SE binding prevents offline attacks. No PBKDF2 (same rationale as PIN verifier).
 - [ ] Each payload padded to nearest power-of-2 bucket boundary before encryption. File size reveals only bucket tier, not contact/vault count.
 - [ ] Blob file: no header, no magic bytes, no version field, no layer count. UUID filename with `.occbak` extension — indistinguishable from vault backup.
+- [ ] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install."
 - [ ] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. Blob exists with natural timestamps before first activation.
 - [ ] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events.
 - [ ] **Activation sequence — key rotation, no row deletion:**
@@ -169,6 +178,8 @@ func updateSafeContacts(_ ids: Set<String>) throws
   - Activation failure after old SE key deletion → must complete forward (no rollback possible; resume is the only path)
   - Runs in a background `Task`; user sees a progress indicator; app backgrounding suspends and resumes on next foreground
 - [ ] Blob stored in App Group container (`group.com.occulta.shared`) with `.completeFileProtection`.
+- [ ] **[security]** Set `isExcludedFromBackup = true` (`URLResourceValues`) on the blob file immediately after creation. Without this, the blob is included in iCloud backups by default. A forensic examiner with iCloud credentials or a court order can recover the blob from a backup taken before a wipe, reversing the wipe entirely. `.completeFileProtection` does not prevent iCloud backup.
+- [ ] **[security]** After the activation sequence completes, run `PRAGMA wal_checkpoint(TRUNCATE)` on the persistent store before deleting the old SE key. A standard checkpoint stops new WAL entries but leaves existing frames intact. `TRUNCATE` checkpoints and then zeroes the WAL file to zero bytes, fully eliminating the re-encryption transition record. A forensic snapshot post-activation then finds an empty WAL with no mass UPDATE event to timestamp.
 
 ---
 
@@ -177,6 +188,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] `PINEntry` shown on every `scenePhase == .active` when `security.requiresPIN`
 - [x] `onDuress` / `onWipe` stubs in place (empty — dry-test deferred)
 - [ ] `onWipe` wired to `Manager.App.eraseAllData()` — **after dry-testing the full flow**
+- [ ] **[security]** `eraseAllData()` must also delete the blob file from the App Group container. Currently it covers prekeys, contacts, vault, and SE keys but has no knowledge of the blob. When Step 4 lands, `Manager.App.eraseAllData()` must receive a reference to the blob file path and delete it as part of the wipe sequence — before SE key deletion so the deletion itself cannot be blocked by an encrypted path lookup.
 - [ ] `onOpenURL` respects Secure Mode — inbound `.occ` queued until PIN entered; hidden contact fingerprint lookup returns "unknown sender"
 - [ ] Panic trigger accessible from decoy view — back tap or shake — calls `eraseAllData()` immediately without confirmation
 - [ ] **Decryption-failure contract** — enforced at `ContactManager`, the single data authority. All fetch and search methods return `nil` (not empty string, not placeholder) for rows that fail decryption. The contract is: `decryptOrNil() == nil` is treated identically to "row never existed" by every caller — no secondary queries, no error logs, no timing differences.
@@ -225,6 +237,8 @@ Given `currentDepth = N`:
 
 At every setup step, validate the candidate PIN against all existing verifiers at all depths. Reject if any verifier opens with the candidate PIN. Without this, a collision between depth K's normal PIN and depth 0's normal PIN silently surfaces the real app when the user intends to stay at level K.
 
+**[security]** This validation must use a pure `checkPIN(_:against:)` method — not `verify()`. `verify()` increments `wrongPINCount` on each non-match. Checking N verifiers for uniqueness would increment the counter N times, potentially triggering a spurious wipe. `PINManager.checkVerifier()` already exists as a pure function; the Phase 2 uniqueness check must call it directly without going through `Manager.Security.verify()`.
+
 ### Cascade delete
 
 Disabling Secure Mode at depth N (i.e. calling `deactivateSecureMode` at depth N) must truncate `sealedNormalVerifiers`, `sealedDuressVerifiers`, and `safeContactIDsPerLevel` to length N, and restore all blob payloads at indices N+1…end. Orphaned deeper configs are unreachable and must not be left in the store.
@@ -244,8 +258,13 @@ Disabling Secure Mode at depth N (i.e. calling `deactivateSecureMode` at depth N
 ## Known Limitations
 
 - **Row count mismatch.** More rows exist than the app displays. Soft-deleted and locked rows each have plausible innocent explanations. Soft-deleted rows are capped at 50 per entity type (evicted FIFO) to prevent unbounded database growth. Soft-deleted rows must never appear in any UI, Share Index, or query result.
-- **SE key rotation is observable.** A forensic examiner checking the Keychain will see a new SE key created and an old one deleted. Timestamp is correlatable with activation. Unavoidable.
-- **The blob file exists.** UUID-named and continuously maintained, but its presence in the App Group container proves something is being protected.
-- **App deletion while Secure Mode is active is unrecoverable.** The App Group container is deleted with the app. Users must be warned before activation.
-- **Counter resets on app kill.** `wrongPINCount` and `consecutiveDuressCount` are in-memory only. A coercer who kills and relaunches resets the wipe counter. Addressed by panic trigger (Step 5).
+- **SE key rotation is observable. No mitigation.** A forensic examiner checking the Keychain will see a new SE key created and an old one deleted. The timestamp is correlatable with activation. The deletion IS the security mechanism — there is no way to hide it.
+- **The blob file exists. Mitigated.** Blob is created on first app launch (before Secure Mode is ever used), UUID-named, and continuously maintained. Its presence is then universal across all Occulta installs and is no longer Secure Mode-specific.
+- **App deletion while Secure Mode is active is unrecoverable. No mitigation.** The App Group container is deleted with the app. This is an OS constraint. Users must be warned before activation; no code fix is possible.
+- **Counter resets on app kill. Mitigated by panic trigger.** `wrongPINCount` and `consecutiveDuressCount` are in-memory only. A coercer who kills and relaunches resets the wipe counter. The panic trigger (Step 5) provides a user-controlled wipe that does not depend on the counter.
+- **SwiftData schema name is a forensic artifact. Mitigated.** Renaming `SecureModeConfig` to an opaque class name (Step 1) changes the table name to something non-descriptive. The schema fingerprint survives row deletion (store file is not deleted by `eraseAllData()`), but the table name no longer names the feature.
+- **SwiftData WAL captures re-encryption transitions. Mitigated.** `PRAGMA wal_checkpoint(TRUNCATE)` after activation (Step 4) zeroes the WAL file, eliminating the re-encryption timestamp record entirely.
+- **`safeContactIDsEncrypted` presence is a deniability tell. Mitigated.** Pre-populating the field with an empty encrypted array on `configurePIN()` (Step 3) makes it non-nil for all users with PIN enabled, not just those who have used Secure Mode.
+- **HKDF with PIN in the `info` field is non-standard. No mitigation planned.** `HKDF(inputKeyMaterial: seKey, info: label ∥ pin)` works correctly. Migrating to a more standard construction (PIN as IKM) would invalidate all existing verifiers. The current scheme has no known exploit; the finding is documented for external audits.
+- **PIN strings are not zeroed after use. Mitigated.** Replacing `[Int]` digit storage with a `Data`-backed buffer and zeroing with `memset` after routing (Step 2) removes PIN heap residue.
 - **Secure Mode raises the bar against coercion and mid-tier adversaries. It is not state-actor proof.**
