@@ -10,7 +10,6 @@
 
 import Foundation
 import SwiftData
-import Security
 
 extension Manager {
     @Observable
@@ -49,9 +48,10 @@ extension Manager {
             self.keyManager   = keyManager
 
             let config = try? context.fetch(FetchDescriptor<SecureModeConfig>()).first
-            if config?.isSecureModeActivated == true {
+            
+            if config?.sealedDuressVerifier != nil {
                 self.state = .active
-            } else if config?.isPINEnabled == true {
+            } else if config?.sealedNormalVerifier != nil {
                 self.state = .pinOnly
             } else {
                 self.state = .noPIN
@@ -65,16 +65,15 @@ extension Manager {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            var saltBytes = [UInt8](repeating: 0, count: 32)
-            guard SecRandomCopyBytes(kSecRandomDefault, 32, &saltBytes) == errSecSuccess else {
-                throw SecurityError.randomGenerationFailed
-            }
-            let salt         = Data(saltBytes)
-            let sealedNormal = try PINManager.buildVerifier(pin: pin, salt: salt, label: Self.normalLabel, seKey: seKey)
+            let sealedNormal = try PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: seKey)
 
             let existing = try self.modelContext.fetch(FetchDescriptor<SecureModeConfig>())
             for c in existing { self.modelContext.delete(c) }
-            self.modelContext.insert(SecureModeConfig(sealedNormalVerifier: sealedNormal, salt: salt))
+
+            let config = SecureModeConfig()
+            config.sealedNormalVerifier = sealedNormal
+            try config.setWipeThreshold(3)
+            self.modelContext.insert(config)
             try self.modelContext.save()
 
             self.resetCounters()
@@ -89,11 +88,12 @@ extension Manager {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            guard PINManager.checkVerifier(pin: confirmingNormalPIN, salt: config.salt,
-                                           label: Self.normalLabel, verifier: config.sealedNormalVerifier,
-                                           seKey: seKey) else {
-                throw SecurityError.incorrectPIN
-            }
+            guard
+                let verifier = config.sealedNormalVerifier,
+                PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
+                                         verifier: verifier, seKey: seKey)
+            else { throw SecurityError.incorrectPIN }
+
             self.modelContext.delete(config)
             try self.modelContext.save()
             self.resetCounters()
@@ -104,21 +104,21 @@ extension Manager {
 
         /// Phase 1: verify existing normal PIN.
         /// Phase 2: build duress verifier, persist, transition .pinOnly → .active.
-        /// Key rotation (blob, Step 4) is a placeholder — added in Step 4.
         func activateSecureMode(confirmingNormalPIN: String, duressPIN: String) throws {
             guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
             let config = try self.requireConfig()
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            guard PINManager.checkVerifier(pin: confirmingNormalPIN, salt: config.salt,
-                                           label: Self.normalLabel, verifier: config.sealedNormalVerifier,
-                                           seKey: seKey) else {
-                throw SecurityError.incorrectPIN
-            }
-            config.sealedDuressVerifier  = try PINManager.buildVerifier(pin: duressPIN, salt: config.salt,
-                                                                         label: Self.duressLabel, seKey: seKey)
-            config.isSecureModeActivated = true
+            guard
+                let verifier = config.sealedNormalVerifier,
+                PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
+                                         verifier: verifier, seKey: seKey)
+            else { throw SecurityError.incorrectPIN }
+
+            config.sealedDuressVerifier = try PINManager.buildVerifier(pin: duressPIN,
+                                                                        label: Self.duressLabel,
+                                                                        seKey: seKey)
             try self.modelContext.save()
 
             // TODO: key rotation (Step 4)
@@ -128,7 +128,6 @@ extension Manager {
         }
 
         /// Verifies the normal PIN, removes duress verifier, and transitions .active/.duress → .pinOnly.
-        /// Blob unwind (Step 4) is a placeholder — added in Step 4.
         func deactivateSecureMode(confirmingNormalPIN: String) throws {
             guard self.state == .active || self.state == .duress else {
                 throw SecurityError.invalidStateTransition
@@ -137,16 +136,15 @@ extension Manager {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            guard PINManager.checkVerifier(pin: confirmingNormalPIN, salt: config.salt,
-                                           label: Self.normalLabel, verifier: config.sealedNormalVerifier,
-                                           seKey: seKey) else {
-                throw SecurityError.incorrectPIN
-            }
+            guard
+                let verifier = config.sealedNormalVerifier,
+                PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
+                                         verifier: verifier, seKey: seKey)
+            else { throw SecurityError.incorrectPIN }
 
             // TODO: blob unwind (Step 4)
 
-            config.sealedDuressVerifier  = nil
-            config.isSecureModeActivated = false
+            config.sealedDuressVerifier = nil
             try self.modelContext.save()
             self.resetCounters()
             self.state = .pinOnly
@@ -155,13 +153,6 @@ extension Manager {
         // MARK: - Verify
 
         /// Verifies a PIN entry and drives all state transitions.
-        ///
-        /// - `.noPIN`   — throws `.notConfigured` (PINEntry must not appear in this state)
-        /// - `.pinOnly` — correct normal PIN → `.normal`; wrong → `.wrong`; no wipe threshold
-        /// - `.active`  — normal → `.normal`; duress → `.duress` + state transition;
-        ///                wrong ×3 → `.wipe`; N consecutive duress → `.wipe`
-        /// - `.duress`  — normal → `.normal` + unwind to `.active`; duress → `.duress` (counter++);
-        ///                wrong → `.wrong` + resets duress counter
         func verify(_ pin: String) throws -> PINVerifyResult {
             guard self.state != .noPIN else { throw SecurityError.notConfigured }
             let config = try self.requireConfig()
@@ -169,8 +160,9 @@ extension Manager {
                 throw SecurityError.keyDerivationFailed
             }
 
-            if PINManager.checkVerifier(pin: pin, salt: config.salt, label: Self.normalLabel,
-                                        verifier: config.sealedNormalVerifier, seKey: seKey) {
+            if let verifier = config.sealedNormalVerifier,
+               PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                        verifier: verifier, seKey: seKey) {
                 if self.state == .duress { self.state = .active }
                 self.resetCounters()
                 return .normal
@@ -178,12 +170,12 @@ extension Manager {
 
             if let duressVerifier = config.sealedDuressVerifier,
                (self.state == .active || self.state == .duress),
-               PINManager.checkVerifier(pin: pin, salt: config.salt, label: Self.duressLabel,
+               PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                         verifier: duressVerifier, seKey: seKey) {
                 self.wrongPINCount          = 0
                 self.consecutiveDuressCount += 1
                 self.state = .duress
-                return self.consecutiveDuressCount >= config.wipeThreshold ? .wipe : .duress
+                return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
             }
 
             self.consecutiveDuressCount  = 0

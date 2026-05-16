@@ -25,6 +25,7 @@ struct PINEntry: View {
     @State private var digits:      [Int]   = []
     @State private var shakeOffset: CGFloat = 0
     @State private var isVerifying: Bool    = false
+    @State private var firstPIN:    String? = nil
 
     private let pinLength:    Int           = 6
     private let gateDuration: TimeInterval  = 0.5
@@ -36,7 +37,7 @@ struct PINEntry: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                Text("Passcode")
+                Text(self.firstPIN != nil ? "Confirm Passcode" : "Passcode")
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white)
@@ -101,8 +102,21 @@ struct PINEntry: View {
         let pin   = self.digits.map { String($0) }.joined()
 
         if self.security.state == .noPIN {
-            try? self.security.configurePIN(pin)
-            self.onNormal(pin)
+            if let first = self.firstPIN {
+                if pin == first {
+                    try? self.security.configurePIN(pin)
+                    self.onNormal(pin)
+                } else {
+                    self.firstPIN    = nil
+                    self.digits      = []
+                    self.isVerifying = false
+                    self.shake()
+                }
+            } else {
+                self.firstPIN    = pin
+                self.digits      = []
+                self.isVerifying = false
+            }
             return
         }
 

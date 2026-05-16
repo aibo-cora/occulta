@@ -2,44 +2,34 @@
 //  SecureModeConfig+Model.swift
 //  Occulta
 //
-//  Each verifier is a two-layer sealed box:
-//    outer = AES-GCM(seKey, innerBox)
-//    inner = AES-GCM(HKDF(PBKDF2(pin, salt), label), knownSentinel)
-//
-//  Verification requires the device SE key (outer) + correct PIN (inner).
-//  An offline attacker who extracts the SwiftData file cannot brute-force PINs
-//  without SE hardware access.
-//
 
 import Foundation
 import SwiftData
 
 @Model
 final class SecureModeConfig {
-    /// Two-layer sealed verifier for the normal PIN.
-    var sealedNormalVerifier: Data
-    /// Two-layer sealed verifier for the duress PIN. Nil in .pinOnly state.
+    var sealedNormalVerifier: Data?
     var sealedDuressVerifier: Data?
-    /// 32-byte PBKDF2 salt. Not secret — stored plaintext.
-    var salt: Data
-    /// Number of consecutive duress PIN entries before full wipe.
-    var wipeThreshold: Int
-    /// True once configurePIN() has completed.
-    var isPINEnabled: Bool
-    /// True once activateSecureMode() has completed (key rotation done).
-    var isSecureModeActivated: Bool
-    /// Encrypted JSON-encoded [String] of contact identifiers marked as safe.
-    /// Nil until the user classifies at least one contact.
+    /// Encrypted Int — consecutive duress entries before wipe. Default 3.
+    var wipeThresholdEncrypted: Data?
     var safeContactIDsEncrypted: Data?
 
-    init(sealedNormalVerifier: Data, salt: Data) {
-        self.sealedNormalVerifier  = sealedNormalVerifier
-        self.sealedDuressVerifier  = nil
-        self.salt                  = salt
-        self.wipeThreshold         = 3
-        self.isPINEnabled          = true
-        self.isSecureModeActivated = false
-        self.safeContactIDsEncrypted = nil
+    init() {}
+
+    // MARK: - Wipe threshold
+
+    func wipeThreshold() -> Int {
+        guard
+            let encrypted = self.wipeThresholdEncrypted,
+            let decrypted = encrypted.decrypt(),
+            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return 3 }
+        return value
+    }
+
+    func setWipeThreshold(_ threshold: Int) throws {
+        let data = try JSONEncoder().encode(threshold)
+        self.wipeThresholdEncrypted = try data.encrypt()
     }
 
     // MARK: - Safe contact membership
