@@ -3,7 +3,7 @@
 //  Occulta
 //
 //  Single umbrella for all app-security hardening.
-//  Owns the SecureModeConfig SwiftData row, PIN verification, and the
+//  Owns the AppLayerConfig SwiftData row, PIN verification, and the
 //  Secure Mode state machine. Replaces the former SecureModeManager +
 //  Manager.PINManager public API.
 //
@@ -47,7 +47,7 @@ extension Manager {
             self.modelContext = context
             self.keyManager   = keyManager
 
-            let config = try? context.fetch(FetchDescriptor<SecureModeConfig>()).first
+            let config = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first
             
             if config?.sealedDuressVerifier != nil {
                 self.state = .active
@@ -67,10 +67,10 @@ extension Manager {
             }
             let sealedNormal = try PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: seKey)
 
-            let existing = try self.modelContext.fetch(FetchDescriptor<SecureModeConfig>())
+            let existing = try self.modelContext.fetch(FetchDescriptor<AppLayerConfig>())
             for c in existing { self.modelContext.delete(c) }
 
-            let config = SecureModeConfig()
+            let config = AppLayerConfig()
             config.sealedNormalVerifier = sealedNormal
             try config.setWipeThreshold(3)
             self.modelContext.insert(config)
@@ -191,7 +191,7 @@ extension Manager {
         // MARK: - Safe contacts
 
         func isSafeContact(_ identifier: String) -> Bool {
-            guard let config = try? self.modelContext.fetch(FetchDescriptor<SecureModeConfig>()).first else {
+            guard let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first else {
                 return false
             }
             return config.isSafeContact(identifier)
@@ -199,7 +199,7 @@ extension Manager {
 
         func safeContactIDs() -> Set<String> {
             guard
-                let config    = try? self.modelContext.fetch(FetchDescriptor<SecureModeConfig>()).first,
+                let config    = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
                 let encrypted = config.safeContactIDsEncrypted,
                 let decrypted = encrypted.decrypt(),
                 let ids       = try? JSONDecoder().decode([String].self, from: decrypted)
@@ -215,8 +215,8 @@ extension Manager {
 
         // MARK: - Private
 
-        private func requireConfig() throws -> SecureModeConfig {
-            guard let config = try self.modelContext.fetch(FetchDescriptor<SecureModeConfig>()).first else {
+        private func requireConfig() throws -> AppLayerConfig {
+            guard let config = try self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first else {
                 throw SecurityError.notConfigured
             }
             return config

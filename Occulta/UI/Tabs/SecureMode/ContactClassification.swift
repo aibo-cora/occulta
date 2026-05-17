@@ -207,7 +207,7 @@ private struct LegendItem: View {
 
 #Preview {
     let container = try! ModelContainer(
-        for: Schema([Contact.Profile.self, SecureModeConfig.self]),
+        for: Schema([Contact.Profile.self, AppLayerConfig.self]),
         configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
     )
     ContactClassification()

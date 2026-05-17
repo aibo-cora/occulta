@@ -44,7 +44,7 @@ struct OccultaApp: App {
                 PotentiallyLostShard.self,
                 GlobalShardConfig.self,
                 BackupEncryptionKey.self,
-                SecureModeConfig.self,
+                AppLayerConfig.self,
             ])
             
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)

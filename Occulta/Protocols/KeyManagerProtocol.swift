@@ -80,7 +80,7 @@ protocol KeyManagerProtocol {
     /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
     ///
     /// No LAContext needed — device-unlock level, no biometric.
-    /// Used by PINManager to wrap/unwrap PIN sentinels in SecureModeConfig.
+    /// Used by PINManager to wrap/unwrap PIN sentinels in AppLayerConfig.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveSecureModeKey() throws -> SymmetricKey?

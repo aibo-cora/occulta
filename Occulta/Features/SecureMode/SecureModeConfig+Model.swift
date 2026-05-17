@@ -1,5 +1,5 @@
 //
-//  SecureModeConfig+Model.swift
+//  AppLayerConfig+Model.swift
 //  Occulta
 //
 
@@ -7,7 +7,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class SecureModeConfig {
+final class AppLayerConfig {
     var sealedNormalVerifier: Data?
     var sealedDuressVerifier: Data?
     /// Encrypted Int — consecutive duress entries before wipe. Default 3.

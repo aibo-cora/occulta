@@ -156,7 +156,7 @@ struct Settings: View {
                     })
                     .environment(self.security)
                 } else {
-                    PINEntry(onNormal: { _ in
+                    PINEntry(mode: .setup, onNormal: { _ in
                         self.showingPINSheet = false
                     })
                     .environment(self.security)

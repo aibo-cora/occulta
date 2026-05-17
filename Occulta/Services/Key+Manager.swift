@@ -39,7 +39,7 @@ struct SaltInfo {
     static let kShardCustodyKeyInfo = "Occulta-v1-shard-custody-2026".data(using: .utf8)!
     /// Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF. Dedicated SE key
     /// with device-unlock-level access (no biometric). Used to wrap PIN sentinels in
-    /// SecureModeConfig. Domain-separated from all other key paths.
+    /// AppLayerConfig. Domain-separated from all other key paths.
     static let kSecureModeKeyInfo = "Occulta-v1-secure-mode-pin-2026".data(using: .utf8)!
     /// Recovery buffer key: same SE key as shard custody, distinct HKDF info →
     /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
@@ -867,7 +867,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
     ///
     /// No LAContext needed — device-unlock level access, no biometric.
-    /// Used by PINManager to wrap/unwrap PIN sentinels stored in SecureModeConfig.
+    /// Used by PINManager to wrap/unwrap PIN sentinels stored in AppLayerConfig.
     ///
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     func deriveSecureModeKey() throws -> SymmetricKey? {

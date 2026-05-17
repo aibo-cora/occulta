@@ -272,7 +272,7 @@ final class VaultManager {
         try deleteAll(ReconstructShard.self)
         try deleteAll(GlobalShardConfig.self)
         try deleteAll(PotentiallyLostShard.self)
-        try deleteAll(SecureModeConfig.self)
+        try deleteAll(AppLayerConfig.self)
         try deleteAllEntries()
     }
 

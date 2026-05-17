@@ -10,11 +10,22 @@ import SwiftData
 
 struct PINEntry: View {
 
+    // MARK: Mode
+
+    enum Mode {
+        case verify
+        case setup
+        /// Phase 1: verify existing normal PIN. Phase 2: enter + confirm new PIN.
+        /// Delivers (confirmedNormalPIN, newPIN) to onComplete.
+        case confirmThenSet(onComplete: (String, String) -> Void)
+    }
+
     // MARK: Callbacks
 
+    var mode:     Mode             = .verify
     var onNormal: (String) -> Void = { _ in }
-    var onDuress: () -> Void = {}
-    var onWipe:   () -> Void = {}
+    var onDuress: () -> Void       = {}
+    var onWipe:   () -> Void       = {}
 
     // MARK: Dependencies
 
@@ -22,13 +33,28 @@ struct PINEntry: View {
 
     // MARK: State
 
-    @State private var digits:      [Int]   = []
-    @State private var shakeOffset: CGFloat = 0
-    @State private var isVerifying: Bool    = false
-    @State private var firstPIN:    String? = nil
+    @State private var digits:       [Int]   = []
+    @State private var shakeOffset:  CGFloat = 0
+    @State private var isVerifying:  Bool    = false
+    @State private var firstPIN:     String? = nil
+    @State private var confirmedPIN: String? = nil  // phase-1 result for .confirmThenSet
 
-    private let pinLength:    Int           = 6
-    private let gateDuration: TimeInterval  = 0.5
+    private let pinLength:    Int          = 6
+    private let gateDuration: TimeInterval = 0.5
+
+    // MARK: Derived
+
+    private var title: String {
+        switch self.mode {
+        case .verify:
+            return "Passcode"
+        case .setup:
+            return self.firstPIN != nil ? "Confirm Passcode" : "Passcode"
+        case .confirmThenSet:
+            guard self.confirmedPIN != nil else { return "Passcode" }
+            return self.firstPIN != nil ? "Confirm Passcode" : "New Passcode"
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -37,7 +63,7 @@ struct PINEntry: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                Text(self.firstPIN != nil ? "Confirm Passcode" : "Passcode")
+                Text(self.title)
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundStyle(.white)
@@ -95,37 +121,51 @@ struct PINEntry: View {
         self.digits.removeLast()
     }
 
-    // MARK: Verification
+    // MARK: Submit
 
     private func submit() {
         self.isVerifying = true
-        let pin   = self.digits.map { String($0) }.joined()
+        let pin = self.digits.map { String($0) }.joined()
 
-        if self.security.state == .noPIN {
-            if let first = self.firstPIN {
-                if pin == first {
-                    try? self.security.configurePIN(pin)
-                    self.onNormal(pin)
-                } else {
-                    self.firstPIN    = nil
-                    self.digits      = []
-                    self.isVerifying = false
-                    self.shake()
-                }
+        switch self.mode {
+        case .setup:
+            self.submitSetup(pin: pin)
+        case .verify:
+            self.submitVerify(pin: pin)
+        case .confirmThenSet(let onComplete):
+            if self.confirmedPIN == nil {
+                self.submitConfirmPhase(pin: pin, onComplete: onComplete)
             } else {
-                self.firstPIN    = pin
+                self.submitSetPhase(pin: pin, onComplete: onComplete)
+            }
+        }
+    }
+
+    // .setup — enter + confirm → configurePIN
+
+    private func submitSetup(pin: String) {
+        if let first = self.firstPIN {
+            if pin == first {
+                try? self.security.configurePIN(pin)
+                self.onNormal(pin)
+            } else {
+                self.firstPIN    = nil
                 self.digits      = []
                 self.isVerifying = false
+                self.shake()
             }
-            return
+        } else {
+            self.firstPIN    = pin
+            self.digits      = []
+            self.isVerifying = false
         }
+    }
 
-        let start = Date()
+    // .verify — single entry → route on PINVerifyResult
 
-        // verify() always attempts both sentinel checks regardless of outcome,
-        // so all paths do equivalent crypto work. The gate pads any remaining gap.
-        let result = (try? self.security.verify(pin)) ?? .wrong
-
+    private func submitVerify(pin: String) {
+        let start     = Date()
+        let result    = (try? self.security.verify(pin)) ?? .wrong
         let elapsed   = Date().timeIntervalSince(start)
         let remaining = max(0, self.gateDuration - elapsed)
 
@@ -134,18 +174,59 @@ struct PINEntry: View {
         }
     }
 
+    // .confirmThenSet phase 1 — verify existing normal PIN via security.verify()
+
+    private func submitConfirmPhase(pin: String, onComplete: @escaping (String, String) -> Void) {
+        let start     = Date()
+        let result    = (try? self.security.verify(pin)) ?? .wrong
+        let elapsed   = Date().timeIntervalSince(start)
+        let remaining = max(0, self.gateDuration - elapsed)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
+            if result == .normal {
+                self.confirmedPIN = pin
+                self.digits       = []
+                self.isVerifying  = false
+            } else {
+                self.digits      = []
+                self.isVerifying = false
+                self.shake()
+            }
+        }
+    }
+
+    // .confirmThenSet phase 2 — enter + confirm new PIN → onComplete(normalPIN, newPIN)
+
+    private func submitSetPhase(pin: String, onComplete: @escaping (String, String) -> Void) {
+        guard let normalPIN = self.confirmedPIN else { return }
+
+        if let first = self.firstPIN {
+            if pin == first {
+                onComplete(normalPIN, pin)
+            } else {
+                self.firstPIN    = nil
+                self.digits      = []
+                self.isVerifying = false
+                self.shake()
+            }
+        } else {
+            self.firstPIN    = pin
+            self.digits      = []
+            self.isVerifying = false
+        }
+    }
+
+    // MARK: Route
+
     private func route(_ result: PINVerifyResult, pin: String) {
         switch result {
-        case .normal:
-            self.onNormal(pin)
-        case .duress:
-            self.onDuress()
+        case .normal: self.onNormal(pin)
+        case .duress: self.onDuress()
         case .wrong:
             self.digits      = []
             self.isVerifying = false
             self.shake()
-        case .wipe:
-            self.onWipe()
+        case .wipe:   self.onWipe()
         }
     }
 
@@ -198,7 +279,7 @@ private struct KeypadButton: View {
 
 #Preview {
     let container = try! ModelContainer(
-        for: Schema([SecureModeConfig.self]),
+        for: Schema([AppLayerConfig.self]),
         configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
     )
     PINEntry()
