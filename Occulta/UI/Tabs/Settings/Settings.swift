@@ -134,7 +134,9 @@ struct Settings: View {
         @Environment(Manager.Security.self) private var security
         @Environment(\.dismiss) private var dismiss
 
-        @State private var showingPINSheet = false
+        @State private var showingPINSheet          = false
+        @State private var showingActivateSheet     = false
+        @State private var showingDeactivateSheet   = false
 
         private var pinEnabledBinding: Binding<Bool> {
             Binding(
@@ -146,8 +148,21 @@ struct Settings: View {
         var body: some View {
             List {
                 Toggle("Enable PIN", isOn: self.pinEnabledBinding)
+
+                if self.security.state == .pinOnly {
+                    Button("Activate Secure Mode") {
+                        self.showingActivateSheet = true
+                    }
+                }
+
+                if self.security.state == .active {
+                    Button("Deactivate Secure Mode", role: .destructive) {
+                        self.showingDeactivateSheet = true
+                    }
+                }
             }
             .navigationTitle("Security")
+            // Enable / disable PIN
             .sheet(isPresented: self.$showingPINSheet) {
                 if self.security.requiresPIN {
                     PINEntry(onNormal: { pin in
@@ -161,6 +176,27 @@ struct Settings: View {
                     })
                     .environment(self.security)
                 }
+            }
+            // Activate Secure Mode: confirm normal PIN, then set duress PIN
+            .sheet(isPresented: self.$showingActivateSheet) {
+                PINEntry(
+                    mode: .confirmThenSet { normalPIN, duressPIN in
+                        try? self.security.activateSecureMode(
+                            confirmingNormalPIN: normalPIN,
+                            duressPIN:           duressPIN
+                        )
+                        self.showingActivateSheet = false
+                    }
+                )
+                .environment(self.security)
+            }
+            // Deactivate Secure Mode: confirm normal PIN
+            .sheet(isPresented: self.$showingDeactivateSheet) {
+                PINEntry(onNormal: { pin in
+                    try? self.security.deactivateSecureMode(confirmingNormalPIN: pin)
+                    self.showingDeactivateSheet = false
+                })
+                .environment(self.security)
             }
         }
     }
