@@ -188,6 +188,20 @@ extension Manager {
             return .wrong
         }
 
+        // MARK: - PIN check (no side effects)
+
+        /// Returns true if pin matches the current normal verifier without modifying any counters.
+        /// Use this for Settings-level confirmation — not the lock-screen path.
+        func checkNormalPIN(_ pin: String) -> Bool {
+            guard
+                let config   = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
+                let verifier = config.sealedNormalVerifier,
+                let seKey    = try? self.keyManager.deriveSecureModeKey()
+            else { return false }
+            return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                            verifier: verifier, seKey: seKey)
+        }
+
         // MARK: - Safe contacts
 
         func isSafeContact(_ identifier: String) -> Bool {

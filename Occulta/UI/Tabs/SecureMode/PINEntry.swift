@@ -180,16 +180,16 @@ struct PINEntry: View {
         }
     }
 
-    // .confirmThenSet phase 1 — verify existing normal PIN via security.verify()
+    // .confirmThenSet phase 1 — verify existing normal PIN (no counter mutation)
 
     private func submitConfirmPhase(pin: String, onComplete: @escaping (String, String) -> Void) {
         let start     = Date()
-        let result    = (try? self.security.verify(pin)) ?? .wrong
+        let matched   = self.security.checkNormalPIN(pin)
         let elapsed   = Date().timeIntervalSince(start)
         let remaining = max(0, self.gateDuration - elapsed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
-            if result == .normal {
+            if matched {
                 self.confirmedPIN = pin
                 self.clearDigits()
                 self.isVerifying  = false
