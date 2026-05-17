@@ -50,7 +50,13 @@ struct OccultaApp: App {
             let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
 
             do {
-                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+                let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+                let storeURL  = modelConfiguration.url
+                let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
+                try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path)
+                try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path + "-wal")
+                try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path + "-shm")
+                return container
             } catch {
                 fatalError("Could not create ModelContainer: \(error)")
             }
