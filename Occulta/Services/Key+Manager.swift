@@ -59,7 +59,7 @@ struct SaltInfo {
 //  "local.db.se.key.occulta"                │ No             │ Local DB hybrid key ECDH component
 //  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault PEK derivation
 //  "shard.custody.occulta"                  │ No             │ Shard custody records + recovery buffer
-//  "secure.mode.pin"                        │ No             │ Secure Mode PIN sentinel encryption
+//  "app.layer.key.occulta.v1"               │ No             │ Secure Mode PIN sentinel encryption
 //
 // All four keys carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
 // never synced to iCloud Keychain.
@@ -83,7 +83,7 @@ extension Manager {
             case localDB       = "local.db.se.key.occulta"
             case vault         = "vault.key.occulta.v1"
             case shardCustody  = "shard.custody.occulta"
-            case secureModePin = "secure.mode.pin"
+            case secureModePin = "app.layer.key.occulta.v1"
         }
 
         // MARK: - SE key creation
