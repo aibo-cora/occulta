@@ -322,15 +322,14 @@ struct OccultaApp: App {
                     )
                 }
                 .onChange(of: self.scenePhase) { _, newPhase in
+                    if newPhase == .inactive, self.security.requiresPIN {
+                        self.isLocked = true
+                    }
                     if newPhase == .active {
                         // Keep the share extension's contact index in sync and
                         // delete stale/orphaned session directories from the shared container.
                         self.contactManager.syncShareIndex()
                         self.contactManager.cleanupPendingSessions()
-
-                        if self.security.requiresPIN {
-                            self.isLocked = true
-                        }
                     }
                 }
                 // Key-rotation → two-sided response:
