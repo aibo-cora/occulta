@@ -33,7 +33,7 @@ struct PINEntry: View {
 
     // MARK: State
 
-    @State private var digits:       [Int]   = []
+    @State private var digits:       Data    = Data()
     @State private var shakeOffset:  CGFloat = 0
     @State private var isVerifying:  Bool    = false
     @State private var firstPIN:     String? = nil
@@ -112,13 +112,19 @@ struct PINEntry: View {
 
     private func append(_ digit: Int) {
         guard !self.isVerifying, self.digits.count < self.pinLength else { return }
-        self.digits.append(digit)
+        self.digits.append(UInt8(digit))
         if self.digits.count == self.pinLength { self.submit() }
     }
 
     private func deleteLast() {
         guard !self.digits.isEmpty else { return }
+        self.digits[self.digits.count - 1] = 0
         self.digits.removeLast()
+    }
+
+    private func clearDigits() {
+        self.digits.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+        self.digits.removeAll()
     }
 
     // MARK: Submit
@@ -150,13 +156,13 @@ struct PINEntry: View {
                 self.onNormal(pin)
             } else {
                 self.firstPIN    = nil
-                self.digits      = []
+                self.clearDigits()
                 self.isVerifying = false
                 self.shake()
             }
         } else {
             self.firstPIN    = pin
-            self.digits      = []
+            self.clearDigits()
             self.isVerifying = false
         }
     }
@@ -185,10 +191,10 @@ struct PINEntry: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             if result == .normal {
                 self.confirmedPIN = pin
-                self.digits       = []
+                self.clearDigits()
                 self.isVerifying  = false
             } else {
-                self.digits      = []
+                self.clearDigits()
                 self.isVerifying = false
                 self.shake()
             }
@@ -205,13 +211,13 @@ struct PINEntry: View {
                 onComplete(normalPIN, pin)
             } else {
                 self.firstPIN    = nil
-                self.digits      = []
+                self.clearDigits()
                 self.isVerifying = false
                 self.shake()
             }
         } else {
             self.firstPIN    = pin
-            self.digits      = []
+            self.clearDigits()
             self.isVerifying = false
         }
     }
@@ -223,7 +229,7 @@ struct PINEntry: View {
         case .normal: self.onNormal(pin)
         case .duress: self.onDuress()
         case .wrong:
-            self.digits      = []
+            self.clearDigits()
             self.isVerifying = false
             self.shake()
         case .wipe:   self.onWipe()
