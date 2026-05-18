@@ -14,6 +14,10 @@ struct PINEntry: View {
 
     enum Mode {
         case verify
+        /// Like .verify but routes through checkNormalPIN — no counter mutation.
+        /// Use for Settings-level confirmations where wrong attempts must not
+        /// increment the wipe counter.
+        case verifyNormal
         case setup
         /// Phase 1: verify existing normal PIN. Phase 2: enter + confirm new PIN.
         /// Delivers (confirmedNormalPIN, newPIN) to onComplete.
@@ -46,7 +50,7 @@ struct PINEntry: View {
 
     private var title: String {
         switch self.mode {
-        case .verify:
+        case .verify, .verifyNormal:
             return "Passcode"
         case .setup:
             return self.firstPIN != nil ? "Confirm Passcode" : "Passcode"
@@ -138,6 +142,8 @@ struct PINEntry: View {
             self.submitSetup(pin: pin)
         case .verify:
             self.submitVerify(pin: pin)
+        case .verifyNormal:
+            self.submitVerifyNormal(pin: pin)
         case .confirmThenSet(let onComplete):
             if self.confirmedPIN == nil {
                 self.submitConfirmPhase(pin: pin, onComplete: onComplete)
@@ -177,6 +183,25 @@ struct PINEntry: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             self.route(result, pin: pin)
+        }
+    }
+
+    // .verifyNormal — checkNormalPIN only; no counter mutation; no duress/wipe routing
+
+    private func submitVerifyNormal(pin: String) {
+        let start     = Date()
+        let matched   = self.security.checkNormalPIN(pin)
+        let elapsed   = Date().timeIntervalSince(start)
+        let remaining = max(0, self.gateDuration - elapsed)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
+            if matched {
+                self.onNormal(pin)
+            } else {
+                self.clearDigits()
+                self.isVerifying = false
+                self.shake()
+            }
         }
     }
 

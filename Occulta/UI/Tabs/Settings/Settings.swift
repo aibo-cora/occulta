@@ -148,6 +148,7 @@ struct Settings: View {
         var body: some View {
             List {
                 Toggle("Enable PIN", isOn: self.pinEnabledBinding)
+                    .disabled(self.security.state == .active || self.security.state == .duress)
 
                 if self.security.state == .pinOnly {
                     Button("Activate Secure Mode") {
@@ -190,9 +191,9 @@ struct Settings: View {
                 )
                 .environment(self.security)
             }
-            // Deactivate Secure Mode: confirm normal PIN
+            // Deactivate Secure Mode: confirm normal PIN (no counter mutation)
             .sheet(isPresented: self.$showingDeactivateSheet) {
-                PINEntry(onNormal: { pin in
+                PINEntry(mode: .verifyNormal, onNormal: { pin in
                     try? self.security.deactivateSecureMode(confirmingNormalPIN: pin)
                     self.showingDeactivateSheet = false
                 })
