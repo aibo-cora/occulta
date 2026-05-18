@@ -76,6 +76,7 @@ extension VaultEntryType {
 struct VaultTab: View {
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(Manager.Security.self) private var security
 
     @Query(sort: \VaultEntry.createdAt, order: .reverse) private var entries: [VaultEntry]
     @Query private var rawCustodyShards: [CustodyShard]
@@ -99,7 +100,9 @@ struct VaultTab: View {
     var body: some View {
         NavigationStack {
             Group {
-                if self.vault.isUnlocked {
+                if self.security.isDuressActive {
+                    ContentUnavailableView("Vault Unavailable", systemImage: "lock.fill")
+                } else if self.vault.isUnlocked {
                     self.list
                 } else {
                     self.lockGate

@@ -32,18 +32,19 @@ State is derived from `SecureModeConfig` on every `init()` — never stored as a
 
 SE key prevents all off-device attacks. PBKDF2 was removed: it added ~1s of main-thread blocking with no real security return — on-device code execution defeats any KDF regardless, and the 6-digit PIN space (1M) is brute-forceable in minutes on GPU independent of iteration count.
 
-**`SecureModeConfig` — current schema (all properties optional, relevant ones encrypted):**
+**`AppLayerConfig` — current schema (all properties optional, relevant ones encrypted):**
 
 ```swift
-@Model final class SecureModeConfig {
+@Model final class AppLayerConfig {
     var sealedNormalVerifier:     Data?   // nil → .noPIN
     var sealedDuressVerifier:     Data?   // nil → .pinOnly
     var wipeThresholdEncrypted:   Data?   // encrypted Int; default 3
-    var safeContactIDsEncrypted:  Data?   // encrypted [String]
 }
 ```
 
 All properties optional to avoid SwiftData migration on schema evolution. `wipeThreshold` is encrypted because it reveals Secure Mode configuration to a forensic examiner.
+
+Contact visibility is tracked per-contact on `Contact.Profile` via `visibleThroughDepth` (see Step 3). There is no central safe-contact list on `AppLayerConfig`.
 
 **`Manager.Security` public interface:**
 
@@ -117,28 +118,46 @@ func updateSafeContacts(_ ids: Set<String>) throws
 ### Settings → Security (4-state)
 
 - [x] "Enable PIN" toggle — transitions `.noPIN ↔ .pinOnly` via `PINEntry` sheet
-- [ ] "Activate Secure Mode" button — visible when `state == .pinOnly`. Taps into a dedicated sheet using `PINEntry` with a `mode` argument:
-  - Mode `.confirmThenSet`: first entry confirms normal PIN, second entry sets duress PIN (with confirm step)
-  - Calls `activateSecureMode(confirmingNormalPIN:duressPIN:)` on success
-- [ ] **[security]** Add `checkNormalPIN(_ pin: String) -> Bool` to `Manager.Security` — thin wrapper around `PINManager.checkVerifier` with no counter mutation. Replace the `security.verify()` call in `PINEntry.submitConfirmPhase` with this method. Using `verify()` for Settings-level PIN confirmation incorrectly increments `wrongPINCount` on each wrong attempt, which is semantically wrong (a Settings confirmation is not a lock-screen attack attempt) and pollutes the in-memory counter state.
-- [ ] "Deactivate Secure Mode" button — visible when `state == .active`. Sheet with `PINEntry` in normal verify mode; calls `deactivateSecureMode(confirmingNormalPIN:)` on success
-- [ ] `state == .duress` → Settings → Security shows "Enable PIN" toggle in `on` state only — never reveals Secure Mode exists
+- [x] **[security]** Add `checkNormalPIN(_ pin: String) -> Bool` to `Manager.Security` — thin wrapper around `PINManager.checkVerifier` with no counter mutation. Replace the `security.verify()` call in `PINEntry.submitConfirmPhase` with this method. Using `verify()` for Settings-level PIN confirmation incorrectly increments `wrongPINCount` on each wrong attempt, which is semantically wrong (a Settings confirmation is not a lock-screen attack attempt) and pollutes the in-memory counter state.
+- [x] "Activate Secure Mode" button — visible when `state == .pinOnly`. Sheet uses `PINEntry(mode: .confirmThenSet)`: phase 1 confirms normal PIN via `checkNormalPIN`, phase 2 enters + confirms duress PIN, calls `activateSecureMode(confirmingNormalPIN:duressPIN:)` on success.
+- [x] "Deactivate Secure Mode" button — visible when `state == .active`. Sheet with `PINEntry` in verify mode; calls `deactivateSecureMode(confirmingNormalPIN:)` on success.
+- [x] `state == .duress` → Settings → Security shows "Enable PIN" toggle `on` only (Activate and Deactivate buttons are already state-gated and invisible at `.duress`). Toggle tap opens verify sheet; coercer cannot disable PIN without the normal PIN; `deactivatePIN` throws `.invalidStateTransition` for non-`.pinOnly` anyway.
+- [ ] **[design]** Contact selection must be part of the activation flow, not a standalone Settings item visited later. A user who activates Secure Mode without designating safe contacts will see an empty decoy — which is more suspicious than a populated one. The activation sheet must be a sequential multi-step flow: (1) confirm normal PIN, (2) enter + confirm duress PIN, (3) select safe contacts, (4) confirm and call `activateSecureMode`. The existing single-step `confirmThenSet` sheet is insufficient for this.
+- [x] **[design]** "Deactivate Secure Mode" sheet calls `verify()` internally (via `PINEntry` in `.verify` mode), then `onNormal` calls `deactivateSecureMode(confirmingNormalPIN:)` which calls `PINManager.checkVerifier` again — double-verification plus counter mutation. Wrong attempts in this sheet increment `wrongPINCount` and can trigger wipe. Replace with a verify-without-counters path using `checkNormalPIN`, same as the activate flow's phase 1. Requires either a new `PINEntry` mode or calling `checkNormalPIN` directly in the sheet.
+- [x] **[design]** "Enable PIN" toggle is interactive in `.active` and `.duress` states, but `deactivatePIN` throws `.invalidStateTransition` for both — the sheet opens, the user enters their PIN, and nothing visibly happens. Disable the toggle (`.disabled(true)`) when `state == .active || state == .duress` so the interaction is blocked at the UI layer. This is not a security issue (state machine is correct), but it is a silent failure in the current UX.
+- [x] **[security]** `activateSecureMode` must validate that the proposed duress PIN does not open any existing normal verifier. Currently no collision check — if duress PIN == normal PIN, `verify()` always matches normal first and duress is never triggerable. Validate with `PINManager.checkVerifier` (not `verify()`) before building the duress verifier; reject with a user-facing error if any existing verifier opens.
 
 ### Contact classification
 
-- [x] `safeContactIDsEncrypted` stored and encrypted on `SecureModeConfig`
-- [x] `isSafeContact(_:)`, `safeContactIDs()`, `updateSafeContacts(_:)` on `Manager.Security`
-- [ ] UI in Settings → Security to designate which contacts are "safe" (visible in decoy view)
-- [ ] **[security]** Pre-populate `safeContactIDsEncrypted` with an empty encrypted array in `configurePIN()` — when PIN is first set, not when safe contacts are later designated. Currently the field is nil until the user visits the safe-contact picker, so its non-nil state reveals active Secure Mode use. Pre-populating makes the field present for all users with PIN enabled, collapsing the signal.
+Contact visibility is tracked per-contact, not in a central list on `AppLayerConfig`. A single encrypted field on `Contact.Profile` encodes depth-aware visibility, scales to the Phase 2 stack without schema changes, and produces no central field whose size can be compared against total row count.
+
+**`visibleThroughDepth: Data?`** on `Contact.Profile` — encrypted `Int?`:
+- `nil` — visible at all depths (default for all new contacts)
+- `0` — hidden at all duress depths (sensitive contact)
+- `N` — visible through duress depth N, hidden at N+1 and deeper
+
+Filter at depth N: show contacts where `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= N`.
+
+Phase 1 (single duress layer, depth 1) only ever writes `nil` (safe) or `0` (sensitive). Phase 2 uses the full integer range without schema migration.
+
+**Forensic profile:** `AES-GCM(nil)`, `AES-GCM(0)`, `AES-GCM(1)` all produce identically-sized ciphertexts — no size-based count inference. No central list to compare against total row count. The primary residual tell is the mass `ZMODIFICATIONDATE` update on safe contacts at activation time (Step 4 re-encrypts their fields under the new SE key). Mitigated by also touching hidden contacts' records with a no-op write at activation, making all N records share the same modification timestamp — no count inference possible.
+
+- [x] `isSafeContact(_:)`, `safeContactIDs()` on `Manager.Security` — **implementation must be updated** to read `visibleThroughDepth` from contact records at `currentDepth`, not from `AppLayerConfig`
+- [ ] Add `visibleThroughDepth: Data?` to `Contact.Profile` model (encrypted `Int?`, default nil)
+- [ ] User chooses contact type (safe / sensitive) during contact creation — a neutral UI choice ("visibility") with no Secure Mode framing. All contacts have this field from day one regardless of whether Secure Mode is configured.
+- [ ] At Secure Mode activation: review step shows existing contacts and lets the user confirm or change classifications before activating. This replaces the separate safe-contact picker that was previously planned as part of the activation sheet.
+- [ ] `Manager.Security.isSafeContact(_:)` and `safeContactIDs()` updated to query `Contact.Profile.visibleThroughDepth` at `currentDepth` rather than decrypting a list from `AppLayerConfig`
+- [ ] Remove `safeContactIDsEncrypted` from `AppLayerConfig` and all call sites (`isSafeContact`, `safeContactIDs`, `updateSafeContacts` on `Manager.Security`)
 
 ### Decoy view
 
 - [ ] `ContactsV2` checks `security.isDuressActive`; filters fetch to `safeContactIDs()` when true
 - [ ] `VaultTab` shows empty/unavailable state when `security.isDuressActive`
-- [ ] `onDuress` in `OccultaApp` wired: set `isLocked = false` (decoy view is the real app filtered — no special navigation)
+- [x] `onDuress` in `OccultaApp` wired: set `isLocked = false` (decoy view is the real app filtered — no special navigation)
 - [ ] Inbound `.occ` from hidden contacts silently suppressed in duress mode; queued encrypted; processed on return to `.active`
 - [ ] Safe contacts fully operational in decoy view (send, receive, decrypt `.occ`)
-- [ ] **[security]** `ExchangeManager` must gate on `security.isDuressActive` before accepting or initiating any UWB/Multipeer key exchange. Currently `ExchangeManager` has zero Secure Mode awareness. In duress mode, coming within range of a hidden contact's device would either surface a new contact the coercer can see, or attempt a re-exchange with an undecryptable contact — both break the decoy. Fix: inject `Manager.Security` into `ExchangeManager`; suppress discovery and reject all incoming session invitations when `isDuressActive`.
+- [ ] New contacts created via key exchange while `isDuressActive` default to safe (`visibleThroughDepth = nil`). The exchange was performed openly in front of the coercer — there is no reason to hide the new contact. The default is the same as any other new contact in any mode.
+- [ ] **[design]** `ExchangeManager` in duress mode — no gate. Silently rejecting an incoming invitation while the exchange UI lights up on the other device is itself a tell (the coercer sees an attempt that produces nothing). Exchanges should proceed normally. A re-exchange with a hidden contact creates a new record with their public key but their name and details remain locked in the blob (unreadable), so the coercer sees an unnamed new contact — indistinguishable from a fresh exchange with a stranger. The only residual risk is fingerprint correlation (Diceware words), which requires a highly targeted adversary who memorised the fingerprint from a prior session. This risk is accepted for Phase 1; revisit if targeted-adversary scenarios are added to the threat model.
 
 ---
 
@@ -208,40 +227,74 @@ A coercer demands access at PIN-point. No matter how many PIN entries are coerce
 
 1. **Arbitrary depth.** No cap. A cap (e.g. VeraCrypt's 2-layer limit) is a smoking gun — a coercer who tries to activate another layer and finds it unavailable immediately knows hidden data exists. Every layer presents an identical "Activate Secure Mode" option.
 2. **PIN entry on every foreground.** `PINEntry` is identical regardless of depth.
-3. **`state == .duress` → Settings shows "Enable PIN" only.** Never reveals a layer is active. Tapping "Activate Secure Mode" from within a duress view pushes a new layer.
-4. **`currentDepth` is in-memory only.** Resets to 0 on every app kill. No persistent depth counter — that would be a forensic artifact. After a kill, the user enters any PIN and is routed to the corresponding level.
+3. **`state == .duress` → Settings shows "Enable PIN" toggle + "Activate Secure Mode" only.** Never reveals whether a deeper layer is already configured. The UI at any depth > 0 is indistinguishable from `.pinOnly`.
+4. **`currentDepth` is in-memory only.** Resets to 0 on every app kill. No persistent depth counter — that would be a forensic artifact. `currentDepth` is sufficient because the PIN itself is the routing key: after a cold start, entering any layer's PIN routes directly to that depth via the full normal-verifier scan (see `verify()` ordering below). `currentDepth` in memory only controls which duress push-down verifier is offered — you can only go one level deeper from where you currently are.
+5. **Depth 0 = `.active`; depth > 0 = `.duress`.** There is no `.active` state at any depth > 0. "Returning" to depth N always produces `.duress` state with the decoy view for that level. Only depth 0 (master PIN) surfaces the real app.
 
-### `SecureModeConfig` — Phase 2 schema extension
+### PIN model — one PIN per layer boundary
+
+Each boundary between depth N and N+1 is guarded by a single PIN:
+
+```
+sealedNormalVerifiers[0]   = master PIN          → depth 0 (.active, real app)
+sealedDuressVerifiers[0]   = duress PIN #0       → push depth 0 → depth 1
+sealedNormalVerifiers[1]   = same value as sealedDuressVerifiers[0]  ← routing alias
+sealedDuressVerifiers[1]   = duress PIN #1       → push depth 1 → depth 2
+sealedNormalVerifiers[2]   = same value as sealedDuressVerifiers[1]  ← routing alias
+...
+```
+
+`sealedNormalVerifiers[N]` (N > 0) and `sealedDuressVerifiers[N-1]` hold the same PIN value. The duress PIN that pushes you to depth N is the same PIN that returns you to depth N from any deeper level. This gives **K+1 distinct PINs for K layers** — no separate "return PIN" to remember per layer.
+
+### `AppLayerConfig` — Phase 2 schema extension
 
 Parallel arrays in the existing single row (no new rows, no joins):
 
 ```swift
 // Added for Phase 2 — Phase 1 fields unchanged
-var sealedNormalVerifiers:    [Data]   // index = depth; [0] is master (depth 0)
+var sealedNormalVerifiers:    [Data]   // index = depth; [0] is master; [N] == sealedDuressVerifiers[N-1]
 var sealedDuressVerifiers:    [Data]   // index = depth; entry at N drives push to N+1
-var safeContactIDsPerLevel:   [Data]   // encrypted [String] per depth
 ```
 
 The existing `sealedNormalVerifier` / `sealedDuressVerifier` fields become `sealedNormalVerifiers[0]` / `sealedDuressVerifiers[0]`. Migration: on first Phase 2 launch, wrap existing single values into index-0 of the arrays.
+
+There is no `safeContactIDsPerLevel` array. Contact visibility across all depths is encoded in `Contact.Profile.visibleThroughDepth` (see Step 3). Filter at depth N: show contacts where `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= N`.
+
+**Contact visibility invariants across layers:**
+
+- A contact with `visibleThroughDepth = K` is visible at all depths 0..K and hidden at K+1 and deeper. Visibility is always a contiguous range from depth 0 — a contact cannot be hidden at depth 1 but visible at depth 2.
+- When activating depth N+1, the user reviews contacts with `visibleThroughDepth >= N` (visible at current depth) and selects which should also be visible at N+1 (setting `visibleThroughDepth = N+1` or leaving at `nil`). Contacts not selected remain at their current value and become hidden at depth N+1.
+- New contacts created at any depth default to `visibleThroughDepth = nil` (visible at all depths). They were exchanged with openly; hiding them retroactively requires an explicit user action.
+- At activation, all N contact records receive a no-op write to unify `ZMODIFICATIONDATE` — prevents count inference from timestamp distribution.
 
 ### `verify()` ordering at any depth
 
 Given `currentDepth = N`:
 
-1. Try `sealedNormalVerifiers[0]` (master) → match: pop all layers, restore all blobs, `currentDepth = 0`, state = `.active`
-2. Try `sealedNormalVerifiers[1..N]` in order 1 → N → first match at K: pop layers K+1..N, restore blobs K+1..N, `currentDepth = K`, state = `.active`
-3. Try `sealedDuressVerifiers[N]` → match: push to N+1, `currentDepth = N+1`, state = `.duress`
-4. No match → `.wrong`; increment `wrongPINCount`
+1. Try **all** `sealedNormalVerifiers[0..max]` — first match at K: `currentDepth = K`, state = `.active` if K == 0 else `.duress`; restore blobs for depths K+1..N if K < N
+2. Try `sealedDuressVerifiers[N]` → match: `currentDepth = N+1`, state = `.duress`
+3. No match → `.wrong`; increment `wrongPINCount`
+
+Step 1 scans all normal verifiers regardless of `currentDepth`. This is what makes cold-start routing work — entering duress PIN #1 after a kill matches `sealedNormalVerifiers[2]` and routes directly to depth 2, without having to walk through depth 1 first. Only the push-down (step 2) is depth-specific, preventing a coercer from jumping past an unvisited depth.
+
+### Activation at depth N — confirmation PIN
+
+When at depth N and tapping "Activate Secure Mode" to add depth N+1:
+
+- **N == 0**: confirm via `checkNormalPIN` (master PIN). Already implemented for Phase 1.
+- **N > 0**: confirm via `checkDuressPIN(N-1)` — check `sealedDuressVerifiers[N-1]`, the PIN that brought the user to depth N. Requires a new `Manager.Security.checkCurrentLayerEntryPIN(_ pin: String) -> Bool` method for Phase 2. Using `checkNormalPIN` here would expose the master PIN to an observer during depth-2+ setup.
+
+The activation flow at any depth: (1) confirm entry PIN for this depth, (2) enter + confirm new duress PIN, (3) select safe contacts for next level, (4) call `activateSecureModeAtCurrentDepth(confirmingEntryPIN:newDuressPIN:safeContacts:)`.
 
 ### PIN uniqueness constraint
 
-At every setup step, validate the candidate PIN against all existing verifiers at all depths. Reject if any verifier opens with the candidate PIN. Without this, a collision between depth K's normal PIN and depth 0's normal PIN silently surfaces the real app when the user intends to stay at level K.
+At every setup step, validate the candidate PIN against all existing verifiers at all depths. Reject if any verifier opens with the candidate PIN.
 
 **[security]** This validation must use a pure `checkPIN(_:against:)` method — not `verify()`. `verify()` increments `wrongPINCount` on each non-match. Checking N verifiers for uniqueness would increment the counter N times, potentially triggering a spurious wipe. `PINManager.checkVerifier()` already exists as a pure function; the Phase 2 uniqueness check must call it directly without going through `Manager.Security.verify()`.
 
 ### Cascade delete
 
-Disabling Secure Mode at depth N (i.e. calling `deactivateSecureMode` at depth N) must truncate `sealedNormalVerifiers`, `sealedDuressVerifiers`, and `safeContactIDsPerLevel` to length N, and restore all blob payloads at indices N+1…end. Orphaned deeper configs are unreachable and must not be left in the store.
+Disabling Secure Mode at depth N (i.e. calling `deactivateSecureMode` at depth N) must truncate `sealedNormalVerifiers` and `sealedDuressVerifiers` to length N, and restore all blob payloads at indices N+1…end. Orphaned deeper configs are unreachable and must not be left in the store. Contact visibility (`visibleThroughDepth` per contact) is not cascaded — the values remain valid and the user retains whatever classifications they set. A contact visible only through depth N becomes unreachable after the stack is truncated to N; its `visibleThroughDepth` value is harmless to leave in place.
 
 ### What Occulta adopts from VeraCrypt — and what it rejects
 
@@ -264,7 +317,7 @@ Disabling Secure Mode at depth N (i.e. calling `deactivateSecureMode` at depth N
 - **Counter resets on app kill. Mitigated by panic trigger.** `wrongPINCount` and `consecutiveDuressCount` are in-memory only. A coercer who kills and relaunches resets the wipe counter. The panic trigger (Step 5) provides a user-controlled wipe that does not depend on the counter.
 - **SwiftData schema name is a forensic artifact. Mitigated.** Renaming `SecureModeConfig` to an opaque class name (Step 1) changes the table name to something non-descriptive. The schema fingerprint survives row deletion (store file is not deleted by `eraseAllData()`), but the table name no longer names the feature.
 - **SwiftData WAL captures re-encryption transitions. Mitigated.** `PRAGMA wal_checkpoint(TRUNCATE)` after activation (Step 4) zeroes the WAL file, eliminating the re-encryption timestamp record entirely.
-- **`safeContactIDsEncrypted` presence is a deniability tell. Mitigated.** Pre-populating the field with an empty encrypted array on `configurePIN()` (Step 3) makes it non-nil for all users with PIN enabled, not just those who have used Secure Mode.
+- **Mass `ZMODIFICATIONDATE` update at activation is a deniability tell. Mitigated.** Re-encrypting safe contacts' fields under the new SE key at activation produces a mass timestamp update on a subset of contact rows — count inference possible by comparing updated rows against total row count. Mitigated by issuing a no-op write to all N contact records at activation, unifying `ZMODIFICATIONDATE` across the full table. No count inference is possible when every row shares the same modification timestamp.
 - **HKDF with PIN in the `info` field is non-standard. No mitigation planned.** `HKDF(inputKeyMaterial: seKey, info: label ∥ pin)` works correctly. Migrating to a more standard construction (PIN as IKM) would invalidate all existing verifiers. The current scheme has no known exploit; the finding is documented for external audits.
 - **PIN strings are not zeroed after use. Mitigated.** Replacing `[Int]` digit storage with a `Data`-backed buffer and zeroing with `memset` after routing (Step 2) removes PIN heap residue.
 - **Secure Mode raises the bar against coercion and mid-tier adversaries. It is not state-actor proof.**

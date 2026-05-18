@@ -13,7 +13,15 @@ import SwiftData
 
 @MainActor
 private func makeContainer() throws -> ModelContainer {
-    let schema = Schema([SecureModeConfig.self])
+    let schema = Schema([
+        AppLayerConfig.self,
+        Contact.Profile.self,
+        Contact.Profile.PhoneNumber.self,
+        Contact.Profile.EmailAddress.self,
+        Contact.Profile.PostalAddress.self,
+        Contact.Profile.URLAddress.self,
+        Contact.Profile.Key.self,
+    ])
     let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
     return try ModelContainer(for: schema, configurations: [config])
 }
@@ -47,7 +55,7 @@ struct SecurityStateTests {
         let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         try s.configurePIN("123456")
         let context = ModelContext(container)
-        let configs = try context.fetch(FetchDescriptor<SecureModeConfig>())
+        let configs = try context.fetch(FetchDescriptor<AppLayerConfig>())
         #expect(configs.count == 1)
     }
 
@@ -57,7 +65,7 @@ struct SecurityStateTests {
         try s.configurePIN("111111")
         try s.configurePIN("222222")
         let context = ModelContext(container)
-        let configs = try context.fetch(FetchDescriptor<SecureModeConfig>())
+        let configs = try context.fetch(FetchDescriptor<AppLayerConfig>())
         #expect(configs.count == 1)
     }
 
@@ -277,25 +285,57 @@ struct SecurityCounterTests {
 @Suite("Security — Safe contacts")
 struct SecuritySafeContactTests {
 
+    private func insertContact(identifier: String, in context: ModelContext) {
+        let contact = Contact.Profile(
+            identifier: identifier, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        context.insert(contact)
+    }
+
     @Test func updateAndFetch_roundTrip() throws {
-        let s = try makeSecurity()
-        try s.configurePIN("123456")
-        let ids: Set<String> = ["abc", "def", "ghi"]
-        try s.updateSafeContacts(ids)
-        #expect(s.safeContactIDs() == ids)
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let ctx = ModelContext(container)
+        self.insertContact(identifier: "abc", in: ctx)
+        self.insertContact(identifier: "def", in: ctx)
+        self.insertContact(identifier: "ghi", in: ctx)
+        try ctx.save()
+
+        // mark "abc" and "ghi" safe, "def" sensitive
+        try s.updateSafeContacts(["abc", "ghi"])
+        let safe = s.safeContactIDs()
+        #expect(safe.contains("abc"))
+        #expect(safe.contains("ghi"))
+        #expect(!safe.contains("def"))
     }
 
     @Test func isSafeContact_unknownID_returnsFalse() throws {
         let s = try makeSecurity()
-        try s.configurePIN("123456")
-        try s.updateSafeContacts(["abc"])
         #expect(s.isSafeContact("xyz") == false)
     }
 
-    @Test func isSafeContact_knownID_returnsTrue() throws {
-        let s = try makeSecurity()
-        try s.configurePIN("123456")
-        try s.updateSafeContacts(["abc", "def"])
+    @Test func isSafeContact_markedSensitive_returnsFalse() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let ctx = ModelContext(container)
+        self.insertContact(identifier: "abc", in: ctx)
+        self.insertContact(identifier: "def", in: ctx)
+        try ctx.save()
+
+        try s.updateSafeContacts(["abc"])  // "def" → sensitive
+        #expect(s.isSafeContact("abc") == true)
+        #expect(s.isSafeContact("def") == false)
+    }
+
+    @Test func isSafeContact_unclassified_returnsTrue() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let ctx = ModelContext(container)
+        self.insertContact(identifier: "abc", in: ctx)
+        try ctx.save()
+
+        // no updateSafeContacts call — nil visibleThroughDepth → always visible
         #expect(s.isSafeContact("abc") == true)
     }
 }

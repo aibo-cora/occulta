@@ -146,20 +146,33 @@ struct Settings: View {
         }
 
         var body: some View {
-            List {
-                Toggle("Enable PIN", isOn: self.pinEnabledBinding)
-                    .disabled(self.security.state == .active || self.security.state == .duress)
+            VStack(spacing: 0) {
+                List {
+                    Toggle("Enable PIN", isOn: self.pinEnabledBinding)
+                        .disabled(self.security.state == .active || self.security.state == .duress)
 
-                if self.security.state == .pinOnly {
-                    Button("Activate Secure Mode") {
-                        self.showingActivateSheet = true
+                    if self.security.state == .active {
+                        NavigationLink("Manage Visibility") {
+                            ContactClassification()
+                                .environment(self.security)
+                        }
                     }
                 }
 
-                if self.security.state == .active {
-                    Button("Deactivate Secure Mode", role: .destructive) {
+                if self.security.state == .pinOnly || self.security.state == .duress {
+                    Button("Activate") {
+                        self.showingActivateSheet = true
+                    }
+                    .prominentButtonStyle()
+                    .tint(Color.occultaAccent)
+                    .padding()
+                } else if self.security.state == .active {
+                    Button("Deactivate", role: .destructive) {
                         self.showingDeactivateSheet = true
                     }
+                    .prominentButtonStyle()
+                    .tint(Color.red)
+                    .padding()
                 }
             }
             .navigationTitle("Security")

@@ -72,6 +72,13 @@ extension Contact {
         /// one existing soft-deleted row is hard-deleted before a new one is written.
         /// Named `deletionToken` (not `isDeleted`) to avoid shadowing NSManagedObject.isDeleted.
         var deletionToken: Data? = nil
+
+        /// Encrypted depth-visibility (encrypted JSON Int):
+        ///   nil  — always visible (default for all new contacts)
+        ///   0    — hidden at all duress depths
+        ///   N    — visible through duress depth N, hidden at N+1 and deeper
+        /// All non-nil values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+        var visibleThroughDepth: Data? = nil
         
         // MARK: - Full Designated Initializer
         

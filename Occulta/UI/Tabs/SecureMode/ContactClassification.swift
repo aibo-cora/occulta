@@ -8,9 +8,7 @@ import SwiftData
 
 struct ContactClassification: View {
 
-    var onContinue: () -> Void = {}
-
-    @Environment(\.dismiss)        private var dismiss
+    @Environment(\.dismiss)             private var dismiss
     @Environment(Manager.Security.self) private var security
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
@@ -57,30 +55,10 @@ struct ContactClassification: View {
             .navigationTitle("Classify Contacts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { self.dismiss() }
-                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { self.save(); self.dismiss() }
                         .fontWeight(.semibold)
                 }
-            }
-            .safeAreaInset(edge: .bottom) {
-                Button {
-                    self.save()
-                    self.onContinue()
-                } label: {
-                    Text("Continue to PIN Setup")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(Color.occultaAccent)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
-                .background(.ultraThinMaterial)
             }
             .onAppear { self.loadSafeIDs() }
         }
@@ -170,6 +148,7 @@ private struct SafeToggle: View {
             } label: {
                 Text("Sensitive")
                     .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
                     .foregroundStyle(self.isSafe ? .secondary : Color.occultaDanger)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)

@@ -127,7 +127,7 @@ struct PINEntry: View {
     }
 
     private func clearDigits() {
-        self.digits.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+        _ = self.digits.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
         self.digits.removeAll()
     }
 

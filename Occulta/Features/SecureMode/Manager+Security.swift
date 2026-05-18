@@ -208,27 +208,65 @@ extension Manager {
 
         // MARK: - Safe contacts
 
+        /// Returns true if the contact is visible at duress depth 1.
+        /// Unknown contacts (not in DB) return false — conservative default.
         func isSafeContact(_ identifier: String) -> Bool {
-            guard let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first else {
-                return false
-            }
-            return config.isSafeContact(identifier)
+            let descriptor = FetchDescriptor<Contact.Profile>(
+                predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
+            )
+            guard let contact = try? self.modelContext.fetch(descriptor).first else { return false }
+            return Self.isVisible(contact, atDepth: 1)
         }
 
+        /// Returns identifiers of contacts visible at duress depth 1.
         func safeContactIDs() -> Set<String> {
-            guard
-                let config    = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let encrypted = config.safeContactIDsEncrypted,
-                let decrypted = encrypted.decrypt(),
-                let ids       = try? JSONDecoder().decode([String].self, from: decrypted)
-            else { return [] }
-            return Set(ids)
+            guard let contacts = try? self.modelContext.fetch(Contact.Profile.descriptor) else { return [] }
+            return Set(contacts.compactMap { Self.isVisible($0, atDepth: 1) ? $0.identifier : nil })
         }
 
+        /// Marks contacts in `ids` as always visible (nil) and all others as hidden (depth 0).
         func updateSafeContacts(_ ids: Set<String>) throws {
-            let config = try self.requireConfig()
-            try config.updateSafeContacts(ids)
+            let contacts = try self.modelContext.fetch(Contact.Profile.descriptor)
+            for contact in contacts {
+                if ids.contains(contact.identifier) {
+                    contact.visibleThroughDepth = nil
+                } else {
+                    contact.visibleThroughDepth = try JSONEncoder().encode(0).encrypt()
+                }
+            }
             try self.modelContext.save()
+        }
+
+        /// Returns true if the contact is explicitly marked sensitive (depth 0).
+        /// Does not infer from unknown contacts — only reads the stored field.
+        func isSensitive(_ identifier: String) -> Bool {
+            let descriptor = FetchDescriptor<Contact.Profile>(
+                predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
+            )
+            guard let contact = try? self.modelContext.fetch(descriptor).first,
+                  let data = contact.visibleThroughDepth,
+                  let decrypted = data.decrypt(),
+                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return false }
+            return value == 0
+        }
+
+        /// Sets a single contact's visibility without touching any other contact records.
+        func setVisibility(for identifier: String, isSensitive: Bool) throws {
+            let descriptor = FetchDescriptor<Contact.Profile>(
+                predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
+            )
+            guard let contact = try? self.modelContext.fetch(descriptor).first else { return }
+            contact.visibleThroughDepth = isSensitive ? try JSONEncoder().encode(0).encrypt() : nil
+            try self.modelContext.save()
+        }
+
+        private static func isVisible(_ contact: Contact.Profile, atDepth depth: Int) -> Bool {
+            guard let data = contact.visibleThroughDepth else { return true }
+            guard let decrypted = data.decrypt(),
+                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return true }
+            return value >= depth
         }
 
         // MARK: - Private
