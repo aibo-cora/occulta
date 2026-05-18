@@ -116,6 +116,10 @@ extension Manager {
                                          verifier: verifier, seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
+            guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel,
+                                            verifier: verifier, seKey: seKey)
+            else { throw SecurityError.pinCollision }
+
             config.sealedDuressVerifier = try PINManager.buildVerifier(pin: duressPIN,
                                                                         label: Self.duressLabel,
                                                                         seKey: seKey)
@@ -252,5 +256,6 @@ extension Manager.Security {
         case randomGenerationFailed
         case incorrectPIN
         case invalidStateTransition
+        case pinCollision
     }
 }
