@@ -343,7 +343,7 @@ struct OccultaApp: App {
                     if self.isLocked {
                         PINEntry(
                             onNormal: { _ in self.isLocked = false },
-                            onDuress: {},
+                            onDuress: { self.isLocked = false },
                             onWipe:   {}
                         )
                         .environment(self.security)
