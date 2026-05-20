@@ -25,9 +25,10 @@ extension Manager {
         }
 
         private(set) var state: State
+        private(set) var currentDepth: Int = 0
 
         var requiresPIN:    Bool { self.state != .noPIN  }
-        var isDuressActive: Bool { self.state == .duress }
+        var isRestricted: Bool { self.currentDepth > 0 }
 
         // MARK: - Private
 
@@ -104,7 +105,7 @@ extension Manager {
 
         /// Phase 1: verify existing normal PIN.
         /// Phase 2: build duress verifier, persist, transition .pinOnly → .active.
-        func activateSecureMode(confirmingNormalPIN: String, duressPIN: String) throws {
+        func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) throws {
             guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
             let config = try self.requireConfig()
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
@@ -112,7 +113,7 @@ extension Manager {
             }
             guard
                 let verifier = config.sealedNormalVerifier,
-                PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
+                PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
                                          verifier: verifier, seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
@@ -132,7 +133,7 @@ extension Manager {
         }
 
         /// Verifies the normal PIN, removes duress verifier, and transitions .active/.duress → .pinOnly.
-        func deactivateSecureMode(confirmingNormalPIN: String) throws {
+        func deactivateSecureMode(confirmingEntryPIN: String) throws {
             guard self.state == .active || self.state == .duress else {
                 throw SecurityError.invalidStateTransition
             }
@@ -142,7 +143,7 @@ extension Manager {
             }
             guard
                 let verifier = config.sealedNormalVerifier,
-                PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
+                PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
                                          verifier: verifier, seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
@@ -151,6 +152,7 @@ extension Manager {
             config.sealedDuressVerifier = nil
             try self.modelContext.save()
             self.resetCounters()
+            self.currentDepth = 0
             self.state = .pinOnly
         }
 
@@ -168,6 +170,7 @@ extension Manager {
                PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                         verifier: verifier, seKey: seKey) {
                 if self.state == .duress { self.state = .active }
+                self.currentDepth = 0
                 self.resetCounters()
                 return .normal
             }
@@ -178,6 +181,7 @@ extension Manager {
                                         verifier: duressVerifier, seKey: seKey) {
                 self.wrongPINCount          = 0
                 self.consecutiveDuressCount += 1
+                self.currentDepth           = 1
                 self.state = .duress
                 return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
             }
@@ -215,13 +219,13 @@ extension Manager {
                 predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
             )
             guard let contact = try? self.modelContext.fetch(descriptor).first else { return false }
-            return Self.isVisible(contact, atDepth: 1)
+            return Self.isVisible(contact, atDepth: self.currentDepth)
         }
 
-        /// Returns identifiers of contacts visible at duress depth 1.
+        /// Returns identifiers of contacts visible at the current depth.
         func safeContactIDs() -> Set<String> {
             guard let contacts = try? self.modelContext.fetch(Contact.Profile.descriptor) else { return [] }
-            return Set(contacts.compactMap { Self.isVisible($0, atDepth: 1) ? $0.identifier : nil })
+            return Set(contacts.compactMap { Self.isVisible($0, atDepth: self.currentDepth) ? $0.identifier : nil })
         }
 
         /// Marks contacts in `ids` as always visible (nil) and all others as hidden (depth 0).

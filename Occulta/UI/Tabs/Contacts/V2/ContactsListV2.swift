@@ -21,7 +21,7 @@ struct ContactsV2: View {
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
     private var visibleContacts: [Contact.Profile] {
-        guard self.security.isDuressActive else { return self.contacts }
+        guard self.security.isRestricted else { return self.contacts }
         return self.contacts.filter { self.security.isSafeContact($0.identifier) }
     }
 

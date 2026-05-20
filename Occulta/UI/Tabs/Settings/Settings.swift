@@ -159,7 +159,7 @@ struct Settings: View {
                     }
                 }
 
-                if self.security.state == .pinOnly || self.security.state == .duress {
+                if self.security.state == .pinOnly {
                     Button("Activate") {
                         self.showingActivateSheet = true
                     }
@@ -196,8 +196,8 @@ struct Settings: View {
                 PINEntry(
                     mode: .confirmThenSet { normalPIN, duressPIN in
                         try? self.security.activateSecureMode(
-                            confirmingNormalPIN: normalPIN,
-                            duressPIN:           duressPIN
+                            confirmingEntryPIN: normalPIN,
+                            duressPIN:          duressPIN
                         )
                         self.showingActivateSheet = false
                     }
@@ -207,7 +207,7 @@ struct Settings: View {
             // Deactivate Secure Mode: confirm normal PIN (no counter mutation)
             .sheet(isPresented: self.$showingDeactivateSheet) {
                 PINEntry(mode: .verifyNormal, onNormal: { pin in
-                    try? self.security.deactivateSecureMode(confirmingNormalPIN: pin)
+                    try? self.security.deactivateSecureMode(confirmingEntryPIN: pin)
                     self.showingDeactivateSheet = false
                 })
                 .environment(self.security)

@@ -87,7 +87,7 @@ struct SecurityStateTests {
     @Test func deactivatePIN_fromActive_throwsInvalidStateTransition() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
             try s.deactivatePIN(confirmingNormalPIN: "123456")
         }
@@ -96,7 +96,7 @@ struct SecurityStateTests {
     @Test func activateSecureMode_fromNoPIN_throwsInvalidStateTransition() throws {
         let s = try makeSecurity()
         #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
-            try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+            try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         }
     }
 
@@ -104,31 +104,31 @@ struct SecurityStateTests {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
-            try s.activateSecureMode(confirmingNormalPIN: "000000", duressPIN: "999999")
+            try s.activateSecureMode(confirmingEntryPIN: "000000", duressPIN: "999999")
         }
     }
 
     @Test func activateSecureMode_fromPinOnly_transitionsToActive() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         #expect(s.state == .active)
     }
 
     @Test func deactivateSecureMode_fromActive_transitionsToPinOnly() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
-        try s.deactivateSecureMode(confirmingNormalPIN: "123456")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try s.deactivateSecureMode(confirmingEntryPIN: "123456")
         #expect(s.state == .pinOnly)
     }
 
     @Test func deactivateSecureMode_fromDuress_transitionsToPinOnly() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("999999")   // → .duress
-        try s.deactivateSecureMode(confirmingNormalPIN: "123456")
+        try s.deactivateSecureMode(confirmingEntryPIN: "123456")
         #expect(s.state == .pinOnly)
     }
 
@@ -136,7 +136,7 @@ struct SecurityStateTests {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
-            try s.deactivateSecureMode(confirmingNormalPIN: "123456")
+            try s.deactivateSecureMode(confirmingEntryPIN: "123456")
         }
     }
 }
@@ -178,14 +178,14 @@ struct SecurityVerifyActiveTests {
     @Test func active_correctNormal_returnsNormal() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         #expect(try s.verify("123456") == .normal)
     }
 
     @Test func active_duressPIN_returnsDuress_transitionsToDuress() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         #expect(try s.verify("999999") == .duress)
         #expect(s.state == .duress)
     }
@@ -193,7 +193,7 @@ struct SecurityVerifyActiveTests {
     @Test func active_threeWrongPINs_returnsWipe() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("000000")
         _ = try s.verify("000000")
         #expect(try s.verify("000000") == .wipe)
@@ -202,7 +202,7 @@ struct SecurityVerifyActiveTests {
     @Test func duress_correctNormal_returnsNormal_transitionsToActive() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("999999")   // → .duress
         #expect(try s.verify("123456") == .normal)
         #expect(s.state == .active)
@@ -211,7 +211,7 @@ struct SecurityVerifyActiveTests {
     @Test func duress_duressPIN_returnsDuress() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("999999")   // → .duress, count=1
         #expect(try s.verify("999999") == .duress)
     }
@@ -219,7 +219,7 @@ struct SecurityVerifyActiveTests {
     @Test func duress_wrongPIN_returnsWrong() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("999999")   // → .duress
         #expect(try s.verify("000000") == .wrong)
     }
@@ -227,7 +227,7 @@ struct SecurityVerifyActiveTests {
     @Test func consecutiveDuressHitsThreshold_returnsWipe() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("999999")   // count=1 → .duress
         _ = try s.verify("999999")   // count=2 → .duress
         #expect(try s.verify("999999") == .wipe)  // count=3, threshold=3
@@ -243,7 +243,7 @@ struct SecurityCounterTests {
     @Test func normalPIN_resetsWrongCounter_preventsEarlyWipe() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("000000")
         _ = try s.verify("000000")
         _ = try s.verify("123456")   // normal → resets wrong counter
@@ -256,7 +256,7 @@ struct SecurityCounterTests {
     @Test func duressPIN_resetsWrongCounter() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("000000")
         _ = try s.verify("000000")
         _ = try s.verify("999999")   // duress → resets wrong counter
@@ -269,7 +269,7 @@ struct SecurityCounterTests {
     @Test func wrongPIN_resetsDuressCounter_preventsEarlyWipe() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingNormalPIN: "123456", duressPIN: "999999")
+        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
         _ = try s.verify("999999")   // count=1
         _ = try s.verify("999999")   // count=2
         _ = try s.verify("000000")   // wrong → resets duress counter
