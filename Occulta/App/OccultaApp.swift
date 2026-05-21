@@ -56,6 +56,7 @@ struct OccultaApp: App {
                 try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path)
                 try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path + "-wal")
                 try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path + "-shm")
+                
                 return container
             } catch {
                 fatalError("Could not create ModelContainer: \(error)")
@@ -72,10 +73,7 @@ struct OccultaApp: App {
         self.security            = security
         self._isLocked           = State(initialValue: security.requiresPIN)
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
-        self.shardCustodyManager = ShardCustodyManager(
-            modelContainer: sharedModelContainer,
-            keyManager:     Manager.Key()
-        )
+        self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
         
         self.migrate()
     }

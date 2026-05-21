@@ -257,6 +257,16 @@ struct ComposableMessage: View {
                             .background(Color.green.opacity(0.2))
                             .foregroundStyle(self.colorScheme == .dark ? .white : .black)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .contextMenu {
+                                Button {
+                                    UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: text]], options: [.expirationDate: Date().addingTimeInterval(120)])
+                                    UIPasteboard.general.string = text
+                                    
+                                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                            }
                     }
                 case .file(let metadata):
                     let name = metadata.name ?? "file"
