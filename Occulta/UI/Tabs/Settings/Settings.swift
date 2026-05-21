@@ -135,7 +135,7 @@ struct Settings: View {
         @Environment(\.dismiss) private var dismiss
 
         @State private var showingPINSheet          = false
-        @State private var showingActivateSheet     = false
+        @State private var showingSetupFlow         = false
         @State private var showingDeactivateSheet   = false
 
         private var pinEnabledBinding: Binding<Bool> {
@@ -146,37 +146,35 @@ struct Settings: View {
         }
 
         var body: some View {
-            VStack(spacing: 0) {
-                List {
+            List {
+                Section {
                     Toggle("Enable PIN", isOn: self.pinEnabledBinding)
                         .disabled(self.security.state == .active || self.security.state == .duress)
+                }
 
-                    if self.security.state == .active {
-                        NavigationLink("Manage Visibility") {
-                            ContactClassification()
-                                .environment(self.security)
+                if self.security.state == .noPIN || self.security.state == .pinOnly {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Learn how you can protect your data.")
+                                .font(.subheadline)
+                            Button("Learn more") { self.showingSetupFlow = true }
+                                .font(.subheadline).fontWeight(.semibold)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .disabled(self.security.state == .noPIN)
+                    .opacity(self.security.state == .noPIN ? 0.4 : 1)
+                }
+
+                if self.security.state == .active {
+                    Section {
+                        Button("Deactivate Protection", role: .destructive) {
+                            self.showingDeactivateSheet = true
                         }
                     }
                 }
-
-                if self.security.state == .pinOnly {
-                    Button("Activate") {
-                        self.showingActivateSheet = true
-                    }
-                    .prominentButtonStyle()
-                    .tint(Color.occultaAccent)
-                    .padding()
-                } else if self.security.state == .active {
-                    Button("Deactivate", role: .destructive) {
-                        self.showingDeactivateSheet = true
-                    }
-                    .prominentButtonStyle()
-                    .tint(Color.red)
-                    .padding()
-                }
             }
             .navigationTitle("Security")
-            // Enable / disable PIN
             .sheet(isPresented: self.$showingPINSheet) {
                 if self.security.requiresPIN {
                     PINEntry(onNormal: { pin in
@@ -191,18 +189,10 @@ struct Settings: View {
                     .environment(self.security)
                 }
             }
-            // Activate Secure Mode: confirm normal PIN, then set duress PIN
-            .sheet(isPresented: self.$showingActivateSheet) {
-                PINEntry(
-                    mode: .confirmThenSet { normalPIN, duressPIN in
-                        try? self.security.activateSecureMode(
-                            confirmingEntryPIN: normalPIN,
-                            duressPIN:          duressPIN
-                        )
-                        self.showingActivateSheet = false
-                    }
-                )
-                .environment(self.security)
+            // Secure Mode setup flow
+            .sheet(isPresented: self.$showingSetupFlow) {
+                SecureModeSetupFlow()
+                    .environment(self.security)
             }
             // Deactivate Secure Mode: confirm normal PIN (no counter mutation)
             .sheet(isPresented: self.$showingDeactivateSheet) {

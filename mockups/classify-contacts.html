@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Classify Contacts</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+      background: #000;
+      color: #fff;
+      max-width: 393px;
+      margin: 0 auto;
+      min-height: 100vh;
+    }
+
+    .status-bar {
+      height: 50px;
+      background: #1c1c1e;
+      display: flex;
+      align-items: flex-end;
+      padding: 0 24px 8px;
+      font-size: 15px;
+      font-weight: 600;
+      justify-content: space-between;
+    }
+
+    .nav-bar {
+      background: #1c1c1e;
+      padding: 8px 16px 12px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.1);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-title { font-size: 17px; font-weight: 600; }
+    .nav-btn { font-size: 17px; color: #bf5af2; }
+    .nav-btn.semibold { font-weight: 600; }
+
+    .scroll {
+      background: #1c1c1e;
+      padding-bottom: 48px;
+    }
+
+    .explainer {
+      font-size: 13px;
+      color: #8e8e93;
+      line-height: 1.5;
+      padding: 14px 20px 4px;
+    }
+
+    .section-wrap { margin-top: 16px; }
+
+    .section-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #8e8e93;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      padding: 0 20px 8px;
+    }
+
+    .section-body {
+      background: #2c2c2e;
+      border-radius: 12px;
+      overflow: hidden;
+      margin: 0 16px;
+      min-height: 44px;
+    }
+
+    .group-divider {
+      font-size: 11px;
+      font-weight: 600;
+      color: #48484a;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      padding: 8px 14px 6px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.06);
+      background: rgba(0,0,0,0.15);
+    }
+
+    .contact-row {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.07);
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.12s;
+      position: relative;
+    }
+    .contact-row:last-child { border-bottom: none; }
+    .contact-row:active { background: rgba(255,255,255,0.06); }
+    .contact-row.unverified { opacity: 0.45; }
+
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+      margin-right: 11px;
+      letter-spacing: 0.3px;
+    }
+
+    .contact-info { flex: 1; min-width: 0; }
+    .contact-name {
+      font-size: 16px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .contact-name .family { font-weight: 600; }
+
+    .contact-chip {
+      display: inline-block;
+      margin-top: 3px;
+      font-size: 10px;
+      font-family: 'SF Mono', 'Menlo', monospace;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+    }
+    .chip-verified { color: #32d74b; }
+    .chip-unverified { color: #636366; }
+
+    .move-btn {
+      flex-shrink: 0;
+      margin-left: 10px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .move-btn.down {
+      background: rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.35);
+    }
+    .move-btn.up {
+      background: rgba(255,69,58,0.15);
+      color: #ff453a;
+    }
+
+    .sensitive-bar {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: #ff453a;
+      opacity: 0.7;
+    }
+    .has-bar .avatar { margin-left: 8px; }
+
+    .empty-state {
+      padding: 18px 14px;
+      font-size: 14px;
+      color: #48484a;
+      text-align: center;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .contact-row.entering { animation: slideIn 0.18s ease; }
+  </style>
+</head>
+<body>
+
+<div class="status-bar">
+  <span>9:41</span>
+  <span style="letter-spacing:2px">● ● ●</span>
+</div>
+
+<div class="nav-bar">
+  <span class="nav-btn" style="visibility:hidden">Back</span>
+  <span class="nav-title">Classify Contacts</span>
+  <span class="nav-btn semibold" id="confirm-btn">Activate</span>
+  <!-- When accessed from Settings (already active): label = "Save" -->
+
+</div>
+
+<div class="scroll">
+
+  <p class="explainer">Sensitive contacts are hidden in restricted view. Tap to move between groups.</p>
+
+  <!-- VISIBLE -->
+  <div class="section-wrap">
+    <div class="section-label">Visible</div>
+    <div class="section-body" id="visible-section">
+
+      <div class="group-divider">Verified</div>
+
+      <div class="contact-row" data-verified="1" onclick="toggle(this)">
+        <div class="avatar" style="background:linear-gradient(135deg,#5e5ce6,#bf5af2)">AS</div>
+        <div class="contact-info">
+          <div class="contact-name">Alex <span class="family">Smith</span></div>
+          <div class="contact-chip chip-verified">verified</div>
+        </div>
+        <div class="move-btn down">↓</div>
+      </div>
+
+      <div class="contact-row" data-verified="1" onclick="toggle(this)">
+        <div class="avatar" style="background:linear-gradient(135deg,#ff9f0a,#ff375f)">JD</div>
+        <div class="contact-info">
+          <div class="contact-name">Jamie <span class="family">Davis</span></div>
+          <div class="contact-chip chip-verified">verified</div>
+        </div>
+        <div class="move-btn down">↓</div>
+      </div>
+
+      <div class="contact-row" data-verified="1" onclick="toggle(this)">
+        <div class="avatar" style="background:linear-gradient(135deg,#30d158,#0a84ff)">MK</div>
+        <div class="contact-info">
+          <div class="contact-name">Maria <span class="family">Kim</span></div>
+          <div class="contact-chip chip-verified">verified</div>
+        </div>
+        <div class="move-btn down">↓</div>
+      </div>
+
+      <div class="group-divider" id="unverified-divider">Unverified</div>
+
+      <div class="contact-row unverified" data-verified="0" onclick="toggle(this)">
+        <div class="avatar" style="background:linear-gradient(135deg,#3a3a3c,#48484a)">RJ</div>
+        <div class="contact-info">
+          <div class="contact-name">Ryan <span class="family">Johnson</span></div>
+          <div class="contact-chip chip-unverified">unverified</div>
+        </div>
+        <div class="move-btn down">↓</div>
+      </div>
+
+      <div class="contact-row unverified" data-verified="0" onclick="toggle(this)">
+        <div class="avatar" style="background:linear-gradient(135deg,#3a3a3c,#48484a)">SL</div>
+        <div class="contact-info">
+          <div class="contact-name">Sarah <span class="family">Lee</span></div>
+          <div class="contact-chip chip-unverified">unverified</div>
+        </div>
+        <div class="move-btn down">↓</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- SENSITIVE -->
+  <div class="section-wrap">
+    <div class="section-label">Sensitive</div>
+    <div class="section-body" id="sensitive-section">
+
+      <div class="contact-row has-bar" data-verified="1" onclick="toggle(this)">
+        <div class="sensitive-bar"></div>
+        <div class="avatar" style="background:linear-gradient(135deg,#ff453a,#ff9f0a)">TC</div>
+        <div class="contact-info">
+          <div class="contact-name">Tom <span class="family">Chen</span></div>
+          <div class="contact-chip chip-verified">verified</div>
+        </div>
+        <div class="move-btn up">↑</div>
+      </div>
+
+      <div id="empty-state" class="empty-state" style="display:none">None marked sensitive</div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+  function toggle(row) {
+    const visible   = document.getElementById('visible-section');
+    const sensitive = document.getElementById('sensitive-section');
+    const empty     = document.getElementById('empty-state');
+    const inSensitive = !!row.closest('#sensitive-section');
+    const isVerified  = row.dataset.verified === '1';
+    const btn         = row.querySelector('.move-btn');
+
+    row.classList.add('entering');
+    setTimeout(() => row.classList.remove('entering'), 200);
+
+    if (inSensitive) {
+      // → move back to visible
+      row.classList.remove('has-bar');
+      const bar = row.querySelector('.sensitive-bar');
+      if (bar) bar.remove();
+      row.querySelector('.avatar').style.marginLeft = '';
+      btn.className = 'move-btn down';
+      btn.textContent = '↓';
+
+      const unverifiedDivider = document.getElementById('unverified-divider');
+      if (isVerified && unverifiedDivider) {
+        visible.insertBefore(row, unverifiedDivider);
+      } else {
+        visible.appendChild(row);
+      }
+    } else {
+      // → move to sensitive
+      row.classList.add('has-bar');
+      const bar = document.createElement('div');
+      bar.className = 'sensitive-bar';
+      row.insertBefore(bar, row.firstChild);
+      btn.className = 'move-btn up';
+      btn.textContent = '↑';
+      sensitive.insertBefore(row, empty);
+    }
+
+    // Empty state
+    const rows = sensitive.querySelectorAll('.contact-row');
+    empty.style.display = rows.length === 0 ? 'block' : 'none';
+
+    // Hide unverified divider if no unverified rows left in visible
+    const unverifiedDivider = document.getElementById('unverified-divider');
+    if (unverifiedDivider) {
+      const unverifiedRows = visible.querySelectorAll('[data-verified="0"]');
+      unverifiedDivider.style.display = unverifiedRows.length === 0 ? 'none' : '';
+    }
+  }
+</script>
+
+</body>
+</html>

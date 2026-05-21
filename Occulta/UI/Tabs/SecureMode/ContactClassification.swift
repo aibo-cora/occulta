@@ -8,177 +8,192 @@ import SwiftData
 
 struct ContactClassification: View {
 
+    /// Label for the confirm button. "Activate" in the activation flow, "Save" from Settings.
+    var confirmLabel: String = "Save"
+    /// Called after saving, before dismissing. Use to trigger the next step in the activation flow.
+    var onConfirm: (() -> Void)? = nil
+
     @Environment(\.dismiss)             private var dismiss
     @Environment(Manager.Security.self) private var security
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
-    @State private var safeIDs: Set<String> = []
+    /// Contacts the user has moved to the Sensitive section during this session.
+    @State private var sensitiveIDs: Set<String> = []
+
+    // MARK: - Derived lists
+
+    private var visibleContacts: [Contact.Profile] {
+        self.contacts.filter { !self.sensitiveIDs.contains($0.identifier) }
+    }
+
+    private var verifiedVisible: [Contact.Profile] {
+        self.visibleContacts.filter { $0.verificationStatus == .verified }
+    }
+
+    private var unverifiedVisible: [Contact.Profile] {
+        self.visibleContacts.filter { $0.verificationStatus != .verified }
+    }
+
+    private var sensitiveContacts: [Contact.Profile] {
+        self.contacts.filter { self.sensitiveIDs.contains($0.identifier) }
+    }
+
+    // MARK: - Body
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Text("**Safe** contacts remain visible. **Sensitive** contacts are hidden when restricted access is active.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                }
-
-                Section("\(self.contacts.count) contacts") {
-                    ForEach(self.contacts) { contact in
-                        ContactClassificationRow(
-                            contact: contact,
-                            isSafe:  self.safeIDs.contains(contact.identifier),
-                            onToggle: { isSafe in
-                                if isSafe {
-                                    self.safeIDs.insert(contact.identifier)
-                                } else {
-                                    self.safeIDs.remove(contact.identifier)
-                                }
-                            }
-                        )
-                    }
-                }
-
-                Section {
-                    HStack(spacing: 16) {
-                        LegendItem(color: .occultaVerified, label: "visible in restricted view")
-                        LegendItem(color: .occultaDanger,   label: "hidden in restricted view")
-                    }
+        List {
+                Text("Sensitive contacts are hidden in restricted view. Tap to move between groups.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+
+                // MARK: Visible
+                if !self.verifiedVisible.isEmpty || !self.unverifiedVisible.isEmpty {
+                    Section {
+                        if !self.verifiedVisible.isEmpty {
+                            groupHeader("Verified")
+                            ForEach(self.verifiedVisible) { contact in
+                                ClassificationRow(
+                                    contact:     contact,
+                                    inSensitive: false,
+                                    onTap:       { self.sensitiveIDs.insert(contact.identifier) }
+                                )
+                            }
+                        }
+                        if !self.unverifiedVisible.isEmpty {
+                            groupHeader("Unverified")
+                            ForEach(self.unverifiedVisible) { contact in
+                                ClassificationRow(
+                                    contact:     contact,
+                                    inSensitive: false,
+                                    onTap:       { self.sensitiveIDs.insert(contact.identifier) }
+                                )
+                                .opacity(0.45)
+                            }
+                        }
+                    } header: {
+                        Text("Visible")
+                    }
+                }
+
+                // MARK: Sensitive
+                Section {
+                    if self.sensitiveContacts.isEmpty {
+                        Text("None marked sensitive")
+                            .font(.subheadline)
+                            .foregroundStyle(Color(.tertiaryLabel))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(self.sensitiveContacts) { contact in
+                            ClassificationRow(
+                                contact:     contact,
+                                inSensitive: true,
+                                onTap:       { self.sensitiveIDs.remove(contact.identifier) }
+                            )
+                            .opacity(contact.verificationStatus != .verified ? 0.45 : 1)
+                        }
+                    }
+                } header: {
+                    Text("Sensitive")
                 }
             }
             .navigationTitle("Classify Contacts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { self.save(); self.dismiss() }
-                        .fontWeight(.semibold)
+                    Button(self.confirmLabel) {
+                        self.save()
+                        if let onConfirm = self.onConfirm {
+                            onConfirm()
+                        } else {
+                            self.dismiss()
+                        }
+                    }
+                    .fontWeight(.semibold)
                 }
             }
-            .onAppear { self.loadSafeIDs() }
-        }
+            .onAppear { self.loadSensitiveIDs() }
+    }
+
+    // MARK: - Helpers
+
+    @ViewBuilder
+    private func groupHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color(.tertiaryLabel))
+            .textCase(.uppercase)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+            .listRowBackground(Color.clear)
     }
 
     // MARK: - Persistence
 
-    private func loadSafeIDs() {
-        self.safeIDs = self.security.safeContactIDs()
+    private func loadSensitiveIDs() {
+        self.sensitiveIDs = Set(
+            self.contacts
+                .filter { self.security.isSensitive($0.identifier) }
+                .map { $0.identifier }
+        )
     }
 
     private func save() {
-        try? self.security.updateSafeContacts(self.safeIDs)
+        let safeIDs = Set(self.contacts.map { $0.identifier }).subtracting(self.sensitiveIDs)
+        try? self.security.updateSafeContacts(safeIDs)
     }
 }
 
 // MARK: - Row
 
-private struct ContactClassificationRow: View {
+private struct ClassificationRow: View {
 
-    let contact:  Contact.Profile
-    let isSafe:   Bool
-    let onToggle: (Bool) -> Void
+    let contact:     Contact.Profile
+    let inSensitive: Bool
+    let onTap:       () -> Void
 
     private var givenName:  String { self.contact.givenName.decrypt() }
     private var familyName: String { self.contact.familyName.decrypt() }
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                avatarGradientV2(for: self.contact.identifier)
-                Text([self.givenName, self.familyName]
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " ")
-                    .initials)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+        Button(action: { withAnimation(.easeInOut(duration: 0.18)) { self.onTap() } }) {
+            HStack(spacing: 12) {
+                ZStack {
+                    avatarGradientV2(for: self.contact.identifier)
+                    Text([self.givenName, self.familyName]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " ")
+                        .initials)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 38, height: 38)
+                .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    (Text(self.givenName.isEmpty ? "" : self.givenName + " ")
+                        .fontWeight(.regular)
+                    + Text(self.familyName)
+                        .fontWeight(.semibold))
+                        .font(.body)
+                        .lineLimit(1)
+
+                    Text(self.contact.verificationStatus.chipLabel)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(self.contact.verificationStatus.color)
+                }
+
+                Spacer()
+
+                Image(systemName: self.inSensitive ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(self.inSensitive ? Color.occultaDanger : Color(.tertiaryLabel))
             }
-            .frame(width: 40, height: 40)
-            .clipShape(Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                (Text(self.givenName.isEmpty ? "" : self.givenName + " ")
-                    .fontWeight(.regular)
-                + Text(self.familyName)
-                    .fontWeight(.semibold))
-                    .font(.body)
-                    .lineLimit(1)
-
-                Text(self.contact.verificationStatus.chipLabel)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(self.contact.verificationStatus.color)
-            }
-
-            Spacer()
-
-            SafeToggle(isSafe: self.isSafe, onToggle: self.onToggle)
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 2)
-    }
-}
-
-// MARK: - Safe Toggle
-
-private struct SafeToggle: View {
-
-    let isSafe:   Bool
-    let onToggle: (Bool) -> Void
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { self.onToggle(true) }
-            } label: {
-                Text("Safe")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(self.isSafe ? .white : .secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(self.isSafe ? Color.occultaVerified : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { self.onToggle(false) }
-            } label: {
-                Text("Sensitive")
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .foregroundStyle(self.isSafe ? .secondary : Color.occultaDanger)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(self.isSafe ? Color.clear : Color.occultaDanger.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
-        }
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color(.separator), lineWidth: 0.5)
-        )
-    }
-}
-
-// MARK: - Legend Item
-
-private struct LegendItem: View {
-    let color: Color
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(self.color).frame(width: 8, height: 8)
-            Text(self.label)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -186,10 +201,15 @@ private struct LegendItem: View {
 
 #Preview {
     let container = try! ModelContainer(
-        for: Schema([Contact.Profile.self, AppLayerConfig.self]),
+        for: Schema([Contact.Profile.self, AppLayerConfig.self,
+                     Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
+                     Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self,
+                     Contact.Profile.Key.self]),
         configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
     )
-    ContactClassification()
-        .modelContainer(container)
-        .environment(Manager.Security(modelContainer: container))
+    NavigationStack {
+        ContactClassification(confirmLabel: "Activate")
+    }
+    .modelContainer(container)
+    .environment(Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
 }
