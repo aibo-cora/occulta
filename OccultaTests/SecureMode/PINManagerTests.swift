@@ -279,6 +279,43 @@ struct SecurityCounterTests {
     }
 }
 
+// MARK: - Wipe threshold fallback
+
+@MainActor
+@Suite("AppLayerConfig — Wipe threshold fallback")
+struct WipeThresholdFallbackTests {
+
+    @Test func nilEncryptedData_returnsFallback() throws {
+        let container = try makeContainer()
+        let ctx = ModelContext(container)
+        let config = AppLayerConfig()
+        // wipeThresholdEncrypted defaults to nil
+        ctx.insert(config)
+        try ctx.save()
+        #expect(config.wipeThreshold() == 3)
+    }
+
+    @Test func corruptEncryptedData_returnsFallback() throws {
+        let container = try makeContainer()
+        let ctx = ModelContext(container)
+        let config = AppLayerConfig()
+        config.wipeThresholdEncrypted = Data([0xFF, 0xFE, 0xFD, 0x00])  // not valid AES-GCM
+        ctx.insert(config)
+        try ctx.save()
+        #expect(config.wipeThreshold() == 3)
+    }
+
+    @Test func validThreshold_roundTrips() throws {
+        let container = try makeContainer()
+        let ctx = ModelContext(container)
+        let config = AppLayerConfig()
+        try config.setWipeThreshold(7)
+        ctx.insert(config)
+        try ctx.save()
+        #expect(config.wipeThreshold() == 7)
+    }
+}
+
 // MARK: - Safe contacts
 
 @MainActor

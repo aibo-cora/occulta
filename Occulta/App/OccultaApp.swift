@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import CoreData
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -25,43 +26,44 @@ struct OccultaApp: App {
     @Environment(\.scenePhase) private var scenePhase
     
     var sharedModelContainer: ModelContainer
-    
-    init() {
-        let sharedModelContainer: ModelContainer = {
-            let schema = Schema([
-                Contact.Profile.self,
-                Contact.Profile.PhoneNumber.self,
-                Contact.Profile.EmailAddress.self,
-                Contact.Profile.PostalAddress.self,
-                Contact.Profile.URLAddress.self,
-                Contact.Profile.Key.self,
-                Contact.Message.self,
-                VaultEntry.self,
-                CustodyShard.self,
-                ReconstructShard.self,
-                PendingShardDistribute.self,
-                PendingShardStatusUpdate.self,
-                PotentiallyLostShard.self,
-                GlobalShardConfig.self,
-                BackupEncryptionKey.self,
-                AppLayerConfig.self,
-            ])
-            
-            let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
+    /// SwiftData store URL. Retained so `reapplyFileProtection()` can stamp
+    /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
+    private let storeURL: URL
 
-            do {
-                let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
-                let storeURL  = modelConfiguration.url
-                let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
-                try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path)
-                try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path + "-wal")
-                try? FileManager.default.setAttributes(attrs, ofItemAtPath: storeURL.path + "-shm")
-                
-                return container
-            } catch {
-                fatalError("Could not create ModelContainer: \(error)")
-            }
-        }()
+    init() {
+        let schema = Schema([
+            Contact.Profile.self,
+            Contact.Profile.PhoneNumber.self,
+            Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self,
+            Contact.Profile.URLAddress.self,
+            Contact.Profile.Key.self,
+            Contact.Message.self,
+            VaultEntry.self,
+            CustodyShard.self,
+            ReconstructShard.self,
+            PendingShardDistribute.self,
+            PendingShardStatusUpdate.self,
+            PotentiallyLostShard.self,
+            GlobalShardConfig.self,
+            BackupEncryptionKey.self,
+            AppLayerConfig.self,
+        ])
+
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
+        let sharedModelContainer: ModelContainer
+        do {
+            sharedModelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+        } catch {
+            fatalError("Could not create ModelContainer: \(error)")
+        }
+        let url = modelConfiguration.url
+        let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-wal")
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-shm")
+
+        self.storeURL = url
         
         let contactManager = ContactManager(modelContainer: sharedModelContainer)
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
@@ -131,6 +133,18 @@ struct OccultaApp: App {
             }
         }
     }
+    /// How long a successful PIN unlock suppresses the next PIN prompt.
+    /// Zero when in restricted (duress) mode — every return from background requires PIN.
+    private static let gracePeriod: TimeInterval = 5 * 60
+
+    /// True when the last unlock is recent enough that PIN re-entry can be skipped.
+    /// Never applies in restricted mode.
+    private var isWithinGracePeriod: Bool {
+        guard !self.security.isRestricted else { return false }
+        guard let last = self.security.lastUnlockDate else { return false }
+        return Date().timeIntervalSince(last) < Self.gracePeriod
+    }
+
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
     // Error feedback
@@ -324,8 +338,17 @@ struct OccultaApp: App {
                         self.isLocked = true
                     }
                     if newPhase == .active {
-                        // Keep the share extension's contact index in sync and
-                        // delete stale/orphaned session directories from the shared container.
+                        // Auto-unlock within grace period — skip PIN prompt for quick app switches.
+                        // Grace period is always zero in restricted mode: every return requires PIN.
+                        if self.isLocked && self.isWithinGracePeriod {
+                            self.isLocked = false
+                        }
+                        // Rebuild share index with the correct depth filter before the
+                        // share extension reads it. Hidden contacts must not appear in
+                        // the iOS share sheet when in restricted mode.
+                        self.contactManager.shareIndexAllowedIDs = self.security.isRestricted
+                            ? self.security.safeContactIDs()
+                            : nil
                         self.contactManager.syncShareIndex()
                         self.contactManager.cleanupPendingSessions()
                     }
@@ -337,14 +360,41 @@ struct OccultaApp: App {
                 .onReceive(self.contactManager.contactKeyRotated) { identifier in
                     self.vaultManager.markShardsLost(forContact: identifier)
                 }
+                // Reapply .completeFileProtection after every save.
+                // SwiftData recreates -wal/-shm sidecar files on WAL merges,
+                // migrations, and conflict resolution — outside the app's init
+                // lifecycle. Re-stamp each time a context saves so no sidecar
+                // can sit with weaker default protection.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: Notification.Name("NSManagedObjectContextDidSaveNotification")
+                )) { _ in
+                    self.reapplyFileProtection()
+                }
                 .overlay {
                     if self.isLocked {
-                        PINEntry(
-                            onNormal: { _ in self.isLocked = false },
-                            onDuress: { self.isLocked = false },
-                            onWipe:   {}
-                        )
-                        .environment(self.security)
+                        if self.isWithinGracePeriod {
+                            // Within grace period: show a blank screen to block the
+                            // app-switcher screenshot without demanding PIN re-entry.
+                            // Cleared immediately by the scenePhase .active handler.
+                            Color(.systemBackground).ignoresSafeArea()
+                        } else {
+                            PINEntry(
+                                onNormal: { _ in
+                                    self.security.recordUnlock()
+                                    self.contactManager.shareIndexAllowedIDs = nil
+                                    self.contactManager.syncShareIndex()
+                                    self.isLocked = false
+                                },
+                                onDuress: {
+                                    self.security.recordUnlock()
+                                    self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
+                                    self.contactManager.syncShareIndex()
+                                    self.isLocked = false
+                                },
+                                onWipe: {}
+                            )
+                            .environment(self.security)
+                        }
                     }
                 }
                 .animation(.none, value: self.isLocked)
@@ -564,6 +614,22 @@ struct OccultaApp: App {
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
             self.showError = true
         }
+    }
+
+    /// Reapply `.completeFileProtection` to the SwiftData store and its WAL/SHM files.
+    ///
+    /// SwiftData (via SQLite) can recreate `-wal` and `-shm` sidecar files after
+    /// checkpoints, schema migrations, or WAL merges. The initial `setAttributes`
+    /// call in `init()` covers the baseline; this method re-stamps every time a
+    /// `ModelContext` saves so newly-created sidecar files are always protected.
+    ///
+    /// Called via `.onReceive(NSManagedObjectContext.didSaveNotification)` in `body`.
+    private func reapplyFileProtection() {
+        let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
+        let path = self.storeURL.path
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: path)
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: path + "-wal")
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: path + "-shm")
     }
 
     /// Strip EXIF, GPS, camera metadata from image data using CGImageSource/CGImageDestination.

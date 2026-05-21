@@ -142,7 +142,7 @@ struct ContactsV2: View {
             request.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
             var batch = [CNContact]()
             try CNContactStore().enumerateContacts(with: request) { contact, _ in batch.append(contact) }
-            try self.contactManager.createContacts(from: batch)
+            try self.contactManager.createContacts(from: batch, currentDepth: self.security.currentDepth)
         } catch {
             debugPrint("fetchContacts error: \(error.localizedDescription)")
         }

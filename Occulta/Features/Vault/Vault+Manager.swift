@@ -202,11 +202,16 @@ final class VaultManager {
     ///
     /// - Returns: The persisted VaultEntry (all fields are ciphertext).
     @discardableResult
-    func addEntry(label: String, content: Data, type: VaultEntryType) throws -> VaultEntry {
+    func addEntry(label: String, content: Data, type: VaultEntryType, currentDepth: Int = 0) throws -> VaultEntry {
         let vaultKey = try self.currentKey()
 
         // Build entry first — id and createdAt must be fixed before AAD is computed.
         let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+
+        // Stamp depth ceiling if created below the true layer.
+        if currentDepth > 0 {
+            entry.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
+        }
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)

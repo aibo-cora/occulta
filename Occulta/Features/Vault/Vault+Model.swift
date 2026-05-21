@@ -183,6 +183,11 @@ final class VaultEntry {
     /// nil until an SSS split has been performed for this entry.
     var shardDistributionEncrypted: Data? = nil
 
+    /// Encrypted `Int` depth ceiling.
+    /// nil  = visible at all depths.
+    /// N    = visible only at depths 0..N (created while at depth N).
+    var visibleThroughDepth: Data? = nil
+
     // MARK: Init
 
     init(encryptedLabel: Data, encryptedContent: Data) {

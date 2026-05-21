@@ -100,9 +100,7 @@ struct VaultTab: View {
     var body: some View {
         NavigationStack {
             Group {
-                if self.security.isRestricted {
-                    ContentUnavailableView("Vault Unavailable", systemImage: "lock.fill")
-                } else if self.vault.isUnlocked {
+                if self.security.isRestricted || self.vault.isUnlocked {
                     self.list
                 } else {
                     self.lockGate
@@ -196,10 +194,19 @@ struct VaultTab: View {
 
     // MARK: Entry list
 
+    /// Entries visible at the current depth. In restricted mode this excludes
+    /// entries whose visibleThroughDepth ceiling is below currentDepth.
+    private var visibleEntries: [VaultEntry] {
+        guard self.security.isRestricted else { return self.entries }
+        return self.entries.filter { self.security.isEntryVisible($0) }
+    }
+
     private var list: some View {
-        let affected       = self.vault.recoveryHealth?.affected ?? []
+        let visibleEntries = self.visibleEntries
+        let visibleIDs     = Set(visibleEntries.map(\.id))
+        let affected       = (self.vault.recoveryHealth?.affected ?? []).filter { visibleIDs.contains($0.entryID) }
         let affectedIDs    = Set(affected.map(\.entryID))
-        let normalEntries  = self.entries.filter { !affectedIDs.contains($0.id) }
+        let normalEntries  = visibleEntries.filter { !affectedIDs.contains($0.id) }
 
         // BEK erosion: read the stored property computed by recomputeRecoveryHealth().
         // Same pending+confirmed logic as PEK — no crypto calls at render time.
@@ -334,7 +341,7 @@ struct VaultTab: View {
             // Personal entries (excludes entries already shown in attention section)
             if self.filter != .shards {
                 Section {
-                    if self.entries.isEmpty {
+                    if visibleEntries.isEmpty {
                         Text("No entries yet. Tap + to add one.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -359,16 +366,16 @@ struct VaultTab: View {
                         Text("Personal")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .tracking(1.6)
-                        if !self.entries.isEmpty {
+                        if !visibleEntries.isEmpty {
                             Spacer()
-                            Text("\(self.entries.count)")
+                            Text("\(visibleEntries.count)")
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
                     }
                 } footer: {
-                    if !self.entries.isEmpty {
-                        Text("\(self.entries.count) \(self.entries.count == 1 ? "entry" : "entries") · se-bound · this device only")
+                    if !visibleEntries.isEmpty {
+                        Text("\(visibleEntries.count) \(visibleEntries.count == 1 ? "entry" : "entries") · se-bound · this device only")
                             .font(.system(size: 10, design: .monospaced))
                     }
                 }

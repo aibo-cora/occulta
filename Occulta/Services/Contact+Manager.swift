@@ -49,6 +49,12 @@ class ContactManager {
     /// key whose P-256 fingerprint differs from the previously active key.
     /// Subscribers (e.g. ShardCustodyManager) use this to schedule auto-returns.
     var contactKeyRotated: PassthroughSubject<String, Never> = .init()
+
+    /// When non-nil, `syncShareIndex()` only writes contacts in this set.
+    /// Set by `OccultaApp` to `security.safeContactIDs()` when `security.isRestricted`,
+    /// and cleared to `nil` when returning to depth 0.
+    @ObservationIgnored
+    var shareIndexAllowedIDs: Set<String>? = nil
     
     init(modelContainer: ModelContainer) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
@@ -69,7 +75,8 @@ class ContactManager {
     ///
     /// All properties are encrypted before being stored in the local database.
     /// - Parameter cnContact: Apple's contact object.
-    func createContacts(from cnContacts: [CNContact]) throws {
+    /// - Parameter currentDepth: Secure Mode depth at creation time. 0 = true layer (default).
+    func createContacts(from cnContacts: [CNContact], currentDepth: Int = 0) throws {
         for contact in cnContacts {
             let encryptedIdentifier = try self.cryptoManager.encrypt(data: contact.identifier.data(using: .utf8))?.base64EncodedString() ?? ""
             let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
@@ -179,9 +186,12 @@ class ContactManager {
                 postalAddresses: encryptedPostalAddresses
             )
             
+            if currentDepth > 0 {
+                newContact.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            }
             self.modelContext.insert(newContact)
         }
-        
+
         try self.modelContext.save()
         self.syncShareIndex()
     }
@@ -194,8 +204,8 @@ class ContactManager {
     
     /// Save a new custom contact or update an existing contact.
     /// - Parameter contact: Custom contact. Thread safe.
-    ///
-    func save(contact: Contact.Draft) throws {
+    /// - Parameter currentDepth: Secure Mode depth at creation time. 0 = true layer (default).
+    func save(contact: Contact.Draft, currentDepth: Int = 0) throws {
         let encryptedIdentifier = contact.identifier
         let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedFamilyName = try self.cryptoManager.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
@@ -329,12 +339,15 @@ class ContactManager {
                 encryptionScheme: EncryptionScheme.v2_hybridPQ.rawValue
             )
             
+            if currentDepth > 0 {
+                newContact.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            }
             self.modelContext.insert(newContact)
-            
+
             for key in contact.contactPublicKeys {
                 try? self.update(key: key, for: newContact.identifier)
             }
-            
+
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
         }
 

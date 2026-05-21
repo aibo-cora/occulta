@@ -27,8 +27,17 @@ extension Manager {
         private(set) var state: State
         private(set) var currentDepth: Int = 0
 
-        var requiresPIN:    Bool { self.state != .noPIN  }
+        var requiresPIN:  Bool { self.state != .noPIN }
         var isRestricted: Bool { self.currentDepth > 0 }
+
+        /// Date of the most recent successful PIN verification. In-memory only — nil after kill.
+        /// Used by `OccultaApp` to skip the PIN prompt within the grace period.
+        private(set) var lastUnlockDate: Date? = nil
+
+        /// Record a successful authentication. Call from `PINEntry.onNormal` and `onDuress`.
+        func recordUnlock() {
+            self.lastUnlockDate = Date()
+        }
 
         // MARK: - Private
 
@@ -271,6 +280,17 @@ extension Manager {
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)
             else { return true }
             return value >= depth
+        }
+
+        // MARK: - Safe vault entries
+
+        /// Returns true if the vault entry is visible at the current depth.
+        func isEntryVisible(_ entry: VaultEntry) -> Bool {
+            guard let data = entry.visibleThroughDepth else { return true }
+            guard let decrypted = data.decrypt(),
+                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return true }
+            return value >= self.currentDepth
         }
 
         // MARK: - Private

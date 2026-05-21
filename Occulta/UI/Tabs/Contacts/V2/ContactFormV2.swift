@@ -77,22 +77,26 @@ extension Contact {
                             EmailSectionRowsV2(contact: self.$contact)
                         }
 
-                        FormSectionV2(header: "VISIBILITY") {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Private contact")
-                                        .font(.system(size: 15))
-                                    Text("Hidden in alternate view")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
+                        // VISIBILITY only applies at depth 0. At depth > 0 the contact
+                        // inherits its visibility from the depth stamp set at creation.
+                        if !self.security.isRestricted {
+                            FormSectionV2(header: "VISIBILITY") {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Private contact")
+                                            .font(.system(size: 15))
+                                        Text("Hidden in alternate view")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Toggle("", isOn: self.$isSensitive)
+                                        .labelsHidden()
+                                        .tint(Color.occultaDanger)
                                 }
-                                Spacer()
-                                Toggle("", isOn: self.$isSensitive)
-                                    .labelsHidden()
-                                    .tint(Color.occultaDanger)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
                         }
 
                         if self.isCreate {
@@ -121,8 +125,15 @@ extension Contact {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Save") {
-                            try? self.contactManager.save(contact: self.contact)
-                            try? self.security.setVisibility(for: self.contact.identifier, isSensitive: self.isSensitive)
+                            try? self.contactManager.save(contact: self.contact,
+                                                          currentDepth: self.security.currentDepth)
+                            // setVisibility stamps visibleThroughDepth = 0 (sensitive) or nil
+                            // (safe). This depth-0 classification only makes sense when at the
+                            // true layer; at depth > 0 the depth stamp from save() is correct.
+                            if self.security.currentDepth == 0 {
+                                try? self.security.setVisibility(for: self.contact.identifier,
+                                                                 isSensitive: self.isSensitive)
+                            }
                             self.dismiss()
                         }
                         .tint(Color.occultaAccent)
