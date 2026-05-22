@@ -141,6 +141,9 @@ struct ContactClassification: View {
     }
 
     private func save() {
+        // Never persist classification changes while restricted. The coercer must
+        // not be able to reclassify contacts from within the duress view.
+        guard !self.security.isRestricted else { return }
         let safeIDs = Set(self.contacts.map { $0.identifier }).subtracting(self.sensitiveIDs)
         try? self.security.updateSafeContacts(safeIDs)
     }

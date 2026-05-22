@@ -144,6 +144,56 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] **[design]** "Deactivate Secure Mode" sheet calls `verify()` internally (via `PINEntry` in `.verify` mode), then `onNormal` calls `deactivateSecureMode(confirmingNormalPIN:)` which calls `PINManager.checkVerifier` again — double-verification plus counter mutation. Wrong attempts in this sheet increment `wrongPINCount` and can trigger wipe. Replace with a verify-without-counters path using `checkNormalPIN`, same as the activate flow's phase 1. Requires either a new `PINEntry` mode or calling `checkNormalPIN` directly in the sheet.
 - [x] **[design]** "Enable PIN" toggle is interactive in `.active` and `.duress` states, but `deactivatePIN` throws `.invalidStateTransition` for both — the sheet opens, the user enters their PIN, and nothing visibly happens. Disable the toggle (`.disabled(true)`) when `state == .active || state == .duress` so the interaction is blocked at the UI layer. This is not a security issue (state machine is correct), but it is a silent failure in the current UX.
 - [x] **[security]** `activateSecureMode` must validate that the proposed duress PIN does not open any existing normal verifier. Currently no collision check — if duress PIN == normal PIN, `verify()` always matches normal first and duress is never triggerable. Validate with `PINManager.checkVerifier` (not `verify()`) before building the duress verifier; reject with a user-facing error if any existing verifier opens.
+- [ ] **[design — pre-ship]** `Enable PIN` toggle must be interactive at every depth, including duress. The current disabled state in `.duress` is a tell — a coercer who notices the toggle is greyed out knows the app is in a protected state distinct from `.pinOnly`. Enabling it trivially is not safe either: the Settings sheet currently calls `security.verify()` internally, so entering the normal PIN from `.duress` would silently transition state to `.active` at depth 0, breaking duress.
+
+  **Chosen design — sticky depth with `appLockEnabled`:**
+
+  The insight is to decouple the PIN gate from depth routing. "Disable PIN" does not mean "forget all verifiers" — it means "lower the gate while remembering where we are." Verifiers remain intact.
+
+  **`AppLayerConfig` additions:**
+  - `persistedDepth: Data` — encrypted `Int`, **always non-nil**. Defaults to `encrypt(0)` on first config write. Value is `encrypt(currentDepth)` at the moment PIN is disabled; reset to `encrypt(0)` when PIN is re-enabled at depth 0. Because it is always present and always the same ciphertext size, a forensic examiner cannot infer whether the user is in a special state from its presence or size alone — only its value carries meaning, and that value is encrypted.
+  - `appLockEnabled: Bool` — plaintext flag controlling whether OccultaApp shows the PIN gate on scene activation. `true` in all normal states; `false` only during the pin-disabled window.
+
+  **Disable PIN from depth N (`disablePINFromCurrentDepth(confirmingPIN:)`):**
+  1. Check entered PIN against `sealedNormalVerifiers[currentDepth]` via `checkCurrentLayerEntryPIN` — no `verify()`, no counter mutation, no state transition.
+  2. On pass: write `persistedDepth = encrypt(currentDepth)`, set `appLockEnabled = false`. Verifiers are left untouched.
+  3. App is now PIN-free, opens directly to depth-N content. Coercer sees: toggle OFF, no PIN required, decoy content. Satisfied.
+
+  **Re-enable PIN (enter + confirm — same UX as always):**
+  PINEntry in setup mode collects two matching entries and delivers the confirmed PIN string to Settings. Settings calls `reEnablePIN(pin:)` on `Manager.Security`, which:
+  1. Checks the PIN against all existing `sealedNormalVerifiers`. If match found at depth K: set `appLockEnabled = true`, write `persistedDepth = encrypt(K)`, set `currentDepth = K`. No new verifier written.
+  2. If no match: create new verifier at `persistedDepth`'s current depth, set `appLockEnabled = true`.
+
+  This preserves identical UX (enter + confirm) while silently routing the real user back to depth 0 via their normal PIN and the coercer back to depth 1 via their duress PIN. Neither sees any difference in the interaction.
+
+  **App launch when `appLockEnabled = false`:**
+  OccultaApp skips the PIN overlay, decrypts `persistedDepth`, sets `currentDepth` from it, and opens directly to that depth's content.
+
+  **Why `persistedDepth` is always non-nil:** a field that is nil in normal operation and non-nil only when PIN has been force-disabled is itself a forensic tell — its mere presence reveals the coerced window occurred. Always writing it (defaulting to `encrypt(0)`) means forensic snapshots always show the same field structure regardless of state. The encrypted value `encrypt(0)` vs `encrypt(1)` is indistinguishable without the SE key.
+
+- [x] **[design — pre-ship]** `Settings → Security` appearance in `.duress` is wrong. The duress experience must be indistinguishable from `.pinOnly` — the coercer must believe Secure Mode was never activated. Correct state table:
+
+  | State | Enable PIN toggle | "Learn more" / Activate section | "Deactivate Protection" |
+  |---|---|---|---|
+  | `.noPIN` | enabled | shown (dimmed, blocked) | hidden |
+  | `.pinOnly` | enabled | shown | hidden |
+  | `.duress` | **disabled** | **shown** | **hidden** |
+  | `.active` | disabled | hidden | shown |
+
+  **Toggle disabled in `.duress`:** Load-bearing, not cosmetic. PIN cannot be removed while Secure Mode is active — this is correct in both `.active` and `.duress`. More critically: if the toggle were enabled, opening it would present a `PINEntry` sheet that calls `security.verify()` internally. Entering the normal PIN in `.duress` triggers the `.normal` route and transitions state to `.active`, breaking duress and silently exiting the decoy view. Even if we substituted `checkNormalPIN` to avoid the state transition: correct PIN + sheet closes + PIN still enabled + nothing changes = a suspicious silent failure that tells the coercer something is wrong. Toggle disabled is the only safe option.
+
+  **"Learn more" section must be shown in `.duress`:** Hiding it (the current bug) is a direct tell — `.active` is the only state that hides it, so a coercer who knows the UI sees `.active` unambiguously. Showing it in `.duress` makes the screen identical to `.pinOnly`. In Phase 2, the button works: it opens `SecureModeSetupFlow`, which creates a new layer.
+
+  **"Deactivate Protection" must be hidden in `.duress`:** Showing it (the current bug — `.duress` is included in the condition alongside `.active`) is the exact signature of `.active` state and directly reveals Secure Mode is on.
+
+  **Fix in `Settings.swift`:**
+  ```swift
+  // "Learn more" — add .duress
+  if state == .noPIN || state == .pinOnly || state == .duress { ... }
+
+  // "Deactivate" — remove .duress
+  if state == .active { ... }
+  ```
 
 ### Contact classification
 

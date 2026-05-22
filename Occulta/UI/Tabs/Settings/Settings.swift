@@ -152,7 +152,7 @@ struct Settings: View {
                         .disabled(self.security.state == .active || self.security.state == .duress)
                 }
 
-                if self.security.state == .noPIN || self.security.state == .pinOnly {
+                if self.security.state == .noPIN || self.security.state == .pinOnly || self.security.state == .duress {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Learn how you can protect your data.")
