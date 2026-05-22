@@ -269,18 +269,18 @@ Filter at depth N: show entries where `visibleThroughDepth == nil || decrypt(vis
 
 ## Step 4 — Blob (Activation / Deactivation)
 
-- [ ] `SecureMode+Blob` — each stack payload serialises:
+- [ ] `SecureMode+Blob` — payload content serialization (crypto primitives `deriveBlobKey`, `bucketSize`, and no-op maintenance are ✅ done; stack format, contact/PEK serialization, and seal/unseal API remain). Each stack payload serialises:
   - Per sensitive contact: persistent model ID + plaintext field data re-encrypted under blob key
   - Sensitive contact identity public keys
   - **Vault PEKs only** (not vault file data). Each vault entry whose `visibleThroughDepth < currentDepth` (i.e. belongs to the layer being locked) has its Per-Entry Key unwrapped and re-wrapped under the blob key. Vault files remain on disk encrypted with their PEKs — locked in-place without moving file data. Blob size is independent of vault storage size. Entries with `nil` or `visibleThroughDepth >= currentDepth` are not serialised — they remain accessible at the current depth.
   - Prekeys are not serialised — locked in-place alongside contact rows; fresh prekeys generated on restore.
 - [ ] Blob is a stack of independently-encrypted payloads in a single file. Push appends; pop removes outermost. Partial-read reveals nothing about other layers.
-- [ ] Blob encryption: `AES-GCM(HKDF(seKey, info: "blob-key"), content)`. SE binding prevents offline attacks. No PBKDF2 (same rationale as PIN verifier).
-- [ ] Each payload padded to nearest power-of-2 bucket boundary before encryption. File size reveals only bucket tier, not contact/vault count.
-- [ ] Blob file: no header, no magic bytes, no version field, no layer count. UUID filename with `.occbak` extension — indistinguishable from vault backup.
-- [ ] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install."
+- [x] Blob encryption: `AES-GCM(HKDF(seKey, info: "blob-key"), content)`. SE binding prevents offline attacks. No PBKDF2 (same rationale as PIN verifier). Implemented: `Blob.deriveBlobKey(from:)` in `SecureMode+Blob.swift`.
+- [x] Each payload padded to nearest power-of-2 bucket boundary before encryption. File size reveals only bucket tier, not contact/vault count. Implemented: `Blob.bucketSize(for:)`.
+- [x] Blob file: no header, no magic bytes, no version field, no layer count. UUID filename with `.occbak` extension — indistinguishable from vault backup. Implemented in `writeNoOpBlob(to:)`.
+- [x] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install." Implemented: `Blob.maintainNoOpBlob()`, called from `OccultaApp.init()` behind the `secureMode` feature flag.
 - [ ] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. Blob exists with natural timestamps before first activation.
-- [ ] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events.
+- [x] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events. `maxAge = 86_400`; `isStale(_:)` gates every `maintainNoOpBlob()` call.
 - [ ] **Activation sequence — key rotation, no row deletion:**
   1. Generate new SE key for this layer
   2. Read safe contact IDs while old SE key is live
@@ -303,8 +303,8 @@ Filter at depth N: show entries where `visibleThroughDepth == nil || decrypt(vis
   - Activation failure before old SE key deletion → safe to retry from scratch
   - Activation failure after old SE key deletion → must complete forward (no rollback possible; resume is the only path)
   - Runs in a background `Task`; user sees a progress indicator; app backgrounding suspends and resumes on next foreground
-- [ ] Blob stored in App Group container (`group.com.occulta.shared`) with `.completeFileProtection`.
-- [ ] **[security]** Set `isExcludedFromBackup = true` (`URLResourceValues`) on the blob file immediately after creation. Without this, the blob is included in iCloud backups by default. A forensic examiner with iCloud credentials or a court order can recover the blob from a backup taken before a wipe, reversing the wipe entirely. `.completeFileProtection` does not prevent iCloud backup.
+- [x] Blob stored in App Group container (`group.com.occulta.shared/blobs/`) with `.completeFileProtection`. `blobDirectory()` creates the directory if absent; `payload.write(to:options:.completeFileProtection)` sets the attribute at creation.
+- [x] **[security]** Set `isExcludedFromBackup = true` (`URLResourceValues`) on the blob file immediately after creation. Without this, the blob is included in iCloud backups by default. A forensic examiner with iCloud credentials or a court order can recover the blob from a backup taken before a wipe, reversing the wipe entirely. `.completeFileProtection` does not prevent iCloud backup. Implemented in `writeNoOpBlob(to:)`.
 
 ---
 

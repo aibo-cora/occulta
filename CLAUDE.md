@@ -103,6 +103,8 @@ Privacy and Security are paramount. There can be no vulnerabilities. Consider al
 - `PortingManager` — device migration
 - `IdentityChallenge.Manager` — three-phase identity verification lifecycle (create / respond / verify)
 - `IdentityChallenge.Coordinator` — `@Observable` bridge between the Manager and SwiftUI sheets
+- `Manager.Security` — PIN lock state machine (`.noPIN / .pinOnly / .active / .duress`), verifier management, depth-aware contact/vault filtering, coercion-resistant gate (`appLockEnabled`). Owns `AppLayerConfig` via its own `ModelContext`. Gated by `secureMode` feature flag.
+- `Manager.Blob` — forensic deniability maintenance: creates and refreshes a no-op `.occbak` file on every install so its creation timestamp predates Secure Mode activation. Provides `deriveBlobKey(from:)` and `bucketSize(for:)` shared with the Step 4 activation sequence.
 
 **UI layer** — SwiftUI, tab-based. Views have no direct crypto knowledge; they go through managers.
 
@@ -143,6 +145,8 @@ SealedPayload {
 
 Routing: `buildOwnedBasket` decrypts the outer bundle via `decryptSealed`; if `sealed.identityChallenge != nil` it hands off to `IdentityChallenge.Coordinator.handleInbound` and returns `nil` (no basket shown). The coordinator re-decrypts independently as defense-in-depth.
 
+**Secure Mode:** PIN verifiers use `AES-GCM(HKDF(seKey, info: label ∥ pin), sentinel)` bound to a dedicated SE key (`"app.layer.key.occulta.v1"`, tag opaque to forensic tools). Normal and duress verifiers are independent. `Manager.Security` derives state from `AppLayerConfig` on every `init()` — never stores state as a plaintext flag. `persistedDepth` (encrypted signed Int on `AppLayerConfig`) encodes both routing depth and gate state: `N ≥ 0` = gate active at depth N; `-(N+1)` = gate inactive at depth N (coercion path). Blob key: `HKDF-SHA256(seKey, info: "blob-key")` — domain-separated from all PIN verifier keys.
+
 ### Key Exchange Flow
 
 1. `ExchangeManager` starts MCNearbyServiceAdvertiser + MCNearbyServiceBrowser (Bonjour services `_peer-data-ex._tcp/_udp`)
@@ -174,6 +178,7 @@ Unit tests use `TestKeyManager` (in-memory P-256, no SE access) injected via `Ke
 Runtime flags in `features.plist`, read via `FeatureFlags.isEnabled(_:)` at launch. Current notable flags:
 - `signature` — ECDSA signing tab (off)
 - `useComposableMessage` / `useMultipleRecipientMessageFormat` — message composer (on)
+- `secureMode` — PIN lock, duress PIN, depth-aware filtering, and blob maintenance (default `true`; set `false` to develop without Secure Mode friction — `Manager.Security` stays in `.noPIN` permanently and `Manager.Blob.maintainNoOpBlob()` is skipped)
 
 ### Branches
 
