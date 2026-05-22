@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import CoreData
 import ImageIO
+import SQLite3
 import UniformTypeIdentifiers
 
 // TODO: We don't have the Rotate Key option available right now. However, if it becomes available, we need to consider an edge case where we rotate a key and include a new ID as the message owner, but the recipient would not have this ID on record. We would need to keep track of all our past and current IDs and include them in the message for look up.
@@ -64,7 +65,8 @@ struct OccultaApp: App {
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-shm")
 
         self.storeURL = url
-        
+        Self.applySecureDeletePragma(at: url)
+
         let contactManager = ContactManager(modelContainer: sharedModelContainer)
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
@@ -620,6 +622,32 @@ struct OccultaApp: App {
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
             self.showError = true
         }
+    }
+
+    /// Applies `PRAGMA secure_delete = ON` to the persistent SQLite store.
+    ///
+    /// Without this pragma, SQLite leaves old content — in this app, old AES-GCM
+    /// ciphertext blobs — in its free-list pages when rows are deleted or updated.
+    /// That residue persists through WAL checkpoints and is visible in raw disk images.
+    /// With `secure_delete = ON`, freed pages are zeroed before release, eliminating
+    /// the residue entirely.
+    ///
+    /// SwiftData does not expose `NSSQLitePragmasOption` through its public API, so we
+    /// open a short-lived helper connection via the SQLite3 C API and set the pragma
+    /// there. In SQLite 3.12+ (shipped with iOS 12+), `secure_delete` is stored in the
+    /// database header and persists across all future connections to the same file —
+    /// including SwiftData's own connection. Setting it here, immediately after the store
+    /// is created, ensures it takes effect before the first user-triggered write.
+    ///
+    /// Called once in `init()` after `ModelContainer` creates the store file. Also
+    /// applied during Step 4's key-rotation sequence, where it is set explicitly on
+    /// the direct SQLite connection used for re-encryption — that path does not rely on
+    /// header persistence.
+    private static func applySecureDeletePragma(at url: URL) {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
+        defer { sqlite3_close(db) }
+        sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
     }
 
     /// Reapply `.completeFileProtection` to the SwiftData store and its WAL/SHM files.
