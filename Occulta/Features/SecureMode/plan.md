@@ -217,24 +217,27 @@ func updateSafeContacts(_ ids: Set<String>) throws
 
 Contact visibility is tracked per-contact, not in a central list on `AppLayerConfig`. A single encrypted field on `Contact.Profile` encodes depth-aware visibility, scales to the Phase 2 stack without schema changes, and produces no central field whose size can be compared against total row count.
 
-**`visibleThroughDepth: Data?`** on `Contact.Profile` — encrypted `Int?`:
-- `nil` — visible at all depths (existing contacts classified as safe at activation)
+**`visibleThroughDepth: Data?`** on `Contact.Profile` — encrypted `Int`, **never nil in new code**:
+- `Int.max` — visible at all depths (safe contact; sentinel written for all depth-0 safe contacts)
 - `0` — visible at true layer only (sensitive contact, hidden from all duress depths)
 - `N` — visible at depths 0 through N; hidden at N+1 and deeper
 
-Filter at depth N: show contacts where `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= N`.
+`nil` is treated as a legacy pre-Secure-Mode value and migrated to `encrypt(Int.max)` at activation. No new code ever writes nil.
 
-**Write rule:** contacts created or exchanged at depth N > 0 receive `visibleThroughDepth = N`, not `nil`. This means they are visible at the true layer and at the depth where they were added, but invisible to any deeper layer created later. Contacts at depth 0 keep `nil` (safe) or receive `0` (sensitive) via the classification step.
+Filter at depth N: show contacts where `(decrypt(visibleThroughDepth) ?? Int.max) >= N`.
 
-Phase 1 writes `nil` (safe), `0` (sensitive), or `1` (created/exchanged at depth 1). Phase 2 uses the full integer range without schema migration.
+**Write rule:** contacts created or exchanged at depth 0 always receive `encrypt(Int.max)` (safe) or `encrypt(0)` (sensitive). Contacts created at depth N > 0 receive `encrypt(N)`. No contact ever gets a nil field after the first activation migration.
 
-**Forensic profile:** `AES-GCM(nil)`, `AES-GCM(0)`, `AES-GCM(1)` all produce identically-sized ciphertexts — no size-based count inference. No central list to compare against total row count. The primary residual tell is the mass `ZMODIFICATIONDATE` update on safe contacts at activation time (Step 4 re-encrypts their fields under the new SE key). Mitigated by also touching hidden contacts' records with a no-op write at activation, making all N records share the same modification timestamp — no count inference possible.
+Phase 1 writes `encrypt(Int.max)` (safe), `encrypt(0)` (sensitive), or `encrypt(1)` (created/exchanged at depth 1). Phase 2 uses the full integer range without schema migration.
+
+**Forensic profile:** `AES-GCM(Int.max)`, `AES-GCM(0)`, `AES-GCM(1)` all produce identically-sized ciphertexts — no size-based count inference. Critically, every contact row always has a non-nil encrypted blob in this column regardless of classification — a NULL vs non-NULL count in a raw SQLite dump cannot reveal how many contacts are hidden. No central list to compare against total row count. The primary residual tell is the mass `ZMODIFICATIONDATE` update on safe contacts at activation time. Mitigated by touching all N contact records in a single batch write at activation (re-encrypting fields under the new DB key for safe contacts; writing `encrypt(Int.max)` to the `visibleThroughDepth` column of any legacy nil contacts), making all records share the same modification timestamp — no count inference possible.
 
 - [x] `isSafeContact(_:)`, `safeContactIDs()`, `updateSafeContacts(_:)` on `Manager.Security` updated to read `visibleThroughDepth` from contact records, not from `AppLayerConfig`
-- [x] `visibleThroughDepth: Data?` added to `Contact.Profile` model (encrypted `Int?`, default nil)
+- [x] `visibleThroughDepth: Data?` added to `Contact.Profile` model (encrypted `Int`, default nil — migrated to `encrypt(Int.max)` at first activation)
 - [x] User chooses contact type (safe / sensitive) during contact creation — VISIBILITY section in `ContactFormV2`; no Secure Mode framing; shown in both create and edit modes
 - [x] At Secure Mode activation: review step shows existing contacts and lets the user confirm or change classifications before activating. This is step 3 of the 4-step activation sheet (`SecureModeSetupFlow`).
 - [x] `safeContactIDsEncrypted` removed from `AppLayerConfig` and all call sites
+- [ ] **[security]** All contact creation / import paths (`ContactFormV2`, `ContactsListV2`, `ExchangeResult`) must write `encrypt(Int.max)` for safe contacts instead of leaving `visibleThroughDepth = nil`. Currently these paths only write when depth > 0; depth-0 safe contacts leave the field nil. Any nil field left after activation is a forensic signal — a raw SQL dump shows NULL vs blob.
 
 ### Decoy view
 
@@ -250,58 +253,72 @@ Phase 1 writes `nil` (safe), `0` (sensitive), or `1` (created/exchanged at depth
 
 Vault entries follow the same depth-aware visibility model as contacts. Each layer starts with an empty vault; entries added there propagate up to the true layer but are invisible to any deeper layer created later.
 
-**`visibleThroughDepth: Data?`** on `VaultEntry` — encrypted `Int?`, same encoding as `Contact.Profile`:
-- `nil` — visible at all depths (legacy / pre-Secure-Mode entries; can be set explicitly for entries that should appear in all layers)
-- `N` — visible at depths 0 through N; hidden at N+1 and deeper
+**`visibleThroughDepth: Data?`** on `VaultEntry` — encrypted `Int`, **never nil in new code**:
+- `encrypt(0)` — belongs to the true layer (depth 0); hidden at depth 1 and deeper
+- `encrypt(N)` — visible at depths 0 through N; hidden at N+1 and deeper
 
-**Write rule:** `addEntry(...)` receives `currentDepth` and sets `visibleThroughDepth = currentDepth`. At depth 0 the field is `nil` (visible everywhere) to preserve pre-activation vault access.
+`nil` is treated as a legacy pre-Secure-Mode value and migrated to `encrypt(0)` at activation — these entries were created before Secure Mode existed and belong to the real layer; they must be hidden from the duress view.
 
-Filter at depth N: show entries where `visibleThroughDepth == nil || decrypt(visibleThroughDepth) >= N`. Identical to the contact filter.
+**Write rule:** `addEntry(...)` always writes `encrypt(currentDepth)` — even at depth 0. No entry ever gets a nil field after the activation migration.
 
-- [x] `visibleThroughDepth: Data?` added to `VaultEntry` model (default `nil`, lightweight SwiftData migration)
-- [x] `isEntryVisible(_ entry: VaultEntry) -> Bool` on `Manager.Security` — takes the already-fetched entry directly, applies `value >= currentDepth` rule; mirrors the contacts `isVisible` helper
+Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`.
+
+- [x] `visibleThroughDepth: Data?` added to `VaultEntry` model (default `nil`, lightweight SwiftData migration — migrated to `encrypt(0)` at first activation)
+- [x] `isEntryVisible(_ entry: VaultEntry) -> Bool` on `Manager.Security` — takes the already-fetched entry directly, applies `(value ?? 0) >= currentDepth` rule; mirrors the contacts `isVisible` helper
 - [x] `Vault+Tab` computes `visibleEntries` filtered through `security.isEntryVisible` when `isRestricted`; filters attention section (`affected`) by `visibleIDs` as well — no hidden-entry labels leak through the recovery health display
-- [x] `Vault+Manager.addEntry(...)` accepts `currentDepth: Int = 0`; stamps `entry.visibleThroughDepth = encrypt(currentDepth)` when `> 0`; default preserves existing call sites
-- [x] `Vault+Manager+Backup.swift` — audited; imported entries leave `visibleThroughDepth = nil` (visible everywhere). Correct: backups originate from the true layer.
-- [ ] **Blob interaction (Step 4):** blob serialises PEKs for entries with `visibleThroughDepth < currentDepth` at activation (entries that belong to the layer being locked). Entries with `nil` or `value >= currentDepth` remain accessible and are not serialised.
+- [ ] `Vault+Manager.addEntry(...)` — currently writes `encrypt(currentDepth)` when `> 0`, nil when 0. Must always write `encrypt(currentDepth)` regardless of depth so no nil fields exist after activation.
+- [x] `Vault+Manager+Backup.swift` — audited; imported entries leave `visibleThroughDepth = nil`. Migration at next activation will stamp them `encrypt(0)` (real-layer entries, correct).
+- [ ] **Blob interaction (Step 4):** blob serialises PEKs + `ShardDistributionMetadata` for **all vault entries with `visibleThroughDepth < currentActivationDepth + 1`** (i.e. all real-layer entries hidden from the duress view). In Phase 1 this means all entries with `decrypt(visibleThroughDepth) == 0`. Entries visible at the new depth remain accessible and are not serialised. Unwrapping PEKs requires the vault key (biometric-gated); activation must evaluate an `LAContext` and request Face ID / passcode before the blob seal step.
 
 ---
 
 ## Step 4 — Blob (Activation / Deactivation)
 
-- [ ] `SecureMode+Blob` — payload content serialization (crypto primitives `deriveBlobKey`, `bucketSize`, and no-op maintenance are ✅ done; stack format, contact/PEK serialization, and seal/unseal API remain). Each stack payload serialises:
-  - Per sensitive contact: persistent model ID + plaintext field data re-encrypted under blob key
-  - Sensitive contact identity public keys
-  - **Vault PEKs only** (not vault file data). Each vault entry whose `visibleThroughDepth < currentDepth` (i.e. belongs to the layer being locked) has its Per-Entry Key unwrapped and re-wrapped under the blob key. Vault files remain on disk encrypted with their PEKs — locked in-place without moving file data. Blob size is independent of vault storage size. Entries with `nil` or `visibleThroughDepth >= currentDepth` are not serialised — they remain accessible at the current depth.
+- [x] `SecureMode+Blob` — payload types (`BlobPayload`, `ContactBlobRecord`, `VaultPEKRecord`) and `seal` / `unseal` API implemented in `SecureMode+Blob.swift`. Each stack payload serialises:
+  - **Per sensitive contact:** full `Contact.Draft` (all decrypted fields including ML-KEM material) + decrypted `signedAttributes` (shard records held as trustee, `nil` if contact was never a trustee).
+  - **Per real-layer vault entry:** raw 32-byte PEK + `ShardDistributionMetadata` (SSS trustee relationships, `nil` if no split configured). Vault file data stays on disk encrypted with its PEK — only the key travels in the blob. Blob size is independent of vault storage size.
   - Prekeys are not serialised — locked in-place alongside contact rows; fresh prekeys generated on restore.
+  - `CustodyShard` records (shards we hold for others) are not serialised — their accessibility in duress mode is a deferred decision.
 - [ ] Blob is a stack of independently-encrypted payloads in a single file. Push appends; pop removes outermost. Partial-read reveals nothing about other layers.
 - [x] Blob encryption: `AES-GCM(HKDF(seKey, info: "blob-key"), content)`. SE binding prevents offline attacks. No PBKDF2 (same rationale as PIN verifier). Implemented: `Blob.deriveBlobKey(from:)` in `SecureMode+Blob.swift`.
 - [x] Each payload padded to nearest power-of-2 bucket boundary before encryption. File size reveals only bucket tier, not contact/vault count. Implemented: `Blob.bucketSize(for:)`.
 - [x] Blob file: no header, no magic bytes, no version field, no layer count. UUID filename with `.occbak` extension — indistinguishable from vault backup. Implemented in `writeNoOpBlob(to:)`.
 - [x] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install." Implemented: `Blob.maintainNoOpBlob()`, called from `OccultaApp.init()` behind the `secureMode` feature flag.
-- [ ] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. Blob exists with natural timestamps before first activation.
+- [x] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. `rewriteNoOpBlob()` added to `Manager.Blob`; subscribed in `OccultaApp` gated on `security.state == .noPIN || .pinOnly` — never rewrites a real payload. Blob timestamps mirror normal app activity before first activation.
 - [x] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events. `maxAge = 86_400`; `isStale(_:)` gates every `maintainNoOpBlob()` call.
-- [ ] **Activation sequence — key rotation, no row deletion:**
-  1. Generate new SE key for this layer
-  2. Read safe contact IDs while old SE key is live
-  3. Serialise sensitive contacts (not soft-deleted, not in safe set) → blob payload
-  4. Serialise vault PEKs → blob payload
-  5. Re-encrypt safe contacts' fields under new DB key
-  6. `PRAGMA wal_checkpoint(TRUNCATE)` — zero the WAL before the point of no return; eliminates re-encryption record
-  7. Delete old SE key — sensitive rows locked in-place (point of no return)
-  8. Build verifiers; update `AppLayerConfig`
+- [ ] **Activation sequence — staged key rotation, old key deleted last:**
+  1. State guard + PIN verification (normal PIN check, duress PIN collision check) — abort immediately on failure, no side effects.
+  2. Evaluate `LAContext` for biometrics — required to unwrap vault PEKs. Abort if biometrics fail; nothing has been written yet.
+  3. Create staged DB key: new SE key at tag `"local.db.se.key.occulta.staged"` + new 32-byte random at Keychain account `"local.db.random.key.occulta.staged"`. Derive `stagedDBKey` from these. **Old canonical key still valid throughout.**
+  4. Decrypt all contacts using the old canonical DB key (`createHybridLocalEncryptionKey()` still reads old canonical tags). Partition into sensitive (not in safe set) and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes`).
+  5. Migrate `visibleThroughDepth`: write `encrypt(Int.max)` to all safe contacts with nil field; write `encrypt(0)` to all vault entries with nil field. This batch write unifies `ZMODIFICATIONDATE` across all rows — no activation timestamp fingerprint.
+  6. Unwrap vault PEKs for all real-layer entries (`decrypt(visibleThroughDepth) == 0`) using the biometric vault key from step 2. Build `VaultPEKRecord` for each (includes `ShardDistributionMetadata`).
+  7. Seal blob: `Manager.Blob.seal(BlobPayload(contacts: sensitiveRecords, vaultPEKs: pekRecords), blobKey:)`. Replaces the no-op blob.
+  8. Re-encrypt safe contacts' fields under `stagedDBKey` using explicit AES-GCM (not via the standard `Manager.Crypto` path, which still reads the old canonical key). Save to DB.
+  9. `PRAGMA wal_checkpoint(TRUNCATE)` on a direct SQLite connection — zero the WAL before key rotation. Eliminates any plaintext re-encryption record from WAL pages.
+  10. Promote staged key to canonical: `SecItemUpdate` to rename staged SE tag → canonical tag; `SecItemUpdate` (or delete + add) to replace canonical random with staged random. **Old canonical key is now uncomputable — sensitive rows locked in-place.**
+  11. Delete staged artefacts (old canonical SE key + old random) that are now superseded. Build duress verifier; write `AppLayerConfig`; transition state → `.active`.
+
+  **Old SE key is deleted in step 11, after all data has been written in steps 8–9.** If the app crashes before step 10, the old key is still canonical and the app recovers cleanly on next launch. The crash window where data is in an inconsistent state is steps 10–11 (milliseconds); `SecureModeOperation` (below) will close this gap in a future iteration.
+
 - [ ] **Deactivation sequence:**
-  1. Decrypt blob payload (using current SE key — the one generated during activation)
-  2. For each (persistentModelID, data): fetch row by ID, UPDATE fields re-encrypted under new DB key
-  3. Generate new vault SE key; restore vault PEKs via UPDATE
-  4. Generate fresh prekeys for restored contacts
-  5. Remove blob payload; update `AppLayerConfig` verifiers
-  6. Delete the layer SE key
+  1. Verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
+  2. `unseal(blobKey:)` → `BlobPayload`. Abort if blob is missing or decryption fails.
+  3. Evaluate `LAContext` for biometrics — required to re-wrap vault PEKs under the new vault key.
+  4. Create staged DB key (same pattern as activation step 3) to derive the new key for re-encrypting restored contacts.
+  5. Restore sensitive contacts: for each `ContactBlobRecord`, fetch the existing `Contact.Profile` row by identifier, re-encrypt all fields under `stagedDBKey`, restore `signedAttributes`. Update `visibleThroughDepth` to `encrypt(Int.max)` (contact is safe again at the real layer).
+  6. Restore vault PEKs: for each `VaultPEKRecord`, re-wrap `pekBytes` under the new biometric vault key and update `VaultEntry.encryptedEntryKey`. Restore `shardDistribution`. Update `visibleThroughDepth` to `encrypt(0)` (entry belongs to real layer).
+  7. Generate fresh prekeys for all restored contacts.
+  8. `PRAGMA wal_checkpoint(TRUNCATE)`.
+  9. Promote staged key to canonical; delete superseded old key.
+  10. Restore no-op blob (write a fresh `rewriteNoOpBlob()` — real payload discarded).
+  11. Update `AppLayerConfig`: clear `sealedDuressVerifier`, write `persistedDepth(0, gateActive: true)`. Transition state → `.pinOnly`.
+
 - [ ] `SecureModeOperation` SwiftData record — tracks activation/deactivation stage. Written before operation begins, deleted on clean completion. All fields encrypted; record's existence must not reveal the operation type. **On next launch, incomplete record → automatic resume or rollback:**
   - Resume: re-enter the operation from the last completed stage (idempotent stage design required)
-  - Rollback: restore the previous verifier state, delete any partial blob payload, leave DB rows in their pre-operation encrypted state
-  - Activation failure before old SE key deletion → safe to retry from scratch
-  - Activation failure after old SE key deletion → must complete forward (no rollback possible; resume is the only path)
+  - Rollback: restore the previous verifier state, delete any partial blob payload, roll back staged key, leave DB rows in their pre-operation encrypted state
+  - Activation crash before step 10 (canonical tag update) → old key still valid → safe rollback
+  - Activation crash after step 10 → new key is canonical but verifiers not written → must complete forward
   - Runs in a background `Task`; user sees a progress indicator; app backgrounding suspends and resumes on next foreground
 - [x] Blob stored in App Group container (`group.com.occulta.shared/blobs/`) with `.completeFileProtection`. `blobDirectory()` creates the directory if absent; `payload.write(to:options:.completeFileProtection)` sets the attribute at creation.
 - [x] **[security]** Set `isExcludedFromBackup = true` (`URLResourceValues`) on the blob file immediately after creation. Without this, the blob is included in iCloud backups by default. A forensic examiner with iCloud credentials or a court order can recover the blob from a backup taken before a wipe, reversing the wipe entirely. `.completeFileProtection` does not prevent iCloud backup. Implemented in `writeNoOpBlob(to:)`.
@@ -366,14 +383,14 @@ The existing `sealedNormalVerifier` / `sealedDuressVerifier` fields become `seal
 
 **[security]** Array length directly encodes layer depth to a forensic examiner. A SQLite dump shows `sealedNormalVerifiers` as an array of N elements — N = layer count. Both arrays must be padded to a fixed maximum length (e.g. 8) with random entries of identical byte size to real verifiers on every write. The padding entries must be indistinguishable from real verifiers (same length AES-GCM ciphertext, randomly generated). `verify()` simply ignores entries that fail to open. A forensic examiner then always sees exactly 8 blobs per array on every install, regardless of actual depth.
 
-There is no `safeContactIDsPerLevel` array. Contact visibility across all depths is encoded in `Contact.Profile.visibleThroughDepth` (see Step 3). Filter at depth N: show contacts where `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= N`.
+There is no `safeContactIDsPerLevel` array. Contact visibility across all depths is encoded in `Contact.Profile.visibleThroughDepth` (see Step 3). Filter at depth N: show contacts where `(decrypt(visibleThroughDepth) ?? Int.max) >= N`.
 
 **Contact visibility invariants across layers:**
 
 - A contact with `visibleThroughDepth = K` is visible at all depths 0..K and hidden at K+1 and deeper. Visibility is always a contiguous range from depth 0 — a contact cannot be hidden at depth 1 but visible at depth 2.
-- When activating depth N+1, the user reviews contacts with `visibleThroughDepth >= N` (visible at current depth) and selects which should also be visible at N+1 (setting `visibleThroughDepth = N+1` or leaving at `nil`). Contacts not selected remain at their current value and become hidden at depth N+1.
-- New contacts created at any depth default to `visibleThroughDepth = nil` (visible at all depths). They were exchanged with openly; hiding them retroactively requires an explicit user action.
-- At activation, all N contact records receive a no-op write to unify `ZMODIFICATIONDATE` — prevents count inference from timestamp distribution.
+- When activating depth N+1, the user reviews contacts with `visibleThroughDepth >= N` (visible at current depth) and selects which should also be visible at N+1 (setting `visibleThroughDepth = N+1`; or retaining `encrypt(Int.max)` for contacts visible at all depths). Contacts not selected remain at their current value and become hidden at depth N+1.
+- New contacts created at any depth receive `encrypt(Int.max)` (depth 0, safe) or `encrypt(N)` (depth N > 0). No contact ever holds a nil field after the activation migration.
+- At activation, all N contact records receive a batch write to unify `ZMODIFICATIONDATE` — safe contacts get their fields re-encrypted under the new DB key; legacy nil `visibleThroughDepth` fields get `encrypt(Int.max)` stamped in the same pass. No separate count inference is possible from the timestamp distribution.
 
 ### `verify()` ordering at any depth
 
@@ -427,8 +444,9 @@ Disabling Secure Mode at depth N (i.e. calling `deactivateSecureMode` at depth N
 - **Counter resets on app kill. Partially mitigated by panic trigger.** `wrongPINCount` and `consecutiveDuressCount` are in-memory only. A coercer who kills and relaunches resets both counters, enabling unlimited PIN attempts. The SE hardware rate-limits verification operations, making brute-force expensive regardless of counter state. The panic trigger (Step 5, duress PIN × 3 design) provides a user-controlled wipe that does not depend on the wrong-PIN counter. A persistent encrypted attempt counter (stored in Keychain, decremented before each verification, with time-based reset) would close this gap entirely but adds complexity; deferred to Phase 2 threat review.
 - **Crash logs may capture sensitive data.** iOS crash logs contain stack traces and register snapshots. A crash during blob serialization, contact re-encryption, or PIN verification could capture plaintext field data or PIN string fragments. Crash logs survive device wipe and are included in iCloud backups. If any external crash reporting (Crashlytics, Sentry, etc.) is ever added, it must sanitize all contact field data before transmission. Currently no crash reporting is used — document this constraint explicitly so it is not accidentally introduced.
 - **SwiftData schema name is a forensic artifact. Mitigated.** Renaming `SecureModeConfig` to an opaque class name (Step 1) changes the table name to something non-descriptive. The schema fingerprint survives row deletion (store file is not deleted by `eraseAllData()`), but the table name no longer names the feature.
-- **SwiftData WAL captures re-encryption transitions. Mitigated.** Activation sequence step 6 runs `PRAGMA wal_checkpoint(TRUNCATE)` before SE key deletion, zeroing the WAL and eliminating the re-encryption timestamp record.
-- **Mass `ZMODIFICATIONDATE` update at activation is a deniability tell. Mitigated.** Re-encrypting safe contacts' fields under the new SE key at activation produces a mass timestamp update on a subset of contact rows — count inference possible by comparing updated rows against total row count. Mitigated by issuing a no-op write to all N contact records at activation, unifying `ZMODIFICATIONDATE` across the full table. No count inference is possible when every row shares the same modification timestamp.
+- **SwiftData WAL captures re-encryption transitions. Mitigated.** Activation sequence step 9 runs `PRAGMA wal_checkpoint(TRUNCATE)` before the staged key is promoted to canonical, zeroing the WAL and eliminating the re-encryption timestamp record.
+- **Mass `ZMODIFICATIONDATE` update at activation is a deniability tell. Mitigated.** Re-encrypting safe contacts' fields under the new DB key at activation produces a mass timestamp update. Mitigated by writing all N contact records in a single batch at activation (step 5) — safe contacts get full field re-encryption, sensitive contacts get a `visibleThroughDepth` stamp — so every row shares the same modification timestamp. No count inference is possible.
+- **`visibleThroughDepth` nil is a forensic tell. Mitigated.** A NULL vs non-NULL column value in a raw SQLite dump reveals which contacts are classified — even without decryption. Mitigated by always writing an encrypted value: safe contacts get `encrypt(Int.max)`, sensitive contacts get `encrypt(0)`. Legacy nil fields are migrated to `encrypt(Int.max)` or `encrypt(0)` in the activation batch write. After activation, no `visibleThroughDepth` field is ever nil.
 - **HKDF with PIN in the `info` field is non-standard. No mitigation planned.** `HKDF(inputKeyMaterial: seKey, info: label ∥ pin)` works correctly. Migrating to a more standard construction (PIN as IKM) would invalidate all existing verifiers. The current scheme has no known exploit; the finding is documented for external audits.
 - **PIN strings are not zeroed after use. Mitigated.** Replacing `[Int]` digit storage with a `Data`-backed buffer and zeroing with `memset` after routing (Step 2) removes PIN heap residue.
 - **Secure Mode raises the bar against coercion and mid-tier adversaries. It is not state-actor proof.**
