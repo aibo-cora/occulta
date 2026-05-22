@@ -67,6 +67,10 @@ struct OccultaApp: App {
         self.storeURL = url
         Self.applySecureDeletePragma(at: url)
 
+        if FeatureFlags.isEnabled(.secureMode) {
+            Manager.Blob.maintainNoOpBlob()
+        }
+
         let contactManager = ContactManager(modelContainer: sharedModelContainer)
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
