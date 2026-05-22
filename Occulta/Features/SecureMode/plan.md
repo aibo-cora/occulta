@@ -45,8 +45,14 @@ SE key prevents all off-device attacks. PBKDF2 was removed: it added ~1s of main
     var sealedNormalVerifier:     Data?   // nil → .noPIN
     var sealedDuressVerifier:     Data?   // nil → .pinOnly
     var wipeThresholdEncrypted:   Data?   // encrypted Int; default 3
+    var persistedDepth:           Data?   // always non-nil after first config write (see below)
 }
 ```
+
+`persistedDepth` encodes both routing depth and gate state in one encrypted signed Int:
+`N ≥ 0` = gate active at depth N (normal operation);  `-(N+1)` = gate inactive at depth N (coercion path).
+Always written as `encrypt(0)` on first config creation so field presence never leaks state.
+`readLockGate()` falls back to `(depth:0, gateActive:true)` on any decode failure — corrupted field always errs secure.
 
 All properties optional to avoid SwiftData migration on schema evolution. `wipeThreshold` is encrypted because it reveals Secure Mode configuration to a forensic examiner.
 
@@ -55,11 +61,20 @@ Contact visibility is tracked per-contact on `Contact.Profile` via `visibleThrou
 **`Manager.Security` public interface:**
 
 ```swift
+// State
+var requiresPIN:    Bool    // state != .noPIN
+var isRestricted:   Bool    // currentDepth > 0
+var appLockEnabled: Bool    // whether the PIN overlay gate fires on scene activation
+
 // Setup
 func configurePIN(_ pin: String) throws                                              // .noPIN → .pinOnly
 func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) throws        // .pinOnly/.duress → .active (Phase 1: depth 0 only)
 func deactivateSecureMode(confirmingEntryPIN: String) throws                         // .active → .pinOnly (depth 0) / .duress at depth N-1 (depth N > 0)
 func deactivatePIN(confirmingNormalPIN: String) throws                               // .pinOnly → .noPIN
+
+// Coercion-resistant gate (sticky-depth)
+func disablePINFromCurrentDepth(confirmingPIN: String) throws     // lowers gate; verifiers intact; depth filter stays
+func reEnablePIN(_ pin: String) -> Bool                           // routes entered PIN to matched verifier depth; returns false on no match
 
 // Verification (owns all state transitions)
 func verify(_ pin: String) throws -> PINVerifyResult
@@ -142,34 +157,29 @@ func updateSafeContacts(_ ids: Set<String>) throws
   - Phase 2: Activate at `.pinOnly` + `.duress`. Deactivate at `.active` (any depth).
 - [x] **[design]** Contact selection must be part of the activation flow, not a standalone Settings item visited later. Implemented as `SecureModeSetupFlow`: Education → PIN setup (confirmThenSet) → Contact classification → Summary/Activate (4 steps, step-dots indicator). `activateSecureMode` called only on the final confirm step.
 - [x] **[design]** "Deactivate Secure Mode" sheet calls `verify()` internally (via `PINEntry` in `.verify` mode), then `onNormal` calls `deactivateSecureMode(confirmingNormalPIN:)` which calls `PINManager.checkVerifier` again — double-verification plus counter mutation. Wrong attempts in this sheet increment `wrongPINCount` and can trigger wipe. Replace with a verify-without-counters path using `checkNormalPIN`, same as the activate flow's phase 1. Requires either a new `PINEntry` mode or calling `checkNormalPIN` directly in the sheet.
-- [x] **[design]** "Enable PIN" toggle is interactive in `.active` and `.duress` states, but `deactivatePIN` throws `.invalidStateTransition` for both — the sheet opens, the user enters their PIN, and nothing visibly happens. Disable the toggle (`.disabled(true)`) when `state == .active || state == .duress` so the interaction is blocked at the UI layer. This is not a security issue (state machine is correct), but it is a silent failure in the current UX.
+- [x] **[design]** "Enable PIN" toggle was disabled in `.active` and `.duress` states (the `.disabled(true)` fix). This was subsequently superseded by the sticky-depth design above, which makes the toggle fully interactive in every state. The `.disabled` modifier has been removed.
 - [x] **[security]** `activateSecureMode` must validate that the proposed duress PIN does not open any existing normal verifier. Currently no collision check — if duress PIN == normal PIN, `verify()` always matches normal first and duress is never triggerable. Validate with `PINManager.checkVerifier` (not `verify()`) before building the duress verifier; reject with a user-facing error if any existing verifier opens.
-- [ ] **[design — pre-ship]** `Enable PIN` toggle must be interactive at every depth, including duress. The current disabled state in `.duress` is a tell — a coercer who notices the toggle is greyed out knows the app is in a protected state distinct from `.pinOnly`. Enabling it trivially is not safe either: the Settings sheet currently calls `security.verify()` internally, so entering the normal PIN from `.duress` would silently transition state to `.active` at depth 0, breaking duress.
+- [x] **[design — pre-ship]** `Enable PIN` toggle must be interactive at every depth, including duress. The current disabled state in `.duress` is a tell — a coercer who notices the toggle is greyed out knows the app is in a protected state distinct from `.pinOnly`. Enabling it trivially is not safe either: the Settings sheet currently calls `security.verify()` internally, so entering the normal PIN from `.duress` would silently transition state to `.active` at depth 0, breaking duress.
 
   **Chosen design — sticky depth with `appLockEnabled`:**
 
   The insight is to decouple the PIN gate from depth routing. "Disable PIN" does not mean "forget all verifiers" — it means "lower the gate while remembering where we are." Verifiers remain intact.
 
-  **`AppLayerConfig` additions:**
-  - `persistedDepth: Data` — encrypted `Int`, **always non-nil**. Defaults to `encrypt(0)` on first config write. Value is `encrypt(currentDepth)` at the moment PIN is disabled; reset to `encrypt(0)` when PIN is re-enabled at depth 0. Because it is always present and always the same ciphertext size, a forensic examiner cannot infer whether the user is in a special state from its presence or size alone — only its value carries meaning, and that value is encrypted.
-  - `appLockEnabled: Bool` — plaintext flag controlling whether OccultaApp shows the PIN gate on scene activation. `true` in all normal states; `false` only during the pin-disabled window.
+  **`AppLayerConfig` addition:**
+  - `persistedDepth: Data?` — always non-nil after first config write. Encodes both depth and gate state in a single signed Int: `N ≥ 0` = gate active at depth N; `-(N+1)` = gate inactive at depth N. No separate `appLockEnabled` field on the model — both values come from one blob. Decoding falls back to `(0, true)` on any failure.
 
-  **Disable PIN from depth N (`disablePINFromCurrentDepth(confirmingPIN:)`):**
-  1. Check entered PIN against `sealedNormalVerifiers[currentDepth]` via `checkCurrentLayerEntryPIN` — no `verify()`, no counter mutation, no state transition.
-  2. On pass: write `persistedDepth = encrypt(currentDepth)`, set `appLockEnabled = false`. Verifiers are left untouched.
-  3. App is now PIN-free, opens directly to depth-N content. Coercer sees: toggle OFF, no PIN required, decoy content. Satisfied.
+  **`Manager.Security` in-memory property:**
+  - `appLockEnabled: Bool` — restored from `persistedDepth.readLockGate()` in `init`. `false` only when gate was deliberately lowered.
+
+  **Disable PIN from current depth (`disablePINFromCurrentDepth(confirmingPIN:)`):**
+  1. Checks entered PIN against the current layer's verifier via `checkCurrentLayerEntryPIN` (private) — no `verify()`, no counter mutation, no state transition.
+  2. On pass: calls `writeLockGate(depth: currentDepth, gateActive: false)`, saves, sets `appLockEnabled = false`. Verifiers are left untouched.
+  3. App opens directly to depth-N content. Coercer sees: toggle OFF, no PIN required, decoy content.
 
   **Re-enable PIN (enter + confirm — same UX as always):**
-  PINEntry in setup mode collects two matching entries and delivers the confirmed PIN string to Settings. Settings calls `reEnablePIN(pin:)` on `Manager.Security`, which:
-  1. Checks the PIN against all existing `sealedNormalVerifiers`. If match found at depth K: set `appLockEnabled = true`, write `persistedDepth = encrypt(K)`, set `currentDepth = K`. No new verifier written.
-  2. If no match: create new verifier at `persistedDepth`'s current depth, set `appLockEnabled = true`.
+  `PINEntry` in `.setup` mode collects two matching entries and delivers the confirmed PIN to Settings. Settings calls `reEnablePIN(_:)` which silently checks against all existing verifiers: normal PIN match → depth 0, `.active`; duress PIN match → depth 1, `.duress`. No new verifier is written; no observable UX difference.
 
-  This preserves identical UX (enter + confirm) while silently routing the real user back to depth 0 via their normal PIN and the coercer back to depth 1 via their duress PIN. Neither sees any difference in the interaction.
-
-  **App launch when `appLockEnabled = false`:**
-  OccultaApp skips the PIN overlay, decrypts `persistedDepth`, sets `currentDepth` from it, and opens directly to that depth's content.
-
-  **Why `persistedDepth` is always non-nil:** a field that is nil in normal operation and non-nil only when PIN has been force-disabled is itself a forensic tell — its mere presence reveals the coerced window occurred. Always writing it (defaulting to `encrypt(0)`) means forensic snapshots always show the same field structure regardless of state. The encrypted value `encrypt(0)` vs `encrypt(1)` is indistinguishable without the SE key.
+  **Why `persistedDepth` is always non-nil:** a field that is nil in normal operation and non-nil only when PIN has been force-disabled is itself a forensic tell. Always writing `writeLockGate(depth:0, gateActive:true)` at first config creation means every Occulta install shows the same field structure regardless of state.
 
 - [x] **[design — pre-ship]** `Settings → Security` appearance in `.duress` is wrong. The duress experience must be indistinguishable from `.pinOnly` — the coercer must believe Secure Mode was never activated. Correct state table:
 
