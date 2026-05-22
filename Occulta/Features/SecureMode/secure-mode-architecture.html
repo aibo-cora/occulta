@@ -333,6 +333,19 @@ const DATA = {
     deps: [],
   },
 
+  'Manager.Blob': {
+    layer: 'crypto',
+    pos: { x: 240, y: 415 },
+    desc: 'Forensic deniability maintenance. Writes a no-op encrypted blob on first launch and rewrites it every 24 hours so a UUID-named .occbak file exists long before Secure Mode is configured — its creation timestamp cannot be correlated with activation. In Step 4, seal() and unseal() will use the same key derivation and wire format for the activation payload.',
+    props: [
+      { name: 'maintainNoOpBlob()',          desc: 'Entry point called from OccultaApp.init() behind the secureMode feature flag. Creates the blobs/ directory if absent, skips if the existing blob is fresh (< 24h), removes stale blob and writes a new one. Fails silently — non-fatal, retried on next launch. Side effect: first call also creates the SE key, decoupling key-creation timestamp from activation.' },
+      { name: 'deriveBlobKey(from:)',        desc: 'HKDF-SHA256(IKM: seKey, info: "blob-key", outputLen: 32). Domain-separated from all PIN verifier keys via the info string — compromise of the blob key does not expose PIN material. Shared with Step 4; this derivation is final.' },
+      { name: 'bucketSize(for:) -> Int',     desc: 'Smallest power-of-2 ≥ contentLength, floor 256 bytes. Plaintext is padded before AES-GCM so the ciphertext size reveals only a tier (256–512, 512–1024, …), not the exact contact or vault count. Shared with Step 4 — bucket boundaries are final.' },
+      { name: 'maxAge: TimeInterval',        desc: '86 400 s (24 h). Blob is stale after this interval and rewritten with a fresh random payload and a new UUID filename. Decouples Last-Modified from meaningful events — PIN entry, activation, and contact changes cannot be inferred from timestamp deltas.' },
+    ],
+    deps: ['KeyManagerProtocol'],
+  },
+
   'Manager.Key': {
     layer: 'crypto',
     pos: { x: 36, y: 370 },
@@ -432,8 +445,9 @@ const DATA = {
       { name: 'isLocked: Bool',              desc: 'Drives the PINEntry overlay. Set true on .inactive (screenshot block) and .active (return from background). Init: security.requiresPIN && security.appLockEnabled — skips gate when gate is intentionally down.' },
       { name: 'storeURL: URL',               desc: 'Retained from ModelConfiguration at init. Used by reapplyFileProtection() to re-stamp .completeFileProtection on store + -wal + -shm after every NSManagedObjectContextDidSaveNotification.' },
       { name: 'isWithinGracePeriod: Bool',   desc: 'Computed from security.lastUnlockDate. Suppresses PIN prompt within 5 min of last unlock. Always false when isRestricted — duress mode requires PIN on every return from background.' },
+      { name: 'Manager.Blob.maintainNoOpBlob()', desc: 'Called in init() after applySecureDeletePragma, gated on FeatureFlags.isEnabled(.secureMode). Runs before any manager is constructed so the SE key creation and blob file timestamp both predate Secure Mode configuration.' },
     ],
-    deps: ['Manager.Security', 'PINEntry'],
+    deps: ['Manager.Security', 'PINEntry', 'Manager.Blob'],
   },
 
 };
