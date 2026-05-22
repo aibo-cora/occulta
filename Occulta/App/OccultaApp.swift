@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import CoreData
+import Combine
 import ImageIO
 import SQLite3
 import UniformTypeIdentifiers
@@ -379,8 +380,8 @@ struct OccultaApp: App {
                 // lifecycle. Re-stamp each time a context saves so no sidecar
                 // can sit with weaker default protection.
                 .onReceive(NotificationCenter.default.publisher(
-                    for: Notification.Name("NSManagedObjectContextDidSaveNotification")
-                )) { _ in
+                    for: NSManagedObjectContext.didSaveObjectIDsNotification
+                ).receive(on: DispatchQueue.main)) { _ in
                     self.reapplyFileProtection()
                 }
                 .overlay {
