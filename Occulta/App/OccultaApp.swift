@@ -152,7 +152,9 @@ struct OccultaApp: App {
     /// Never applies in restricted mode.
     private var isWithinGracePeriod: Bool {
         guard !self.security.isRestricted else { return false }
+        
         guard let last = self.security.lastUnlockDate else { return false }
+        
         return Date().timeIntervalSince(last) < Self.gracePeriod
     }
 
@@ -395,7 +397,9 @@ struct OccultaApp: App {
                 .receive(on: DispatchQueue.main)
                 .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
                     guard FeatureFlags.isEnabled(.secureMode) else { return }
+                    
                     guard self.security.state == .noPIN || self.security.state == .pinOnly else { return }
+                    
                     DispatchQueue.global(qos: .utility).async {
                         Manager.Blob.rewriteNoOpBlob()
                     }
