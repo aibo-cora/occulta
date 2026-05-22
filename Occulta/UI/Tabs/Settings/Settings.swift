@@ -140,7 +140,11 @@ struct Settings: View {
 
         private var pinEnabledBinding: Binding<Bool> {
             Binding(
-                get: { self.security.requiresPIN },
+                // True only when a PIN is configured AND the gate overlay is active.
+                // When `appLockEnabled` is false (gate lowered under coercion), the toggle
+                // appears off even though verifiers are intact — this is the tell-avoidance
+                // invariant: the toggle must look identical to a device with no PIN.
+                get: { self.security.requiresPIN && self.security.appLockEnabled },
                 set: { _ in self.showingPINSheet = true }
             )
         }
@@ -148,8 +152,11 @@ struct Settings: View {
         var body: some View {
             List {
                 Section {
+                    // The toggle is interactive in every state — including .active and .duress.
+                    // Disabling it in those states was a forensic tell (visible UI difference
+                    // between normal and duress mode). Instead, toggling off in .active/.duress
+                    // lowers the gate without removing verifiers via disablePINFromCurrentDepth.
                     Toggle("Enable PIN", isOn: self.pinEnabledBinding)
-                        .disabled(self.security.state == .active || self.security.state == .duress)
                 }
 
                 if self.security.state == .noPIN || self.security.state == .pinOnly || self.security.state == .duress {
@@ -176,14 +183,39 @@ struct Settings: View {
             }
             .navigationTitle("Security")
             .sheet(isPresented: self.$showingPINSheet) {
-                if self.security.requiresPIN {
-                    PINEntry(onNormal: { pin in
+                if !self.security.requiresPIN {
+                    // State: .noPIN — no verifier exists yet. Enter + confirm a new PIN,
+                    // then call configurePIN so the caller's closure owns the security op.
+                    PINEntry(mode: .setup, onNormal: { pin in
+                        try? self.security.configurePIN(pin)
+                        self.showingPINSheet = false
+                    })
+                    .environment(self.security)
+                } else if !self.security.appLockEnabled {
+                    // State: gate lowered under coercion. The user wants to re-enable.
+                    // Enter + confirm the existing PIN (normal or duress); reEnablePIN
+                    // silently routes to the matched verifier depth. UX is identical to
+                    // initial setup — no observable tell from which verifier matched.
+                    PINEntry(mode: .setup, onNormal: { pin in
+                        _ = self.security.reEnablePIN(pin)
+                        self.showingPINSheet = false
+                    })
+                    .environment(self.security)
+                } else if self.security.state == .pinOnly {
+                    // State: .pinOnly — normal PIN set, no duress verifier. User is
+                    // turning PIN off entirely. Verify with no counter mutation so a
+                    // wrong guess here does not advance the wipe counter.
+                    PINEntry(mode: .verifyNormal, onNormal: { pin in
                         try? self.security.deactivatePIN(confirmingNormalPIN: pin)
                         self.showingPINSheet = false
                     })
                     .environment(self.security)
                 } else {
-                    PINEntry(mode: .setup, onNormal: { _ in
+                    // State: .active or .duress — Secure Mode is live. User is toggling
+                    // "off" to lower the gate without removing verifiers (coercion path).
+                    // Enter + confirm the current layer's PIN to authorise the gate drop.
+                    PINEntry(mode: .setup, onNormal: { pin in
+                        try? self.security.disablePINFromCurrentDepth(confirmingPIN: pin)
                         self.showingPINSheet = false
                     })
                     .environment(self.security)

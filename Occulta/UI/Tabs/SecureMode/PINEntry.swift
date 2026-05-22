@@ -18,6 +18,11 @@ struct PINEntry: View {
         /// Use for Settings-level confirmations where wrong attempts must not
         /// increment the wipe counter.
         case verifyNormal
+        /// Two-phase entry: first entry sets `firstPIN`, second entry must match it.
+        /// On match, calls `onNormal(pin)` with the confirmed PIN and does **not** call
+        /// any security method internally — the caller's `onNormal` closure is responsible
+        /// for the actual security operation (e.g. `configurePIN`, `disablePINFromCurrentDepth`,
+        /// `reEnablePIN`). This keeps the view decoupled from which operation is being confirmed.
         case setup
         /// Phase 1: verify existing normal PIN. Phase 2: enter + confirm new PIN.
         /// Delivers (confirmedNormalPIN, newPIN) to onComplete.
@@ -153,12 +158,11 @@ struct PINEntry: View {
         }
     }
 
-    // .setup — enter + confirm → configurePIN
+    // .setup — enter + confirm → deliver to onNormal (caller handles security)
 
     private func submitSetup(pin: String) {
         if let first = self.firstPIN {
             if pin == first {
-                try? self.security.configurePIN(pin)
                 self.onNormal(pin)
             } else {
                 self.firstPIN    = nil

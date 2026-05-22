@@ -73,7 +73,10 @@ struct OccultaApp: App {
         self.vaultManager        = vaultManager
         let security             = Manager.Security(modelContainer: sharedModelContainer)
         self.security            = security
-        self._isLocked           = State(initialValue: security.requiresPIN)
+        // Lock on launch only when a PIN is configured AND the gate is active.
+        // When appLockEnabled is false (gate lowered under coercion), the app
+        // opens without the PIN overlay even though all verifiers are intact.
+        self._isLocked           = State(initialValue: security.requiresPIN && security.appLockEnabled)
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
         
@@ -334,7 +337,10 @@ struct OccultaApp: App {
                     )
                 }
                 .onChange(of: self.scenePhase) { _, newPhase in
-                    if newPhase == .inactive, self.security.requiresPIN {
+                    // Only raise the lock overlay when a PIN is configured AND the gate is
+                    // active. When appLockEnabled is false the device is operating in
+                    // coercion mode: re-locking on background would expose the gate state.
+                    if newPhase == .inactive, self.security.requiresPIN, self.security.appLockEnabled {
                         self.isLocked = true
                     }
                     if newPhase == .active {
