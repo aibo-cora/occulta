@@ -410,15 +410,13 @@ extension Manager {
             return Set(contacts.compactMap { Self.isVisible($0, atDepth: self.currentDepth) ? $0.identifier : nil })
         }
 
-        /// Marks contacts in `ids` as always visible (nil) and all others as hidden (depth 0).
+        /// Marks contacts in `ids` as always visible (`encrypt(Int.max)`) and all others
+        /// as hidden (`encrypt(0)`). Never writes nil — every row gets an encrypted value.
         func updateSafeContacts(_ ids: Set<String>) throws {
             let contacts = try self.modelContext.fetch(Contact.Profile.descriptor)
             for contact in contacts {
-                if ids.contains(contact.identifier) {
-                    contact.visibleThroughDepth = nil
-                } else {
-                    contact.visibleThroughDepth = try JSONEncoder().encode(0).encrypt()
-                }
+                let depthValue = ids.contains(contact.identifier) ? Int.max : 0
+                contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             }
             try self.modelContext.save()
         }
@@ -443,7 +441,7 @@ extension Manager {
                 predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
             )
             guard let contact = try? self.modelContext.fetch(descriptor).first else { return }
-            contact.visibleThroughDepth = isSensitive ? try JSONEncoder().encode(0).encrypt() : nil
+            contact.visibleThroughDepth = try JSONEncoder().encode(isSensitive ? 0 : Int.max).encrypt()
             try self.modelContext.save()
         }
 

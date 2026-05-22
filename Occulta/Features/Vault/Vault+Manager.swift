@@ -208,10 +208,9 @@ final class VaultManager {
         // Build entry first — id and createdAt must be fixed before AAD is computed.
         let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
 
-        // Stamp depth ceiling if created below the true layer.
-        if currentDepth > 0 {
-            entry.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
-        }
+        // Stamp depth ceiling — always encrypted, never nil.
+        // Depth 0 entries get encrypt(0): real-layer items hidden from all duress views.
+        entry.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)

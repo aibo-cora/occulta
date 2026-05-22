@@ -127,9 +127,9 @@ extension Contact {
                         Button("Save") {
                             try? self.contactManager.save(contact: self.contact,
                                                           currentDepth: self.security.currentDepth)
-                            // setVisibility stamps visibleThroughDepth = 0 (sensitive) or nil
-                            // (safe). This depth-0 classification only makes sense when at the
-                            // true layer; at depth > 0 the depth stamp from save() is correct.
+                            // setVisibility stamps visibleThroughDepth = encrypt(0) (sensitive)
+                            // or encrypt(Int.max) (safe). Only called at depth 0; at depth > 0
+                            // the depth stamp written by save() is correct and sufficient.
                             if self.security.currentDepth == 0 {
                                 try? self.security.setVisibility(for: self.contact.identifier,
                                                                  isSensitive: self.isSensitive)

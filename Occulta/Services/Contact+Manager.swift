@@ -186,9 +186,11 @@ class ContactManager {
                 postalAddresses: encryptedPostalAddresses
             )
             
-            if currentDepth > 0 {
-                newContact.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
-            }
+            // visibleThroughDepth is always encrypted, never nil.
+            // Depth 0 imports are safe contacts → Int.max (visible everywhere).
+            // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
+            let depthValue = currentDepth == 0 ? Int.max : currentDepth
+            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -339,9 +341,11 @@ class ContactManager {
                 encryptionScheme: EncryptionScheme.v2_hybridPQ.rawValue
             )
             
-            if currentDepth > 0 {
-                newContact.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
-            }
+            // visibleThroughDepth is always encrypted, never nil.
+            // Depth 0 contacts are safe by default → Int.max (visible everywhere).
+            // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
+            let depthValue = currentDepth == 0 ? Int.max : currentDepth
+            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
