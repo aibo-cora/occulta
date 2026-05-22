@@ -47,6 +47,42 @@ import Foundation
 import CryptoKit
 import Security
 
+// MARK: - Payload types
+
+/// One hidden contact serialised for the blob.
+///
+/// All fields are in plaintext — the activation sequence decrypts contact fields
+/// from the DB key before constructing this record. The restore path re-encrypts
+/// them under the new DB key.
+struct ContactBlobRecord: Codable {
+    /// Full contact data including ML-KEM material (via `Contact.Draft.Key.quantumKeyMaterial`).
+    let draft: Contact.Draft
+    /// Decrypted plaintext of `Contact.Profile.signedAttributes` — the JSON-encoded
+    /// `[SignedAttribute]` shard records this contact holds as trustee.
+    /// `nil` when the contact has never been a trustee.
+    let signedAttributes: Data?
+}
+
+/// One hidden vault entry's per-entry key serialised for the blob.
+///
+/// `encryptedLabel` / `encryptedContent` stay on disk locked in-place;
+/// only the PEK travels in the blob so the entry can be decrypted on restore.
+struct VaultPEKRecord: Codable {
+    /// Matches `VaultEntry.id` — used as the UPDATE target on restore.
+    let entryID: UUID
+    /// Raw 32-byte per-entry key. Caller must zero the source bytes after `seal` returns.
+    let pekBytes: Data
+    /// Decrypted `ShardDistributionMetadata` for this entry, or `nil` if no SSS
+    /// split has been configured. Carried so trustee relationships survive deactivation.
+    let shardDistribution: ShardDistributionMetadata?
+}
+
+/// The complete blob payload for one activation layer.
+struct BlobPayload: Codable {
+    let contacts: [ContactBlobRecord]
+    let vaultPEKs: [VaultPEKRecord]
+}
+
 extension Manager {
 
     /// Blob file management for Secure Mode.
@@ -93,14 +129,14 @@ extension Manager {
         /// side effect, decoupling the Keychain key-creation timestamp from the
         /// moment Secure Mode is first configured.
         static func maintainNoOpBlob() {
-            guard let dir = blobDirectory() else { return }
+            guard let dir = self.blobDirectory() else { return }
 
-            if let existing = findBlob(in: dir) {
-                guard isStale(existing) else { return }
+            if let existing = self.findBlob(in: dir) {
+                guard self.isStale(existing) else { return }
                 try? FileManager.default.removeItem(at: existing)
             }
 
-            writeNoOpBlob(to: dir)
+            self.writeNoOpBlob(to: dir)
         }
 
         // MARK: - Key derivation (shared with Step 4)
@@ -134,6 +170,76 @@ extension Manager {
             return size
         }
 
+        // MARK: - Seal / Unseal (Step 4)
+
+        enum BlobError: Error {
+            /// No `.occbak` file found in the blobs directory.
+            case noBlobFound
+            /// AES-GCM seal failed or the blob directory is unavailable.
+            case encryptionFailed
+            /// AES-GCM open failed — wrong key, corrupt file, or truncated data.
+            case decryptionFailed
+        }
+
+        /// Encrypts `payload` and writes it as the current blob, replacing whatever
+        /// file was there before (no-op or a previous real payload).
+        ///
+        /// The plaintext is bucket-padded before sealing so the file size reveals
+        /// only a tier, not the contact or vault count.
+        ///
+        /// **Caller contract:** zero the `pekBytes` fields in all `VaultPEKRecord`
+        /// instances after this method returns — those bytes are value-typed and
+        /// cannot be zeroed from inside this method.
+        static func seal(_ payload: BlobPayload, blobKey: SymmetricKey) throws {
+            guard let dir = self.blobDirectory() else { throw BlobError.encryptionFailed }
+
+            // Replace existing blob (no-op or previous real payload).
+            if let existing = self.findBlob(in: dir) {
+                try FileManager.default.removeItem(at: existing)
+            }
+
+            // Encode → pad → seal. Zero the plaintext buffer before returning.
+            var plaintext = try JSONEncoder().encode(payload)
+            let padded    = self.bucketSize(for: plaintext.count)
+            if plaintext.count < padded {
+                plaintext.append(contentsOf: repeatElement(0, count: padded - plaintext.count))
+            }
+            defer {
+                plaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+            }
+
+            guard let combined = try? AES.GCM.seal(plaintext, using: blobKey).combined else {
+                throw BlobError.encryptionFailed
+            }
+
+            let url = dir.appendingPathComponent("\(UUID().uuidString).occbak")
+            try combined.write(to: url, options: .completeFileProtection)
+            var mutableURL = url
+            var values     = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try mutableURL.setResourceValues(values)
+        }
+
+        /// Decrypts the current blob and returns its payload.
+        ///
+        /// Throws `BlobError.noBlobFound` when no `.occbak` file exists (the blob
+        /// directory is empty or was never written). Throws `BlobError.decryptionFailed`
+        /// when the file exists but cannot be opened with `blobKey` — wrong key or
+        /// corrupt data. Both are fatal for the deactivation sequence.
+        static func unseal(blobKey: SymmetricKey) throws -> BlobPayload {
+            guard let dir = self.blobDirectory(),
+                  let url = self.findBlob(in: dir)
+            else { throw BlobError.noBlobFound }
+
+            let combined = try Data(contentsOf: url)
+            guard let box       = try? AES.GCM.SealedBox(combined: combined),
+                  let plaintext = try? AES.GCM.open(box, using: blobKey)
+            else { throw BlobError.decryptionFailed }
+
+            // JSONDecoder stops at the closing `}` and ignores the bucket-padding zeros.
+            return try JSONDecoder().decode(BlobPayload.self, from: plaintext)
+        }
+
         // MARK: - Private helpers
 
         private static func blobDirectory() -> URL? {
@@ -164,8 +270,8 @@ extension Manager {
         private static func writeNoOpBlob(to dir: URL) {
             guard
                 let seKey   = try? Manager.Key().deriveSecureModeKey(),
-                let blobKey = deriveBlobKey(from: seKey),
-                let payload = encryptedNoOpPayload(using: blobKey)
+                let blobKey = self.deriveBlobKey(from: seKey),
+                let payload = self.encryptedNoOpPayload(using: blobKey)
             else { return }
 
             let url = dir.appendingPathComponent("\(UUID().uuidString).occbak")
@@ -188,7 +294,7 @@ extension Manager {
         /// payload after AES-GCM encryption. A random nonce is generated per write
         /// so each rewrite produces a completely different ciphertext.
         private static func encryptedNoOpPayload(using key: SymmetricKey) -> Data? {
-            let size    = bucketSize(for: 0)
+            let size    = self.bucketSize(for: 0)
             var random  = Data(count: size)
             let status  = random.withUnsafeMutableBytes {
                 SecRandomCopyBytes(kSecRandomDefault, size, $0.baseAddress!)
