@@ -29,8 +29,10 @@ struct Settings: View {
                     ManageContacts()
                 }
 
-                NavigationLink("Security") {
-                    SecuritySettings()
+                if FeatureFlags.isEnabled(.secureMode) {
+                    NavigationLink("Security") {
+                        SecuritySettings()
+                    }
                 }
             }
             

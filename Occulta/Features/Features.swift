@@ -36,4 +36,9 @@ enum Feature: String {
     case useMultipleRecipientMessageFormat
     /// Enable SSS in vault to distribute vault key shards for custody.
     case enableShamirShardSharing
+    /// PIN lock, duress mode, depth-filtered contact/vault views, and all related
+    /// Settings UI. When disabled, `Manager.Security` is permanently in `.noPIN`
+    /// state — no overlay, no filtering, no DB reads from `AppLayerConfig`.
+    /// Flip to `false` in features.plist to develop without Secure Mode friction.
+    case secureMode
 }

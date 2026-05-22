@@ -73,7 +73,8 @@ struct OccultaApp: App {
         self.sharedModelContainer = sharedModelContainer
         self.contactManager      = contactManager
         self.vaultManager        = vaultManager
-        let security             = Manager.Security(modelContainer: sharedModelContainer)
+        let security             = Manager.Security(modelContainer: sharedModelContainer,
+                                                     enabled: FeatureFlags.isEnabled(.secureMode))
         self.security            = security
         // Lock on launch only when a PIN is configured AND the gate is active.
         // When appLockEnabled is false (gate lowered under coercion), the app

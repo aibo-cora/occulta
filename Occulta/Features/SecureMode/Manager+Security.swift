@@ -69,10 +69,26 @@ extension Manager {
 
         // MARK: - Init
 
-        init(modelContainer: ModelContainer, keyManager: any KeyManagerProtocol = Manager.Key()) {
+        /// - Parameters:
+        ///   - modelContainer: The shared SwiftData container.
+        ///   - keyManager: Key manager implementation (injectable for testing).
+        ///   - enabled: When `false` (feature flag `secureMode` is off), the manager
+        ///     stays permanently in `.noPIN` state without reading `AppLayerConfig`
+        ///     at all. All filtering and overlay logic becomes a no-op.
+        init(modelContainer: ModelContainer,
+             keyManager: any KeyManagerProtocol = Manager.Key(),
+             enabled: Bool = true) {
             let context       = ModelContext(modelContainer)
             self.modelContext = context
             self.keyManager   = keyManager
+
+            // Feature-flag off path: skip all DB reads and sit permanently in .noPIN.
+            // requiresPIN = false → overlay never shown. isRestricted = false →
+            // no contact or vault filtering. All other properties stay at defaults.
+            guard enabled else {
+                self.state = .noPIN
+                return
+            }
 
             let config = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first
 
