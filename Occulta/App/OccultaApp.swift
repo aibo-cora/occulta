@@ -384,6 +384,22 @@ struct OccultaApp: App {
                 ).receive(on: DispatchQueue.main)) { _ in
                     self.reapplyFileProtection()
                 }
+                // Rewrite the no-op blob on every save (debounced 30 s) so the
+                // blob's Last-Modified timestamp correlates with normal app activity,
+                // not with Secure Mode activation. Only rewrites when Secure Mode is
+                // inactive — when active the blob holds a real payload that must not
+                // be overwritten.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSManagedObjectContext.didSaveObjectIDsNotification
+                )
+                .receive(on: DispatchQueue.main)
+                .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
+                    guard FeatureFlags.isEnabled(.secureMode) else { return }
+                    guard self.security.state == .noPIN || self.security.state == .pinOnly else { return }
+                    DispatchQueue.global(qos: .utility).async {
+                        Manager.Blob.rewriteNoOpBlob()
+                    }
+                }
                 .overlay {
                     if self.isLocked {
                         if self.isWithinGracePeriod {

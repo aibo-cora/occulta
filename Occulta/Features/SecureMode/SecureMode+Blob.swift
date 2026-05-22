@@ -139,6 +139,24 @@ extension Manager {
             self.writeNoOpBlob(to: dir)
         }
 
+        /// Unconditionally replaces the current blob with a fresh no-op payload.
+        ///
+        /// Unlike `maintainNoOpBlob()`, this ignores the 24-hour staleness check
+        /// and always rewrites. Called by `OccultaApp` on every `ModelContext` save
+        /// (debounced 30 s) so the blob's Last-Modified timestamp mirrors normal app
+        /// activity rather than spiking only at meaningful events (activation, etc.).
+        ///
+        /// **Caller contract:** only call when Secure Mode is not active. When the
+        /// blob holds a real payload, this call destroys it. `OccultaApp` gates on
+        /// `security.state == .noPIN || security.state == .pinOnly`.
+        static func rewriteNoOpBlob() {
+            guard let dir = self.blobDirectory() else { return }
+            if let existing = self.findBlob(in: dir) {
+                try? FileManager.default.removeItem(at: existing)
+            }
+            self.writeNoOpBlob(to: dir)
+        }
+
         // MARK: - Key derivation (shared with Step 4)
 
         /// Derives the 256-bit blob encryption key from the SE-bound key via HKDF-SHA256.
