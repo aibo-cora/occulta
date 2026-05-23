@@ -31,6 +31,20 @@ private func makeSecurity() throws -> Manager.Security {
     return try Manager.Security(modelContainer: makeContainer(), keyManager: TestKeyManager())
 }
 
+/// Creates a security manager plus the contact/vault managers needed by `activateSecureMode`.
+/// The vault manager starts locked (no LAContext) so vault PEK extraction is skipped.
+@MainActor
+private func makeSecurityAndManagers() throws -> (security: Manager.Security,
+                                                    container: ModelContainer,
+                                                    contacts: ContactManager,
+                                                    vault: VaultManager) {
+    let container = try makeContainer()
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let contacts  = ContactManager(modelContainer: container)
+    let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+    return (security, container, contacts, vault)
+}
+
 // MARK: - State transitions
 
 @MainActor
@@ -84,49 +98,55 @@ struct SecurityStateTests {
         }
     }
 
-    @Test func deactivatePIN_fromActive_throwsInvalidStateTransition() throws {
-        let s = try makeSecurity()
+    @Test func deactivatePIN_fromActive_throwsInvalidStateTransition() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
             try s.deactivatePIN(confirmingNormalPIN: "123456")
         }
     }
 
-    @Test func activateSecureMode_fromNoPIN_throwsInvalidStateTransition() throws {
-        let s = try makeSecurity()
-        #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
-            try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+    @Test func activateSecureMode_fromNoPIN_throwsInvalidStateTransition() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
+        await #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
+            try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                            contactManager: cm, vaultManager: vm)
         }
     }
 
-    @Test func activateSecureMode_wrongNormalPIN_throwsIncorrectPIN() throws {
-        let s = try makeSecurity()
+    @Test func activateSecureMode_wrongNormalPIN_throwsIncorrectPIN() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
-            try s.activateSecureMode(confirmingEntryPIN: "000000", duressPIN: "999999")
+        await #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
+            try await s.activateSecureMode(confirmingEntryPIN: "000000", duressPIN: "999999",
+                                            contactManager: cm, vaultManager: vm)
         }
     }
 
-    @Test func activateSecureMode_fromPinOnly_transitionsToActive() throws {
-        let s = try makeSecurity()
+    @Test func activateSecureMode_fromPinOnly_transitionsToActive() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         #expect(s.state == .active)
     }
 
-    @Test func deactivateSecureMode_fromActive_transitionsToPinOnly() throws {
-        let s = try makeSecurity()
+    @Test func deactivateSecureMode_fromActive_transitionsToPinOnly() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         try s.deactivateSecureMode(confirmingEntryPIN: "123456")
         #expect(s.state == .pinOnly)
     }
 
-    @Test func deactivateSecureMode_fromDuress_transitionsToPinOnly() throws {
-        let s = try makeSecurity()
+    @Test func deactivateSecureMode_fromDuress_transitionsToPinOnly() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // → .duress
         try s.deactivateSecureMode(confirmingEntryPIN: "123456")
         #expect(s.state == .pinOnly)
@@ -175,59 +195,66 @@ struct SecurityVerifyPinOnlyTests {
 @Suite("Security — Verify (active/duress)")
 struct SecurityVerifyActiveTests {
 
-    @Test func active_correctNormal_returnsNormal() throws {
-        let s = try makeSecurity()
+    @Test func active_correctNormal_returnsNormal() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         #expect(try s.verify("123456") == .normal)
     }
 
-    @Test func active_duressPIN_returnsDuress_transitionsToDuress() throws {
-        let s = try makeSecurity()
+    @Test func active_duressPIN_returnsDuress_transitionsToDuress() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         #expect(try s.verify("999999") == .duress)
         #expect(s.state == .duress)
     }
 
-    @Test func active_threeWrongPINs_returnsWipe() throws {
-        let s = try makeSecurity()
+    @Test func active_threeWrongPINs_returnsWipe() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("000000")
         _ = try s.verify("000000")
         #expect(try s.verify("000000") == .wipe)
     }
 
-    @Test func duress_correctNormal_returnsNormal_transitionsToActive() throws {
-        let s = try makeSecurity()
+    @Test func duress_correctNormal_returnsNormal_transitionsToActive() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // → .duress
         #expect(try s.verify("123456") == .normal)
         #expect(s.state == .active)
     }
 
-    @Test func duress_duressPIN_returnsDuress() throws {
-        let s = try makeSecurity()
+    @Test func duress_duressPIN_returnsDuress() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // → .duress, count=1
         #expect(try s.verify("999999") == .duress)
     }
 
-    @Test func duress_wrongPIN_returnsWrong() throws {
-        let s = try makeSecurity()
+    @Test func duress_wrongPIN_returnsWrong() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // → .duress
         #expect(try s.verify("000000") == .wrong)
     }
 
-    @Test func consecutiveDuressHitsThreshold_returnsWipe() throws {
-        let s = try makeSecurity()
+    @Test func consecutiveDuressHitsThreshold_returnsWipe() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // count=1 → .duress
         _ = try s.verify("999999")   // count=2 → .duress
         #expect(try s.verify("999999") == .wipe)  // count=3, threshold=3
@@ -240,10 +267,11 @@ struct SecurityVerifyActiveTests {
 @Suite("Security — Counter cross-reset")
 struct SecurityCounterTests {
 
-    @Test func normalPIN_resetsWrongCounter_preventsEarlyWipe() throws {
-        let s = try makeSecurity()
+    @Test func normalPIN_resetsWrongCounter_preventsEarlyWipe() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("000000")
         _ = try s.verify("000000")
         _ = try s.verify("123456")   // normal → resets wrong counter
@@ -253,10 +281,11 @@ struct SecurityCounterTests {
         #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
     }
 
-    @Test func duressPIN_resetsWrongCounter() throws {
-        let s = try makeSecurity()
+    @Test func duressPIN_resetsWrongCounter() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("000000")
         _ = try s.verify("000000")
         _ = try s.verify("999999")   // duress → resets wrong counter
@@ -266,10 +295,11 @@ struct SecurityCounterTests {
         #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
     }
 
-    @Test func wrongPIN_resetsDuressCounter_preventsEarlyWipe() throws {
-        let s = try makeSecurity()
+    @Test func wrongPIN_resetsDuressCounter_preventsEarlyWipe() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        try s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // count=1
         _ = try s.verify("999999")   // count=2
         _ = try s.verify("000000")   // wrong → resets duress counter

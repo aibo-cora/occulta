@@ -10,6 +10,8 @@
 
 import Foundation
 import SwiftData
+import CryptoKit
+import SQLite3
 
 extension Manager {
     @Observable
@@ -60,6 +62,9 @@ extension Manager {
 
         private let modelContext: ModelContext
         private let keyManager:   any KeyManagerProtocol
+        /// SwiftData store URL for WAL checkpoint during key rotation.
+        /// `nil` in tests (TestKeyManager, in-memory store).
+        private let storeURL:     URL?
 
         private var wrongPINCount          = 0
         private var consecutiveDuressCount = 0
@@ -77,10 +82,12 @@ extension Manager {
         ///     at all. All filtering and overlay logic becomes a no-op.
         init(modelContainer: ModelContainer,
              keyManager: any KeyManagerProtocol = Manager.Key(),
+             storeURL: URL? = nil,
              enabled: Bool = true) {
             let context       = ModelContext(modelContainer)
             self.modelContext = context
             self.keyManager   = keyManager
+            self.storeURL     = storeURL
 
             // Feature-flag off path: skip all DB reads and sit permanently in .noPIN.
             // requiresPIN = false → overlay never shown. isRestricted = false →
@@ -171,12 +178,21 @@ extension Manager {
 
         // MARK: - Secure Mode
 
-        /// Activates Secure Mode in two phases: verify the existing normal PIN, then
-        /// build the duress verifier and transition `.pinOnly` → `.active`.
+        /// Activates Secure Mode: verify the existing normal PIN, run the 11-step key
+        /// rotation, then transition `.pinOnly` → `.active`.
         ///
-        /// Also resets `persistedDepth` to gate-active at depth 0 so a prior coercion-
-        /// lowered gate is automatically restored when Secure Mode is (re-)activated.
-        func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) async throws {
+        /// - Parameters:
+        ///   - confirmingEntryPIN: Must match the existing normal PIN verifier.
+        ///   - duressPIN: The new duress PIN; must differ from the normal PIN.
+        ///   - contactManager: Used to read, re-encrypt, and hard-delete contacts.
+        ///   - vaultManager: Used to read vault PEKs for the blob (vault must be unlocked).
+        func activateSecureMode(
+            confirmingEntryPIN: String,
+            duressPIN:          String,
+            contactManager:     ContactManager,
+            vaultManager:       VaultManager
+        ) async throws {
+            // ── Step 1: State guard + PIN verification ──────────────────────────────
             guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
             let config = try self.requireConfig()
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
@@ -198,7 +214,116 @@ extension Manager {
             try config.writeLockGate(depth: 0, gateActive: true)
             try self.modelContext.save()
 
-            // TODO: key rotation (Step 4)
+            // ── Step 2: Create staged local DB key ──────────────────────────────────
+            // On any failure past this point we rollback staged artefacts.
+            let stagedKey = try self.keyManager.createStagedLocalDBKey()
+            do {
+                // ── Step 3: Derive blob key ──────────────────────────────────────────
+                guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
+                    throw SecurityError.keyDerivationFailed
+                }
+
+                // ── Step 4: Classify contacts ────────────────────────────────────────
+                // sensitive → blob; safe → re-encrypt in DB.
+                let allProfiles = try contactManager.fetchAllContacts()
+                var blobContacts:  [ContactBlobRecord] = []
+                var safeProfiles:  [Contact.Profile]   = []
+
+                for profile in allProfiles {
+                    if Self.isVisible(profile, atDepth: 1) {
+                        safeProfiles.append(profile)
+                    } else {
+                        // Sensitive: decrypt and capture for blob.
+                        let draft = try contactManager.convertToMutableCopy(
+                            using: profile.identifier
+                        )
+                        let signedAttrs: Data?
+                        if let enc = profile.signedAttributes, !enc.isEmpty {
+                            signedAttrs = enc.decrypt()
+                        } else {
+                            signedAttrs = nil
+                        }
+                        blobContacts.append(
+                            ContactBlobRecord(draft: draft, signedAttributes: signedAttrs)
+                        )
+                    }
+                }
+
+                // ── Step 5: Migrate nil visibleThroughDepth (should be a no-op) ─────
+                for profile in safeProfiles where profile.visibleThroughDepth == nil {
+                    profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+                }
+
+                // ── Step 6: Unwrap vault PEKs ────────────────────────────────────────
+                var blobPEKs: [VaultPEKRecord] = []
+                if vaultManager.isUnlocked {
+                    let vaultKey = try vaultManager.currentKey()
+                    for entry in try vaultManager.fetchAllEntries() {
+                        let pek   = try vaultManager.unwrapPEK(for: entry, vaultKey: vaultKey)
+                        let dist  = try? vaultManager.shardDistributionMetadata(for: entry.id)
+                        var bytes = pek.withUnsafeBytes { Data($0) }
+                        blobPEKs.append(VaultPEKRecord(entryID: entry.id,
+                                                        pekBytes: bytes,
+                                                        shardDistribution: dist))
+                        bytes.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                    }
+                }
+
+                // ── Step 7: Seal blob ────────────────────────────────────────────────
+                let payload = BlobPayload(contacts: blobContacts, vaultPEKs: blobPEKs)
+                try Manager.Blob.seal(payload, blobKey: blobKey)
+
+                // ── Step 8: Re-encrypt safe contacts + vault depth fields ─────────────
+                let stagedCrypto = StagedCryptoManager(key: stagedKey)
+                let aad          = EncryptionScheme.v2_hybridPQ.aad
+
+                for profile in safeProfiles {
+                    let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
+                    try contactManager.save(contact: draft, using: stagedCrypto)
+
+                    // Re-encrypt visibleThroughDepth with the staged key.
+                    if let old = profile.visibleThroughDepth, let plain = old.decrypt() {
+                        profile.visibleThroughDepth = try AES.GCM.seal(
+                            plain, using: stagedKey, authenticating: aad
+                        ).combined
+                    }
+                    // Re-encrypt signedAttributes if present.
+                    if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
+                        profile.signedAttributes = try AES.GCM.seal(
+                            plain, using: stagedKey, authenticating: aad
+                        ).combined
+                    }
+                }
+                // Re-encrypt VaultEntry.visibleThroughDepth (encrypted under local DB key).
+                for entry in try vaultManager.fetchAllEntries() {
+                    if let old = entry.visibleThroughDepth, let plain = old.decrypt() {
+                        entry.visibleThroughDepth = try AES.GCM.seal(
+                            plain, using: stagedKey, authenticating: aad
+                        ).combined
+                    }
+                }
+                try vaultManager.modelContext.save()
+
+                // Hard-delete sensitive contacts from DB after their data is safely in the blob.
+                for profile in allProfiles where !safeProfiles.contains(where: { $0.identifier == profile.identifier }) {
+                    try contactManager.hardDeleteContact(profile)
+                }
+
+                // ── Step 9: WAL checkpoint ────────────────────────────────────────────
+                if let url = self.storeURL {
+                    Self.walCheckpoint(at: url)
+                }
+
+                // ── Step 10: Commit staged key → point of no return ───────────────────
+                try self.keyManager.commitStagedLocalDBKey()
+
+                // ── Step 11: Cleanup + state transition ───────────────────────────────
+                self.keyManager.deleteSupersededLocalDBArtefacts()
+
+            } catch {
+                self.keyManager.rollbackStagedLocalDBKey()
+                throw error
+            }
 
             self.resetCounters()
             self.appLockEnabled = true
@@ -477,6 +602,15 @@ extension Manager {
             self.wrongPINCount          = 0
             self.consecutiveDuressCount = 0
         }
+
+        /// Forces a full WAL checkpoint (TRUNCATE mode) so all pending writes land in
+        /// the main `.sqlite` file before the staged key is committed in step 10.
+        private static func walCheckpoint(at url: URL) {
+            var db: OpaquePointer?
+            guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
+            defer { sqlite3_close(db) }
+            sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+        }
     }
 }
 
@@ -491,4 +625,37 @@ extension Manager.Security {
         case invalidStateTransition
         case pinCollision
     }
+}
+
+// MARK: - Staged crypto helper
+
+/// Minimal CryptoProtocol that encrypts/decrypts with an explicit SymmetricKey.
+///
+/// Used by the Secure Mode activation sequence to re-encrypt safe contacts
+/// under the staged DB key before it is promoted to canonical. Only
+/// `encrypt(data:)` and `decrypt(data:)` are implemented — the activation
+/// sequence never calls the other protocol methods.
+private final class StagedCryptoManager: CryptoProtocol {
+    private let key: SymmetricKey
+
+    init(key: SymmetricKey) { self.key = key }
+
+    func encrypt(data: Data?) throws -> Data? {
+        guard let data else { return nil }
+        let aad = EncryptionScheme.v2_hybridPQ.aad
+        return try AES.GCM.seal(data, using: self.key, nonce: AES.GCM.Nonce(),
+                                 authenticating: aad).combined
+    }
+
+    func decrypt(data: Data?) throws -> Data? {
+        guard let data else { return nil }
+        let box = try AES.GCM.SealedBox(combined: data)
+        return try AES.GCM.open(box, using: self.key,
+                                 authenticating: EncryptionScheme.v2_hybridPQ.aad)
+    }
+
+    func decryptLegacy(data: Data?) throws -> Data?                          { nil }
+    func encrypt(message: Data, using material: Data?) throws -> Data?       { nil }
+    func decrypt(message: Data, using material: Data?) throws -> Data?       { nil }
+    func sign(data: Data?) -> String                                         { "" }
 }

@@ -208,91 +208,97 @@ class ContactManager {
     /// - Parameter contact: Custom contact. Thread safe.
     /// - Parameter currentDepth: Secure Mode depth at creation time. 0 = true layer (default).
     func save(contact: Contact.Draft, currentDepth: Int = 0) throws {
+        try self.save(contact: contact, currentDepth: currentDepth, using: self.cryptoManager)
+    }
+
+    /// Overload used by Secure Mode activation to re-encrypt safe contacts under the staged key.
+    /// Identical to `save(contact:currentDepth:)` but uses `crypto` instead of `self.cryptoManager`.
+    func save(contact: Contact.Draft, currentDepth: Int = 0, using crypto: any CryptoProtocol) throws {
         let encryptedIdentifier = contact.identifier
-        let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedFamilyName = try self.cryptoManager.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedMiddleName = try self.cryptoManager.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedNamePrefix = try self.cryptoManager.encrypt(data: contact.namePrefix.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedNameSuffix = try self.cryptoManager.encrypt(data: contact.nameSuffix.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedNickname = try self.cryptoManager.encrypt(data: contact.nickname.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedOrganizationName = try self.cryptoManager.encrypt(data: contact.organizationName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedDepartmentName = try self.cryptoManager.encrypt(data: contact.departmentName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedJobTitle = try self.cryptoManager.encrypt(data: contact.jobTitle.data(using: .utf8))?.base64EncodedString() ?? ""
-        
-        let encryptedImageData = try self.cryptoManager.encrypt(data: contact.imageData)
-        let encryptedThumbnailImageData = try self.cryptoManager.encrypt(data: contact.thumbnailImageData)
-        
+        let encryptedGivenName = try crypto.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedFamilyName = try crypto.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedMiddleName = try crypto.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedNamePrefix = try crypto.encrypt(data: contact.namePrefix.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedNameSuffix = try crypto.encrypt(data: contact.nameSuffix.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedNickname = try crypto.encrypt(data: contact.nickname.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedOrganizationName = try crypto.encrypt(data: contact.organizationName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedDepartmentName = try crypto.encrypt(data: contact.departmentName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedJobTitle = try crypto.encrypt(data: contact.jobTitle.data(using: .utf8))?.base64EncodedString() ?? ""
+
+        let encryptedImageData = try crypto.encrypt(data: contact.imageData)
+        let encryptedThumbnailImageData = try crypto.encrypt(data: contact.thumbnailImageData)
+
         var encryptedEmailAddresses: [CNLabeledValue<NSString>] = []
-        
+
         contact.emailAddresses.forEach { email in
             do {
-                let label = try self.cryptoManager.encrypt(data: email.label.data(using: .utf8))?.base64EncodedString() ?? ""
-                let value = try self.cryptoManager.encrypt(data: String(email.value).data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let label = try crypto.encrypt(data: email.label.data(using: .utf8))?.base64EncodedString() ?? ""
+                let value = try crypto.encrypt(data: String(email.value).data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedEmailAddresses.append(CNLabeledValue(label: label, value: value as NSString))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
+
         var encryptedPhoneNumbers: [CNLabeledValue<CNPhoneNumber>] = []
-        
+
         contact.phoneNumbers.forEach { phoneNumber in
             do {
-                let label = try self.cryptoManager.encrypt(data: phoneNumber.label.data(using: .utf8))?.base64EncodedString() ?? ""
-                let value = try self.cryptoManager.encrypt(data: phoneNumber.value.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let label = try crypto.encrypt(data: phoneNumber.label.data(using: .utf8))?.base64EncodedString() ?? ""
+                let value = try crypto.encrypt(data: phoneNumber.value.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedPhoneNumbers.append(CNLabeledValue(label: label, value: CNPhoneNumber(stringValue: value)))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
+
         var encryptedPostalAddresses: [Contact.Profile.PostalAddress] = []
-        
+
         contact.postalAddresses.forEach { postalAddress in
             do {
-                let encryptedStreet = try self.cryptoManager.encrypt(data: postalAddress.street.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedCity = try self.cryptoManager.encrypt(data: postalAddress.city.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedState = try self.cryptoManager.encrypt(data: postalAddress.state.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedPostalCode = try self.cryptoManager.encrypt(data: postalAddress.postalCode.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedCountry = try self.cryptoManager.encrypt(data: postalAddress.country.name.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedIsoCountryCode = try self.cryptoManager.encrypt(data: postalAddress.country.code.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let encryptedStreet = try crypto.encrypt(data: postalAddress.street.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedCity = try crypto.encrypt(data: postalAddress.city.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedState = try crypto.encrypt(data: postalAddress.state.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedPostalCode = try crypto.encrypt(data: postalAddress.postalCode.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedCountry = try crypto.encrypt(data: postalAddress.country.name.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedIsoCountryCode = try crypto.encrypt(data: postalAddress.country.code.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 let mutable = CNMutablePostalAddress()
-                
+
                 mutable.street = encryptedStreet
                 mutable.city = encryptedCity
                 mutable.state = encryptedState
                 mutable.postalCode = encryptedPostalCode
                 mutable.country = encryptedCountry
                 mutable.isoCountryCode = encryptedIsoCountryCode
-                
-                let encryptedLabel = try self.cryptoManager.encrypt(data: postalAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+
+                let encryptedLabel = try crypto.encrypt(data: postalAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedPostalAddresses.append(Contact.Profile.PostalAddress(from: CNLabeledValue<CNMutablePostalAddress>(label: encryptedLabel, value: mutable)))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
+
         var encryptedURLs: [Contact.Profile.URLAddress] = []
-        
+
         contact.urlAddresses.forEach { urlAddress in
             do {
-                let encryptedLabel = try self.cryptoManager.encrypt(data: urlAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedLabel = try crypto.encrypt(data: urlAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
                 let url = urlAddress.value as String
-                let encryptedURL = try self.cryptoManager.encrypt(data: url.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let encryptedURL = try crypto.encrypt(data: url.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedURLs.append(Contact.Profile.URLAddress(label: encryptedLabel, value: encryptedURL))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
-        let encryptedBirthday: String = try self.cryptoManager.encrypt(data: contact.birthday?.data(using: .utf8))?.base64EncodedString() ?? ""
-        
-        let encryptedNote = try self.cryptoManager.encrypt(data: contact.note.data(using: .utf8))?.base64EncodedString() ?? ""
+
+        let encryptedBirthday: String = try crypto.encrypt(data: contact.birthday?.data(using: .utf8))?.base64EncodedString() ?? ""
+
+        let encryptedNote = try crypto.encrypt(data: contact.note.data(using: .utf8))?.base64EncodedString() ?? ""
         
         /// Storing
         
@@ -411,6 +417,13 @@ class ContactManager {
         contact.deletionToken = try Data([1]).encrypt()
         try self.modelContext.save()
         self.syncShareIndex()
+    }
+
+    /// Hard-deletes a single Contact.Profile row from the store.
+    /// Only for use in Secure Mode activation — normal deletions use `deleteContact(:)`.
+    func hardDeleteContact(_ profile: Contact.Profile) throws {
+        self.modelContext.delete(profile)
+        try self.modelContext.save()
     }
 
     /// Hard-deletes all contacts, including soft-deleted rows. Used for panic wipe only.

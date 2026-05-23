@@ -15,6 +15,8 @@ struct SecureModeSetupFlow: View {
 
     @Environment(\.dismiss)             private var dismiss
     @Environment(Manager.Security.self) private var security
+    @Environment(ContactManager.self)   private var contactManager
+    @Environment(VaultManager.self)     private var vaultManager
 
     @State private var path            = NavigationPath()
     @State private var collectedNormal = ""
@@ -75,7 +77,9 @@ struct SecureModeSetupFlow: View {
                         Task {
                             try? await self.security.activateSecureMode(
                                 confirmingEntryPIN: normal,
-                                duressPIN:          duress
+                                duressPIN:          duress,
+                                contactManager:     self.contactManager,
+                                vaultManager:       self.vaultManager
                             )
                             self.isActivating = false
                             self.dismiss()
