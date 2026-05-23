@@ -19,6 +19,7 @@ struct SecureModeSetupFlow: View {
     @State private var path            = NavigationPath()
     @State private var collectedNormal = ""
     @State private var collectedDuress = ""
+    @State private var isActivating    = false
 
     private enum Step: Hashable { case pinSetup, contacts, summary }
 
@@ -66,13 +67,19 @@ struct SecureModeSetupFlow: View {
 
                 case .summary:
                     SummaryView(onActivate: {
-                        try? self.security.activateSecureMode(
-                            confirmingEntryPIN: self.collectedNormal,
-                            duressPIN:          self.collectedDuress
-                        )
+                        self.isActivating = true
+                        let normal = self.collectedNormal
+                        let duress = self.collectedDuress
                         self.collectedNormal = ""
                         self.collectedDuress = ""
-                        self.dismiss()
+                        Task {
+                            try? await self.security.activateSecureMode(
+                                confirmingEntryPIN: normal,
+                                duressPIN:          duress
+                            )
+                            self.isActivating = false
+                            self.dismiss()
+                        }
                     })
                     .navigationTitle("Review")
                     .navigationBarTitleDisplayMode(.inline)
@@ -84,6 +91,33 @@ struct SecureModeSetupFlow: View {
                 }
             }
         }
+        .overlay {
+            if self.isActivating {
+                ActivatingOverlay()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: self.isActivating)
+    }
+}
+
+// MARK: - Activating overlay
+
+private struct ActivatingOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 16) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                    .scaleEffect(1.2)
+                Text("Securing your data…")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .allowsHitTesting(true) // absorbs all taps
     }
 }
 

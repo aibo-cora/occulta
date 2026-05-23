@@ -176,7 +176,7 @@ extension Manager {
         ///
         /// Also resets `persistedDepth` to gate-active at depth 0 so a prior coercion-
         /// lowered gate is automatically restored when Secure Mode is (re-)activated.
-        func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) throws {
+        func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) async throws {
             guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
             let config = try self.requireConfig()
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
