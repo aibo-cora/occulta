@@ -14,6 +14,8 @@ Because Occulta requires no phone number, no server account, and no password, th
 
 ## Table of Contents
 
+- [Who It's For](#who-its-for)
+- [Threats](#threats)
 - [How It Works](#how-it-works)
 - [Cryptographic Protocol](#cryptographic-protocol)
 - [Post-Quantum Protection](#post-quantum-protection)
@@ -36,6 +38,36 @@ Because Occulta requires no phone number, no server account, and no password, th
 - [Building](#building)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## Who It's For
+
+Medical staff, lawyers, financial advisors, accountants — anyone whose work is legally privileged or under regulatory protection. When that information moves through a messaging platform, it travels through infrastructure the platform can read, a company can scan, and a subpoena can reach. Occulta removes the infrastructure: the keys never touch a server, so there is nothing to compel.
+
+Journalists and travelers who operate in environments where sensitive information carries real risk. Cryptographic identity in Occulta is bound to hardware that cannot be reached remotely — your keys are on your device, and only your device.
+
+People who don't want their private information readable by third parties. You don't need a specific adversary to want your information to be yours. Anything encrypted in Occulta is inaccessible to the platform it travels through, the company that built it, and any legal process served on that company — because none of them hold the key.
+
+The protection Occulta offers is worth having for anyone. Claiming it means meeting people in person to exchange keys — no shortcuts, no remote setup. The people who do that get something no cloud account can offer.
+
+---
+
+## Threats
+
+**The key custodian problem**
+
+Most encrypted messaging tools share a structural problem: someone else is managing your keys. A server vouches for identity. A company mediates trust. That means the company can be compelled, the server can be breached, and the jurisdiction can reach the infrastructure.
+
+Occulta inverts this. You collect keys in person, at ≤ 25 cm. No server is involved at any step. No company can be compelled to produce what it never held.
+
+**Account takeover and impersonation**
+
+Messaging accounts are compromised through SIM-swapping, credential phishing, and platform-level breaches. When an account is hijacked through any of these vectors, most encrypted tools offer no recourse: the attacker inherits the account and with it the trust your contacts placed in it.
+
+Occulta separates account ownership from cryptographic identity. An attacker who takes over a messaging account can post as you — but they cannot produce a valid `.occ` bundle, because the private key that composes and opens those bundles lives in the Secure Enclave of your physical device. They cannot read inbound `.occ` bundles either.
+
+A stolen account goes silent in Occulta. Your contacts stop receiving valid bundles from "you," and that silence is the signal. A silent takeover becomes a visible one.
 
 ---
 
