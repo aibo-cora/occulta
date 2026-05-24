@@ -33,13 +33,19 @@ private func makeSecurity() throws -> Manager.Security {
 
 /// Creates a security manager plus the contact/vault managers needed by `activateSecureMode`.
 /// The vault manager starts locked (no LAContext) so vault PEK extraction is skipped.
+/// A per-invocation temp directory is used for blob storage so concurrent tests don't
+/// cross-contaminate each other's blob files.
 @MainActor
 private func makeSecurityAndManagers() throws -> (security: Manager.Security,
                                                     container: ModelContainer,
                                                     contacts: ContactManager,
                                                     vault: VaultManager) {
     let container = try makeContainer()
-    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+    let blobDir   = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: blobDir, withIntermediateDirectories: true)
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager(),
+                                     blobDirectory: blobDir)
     let contacts  = ContactManager(modelContainer: container)
     let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return (security, container, contacts, vault)
@@ -48,7 +54,7 @@ private func makeSecurityAndManagers() throws -> (security: Manager.Security,
 // MARK: - State transitions
 
 @MainActor
-@Suite("Security — State transitions")
+@Suite("Security — State transitions", .serialized)
 struct SecurityStateTests {
 
     @Test func noPIN_verify_throwsNotConfigured() throws {
@@ -138,7 +144,8 @@ struct SecurityStateTests {
         try s.configurePIN("123456")
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        try s.deactivateSecureMode(confirmingEntryPIN: "123456")
+        try await s.deactivateSecureMode(confirmingEntryPIN: "123456",
+                                         contactManager: cm, vaultManager: vm)
         #expect(s.state == .pinOnly)
     }
 
@@ -148,15 +155,17 @@ struct SecurityStateTests {
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // → .duress
-        try s.deactivateSecureMode(confirmingEntryPIN: "123456")
+        try await s.deactivateSecureMode(confirmingEntryPIN: "123456",
+                                         contactManager: cm, vaultManager: vm)
         #expect(s.state == .pinOnly)
     }
 
-    @Test func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() throws {
-        let s = try makeSecurity()
+    @Test func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
-        #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
-            try s.deactivateSecureMode(confirmingEntryPIN: "123456")
+        await #expect(throws: Manager.Security.SecurityError.invalidStateTransition) {
+            try await s.deactivateSecureMode(confirmingEntryPIN: "123456",
+                                             contactManager: cm, vaultManager: vm)
         }
     }
 }

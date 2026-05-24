@@ -134,6 +134,8 @@ struct Settings: View {
     
     private struct SecuritySettings: View {
         @Environment(Manager.Security.self) private var security
+        @Environment(ContactManager.self)   private var contactManager
+        @Environment(VaultManager.self)     private var vaultManager
         @Environment(\.dismiss) private var dismiss
 
         @State private var showingPINSheet          = false
@@ -231,7 +233,15 @@ struct Settings: View {
             // Deactivate Secure Mode: confirm normal PIN (no counter mutation)
             .sheet(isPresented: self.$showingDeactivateSheet) {
                 PINEntry(mode: .verifyNormal, onNormal: { pin in
-                    try? self.security.deactivateSecureMode(confirmingEntryPIN: pin)
+                    let cm = self.contactManager
+                    let vm = self.vaultManager
+                    Task {
+                        try? await self.security.deactivateSecureMode(
+                            confirmingEntryPIN: pin,
+                            contactManager:     cm,
+                            vaultManager:       vm
+                        )
+                    }
                     self.showingDeactivateSheet = false
                 })
                 .environment(self.security)

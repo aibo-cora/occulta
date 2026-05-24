@@ -208,8 +208,12 @@ extension Manager {
         /// **Caller contract:** zero the `pekBytes` fields in all `VaultPEKRecord`
         /// instances after this method returns — those bytes are value-typed and
         /// cannot be zeroed from inside this method.
-        static func seal(_ payload: BlobPayload, blobKey: SymmetricKey) throws {
-            guard let dir = self.blobDirectory() else { throw BlobError.encryptionFailed }
+        ///
+        /// - Parameter directory: Override the default app-group blob directory.
+        ///   Pass `nil` (default) in production; pass a per-test temp URL in unit tests
+        ///   to avoid cross-test blob collisions when tests run concurrently.
+        static func seal(_ payload: BlobPayload, blobKey: SymmetricKey, directory: URL? = nil) throws {
+            guard let dir = directory ?? self.blobDirectory() else { throw BlobError.encryptionFailed }
 
             // Replace existing blob (no-op or previous real payload).
             if let existing = self.findBlob(in: dir) {
@@ -244,8 +248,11 @@ extension Manager {
         /// directory is empty or was never written). Throws `BlobError.decryptionFailed`
         /// when the file exists but cannot be opened with `blobKey` — wrong key or
         /// corrupt data. Both are fatal for the deactivation sequence.
-        static func unseal(blobKey: SymmetricKey) throws -> BlobPayload {
-            guard let dir = self.blobDirectory(),
+        ///
+        /// - Parameter directory: Override the default app-group blob directory.
+        ///   Must match the `directory` passed to `seal`. Pass `nil` (default) in production.
+        static func unseal(blobKey: SymmetricKey, directory: URL? = nil) throws -> BlobPayload {
+            guard let dir = directory ?? self.blobDirectory(),
                   let url = self.findBlob(in: dir)
             else { throw BlobError.noBlobFound }
 
@@ -254,8 +261,12 @@ extension Manager {
                   let plaintext = try? AES.GCM.open(box, using: blobKey)
             else { throw BlobError.decryptionFailed }
 
-            // JSONDecoder stops at the closing `}` and ignores the bucket-padding zeros.
-            return try JSONDecoder().decode(BlobPayload.self, from: plaintext)
+            // Strip bucket-padding zeros before decoding. seal() pads the plaintext to the
+            // nearest power-of-2 bucket size using zero bytes; NSJSONSerialization rejects
+            // any trailing bytes after valid JSON. All data fields in BlobPayload are
+            // base64-encoded so the JSON itself never contains 0x00 bytes.
+            let jsonEnd = plaintext.firstIndex(of: 0) ?? plaintext.endIndex
+            return try JSONDecoder().decode(BlobPayload.self, from: plaintext[..<jsonEnd])
         }
 
         // MARK: - Private helpers

@@ -60,11 +60,15 @@ extension Manager {
 
         // MARK: - Private
 
-        private let modelContext: ModelContext
-        private let keyManager:   any KeyManagerProtocol
+        private let modelContext:    ModelContext
+        private let keyManager:      any KeyManagerProtocol
         /// SwiftData store URL for WAL checkpoint during key rotation.
         /// `nil` in tests (TestKeyManager, in-memory store).
-        private let storeURL:     URL?
+        private let storeURL:        URL?
+        /// Override for the blob directory used by `Manager.Blob.seal/unseal`.
+        /// `nil` (default) → production app-group path.
+        /// Non-nil → per-test temp directory that avoids cross-test blob collisions.
+        private let blobDirectory:   URL?
 
         private var wrongPINCount          = 0
         private var consecutiveDuressCount = 0
@@ -83,11 +87,13 @@ extension Manager {
         init(modelContainer: ModelContainer,
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
+             blobDirectory: URL? = nil,
              enabled: Bool = true) {
-            let context       = ModelContext(modelContainer)
-            self.modelContext = context
-            self.keyManager   = keyManager
-            self.storeURL     = storeURL
+            let context          = ModelContext(modelContainer)
+            self.modelContext    = context
+            self.keyManager      = keyManager
+            self.storeURL        = storeURL
+            self.blobDirectory   = blobDirectory
 
             // Feature-flag off path: skip all DB reads and sit permanently in .noPIN.
             // requiresPIN = false → overlay never shown. isRestricted = false →
@@ -271,28 +277,34 @@ extension Manager {
 
                 // ── Step 7: Seal blob ────────────────────────────────────────────────
                 let payload = BlobPayload(contacts: blobContacts, vaultPEKs: blobPEKs)
-                try Manager.Blob.seal(payload, blobKey: blobKey)
+                try Manager.Blob.seal(payload, blobKey: blobKey, directory: self.blobDirectory)
 
                 // ── Step 8: Re-encrypt safe contacts + vault depth fields ─────────────
                 let stagedCrypto = StagedCryptoManager(key: stagedKey)
                 let aad          = EncryptionScheme.v2_hybridPQ.aad
 
                 for profile in safeProfiles {
-                    let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
-                    try contactManager.save(contact: draft, using: stagedCrypto)
-
-                    // Re-encrypt visibleThroughDepth with the staged key.
+                    // Pre-fix all fields that save(contact:using:) does not touch
+                    // (visibleThroughDepth, signedAttributes, contactPublicKeys).
+                    // These must be staged before the modelContext.save() inside
+                    // save(contact:using:) so they land in the same write batch.
+                    // Key records are fixed before convertToMutableCopy — convertToMutableCopy
+                    // will produce nil keys for them (canonical-key decrypt fails on
+                    // staged-key ciphertext), but the UPDATE save path ignores keys.
                     if let old = profile.visibleThroughDepth, let plain = old.decrypt() {
                         profile.visibleThroughDepth = try AES.GCM.seal(
                             plain, using: stagedKey, authenticating: aad
                         ).combined
                     }
-                    // Re-encrypt signedAttributes if present.
                     if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
                         profile.signedAttributes = try AES.GCM.seal(
                             plain, using: stagedKey, authenticating: aad
                         ).combined
                     }
+                    try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
+
+                    let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
+                    try contactManager.save(contact: draft, using: stagedCrypto)
                 }
                 // Re-encrypt VaultEntry.visibleThroughDepth (encrypted under local DB key).
                 for entry in try vaultManager.fetchAllEntries() {
@@ -330,12 +342,18 @@ extension Manager {
             self.state = .active
         }
 
-        /// Verifies the normal PIN, removes the duress verifier, and transitions
-        /// `.active` / `.duress` → `.pinOnly`.
+        /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
+        /// restores sensitive contacts, and transitions `.active` / `.duress` → `.pinOnly`.
         ///
-        /// Also resets `persistedDepth` to gate-active at depth 0 so the overlay
-        /// is guaranteed active after deactivation, regardless of any prior coercion state.
-        func deactivateSecureMode(confirmingEntryPIN: String) throws {
+        /// Mirror of `activateSecureMode`: creates a staged key, re-encrypts everything
+        /// under it (safe contacts + restored blob contacts + vault depth fields), commits,
+        /// then replaces the real blob with a fresh no-op payload.
+        func deactivateSecureMode(
+            confirmingEntryPIN: String,
+            contactManager:     ContactManager,
+            vaultManager:       VaultManager
+        ) async throws {
+            // ── Step 1: State guard + PIN verification ──────────────────────────────
             guard self.state == .active || self.state == .duress else {
                 throw SecurityError.invalidStateTransition
             }
@@ -349,11 +367,99 @@ extension Manager {
                                          verifier: verifier, seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
-            // TODO: blob unwind (Step 4)
+            // ── Step 2: Derive blob key + unseal ────────────────────────────────────
+            guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
+                throw SecurityError.keyDerivationFailed
+            }
+            let payload = try Manager.Blob.unseal(blobKey: blobKey, directory: self.blobDirectory)
 
+            // ── Step 3: Create staged key (point of no return begins) ───────────────
+            let stagedKey = try self.keyManager.createStagedLocalDBKey()
+            do {
+                let stagedCrypto = StagedCryptoManager(key: stagedKey)
+                let aad          = EncryptionScheme.v2_hybridPQ.aad
+
+                // ── Step 4: Re-encrypt safe contacts (currently in DB) ───────────────
+                // Pre-fix visibleThroughDepth, signedAttributes, and contactPublicKeys
+                // BEFORE the save so they land in the same modelContext.save() batch.
+                for profile in try contactManager.fetchAllContacts() {
+                    if let old = profile.visibleThroughDepth, let plain = old.decrypt() {
+                        profile.visibleThroughDepth = try AES.GCM.seal(
+                            plain, using: stagedKey, authenticating: aad
+                        ).combined
+                    }
+                    if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
+                        profile.signedAttributes = try AES.GCM.seal(
+                            plain, using: stagedKey, authenticating: aad
+                        ).combined
+                    }
+                    try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
+
+                    let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
+                    try contactManager.save(contact: draft, using: stagedCrypto)
+                }
+
+                // ── Step 5: Re-insert sensitive contacts from blob ───────────────────
+                // INSERT path in save(contact:using:) writes visibleThroughDepth and
+                // contactPublicKeys with the canonical key. Fetch via self.modelContext
+                // after each INSERT to overwrite those fields with staged-key encryption.
+                let depthData        = try JSONEncoder().encode(Int.max)
+                let visibleEncrypted = try AES.GCM.seal(
+                    depthData, using: stagedKey, authenticating: aad
+                ).combined
+
+                for record in payload.contacts {
+                    try contactManager.save(contact: record.draft, using: stagedCrypto)
+
+                    let fetchDesc = FetchDescriptor<Contact.Profile>(
+                        predicate: #Predicate { $0.identifier == record.draft.identifier }
+                    )
+                    guard let restored = try self.modelContext.fetch(fetchDesc).first else { continue }
+                    restored.visibleThroughDepth = visibleEncrypted
+                    if let attrs = record.signedAttributes, !attrs.isEmpty {
+                        restored.signedAttributes = try AES.GCM.seal(
+                            attrs, using: stagedKey, authenticating: aad
+                        ).combined
+                    }
+                    try Self.reEncryptKeyRecords(for: restored, using: stagedKey, aad: aad)
+                }
+                if !payload.contacts.isEmpty {
+                    try self.modelContext.save()
+                }
+
+                // ── Step 6: Restore all vault entries to visible under staged key ────
+                // Sets every visibleThroughDepth to Int.max (always visible) so deactivation
+                // clears depth-1 hiding. Falls back to nil (also always visible) implicitly
+                // if no entries exist.
+                let allVaultEntries = try vaultManager.fetchAllEntries()
+                for entry in allVaultEntries {
+                    entry.visibleThroughDepth = visibleEncrypted
+                }
+                if !allVaultEntries.isEmpty {
+                    try vaultManager.modelContext.save()
+                }
+
+                // ── Step 7: WAL checkpoint ────────────────────────────────────────────
+                if let url = self.storeURL {
+                    Self.walCheckpoint(at: url)
+                }
+
+                // ── Step 8: Commit staged key (hard point of no return) ───────────────
+                try self.keyManager.commitStagedLocalDBKey()
+
+                // ── Step 9: Delete superseded artefacts ───────────────────────────────
+                self.keyManager.deleteSupersededLocalDBArtefacts()
+
+            } catch {
+                self.keyManager.rollbackStagedLocalDBKey()
+                throw error
+            }
+
+            // Remove duress verifier, reset gate, persist config, replace blob.
             config.sealedDuressVerifier = nil
             try config.writeLockGate(depth: 0, gateActive: true)
             try self.modelContext.save()
+            Manager.Blob.rewriteNoOpBlob()
             self.resetCounters()
             self.currentDepth   = 0
             self.appLockEnabled = true
@@ -610,6 +716,50 @@ extension Manager {
             guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
             defer { sqlite3_close(db) }
             sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+        }
+
+        /// Re-encrypts every field of every `Contact.Profile.Key` child of `profile`
+        /// from the current canonical key to `key` (the staged key).
+        ///
+        /// `save(contact:using:)` never touches `contactPublicKeys` in its UPDATE path
+        /// and encrypts them with `self.cryptoManager` (canonical) in its INSERT path.
+        /// This helper closes that gap for both activation (safe contacts) and deactivation
+        /// (safe + restored blob contacts).
+        ///
+        /// Fields whose decrypt attempt returns `nil` are left unchanged — this covers
+        /// nil/empty values and records that are already staged-key-encrypted (idempotent
+        /// on second call).
+        private static func reEncryptKeyRecords(
+            for profile: Contact.Profile,
+            using key: SymmetricKey,
+            aad: Data
+        ) throws {
+            for keyRecord in (profile.contactPublicKeys ?? []) {
+                if let plain = keyRecord.material?.decrypt() {
+                    keyRecord.material = try AES.GCM.seal(
+                        plain, using: key, authenticating: aad
+                    ).combined
+                }
+                if !keyRecord.owner.isEmpty, let plain = keyRecord.owner.decrypt(),
+                   let combined = try AES.GCM.seal(plain, using: key, authenticating: aad).combined {
+                    keyRecord.owner = combined
+                }
+                if let plain = keyRecord.acquiredAt?.decrypt() {
+                    keyRecord.acquiredAt = try AES.GCM.seal(
+                        plain, using: key, authenticating: aad
+                    ).combined
+                }
+                if let plain = keyRecord.expiredOn?.decrypt() {
+                    keyRecord.expiredOn = try AES.GCM.seal(
+                        plain, using: key, authenticating: aad
+                    ).combined
+                }
+                if let plain = keyRecord.quantumKeyMaterialEncrypted?.decrypt() {
+                    keyRecord.quantumKeyMaterialEncrypted = try AES.GCM.seal(
+                        plain, using: key, authenticating: aad
+                    ).combined
+                }
+            }
         }
     }
 }
