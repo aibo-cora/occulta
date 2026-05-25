@@ -235,12 +235,19 @@ struct Settings: View {
                 PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                     let cm = self.contactManager
                     let vm = self.vaultManager
+                    
                     Task {
-                        try? await self.security.deactivateSecureMode(
-                            confirmingEntryPIN: pin,
-                            contactManager:     cm,
-                            vaultManager:       vm
-                        )
+                        do {
+                            try await self.security.deactivateSecureMode(
+                                confirmingEntryPIN: pin,
+                                contactManager:     cm,
+                                vaultManager:       vm
+                            )
+                        } catch {
+                            #if DEBUG
+                            debugPrint("Secure mode deactivate failed: \(error)")
+                            #endif
+                        }
                     }
                     self.showingDeactivateSheet = false
                 })

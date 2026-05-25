@@ -211,7 +211,7 @@ struct ComposableMessage: View {
         struct MessageBubble: View {
             let file: Occulta.File
             let mode: Conversation.Modes
-            
+
             var body: some View {
                 HStack(alignment: .center) {
                     Spacer()
@@ -273,25 +273,33 @@ struct ComposableMessage: View {
                     /// Display image.
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
                         VStack(spacing: 8) {
-                            AsyncImage(url: self.file.url) { image in
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            } placeholder: {
-                                ProgressView()
+                            AsyncImage(url: self.file.url) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                case .failure(let error):
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "exclamationmark.triangle")
+                                            .foregroundStyle(.secondary)
+                                        Text(error.localizedDescription)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.center)
+                                    }
+                                case .empty:
+                                    ProgressView()
+                                @unknown default:
+                                    ProgressView()
+                                }
                             }
                             .frame(maxWidth: 260, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            
+
                             Text(name)
                                 .font(.caption)
                                 .foregroundStyle(.white)
-                        }
-                        .onAppear {
-                            let resources = try? self.file.url?.resourceValues(forKeys: [.fileSizeKey])
-                            let size = UInt64(resources?.fileSize ?? 0)
-                            
-                            debugPrint("Showing async image..., url=\(String(describing: self.file.url)), size=\(size), file=\(self.file)")
                         }
                     } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
                         /// Display video

@@ -154,3 +154,46 @@ No code change. The call is correct and must stay.
 
 ### Resolution
 In `OccultaApp.init()`, read `AppLayerConfig` from the already-initialized `ModelContainer` (no SE key required) and check whether a duress verifier is present before calling `maintainNoOpBlob`. A duress verifier indicates Secure Mode is active and the blob holds real data. If active, skip `maintainNoOpBlob` entirely. After deactivation, `rewriteNoOpBlob()` is called explicitly to install a fresh no-op, so the next launch will not see a stale real blob.
+
+---
+
+## Bug 12 — `visibleThroughDepth` watermark survives deactivation
+
+**Status:** Closed (Fixed)
+
+### Severity: Low-Medium
+After Secure Mode activation, every contact that existed at activation time has `visibleThroughDepth` set to encrypted `Int.max` (migrated from `nil` in Step 5 of `activateSecureMode`). `deactivateSecureMode` re-encrypted this value under the new staged key but never cleared it. Even after deactivation, those contacts permanently retain a non-null `visibleThroughDepth` field — a forensic watermark detectable without decryption. An examiner inspecting the SQLite file after deactivation could identify which contacts predated Secure Mode activation by the presence of this field.
+
+The same issue applied to vault entries restored in Step 6 of deactivation.
+
+### Root Cause
+`deactivateSecureMode` Step 4 re-encrypted the existing `visibleThroughDepth` value rather than erasing it. `nil` and `Int.max` are functionally identical (`isVisible` returns `true` for both), so clearing to `nil` loses no information but removes the activation-era artefact.
+
+### Resolution
+Three sites in `deactivateSecureMode` updated to set `visibleThroughDepth = nil` instead of re-encrypting:
+- **Step 4** (safe contacts re-encryption loop): `profile.visibleThroughDepth = nil` unconditionally, replacing the `AES.GCM.seal` block.
+- **Step 5** (sensitive contacts restored from blob): `restored.visibleThroughDepth = nil`, replacing assignment of `visibleEncrypted`.
+- **Step 6** (vault entries): `entry.visibleThroughDepth = nil`, replacing assignment of `visibleEncrypted`.
+
+The `depthData` / `visibleEncrypted` intermediates are now entirely unused and were removed.
+
+---
+
+## Bug 13 — Hard-delete of sensitive contacts fails silently after WAL checkpoint
+
+**Status:** Open
+
+### Severity: High
+After `activateSecureMode` completes, sensitive contacts (those with `visibleThroughDepth < 1`) are supposed to be removed from the SQLite database — their data is sealed in the blob, and the DB hard-delete is the forensic protection that prevents a duress-mode examiner from finding them at the SQLite layer. In practice the hard-delete silently fails: sensitive contacts remain in the DB after activation, meaning the forensic protection does not apply even though depth filtering correctly hides them from the UI in duress mode.
+
+The hard-delete failure was confirmed empirically: with the blob destroyed (Bug 11, now fixed) and a missing-blob fallback that returns `BlobPayload(contacts: [])`, sensitive contacts should be unrecoverable if the delete had succeeded — yet they remain visible in the app after activation, proving they were never removed from the database.
+
+### Root Cause
+Step 9 of `activateSecureMode` calls `walCheckpoint(at:)`, which opens a *second* SQLite connection to the same database file and runs `PRAGMA wal_checkpoint(TRUNCATE)`. This external write-level operation disturbs the SwiftData persistent store coordinator's internal state: SwiftData detects an external change to the database and can invalidate or re-merge the in-memory context, wiping the pending deletion marks that a subsequent `modelContext.delete(profile)` would rely on. The `try?` wrapping the hard-delete loop in Step 11 silently swallows the resulting error, leaving sensitive contacts in the database encrypted under the new canonical key.
+
+Note: depth filtering (`isVisible(contact, atDepth:)`) is unaffected — the contacts remain correctly hidden in duress mode at the *UI* layer. The failure is forensic: a raw SQLite examination during duress exposure would reveal the sensitive contact rows.
+
+### Resolution
+Pending. Two viable approaches:
+- **Option A (simpler):** Move the WAL checkpoint from Step 9 to *after* the hard-delete loop (Step 11). The hard-delete runs while the SwiftData context is still coherent, before the external SQLite connection disturbs it. The hard-delete still happens after `commitStagedLocalDBKey()`, preserving Bug 7's invariant.
+- **Option B:** Replace the SwiftData hard-delete with a direct SQLite `DELETE` via a dedicated connection (same pattern as `walCheckpoint`). Bypasses context state entirely; requires manual cascade handling for related records (`PhoneNumber`, `EmailAddress`, `PostalAddress`, `URLAddress`, `Key`).

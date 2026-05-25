@@ -223,6 +223,7 @@ extension Manager {
             // ── Step 2: Create staged local DB key ──────────────────────────────────
             // On any failure past this point we rollback staged artefacts.
             let stagedKey = try self.keyManager.createStagedLocalDBKey()
+            
             do {
                 // ── Step 3: Derive blob key ──────────────────────────────────────────
                 guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
@@ -372,7 +373,16 @@ extension Manager {
             guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
                 throw SecurityError.keyDerivationFailed
             }
-            let payload = try Manager.Blob.unseal(blobKey: blobKey, directory: self.blobDirectory)
+            let payload: BlobPayload
+            do {
+                payload = try Manager.Blob.unseal(blobKey: blobKey, directory: self.blobDirectory)
+            } catch {
+                // Blob is missing or corrupted (e.g. overwritten by maintainNoOpBlob after 24 h).
+                // Sensitive contacts that were hard-deleted during activation are unrecoverable,
+                // but continuing with an empty list is strictly better than being permanently
+                // stuck: safe contacts in the DB are intact and the key rotation still runs.
+                payload = BlobPayload(contacts: [])
+            }
 
             // ── Step 3: Create staged key (point of no return begins) ───────────────
             let stagedKey = try self.keyManager.createStagedLocalDBKey()
@@ -383,12 +393,11 @@ extension Manager {
                 // ── Step 4: Re-encrypt safe contacts (currently in DB) ───────────────
                 // Pre-fix visibleThroughDepth, signedAttributes, and contactPublicKeys
                 // BEFORE the save so they land in the same modelContext.save() batch.
+                // visibleThroughDepth is set to nil (not re-encrypted) so the activation
+                // watermark is erased: nil is the pre-activation default and functionally
+                // identical to Int.max — isVisible returns true for both.
                 for profile in try contactManager.fetchAllContacts() {
-                    if let old = profile.visibleThroughDepth, let plain = old.decrypt() {
-                        profile.visibleThroughDepth = try AES.GCM.seal(
-                            plain, using: stagedKey, authenticating: aad
-                        ).combined
-                    }
+                    profile.visibleThroughDepth = nil
                     if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
                         profile.signedAttributes = try AES.GCM.seal(
                             plain, using: stagedKey, authenticating: aad
@@ -403,12 +412,8 @@ extension Manager {
                 // ── Step 5: Re-insert sensitive contacts from blob ───────────────────
                 // INSERT path in save(contact:using:) writes visibleThroughDepth and
                 // contactPublicKeys with the canonical key. Fetch via self.modelContext
-                // after each INSERT to overwrite those fields with staged-key encryption.
-                let depthData        = try JSONEncoder().encode(Int.max)
-                let visibleEncrypted = try AES.GCM.seal(
-                    depthData, using: stagedKey, authenticating: aad
-                ).combined
-
+                // after each INSERT to clear visibleThroughDepth (nil = always visible,
+                // erasing the activation watermark) and fix contactPublicKeys.
                 for record in payload.contacts {
                     try contactManager.save(contact: record.draft, using: stagedCrypto)
 
@@ -416,7 +421,7 @@ extension Manager {
                         predicate: #Predicate { $0.identifier == record.draft.identifier }
                     )
                     guard let restored = try self.modelContext.fetch(fetchDesc).first else { continue }
-                    restored.visibleThroughDepth = visibleEncrypted
+                    restored.visibleThroughDepth = nil
                     if let attrs = record.signedAttributes, !attrs.isEmpty {
                         restored.signedAttributes = try AES.GCM.seal(
                             attrs, using: stagedKey, authenticating: aad
@@ -429,12 +434,11 @@ extension Manager {
                 }
 
                 // ── Step 6: Restore all vault entries to visible under staged key ────
-                // Sets every visibleThroughDepth to Int.max (always visible) so deactivation
-                // clears depth-1 hiding. Falls back to nil (also always visible) implicitly
-                // if no entries exist.
+                // nil = always visible (pre-activation default). Erases the activation
+                // watermark on vault entries the same way Step 4 does for contacts.
                 let allVaultEntries = try vaultManager.fetchAllEntries()
                 for entry in allVaultEntries {
-                    entry.visibleThroughDepth = visibleEncrypted
+                    entry.visibleThroughDepth = nil
                 }
                 if !allVaultEntries.isEmpty {
                     try vaultManager.modelContext.save()
