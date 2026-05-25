@@ -73,7 +73,17 @@ struct OccultaApp: App {
         Self.applySecureDeletePragma(at: url)
 
         if FeatureFlags.isEnabled(.secureMode) {
-            Manager.Blob.maintainNoOpBlob()
+            // Only maintain the no-op blob when Secure Mode is not active.
+            // When active, the blob holds a real payload (sensitive contact data);
+            // maintainNoOpBlob treats blobs older than 24 h as stale and replaces
+            // them with random-byte no-op content — destroying the payload and making
+            // deactivation fail with a JSON decoding error.
+            // Checking for a duress verifier does not require the SE key.
+            let initCtx = ModelContext(sharedModelContainer)
+            let secureModeActive = (try? initCtx.fetch(FetchDescriptor<AppLayerConfig>()).first)?.sealedDuressVerifier != nil
+            if !secureModeActive {
+                Manager.Blob.maintainNoOpBlob()
+            }
         }
 
         let contactManager = ContactManager(modelContainer: sharedModelContainer)
