@@ -44,16 +44,16 @@ Introduced `PINEntry.Mode.verifyCurrentLayer`: single-entry, calls `checkCurrent
 
 ## Bug 5 — App stays in grace period after Secure Mode activation; PIN does not show on scene change for ~5 minutes
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 Immediately after Secure Mode is activated, the window during which the app can be backgrounded and foregrounded without triggering a PIN prompt is ~5 minutes. An adversary who witnesses activation (or checks the device shortly after) can access the app without a PIN during this window, defeating the purpose of activating Secure Mode in the first place.
 
 ### Root Cause
-`activateSecureMode` does not clear `lastUnlockDate`. The field retains the timestamp from the most recent `recordUnlock()` call (the PIN entry that unlocked the app before the user started the setup flow). `isWithinGracePeriod` in `OccultaApp` returns `true` until that timestamp is more than 5 minutes old, so background → foreground transitions skip the PIN prompt for the remainder of that window.
+`activateSecureMode` did not clear `lastUnlockDate`. The field retained the timestamp from the most recent `recordUnlock()` call (the PIN entry that unlocked the app before the user started the setup flow). `isWithinGracePeriod` in `OccultaApp` returned `true` until that timestamp was more than 5 minutes old, so background → foreground transitions skipped the PIN prompt for the remainder of that window.
 
-### Proposed Resolution
-Set `self.lastUnlockDate = nil` at the end of `activateSecureMode`, before the state transition to `.active`. `lastUnlockDate` is `private(set)` but writable from within the class. Setting it to `nil` is sufficient — `isWithinGracePeriod` already returns `false` when `lastUnlockDate` is `nil`.
+### Resolution
+Set `self.lastUnlockDate = nil` in `activateSecureMode`, after `resetCounters()` and before the state transition to `.active`. `isWithinGracePeriod` already returns `false` when `lastUnlockDate` is `nil`, so the PIN is required on the very next background → foreground transition after activation.
 
 ---
 

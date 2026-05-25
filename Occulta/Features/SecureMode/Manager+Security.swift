@@ -338,6 +338,7 @@ extension Manager {
             }
 
             self.resetCounters()
+            self.lastUnlockDate = nil
             self.appLockEnabled = true
             self.state = .active
         }
