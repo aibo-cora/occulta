@@ -84,16 +84,16 @@ Three changes applied together:
 
 ## Bug 7 — Hard-delete inside staged key rollback scope causes irrecoverable data loss
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
-In `activateSecureMode`, `hardDeleteContact` is called after all safe contacts have been re-encrypted with the staged key and persisted to the DB — but still inside the `do { } catch { rollbackStagedLocalDBKey() }` block. If `hardDeleteContact` throws, the catch block deletes the staged key, but the DB already contains data encrypted exclusively with it. The canonical key can no longer decrypt any of those records. All contact data is permanently unrecoverable.
+In `activateSecureMode`, `hardDeleteContact` was called after all safe contacts were re-encrypted with the staged key and persisted to the DB — but still inside the `do { } catch { rollbackStagedLocalDBKey() }` block. If `hardDeleteContact` threw, the catch block deleted the staged key, but the DB already contained data encrypted exclusively with it. The canonical key could no longer decrypt any of those records. All contact data was permanently unrecoverable.
 
 ### Root Cause
-The hard-delete loop sits after the Step 8 re-encryption writes but before `commitStagedLocalDBKey()` (Step 10). Any error in this window triggers a rollback that invalidates the only key capable of reading the already-written DB rows.
+The hard-delete loop sat after the Step 8 re-encryption writes but before `commitStagedLocalDBKey()` (Step 10). Any error in this window triggered a rollback that invalidated the only key capable of reading the already-written DB rows.
 
-### Proposed Resolution
-Move the `hardDeleteContact` loop to after `commitStagedLocalDBKey()` (after the point of no return), with its own non-rollback error handling. At that point a delete failure is recoverable: sensitive contacts remain in the DB encrypted under the canonical key; the user can retry activation. No rollback is triggered and no data is lost.
+### Resolution
+Moved the `hardDeleteContact` loop to after `commitStagedLocalDBKey()` (Step 10, the point of no return). Each call uses `try?` — a delete failure is silently absorbed and does not re-throw into the outer `catch`. After commit the staged key is the canonical key, so a delete failure leaves sensitive contacts in the DB encrypted under the canonical key. The user can retry activation; no rollback is triggered and no data is lost.
 
 ---
 

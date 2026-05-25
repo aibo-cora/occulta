@@ -317,11 +317,6 @@ extension Manager {
                 }
                 try vaultManager.modelContext.save()
 
-                // Hard-delete sensitive contacts from DB after their data is safely in the blob.
-                for profile in allProfiles where !safeProfiles.contains(where: { $0.identifier == profile.identifier }) {
-                    try contactManager.hardDeleteContact(profile)
-                }
-
                 // ── Step 9: WAL checkpoint ────────────────────────────────────────────
                 if let url = self.storeURL {
                     Self.walCheckpoint(at: url)
@@ -330,8 +325,22 @@ extension Manager {
                 // ── Step 10: Commit staged key → point of no return ───────────────────
                 try self.keyManager.commitStagedLocalDBKey()
 
-                // ── Step 11: Cleanup + state transition ───────────────────────────────
+                // ── Step 11: Cleanup ──────────────────────────────────────────────────
                 self.keyManager.deleteSupersededLocalDBArtefacts()
+
+                // Hard-delete sensitive contacts from DB — intentionally after commit.
+                //
+                // Previously this loop was before Step 9. Any throw inside it triggered
+                // rollbackStagedLocalDBKey(), but the DB already contained data re-encrypted
+                // exclusively with the staged key (Step 8). After rollback the staged key was
+                // deleted, making those rows permanently unreadable — irrecoverable data loss.
+                //
+                // After commit the staged key IS the canonical key. A delete failure is safe:
+                // sensitive contacts remain in the DB encrypted under the canonical key.
+                // The user can retry activation; no rollback is needed and no data is lost.
+                for profile in allProfiles where !safeProfiles.contains(where: { $0.identifier == profile.identifier }) {
+                    try? contactManager.hardDeleteContact(profile)
+                }
 
             } catch {
                 self.keyManager.rollbackStagedLocalDBKey()
