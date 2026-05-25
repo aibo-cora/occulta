@@ -542,7 +542,7 @@ extension Manager {
             guard self.state == .active || self.state == .duress else {
                 throw SecurityError.invalidStateTransition
             }
-            guard self.checkCurrentLayerEntryPIN(confirmingPIN) else {
+            guard self.checkCurrentLayerPIN(confirmingPIN) else {
                 throw SecurityError.incorrectPIN
             }
             let config = try self.requireConfig()
@@ -604,9 +604,10 @@ extension Manager {
         ///
         /// In `.duress` state the check is against `sealedDuressVerifier`; in all other states
         /// (`.active`, `.pinOnly`) it is against `sealedNormalVerifier`. No counters are mutated
-        /// and no state transitions occur — this is a read-only guard used exclusively by
-        /// `disablePINFromCurrentDepth` to confirm the user's identity at the correct layer.
-        private func checkCurrentLayerEntryPIN(_ pin: String) -> Bool {
+        /// and no state transitions occur — used by `disablePINFromCurrentDepth` and by
+        /// `PINEntry.submitConfirmPhase` so the activation flow's first phase accepts the
+        /// correct PIN at any depth (duress PIN in `.duress`, normal PIN otherwise).
+        func checkCurrentLayerPIN(_ pin: String) -> Bool {
             guard
                 let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
                 let seKey  = try? self.keyManager.deriveSecureModeKey()

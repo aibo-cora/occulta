@@ -284,7 +284,15 @@ struct OccultaApp: App {
                             }
 
                             if let ownedBasket = try await self.buildOwnedBasket(from: data) {
-                                self.openedFileContents = ownedBasket
+                                // Content gate (check point A): if already in restricted
+                                // mode, suppress messages from contacts not visible at
+                                // this depth rather than presenting their content.
+                                if self.security.isRestricted && !self.security.isSafeContact(ownedBasket.owner) {
+                                    self.errorMessage = "This message was not addressed to you."
+                                    self.showError = true
+                                } else {
+                                    self.openedFileContents = ownedBasket
+                                }
                             } else {
                                 /// Identity challenge - processed separately.
                             }
@@ -405,31 +413,45 @@ struct OccultaApp: App {
                         Manager.Blob.rewriteNoOpBlob()
                     }
                 }
-                .overlay {
-                    if self.isLocked {
-                        if self.isWithinGracePeriod {
-                            // Within grace period: show a blank screen to block the
-                            // app-switcher screenshot without demanding PIN re-entry.
-                            // Cleared immediately by the scenePhase .active handler.
-                            Color(.systemBackground).ignoresSafeArea()
-                        } else {
-                            PINEntry(
-                                onNormal: { _ in
-                                    self.security.recordUnlock()
-                                    self.contactManager.shareIndexAllowedIDs = nil
-                                    self.contactManager.syncShareIndex()
-                                    self.isLocked = false
-                                },
-                                onDuress: {
-                                    self.security.recordUnlock()
-                                    self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
-                                    self.contactManager.syncShareIndex()
-                                    self.isLocked = false
-                                },
-                                onWipe: {}
-                            )
-                            .environment(self.security)
-                        }
+                // fullScreenCover rather than overlay: a UIKit modal presentation
+                // stacks above any existing sheets, so it cannot be underlapped by
+                // conversation or identity-challenge sheets triggered while locked.
+                .fullScreenCover(isPresented: self.$isLocked) {
+                    if self.isWithinGracePeriod {
+                        // Within grace period: show a blank screen to block the
+                        // app-switcher screenshot without demanding PIN re-entry.
+                        // Cleared immediately by the scenePhase .active handler.
+                        Color(.systemBackground).ignoresSafeArea()
+                    } else {
+                        PINEntry(
+                            onNormal: { _ in
+                                self.security.recordUnlock()
+                                self.contactManager.shareIndexAllowedIDs = nil
+                                self.contactManager.syncShareIndex()
+                                self.isLocked = false
+                            },
+                            onDuress: {
+                                self.security.recordUnlock()
+                                // Content gate (check point B): a message may have been
+                                // queued in openedFileContents while the app was locked,
+                                // before PIN entry determined the security depth. Now that
+                                // the duress PIN has been entered, suppress any pending
+                                // basket whose sender is not visible at duress depth.
+                                // Sensitive contacts are absent from the DB in Secure Mode,
+                                // so isSafeContact returns false for them naturally.
+                                if let basket = self.openedFileContents,
+                                   !self.security.isSafeContact(basket.owner) {
+                                    self.openedFileContents = nil
+                                    self.errorMessage = "This message was not addressed to you."
+                                    self.showError = true
+                                }
+                                self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
+                                self.contactManager.syncShareIndex()
+                                self.isLocked = false
+                            },
+                            onWipe: {}
+                        )
+                        .environment(self.security)
                     }
                 }
                 .animation(.none, value: self.isLocked)

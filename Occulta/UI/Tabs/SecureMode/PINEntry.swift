@@ -209,11 +209,14 @@ struct PINEntry: View {
         }
     }
 
-    // .confirmThenSet phase 1 — verify existing normal PIN (no counter mutation)
+    // .confirmThenSet phase 1 — verify current-layer PIN (no counter mutation)
+    // Uses checkCurrentLayerPIN so the duress PIN is accepted in .duress state,
+    // matching the PIN the coercer observed at unlock. From .pinOnly the behaviour
+    // is identical to checkNormalPIN (only one verifier exists).
 
     private func submitConfirmPhase(pin: String, onComplete: @escaping (String, String) -> Void) {
         let start     = Date()
-        let matched   = self.security.checkNormalPIN(pin)
+        let matched   = self.security.checkCurrentLayerPIN(pin)
         let elapsed   = Date().timeIntervalSince(start)
         let remaining = max(0, self.gateDuration - elapsed)
 
