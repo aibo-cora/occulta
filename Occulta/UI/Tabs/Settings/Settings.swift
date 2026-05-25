@@ -138,9 +138,14 @@ struct Settings: View {
         @Environment(VaultManager.self)     private var vaultManager
         @Environment(\.dismiss) private var dismiss
 
+        @Query private var configs: [AppLayerConfig]
+
         @State private var showingPINSheet          = false
         @State private var showingSetupFlow         = false
         @State private var showingDeactivateSheet   = false
+
+        private var requiresPIN:        Bool { self.configs.first?.sealedNormalVerifier != nil }
+        private var isSecureModeActive: Bool { self.configs.first?.sealedDuressVerifier != nil }
 
         private var pinEnabledBinding: Binding<Bool> {
             Binding(
@@ -148,7 +153,7 @@ struct Settings: View {
                 // When `appLockEnabled` is false (gate lowered under coercion), the toggle
                 // appears off even though verifiers are intact — this is the tell-avoidance
                 // invariant: the toggle must look identical to a device with no PIN.
-                get: { self.security.requiresPIN && self.security.appLockEnabled },
+                get: { self.requiresPIN && self.security.appLockEnabled },
                 set: { _ in self.showingPINSheet = true }
             )
         }
@@ -156,14 +161,14 @@ struct Settings: View {
         var body: some View {
             List {
                 Section {
-                    // The toggle is interactive in every state — including .active and .duress.
-                    // Disabling it in those states was a forensic tell (visible UI difference
-                    // between normal and duress mode). Instead, toggling off in .active/.duress
-                    // lowers the gate without removing verifiers via disablePINFromCurrentDepth.
+                    // Disabled in .active (gate up): Secure Mode must be deactivated before
+                    // the PIN can be removed. Interactive in .duress so the coercion gate-drop
+                    // path (disablePINFromCurrentDepth) remains available without a forensic tell.
                     Toggle("Enable PIN", isOn: self.pinEnabledBinding)
+                        .disabled(self.isSecureModeActive && self.security.state == .normal && self.security.appLockEnabled)
                 }
 
-                if self.security.state == .noPIN || self.security.state == .pinOnly || self.security.state == .duress {
+                if !self.isSecureModeActive || self.security.state == .duress {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Learn how you can protect your data.")
@@ -173,11 +178,11 @@ struct Settings: View {
                         }
                         .padding(.vertical, 4)
                     }
-                    .disabled(self.security.state == .noPIN)
-                    .opacity(self.security.state == .noPIN ? 0.4 : 1)
+                    .disabled(!self.requiresPIN)
+                    .opacity(!self.requiresPIN ? 0.4 : 1)
                 }
 
-                if self.security.state == .active {
+                if self.isSecureModeActive && self.security.state == .normal {
                     Section {
                         Button("Deactivate Protection", role: .destructive) {
                             self.showingDeactivateSheet = true
@@ -187,37 +192,30 @@ struct Settings: View {
             }
             .navigationTitle("Security")
             .sheet(isPresented: self.$showingPINSheet) {
-                if !self.security.requiresPIN {
-                    // State: .noPIN — no verifier exists yet. Enter + confirm a new PIN,
-                    // then call configurePIN so the caller's closure owns the security op.
+                if !self.requiresPIN {
+                    // No verifier exists yet. Enter + confirm a new PIN.
                     PINEntry(mode: .setup, onNormal: { pin in
                         try? self.security.configurePIN(pin)
                         self.showingPINSheet = false
                     })
                     .environment(self.security)
                 } else if !self.security.appLockEnabled {
-                    // State: gate lowered under coercion. The user wants to re-enable.
-                    // Enter + confirm the existing PIN (normal or duress); reEnablePIN
-                    // silently routes to the matched verifier depth. UX is identical to
-                    // initial setup — no observable tell from which verifier matched.
+                    // Gate lowered under coercion. Re-enable via existing PIN (normal or duress).
+                    // UX is identical to initial setup — no observable tell from which matched.
                     PINEntry(mode: .setup, onNormal: { pin in
                         _ = self.security.reEnablePIN(pin)
                         self.showingPINSheet = false
                     })
                     .environment(self.security)
-                } else if self.security.state == .pinOnly {
-                    // State: .pinOnly — normal PIN set, no duress verifier. User is
-                    // turning PIN off entirely. Verify with no counter mutation so a
-                    // wrong guess here does not advance the wipe counter.
+                } else if !self.isSecureModeActive {
+                    // Normal PIN set, no duress verifier. User is turning PIN off entirely.
                     PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                         try? self.security.deactivatePIN(confirmingNormalPIN: pin)
                         self.showingPINSheet = false
                     })
                     .environment(self.security)
-                } else {
-                    // State: .active or .duress — Secure Mode is live. User is toggling
-                    // "off" to lower the gate without removing verifiers (coercion path).
-                    // Enter + confirm the current layer's PIN to authorise the gate drop.
+                } else if self.security.state == .duress {
+                    // Coercion path — lower the gate at depth 1 without removing verifiers.
                     PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                         try? self.security.disablePINFromCurrentDepth(confirmingPIN: pin)
                         self.showingPINSheet = false
@@ -235,7 +233,7 @@ struct Settings: View {
                 PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                     let cm = self.contactManager
                     let vm = self.vaultManager
-                    
+
                     Task {
                         do {
                             try await self.security.deactivateSecureMode(

@@ -19,18 +19,23 @@ extension Manager {
 
         // MARK: - State
 
-        enum State {
-            case noPIN      // no PIN configured; app opens directly
-            case pinOnly    // PIN set, Secure Mode not activated
-            case active     // Secure Mode active; full data visible
-            case duress     // duress PIN entered; decoy view active
+        private(set) var state: RoutingDepth = .normal
+
+        var currentDepth:      Int  { self.state.rawValue }
+        var isRestricted:      Bool { self.state == .duress }
+
+        /// Whether a normal PIN verifier exists. Reads config on every call — not reactive
+        /// for SwiftUI; views that need reactive updates should use `@Query` on `AppLayerConfig`.
+        var requiresPIN: Bool {
+            (try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first)?
+                .sealedNormalVerifier != nil
         }
 
-        private(set) var state: State
-        private(set) var currentDepth: Int = 0
-
-        var requiresPIN:  Bool { self.state != .noPIN }
-        var isRestricted: Bool { self.currentDepth > 0 }
+        /// Whether both verifiers exist (Secure Mode active). Same caveats as `requiresPIN`.
+        var isSecureModeActive: Bool {
+            (try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first)?
+                .sealedDuressVerifier != nil
+        }
 
         /// Date of the most recent successful PIN verification. In-memory only — nil after kill.
         /// Used by `OccultaApp` to skip the PIN prompt within the grace period.
@@ -49,7 +54,7 @@ extension Manager {
         /// regardless of whether the PIN overlay fires on scene activation.
         ///
         /// Persisted across app kills via `AppLayerConfig.pinEnabled`. Restored in `init`.
-        /// Always `true` for fresh configs and after any clean state transition.
+        /// Always `true` after any clean state transition.
         private(set) var appLockEnabled: Bool = true
 
         /// Record a successful authentication. Call from `PINEntry.onNormal` and `onDuress`.
@@ -94,43 +99,33 @@ extension Manager {
             self.storeURL        = storeURL
             self.blobDirectory   = blobDirectory
 
-            // Feature-flag off path: skip all DB reads and sit permanently in .noPIN.
-            // requiresPIN = false → overlay never shown. isRestricted = false →
-            // no contact or vault filtering. All other properties stay at defaults.
-            guard enabled else {
-                self.state = .noPIN
-                return
-            }
+            // Feature-flag off path: skip all DB reads. requiresPIN returns false
+            // (no config row), isRestricted = false. All properties stay at defaults.
+            guard enabled else { return }
 
             let config = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first
-
-            // Determine base state from which verifiers are present.
-            if config?.sealedDuressVerifier != nil {
-                self.state = .active
-            } else if config?.sealedNormalVerifier != nil {
-                self.state = .pinOnly
-            } else {
-                self.state = .noPIN
-            }
 
             // Restore routing depth and gate state so depth-filtering and the PIN
             // overlay behave correctly after an app kill or restart. Both fields
             // fall back to the safe default on any decode failure.
-            let routingDepth    = config?.readRoutingDepth() ?? .normal
-            self.currentDepth   = routingDepth.rawValue
+            self.state          = config?.readRoutingDepth() ?? .normal
             self.appLockEnabled = config?.readPinEnabled() ?? true
+        }
 
-            // If the app was killed while at depth 1 (duress verifier present and
-            // routing depth is .duress), re-enter .duress immediately so
-            // depth-filtering applies before any UI renders.
-            if routingDepth == .duress && self.state == .active {
-                self.state = .duress
-            }
+        // MARK: - State transition
+
+        /// Atomically writes routing depth and gate state to config and updates in-memory properties.
+        /// The caller is responsible for calling `modelContext.save()` afterward.
+        private func setState(_ depth: RoutingDepth, pinEnabled: Bool = true, config: AppLayerConfig) throws {
+            try config.writeRoutingDepth(depth)
+            try config.writePinEnabled(pinEnabled)
+            self.state          = depth
+            self.appLockEnabled = pinEnabled
         }
 
         // MARK: - PIN Setup
 
-        /// Builds a normal PIN verifier, persists config, and transitions `.noPIN` → `.pinOnly`.
+        /// Builds a normal PIN verifier, persists config, and transitions to `.normal` routing depth.
         ///
         /// Also initialises `persistedDepth` and `pinEnabled` so both fields are non-nil
         /// from the first config write onward — a consistently present field prevents
@@ -147,14 +142,11 @@ extension Manager {
             let config = AppLayerConfig()
             config.sealedNormalVerifier = sealedNormal
             try config.setWipeThreshold(3)
-            try config.writeRoutingDepth(.normal)
-            try config.writePinEnabled(true)
+            try self.setState(.normal, config: config)
             self.modelContext.insert(config)
             try self.modelContext.save()
 
             self.resetCounters()
-            self.appLockEnabled = true
-            self.state = .pinOnly
         }
 
         /// Verifies the normal PIN, removes the entire config row, and transitions `.pinOnly` → `.noPIN`.
@@ -162,8 +154,8 @@ extension Manager {
         /// Throws `.invalidStateTransition` if not in `.pinOnly` — the caller must
         /// deactivate Secure Mode (removing the duress verifier) before removing the PIN entirely.
         func deactivatePIN(confirmingNormalPIN: String) throws {
-            guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
             let config = try self.requireConfig()
+            guard config.sealedDuressVerifier == nil else { throw SecurityError.invalidStateTransition }
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
@@ -177,7 +169,7 @@ extension Manager {
             try self.modelContext.save()
             self.resetCounters()
             self.appLockEnabled = true
-            self.state = .noPIN
+            self.state = .normal
         }
 
         // MARK: - Secure Mode
@@ -197,9 +189,9 @@ extension Manager {
             vaultManager:       VaultManager
         ) async throws {
             // ── Step 1: State guard + PIN verification ──────────────────────────────
-            guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
-            
+            guard self.requiresPIN else { throw SecurityError.invalidStateTransition }
             let config = try self.requireConfig()
+            guard config.sealedDuressVerifier == nil else { throw SecurityError.invalidStateTransition }
             
             guard
                 let seKey = try self.keyManager.deriveSecureModeKey()
@@ -368,8 +360,6 @@ extension Manager {
 
             self.resetCounters()
             self.lastUnlockDate = nil
-            self.appLockEnabled = true
-            self.state = .active
         }
 
         /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
@@ -384,10 +374,8 @@ extension Manager {
             vaultManager:       VaultManager
         ) async throws {
             // ── Step 1: State guard + PIN verification ──────────────────────────────
-            guard self.state == .active || self.state == .duress else {
-                throw SecurityError.invalidStateTransition
-            }
             let config = try self.requireConfig()
+            guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
@@ -511,16 +499,11 @@ extension Manager {
 
             // Remove duress verifier, reset to normal layer, persist config, replace blob.
             config.sealedDuressVerifier = nil
-            try config.writeRoutingDepth(.normal)
-            try config.writePinEnabled(true)
+            try self.setState(.normal, config: config)
             try self.modelContext.save()
-            
+
             Manager.Blob.rewriteNoOpBlob()
-            
             self.resetCounters()
-            self.currentDepth   = 0
-            self.appLockEnabled = true
-            self.state = .pinOnly
         }
 
         // MARK: - Emergency recovery
@@ -534,10 +517,8 @@ extension Manager {
         /// state machine transitions to `.pinOnly`. The DB key stays at whatever it
         /// currently is — contacts may be unreadable if the key state is corrupted.
         func forceDeactivateForRecovery(confirmingEntryPIN: String) throws {
-            guard self.state == .active || self.state == .duress else {
-                throw SecurityError.invalidStateTransition
-            }
             let config = try self.requireConfig()
+            guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
@@ -548,23 +529,21 @@ extension Manager {
             else { throw SecurityError.incorrectPIN }
 
             config.sealedDuressVerifier = nil
-            try config.writeRoutingDepth(.normal)
-            try config.writePinEnabled(true)
+            try self.setState(.normal, config: config)
             try self.modelContext.save()
 
             Manager.Blob.rewriteNoOpBlob()
             self.resetCounters()
-            self.currentDepth   = 0
-            self.appLockEnabled = true
-            self.state          = .pinOnly
         }
 
         // MARK: - Verify
 
         /// Verifies a PIN entry and drives all state transitions.
         func verify(_ pin: String) throws -> PINVerifyResult {
-            guard self.state != .noPIN else { throw SecurityError.notConfigured }
+            guard self.requiresPIN else { throw SecurityError.notConfigured }
+            
             let config = try self.requireConfig()
+            
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
@@ -572,19 +551,16 @@ extension Manager {
             if let verifier = config.sealedNormalVerifier,
                PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                         verifier: verifier, seKey: seKey) {
-                if self.state == .duress { self.state = .active }
-                self.currentDepth = 0
+                self.state = .normal
                 self.resetCounters()
                 return .normal
             }
 
             if let duressVerifier = config.sealedDuressVerifier,
-               (self.state == .active || self.state == .duress),
                PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                         verifier: duressVerifier, seKey: seKey) {
                 self.wrongPINCount          = 0
                 self.consecutiveDuressCount += 1
-                self.currentDepth           = 1
                 self.state = .duress
                 return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
             }
@@ -592,7 +568,7 @@ extension Manager {
             self.consecutiveDuressCount  = 0
             self.wrongPINCount          += 1
 
-            if (self.state == .active || self.state == .duress),
+            if config.sealedDuressVerifier != nil,
                self.wrongPINCount >= PINManager.wrongPINLimit {
                 return .wipe
             }
@@ -632,17 +608,11 @@ extension Manager {
         /// - Throws: `SecurityError.invalidStateTransition` if not in `.active` or `.duress`.
         ///           `SecurityError.incorrectPIN` if the confirming PIN does not match.
         func disablePINFromCurrentDepth(confirmingPIN: String) throws {
-            guard self.state == .active || self.state == .duress else {
-                throw SecurityError.invalidStateTransition
-            }
-            guard self.checkCurrentLayerPIN(confirmingPIN) else {
-                throw SecurityError.incorrectPIN
-            }
             let config = try self.requireConfig()
-            try config.writeRoutingDepth(RoutingDepth(rawValue: self.currentDepth) ?? .normal)
-            try config.writePinEnabled(false)
+            guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
+            guard self.checkCurrentLayerPIN(confirmingPIN) else { throw SecurityError.incorrectPIN }
+            try self.setState(self.state, pinEnabled: false, config: config)
             try self.modelContext.save()
-            self.appLockEnabled = false
         }
 
         /// Re-enables the PIN gate after it was lowered by `disablePINFromCurrentDepth`.
@@ -672,24 +642,16 @@ extension Manager {
             // Normal PIN — restore to depth 0 (real layer).
             if let verifier = config.sealedNormalVerifier,
                PINManager.checkVerifier(pin: pin, label: Self.normalLabel, verifier: verifier, seKey: seKey) {
-                try? config.writeRoutingDepth(.normal)
-                try? config.writePinEnabled(true)
+                try? self.setState(.normal, config: config)
                 try? self.modelContext.save()
-                self.currentDepth   = 0
-                self.state          = .active
-                self.appLockEnabled = true
                 return true
             }
 
             // Duress PIN — re-enable gate at depth 1 (duress layer stays active).
             if let verifier = config.sealedDuressVerifier,
                PINManager.checkVerifier(pin: pin, label: Self.duressLabel, verifier: verifier, seKey: seKey) {
-                try? config.writeRoutingDepth(.duress)
-                try? config.writePinEnabled(true)
+                try? self.setState(.duress, config: config)
                 try? self.modelContext.save()
-                self.currentDepth   = 1
-                self.state          = .duress
-                self.appLockEnabled = true
                 return true
             }
 
@@ -713,7 +675,7 @@ extension Manager {
                 guard let verifier = config.sealedDuressVerifier else { return false }
                 return PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                                 verifier: verifier, seKey: seKey)
-            default:
+            case .normal:
                 guard let verifier = config.sealedNormalVerifier else { return false }
                 return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                                 verifier: verifier, seKey: seKey)

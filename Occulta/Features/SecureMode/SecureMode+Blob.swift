@@ -134,7 +134,7 @@ extension Manager {
         ///
         /// **Caller contract:** only call when Secure Mode is not active. When the
         /// blob holds a real payload, this call destroys it. `OccultaApp` gates on
-        /// `security.state == .noPIN || security.state == .pinOnly`.
+        /// `!security.isSecureModeActive`.
         static func rewriteNoOpBlob() {
             guard let dir = self.blobDirectory() else { return }
             if let existing = self.findBlob(in: dir) {

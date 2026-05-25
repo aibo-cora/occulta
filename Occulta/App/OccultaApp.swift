@@ -438,7 +438,7 @@ struct OccultaApp: App {
                 .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
                     guard FeatureFlags.isEnabled(.secureMode) else { return }
                     
-                    guard self.security.state == .noPIN || self.security.state == .pinOnly else { return }
+                    guard !self.security.isSecureModeActive else { return }
                     
                     DispatchQueue.global(qos: .utility).async {
                         Manager.Blob.rewriteNoOpBlob()

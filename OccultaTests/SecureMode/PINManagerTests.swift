@@ -67,7 +67,7 @@ struct SecurityStateTests {
     @Test func configurePIN_transitionsToPinOnly() throws {
         let s = try makeSecurity()
         try s.configurePIN("123456")
-        #expect(s.state == .pinOnly)
+        #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
     @Test func configurePIN_insertsExactlyOneConfig() throws {
@@ -93,7 +93,7 @@ struct SecurityStateTests {
         let s = try makeSecurity()
         try s.configurePIN("123456")
         try s.deactivatePIN(confirmingNormalPIN: "123456")
-        #expect(s.state == .noPIN)
+        #expect(!s.requiresPIN)
     }
 
     @Test func deactivatePIN_wrongPIN_throwsIncorrectPIN() throws {
@@ -136,7 +136,7 @@ struct SecurityStateTests {
         try s.configurePIN("123456")
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        #expect(s.state == .active)
+        #expect(s.isSecureModeActive && s.state == .normal)
     }
 
     @Test func deactivateSecureMode_fromActive_transitionsToPinOnly() async throws {
@@ -146,7 +146,7 @@ struct SecurityStateTests {
                                         contactManager: cm, vaultManager: vm)
         try await s.deactivateSecureMode(confirmingEntryPIN: "123456",
                                          contactManager: cm, vaultManager: vm)
-        #expect(s.state == .pinOnly)
+        #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
     @Test func deactivateSecureMode_fromDuress_transitionsToPinOnly() async throws {
@@ -157,7 +157,7 @@ struct SecurityStateTests {
         _ = try s.verify("999999")   // → .duress
         try await s.deactivateSecureMode(confirmingEntryPIN: "123456",
                                          contactManager: cm, vaultManager: vm)
-        #expect(s.state == .pinOnly)
+        #expect(s.requiresPIN && !s.isSecureModeActive)
     }
 
     @Test func deactivateSecureMode_fromPinOnly_throwsInvalidStateTransition() async throws {
@@ -238,7 +238,7 @@ struct SecurityVerifyActiveTests {
                                         contactManager: cm, vaultManager: vm)
         _ = try s.verify("999999")   // → .duress
         #expect(try s.verify("123456") == .normal)
-        #expect(s.state == .active)
+        #expect(s.isSecureModeActive && s.state == .normal)
     }
 
     @Test func duress_duressPIN_returnsDuress() async throws {
