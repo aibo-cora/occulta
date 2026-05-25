@@ -260,24 +260,14 @@ extension Manager {
                     profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
                 }
 
-                // ── Step 6: Unwrap vault PEKs ────────────────────────────────────────
-                var blobPEKs: [VaultPEKRecord] = []
-                
-                if vaultManager.isUnlocked {
-                    let vaultKey = try vaultManager.currentKey()
-                    for entry in try vaultManager.fetchAllEntries() {
-                        let pek   = try vaultManager.unwrapPEK(for: entry, vaultKey: vaultKey)
-                        let dist  = try? vaultManager.shardDistributionMetadata(for: entry.id)
-                        var bytes = pek.withUnsafeBytes { Data($0) }
-                        blobPEKs.append(VaultPEKRecord(entryID: entry.id,
-                                                        pekBytes: bytes,
-                                                        shardDistribution: dist))
-                        _ = bytes.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                    }
-                }
-
-                // ── Step 7: Seal blob ────────────────────────────────────────────────
-                let payload = BlobPayload(contacts: blobContacts, vaultPEKs: blobPEKs)
+                // ── Step 6: Seal blob ────────────────────────────────────────────────
+                // Vault entries are not included in the blob. Their per-entry keys (PEKs)
+                // are derived from a dedicated SE key entirely independent of the local DB
+                // key rotation — vault entries never need re-keying during activation or
+                // deactivation. Storing raw PEK bytes in the blob would unnecessarily widen
+                // the attack surface: blob compromise (SE Secure Mode key, no biometrics)
+                // would also yield all vault entry symmetric keys, bypassing the biometric gate.
+                let payload = BlobPayload(contacts: blobContacts)
                 try Manager.Blob.seal(payload, blobKey: blobKey, directory: self.blobDirectory)
 
                 // ── Step 8: Re-encrypt safe contacts + vault depth fields ─────────────

@@ -99,30 +99,30 @@ Moved the `hardDeleteContact` loop to after `commitStagedLocalDBKey()` (Step 10,
 
 ## Bug 8 — Vault PEKs unnecessarily stored in the blob
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
-`activateSecureMode` Step 6 unwraps every vault entry's per-entry key (PEK) and stores the raw 32-byte key bytes inside `BlobPayload`. The vault key is derived from a dedicated SE key entirely independent of the local DB key rotation — vault entries never need re-keying during activation or deactivation.
+`activateSecureMode` Step 6 unwrapped every vault entry's per-entry key (PEK) and stored the raw 32-byte key bytes inside `BlobPayload`. The vault key is derived from a dedicated SE key entirely independent of the local DB key rotation — vault entries never need re-keying during activation or deactivation.
 
-`payload.vaultPEKs` is unsealed in `deactivateSecureMode` and silently ignored, confirming the data serves no purpose. Meanwhile, storing raw PEK bytes in the blob unnecessarily widens the attack surface: a blob compromise (requiring only the SE Secure Mode key, no biometrics) now also yields the symmetric keys for all vault entry content, bypassing the biometric gate that normally protects them.
+`payload.vaultPEKs` was unsealed in `deactivateSecureMode` and silently ignored, confirming the data served no purpose. Meanwhile, storing raw PEK bytes in the blob unnecessarily widened the attack surface: a blob compromise (requiring only the SE Secure Mode key, no biometrics) also yielded the symmetric keys for all vault entry content, bypassing the biometric gate that normally protects them.
 
-### Proposed Resolution
-Remove vault PEK collection from Step 6 of `activateSecureMode` and remove `VaultPEKRecord` and the `vaultPEKs` field from `BlobPayload`. The vault's `visibleThroughDepth` re-encryption (already handled in Step 8) is the only vault-related work the key rotation requires.
+### Resolution
+Removed `VaultPEKRecord` struct and the `vaultPEKs` field from `BlobPayload`. Removed Step 6 (vault PEK collection) from `activateSecureMode`. The vault's `visibleThroughDepth` re-encryption (Step 8) is the only vault-related work the key rotation requires.
 
 ---
 
 ## Bug 9 — `findBlob` returns an arbitrary file when multiple `.occbak` files exist
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Low
-`findBlob` requests `contentModificationDateKey` from the filesystem but never uses it for sorting. `files?.first { $0.pathExtension == "occbak" }` returns whichever file appears first in the enumeration order, which is unspecified on APFS. If two `.occbak` files are present — e.g. a stale file from a prior interrupted `seal()` — the wrong blob may be returned, causing deactivation to fail with `BlobError.decryptionFailed` or to silently unseal stale data.
+`findBlob` requested `contentModificationDateKey` from the filesystem but never used it for sorting. `files?.first { $0.pathExtension == "occbak" }` returned whichever file appeared first in the enumeration order, which is unspecified on APFS. If two `.occbak` files were present — e.g. a stale file from a prior interrupted `seal()` — the wrong blob could be returned, causing deactivation to fail with `BlobError.decryptionFailed` or to silently unseal stale data.
 
 ### Root Cause
 The sort step was omitted when the resource key was added. `FileManager.contentsOfDirectory` does not guarantee ordering.
 
-### Proposed Resolution
-Sort the result by `contentModificationDateKey` descending before taking `first`, so the most recently written file is always selected.
+### Resolution
+`findBlob` now filters to `.occbak` files, sorts by `contentModificationDateKey` descending (falling back to `.distantPast` on read failure), and returns `first`. The most recently written file is always selected.
 
 ---
 

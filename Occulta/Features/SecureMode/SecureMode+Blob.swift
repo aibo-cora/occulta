@@ -63,24 +63,9 @@ struct ContactBlobRecord: Codable {
     let signedAttributes: Data?
 }
 
-/// One hidden vault entry's per-entry key serialised for the blob.
-///
-/// `encryptedLabel` / `encryptedContent` stay on disk locked in-place;
-/// only the PEK travels in the blob so the entry can be decrypted on restore.
-struct VaultPEKRecord: Codable {
-    /// Matches `VaultEntry.id` — used as the UPDATE target on restore.
-    let entryID: UUID
-    /// Raw 32-byte per-entry key. Caller must zero the source bytes after `seal` returns.
-    let pekBytes: Data
-    /// Decrypted `ShardDistributionMetadata` for this entry, or `nil` if no SSS
-    /// split has been configured. Carried so trustee relationships survive deactivation.
-    let shardDistribution: ShardDistributionMetadata?
-}
-
 /// The complete blob payload for one activation layer.
 struct BlobPayload: Codable {
     let contacts: [ContactBlobRecord]
-    let vaultPEKs: [VaultPEKRecord]
 }
 
 extension Manager {
@@ -94,12 +79,13 @@ extension Manager {
     ///    with Secure Mode activation — it predates activation by design.
     ///
     /// 2. **Step 4 cryptographic container**: when Secure Mode is activated, the real
-    ///    blob holds sensitive contact fields and vault PEKs that are locked out of the
-    ///    main SQLite store by key rotation. Deactivation reads the blob and restores
-    ///    those fields under a new key.
+    ///    blob holds sensitive contact fields locked out of the main SQLite store by
+    ///    key rotation. Deactivation reads the blob and restores those fields under a
+    ///    new key. Vault entries are never stored in the blob — their per-entry keys
+    ///    are derived from a dedicated SE key that is independent of the DB key rotation.
     ///
     /// Phase 1 implements only the deniability maintenance path. Step 4 adds
-    /// `seal(contacts:vaultPEKs:)` and `unseal()` using the same crypto primitives.
+    /// `seal(_:blobKey:)` and `unseal(blobKey:)` using the same crypto primitives.
     enum Blob {
 
         // MARK: - Constants
@@ -203,11 +189,7 @@ extension Manager {
         /// file was there before (no-op or a previous real payload).
         ///
         /// The plaintext is bucket-padded before sealing so the file size reveals
-        /// only a tier, not the contact or vault count.
-        ///
-        /// **Caller contract:** zero the `pekBytes` fields in all `VaultPEKRecord`
-        /// instances after this method returns — those bytes are value-typed and
-        /// cannot be zeroed from inside this method.
+        /// only a tier, not the exact contact count.
         ///
         /// - Parameter directory: Override the default app-group blob directory.
         ///   Pass `nil` (default) in production; pass a per-test temp URL in unit tests
@@ -280,12 +262,25 @@ extension Manager {
             return dir
         }
 
-        /// Returns the first `.occbak` file in the blobs directory, if any.
+        /// Returns the most recently modified `.occbak` file in the blobs directory, if any.
+        ///
+        /// `FileManager.contentsOfDirectory` does not guarantee ordering on APFS. Without
+        /// sorting, `first` returns an arbitrary file when multiple `.occbak` files exist
+        /// (e.g. a stale file from a prior interrupted `seal()`). Sorting by
+        /// `contentModificationDateKey` descending ensures the most recently written file
+        /// is always selected, matching the caller's intent.
         private static func findBlob(in dir: URL) -> URL? {
             let files = try? FileManager.default.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: [.contentModificationDateKey]
             )
-            return files?.first { $0.pathExtension == "occbak" }
+            return files?
+                .filter { $0.pathExtension == "occbak" }
+                .sorted {
+                    let lhs = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                    let rhs = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                    return lhs > rhs
+                }
+                .first
         }
 
         private static func isStale(_ url: URL) -> Bool {
