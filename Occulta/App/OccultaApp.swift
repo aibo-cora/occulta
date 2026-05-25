@@ -23,6 +23,10 @@ struct OccultaApp: App {
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
     @State private var isLocked: Bool
+    /// True while the app is `.inactive` and a PIN is configured — shows a blank
+    /// overlay to block app-switcher screenshots without a UIKit modal presentation
+    /// (which would conflict with an active UIActivityViewController share sheet).
+    @State private var showScreenshotBlank = false
     @State private var appManager: Manager.App
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
@@ -356,24 +360,41 @@ struct OccultaApp: App {
                     )
                 }
                 .onChange(of: self.scenePhase) { _, newPhase in
-                    // Only raise the lock overlay when a PIN is configured AND the gate is
-                    // active. When appLockEnabled is false the device is operating in
-                    // coercion mode: re-locking on background would expose the gate state.
+                    // Only lock when a PIN is configured AND the gate is active.
+                    // When appLockEnabled is false the device is operating in coercion mode:
+                    // re-locking on background would expose the gate state.
                     if newPhase == .inactive, self.security.requiresPIN, self.security.appLockEnabled {
+                        // Blank the screen on .inactive to block app-switcher screenshots.
+                        // Do NOT set isLocked here — that triggers fullScreenCover, which
+                        // conflicts with UIActivityViewController already on screen when the
+                        // user picks a share target (e.g. WhatsApp): the app briefly goes
+                        // .inactive and two UIKit modal presentations collide.
+                        self.showScreenshotBlank = true
+                        // Restrict the share index the moment the app loses focus so the
+                        // Share Extension cannot read sensitive contacts while locked.
+                        self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+                        self.contactManager.syncShareIndex()
+                    }
+                    if newPhase == .background, self.security.requiresPIN, self.security.appLockEnabled {
+                        // App is fully backgrounded — safe to raise the lock now.
                         self.isLocked = true
+                        self.showScreenshotBlank = false
                     }
                     if newPhase == .active {
+                        self.showScreenshotBlank = false
                         // Auto-unlock within grace period — skip PIN prompt for quick app switches.
                         // Grace period is always zero in restricted mode: every return requires PIN.
                         if self.isLocked && self.isWithinGracePeriod {
                             self.isLocked = false
                         }
-                        // Rebuild share index with the correct depth filter before the
-                        // share extension reads it. Hidden contacts must not appear in
-                        // the iOS share sheet when in restricted mode.
-                        self.contactManager.shareIndexAllowedIDs = self.security.isRestricted
-                            ? self.security.safeContactIDs()
-                            : nil
+                        // Rebuild share index with the correct depth filter. When locked (PIN
+                        // not yet entered) or in restricted mode, hold at depth-1 so the
+                        // extension cannot read sensitive contacts during this foreground cycle.
+                        if self.isLocked || self.security.isRestricted {
+                            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+                        } else {
+                            self.contactManager.shareIndexAllowedIDs = nil
+                        }
                         self.contactManager.syncShareIndex()
                         self.contactManager.cleanupPendingSessions()
                     }
@@ -411,6 +432,14 @@ struct OccultaApp: App {
                     
                     DispatchQueue.global(qos: .utility).async {
                         Manager.Blob.rewriteNoOpBlob()
+                    }
+                }
+                // Screenshot blank: SwiftUI overlay, NOT a UIKit modal, so it does
+                // not conflict with UIActivityViewController or other sheets.
+                // Shown only during .inactive (app-switcher) when a PIN is set.
+                .overlay {
+                    if self.showScreenshotBlank {
+                        Color(.systemBackground).ignoresSafeArea()
                     }
                 }
                 // fullScreenCover rather than overlay: a UIKit modal presentation

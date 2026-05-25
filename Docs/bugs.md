@@ -57,21 +57,28 @@ Set `self.lastUnlockDate = nil` in `activateSecureMode`, after `resetCounters()`
 
 ---
 
-## Bug 6 — Share Extension shows all contacts when selecting encryption recipients while PIN / Secure Mode is active
+## Bug 6 — Share Extension shows sensitive contacts while main app is locked
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Critical
-The Share Extension's recipient picker exposes the full, unfiltered contact list regardless of lock state or Secure Mode depth. In a duress scenario an adversary can force the user to "encrypt a file via Share" and use the picker to enumerate every contact — including those intentionally hidden at the current depth. This directly breaks the coercion-resistance guarantee of Secure Mode and leaks the existence of hidden contacts.
+The Share Extension's recipient picker exposed the full contact list — including sensitive contacts — while the main app was locked. The extension runs as a separate process with no app-level authentication; it reads `ShareIndex.sqlite` directly. An adversary with brief physical access to an unlocked device could open any app (Photos, Files) and use the Occulta share target to enumerate the full contact list without ever entering a PIN.
 
 ### Root Cause
-The Share Extension runs as a separate process with its own `ModelContext`. It instantiates `ContactManager` directly without going through `Manager.Security`, so depth-aware filtering is never applied. All SwiftData contacts are returned in the raw fetch, bypassing every security boundary the main app enforces.
+Two gaps in the share index rebuild logic:
 
-### Proposed Resolution
-1. At extension launch, read `AppLayerConfig` from the shared SwiftData store and derive the current depth using the same logic as `Manager.Security.init()` — check which verifiers are present, read `persistedDepth`.
-2. Apply `isVisible(_:atDepth:)` before populating the picker. Never display contacts until this step completes.
-3. If the security state cannot be determined (SE key unreachable, decryption fails), show zero contacts and surface an error — never fail open.
-4. Extract the filtering and depth-resolution logic into a shared file both the main app and extension link against, so the filter cannot drift out of sync.
+1. **Lock handler** (`scenePhase == .inactive`): when the app locked, `isLocked` was set to `true` but the share index was not rebuilt. It retained whatever filter was in effect from the previous session — typically the full contact list from a normal-mode unlock.
+
+2. **Foreground handler** (`scenePhase == .active`): the handler rebuilt the index based on `security.isRestricted`, which is `false` in `.active` state. When the app came to the foreground with `isLocked == true` (PIN prompt showing), it overwrote the index with all contacts before the user entered any PIN.
+
+The extension reads the index at any point while suspended — it does not wait for the main app to foreground and re-filter.
+
+### Resolution
+Three changes applied together:
+
+- `safeContactIDs(atDepth:)` — added an explicit depth parameter (defaults to `currentDepth`) so callers can request depth-1 visibility without being in `.duress` state.
+- **Lock handler** — on `scenePhase == .inactive` when `requiresPIN && appLockEnabled`, immediately rebuild the share index filtered to depth-1 (`safeContactIDs(atDepth: 1)`). Sensitive contacts are removed from the index before the app suspends.
+- **Foreground handler** — when `isLocked == true` (PIN not yet entered) or `isRestricted == true` (duress mode), apply depth-1 filtering instead of writing all contacts. Only after a successful PIN entry (`onNormal`) does the index expand to all contacts.
 
 ---
 

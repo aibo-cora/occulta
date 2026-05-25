@@ -227,7 +227,7 @@ extension Manager {
                 plaintext.append(contentsOf: repeatElement(0, count: padded - plaintext.count))
             }
             defer {
-                plaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                _ = plaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
             }
 
             guard let combined = try? AES.GCM.seal(plaintext, using: blobKey).combined else {

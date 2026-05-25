@@ -262,6 +262,7 @@ extension Manager {
 
                 // ── Step 6: Unwrap vault PEKs ────────────────────────────────────────
                 var blobPEKs: [VaultPEKRecord] = []
+                
                 if vaultManager.isUnlocked {
                     let vaultKey = try vaultManager.currentKey()
                     for entry in try vaultManager.fetchAllEntries() {
@@ -271,7 +272,7 @@ extension Manager {
                         blobPEKs.append(VaultPEKRecord(entryID: entry.id,
                                                         pekBytes: bytes,
                                                         shardDistribution: dist))
-                        bytes.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                        _ = bytes.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                     }
                 }
 
@@ -637,10 +638,15 @@ extension Manager {
             return Self.isVisible(contact, atDepth: self.currentDepth)
         }
 
-        /// Returns identifiers of contacts visible at the current depth.
-        func safeContactIDs() -> Set<String> {
+        /// Returns identifiers of contacts visible at the given depth (defaults to `currentDepth`).
+        ///
+        /// Pass an explicit `depth` when querying from a context where `currentDepth` may not
+        /// yet reflect the desired security level — e.g. when locking the app from `.active`
+        /// state to pre-filter the share index for the unauthenticated Share Extension process.
+        func safeContactIDs(atDepth depth: Int? = nil) -> Set<String> {
+            let d = depth ?? self.currentDepth
             guard let contacts = try? self.modelContext.fetch(Contact.Profile.descriptor) else { return [] }
-            return Set(contacts.compactMap { Self.isVisible($0, atDepth: self.currentDepth) ? $0.identifier : nil })
+            return Set(contacts.compactMap { Self.isVisible($0, atDepth: d) ? $0.identifier : nil })
         }
 
         /// Marks contacts in `ids` as always visible (`encrypt(Int.max)`) and all others
