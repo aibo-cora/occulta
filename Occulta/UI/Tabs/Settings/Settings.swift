@@ -209,7 +209,7 @@ struct Settings: View {
                     // State: .pinOnly — normal PIN set, no duress verifier. User is
                     // turning PIN off entirely. Verify with no counter mutation so a
                     // wrong guess here does not advance the wipe counter.
-                    PINEntry(mode: .verifyNormal, onNormal: { pin in
+                    PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                         try? self.security.deactivatePIN(confirmingNormalPIN: pin)
                         self.showingPINSheet = false
                     })
@@ -218,7 +218,7 @@ struct Settings: View {
                     // State: .active or .duress — Secure Mode is live. User is toggling
                     // "off" to lower the gate without removing verifiers (coercion path).
                     // Enter + confirm the current layer's PIN to authorise the gate drop.
-                    PINEntry(mode: .setup, onNormal: { pin in
+                    PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                         try? self.security.disablePINFromCurrentDepth(confirmingPIN: pin)
                         self.showingPINSheet = false
                     })
@@ -232,7 +232,7 @@ struct Settings: View {
             }
             // Deactivate Secure Mode: confirm normal PIN (no counter mutation)
             .sheet(isPresented: self.$showingDeactivateSheet) {
-                PINEntry(mode: .verifyNormal, onNormal: { pin in
+                PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                     let cm = self.contactManager
                     let vm = self.vaultManager
                     Task {

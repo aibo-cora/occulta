@@ -14,10 +14,11 @@ struct PINEntry: View {
 
     enum Mode {
         case verify
-        /// Like .verify but routes through checkNormalPIN — no counter mutation.
-        /// Use for Settings-level confirmations where wrong attempts must not
-        /// increment the wipe counter.
-        case verifyNormal
+        /// Single-entry verification against the current layer's verifier — no counter
+        /// mutation. In `.duress` checks the duress verifier; all other states check
+        /// the normal verifier. Use for Settings-level confirmations where wrong
+        /// attempts must not increment the wipe counter.
+        case verifyCurrentLayer
         /// Two-phase entry: first entry sets `firstPIN`, second entry must match it.
         /// On match, calls `onNormal(pin)` with the confirmed PIN and does **not** call
         /// any security method internally — the caller's `onNormal` closure is responsible
@@ -55,7 +56,7 @@ struct PINEntry: View {
 
     private var title: String {
         switch self.mode {
-        case .verify, .verifyNormal:
+        case .verify, .verifyCurrentLayer:
             return "Passcode"
         case .setup:
             return self.firstPIN != nil ? "Confirm Passcode" : "Passcode"
@@ -147,8 +148,8 @@ struct PINEntry: View {
             self.submitSetup(pin: pin)
         case .verify:
             self.submitVerify(pin: pin)
-        case .verifyNormal:
-            self.submitVerifyNormal(pin: pin)
+        case .verifyCurrentLayer:
+            self.submitVerifyCurrentLayer(pin: pin)
         case .confirmThenSet(let onComplete):
             if self.confirmedPIN == nil {
                 self.submitConfirmPhase(pin: pin, onComplete: onComplete)
@@ -190,11 +191,12 @@ struct PINEntry: View {
         }
     }
 
-    // .verifyNormal — checkNormalPIN only; no counter mutation; no duress/wipe routing
+    // .verifyCurrentLayer — checkCurrentLayerPIN; no counter mutation; no duress/wipe routing.
+    // In .duress, matches the duress verifier. In all other states, matches the normal verifier.
 
-    private func submitVerifyNormal(pin: String) {
+    private func submitVerifyCurrentLayer(pin: String) {
         let start     = Date()
-        let matched   = self.security.checkNormalPIN(pin)
+        let matched   = self.security.checkCurrentLayerPIN(pin)
         let elapsed   = Date().timeIntervalSince(start)
         let remaining = max(0, self.gateDuration - elapsed)
 

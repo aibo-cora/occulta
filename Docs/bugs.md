@@ -29,16 +29,16 @@ Two fixes applied together:
 
 ## Bug 4 — Disabling PIN in duress mode prompts for PIN twice
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 Double prompting is a UX defect on its own, but in a coercion scenario it is worse: the unexpected second prompt is a behavioural tell that the device is in a special state. A coerced user asked to "turn off the PIN" would visibly hesitate or fail on the second prompt, signalling to an observer that something unusual is happening.
 
 ### Root Cause
-`Settings.SecuritySettings` uses `PINEntry(mode: .setup)` for the `.active`/`.duress` disable path and `PINEntry(mode: .verifyNormal)` for the `.pinOnly` path. `.setup` is a two-phase flow (enter, then confirm); `.verifyNormal` is single-entry. The asymmetry is a UI artifact — `disablePINFromCurrentDepth` itself performs exactly one check internally.
+`Settings.SecuritySettings` used `PINEntry(mode: .setup)` for the `.active`/`.duress` disable path and `PINEntry(mode: .verifyNormal)` for the `.pinOnly` path. `.setup` is a two-phase flow (enter, then confirm); `.verifyNormal` is single-entry. The asymmetry was a UI artifact — `disablePINFromCurrentDepth` itself performs exactly one check internally.
 
-### Proposed Resolution
-Introduce a `PINEntry.Mode.verifySilent` case: single-entry, calls `checkCurrentLayerPIN` (no counter mutation), delivers the PIN to a caller-supplied closure on match. Replace `.setup` with `.verifySilent` in the `.active`/`.duress` branch of `Settings.SecuritySettings`. Both `.pinOnly` and `.active`/`.duress` then present a single-entry prompt, eliminating the tell.
+### Resolution
+Introduced `PINEntry.Mode.verifyCurrentLayer`: single-entry, calls `checkCurrentLayerPIN` (no counter mutation, duress-verifier aware), delivers the PIN to `onNormal` on match. Replaced `.setup` in the `.active`/`.duress` branch and both `.verifyNormal` usages with `.verifyCurrentLayer`. All three Settings paths now present a single-entry prompt. The old `.verifyNormal` case was removed.
 
 ---
 
