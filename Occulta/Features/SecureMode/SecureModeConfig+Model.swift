@@ -6,29 +6,44 @@
 import Foundation
 import SwiftData
 
+/// Routing depth — which contact layer the app is currently showing.
+///
+/// `.normal` (depth 0) — the real layer; all contacts visible.
+/// `.duress` (depth 1) — the decoy layer; sensitive contacts filtered out.
+enum RoutingDepth: Int, Codable {
+    case normal = 0
+    case duress = 1
+}
+
 @Model
 final class AppLayerConfig {
     var sealedNormalVerifier: Data?
     var sealedDuressVerifier: Data?
-    /// Encrypted Int — consecutive duress entries before wipe. Default 3.
+    /// Encrypted Int — consecutive wrong-PIN entries before wipe. Default 3.
     var wipeThresholdEncrypted: Data?
 
-    /// Encoded lock-gate state. Always non-nil after the first config write.
+    /// Encrypted `RoutingDepth`. Records which layer (real vs decoy) was active
+    /// when config was last written, so `Manager.Security.init` can restore
+    /// depth-filtering and `.duress` state after a process kill without
+    /// re-authentication.
     ///
-    /// Packs both the current routing depth and whether the app-lock PIN overlay is
-    /// active into a single AES-GCM encrypted blob using a signed-Int encoding scheme:
+    /// Always non-nil after the first config write — a consistently present field
+    /// prevents forensic tools from inferring the device's threat state from
+    /// field presence or absence.
     ///
-    /// - **N ≥ 0** — gate is *active* at depth N. Normal operation: the PIN overlay
-    ///   is shown on scene activation and `Manager.Security.appLockEnabled` is `true`.
-    /// - **-(N+1)** — gate is *inactive* at depth N. The user disabled the overlay
-    ///   via `disablePINFromCurrentDepth` (typically under coercion) without removing
-    ///   any verifiers. The depth filter still applies — depth-1 contacts and vault
-    ///   entries remain hidden — but the app opens without demanding a PIN.
-    ///
-    /// Keeping this field always non-nil (written as `writeLockGate(depth:0, gateActive:true)`
-    /// during first config creation) prevents a forensic tool from inferring the device's
-    /// threat state from the mere presence or absence of the field.
+    /// Falls back to `.normal` on any decode failure — the safe default.
     var persistedDepth: Data?
+
+    /// Encrypted Bool. `true` = PIN overlay shown on next foreground (normal operation).
+    /// `false` = gate suppressed while all verifiers remain intact — the coercion path
+    /// where the user called `disablePINFromCurrentDepth` so the app opens without
+    /// demanding a PIN. Depth-filtering still applies when `false`.
+    ///
+    /// Always non-nil after the first config write.
+    ///
+    /// Falls back to `true` on any decode failure — always demand a PIN rather than
+    /// silently opening the app.
+    var pinEnabled: Data?
 
     init() {}
 
@@ -48,36 +63,35 @@ final class AppLayerConfig {
         self.wipeThresholdEncrypted = try data.encrypt()
     }
 
-    // MARK: - Lock gate
+    // MARK: - Routing depth
 
-    /// Decodes the persisted lock-gate state into a depth and an active-flag.
-    ///
-    /// Falls back to `(depth: 0, gateActive: true)` — the secure neutral default —
-    /// when the field is absent or decryption fails. An unreadable or tampered
-    /// `persistedDepth` field therefore always errs on the side of showing the PIN prompt.
-    ///
-    /// - Returns: A tuple where `depth` is the routing depth (0 = real layer,
-    ///   1 = duress layer) and `gateActive` indicates whether the PIN overlay is
-    ///   shown on scene activation.
-    func readLockGate() -> (depth: Int, gateActive: Bool) {
+    /// Decodes the persisted routing depth. Falls back to `.normal` on any decode failure.
+    func readRoutingDepth() -> RoutingDepth {
         guard
             let data      = self.persistedDepth,
             let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
-        else { return (0, true) }
-        return value >= 0 ? (value, true) : (-(value + 1), false)
+            let value     = try? JSONDecoder().decode(RoutingDepth.self, from: decrypted)
+        else { return .normal }
+        return value
     }
 
-    /// Encodes and persists a new lock-gate state using signed-Int encoding:
-    /// `gateActive ? depth : -(depth + 1)`.
-    ///
-    /// - Parameters:
-    ///   - depth: The depth at which depth-filtering and the gate will apply (0 or 1).
-    ///   - gateActive: `true` to show the PIN overlay on next scene activation;
-    ///     `false` to suppress it while keeping all verifiers and depth-filtering intact.
-    func writeLockGate(depth: Int, gateActive: Bool) throws {
-        let encoded = gateActive ? depth : -(depth + 1)
-        self.persistedDepth = try JSONEncoder().encode(encoded).encrypt()
+    func writeRoutingDepth(_ depth: RoutingDepth) throws {
+        self.persistedDepth = try JSONEncoder().encode(depth).encrypt()
     }
 
+    // MARK: - PIN enabled
+
+    /// Decodes the persisted gate state. Falls back to `true` (PIN required) on any decode failure.
+    func readPinEnabled() -> Bool {
+        guard
+            let data      = self.pinEnabled,
+            let decrypted = data.decrypt(),
+            let value     = try? JSONDecoder().decode(Bool.self, from: decrypted)
+        else { return true }
+        return value
+    }
+
+    func writePinEnabled(_ enabled: Bool) throws {
+        self.pinEnabled = try JSONEncoder().encode(enabled).encrypt()
+    }
 }

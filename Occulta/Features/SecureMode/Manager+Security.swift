@@ -48,8 +48,7 @@ extension Manager {
         /// entries whose `visibleThroughDepth` is set remain hidden at the stored depth,
         /// regardless of whether the PIN overlay fires on scene activation.
         ///
-        /// Persisted across app kills via `AppLayerConfig.persistedDepth` (signed-Int encoding
-        /// in `readLockGate` / `writeLockGate`). Restored in `init` from the same field.
+        /// Persisted across app kills via `AppLayerConfig.pinEnabled`. Restored in `init`.
         /// Always `true` for fresh configs and after any clean state transition.
         private(set) var appLockEnabled: Bool = true
 
@@ -114,19 +113,17 @@ extension Manager {
                 self.state = .noPIN
             }
 
-            // Restore the persisted depth and gate-active flag so depth-filtering
-            // and the PIN overlay behave correctly after an app kill or restart.
-            // `readLockGate` falls back to (0, true) on any decode failure, so
-            // a corrupted or absent field always results in the safe default.
-            let (depth, gateActive) = config?.readLockGate() ?? (0, true)
-            self.currentDepth   = depth
-            self.appLockEnabled = gateActive
+            // Restore routing depth and gate state so depth-filtering and the PIN
+            // overlay behave correctly after an app kill or restart. Both fields
+            // fall back to the safe default on any decode failure.
+            let routingDepth    = config?.readRoutingDepth() ?? .normal
+            self.currentDepth   = routingDepth.rawValue
+            self.appLockEnabled = config?.readPinEnabled() ?? true
 
             // If the app was killed while at depth 1 (duress verifier present and
-            // depth > 0), re-enter .duress immediately so depth-filtering applies
-            // before any UI renders — no PIN re-entry required for the depth itself;
-            // the overlay gate handles authentication separately.
-            if depth > 0 && self.state == .active {
+            // routing depth is .duress), re-enter .duress immediately so
+            // depth-filtering applies before any UI renders.
+            if routingDepth == .duress && self.state == .active {
                 self.state = .duress
             }
         }
@@ -135,9 +132,9 @@ extension Manager {
 
         /// Builds a normal PIN verifier, persists config, and transitions `.noPIN` → `.pinOnly`.
         ///
-        /// Also initialises `persistedDepth` to `encrypt(0)` (gate active at depth 0) so the
-        /// field is always non-nil from the first config write onward. This prevents forensic
-        /// tools from inferring special state from field presence or absence.
+        /// Also initialises `persistedDepth` and `pinEnabled` so both fields are non-nil
+        /// from the first config write onward — a consistently present field prevents
+        /// forensic tools from inferring special state from field presence or absence.
         func configurePIN(_ pin: String) throws {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
@@ -150,7 +147,8 @@ extension Manager {
             let config = AppLayerConfig()
             config.sealedNormalVerifier = sealedNormal
             try config.setWipeThreshold(3)
-            try config.writeLockGate(depth: 0, gateActive: true)
+            try config.writeRoutingDepth(.normal)
+            try config.writePinEnabled(true)
             self.modelContext.insert(config)
             try self.modelContext.save()
 
@@ -200,24 +198,29 @@ extension Manager {
         ) async throws {
             // ── Step 1: State guard + PIN verification ──────────────────────────────
             guard self.state == .pinOnly else { throw SecurityError.invalidStateTransition }
+            
             let config = try self.requireConfig()
-            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
+            
+            guard
+                let seKey = try self.keyManager.deriveSecureModeKey()
+            else {
                 throw SecurityError.keyDerivationFailed
             }
+            
             guard
                 let verifier = config.sealedNormalVerifier,
                 PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
                                          verifier: verifier, seKey: seKey)
-            else { throw SecurityError.incorrectPIN }
+            else {
+                throw SecurityError.incorrectPIN
+            }
 
             guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel,
                                             verifier: verifier, seKey: seKey)
             else { throw SecurityError.pinCollision }
 
-            config.sealedDuressVerifier = try PINManager.buildVerifier(pin: duressPIN,
-                                                                        label: Self.duressLabel,
-                                                                        seKey: seKey)
-            try config.writeLockGate(depth: 0, gateActive: true)
+            config.sealedDuressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: seKey)
+
             try self.modelContext.save()
 
             // ── Step 2: Create staged local DB key ──────────────────────────────────
@@ -226,7 +229,9 @@ extension Manager {
             
             do {
                 // ── Step 3: Derive blob key ──────────────────────────────────────────
-                guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
+                guard
+                    let blobKey = Manager.Blob.deriveBlobKey(from: seKey)
+                else {
                     throw SecurityError.keyDerivationFailed
                 }
 
@@ -237,7 +242,7 @@ extension Manager {
                 var safeProfiles:  [Contact.Profile]   = []
 
                 for profile in allProfiles {
-                    if Self.isVisible(profile, atDepth: 1) {
+                    if Self.isVisible(profile, atDepth: .max) {
                         safeProfiles.append(profile)
                     } else {
                         // Sensitive: decrypt and capture for blob.
@@ -271,11 +276,17 @@ extension Manager {
                 let payload = BlobPayload(contacts: blobContacts)
                 try Manager.Blob.seal(payload, blobKey: blobKey, directory: self.blobDirectory)
 
-                // ── Step 8: Re-encrypt safe contacts + vault depth fields ─────────────
+                // ── Step 8: Re-encrypt ALL contacts + vault depth fields ──────────────
+                //
+                // Both safe and sensitive contacts must be re-encrypted under the staged
+                // key. Sensitive contacts remain in the DB (not hard-deleted); after the
+                // old canonical key is deleted in Step 11, any contact still encrypted
+                // under it becomes permanently unreadable. Depth-based visibility
+                // (visibleThroughDepth) controls what appears in the UI — not the key.
                 let stagedCrypto = StagedCryptoManager(key: stagedKey)
                 let aad          = EncryptionScheme.v2_hybridPQ.aad
 
-                for profile in safeProfiles {
+                for profile in allProfiles {
                     // Pre-fix all fields that save(contact:using:) does not touch
                     // (visibleThroughDepth, signedAttributes, contactPublicKeys).
                     // These must be staged before the modelContext.save() inside
@@ -308,30 +319,47 @@ extension Manager {
                 }
                 try vaultManager.modelContext.save()
 
-                // ── Step 9: WAL checkpoint ────────────────────────────────────────────
+                // ── Step 9: Commit staged key → point of no return ───────────────────
+                //
+                // WAL checkpoint intentionally comes AFTER commit (Step 10).
+                // If checkpoint ran before commit and the commit failed, the main
+                // SQLite file would contain data encrypted with the staged (rolled-back)
+                // key — permanently unreadable. Keeping all staged writes in the WAL
+                // means a commit failure leaves the main file intact under the old
+                // canonical key, which is fully readable after a rollback.
+                try self.keyManager.commitStagedLocalDBKey()
+
+                // ── Step 10: WAL checkpoint ───────────────────────────────────────────
+                // Commit succeeded — flush the staged-key writes from the WAL to the
+                // main file. Safe to checkpoint now because the commit is final.
                 if let url = self.storeURL {
                     Self.walCheckpoint(at: url)
                 }
 
-                // ── Step 10: Commit staged key → point of no return ───────────────────
-                try self.keyManager.commitStagedLocalDBKey()
-
                 // ── Step 11: Cleanup ──────────────────────────────────────────────────
                 self.keyManager.deleteSupersededLocalDBArtefacts()
 
-                // Hard-delete sensitive contacts from DB — intentionally after commit.
+                // Sensitive contacts are NOT hard-deleted from the DB.
                 //
-                // Previously this loop was before Step 9. Any throw inside it triggered
-                // rollbackStagedLocalDBKey(), but the DB already contained data re-encrypted
-                // exclusively with the staged key (Step 8). After rollback the staged key was
-                // deleted, making those rows permanently unreadable — irrecoverable data loss.
+                // They remain in the DB with `visibleThroughDepth` set to a value that
+                // hides them at duress depth (e.g. 0 = visible at depth 0 only). Depth
+                // filtering in the contact list UI enforces visibility: at depth 0 (normal
+                // PIN) they show; at depth 1+ (duress PIN) they are hidden.
                 //
-                // After commit the staged key IS the canonical key. A delete failure is safe:
-                // sensitive contacts remain in the DB encrypted under the canonical key.
-                // The user can retry activation; no rollback is needed and no data is lost.
-                for profile in allProfiles where !safeProfiles.contains(where: { $0.identifier == profile.identifier }) {
-                    try? contactManager.hardDeleteContact(profile)
-                }
+                // Page-slack forensics are handled by two existing mitigations that do not
+                // require hard-deletion:
+                //   • PRAGMA secure_delete = ON: SQLite zeroes freed pages on any row
+                //     deletion or update, eliminating residual ciphertext from prior writes.
+                //   • DB key rotation (S1): rows written before activation are encrypted
+                //     under the old canonical key, which is deleted after commit. A forensic
+                //     examiner with the current canonical key cannot decrypt pre-activation
+                //     page slack.
+                // Sensitive contacts that remain in the DB are encrypted under the new
+                // canonical key. They are not accessible via the UI in duress mode; a raw
+                // SQLite examiner with device access during duress exposure could decrypt
+                // them. This is documented in forensic-trace-avoidance.md §S5 as an
+                // accepted residual gap given the functional requirement that the real user
+                // can see their sensitive contacts after entering the normal PIN.
 
             } catch {
                 self.keyManager.rollbackStagedLocalDBKey()
@@ -373,7 +401,9 @@ extension Manager {
             guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
                 throw SecurityError.keyDerivationFailed
             }
+            
             let payload: BlobPayload
+            
             do {
                 payload = try Manager.Blob.unseal(blobKey: blobKey, directory: self.blobDirectory)
             } catch {
@@ -396,6 +426,14 @@ extension Manager {
                 // visibleThroughDepth is set to nil (not re-encrypted) so the activation
                 // watermark is erased: nil is the pre-activation default and functionally
                 // identical to Int.max — isVisible returns true for both.
+                //
+                // convertToMutableCopy is wrapped in a local do/catch: a contact encrypted
+                // with a deleted key (orphaned by Bug 13's failed hard-delete during
+                // activation) cannot be decrypted or recovered. Hard-deleting it here is
+                // the correct response — skipping it and letting it throw would propagate
+                // out of the loop, causing the catch block to rollback the staged Keychain
+                // key while leaving earlier contacts already written to the WAL encrypted
+                // under that now-deleted staged key (permanently unreadable).
                 for profile in try contactManager.fetchAllContacts() {
                     profile.visibleThroughDepth = nil
                     if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
@@ -421,7 +459,9 @@ extension Manager {
                         predicate: #Predicate { $0.identifier == record.draft.identifier }
                     )
                     guard let restored = try self.modelContext.fetch(fetchDesc).first else { continue }
+                    
                     restored.visibleThroughDepth = nil
+                    
                     if let attrs = record.signedAttributes, !attrs.isEmpty {
                         restored.signedAttributes = try AES.GCM.seal(
                             attrs, using: stagedKey, authenticating: aad
@@ -444,13 +484,22 @@ extension Manager {
                     try vaultManager.modelContext.save()
                 }
 
-                // ── Step 7: WAL checkpoint ────────────────────────────────────────────
+                // ── Step 7: Commit staged key (hard point of no return) ───────────────
+                //
+                // WAL checkpoint intentionally comes AFTER commit (Step 8).
+                // If checkpoint ran before commit and the commit failed, the main
+                // SQLite file would contain data encrypted with the staged (rolled-back)
+                // key — permanently unreadable. Keeping all staged writes in the WAL
+                // means a commit failure leaves the main file intact under the old
+                // canonical key, which is fully readable after a rollback.
+                try self.keyManager.commitStagedLocalDBKey()
+
+                // ── Step 8: WAL checkpoint ────────────────────────────────────────────
+                // Commit succeeded — flush the staged-key writes from the WAL to the
+                // main file. Safe to checkpoint now because the commit is final.
                 if let url = self.storeURL {
                     Self.walCheckpoint(at: url)
                 }
-
-                // ── Step 8: Commit staged key (hard point of no return) ───────────────
-                try self.keyManager.commitStagedLocalDBKey()
 
                 // ── Step 9: Delete superseded artefacts ───────────────────────────────
                 self.keyManager.deleteSupersededLocalDBArtefacts()
@@ -460,15 +509,54 @@ extension Manager {
                 throw error
             }
 
-            // Remove duress verifier, reset gate, persist config, replace blob.
+            // Remove duress verifier, reset to normal layer, persist config, replace blob.
             config.sealedDuressVerifier = nil
-            try config.writeLockGate(depth: 0, gateActive: true)
+            try config.writeRoutingDepth(.normal)
+            try config.writePinEnabled(true)
             try self.modelContext.save()
+            
             Manager.Blob.rewriteNoOpBlob()
+            
             self.resetCounters()
             self.currentDepth   = 0
             self.appLockEnabled = true
             self.state = .pinOnly
+        }
+
+        // MARK: - Emergency recovery
+
+        /// Clears Secure Mode state without performing a key rotation or re-encryption.
+        ///
+        /// Use only when the DB is in an inconsistent key state (e.g. a failed key
+        /// rotation left contacts encrypted under a deleted staged key). Normal
+        /// `deactivateSecureMode` rotates the key and restores blob contacts; this
+        /// function skips both steps and simply removes the duress verifier so the
+        /// state machine transitions to `.pinOnly`. The DB key stays at whatever it
+        /// currently is — contacts may be unreadable if the key state is corrupted.
+        func forceDeactivateForRecovery(confirmingEntryPIN: String) throws {
+            guard self.state == .active || self.state == .duress else {
+                throw SecurityError.invalidStateTransition
+            }
+            let config = try self.requireConfig()
+            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
+                throw SecurityError.keyDerivationFailed
+            }
+            guard
+                let verifier = config.sealedNormalVerifier,
+                PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
+                                         verifier: verifier, seKey: seKey)
+            else { throw SecurityError.incorrectPIN }
+
+            config.sealedDuressVerifier = nil
+            try config.writeRoutingDepth(.normal)
+            try config.writePinEnabled(true)
+            try self.modelContext.save()
+
+            Manager.Blob.rewriteNoOpBlob()
+            self.resetCounters()
+            self.currentDepth   = 0
+            self.appLockEnabled = true
+            self.state          = .pinOnly
         }
 
         // MARK: - Verify
@@ -551,7 +639,8 @@ extension Manager {
                 throw SecurityError.incorrectPIN
             }
             let config = try self.requireConfig()
-            try config.writeLockGate(depth: self.currentDepth, gateActive: false)
+            try config.writeRoutingDepth(RoutingDepth(rawValue: self.currentDepth) ?? .normal)
+            try config.writePinEnabled(false)
             try self.modelContext.save()
             self.appLockEnabled = false
         }
@@ -583,7 +672,8 @@ extension Manager {
             // Normal PIN — restore to depth 0 (real layer).
             if let verifier = config.sealedNormalVerifier,
                PINManager.checkVerifier(pin: pin, label: Self.normalLabel, verifier: verifier, seKey: seKey) {
-                try? config.writeLockGate(depth: 0, gateActive: true)
+                try? config.writeRoutingDepth(.normal)
+                try? config.writePinEnabled(true)
                 try? self.modelContext.save()
                 self.currentDepth   = 0
                 self.state          = .active
@@ -594,7 +684,8 @@ extension Manager {
             // Duress PIN — re-enable gate at depth 1 (duress layer stays active).
             if let verifier = config.sealedDuressVerifier,
                PINManager.checkVerifier(pin: pin, label: Self.duressLabel, verifier: verifier, seKey: seKey) {
-                try? config.writeLockGate(depth: 1, gateActive: true)
+                try? config.writeRoutingDepth(.duress)
+                try? config.writePinEnabled(true)
                 try? self.modelContext.save()
                 self.currentDepth   = 1
                 self.state          = .duress
