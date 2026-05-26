@@ -18,11 +18,9 @@ struct SecureModeSetupFlow: View {
     @Environment(ContactManager.self)   private var contactManager
     @Environment(VaultManager.self)     private var vaultManager
 
-    @State private var path              = NavigationPath()
-    @State private var collectedNormal   = ""
-    @State private var collectedDuress   = ""
-    @State private var isActivating      = false
-    @State private var activationFailed  = false
+    @State private var path            = NavigationPath()
+    @State private var collectedNormal = ""
+    @State private var collectedDuress = ""
 
     private enum Step: Hashable { case pinSetup, contacts, summary }
 
@@ -69,28 +67,15 @@ struct SecureModeSetupFlow: View {
                     }
 
                 case .summary:
-                    SummaryView(onActivate: {
-                        self.isActivating = true
-                        let normal = self.collectedNormal
-                        let duress = self.collectedDuress
-                        self.collectedNormal = ""
-                        self.collectedDuress = ""
-                        Task {
-                            do {
-                                try await self.security.activateSecureMode(
-                                    confirmingEntryPIN: normal,
-                                    duressPIN:          duress,
-                                    contactManager:     self.contactManager,
-                                    vaultManager:       self.vaultManager
-                                )
-                                self.isActivating = false
-                                self.dismiss()
-                            } catch {
-                                self.isActivating    = false
-                                self.activationFailed = true
-                            }
+                    SummaryView(
+                        normalPIN: self.collectedNormal,
+                        duressPIN: self.collectedDuress,
+                        onDone: {
+                            self.collectedNormal = ""
+                            self.collectedDuress = ""
+                            self.dismiss()
                         }
-                    })
+                    )
                     .navigationTitle("Review")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -101,18 +86,6 @@ struct SecureModeSetupFlow: View {
                 }
             }
         }
-        .overlay {
-            if self.isActivating {
-                ActivatingOverlay()
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: self.isActivating)
-        .alert("Activation Failed", isPresented: self.$activationFailed) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("Secure Mode could not be activated. Your data is unchanged. Please try again.")
-        }
     }
 }
 
@@ -122,6 +95,7 @@ private struct ActivatingOverlay: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
+            
             VStack(spacing: 16) {
                 ProgressView()
                     .progressViewStyle(.circular)
@@ -239,10 +213,17 @@ private struct FeatureRow: View {
 // MARK: - Summary
 
 private struct SummaryView: View {
-    let onActivate: () -> Void
+    let normalPIN: String
+    let duressPIN: String
+    let onDone:    () -> Void
 
     @Environment(Manager.Security.self) private var security
+    @Environment(ContactManager.self)   private var contactManager
+    @Environment(VaultManager.self)     private var vaultManager
     @Query(Contact.Profile.descriptor)  private var contacts: [Contact.Profile]
+
+    @State private var isActivating     = false
+    @State private var activationFailed = false
 
     private var sensitiveCount: Int {
         self.contacts.filter { self.security.isSensitive($0.identifier) }.count
@@ -296,17 +277,49 @@ private struct SummaryView: View {
             }
 
             Section {
-                Button(action: self.onActivate) {
+                Button {
+                    self.isActivating = true
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(50))
+                        do {
+                            try await self.security.activateSecureMode(
+                                confirmingEntryPIN: self.normalPIN,
+                                duressPIN:          self.duressPIN,
+                                contactManager:     self.contactManager,
+                                vaultManager:       self.vaultManager
+                            )
+                            self.isActivating = false
+                            self.onDone()
+                        } catch {
+                            self.isActivating     = false
+                            self.activationFailed = true
+                        }
+                    }
+                } label: {
                     Text("Activate")
                         .frame(maxWidth: .infinity)
                         .fontWeight(.semibold)
                 }
+                .disabled(self.isActivating)
                 .prominentButtonStyle()
                 .tint(Color.occultaAccent)
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
         }
         .listStyle(.insetGrouped)
+        .overlay {
+            if self.isActivating {
+                ActivatingOverlay()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: self.isActivating)
+        .interactiveDismissDisabled(self.isActivating)
+        .alert("Activation Failed", isPresented: self.$activationFailed) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Secure Mode could not be activated. Your data is unchanged. Please try again.")
+        }
     }
 }
 

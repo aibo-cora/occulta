@@ -228,28 +228,10 @@ struct Settings: View {
                 SecureModeSetupFlow()
                     .environment(self.security)
             }
-            // Deactivate Secure Mode: confirm normal PIN (no counter mutation)
+            // Deactivate Secure Mode
             .sheet(isPresented: self.$showingDeactivateSheet) {
-                PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
-                    let cm = self.contactManager
-                    let vm = self.vaultManager
-
-                    Task {
-                        do {
-                            try await self.security.deactivateSecureMode(
-                                confirmingEntryPIN: pin,
-                                contactManager:     cm,
-                                vaultManager:       vm
-                            )
-                        } catch {
-                            #if DEBUG
-                            debugPrint("Secure mode deactivate failed: \(error)")
-                            #endif
-                        }
-                    }
-                    self.showingDeactivateSheet = false
-                })
-                .environment(self.security)
+                SecureModeDeactivateFlow()
+                    .environment(self.security)
             }
         }
     }
