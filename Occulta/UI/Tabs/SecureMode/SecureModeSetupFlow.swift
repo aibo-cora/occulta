@@ -18,10 +18,11 @@ struct SecureModeSetupFlow: View {
     @Environment(ContactManager.self)   private var contactManager
     @Environment(VaultManager.self)     private var vaultManager
 
-    @State private var path            = NavigationPath()
-    @State private var collectedNormal = ""
-    @State private var collectedDuress = ""
-    @State private var isActivating    = false
+    @State private var path              = NavigationPath()
+    @State private var collectedNormal   = ""
+    @State private var collectedDuress   = ""
+    @State private var isActivating      = false
+    @State private var activationFailed  = false
 
     private enum Step: Hashable { case pinSetup, contacts, summary }
 
@@ -75,14 +76,19 @@ struct SecureModeSetupFlow: View {
                         self.collectedNormal = ""
                         self.collectedDuress = ""
                         Task {
-                            try? await self.security.activateSecureMode(
-                                confirmingEntryPIN: normal,
-                                duressPIN:          duress,
-                                contactManager:     self.contactManager,
-                                vaultManager:       self.vaultManager
-                            )
-                            self.isActivating = false
-                            self.dismiss()
+                            do {
+                                try await self.security.activateSecureMode(
+                                    confirmingEntryPIN: normal,
+                                    duressPIN:          duress,
+                                    contactManager:     self.contactManager,
+                                    vaultManager:       self.vaultManager
+                                )
+                                self.isActivating = false
+                                self.dismiss()
+                            } catch {
+                                self.isActivating    = false
+                                self.activationFailed = true
+                            }
                         }
                     })
                     .navigationTitle("Review")
@@ -102,6 +108,11 @@ struct SecureModeSetupFlow: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: self.isActivating)
+        .alert("Activation Failed", isPresented: self.$activationFailed) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Secure Mode could not be activated. Your data is unchanged. Please try again.")
+        }
     }
 }
 

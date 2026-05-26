@@ -375,6 +375,7 @@ extension Manager {
         ) async throws {
             // ── Step 1: State guard + PIN verification ──────────────────────────────
             let config = try self.requireConfig()
+            
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
@@ -415,13 +416,13 @@ extension Manager {
                 // watermark is erased: nil is the pre-activation default and functionally
                 // identical to Int.max — isVisible returns true for both.
                 //
-                // convertToMutableCopy is wrapped in a local do/catch: a contact encrypted
-                // with a deleted key (orphaned by Bug 13's failed hard-delete during
-                // activation) cannot be decrypted or recovered. Hard-deleting it here is
-                // the correct response — skipping it and letting it throw would propagate
-                // out of the loop, causing the catch block to rollback the staged Keychain
-                // key while leaving earlier contacts already written to the WAL encrypted
-                // under that now-deleted staged key (permanently unreadable).
+                // convertToMutableCopy is wrapped in a local do/catch. Sensitive shells
+                // have all text fields encrypted under the deleted activation key and
+                // cannot be decrypted. On failure: skip without hard-deleting. Hard-delete
+                // would write a delete record in the WAL at deactivation time — a forensic
+                // tell that identifies exactly which contacts were hidden during Secure Mode.
+                // Instead, the shell stays in the DB; Step 5 overwrites its text fields via
+                // the UPDATE path using blob plaintext re-encrypted under the staged key.
                 for profile in try contactManager.fetchAllContacts() {
                     profile.visibleThroughDepth = nil
                     if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
@@ -431,15 +432,21 @@ extension Manager {
                     }
                     try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
 
-                    let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
-                    try contactManager.save(contact: draft, using: stagedCrypto)
+                    do {
+                        let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
+                        try contactManager.save(contact: draft, using: stagedCrypto)
+                    } catch {
+                        // Sensitive shell — skip; restored from blob in Step 5.
+                    }
                 }
 
-                // ── Step 5: Re-insert sensitive contacts from blob ───────────────────
-                // INSERT path in save(contact:using:) writes visibleThroughDepth and
-                // contactPublicKeys with the canonical key. Fetch via self.modelContext
-                // after each INSERT to clear visibleThroughDepth (nil = always visible,
-                // erasing the activation watermark) and fix contactPublicKeys.
+                // ── Step 5: Restore sensitive contacts from blob ────────────────────
+                // Sensitive shells are still in the DB (not hard-deleted — see Step 4).
+                // save(contact:using:) takes the UPDATE path, overwriting all text fields
+                // with staged-key ciphertext from the blob draft. contactPublicKeys are
+                // not touched by the UPDATE path, so they remain under the deleted
+                // activation key. Detect this after reEncryptKeyRecords (which silently
+                // skips unreadable records) and rebuild key records from blob plaintext.
                 for record in payload.contacts {
                     try contactManager.save(contact: record.draft, using: stagedCrypto)
 
@@ -447,15 +454,43 @@ extension Manager {
                         predicate: #Predicate { $0.identifier == record.draft.identifier }
                     )
                     guard let restored = try self.modelContext.fetch(fetchDesc).first else { continue }
-                    
+
                     restored.visibleThroughDepth = nil
-                    
+
                     if let attrs = record.signedAttributes, !attrs.isEmpty {
                         restored.signedAttributes = try AES.GCM.seal(
                             attrs, using: stagedKey, authenticating: aad
                         ).combined
                     }
                     try Self.reEncryptKeyRecords(for: restored, using: stagedKey, aad: aad)
+
+                    // Rebuild key records that reEncryptKeyRecords could not decrypt
+                    // (encrypted under the deleted activation key).
+                    let hasUnreadableKeys = (restored.contactPublicKeys ?? []).contains {
+                        $0.material != nil && $0.material?.decrypt() == nil
+                    }
+                    if hasUnreadableKeys {
+                        restored.contactPublicKeys?.removeAll()
+                        let crypto = Manager.Crypto()
+                        for key in record.draft.contactPublicKeys {
+                            let encMat: Data?
+                            if let mat = key.material {
+                                encMat = try? crypto.encrypt(data: mat)
+                            } else {
+                                encMat = nil
+                            }
+                            guard
+                                let encOwner = (try? crypto.encrypt(data: key.owner)) ?? nil,
+                                let dateData = key.acquiredAt.data(using: .utf8),
+                                let encDate  = (try? crypto.encrypt(data: dateData)) ?? nil
+                            else { continue }
+                            restored.contactPublicKeys?.append(
+                                Contact.Profile.Key(material: encMat, owner: encOwner, date: encDate)
+                            )
+                        }
+                        // Re-encrypt freshly added records from canonical → staged.
+                        try Self.reEncryptKeyRecords(for: restored, using: stagedKey, aad: aad)
+                    }
                 }
                 if !payload.contacts.isEmpty {
                     try self.modelContext.save()

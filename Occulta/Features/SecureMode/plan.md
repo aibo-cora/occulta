@@ -224,7 +224,13 @@ Contact visibility is tracked per-contact, not in a central list on `AppLayerCon
 
 `nil` is treated as a legacy pre-Secure-Mode value and migrated to `encrypt(Int.max)` at activation. No new code ever writes nil.
 
-Filter at depth N: show contacts where `(decrypt(visibleThroughDepth) ?? Int.max) >= N`.
+Filter at depth N — four cases:
+- `nil` → show (pre-Secure-Mode contact; `?? Int.max` fallback applies)
+- non-nil, decryption succeeds, value ≥ N → show
+- non-nil, decryption succeeds, value < N → hide (depth-gated)
+- non-nil, **decryption fails** → **exclude entirely** (sensitive shell; canonical DB key was deleted at activation)
+
+The decryption-failure case is the post-activation sentinel. Safe contacts have all fields re-encrypted under the new key (readable). Sensitive contacts have all fields left under the deleted key (permanently unreadable). A sensitive shell has a non-nil `visibleThroughDepth` that cannot be decrypted — this is the signal to suppress the row. The current `return true` fallback on decrypt failure is a bug; it must be `return false`.
 
 **Write rule:** contacts created or exchanged at depth 0 always receive `encrypt(Int.max)` (safe) or `encrypt(0)` (sensitive). Contacts created at depth N > 0 receive `encrypt(N)`. No contact ever gets a nil field after the first activation migration.
 
@@ -294,12 +300,52 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
   5. Migrate `visibleThroughDepth`: write `encrypt(Int.max)` to all safe contacts with nil field; write `encrypt(0)` to all vault entries with nil field. This batch write unifies `ZMODIFICATIONDATE` across all rows — no activation timestamp fingerprint.
   6. Unwrap vault PEKs for all real-layer entries (`decrypt(visibleThroughDepth) == 0`) using the biometric vault key from step 2. Build `VaultPEKRecord` for each (includes `ShardDistributionMetadata`).
   7. Seal blob: `Manager.Blob.seal(BlobPayload(contacts: sensitiveRecords, vaultPEKs: pekRecords), blobKey:)`. Replaces the no-op blob.
-  8. Re-encrypt safe contacts' fields under `stagedDBKey` using explicit AES-GCM (not via the standard `Manager.Crypto` path, which still reads the old canonical key). Save to DB.
+  8. Re-encrypt **safe** contacts' fields under `stagedDBKey` using explicit AES-GCM (not via the standard `Manager.Crypto` path, which still reads the old canonical key). **Sensitive contacts are not re-encrypted** — all their fields intentionally remain encrypted under the old canonical key, which is deleted in step 11. This produces uniform unreadability across all sensitive shells with no mixed-field forensic tell. Save to DB.
   9. `PRAGMA wal_checkpoint(TRUNCATE)` on a direct SQLite connection — zero the WAL before key rotation. Eliminates any plaintext re-encryption record from WAL pages.
   10. Promote staged key to canonical: `SecItemUpdate` to rename staged SE tag → canonical tag; `SecItemUpdate` (or delete + add) to replace canonical random with staged random. **Old canonical key is now uncomputable — sensitive rows locked in-place.**
   11. Delete staged artefacts (old canonical SE key + old random) that are now superseded. Build duress verifier; write `AppLayerConfig`; transition state → `.active`.
 
   **Old SE key is deleted in step 11, after all data has been written in steps 8–9.** If the app crashes before step 10, the old key is still canonical and the app recovers cleanly on next launch. The crash window where data is in an inconsistent state is steps 10–11 (milliseconds); `SecureModeOperation` (below) will close this gap in a future iteration.
+
+### Post-activation contact access
+
+After activation, two data sources exist:
+
+| Source | Contents | Readable |
+|---|---|---|
+| Database | Safe contacts (re-encrypted with new key) | Yes |
+| Database | Sensitive shells (old key deleted) | No — `visibleThroughDepth` decrypt fails → excluded |
+| `inMemorySensitiveContacts` | Sensitive contacts plaintext | Yes — normal PIN only |
+
+**Normal PIN → blob load.** `verify()` returning `.normal` (regardless of prior state) triggers `loadBlobContacts()`:
+1. Derive blob key via `Manager.Blob.deriveBlobKey(from:)`.
+2. Unseal `AppLayerConfig.blobPayload`.
+3. Decode `BlobPayload` → `[ContactBlobRecord]`.
+4. Assign to `inMemorySensitiveContacts`.
+5. On failure: surface error, leave `inMemorySensitiveContacts` empty, contact list shows only DB safe contacts.
+
+**Gate-active → memory wipe.** When the PIN overlay fires (`isLocked` transitions to `true`): `inMemorySensitiveContacts = []` immediately, before the overlay is visible. Triggered by gate onset, not by backgrounding.
+
+**Duress PIN.** Blob never opened. `inMemorySensitiveContacts` stays empty. Contact list = DB safe contacts only (shells filtered by the decryptability sentinel).
+
+**Merged contact list.**
+- Source A: `@Query(Contact.Profile.descriptor)` — sensitive shells excluded by `isVisible` decryptability rule.
+- Source B: `security.inMemorySensitiveContacts` decoded for display.
+- Merge: union, deduplicated by identifier (belt-and-suspenders against the key-deletion window).
+
+**Editing an in-memory sensitive contact.**
+1. Update `inMemorySensitiveContacts` array.
+2. Re-seal blob: `AppLayerConfig.blobPayload = seal(inMemorySensitiveContacts, using: blobKey)`.
+3. Save `AppLayerConfig`. DB shell intentionally left stale — no write.
+
+- [ ] **[bug]** Revert `for profile in allProfiles` → `for profile in safeProfiles` in activation step 8. A wrong edit changed the loop to include sensitive contacts in the re-encryption pass. Sensitive contacts must never enter the re-encryption loop — their fields must remain exclusively under the old (deleted) key.
+- [ ] **[bug]** Fix `isVisible(_:atDepth:)` fallback: `visibleThroughDepth` non-nil + decrypt failure → `return false`. Current fallback `return true` is the root cause of sensitive shells surfacing as empty contacts after activation.
+- [ ] Add `private(set) var inMemorySensitiveContacts: [ContactBlobRecord] = []` to `Manager.Security`.
+- [ ] Implement `loadBlobContacts()` on `Manager.Security`.
+- [ ] Wire `loadBlobContacts()` to `verify()` → `.normal` result.
+- [ ] Wire `inMemorySensitiveContacts = []` to gate-active event (PIN overlay presentation).
+- [ ] Implement merged contact list data source in the contact list view.
+- [ ] Implement blob re-seal on edit of in-memory sensitive contact.
 
 - [ ] **Deactivation sequence:**
   1. Verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
@@ -312,7 +358,7 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
   8. `PRAGMA wal_checkpoint(TRUNCATE)`.
   9. Promote staged key to canonical; delete superseded old key.
   10. Restore no-op blob (write a fresh `rewriteNoOpBlob()` — real payload discarded).
-  11. Update `AppLayerConfig`: clear `sealedDuressVerifier`, write `persistedDepth(0, gateActive: true)`. Transition state → `.pinOnly`.
+  11. Update `AppLayerConfig`: clear `sealedDuressVerifier`, write `persistedDepth(0, gateActive: true)`. Clear `inMemorySensitiveContacts = []`. Transition state → `.pinOnly`.
 
 - [ ] `SecureModeOperation` SwiftData record — tracks activation/deactivation stage. Written before operation begins, deleted on clean completion. All fields encrypted; record's existence must not reveal the operation type. **On next launch, incomplete record → automatic resume or rollback:**
   - Resume: re-enter the operation from the last completed stage (idempotent stage design required)
