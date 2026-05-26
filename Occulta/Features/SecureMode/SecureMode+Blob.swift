@@ -61,6 +61,14 @@ struct ContactBlobRecord: Codable {
     /// `[SignedAttribute]` shard records this contact holds as trustee.
     /// `nil` when the contact has never been a trustee.
     let signedAttributes: Data?
+    /// The decoded `visibleThroughDepth` value at activation time (e.g. `0` = hidden at
+    /// all duress depths). Restored verbatim on deactivation so the contact retains its
+    /// sensitivity classification across activation cycles without requiring the user to
+    /// re-mark contacts manually.
+    ///
+    /// `nil` in blobs written before this field was added — deactivation falls back to `0`
+    /// (sensitive) since any contact present in the blob had a finite depth by definition.
+    let visibleThroughDepth: Int?
 }
 
 /// The complete blob payload for one activation layer.

@@ -250,8 +250,17 @@ extension Manager {
                         } else {
                             signedAttrs = nil
                         }
+                        let depth: Int?
+                        if let data = profile.visibleThroughDepth,
+                           let plain = data.decrypt(),
+                           let value = try? JSONDecoder().decode(Int.self, from: plain) {
+                            depth = value
+                        } else {
+                            depth = nil
+                        }
                         blobContacts.append(
-                            ContactBlobRecord(draft: draft, signedAttributes: signedAttrs)
+                            ContactBlobRecord(draft: draft, signedAttributes: signedAttrs,
+                                              visibleThroughDepth: depth)
                         )
                     }
                 }
@@ -465,7 +474,15 @@ extension Manager {
                     )
                     guard let restored = try self.modelContext.fetch(fetchDesc).first else { continue }
 
-                    restored.visibleThroughDepth = nil
+                    // Restore the depth stored at activation time, encrypted under the staged
+                    // key so it is readable after commitStagedLocalDBKey(). Falls back to 0
+                    // (sensitive) for blobs written before this field was added — any contact
+                    // in the blob had a finite visibleThroughDepth by definition.
+                    let depth     = record.visibleThroughDepth ?? 0
+                    let depthData = try JSONEncoder().encode(depth)
+                    restored.visibleThroughDepth = try AES.GCM.seal(
+                        depthData, using: stagedKey, authenticating: aad
+                    ).combined
 
                     if let attrs = record.signedAttributes, !attrs.isEmpty {
                         restored.signedAttributes = try AES.GCM.seal(
