@@ -179,21 +179,202 @@ The `depthData` / `visibleEncrypted` intermediates are now entirely unused and w
 
 ---
 
-## Bug 13 — Hard-delete of sensitive contacts fails silently after WAL checkpoint
+## Bug 13 — Hard-delete of sensitive contacts conflicts with normal-mode visibility
 
-**Status:** Open
+**Status:** Closed (design decision — hard-delete removed)
 
 ### Severity: High
 After `activateSecureMode` completes, sensitive contacts (those with `visibleThroughDepth < 1`) are supposed to be removed from the SQLite database — their data is sealed in the blob, and the DB hard-delete is the forensic protection that prevents a duress-mode examiner from finding them at the SQLite layer. In practice the hard-delete silently fails: sensitive contacts remain in the DB after activation, meaning the forensic protection does not apply even though depth filtering correctly hides them from the UI in duress mode.
 
-The hard-delete failure was confirmed empirically: with the blob destroyed (Bug 11, now fixed) and a missing-blob fallback that returns `BlobPayload(contacts: [])`, sensitive contacts should be unrecoverable if the delete had succeeded — yet they remain visible in the app after activation, proving they were never removed from the database.
-
 ### Root Cause
-Step 9 of `activateSecureMode` calls `walCheckpoint(at:)`, which opens a *second* SQLite connection to the same database file and runs `PRAGMA wal_checkpoint(TRUNCATE)`. This external write-level operation disturbs the SwiftData persistent store coordinator's internal state: SwiftData detects an external change to the database and can invalidate or re-merge the in-memory context, wiping the pending deletion marks that a subsequent `modelContext.delete(profile)` would rely on. The `try?` wrapping the hard-delete loop in Step 11 silently swallows the resulting error, leaving sensitive contacts in the database encrypted under the new canonical key.
+Hard-deleting sensitive contacts from the DB removes them from the normal-mode contact list. Sensitive contacts have `visibleThroughDepth = 0` (visible at depth 0, hidden at depth 1+). If they are not in the DB, `isVisible(atDepth: 0)` never runs for them — the real user entering the normal PIN cannot see their own sensitive contacts.
 
-Note: depth filtering (`isVisible(contact, atDepth:)`) is unaffected — the contacts remain correctly hidden in duress mode at the *UI* layer. The failure is forensic: a raw SQLite examination during duress exposure would reveal the sensitive contact rows.
+The original rationale for hard-delete was forensic: preventing a raw SQLite examination during duress exposure from finding sensitive contact rows encrypted under the canonical key. However, this conflicts with the primary functional requirement that the real user retains full access via the normal PIN.
 
 ### Resolution
-Pending. Two viable approaches:
-- **Option A (simpler):** Move the WAL checkpoint from Step 9 to *after* the hard-delete loop (Step 11). The hard-delete runs while the SwiftData context is still coherent, before the external SQLite connection disturbs it. The hard-delete still happens after `commitStagedLocalDBKey()`, preserving Bug 7's invariant.
-- **Option B:** Replace the SwiftData hard-delete with a direct SQLite `DELETE` via a dedicated connection (same pattern as `walCheckpoint`). Bypasses context state entirely; requires manual cascade handling for related records (`PhoneNumber`, `EmailAddress`, `PostalAddress`, `URLAddress`, `Key`).
+The hard-delete loop was removed from `activateSecureMode`. Sensitive contacts remain in the DB with `visibleThroughDepth` controlling UI visibility. Depth filtering in `ContactsListV2` hides them at depth 1 (duress mode). Pre-activation page slack is covered by S1 (DB key rotation) and S2 (`PRAGMA secure_delete = ON`). The residual forensic gap (sensitive rows readable via raw SQLite during duress exposure) is documented in `forensic-trace-avoidance.md §S5` as an accepted trade-off.
+
+---
+
+## Bug 14 — `commitStagedLocalDBKey` uses invalid `SecItemUpdate` search attributes, causing permanent data loss on deactivation failure
+
+**Status:** Closed (Fixed)
+
+### Severity: Critical
+`commitStagedLocalDBKey` failed consistently during deactivation with `errSecNoSuchAttr` (OSStatus -25303), triggering rollback. The rollback deleted the staged random component. Because the WAL checkpoint ran *before* the commit, the main SQLite file already contained all contact data re-encrypted under the staged key. With the staged random deleted, those contacts became permanently unreadable — all user contact data was destroyed.
+
+### Root Cause
+Three `SecItemUpdate` calls inside `commitStagedLocalDBKey` used attributes that are not valid search criteria for `SecItemUpdate`:
+
+- **Steps A and B** (SE key tag renames): included `kSecAttrTokenID` and `kSecAttrKeyType` in the search dictionary. On the affected iOS version, `kSecAttrTokenID` as a `SecItemUpdate` search key returns `errSecNoSuchAttr` (-25303).
+- **Step C** (Keychain random update): included `kSecAttrAccessible` in the search dictionary. `kSecAttrAccessible` is valid for `SecItemAdd` and `SecItemCopyMatching` but not for `SecItemUpdate` — when the item already exists it returns `errSecNoSuchAttr` instead of finding and updating it.
+
+Steps A and B worked during activation because activations used an older build where those attributes were absent. Step C worked during first activation only because `localDBRandomKeychainAccount` did not yet exist, so `SecItemUpdate` returned `errSecItemNotFound` and the defensive `SecItemAdd` fallback ran successfully. All subsequent activations and all deactivations failed at Step C once the item existed.
+
+A compounding factor: the WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`) ran before `commitStagedLocalDBKey`. When the commit failed and rollback deleted the staged random, the main SQLite file already contained contacts encrypted exclusively under the staged key — permanently unreadable.
+
+### Resolution
+Two fixes applied together:
+
+**1. `commitStagedLocalDBKey` search dictionaries** — all three steps now use only the minimal valid search keys:
+- Steps A and B: `kSecClass` + `kSecAttrApplicationTag` only (sufficient to identify SE keys by tag uniquely).
+- Step C: `kSecClass` + `kSecAttrAccount` only (sufficient to identify generic password items by account).
+
+`kSecAttrTokenID`, `kSecAttrKeyType`, and `kSecAttrAccessible` were removed from all search dictionaries. They remain valid in the *attributes-to-update* dictionary (Step C's add fallback) where they are correctly used.
+
+**2. WAL checkpoint moved after commit** — in both `activateSecureMode` (Step 10) and `deactivateSecureMode` (Step 8), the `walCheckpoint(at:)` call now runs *after* `commitStagedLocalDBKey`. If the commit fails, the main SQLite file still contains contacts encrypted under the old canonical key (intact), and rollback leaves the system in a recoverable state. Only after a successful commit — when the staged key is irrevocably canonical — does the checkpoint flush staged-key writes to the main file.
+
+---
+
+## Bug 15 — Contact classification uses hardcoded depth 1, breaks under multi-depth Secure Mode
+
+**Status:** Closed (Fixed)
+
+### Severity: Medium
+`activateSecureMode` Step 4 classified contacts into safe (stay in DB) vs. sensitive (go to blob) using `Self.isVisible(profile, atDepth: 1)`. This is correct for the current two-level system (depth 0 = real, depth 1 = duress), but fails if the depth model ever extends to levels 2, 3, etc.
+
+A contact with `visibleThroughDepth = 1` (visible at depth 1, hidden at depth 2) would pass the `atDepth: 1` check and remain in the DB. At depth 2 it would be filtered from the UI — but it sits in the DB unprotected, not in the blob. The invariant "sensitive contacts live only in the blob" is broken.
+
+The single-blob design requires that any contact hidden at *any* duress depth be removed from the DB. Per-depth blobs are not viable (multiple distinct `.occbak` files are a forensic tell).
+
+### Root Cause
+The depth was a magic number rather than "the maximum possible depth," so new depth levels silently introduced unclassified contacts.
+
+### Resolution
+Changed `atDepth: 1` to `atDepth: .max` in `activateSecureMode` Step 4 (`Manager+Security.swift`). `isVisible(atDepth: .max)` returns `true` only for `nil` and `Int.max` — both mean "always visible." Any contact with a finite `visibleThroughDepth` (0, 1, 2, …) is classified sensitive and goes to the blob. This is future-proof for any number of depth levels.
+
+---
+
+## Bug 16 — PIN toggle interactive in `.active` state allows gate-drop without deactivating Secure Mode
+
+**Status:** Closed (Fixed)
+
+### Severity: Medium
+In `.active` state (Secure Mode running, gate up), the "Enable PIN" toggle was fully interactive. Tapping it routed to `disablePINFromCurrentDepth`, lowering the gate at depth 0. This violated the stated invariant: "Secure Mode must be deactivated before the PIN can be removed." The gate-drop at depth 0 also left the "Deactivate Protection" button visible in Settings while the toggle showed OFF — a forensic tell revealing Secure Mode was active (see Bug 17).
+
+### Root Cause
+The `else` branch in `SecuritySettings.showingPINSheet` handled both `.active` and `.duress` with the same `disablePINFromCurrentDepth` path. Coercion gate-drop at depth 1 (`.duress`) is a valid and intentional flow; gate-drop at depth 0 (`.active`) is not.
+
+### Resolution
+Added `.disabled(self.security.state == .active && self.security.appLockEnabled)` to the Toggle in `Settings.swift`. The sheet's `else` branch was tightened to `else if self.security.state == .duress`, making the coercion-only intent explicit and making the `.active` path unreachable. In `.duress`, the toggle remains interactive to preserve coercion-resistance.
+
+---
+
+## Bug 17 — "Deactivate Protection" button shown when gate is lowered in `.active` state — forensic tell
+
+**Status:** Open
+
+### Severity: High (forensic)
+When `disablePINFromCurrentDepth` is called from `.active` state (depth 0), `state` remains `.active` and `appLockEnabled` becomes `false`. The Settings condition `if self.security.state == .active` still shows the "Deactivate Protection" button. A coercer or forensic tool browsing Settings sees this button despite the PIN toggle appearing off — directly revealing that Secure Mode is active.
+
+Additionally, the "Learn more" Secure Mode section (which would normally appear in `.pinOnly` as a cover story) is hidden in `.active` state, so Settings in this configuration looks neither like `.active` nor `.pinOnly` — it looks anomalous.
+
+Note: Bug 16's fix prevents the gate from being lowered from `.active` via the toggle, but `disablePINFromCurrentDepth` remains callable from `.active` programmatically (e.g. future UI flows), so this forensic issue remains latent.
+
+### Root Cause
+The "Deactivate Protection" condition (`if self.security.state == .active`) does not account for `appLockEnabled`. Gate-down `.active` was never an intended user-facing configuration.
+
+### Resolution
+Pending. Fix is: gate the "Deactivate Protection" button on `appLockEnabled` as well:
+```swift
+if self.security.state == .active && self.security.appLockEnabled { ... }
+```
+And add `|| (self.security.state == .active && !self.security.appLockEnabled)` to the "Learn more" condition so Settings in that state looks identical to `.pinOnly`.
+
+---
+
+## Bug 18 — `onWipe` closure is empty — wipe threshold triggers no action
+
+**Status:** Open
+
+### Severity: High
+When `Manager.Security.verify()` returns `.wipe` (wrong PIN limit reached, or duress consecutive-entry threshold exceeded), `PINEntry` calls `onWipe()`. The lock-screen `PINEntry` in `OccultaApp` passes `onWipe: {}`. No data is erased. The user stays on the PIN screen and can continue guessing indefinitely, defeating the entire wipe-threshold feature.
+
+### Root Cause
+`onWipe` was left unimplemented as a placeholder.
+
+### Resolution
+Pending. `onWipe` should call `appManager.eraseAllData()` (the same path used by Settings → Manage Contacts → Delete) and transition `Manager.Security` to `.noPIN` by deleting the `AppLayerConfig` row.
+
+---
+
+## Bug 19 — Secure Mode deactivation has no loading overlay; sheet dismissed before async task completes
+
+**Status:** Open
+
+### Severity: Medium
+`SecuritySettings.showingDeactivateSheet` dismisses the PINEntry sheet synchronously (`self.showingDeactivateSheet = false`) before the `Task { try await deactivateSecureMode(...) }` begins. The user sees the normal Settings screen immediately while a multi-step key rotation (re-encrypt all contacts, WAL checkpoint, commit staged key) runs in the background with no visual indicator. Contrast with activation, which shows `ActivatingOverlay` for exactly this duration.
+
+If the task fails mid-rotation, the rollback runs silently with no user feedback. The state does not transition, but the user has already seen the normal Settings screen and receives no indication of failure.
+
+### Root Cause
+The deactivation sheet was written without the async-blocking pattern that activation uses.
+
+### Resolution
+Pending. Mirror the `SecureModeSetupFlow` pattern: add `@State private var isDeactivating = false`, set it before the Task, clear on completion or failure, and overlay a blocking spinner (identical to `ActivatingOverlay`) while `isDeactivating` is true. Keep the sheet open until the task resolves.
+
+---
+
+## Bug 20 — Deactivation errors silently dropped in production builds
+
+**Status:** Open
+
+### Severity: Medium
+The `catch` block in the deactivation Task is gated on `#if DEBUG`. In a release build, any throw from `deactivateSecureMode` (SE failure, context save error, key rotation error) produces zero user feedback. Combined with Bug 19's premature sheet dismissal, the user has no way to know whether deactivation succeeded or failed.
+
+### Root Cause
+`#if DEBUG` gate left on error handling during development.
+
+### Resolution
+Pending. Remove the `#if DEBUG` guard. Surface failure as an alert with a "Try again" action. The error message can be generic ("Deactivation failed — your data is unchanged, please try again") without exposing internal details.
+
+---
+
+## Bug 21 — Secure Mode activation errors silently dropped via `try?`
+
+**Status:** Open
+
+### Severity: Medium
+In `SecureModeSetupFlow.onActivate`, the call to `activateSecureMode` is wrapped in `try?`:
+```swift
+try? await self.security.activateSecureMode(...)
+self.isActivating = false
+self.dismiss()
+```
+If activation throws (`.pinCollision`, `.keyDerivationFailed`, SE failure, DB save error), the overlay clears and the sheet dismisses as if activation succeeded. The state remains `.pinOnly` but the user believes Secure Mode is active — all subsequent assumptions about the blob and contact classification are wrong.
+
+### Root Cause
+`try?` was used for simplicity during initial implementation; error propagation path was not wired up.
+
+### Resolution
+Pending. Capture the thrown error, keep the sheet open, clear `isActivating`, and present an alert. `try?` is only appropriate for non-critical side effects; a state transition of this magnitude must surface failures.
+
+---
+
+## Bug 22 — Activate button remains tappable during activation; concurrent calls possible
+
+**Status:** Open
+
+### Severity: Medium
+After the user taps Activate in `SecureModeSetupFlow`, `isActivating` is set to `true` but the activate button has no `.disabled(self.isActivating)` modifier. A rapid double-tap (or any second tap before the overlay appears) dispatches a second concurrent call to `activateSecureMode`. The second call creates a new staged key while the first is mid-rotation, leaving two conflicting staged artefacts in the Keychain and SE. At best, the second call fails and rolls back, stranding the first call with a partially committed state. At worst, both calls progress past the rollback window, resulting in contacts encrypted under different keys.
+
+### Root Cause
+The button's disabled state was not wired to `isActivating`. The overlay (`ActivatingOverlay`) blocks further interaction visually, but it appears asynchronously after the Task is dispatched — not synchronously on tap.
+
+### Resolution
+Pending. Add `.disabled(self.isActivating)` to the activate button so the second tap is rejected before any Task is created.
+
+---
+
+## Bug 23 — Sensitive contacts lose their sensitivity flag after deactivation; must be re-marked on every activation cycle
+
+**Status:** Open
+
+### Severity: Medium
+When `deactivateSecureMode` Step 5 restores sensitive contacts from the blob, it sets `restored.visibleThroughDepth = nil` (per Bug 12's watermark-erasure fix). This clears the `visibleThroughDepth = 0` that originally caused the contact to be classified as sensitive during activation. On any subsequent re-activation, those contacts have `visibleThroughDepth = nil` — `isVisible(atDepth: .max)` treats `nil` as always-visible, so they are classified as safe and remain in the DB unprotected. The user must manually re-mark every sensitive contact before each activation. In practice this is silent data-exposure: the user believes those contacts are protected but they are not blobbed.
+
+### Root Cause
+`ContactBlobRecord` does not preserve the contact's original `visibleThroughDepth` value. Deactivation has no source of truth for what the depth was at activation time, so it unconditionally writes `nil` rather than restoring to `0`.
+
+### Resolution
+Pending. Add `visibleThroughDepth: Int?` to `ContactBlobRecord` — store the raw decoded depth value at blob-seal time (Step 6 of activation, when the contact is converted to a draft). During deactivation Step 5, re-encrypt and restore the stored value: `restored.visibleThroughDepth = try JSONEncoder().encode(record.visibleThroughDepth ?? 0).encrypt()`. Existing blobs that predate this field will decode `nil` for `visibleThroughDepth`; fall back to `0` (sensitive) since any contact in the blob by definition had a non-`Int.max` depth.

@@ -57,7 +57,7 @@ Measures that prevent recovery of deleted or sensitive data from the raw databas
 | S2 | `PRAGMA secure_delete = ON` | High | ✅ |
 | S3 | `.completeFileProtection` on SQLite + WAL + SHM | Critical | ✅ |
 | S4 | `.completeFileProtection` re-applied on every save | Medium | ✅ |
-| S5 | Hard-delete of sensitive contacts | Critical | ⚠️ Bug 13 |
+| S5 | Sensitive contacts depth-filtered at UI; page slack covered by S1 + S2 | Medium | ✅ Design decision |
 | S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed |
 
 ### S1 — DB key rotation on activation (cryptographic erasure)
@@ -72,8 +72,10 @@ The main `.sqlite`, `-wal`, and `-shm` files are stamped with `FileProtectionTyp
 ### S4 — File protection re-applied on every save
 SwiftData can recreate `-wal` and `-shm` sidecar files after WAL merges, schema migrations, and conflict resolution. Newly created sidecar files receive iOS default protection (`completeUnlessOpen`), not `complete`. `OccultaApp` listens to `NSManagedObjectContext.didSaveObjectIDsNotification` and re-stamps all three files on every save so no sidecar can sit with weaker protection.
 
-### S5 — Hard-delete of sensitive contacts ⚠️ Bug 13 — broken
-After the key rotation commits, sensitive contacts are `DELETE`d from the SQLite store. Without the delete, they sit in the DB encrypted under the new canonical key — visible at depth 0 (normal mode) and hidden only at the UI layer in duress mode. A raw SQLite examination during a duress exposure would find them. The delete currently fails silently due to WAL checkpoint interference with the SwiftData context. See Bug 13 in `Docs/bugs.md` for root cause and resolution options.
+### S5 — Sensitive contacts remain in DB; page slack covered by S1 + S2
+Sensitive contacts are not hard-deleted from the SQLite store. They remain in the DB encrypted under the canonical key with `visibleThroughDepth` set to a value that hides them at duress depth. The UI enforces this: at depth 0 (normal PIN) they are shown; at depth 1 (duress PIN) they are hidden by the contact list filter.
+
+**Residual forensic gap:** a raw SQLite examination during a duress exposure can find these rows and decrypt them using the canonical key (derivable on an unlocked device). This is an accepted trade-off: hard-deleting them would make them invisible to the real user in normal mode, defeating the core use case. Page-slack protection from *pre-activation* rows is handled by S1 (DB key rotation — old key deleted) and S2 (`PRAGMA secure_delete = ON` — freed pages zeroed). Rows that persist across activation are encrypted under the new canonical key and are not residue in the forensic sense.
 
 ### S6 — `visibleThroughDepth` watermark erased on deactivation
 Activation Step 5 migrates `nil → encrypt(Int.max)` for all safe contacts. Before Bug 12's fix, deactivation re-encrypted this value rather than clearing it, leaving a permanent non-null field on contacts that existed at activation time. An examiner could identify which contacts predated activation without decrypting anything. Deactivation now sets `visibleThroughDepth = nil` for all contacts and vault entries, restoring the pre-activation default.

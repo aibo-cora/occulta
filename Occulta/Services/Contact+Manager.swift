@@ -473,6 +473,7 @@ extension ContactManager {
         
         // Detect fingerprint change before appending the new key.
         var keyRotated = false
+        
         if let newMaterial = key.material,
            let currentRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
            let storedMaterial = try? self.cryptoManager.decrypt(data: currentRecord.material) {
@@ -480,6 +481,10 @@ extension ContactManager {
         }
 
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
+        
+        #if DEBUG
+        debugPrint("Updated key, owner hash = \(key.owner)")
+        #endif
 
         try self.modelContext.save()
 
@@ -669,20 +674,20 @@ extension ContactManager {
             else {
                 throw Errors.invalidBase64
             }
-            
+
             guard
                 !data.isEmpty
             else {
                 return ""
             }
-            
+
             guard
                 let decryptedData = try self.cryptoManager.decrypt(data: data),
                 let string = String(data: decryptedData, encoding: .utf8)
             else {
                 throw Errors.decryptionFailed
             }
-            
+
             return string
         }
         
@@ -781,12 +786,16 @@ extension ContactManager {
         }
         
         let encryptedPublicKeys = storedContact.contactPublicKeys
-        let plaintextPublicKeys = encryptedPublicKeys?.compactMap {
-            let material = try? self.cryptoManager.decrypt(data: $0.material)
-            let owner = (try? self.cryptoManager.decrypt(data: $0.owner)) ?? Data()
-            let date = String(data: (try? self.cryptoManager.decrypt(data: $0.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
-            
-            return Contact.Draft.Key(material: material, owner: owner, date: date)
+        let plaintextPublicKeys = encryptedPublicKeys?.compactMap { record -> Contact.Draft.Key? in
+            let material = try? self.cryptoManager.decrypt(data: record.material)
+            let ownerHash = (try? self.cryptoManager.decrypt(data: record.owner)) ?? Data()
+            let date = String(data: (try? self.cryptoManager.decrypt(data: record.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
+
+            // ownerHash is already SHA-256(identity_key) from the DB.
+            // Draft.Key.init would sha256 it again (double-hash) — override after construction.
+            var key = Contact.Draft.Key(material: material, owner: ownerHash, date: date)
+            key?.owner = ownerHash
+            return key
         }
         
         // MARK: - Build final Draft

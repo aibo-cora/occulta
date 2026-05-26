@@ -996,21 +996,23 @@ extension Manager.Key: KeyManagerProtocol {
         try self.createLocalDBSEKey(tag: Self.stagedLocalDBSETag)
 
         // 2. New random component stored at staged Keychain account.
-        guard let stagedRandom = try self.generateAndStoreRandomComponent(
-            account: Self.stagedLocalDBRandomAccount
-        ) else {
+        guard
+            let stagedRandom = try self.generateAndStoreRandomComponent(account: Self.stagedLocalDBRandomAccount)
+        else {
             self.rollbackStagedLocalDBKey()
+            
             throw StagedKeyError.randomGenerationFailed
         }
 
         // 3. Derive the hybrid key from staged components.
-        guard let key = try self.deriveHybridKey(
-            seTag: Self.stagedLocalDBSETag,
-            randomData: stagedRandom
-        ) else {
+        guard
+            let key = try self.deriveHybridKey(seTag: Self.stagedLocalDBSETag, randomData: stagedRandom)
+        else {
             self.rollbackStagedLocalDBKey()
+            
             throw StagedKeyError.derivationFailed
         }
+        
         return key
     }
 
@@ -1038,11 +1040,13 @@ extension Manager.Key: KeyManagerProtocol {
         // A. Rename canonical SE key → superseded tag (frees the canonical slot).
         //    errSecItemNotFound is acceptable — crash-recovery path where canonical
         //    was already renamed in a prior partial commit attempt.
+        //
+        //    kSecAttrTokenID and kSecAttrKeyType are omitted from the search dict:
+        //    SecItemUpdate rejects them as invalid search criteria on some iOS versions
+        //    (errSecNoSuchAttr). kSecAttrApplicationTag alone identifies the key uniquely.
         let renameCanonical: [String: Any] = [
             kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!,
-            kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
+            kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!
         ]
         let markSuperseded: [String: Any] = [
             kSecAttrApplicationTag as String: Self.supersededLocalDBSETag.data(using: .utf8)!
@@ -1055,21 +1059,18 @@ extension Manager.Key: KeyManagerProtocol {
         // B. Rename staged SE key → canonical tag.
         let findStaged: [String: Any] = [
             kSecClass as String:              kSecClassKey,
-            kSecAttrApplicationTag as String: Self.stagedLocalDBSETag.data(using: .utf8)!,
-            kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
+            kSecAttrApplicationTag as String: Self.stagedLocalDBSETag.data(using: .utf8)!
         ]
         let makeCanonical: [String: Any] = [
             kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!
         ]
         let promoteStatus = SecItemUpdate(findStaged as CFDictionary, makeCanonical as CFDictionary)
+        
         guard promoteStatus == errSecSuccess else {
             // Promotion failed — attempt to restore the canonical tag on the old key.
             let findSuperseded: [String: Any] = [
                 kSecClass as String:              kSecClassKey,
-                kSecAttrApplicationTag as String: Self.supersededLocalDBSETag.data(using: .utf8)!,
-                kSecAttrKeyType as String:        kSecAttrKeyTypeECSECPrimeRandom,
-                kSecAttrTokenID as String:        kSecAttrTokenIDSecureEnclave
+                kSecAttrApplicationTag as String: Self.supersededLocalDBSETag.data(using: .utf8)!
             ]
             let restoreCanonical: [String: Any] = [
                 kSecAttrApplicationTag as String: Tags.localDB.rawValue.data(using: .utf8)!
@@ -1081,9 +1082,8 @@ extension Manager.Key: KeyManagerProtocol {
         // C. Update canonical Keychain random → staged value.
         //    The entry already exists; we update its data in-place.
         let findRandom: [String: Any] = [
-            kSecClass as String:          kSecClassGenericPassword,
-            kSecAttrAccount as String:    Self.localDBRandomKeychainAccount,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrAccount as String: Self.localDBRandomKeychainAccount
         ]
         let newRandomValue: [String: Any] = [kSecValueData as String: stagedRandom]
         var randomStatus = SecItemUpdate(findRandom as CFDictionary, newRandomValue as CFDictionary)

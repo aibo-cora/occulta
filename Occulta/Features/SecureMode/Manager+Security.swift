@@ -405,6 +405,7 @@ extension Manager {
 
             // ── Step 3: Create staged key (point of no return begins) ───────────────
             let stagedKey = try self.keyManager.createStagedLocalDBKey()
+            
             do {
                 let stagedCrypto = StagedCryptoManager(key: stagedKey)
                 let aad          = EncryptionScheme.v2_hybridPQ.aad
@@ -472,6 +473,8 @@ extension Manager {
                     if hasUnreadableKeys {
                         restored.contactPublicKeys?.removeAll()
                         let crypto = Manager.Crypto()
+                        // Resolve our identity key once for double-hash correction below.
+                        let ourIdentityKey = try? self.keyManager.retrieveIdentity()
                         for key in record.draft.contactPublicKeys {
                             let encMat: Data?
                             if let mat = key.material {
@@ -479,8 +482,19 @@ extension Manager {
                             } else {
                                 encMat = nil
                             }
+                            // Correct the double-hash introduced by the convertToMutableCopy bug
+                            // in blobs created before the fix. Old blobs store
+                            // owner = SHA256(SHA256(identityKey)); the DB expects SHA256(identityKey).
+                            // Detect by checking if key.owner == SHA256(SHA256(ourIdentityKey)).
+                            var ownerToStore = key.owner
+                            if let identityKey = ourIdentityKey {
+                                let singleHash = identityKey.sha256
+                                if key.owner == singleHash.sha256 {
+                                    ownerToStore = singleHash
+                                }
+                            }
                             guard
-                                let encOwner = (try? crypto.encrypt(data: key.owner)) ?? nil,
+                                let encOwner = (try? crypto.encrypt(data: ownerToStore)) ?? nil,
                                 let dateData = key.acquiredAt.data(using: .utf8),
                                 let encDate  = (try? crypto.encrypt(data: dateData)) ?? nil
                             else { continue }
