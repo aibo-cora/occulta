@@ -190,7 +190,9 @@ extension Manager {
         ) async throws {
             // ── Step 1: State guard + PIN verification ──────────────────────────────
             guard self.requiresPIN else { throw SecurityError.invalidStateTransition }
+            
             let config = try self.requireConfig()
+            
             guard config.sealedDuressVerifier == nil else { throw SecurityError.invalidStateTransition }
             
             guard
@@ -212,14 +214,15 @@ extension Manager {
             else { throw SecurityError.pinCollision }
 
             config.sealedDuressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: seKey)
-
-            try self.modelContext.save()
+            // Do NOT save the verifier yet — deferred until key rotation succeeds.
+            // If anything below throws, the catch block clears this in-memory change so
+            // a retry attempt doesn't hit `sealedDuressVerifier != nil` guard.
 
             // ── Step 2: Create staged local DB key ──────────────────────────────────
             // On any failure past this point we rollback staged artefacts.
-            let stagedKey = try self.keyManager.createStagedLocalDBKey()
-            
+            // stagedKey is declared here so it's in scope for the catch's rollback call.
             do {
+                let stagedKey = try self.keyManager.createStagedLocalDBKey()
                 // ── Step 3: Derive blob key ──────────────────────────────────────────
                 guard
                     let blobKey = Manager.Blob.deriveBlobKey(from: seKey)
@@ -355,9 +358,15 @@ extension Manager {
 
             } catch {
                 self.keyManager.rollbackStagedLocalDBKey()
+                // Clear the in-memory duress verifier so the context doesn't persist
+                // a partial state — retrying activation must see nil here.
+                config.sealedDuressVerifier = nil
                 throw error
             }
 
+            // Key rotation succeeded. Persist the duress verifier now that the DB
+            // is fully consistent under the new canonical key.
+            try self.modelContext.save()
             self.resetCounters()
             self.lastUnlockDate = nil
         }

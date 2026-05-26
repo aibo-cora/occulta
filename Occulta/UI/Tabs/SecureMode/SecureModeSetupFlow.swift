@@ -18,11 +18,13 @@ struct SecureModeSetupFlow: View {
     @Environment(ContactManager.self)   private var contactManager
     @Environment(VaultManager.self)     private var vaultManager
 
-    @State private var path            = NavigationPath()
-    @State private var collectedNormal = ""
-    @State private var collectedDuress = ""
+    @State private var path = NavigationPath()
 
-    private enum Step: Hashable { case pinSetup, contacts, summary }
+    private enum Step: Hashable {
+        case pinSetup
+        case contacts(normalPIN: String, duressPIN: String)
+        case summary(normalPIN: String, duressPIN: String)
+    }
 
     var body: some View {
         NavigationStack(path: self.$path) {
@@ -43,9 +45,7 @@ struct SecureModeSetupFlow: View {
                 switch step {
                 case .pinSetup:
                     PINEntry(mode: .confirmThenSet { normal, duress in
-                        self.collectedNormal = normal
-                        self.collectedDuress = duress
-                        self.path.append(Step.contacts)
+                        self.path.append(Step.contacts(normalPIN: normal, duressPIN: duress))
                     })
                     .navigationTitle("Secure Mode")
                     .navigationBarTitleDisplayMode(.inline)
@@ -55,10 +55,10 @@ struct SecureModeSetupFlow: View {
                         }
                     }
 
-                case .contacts:
+                case .contacts(let normalPIN, let duressPIN):
                     ContactClassification(
                         confirmLabel: "Next",
-                        onConfirm:    { self.path.append(Step.summary) }
+                        onConfirm:    { self.path.append(Step.summary(normalPIN: normalPIN, duressPIN: duressPIN)) }
                     )
                     .toolbar {
                         ToolbarItem(placement: .principal) {
@@ -66,15 +66,11 @@ struct SecureModeSetupFlow: View {
                         }
                     }
 
-                case .summary:
+                case .summary(let normalPIN, let duressPIN):
                     SummaryView(
-                        normalPIN: self.collectedNormal,
-                        duressPIN: self.collectedDuress,
-                        onDone: {
-                            self.collectedNormal = ""
-                            self.collectedDuress = ""
-                            self.dismiss()
-                        }
+                        normalPIN: normalPIN,
+                        duressPIN: duressPIN,
+                        onDone:    { self.dismiss() }
                     )
                     .navigationTitle("Review")
                     .navigationBarTitleDisplayMode(.inline)
@@ -279,8 +275,10 @@ private struct SummaryView: View {
             Section {
                 Button {
                     self.isActivating = true
+                    
                     Task {
                         try? await Task.sleep(for: .milliseconds(50))
+                        
                         do {
                             try await self.security.activateSecureMode(
                                 confirmingEntryPIN: self.normalPIN,
@@ -291,6 +289,8 @@ private struct SummaryView: View {
                             self.isActivating = false
                             self.onDone()
                         } catch {
+                            debugPrint("Error activating: \(error.localizedDescription)")
+                            
                             self.isActivating     = false
                             self.activationFailed = true
                         }
