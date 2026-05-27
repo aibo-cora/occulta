@@ -57,7 +57,7 @@ Measures that prevent recovery of deleted or sensitive data from the raw databas
 | S2 | `PRAGMA secure_delete = ON` | High | ✅ |
 | S3 | `.completeFileProtection` on SQLite + WAL + SHM | Critical | ✅ |
 | S4 | `.completeFileProtection` re-applied on every save | Medium | ✅ |
-| S5 | Sensitive contacts depth-filtered at UI; page slack covered by S1 + S2 | Medium | ✅ Design decision |
+| S5 | Sensitive contacts depth-filtered at UI (Design A — accepted forensic gap); page slack covered by S1 + S2 | Medium | ✅ Design decision |
 | S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed |
 
 ### S1 — DB key rotation on activation (cryptographic erasure)
@@ -73,9 +73,15 @@ The main `.sqlite`, `-wal`, and `-shm` files are stamped with `FileProtectionTyp
 SwiftData can recreate `-wal` and `-shm` sidecar files after WAL merges, schema migrations, and conflict resolution. Newly created sidecar files receive iOS default protection (`completeUnlessOpen`), not `complete`. `OccultaApp` listens to `NSManagedObjectContext.didSaveObjectIDsNotification` and re-stamps all three files on every save so no sidecar can sit with weaker protection.
 
 ### S5 — Sensitive contacts remain in DB; page slack covered by S1 + S2
-Sensitive contacts are not hard-deleted from the SQLite store. They remain in the DB encrypted under the canonical key with `visibleThroughDepth` set to a value that hides them at duress depth. The UI enforces this: at depth 0 (normal PIN) they are shown; at depth 1 (duress PIN) they are hidden by the contact list filter.
+**Design A — intentional choice.** Sensitive contacts are not hard-deleted from the SQLite store. They remain in the DB re-encrypted under the new canonical key (same pass as safe contacts) with `visibleThroughDepth` set to a value that hides them at duress depth. The UI enforces this: at depth 0 (normal PIN) they are shown; at depth 1 (duress PIN) they are hidden by the contact list filter.
 
-**Residual forensic gap:** a raw SQLite examination during a duress exposure can find these rows and decrypt them using the canonical key (derivable on an unlocked device). This is an accepted trade-off: hard-deleting them would make them invisible to the real user in normal mode, defeating the core use case. Page-slack protection from *pre-activation* rows is handled by S1 (DB key rotation — old key deleted) and S2 (`PRAGMA secure_delete = ON` — freed pages zeroed). Rows that persist across activation are encrypted under the new canonical key and are not residue in the forensic sense.
+**Residual forensic gap:** a raw SQLite examination during a duress exposure can find these rows and decrypt them using the canonical key (derivable on an unlocked device). This is an **explicitly accepted trade-off** for Phase 1.
+
+**Design B considered and deferred.** The alternative design leaves sensitive contacts as unreadable shells in the DB (fields encrypted under the deleted old key), with the blob as the sole readable copy. On normal PIN entry, contacts are loaded from the blob into memory and wiped on lock. An examiner in duress mode finds only unreadable shells — no canonical-key access helps. Design B provides a genuine cryptographic guarantee that Design A does not. It was deferred for Phase 1 in favour of implementation simplicity. The blob infrastructure already supports it; upgrading requires: (1) re-encrypting only safe contacts in activation step 8, (2) loading `inMemorySensitiveContacts` from the blob on normal unlock, (3) wiping that array on lock, (4) merging DB + in-memory contacts in the contact list view. Design B is the correct upgrade path if the threat model is elevated beyond mid-tier adversaries.
+
+**Blob role under Design A.** The blob is sealed at activation with a snapshot of sensitive contacts. Because both the blob key and the DB canonical key derive from SE keys with identical access controls (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, no biometric gate), the blob provides no cryptographic advantage over the DB during a live duress exposure. Its roles are: (1) reliable restoration source during deactivation — deactivation re-encrypts contacts from blob plaintext under the staged key; (2) forensic cover object — present from first launch regardless of Secure Mode state (B1).
+
+Page-slack protection from *pre-activation* rows is handled by S1 (DB key rotation — old key deleted) and S2 (`PRAGMA secure_delete = ON` — freed pages zeroed). Rows that persist across activation are encrypted under the new canonical key and are not residue in the forensic sense.
 
 ### S6 — `visibleThroughDepth` watermark erased on deactivation
 Activation Step 5 migrates `nil → encrypt(Int.max)` for all safe contacts. Before Bug 12's fix, deactivation re-encrypted this value rather than clearing it, leaving a permanent non-null field on contacts that existed at activation time. An examiner could identify which contacts predated activation without decrypting anything. Deactivation now sets `visibleThroughDepth = nil` for all contacts and vault entries, restoring the pre-activation default.

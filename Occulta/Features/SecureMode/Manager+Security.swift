@@ -821,7 +821,7 @@ extension Manager {
             guard let data = contact.visibleThroughDepth else { return true }
             guard let decrypted = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-            else { return true }
+            else { return false }   // non-nil field that won't decrypt = sensitive shell; exclude
             return value >= depth
         }
 
@@ -832,7 +832,7 @@ extension Manager {
             guard let data = entry.visibleThroughDepth else { return true }
             guard let decrypted = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-            else { return true }
+            else { return false }  // non-nil field that won't decrypt = sensitive shell; exclude
             return value >= self.currentDepth
         }
 
