@@ -368,7 +368,7 @@ Pending. Add `.disabled(self.isActivating)` to the activate button so the second
 
 ## Bug 23 — Sensitive contacts lose their sensitivity flag after deactivation; must be re-marked on every activation cycle
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 When `deactivateSecureMode` Step 5 restores sensitive contacts from the blob, it sets `restored.visibleThroughDepth = nil` (per Bug 12's watermark-erasure fix). This clears the `visibleThroughDepth = 0` that originally caused the contact to be classified as sensitive during activation. On any subsequent re-activation, those contacts have `visibleThroughDepth = nil` — `isVisible(atDepth: .max)` treats `nil` as always-visible, so they are classified as safe and remain in the DB unprotected. The user must manually re-mark every sensitive contact before each activation. In practice this is silent data-exposure: the user believes those contacts are protected but they are not blobbed.
