@@ -1025,7 +1025,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// - Staged random entry exists at `stagedLocalDBRandomAccount` (delete in step 11)
     ///
     /// Call `deleteSupersededLocalDBArtefacts()` in step 11, after AppLayerConfig
-    /// is written and state has transitioned to `.active`.
+    /// is written and state has transitioned to `.normal`.
     ///
     /// If sub-step B (rename staged → canonical) fails, attempts to restore the
     /// old canonical tag before throwing.
@@ -1107,7 +1107,7 @@ extension Manager.Key: KeyManagerProtocol {
     /// Removes the old canonical SE key (at `supersededLocalDBSETag`) and the
     /// staged Keychain random entry. Both deletions are no-ops if the items are
     /// already absent. Call from step 11 of activation, after AppLayerConfig is
-    /// written and the state machine has transitioned to `.active`.
+    /// written and the state machine has transitioned to `.normal`.
     func deleteSupersededLocalDBArtefacts() {
         self.delete(using: Self.supersededLocalDBSETag)
         let query: [String: Any] = [

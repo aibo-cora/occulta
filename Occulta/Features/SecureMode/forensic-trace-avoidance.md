@@ -88,15 +88,19 @@ Measures that prevent detection via Keychain metadata or the persisted config ro
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
-| K1 | `persistedDepth` signed-Int encoding — gate state opaque | Medium | ✅ |
+| K1 | `persistedDepth` + `pinEnabled` two-field encoding — gate state opaque | Medium | ✅ |
 | K2 | `persistedDepth` always non-nil from first PIN config | Low | ✅ |
 | K3 | Blob key HKDF-domain-separated from PIN verifier keys | Medium | ✅ |
 
-### K1 — `persistedDepth` signed-Int encoding
-The lock gate state (routing depth + whether the PIN overlay is active) is packed into a single AES-GCM encrypted signed integer: `N ≥ 0` = gate active at depth N; `-(N+1)` = gate inactive at depth N. No plaintext boolean flags. A raw `AppLayerConfig` row reveals three opaque `Data` blobs — nothing about whether the gate is currently lowered under coercion.
+### K1 — `persistedDepth` + `pinEnabled` two-field encoding
+The lock state is stored as two independent encrypted fields on `AppLayerConfig`:
+- `persistedDepth` — AES-GCM encrypted `RoutingDepth` (`.normal` or `.duress`); restored by `Manager.Security.init` via `readRoutingDepth()`.
+- `pinEnabled` — AES-GCM encrypted `Bool`; `false` = gate suppressed under coercion while verifiers remain intact; restored via `readPinEnabled()`.
 
-### K2 — `persistedDepth` always non-nil from first PIN write
-`configurePIN` writes `writeLockGate(depth: 0, gateActive: true)` immediately so `persistedDepth` is non-nil from the moment any PIN is set. Without this, `persistedDepth` being absent vs. present would distinguish `.pinOnly` from `.active` states without needing any keys. Now the field is always present and always opaque.
+No plaintext boolean flags. A raw `AppLayerConfig` row reveals four opaque `Data` blobs — nothing about current gate state or routing depth without the SE key.
+
+### K2 — `persistedDepth` and `pinEnabled` always non-nil from first PIN write
+`configurePIN` calls `writeRoutingDepth(.normal)` and `writePinEnabled(true)` immediately so both fields are non-nil from the moment any PIN is set. Without this, field absence vs. presence would distinguish no-PIN from PIN-only or Secure Mode states without needing any keys. Now both fields are always present and always opaque.
 
 ### K3 — Blob key HKDF domain separation
 Blob key: `HKDF(seKey_secureMode, info: "blob-key")`. PIN verifier keys: `HKDF(seKey_secureMode, info: label ∥ pin)`. Different `info` strings guarantee independent key streams. A blob compromise — requiring SE access but not biometrics — yields nothing about the PIN. A PIN verifier compromise yields nothing about blob content.
@@ -109,7 +113,7 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
-| U1 | Settings PIN toggle interactive in `.active` / `.duress` | High | ✅ |
+| U1 | Settings PIN toggle interactive in `.normal` / `.duress` | High | ✅ |
 | U2 | Grace period zero in restricted mode | High | ✅ |
 | U3 | `lastUnlockDate = nil` on activation | High | ✅ Bug 5 fixed |
 | U4 | `fullScreenCover` for PIN lock — not underlappable by sheets | High | ✅ Bug 1 fixed |
@@ -117,7 +121,7 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 | U6 | Share index filtered to depth-1 on lock | Critical | ✅ Bug 6 fixed |
 
 ### U1 — PIN toggle always interactive
-In `.active` and `.duress` states, disabling the Settings PIN toggle calls `disablePINFromCurrentDepth` — it lowers the gate without removing verifiers. Disabling in `.pinOnly` calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
+In `.normal` and `.duress` states (Secure Mode active), disabling the Settings PIN toggle calls `disablePINFromCurrentDepth` — it lowers the gate without removing verifiers. When Secure Mode is not active (`isSecureModeActive == false`), the toggle calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
 
 ### U2 — Grace period always zero in restricted mode
 `isWithinGracePeriod` returns `false` when `isRestricted`. In duress mode, every return from background requires PIN re-entry. An attacker cannot use a brief background-foreground cycle to skip the PIN prompt after the device has been handed over unlocked.

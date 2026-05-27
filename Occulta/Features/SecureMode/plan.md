@@ -28,13 +28,14 @@ When `false`: `Manager.Security` initialises permanently in `.noPIN` without rea
 ```
 .noPIN   — no PIN configured; app opens directly
 .pinOnly — PIN set, Secure Mode not activated; PINEntry on every scene activation
-.active  — authenticated at currentDepth; shows data visible at that depth
+.normal  — authenticated at currentDepth; shows data visible at that depth
            depth 0: real app (all contacts); depth N > 0: decoy for depth N
-.duress  — pushed one level deeper from .active; next PIN entry goes to depth N+1
+           (renamed from .active to avoid confusion with UIApplication's .active scene phase)
+.duress  — pushed one level deeper from .normal; next PIN entry goes to depth N+1
 ```
 
 State is derived from `AppLayerConfig` on every `init()` — never stored as a plaintext flag. Phase 1:
-- `sealedDuressVerifier != nil` → `.active` (Secure Mode configured; app will lock on foreground)
+- `sealedDuressVerifier != nil` → `.normal` (Secure Mode configured; app will lock on foreground)
 - `sealedNormalVerifier != nil` → `.pinOnly`
 - no config → `.noPIN`
 
@@ -50,17 +51,17 @@ SE key prevents all off-device attacks. PBKDF2 was removed: it added ~1s of main
 
 ```swift
 @Model final class AppLayerConfig {
-    var sealedNormalVerifier:     Data?   // nil → .noPIN
-    var sealedDuressVerifier:     Data?   // nil → .pinOnly
+    var sealedNormalVerifier:     Data?   // nil → no PIN configured (requiresPIN == false)
+    var sealedDuressVerifier:     Data?   // nil → Secure Mode not active (isSecureModeActive == false)
     var wipeThresholdEncrypted:   Data?   // encrypted Int; default 3
-    var persistedDepth:           Data?   // always non-nil after first config write (see below)
+    var persistedDepth:           Data?   // encrypted RoutingDepth; always non-nil after first config write
+    var pinEnabled:               Data?   // encrypted Bool; false = gate suppressed under coercion
 }
 ```
 
-`persistedDepth` encodes both routing depth and gate state in one encrypted signed Int:
-`N ≥ 0` = gate active at depth N (normal operation);  `-(N+1)` = gate inactive at depth N (coercion path).
-Always written as `encrypt(0)` on first config creation so field presence never leaks state.
-`readLockGate()` falls back to `(depth:0, gateActive:true)` on any decode failure — corrupted field always errs secure.
+`persistedDepth` stores the current `RoutingDepth` (`.normal` or `.duress`) via `writeRoutingDepth` / `readRoutingDepth`.
+`pinEnabled` stores the gate state (Bool) via `writePinEnabled` / `readPinEnabled`. Falls back to `true` on any decode failure — always demand a PIN rather than silently opening the app.
+Both fields are written at first config creation so their presence never leaks state — a consistently non-nil field is forensically opaque.
 
 All properties optional to avoid SwiftData migration on schema evolution. `wipeThreshold` is encrypted because it reveals Secure Mode configuration to a forensic examiner.
 
@@ -76,8 +77,8 @@ var appLockEnabled: Bool    // whether the PIN overlay gate fires on scene activ
 
 // Setup
 func configurePIN(_ pin: String) throws                                              // .noPIN → .pinOnly
-func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) throws        // .pinOnly/.duress → .active (Phase 1: depth 0 only)
-func deactivateSecureMode(confirmingEntryPIN: String) throws                         // .active → .pinOnly (depth 0) / .duress at depth N-1 (depth N > 0)
+func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) throws        // .pinOnly/.duress → .normal (Phase 1: depth 0 only)
+func deactivateSecureMode(confirmingEntryPIN: String) throws                         // .normal → .pinOnly (depth 0) / .duress at depth N-1 (depth N > 0)
 func deactivatePIN(confirmingNormalPIN: String) throws                               // .pinOnly → .noPIN
 
 // Coercion-resistant gate (sticky-depth)
@@ -174,20 +175,21 @@ func updateSafeContacts(_ ids: Set<String>) throws
   The insight is to decouple the PIN gate from depth routing. "Disable PIN" does not mean "forget all verifiers" — it means "lower the gate while remembering where we are." Verifiers remain intact.
 
   **`AppLayerConfig` addition:**
-  - `persistedDepth: Data?` — always non-nil after first config write. Encodes both depth and gate state in a single signed Int: `N ≥ 0` = gate active at depth N; `-(N+1)` = gate inactive at depth N. No separate `appLockEnabled` field on the model — both values come from one blob. Decoding falls back to `(0, true)` on any failure.
+  - `persistedDepth: Data?` — encrypted `RoutingDepth` (`.normal` / `.duress`). Always non-nil after first config write.
+  - `pinEnabled: Data?` — encrypted `Bool`. `true` = gate active (PIN required on foreground); `false` = gate suppressed under coercion. Always non-nil after first config write. Decoding falls back to `true` (require PIN) on any failure.
 
   **`Manager.Security` in-memory property:**
-  - `appLockEnabled: Bool` — restored from `persistedDepth.readLockGate()` in `init`. `false` only when gate was deliberately lowered.
+  - `appLockEnabled: Bool` — restored from `config.readPinEnabled()` in `init`. `false` only when gate was deliberately lowered.
 
   **Disable PIN from current depth (`disablePINFromCurrentDepth(confirmingPIN:)`):**
   1. Checks entered PIN against the current layer's verifier via `checkCurrentLayerEntryPIN` (private) — no `verify()`, no counter mutation, no state transition.
-  2. On pass: calls `writeLockGate(depth: currentDepth, gateActive: false)`, saves, sets `appLockEnabled = false`. Verifiers are left untouched.
+  2. On pass: calls `writeRoutingDepth(currentDepth)` + `writePinEnabled(false)`, saves, sets `appLockEnabled = false`. Verifiers are left untouched.
   3. App opens directly to depth-N content. Coercer sees: toggle OFF, no PIN required, decoy content.
 
   **Re-enable PIN (enter + confirm — same UX as always):**
   `PINEntry` in `.setup` mode collects two matching entries and delivers the confirmed PIN to Settings. Settings calls `reEnablePIN(_:)` which silently checks against all existing verifiers: normal PIN match → depth 0, `.active`; duress PIN match → depth 1, `.duress`. No new verifier is written; no observable UX difference.
 
-  **Why `persistedDepth` is always non-nil:** a field that is nil in normal operation and non-nil only when PIN has been force-disabled is itself a forensic tell. Always writing `writeLockGate(depth:0, gateActive:true)` at first config creation means every Occulta install shows the same field structure regardless of state.
+  **Why both fields are always non-nil:** a field that is nil in normal operation and non-nil only when PIN has been force-disabled is itself a forensic tell. Always writing `writeRoutingDepth(.normal)` + `writePinEnabled(true)` at first config creation means every Occulta install shows the same field structure regardless of state.
 
 - [x] **[design — pre-ship]** `Settings → Security` appearance in `.duress` is wrong. The duress experience must be indistinguishable from `.pinOnly` — the coercer must believe Secure Mode was never activated. Correct state table:
 
@@ -196,7 +198,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
   | `.noPIN` | enabled | shown (dimmed, blocked) | hidden |
   | `.pinOnly` | enabled | shown | hidden |
   | `.duress` | **disabled** | **shown** | **hidden** |
-  | `.active` | disabled | hidden | shown |
+  | `.normal` | disabled | hidden | shown |
 
   **Toggle disabled in `.duress`:** Load-bearing, not cosmetic. PIN cannot be removed while Secure Mode is active — this is correct in both `.active` and `.duress`. More critically: if the toggle were enabled, opening it would present a `PINEntry` sheet that calls `security.verify()` internally. Entering the normal PIN in `.duress` triggers the `.normal` route and transitions state to `.active`, breaking duress and silently exiting the decoy view. Even if we substituted `checkNormalPIN` to avoid the state transition: correct PIN + sheet closes + PIN still enabled + nothing changes = a suspicious silent failure that tells the coercer something is wrong. Toggle disabled is the only safe option.
 
@@ -274,36 +276,36 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 - [x] `Vault+Tab` computes `visibleEntries` filtered through `security.isEntryVisible` when `isRestricted`; filters attention section (`affected`) by `visibleIDs` as well — no hidden-entry labels leak through the recovery health display
 - [ ] `Vault+Manager.addEntry(...)` — currently writes `encrypt(currentDepth)` when `> 0`, nil when 0. Must always write `encrypt(currentDepth)` regardless of depth so no nil fields exist after activation.
 - [x] `Vault+Manager+Backup.swift` — audited; imported entries leave `visibleThroughDepth = nil`. Migration at next activation will stamp them `encrypt(0)` (real-layer entries, correct).
-- [ ] **Blob interaction (Step 4):** blob serialises PEKs + `ShardDistributionMetadata` for **all vault entries with `visibleThroughDepth < currentActivationDepth + 1`** (i.e. all real-layer entries hidden from the duress view). In Phase 1 this means all entries with `decrypt(visibleThroughDepth) == 0`. Entries visible at the new depth remain accessible and are not serialised. Unwrapping PEKs requires the vault key (biometric-gated); activation must evaluate an `LAContext` and request Face ID / passcode before the blob seal step.
+- [x] **Blob interaction (Step 4):** vault PEKs are **not** stored in the blob (Bug 8 fix). The vault key is derived from a dedicated SE key independent of DB key rotation; `visibleThroughDepth` on each `VaultEntry` is the only vault-related field that requires re-encryption during key rotation. Activation re-encrypts this field under the staged DB key; deactivation clears it to `nil` (Bug 12 fix). No `LAContext` evaluation or biometrics required for vault data at activation/deactivation.
 
 ---
 
 ## Step 4 — Blob (Activation / Deactivation)
 
-- [x] `SecureMode+Blob` — payload types (`BlobPayload`, `ContactBlobRecord`, `VaultPEKRecord`) and `seal` / `unseal` API implemented in `SecureMode+Blob.swift`. Each stack payload serialises:
-  - **Per sensitive contact:** full `Contact.Draft` (all decrypted fields including ML-KEM material) + decrypted `signedAttributes` (shard records held as trustee, `nil` if contact was never a trustee).
-  - **Per real-layer vault entry:** raw 32-byte PEK + `ShardDistributionMetadata` (SSS trustee relationships, `nil` if no split configured). Vault file data stays on disk encrypted with its PEK — only the key travels in the blob. Blob size is independent of vault storage size.
-  - Prekeys are not serialised — locked in-place alongside contact rows; fresh prekeys generated on restore.
+- [x] `SecureMode+Blob` — payload types (`BlobPayload`, `ContactBlobRecord`) and `seal` / `unseal` API implemented in `SecureMode+Blob.swift`. Each stack payload serialises:
+  - **Per sensitive contact:** full `Contact.Draft` (all decrypted fields including ML-KEM material) + decrypted `signedAttributes` (shard records held as trustee, `nil` if contact was never a trustee) + original `visibleThroughDepth: Int?` (restored verbatim on deactivation so the contact retains its sensitivity classification across activation cycles — Bug 23 fix).
+  - **Vault PEKs are NOT stored in the blob** (Bug 8 fix). The vault key is derived from a dedicated SE key independent of the local DB key rotation; vault PEKs never need re-wrapping. Removing them from the blob eliminates an unnecessary attack surface: a blob compromise requires only the SE Secure Mode key (no biometrics), so storing raw PEK bytes would bypass the biometric gate that normally protects vault content.
+  - Prekeys are not serialised — locked in-place alongside contact rows.
   - `CustodyShard` records (shards we hold for others) are not serialised — their accessibility in duress mode is a deferred decision.
 - [ ] Blob is a stack of independently-encrypted payloads in a single file. Push appends; pop removes outermost. Partial-read reveals nothing about other layers.
 - [x] Blob encryption: `AES-GCM(HKDF(seKey, info: "blob-key"), content)`. SE binding prevents offline attacks. No PBKDF2 (same rationale as PIN verifier). Implemented: `Blob.deriveBlobKey(from:)` in `SecureMode+Blob.swift`.
 - [x] Each payload padded to nearest power-of-2 bucket boundary before encryption. File size reveals only bucket tier, not contact/vault count. Implemented: `Blob.bucketSize(for:)`.
 - [x] Blob file: no header, no magic bytes, no version field, no layer count. UUID filename with `.occbak` extension — indistinguishable from vault backup. Implemented in `writeNoOpBlob(to:)`.
 - [x] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install." Implemented: `Blob.maintainNoOpBlob()`, called from `OccultaApp.init()` behind the `secureMode` feature flag.
-- [x] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. `rewriteNoOpBlob()` added to `Manager.Blob`; subscribed in `OccultaApp` gated on `security.state == .noPIN || .pinOnly` — never rewrites a real payload. Blob timestamps mirror normal app activity before first activation.
+- [x] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. `rewriteNoOpBlob()` added to `Manager.Blob`; subscribed in `OccultaApp` gated on `!security.isSecureModeActive` — never rewrites a real payload. Blob timestamps mirror normal app activity before first activation.
 - [x] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events. `maxAge = 86_400`; `isStale(_:)` gates every `maintainNoOpBlob()` call.
-- [ ] **Activation sequence — staged key rotation, old key deleted last:**
+- [x] **Activation sequence — staged key rotation, old key deleted last:** (implemented in `Manager+Security.activateSecureMode`; two open bugs noted below)
   1. State guard + PIN verification (normal PIN check, duress PIN collision check) — abort immediately on failure, no side effects.
-  2. Evaluate `LAContext` for biometrics — required to unwrap vault PEKs. Abort if biometrics fail; nothing has been written yet.
+  2. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs are not in the blob; no biometric gate needed.
   3. Create staged DB key: new SE key at tag `"local.db.se.key.occulta.staged"` + new 32-byte random at Keychain account `"local.db.random.key.occulta.staged"`. Derive `stagedDBKey` from these. **Old canonical key still valid throughout.**
-  4. Decrypt all contacts using the old canonical DB key (`createHybridLocalEncryptionKey()` still reads old canonical tags). Partition into sensitive (not in safe set) and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes`).
-  5. Migrate `visibleThroughDepth`: write `encrypt(Int.max)` to all safe contacts with nil field; write `encrypt(0)` to all vault entries with nil field. This batch write unifies `ZMODIFICATIONDATE` across all rows — no activation timestamp fingerprint.
-  6. Unwrap vault PEKs for all real-layer entries (`decrypt(visibleThroughDepth) == 0`) using the biometric vault key from step 2. Build `VaultPEKRecord` for each (includes `ShardDistributionMetadata`).
-  7. Seal blob: `Manager.Blob.seal(BlobPayload(contacts: sensitiveRecords, vaultPEKs: pekRecords), blobKey:)`. Replaces the no-op blob.
-  8. Re-encrypt **safe** contacts' fields under `stagedDBKey` using explicit AES-GCM (not via the standard `Manager.Crypto` path, which still reads the old canonical key). **Sensitive contacts are not re-encrypted** — all their fields intentionally remain encrypted under the old canonical key, which is deleted in step 11. This produces uniform unreadability across all sensitive shells with no mixed-field forensic tell. Save to DB.
-  9. `PRAGMA wal_checkpoint(TRUNCATE)` on a direct SQLite connection — zero the WAL before key rotation. Eliminates any plaintext re-encryption record from WAL pages.
-  10. Promote staged key to canonical: `SecItemUpdate` to rename staged SE tag → canonical tag; `SecItemUpdate` (or delete + add) to replace canonical random with staged random. **Old canonical key is now uncomputable — sensitive rows locked in-place.**
-  11. Delete staged artefacts (old canonical SE key + old random) that are now superseded. Build duress verifier; write `AppLayerConfig`; transition state → `.active`.
+  4. Decrypt all contacts using old canonical DB key. Partition into sensitive and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes` and `visibleThroughDepth` — Bug 23 fix).
+  5. Migrate `visibleThroughDepth`: write `encrypt(Int.max)` to all safe contacts with nil field; write `encrypt(0)` to all vault entries with nil field. Batch write unifies `ZMODIFICATIONDATE` — no activation timestamp fingerprint.
+  6. ~~Unwrap vault PEKs~~ — **removed** (Bug 8).
+  7. Seal blob: `Manager.Blob.seal(BlobPayload(contacts: sensitiveRecords), blobKey:)`. Replaces the no-op blob.
+  8. Re-encrypt **safe** contacts' fields under `stagedDBKey`. ⚠️ **Bug open**: loop currently iterates `allProfiles` instead of `safeProfiles` — sensitive contacts enter the re-encryption pass and get re-encrypted under the staged key, breaking the unreadability sentinel. See open `[ ]` bug item below.
+  9. WAL checkpoint (runs after commit — Bug 14 fix; old description had wrong order).
+  10. Promote staged key to canonical. **Old canonical key is now uncomputable — sensitive rows locked in-place.**
+  11. Delete superseded artefacts. Build duress verifier; write `AppLayerConfig`; transition state → `.normal`. `lastUnlockDate` cleared (Bug 5 fix).
 
   **Old SE key is deleted in step 11, after all data has been written in steps 8–9.** If the app crashes before step 10, the old key is still canonical and the app recovers cleanly on next launch. The crash window where data is in an inconsistent state is steps 10–11 (milliseconds); `SecureModeOperation` (below) will close this gap in a future iteration.
 
@@ -347,18 +349,19 @@ After activation, two data sources exist:
 - [ ] Implement merged contact list data source in the contact list view.
 - [ ] Implement blob re-seal on edit of in-memory sensitive contact.
 
-- [ ] **Deactivation sequence:**
-  1. Verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
+- [x] **Deactivation sequence:** (implemented in `Manager+Security.deactivateSecureMode`; deviations from original plan noted below)
+  1. State guard + verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
   2. `unseal(blobKey:)` → `BlobPayload`. Abort if blob is missing or decryption fails.
-  3. Evaluate `LAContext` for biometrics — required to re-wrap vault PEKs under the new vault key.
+  3. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs not in blob; no biometrics needed.
   4. Create staged DB key (same pattern as activation step 3) to derive the new key for re-encrypting restored contacts.
-  5. Restore sensitive contacts: for each `ContactBlobRecord`, fetch the existing `Contact.Profile` row by identifier, re-encrypt all fields under `stagedDBKey`, restore `signedAttributes`. Update `visibleThroughDepth` to `encrypt(Int.max)` (contact is safe again at the real layer).
-  6. Restore vault PEKs: for each `VaultPEKRecord`, re-wrap `pekBytes` under the new biometric vault key and update `VaultEntry.encryptedEntryKey`. Restore `shardDistribution`. Update `visibleThroughDepth` to `encrypt(0)` (entry belongs to real layer).
-  7. Generate fresh prekeys for all restored contacts.
-  8. `PRAGMA wal_checkpoint(TRUNCATE)`.
-  9. Promote staged key to canonical; delete superseded old key.
-  10. Restore no-op blob (write a fresh `rewriteNoOpBlob()` — real payload discarded).
-  11. Update `AppLayerConfig`: clear `sealedDuressVerifier`, write `persistedDepth(0, gateActive: true)`. Clear `inMemorySensitiveContacts = []`. Transition state → `.pinOnly`.
+  5. Re-encrypt safe contacts (currently in DB) under `stagedDBKey`. Clear their `visibleThroughDepth` to `nil` (erases activation watermark — Bug 12 fix). Sensitive shells are skipped (their fields remain unreadable; overwritten in step 5b).
+  5b. Restore sensitive contacts from blob: fetch existing shell by identifier, re-encrypt all fields under `stagedDBKey`, restore `signedAttributes`. Re-encode `record.visibleThroughDepth ?? 0` (Bug 23 fix — preserves sensitivity across activation cycles, fallback `0` for old blobs). Rebuild key records that are still encrypted under the deleted activation key.
+  6. ~~Restore vault PEKs~~ — **removed** (Bug 8). Restore vault entries to depth-visible under staged key; clear `visibleThroughDepth` to `nil` (erases watermark — Bug 12 fix). No PEK re-wrapping required.
+  7. ~~Generate fresh prekeys for all restored contacts~~ — **not implemented**. Prekey records are re-encrypted in-place via `reEncryptKeyRecords`; shells with unreadable prekeys are rebuilt from blob plaintext. Fresh batch generation deferred.
+  8. Commit staged key → canonical (point of no return).
+  9. `PRAGMA wal_checkpoint(TRUNCATE)` — runs *after* commit (Bug 14 fix).
+  10. Delete superseded artefacts.
+  11. `rewriteNoOpBlob()` — real payload discarded; fresh no-op written. Clear `sealedDuressVerifier`, transition state → `.normal` then back to `.pinOnly`. (`inMemorySensitiveContacts = []` deferred — that field is not yet implemented.)
 
 - [ ] `SecureModeOperation` SwiftData record — tracks activation/deactivation stage. Written before operation begins, deleted on clean completion. All fields encrypted; record's existence must not reveal the operation type. **On next launch, incomplete record → automatic resume or rollback:**
   - Resume: re-enter the operation from the last completed stage (idempotent stage design required)

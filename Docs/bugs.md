@@ -256,13 +256,15 @@ In `.active` state (Secure Mode running, gate up), the "Enable PIN" toggle was f
 The `else` branch in `SecuritySettings.showingPINSheet` handled both `.active` and `.duress` with the same `disablePINFromCurrentDepth` path. Coercion gate-drop at depth 1 (`.duress`) is a valid and intentional flow; gate-drop at depth 0 (`.active`) is not.
 
 ### Resolution
-Added `.disabled(self.security.state == .active && self.security.appLockEnabled)` to the Toggle in `Settings.swift`. The sheet's `else` branch was tightened to `else if self.security.state == .duress`, making the coercion-only intent explicit and making the `.active` path unreachable. In `.duress`, the toggle remains interactive to preserve coercion-resistance.
+Added `.disabled(self.isSecureModeActive && self.security.state == .normal && self.security.appLockEnabled)` to the Toggle in `Settings.swift` (`Settings.SecuritySettings`). The sheet's `else` branch was tightened to `else if self.security.state == .duress`, making the coercion-only intent explicit and making the normal-state path unreachable. In `.duress`, the toggle remains interactive to preserve coercion-resistance.
+
+Note: the state case was renamed `.active` → `.normal` in a later refactor; the guard above reflects the current name.
 
 ---
 
 ## Bug 17 — "Deactivate Protection" button shown when gate is lowered in `.active` state — forensic tell
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High (forensic)
 When `disablePINFromCurrentDepth` is called from `.active` state (depth 0), `state` remains `.active` and `appLockEnabled` becomes `false`. The Settings condition `if self.security.state == .active` still shows the "Deactivate Protection" button. A coercer or forensic tool browsing Settings sees this button despite the PIN toggle appearing off — directly revealing that Secure Mode is active.
@@ -275,11 +277,19 @@ Note: Bug 16's fix prevents the gate from being lowered from `.active` via the t
 The "Deactivate Protection" condition (`if self.security.state == .active`) does not account for `appLockEnabled`. Gate-down `.active` was never an intended user-facing configuration.
 
 ### Resolution
-Pending. Fix is: gate the "Deactivate Protection" button on `appLockEnabled` as well:
+Two guards updated in `Settings.SecuritySettings`:
+
+**1. "Deactivate Protection" button** — condition tightened to require `appLockEnabled`:
 ```swift
-if self.security.state == .active && self.security.appLockEnabled { ... }
+if self.isSecureModeActive && self.security.state == .normal && self.security.appLockEnabled { ... }
 ```
-And add `|| (self.security.state == .active && !self.security.appLockEnabled)` to the "Learn more" condition so Settings in that state looks identical to `.pinOnly`.
+The button is now invisible when the gate is down, matching the visual of a PIN-only setup.
+
+**2. "Learn more" section** — condition already covers gate-down `.normal` via the `!self.security.appLockEnabled` term:
+```swift
+if !self.isSecureModeActive || self.security.state == .duress || !self.security.appLockEnabled { ... }
+```
+When `appLockEnabled` is `false` the section renders regardless of `state`, so gate-down `.normal` is visually indistinguishable from `.pinOnly`.
 
 ---
 
@@ -300,7 +310,7 @@ Pending. `onWipe` should call `appManager.eraseAllData()` (the same path used by
 
 ## Bug 19 — Secure Mode deactivation has no loading overlay; sheet dismissed before async task completes
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 `SecuritySettings.showingDeactivateSheet` dismisses the PINEntry sheet synchronously (`self.showingDeactivateSheet = false`) before the `Task { try await deactivateSecureMode(...) }` begins. The user sees the normal Settings screen immediately while a multi-step key rotation (re-encrypt all contacts, WAL checkpoint, commit staged key) runs in the background with no visual indicator. Contrast with activation, which shows `ActivatingOverlay` for exactly this duration.
@@ -311,13 +321,17 @@ If the task fails mid-rotation, the rollback runs silently with no user feedback
 The deactivation sheet was written without the async-blocking pattern that activation uses.
 
 ### Resolution
-Pending. Mirror the `SecureModeSetupFlow` pattern: add `@State private var isDeactivating = false`, set it before the Task, clear on completion or failure, and overlay a blocking spinner (identical to `ActivatingOverlay`) while `isDeactivating` is true. Keep the sheet open until the task resolves.
+Implemented in `SecureModeDeactivateFlow`. The sheet now:
+- Holds `@State private var isDeactivating = false` and sets it to `true` before dispatching the Task.
+- Renders `DeactivatingOverlay` (full-screen black spinner with "Removing protection…") while `isDeactivating` is `true`.
+- Calls `interactiveDismissDisabled(self.isDeactivating)` to prevent swipe-to-dismiss during rotation.
+- Clears `isDeactivating` and calls `dismiss()` only after `deactivateSecureMode` returns successfully; sets `deactivationFailed = true` on error (see Bug 20).
 
 ---
 
 ## Bug 20 — Deactivation errors silently dropped in production builds
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 The `catch` block in the deactivation Task is gated on `#if DEBUG`. In a release build, any throw from `deactivateSecureMode` (SE failure, context save error, key rotation error) produces zero user feedback. Combined with Bug 19's premature sheet dismissal, the user has no way to know whether deactivation succeeded or failed.
@@ -326,13 +340,13 @@ The `catch` block in the deactivation Task is gated on `#if DEBUG`. In a release
 `#if DEBUG` gate left on error handling during development.
 
 ### Resolution
-Pending. Remove the `#if DEBUG` guard. Surface failure as an alert with a "Try again" action. The error message can be generic ("Deactivation failed — your data is unchanged, please try again") without exposing internal details.
+The catch block in `SecureModeDeactivateFlow` has no `#if DEBUG` guard. On any throw it sets `deactivationFailed = true`, which triggers an `.alert("Deactivation Failed")` with the message: "Protection could not be removed. Your data is unchanged. Please try again." The user receives explicit feedback in both debug and release builds.
 
 ---
 
 ## Bug 21 — Secure Mode activation errors silently dropped via `try?`
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 In `SecureModeSetupFlow.onActivate`, the call to `activateSecureMode` is wrapped in `try?`:
@@ -347,13 +361,13 @@ If activation throws (`.pinCollision`, `.keyDerivationFailed`, SE failure, DB sa
 `try?` was used for simplicity during initial implementation; error propagation path was not wired up.
 
 ### Resolution
-Pending. Capture the thrown error, keep the sheet open, clear `isActivating`, and present an alert. `try?` is only appropriate for non-critical side effects; a state transition of this magnitude must surface failures.
+`try?` was replaced with a proper `do / catch` block in `SecureModeSetupFlow.SummaryView`. On throw, `activationFailed = true` triggers an `.alert("Activation Failed")` with the message: "Secure Mode could not be activated. Your data is unchanged. Please try again." `isActivating` is cleared and the sheet stays open for a retry.
 
 ---
 
 ## Bug 22 — Activate button remains tappable during activation; concurrent calls possible
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 After the user taps Activate in `SecureModeSetupFlow`, `isActivating` is set to `true` but the activate button has no `.disabled(self.isActivating)` modifier. A rapid double-tap (or any second tap before the overlay appears) dispatches a second concurrent call to `activateSecureMode`. The second call creates a new staged key while the first is mid-rotation, leaving two conflicting staged artefacts in the Keychain and SE. At best, the second call fails and rolls back, stranding the first call with a partially committed state. At worst, both calls progress past the rollback window, resulting in contacts encrypted under different keys.
@@ -362,7 +376,7 @@ After the user taps Activate in `SecureModeSetupFlow`, `isActivating` is set to 
 The button's disabled state was not wired to `isActivating`. The overlay (`ActivatingOverlay`) blocks further interaction visually, but it appears asynchronously after the Task is dispatched — not synchronously on tap.
 
 ### Resolution
-Pending. Add `.disabled(self.isActivating)` to the activate button so the second tap is rejected before any Task is created.
+`.disabled(self.isActivating)` added to the Activate button in `SecureModeSetupFlow.SummaryView`. A second tap is rejected at the view layer before any `Task` is created, making concurrent calls impossible from the UI.
 
 ---
 
@@ -377,4 +391,4 @@ When `deactivateSecureMode` Step 5 restores sensitive contacts from the blob, it
 `ContactBlobRecord` does not preserve the contact's original `visibleThroughDepth` value. Deactivation has no source of truth for what the depth was at activation time, so it unconditionally writes `nil` rather than restoring to `0`.
 
 ### Resolution
-Pending. Add `visibleThroughDepth: Int?` to `ContactBlobRecord` — store the raw decoded depth value at blob-seal time (Step 6 of activation, when the contact is converted to a draft). During deactivation Step 5, re-encrypt and restore the stored value: `restored.visibleThroughDepth = try JSONEncoder().encode(record.visibleThroughDepth ?? 0).encrypt()`. Existing blobs that predate this field will decode `nil` for `visibleThroughDepth`; fall back to `0` (sensitive) since any contact in the blob by definition had a non-`Int.max` depth.
+`visibleThroughDepth: Int?` added to `ContactBlobRecord` in `SecureMode+Blob.swift`. At activation (Step 6 of `activateSecureMode`), the decoded depth value is read from `profile.visibleThroughDepth` and stored verbatim in the blob record. At deactivation (Step 5 of `deactivateSecureMode`), `record.visibleThroughDepth ?? 0` is re-encoded and written back to `restored.visibleThroughDepth`. The `?? 0` fallback applies to blobs written before this field was added — any contact present in the blob by definition had a finite depth, so `0` (sensitive) is the correct default.

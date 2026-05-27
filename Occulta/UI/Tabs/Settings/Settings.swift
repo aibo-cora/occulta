@@ -161,7 +161,7 @@ struct Settings: View {
         var body: some View {
             List {
                 Section {
-                    // Disabled in .active (gate up): Secure Mode must be deactivated before
+                    // Disabled in .normal (gate up): Secure Mode must be deactivated before
                     // the PIN can be removed. Interactive in .duress so the coercion gate-drop
                     // path (disablePINFromCurrentDepth) remains available without a forensic tell.
                     Toggle("Enable PIN", isOn: self.pinEnabledBinding)

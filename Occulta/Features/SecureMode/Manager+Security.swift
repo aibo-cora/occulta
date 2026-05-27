@@ -4,8 +4,9 @@
 //
 //  Single umbrella for all app-security hardening.
 //  Owns the AppLayerConfig SwiftData row, PIN verification, and the
-//  Secure Mode state machine. Replaces the former SecureModeManager +
-//  Manager.PINManager public API.
+//  Secure Mode state machine. The former SecureModeManager is gone;
+//  Manager.PINManager (PIN+Manager.swift) handles pure crypto operations
+//  internally and is not part of the public API.
 //
 
 import Foundation
@@ -46,7 +47,7 @@ extension Manager {
         /// When `false`, the app opens without showing the PIN prompt even though all PIN
         /// verifiers remain intact. This happens when the user explicitly lowers the gate
         /// via `disablePINFromCurrentDepth(confirmingPIN:)` — typically under coercion
-        /// while in `.active` or `.duress` state — so that the Settings toggle shows no
+        /// while in `.normal` or `.duress` state — so that the Settings toggle shows no
         /// observable difference from a device with no PIN configured.
         ///
         /// Critically, depth-filtering still applies when the gate is down: contacts and vault
@@ -86,8 +87,8 @@ extension Manager {
         ///   - modelContainer: The shared SwiftData container.
         ///   - keyManager: Key manager implementation (injectable for testing).
         ///   - enabled: When `false` (feature flag `secureMode` is off), the manager
-        ///     stays permanently in `.noPIN` state without reading `AppLayerConfig`
-        ///     at all. All filtering and overlay logic becomes a no-op.
+        ///     skips all `AppLayerConfig` reads. `requiresPIN` returns `false`, all
+        ///     filtering is inert, and the PIN overlay never appears.
         init(modelContainer: ModelContainer,
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
@@ -125,7 +126,8 @@ extension Manager {
 
         // MARK: - PIN Setup
 
-        /// Builds a normal PIN verifier, persists config, and transitions to `.normal` routing depth.
+        /// Builds a normal PIN verifier, persists config, and transitions from no-PIN to PIN-only
+        /// (`requiresPIN` becomes `true`, `isSecureModeActive` remains `false`).
         ///
         /// Also initialises `persistedDepth` and `pinEnabled` so both fields are non-nil
         /// from the first config write onward — a consistently present field prevents
@@ -149,9 +151,9 @@ extension Manager {
             self.resetCounters()
         }
 
-        /// Verifies the normal PIN, removes the entire config row, and transitions `.pinOnly` → `.noPIN`.
+        /// Verifies the normal PIN and removes the entire config row, making `requiresPIN` false.
         ///
-        /// Throws `.invalidStateTransition` if not in `.pinOnly` — the caller must
+        /// Throws `.invalidStateTransition` if `isSecureModeActive` is true — the caller must
         /// deactivate Secure Mode (removing the duress verifier) before removing the PIN entirely.
         func deactivatePIN(confirmingNormalPIN: String) throws {
             let config = try self.requireConfig()
@@ -175,7 +177,7 @@ extension Manager {
         // MARK: - Secure Mode
 
         /// Activates Secure Mode: verify the existing normal PIN, run the 11-step key
-        /// rotation, then transition `.pinOnly` → `.active`.
+        /// rotation, then transition from PIN-only to Secure Mode active (`isSecureModeActive` becomes `true`).
         ///
         /// - Parameters:
         ///   - confirmingEntryPIN: Must match the existing normal PIN verifier.
@@ -381,7 +383,7 @@ extension Manager {
         }
 
         /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
-        /// restores sensitive contacts, and transitions `.active` / `.duress` → `.pinOnly`.
+        /// restores sensitive contacts, and removes the duress verifier (`isSecureModeActive` becomes `false`).
         ///
         /// Mirror of `activateSecureMode`: creates a staged key, re-encrypts everything
         /// under it (safe contacts + restored blob contacts + vault depth fields), commits,
@@ -588,8 +590,8 @@ extension Manager {
         /// Use only when the DB is in an inconsistent key state (e.g. a failed key
         /// rotation left contacts encrypted under a deleted staged key). Normal
         /// `deactivateSecureMode` rotates the key and restores blob contacts; this
-        /// function skips both steps and simply removes the duress verifier so the
-        /// state machine transitions to `.pinOnly`. The DB key stays at whatever it
+        /// function skips both steps and simply removes the duress verifier
+        /// (`isSecureModeActive` becomes `false`). The DB key stays at whatever it
         /// currently is — contacts may be unreadable if the key state is corrupted.
         func forceDeactivateForRecovery(confirmingEntryPIN: String) throws {
             let config = try self.requireConfig()
@@ -676,11 +678,11 @@ extension Manager {
         ///   gate without entering the setup flow again.
         ///
         /// The confirming PIN must match the verifier for the **current layer**:
-        /// `sealedDuressVerifier` in `.duress` state, `sealedNormalVerifier` in `.active`.
+        /// `sealedDuressVerifier` in `.duress` state, `sealedNormalVerifier` in `.normal`.
         /// This ensures a coercer at depth 1 cannot lower the gate using a PIN they don't know.
         ///
         /// - Parameter confirmingPIN: Must match the current layer's verifier.
-        /// - Throws: `SecurityError.invalidStateTransition` if not in `.active` or `.duress`.
+        /// - Throws: `SecurityError.invalidStateTransition` if not in `.normal` or `.duress`.
         ///           `SecurityError.incorrectPIN` if the confirming PIN does not match.
         func disablePINFromCurrentDepth(confirmingPIN: String) throws {
             let config = try self.requireConfig()
@@ -696,7 +698,7 @@ extension Manager {
         /// is created. The Settings UI uses `.setup` mode (enter + confirm) for this call,
         /// making the re-enable flow visually identical to initial PIN setup — no tell.
         ///
-        /// - **Normal PIN match** → gate re-enabled at depth 0. `state` transitions to `.active`,
+        /// - **Normal PIN match** → gate re-enabled at depth 0. `state` transitions to `.normal`,
         ///   `currentDepth` resets to 0. The user returns to the real layer.
         /// - **Duress PIN match** → gate re-enabled at depth 1. `state` transitions to `.duress`,
         ///   `currentDepth` set to 1. The device continues showing the duress view.
@@ -736,7 +738,7 @@ extension Manager {
         /// Checks the entered PIN against the verifier for the **current layer**, with no side effects.
         ///
         /// In `.duress` state the check is against `sealedDuressVerifier`; in all other states
-        /// (`.active`, `.pinOnly`) it is against `sealedNormalVerifier`. No counters are mutated
+        /// it is against `sealedNormalVerifier`. No counters are mutated
         /// and no state transitions occur — used by `disablePINFromCurrentDepth` and by
         /// `PINEntry.submitConfirmPhase` so the activation flow's first phase accepts the
         /// correct PIN at any depth (duress PIN in `.duress`, normal PIN otherwise).
@@ -772,7 +774,7 @@ extension Manager {
         /// Returns identifiers of contacts visible at the given depth (defaults to `currentDepth`).
         ///
         /// Pass an explicit `depth` when querying from a context where `currentDepth` may not
-        /// yet reflect the desired security level — e.g. when locking the app from `.active`
+        /// yet reflect the desired security level — e.g. when locking the app from `.normal`
         /// state to pre-filter the share index for the unauthenticated Share Extension process.
         func safeContactIDs(atDepth depth: Int? = nil) -> Set<String> {
             let d = depth ?? self.currentDepth
