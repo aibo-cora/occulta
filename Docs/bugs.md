@@ -392,3 +392,33 @@ When `deactivateSecureMode` Step 5 restores sensitive contacts from the blob, it
 
 ### Resolution
 `visibleThroughDepth: Int?` added to `ContactBlobRecord` in `SecureMode+Blob.swift`. At activation (Step 6 of `activateSecureMode`), the decoded depth value is read from `profile.visibleThroughDepth` and stored verbatim in the blob record. At deactivation (Step 5 of `deactivateSecureMode`), `record.visibleThroughDepth ?? 0` is re-encoded and written back to `restored.visibleThroughDepth`. The `?? 0` fallback applies to blobs written before this field was added — any contact present in the blob by definition had a finite depth, so `0` (sensitive) is the correct default.
+
+---
+
+## Bug 24 — "Activation Failed" alert reveals Secure Mode state in duress mode
+
+**Status:** Open
+
+### Severity: High
+In duress mode the "Learn more" section in Settings is intentionally shown to make the screen indistinguishable from `.pinOnly`. A coercer who navigates through the full `SecureModeSetupFlow` and taps "Activate" triggers `activateSecureMode`, which throws `SecurityError.invalidStateTransition` because a duress verifier already exists. The catch-all block sets `activationFailed = true`, surfacing an "Activation Failed" alert. This directly tells the coercer that activation was blocked — implying Secure Mode is already active and the current view is the decoy.
+
+### Root Cause
+The `catch` block in `SecureModeSetupFlow.SummaryView` does not distinguish `invalidStateTransition` from genuine errors. In this context `invalidStateTransition` is the expected outcome when the flow is traversed from duress state for tell-avoidance purposes, not an error.
+
+### Resolution
+Pending: catch `Manager.SecurityError.invalidStateTransition` separately and call `onDone()` (silent dismiss). The sheet closes without surfacing an error, indistinguishable from a normal dismissal or a successful activation from `.pinOnly`.
+
+---
+
+## Bug 25 — `ContactClassification` exposes sensitive contacts during activation flow in duress mode
+
+**Status:** Open
+
+### Severity: Critical
+When in duress mode, a coercer who navigates through `SecureModeSetupFlow` reaches the contact classification step (step 3). `ContactClassification` fetches all contacts via `@Query(Contact.Profile.descriptor)` with no depth filter. `loadSensitiveIDs()` calls `security.isSensitive` for every contact, which reads `visibleThroughDepth` and correctly identifies contacts with `encrypt(0)` as sensitive. These are then rendered in the "Sensitive contacts" section of the classification UI. The coercer sees the full list of contacts the real user has chosen to hide, including their names and verification status. The `guard !self.security.isRestricted` in `save()` prevents reclassification but does nothing to prevent display.
+
+### Root Cause
+`ContactClassification` was designed for the initial activation flow from `.pinOnly` state, where all contacts are visible. It has no guard against being presented from a restricted (duress) depth. The display path does not pass through `isDisplayable` / `isRestricted`.
+
+### Resolution
+Pending: when `security.isRestricted`, `ContactClassification` must not load or display any contacts. The step should either be skipped entirely in the flow (since saving is a no-op anyway) or render an empty state with no contact data visible.
