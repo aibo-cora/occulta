@@ -422,3 +422,8 @@ When in duress mode, a coercer who navigates through `SecureModeSetupFlow` reach
 
 ### Resolution
 Added `guard !self.security.isRestricted else { return }` at the top of `loadSensitiveIDs()`. In duress mode `sensitiveIDs` stays empty, so all contacts appear in "Visible" and the "Sensitive" section shows "None marked sensitive" — consistent with tell-avoidance (the screen looks identical to a first-time setup with no contacts classified). Both save and load are now blocked in restricted mode.
+
+### Phase 2 note
+This fix is complete for Phase 1 (two layers). For Phase 2 multi-layer, two further changes are required:
+1. `isSensitive` hardcodes `value == 0` — must become depth-relative (`value < currentDepth`) so contacts sensitive at intermediate depths are recognised correctly.
+2. `ContactClassification` should only be editable at depth 0; at depth N > 0, the same `isRestricted` guard applies but the definition of "sensitive at this depth" changes.
