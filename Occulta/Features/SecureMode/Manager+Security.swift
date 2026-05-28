@@ -761,6 +761,14 @@ extension Manager {
 
         // MARK: - Safe contacts
 
+        /// Returns true if the contact should appear in the contact list at the current depth.
+        ///
+        /// Wraps `isVisible` for use with an already-fetched `Contact.Profile`, avoiding the
+        /// per-identifier DB lookup cost of `isSafeContact`. Use this for list filtering.
+        func isDisplayable(_ contact: Contact.Profile) -> Bool {
+            Self.isVisible(contact, atDepth: self.currentDepth)
+        }
+
         /// Returns true if the contact is visible at duress depth 1.
         /// Unknown contacts (not in DB) return false — conservative default.
         func isSafeContact(_ identifier: String) -> Bool {
