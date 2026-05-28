@@ -33,7 +33,8 @@ private func makeAlice() throws -> (
         CustodyShard.self,
         ReconstructShard.self,
         PendingShardDistribute.self,
-        PendingShardStatusUpdate.self
+        PendingShardStatusUpdate.self,
+        PotentiallyLostShard.self
     ])
     let cfg       = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
     let container = try ModelContainer(for: schema, configurations: [cfg])
@@ -55,7 +56,8 @@ private func makeBob() throws -> (
         CustodyShard.self,
         ReconstructShard.self,
         PendingShardDistribute.self,
-        PendingShardStatusUpdate.self
+        PendingShardStatusUpdate.self,
+        PotentiallyLostShard.self
     ])
     let cfg       = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
     let container = try ModelContainer(for: schema, configurations: [cfg])
