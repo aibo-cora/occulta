@@ -288,7 +288,7 @@ private struct SummaryView: View {
                             )
                             self.isActivating = false
                             self.onDone()
-                        } catch Manager.SecurityError.invalidStateTransition {
+                        } catch Manager.Security.SecurityError.invalidStateTransition {
                             // Secure Mode is already active (duress state). The flow was
                             // opened for tell-avoidance — the UI looks identical to pinOnly.
                             // Silently dismiss rather than showing an error that would reveal
