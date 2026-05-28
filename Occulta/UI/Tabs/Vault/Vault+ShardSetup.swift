@@ -47,7 +47,7 @@ struct VaultShardSetup: View {
     }
 
     private var mlkemContacts: [Contact.Profile] {
-        allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
+        allContacts.filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     private var selected: [Contact.Profile] {
