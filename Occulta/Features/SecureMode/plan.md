@@ -245,7 +245,7 @@ Phase 1 writes `encrypt(Int.max)` (safe), `encrypt(0)` (sensitive), or `encrypt(
 - [x] User chooses contact type (safe / sensitive) during contact creation — VISIBILITY section in `ContactFormV2`; no Secure Mode framing; shown in both create and edit modes
 - [x] At Secure Mode activation: review step shows existing contacts and lets the user confirm or change classifications before activating. This is step 3 of the 4-step activation sheet (`SecureModeSetupFlow`).
 - [x] `safeContactIDsEncrypted` removed from `AppLayerConfig` and all call sites
-- [ ] **[security]** All contact creation / import paths (`ContactFormV2`, `ContactsListV2`, `ExchangeResult`) must write `encrypt(Int.max)` for safe contacts instead of leaving `visibleThroughDepth = nil`. Currently these paths only write when depth > 0; depth-0 safe contacts leave the field nil. Any nil field left after activation is a forensic signal — a raw SQL dump shows NULL vs blob.
+- [x] **[security]** All contact creation / import paths (`ContactFormV2`, `ContactsListV2`, `ExchangeResult`) must write `encrypt(Int.max)` for safe contacts instead of leaving `visibleThroughDepth = nil`. Both `createContacts` and `save(contact:currentDepth:)` write `encrypt(Int.max)` at depth 0 unconditionally. `ContactFormV2` calls `setVisibility` immediately after save to apply the user's choice. `ExchangeResult` only updates key records — contact already has its depth stamp from creation.
 
 ### Decoy view
 
@@ -274,7 +274,7 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 - [x] `visibleThroughDepth: Data?` added to `VaultEntry` model (default `nil`, lightweight SwiftData migration — migrated to `encrypt(0)` at first activation)
 - [x] `isEntryVisible(_ entry: VaultEntry) -> Bool` on `Manager.Security` — takes the already-fetched entry directly, applies `(value ?? 0) >= currentDepth` rule; mirrors the contacts `isVisible` helper
 - [x] `Vault+Tab` computes `visibleEntries` filtered through `security.isEntryVisible` when `isRestricted`; filters attention section (`affected`) by `visibleIDs` as well — no hidden-entry labels leak through the recovery health display
-- [ ] `Vault+Manager.addEntry(...)` — currently writes `encrypt(currentDepth)` when `> 0`, nil when 0. Must always write `encrypt(currentDepth)` regardless of depth so no nil fields exist after activation.
+- [x] `Vault+Manager.addEntry(...)` — writes `encrypt(currentDepth)` unconditionally regardless of depth. Depth 0 entries get `encrypt(0)` (real-layer items, hidden from all duress views).
 - [x] `Vault+Manager+Backup.swift` — audited; imported entries leave `visibleThroughDepth = nil`. Migration at next activation will stamp them `encrypt(0)` (real-layer entries, correct).
 - [x] **Blob interaction (Step 4):** vault PEKs are **not** stored in the blob (Bug 8 fix). The vault key is derived from a dedicated SE key independent of DB key rotation; `visibleThroughDepth` on each `VaultEntry` is the only vault-related field that requires re-encryption during key rotation. Activation re-encrypts this field under the staged DB key; deactivation clears it to `nil` (Bug 12 fix). No `LAContext` evaluation or biometrics required for vault data at activation/deactivation.
 
