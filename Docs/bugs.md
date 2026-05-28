@@ -397,7 +397,7 @@ When `deactivateSecureMode` Step 5 restores sensitive contacts from the blob, it
 
 ## Bug 24 — "Activation Failed" alert reveals Secure Mode state in duress mode
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 In duress mode the "Learn more" section in Settings is intentionally shown to make the screen indistinguishable from `.pinOnly`. A coercer who navigates through the full `SecureModeSetupFlow` and taps "Activate" triggers `activateSecureMode`, which throws `SecurityError.invalidStateTransition` because a duress verifier already exists. The catch-all block sets `activationFailed = true`, surfacing an "Activation Failed" alert. This directly tells the coercer that activation was blocked — implying Secure Mode is already active and the current view is the decoy.
@@ -406,7 +406,7 @@ In duress mode the "Learn more" section in Settings is intentionally shown to ma
 The `catch` block in `SecureModeSetupFlow.SummaryView` does not distinguish `invalidStateTransition` from genuine errors. In this context `invalidStateTransition` is the expected outcome when the flow is traversed from duress state for tell-avoidance purposes, not an error.
 
 ### Resolution
-Pending: catch `Manager.SecurityError.invalidStateTransition` separately and call `onDone()` (silent dismiss). The sheet closes without surfacing an error, indistinguishable from a normal dismissal or a successful activation from `.pinOnly`.
+Added a dedicated `catch Manager.SecurityError.invalidStateTransition` arm before the catch-all in `SummaryView`. This arm sets `isActivating = false` and calls `onDone()` — a silent dismiss indistinguishable from a successful activation from `.pinOnly`. The catch-all block retains `activationFailed = true` for genuine errors only.
 
 ---
 
