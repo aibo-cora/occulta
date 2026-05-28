@@ -133,6 +133,10 @@ struct ContactClassification: View {
     // MARK: - Persistence
 
     private func loadSensitiveIDs() {
+        // In duress mode, do not reveal which contacts are sensitive.
+        // save() has the same guard — the view intentionally appears as if no contacts
+        // have been classified (consistent with tell-avoidance: attacker sees normal state).
+        guard !self.security.isRestricted else { return }
         self.sensitiveIDs = Set(
             self.contacts
                 .filter { self.security.isSensitive($0.identifier) }

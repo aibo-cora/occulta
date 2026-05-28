@@ -412,7 +412,7 @@ Pending: catch `Manager.SecurityError.invalidStateTransition` separately and cal
 
 ## Bug 25 — `ContactClassification` exposes sensitive contacts during activation flow in duress mode
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Critical
 When in duress mode, a coercer who navigates through `SecureModeSetupFlow` reaches the contact classification step (step 3). `ContactClassification` fetches all contacts via `@Query(Contact.Profile.descriptor)` with no depth filter. `loadSensitiveIDs()` calls `security.isSensitive` for every contact, which reads `visibleThroughDepth` and correctly identifies contacts with `encrypt(0)` as sensitive. These are then rendered in the "Sensitive contacts" section of the classification UI. The coercer sees the full list of contacts the real user has chosen to hide, including their names and verification status. The `guard !self.security.isRestricted` in `save()` prevents reclassification but does nothing to prevent display.
@@ -421,4 +421,4 @@ When in duress mode, a coercer who navigates through `SecureModeSetupFlow` reach
 `ContactClassification` was designed for the initial activation flow from `.pinOnly` state, where all contacts are visible. It has no guard against being presented from a restricted (duress) depth. The display path does not pass through `isDisplayable` / `isRestricted`.
 
 ### Resolution
-Pending: when `security.isRestricted`, `ContactClassification` must not load or display any contacts. The step should either be skipped entirely in the flow (since saving is a no-op anyway) or render an empty state with no contact data visible.
+Added `guard !self.security.isRestricted else { return }` at the top of `loadSensitiveIDs()`. In duress mode `sensitiveIDs` stays empty, so all contacts appear in "Visible" and the "Sensitive" section shows "None marked sensitive" — consistent with tell-avoidance (the screen looks identical to a first-time setup with no contacts classified). Both save and load are now blocked in restricted mode.
