@@ -134,9 +134,18 @@ extension Contact.Profile {
         return formatter.string(from: Date(timeIntervalSince1970: interval))
     }
 
+    @MainActor
     var encryptionSchemeLabel: String {
-        self.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil
-            ? "Hybrid PQ · ML-KEM-1024"
-            : "Classical (v1)"
+        let activeKey = self.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        
+        guard let enc = activeKey?.quantumKeyMaterialEncrypted else {
+            return "Classical (v1) · exchange for full protection if they have iOS 26+"
+        }
+        guard let dec = enc.decrypt(),
+              (try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)) != nil
+        else {
+            return "Classical (v1) · exchange again to restore full protection"
+        }
+        return "Hybrid PQ · ML-KEM-1024"
     }
 }

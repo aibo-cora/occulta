@@ -61,6 +61,7 @@ extension Contact {
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
+                            .foregroundColor(.occultaAccent)
 
                         if let p = self.profile {
                             KeyDetailsDisclosureV2(profile: p, expanded: self.$keyDetailsExpanded)
@@ -365,13 +366,25 @@ private struct ComposeHeroV2: View {
                 debugPrint("Shard ops: \(shardOps.isEmpty ? "none" : shardOps.map(\.kind.rawValue).joined(separator: "\n"))")
                 #endif
 
-                let encrypted = try self.contactManager.encryptBundle(
-                    data:            encoded,
-                    for:             self.identifier,
-                    shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: manifest_,
-                    expectedShards:  expected
-                )
+                let encrypted: Data
+                do {
+                    encrypted = try self.contactManager.encryptBundle(
+                        data:            encoded,
+                        for:             identifier,
+                        shardOperations: shardOps.isEmpty ? nil : shardOps,
+                        custodyManifest: manifest_,
+                        expectedShards:  expected
+                    )
+                } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
+                    // Quantum material corrupted or missing — fall back to classical,
+                    // strip shard ops (they stay pending and will retry after re-exchange).
+                    encrypted = try self.contactManager.encryptBundle(
+                        data: encoded,
+                        for:  identifier
+                    )
+                } catch {
+                    encrypted = Data()
+                }
 
                 guard !encrypted.isEmpty else {
                     self.showError("Encryption failed. Try again.")

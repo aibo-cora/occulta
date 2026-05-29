@@ -530,13 +530,26 @@ struct ComposableMessage: View {
                     expected = nil
                 }
 
-                let encryptedData = try self.contactManager?.encryptBundle(
-                    data:            encoded,
-                    for:             identifier,
-                    shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: manifest_,
-                    expectedShards:  expected
-                )
+                let encryptedData: Data?
+                do {
+                    encryptedData = try self.contactManager?.encryptBundle(
+                        data:            encoded,
+                        for:             identifier,
+                        shardOperations: shardOps.isEmpty ? nil : shardOps,
+                        custodyManifest: manifest_,
+                        expectedShards:  expected
+                    )
+                } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
+                    // Quantum material corrupted or missing — fall back to classical,
+                    // strip shard ops (they stay pending and will retry after re-exchange).
+                    encryptedData = try self.contactManager?.encryptBundle(
+                        data: encoded,
+                        for:  identifier
+                    )
+                } catch {
+                    debugPrint("Error: \(error)")
+                    encryptedData = nil
+                }
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false
