@@ -628,7 +628,6 @@ extension Manager {
             if let verifier = config.sealedNormalVerifier,
                PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                         verifier: verifier, seKey: seKey) {
-                self.state = .normal
                 self.resetCounters()
                 return .normal
             }
@@ -638,7 +637,6 @@ extension Manager {
                                         verifier: duressVerifier, seKey: seKey) {
                 self.wrongPINCount          = 0
                 self.consecutiveDuressCount += 1
-                self.state = .duress
                 return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
             }
 
@@ -650,6 +648,21 @@ extension Manager {
                 return .wipe
             }
             return .wrong
+        }
+
+        /// Applies the routing-depth state transition for a verified result.
+        ///
+        /// Intentionally separated from `verify()` so the state mutation fires in
+        /// the same synchronous context as `isLocked = false` (inside PINEntry's
+        /// gateDuration asyncAfter). SwiftUI then batches the state change and the
+        /// cover dismissal into one render pass, preventing the vault tab from
+        /// briefly showing a stale duress-mode render when the cover dismisses.
+        func applyVerifyState(for result: PINVerifyResult) {
+            switch result {
+            case .normal: self.state = .normal
+            case .duress: self.state = .duress
+            case .wrong, .wipe: break
+            }
         }
 
         // MARK: - PIN check (no side effects)

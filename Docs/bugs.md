@@ -427,3 +427,126 @@ Added `guard !self.security.isRestricted else { return }` at the top of `loadSen
 This fix is complete for Phase 1 (two layers). For Phase 2 multi-layer, two further changes are required:
 1. `isSensitive` hardcodes `value == 0` — must become depth-relative (`value < currentDepth`) so contacts sensitive at intermediate depths are recognised correctly.
 2. `ContactClassification` should only be editable at depth 0; at depth N > 0, the same `isRestricted` guard applies but the definition of "sensitive at this depth" changes.
+
+---
+
+## Bug 26 — Pre-existing vault entries visible in duress mode after activation
+
+**Status:** Open
+
+### Severity: High
+`activateSecureMode` Step 8 re-encrypts `VaultEntry.visibleThroughDepth` but only touches entries where the field is non-nil. Entries created before this branch (i.e. before `addEntry` started stamping `encrypt(0)`) have `visibleThroughDepth = nil`. Step 8 skips them silently. After activation, `isEntryVisible` returns `true` for `nil`:
+
+```swift
+func isEntryVisible(_ entry: VaultEntry) -> Bool {
+    guard let data = entry.visibleThroughDepth else { return true }  // nil → always visible
+    ...
+}
+```
+
+`visibleEntries` in `Vault+Tab` only filters when `isRestricted`:
+
+```swift
+private var visibleEntries: [VaultEntry] {
+    guard self.security.isRestricted else { return self.entries }
+    return self.entries.filter { self.security.isEntryVisible($0) }
+}
+```
+
+Because `isEntryVisible` returns `true` for nil-depth entries, those entries pass through the duress filter and appear in the vault tab when the duress PIN is entered. The EducationView and SummaryView both promise "Vault items will not be visible in alternate views" — that promise is broken for any entry created before this branch.
+
+### Root Cause
+Step 8 uses `if let old = entry.visibleThroughDepth` to guard the re-encryption. When `nil`, the entry is not given a hidden-depth stamp; it simply carries no field at all, which `isEntryVisible` interprets as "always visible."
+
+### Resolution
+In `activateSecureMode` Step 8, entries where `visibleThroughDepth == nil` should be stamped with the hidden sentinel under the staged key rather than skipped:
+
+```swift
+for entry in try vaultManager.fetchAllEntries() {
+    if let old = entry.visibleThroughDepth {
+        guard let plain = old.decrypt() else { continue }
+        entry.visibleThroughDepth = try AES.GCM.seal(
+            plain, using: stagedKey, authenticating: aad
+        ).combined
+    } else {
+        // Pre-existing entry: hide at all duress depths.
+        let hidden = try JSONEncoder().encode(0)
+        entry.visibleThroughDepth = try AES.GCM.seal(
+            hidden, using: stagedKey, authenticating: aad
+        ).combined
+    }
+}
+```
+
+Additionally, `deactivateSecureMode` Step 6 already sets `entry.visibleThroughDepth = nil` unconditionally, which correctly erases the activation-era stamp on deactivation. No change needed there.
+
+---
+
+## Bug 27 — Silent skip in Step 8 when `old.decrypt()` fails; entry hidden by stale ciphertext
+
+**Status:** Open
+
+### Severity: Medium
+In `activateSecureMode` Step 8, the inner guard `if let old = entry.visibleThroughDepth, let plain = old.decrypt()` silently skips an entry when `old.decrypt()` returns `nil`. This can happen if the ciphertext is corrupt or was encrypted under a different key. The entry's `visibleThroughDepth` is left as-is — still encrypted under the old canonical key, which is deleted at Step 9 (`commitStagedLocalDBKey`). After commit, `isEntryVisible` cannot decrypt the field and reaches:
+
+```swift
+else { return false }  // non-nil but can't decrypt → hidden
+```
+
+The entry becomes permanently hidden in both normal and duress mode — not deleted, not visible, just silently inaccessible from the vault UI. No error is thrown; the activation completes successfully from the user's perspective.
+
+### Root Cause
+The `if let` double-bind swallows the decrypt failure and falls through. The fix for Bug 26 (splitting the nil and non-nil branches) should also surface or handle the decrypt-failure case explicitly.
+
+### Resolution
+In the non-nil branch (see Bug 26 resolution), replace the guard-based silent skip with an explicit `continue` after logging or — for maximum safety — stamp the entry as hidden under the staged key regardless of whether the old plaintext is recoverable:
+
+```swift
+if let old = entry.visibleThroughDepth {
+    // If we can decrypt the old value, re-encrypt it; otherwise treat as hidden.
+    let plain = old.decrypt() ?? (try JSONEncoder().encode(0))
+    entry.visibleThroughDepth = try AES.GCM.seal(
+        plain, using: stagedKey, authenticating: aad
+    ).combined
+}
+```
+
+This ensures every entry ends up with a `visibleThroughDepth` encrypted under the staged key regardless of the prior field state.
+
+---
+
+## Bug 28 — Sensitive contacts visible as eligible trustees in shard backup setup while in duress mode
+
+**Status:** Open
+
+### Severity: Critical
+When in duress mode, the vault backup / shard distribution trustee picker shows sensitive contacts as eligible trustees. These contacts are hidden from the main contact list at duress depth, but the shard setup UI fetches eligible trustees through a code path that does not apply the same depth filter. A coercer who navigates to vault backup setup can enumerate the sensitive contacts by observing which contacts appear as selectable trustees — contacts that are invisible everywhere else in the duress view.
+
+### Root Cause
+The trustee eligibility query (in `Vault+ShardSetup` or its backing manager) does not pass through `isDisplayable` / the depth filter that `ContactsListV2` and related views apply in `isRestricted` mode.
+
+### Resolution
+Pending investigation. The trustee picker's data source must apply the same depth filter used by the contact list: contacts with `visibleThroughDepth` encoding a depth less than `security.currentDepth` must be excluded from the eligible-trustee list when `security.isRestricted`.
+
+---
+
+## Bug 29 — Vault items flicker (show → blank → show) after entering normal PIN with Secure Mode active
+
+**Status:** Closed (Fixed)
+
+### Severity: Low
+With Secure Mode active, after entering the normal PIN the vault tab briefly shows vault items, then goes blank, then shows the items again. The flicker is reproducible and creates a jarring UX. In a coercion scenario it could also briefly expose vault item content before the blank frame, though the window is sub-second.
+
+### Root Cause
+Not yet fully diagnosed. Likely candidates:
+1. The vault lock (`willResignActiveNotification` or the activation flow triggering a lock) fires after PIN entry resolves, setting `vault.isUnlocked = false` momentarily, then Face ID re-authenticates and sets it back to `true`. The `Vault+Tab` gate (`if self.security.isRestricted || self.vault.isUnlocked`) reacts to each state change, producing the visible → blank → visible sequence.
+2. A `@Observable` batch-update race: `security.state` and `vault.isUnlocked` update on different ticks, causing an intermediate render where `isRestricted` is `false` (normal depth) but `isUnlocked` has transiently reset.
+
+### Resolution
+`security.state` was mutated synchronously inside `verify()`, 500 ms before `isLocked = false` fires (due to `gateDuration`). SwiftUI defers re-renders of views behind a `fullScreenCover`; when the cover began its dismiss animation the vault tab was composited from its last committed CALayer content — the stale duress-mode list. The state mutation and the cover dismissal needed to land in the same SwiftUI render pass.
+
+Two changes applied together:
+
+**`Manager+Security.swift`** — `self.state = .normal` and `self.state = .duress` removed from `verify()`. A new `applyVerifyState(for:)` method added immediately after `verify()` that applies only the state transition.
+
+**`PINEntry.swift`** — `submitVerify`'s `asyncAfter` callback now calls `security.applyVerifyState(for: result)` before `route(result, pin:)`. Both mutations (`state` and `isLocked = false` via `onNormal`) now occur in the same synchronous main-thread task; SwiftUI batches them into one render pass and the vault tab renders `lockGate` correctly on first reveal.

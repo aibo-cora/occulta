@@ -187,6 +187,7 @@ struct PINEntry: View {
         let remaining = max(0, self.gateDuration - elapsed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
+            self.security.applyVerifyState(for: result)
             self.route(result, pin: pin)
         }
     }
