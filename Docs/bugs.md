@@ -530,6 +530,31 @@ Pending investigation. The trustee picker's data source must apply the same dept
 
 ---
 
+## Bug 30 — Quantum key material destroyed for sensitive contacts after Secure Mode deactivation
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+After a full activate → deactivate cycle, any contact that was classified as sensitive loses its ML-KEM quantum key material. Subsequent attempts to decrypt a hybrid-PQ message from that contact throw `ContactManager.Errors.quantumKeyMaterialCorrupted` (error 13), making all such messages permanently undecryptable.
+
+### Root Cause
+Two compounding bugs:
+
+**1. `convertToMutableCopy` never extracted `quantumKeyMaterialEncrypted` into the draft.**
+`Contact+Manager.swift` built each `Contact.Draft.Key` from material, owner, and date only — it never read `quantumKeyMaterialEncrypted` from the stored key record. Every blob sealed at activation was therefore missing quantum material for all contacts that had it.
+
+**2. `hasUnreadableKeys` in deactivation Step 5b was a Design B artefact that fired spuriously under Design A.**
+The check was written for a Design B world where sensitive contacts' key records would be left under the deleted activation key, making them genuinely unreadable during deactivation. Under Design A (the actual implementation), activation Step 8's `reEncryptKeyRecords` migrates *all* contacts' key records — including sensitive contacts' — from K_old → K_staged. The check tested readability using `Manager.Crypto()` (K_activation, the current canonical key), but by the time Step 5b ran, those records had already been migrated to K_staged by Step 4. Decryption with K_activation failed on K_staged ciphertext, so `hasUnreadableKeys` evaluated to `true` for every sensitive contact — not because the records were under a deleted key but because they had already been successfully re-encrypted. The check then wiped and rebuilt all key records from the blob draft, discarding intact quantum material and replacing it with nil (from bug 1).
+
+### Resolution
+Two fixes applied together:
+
+**1. `convertToMutableCopy` now carries quantum material through to the draft** (`Contact+Manager.swift`). For each key record, `quantumKeyMaterialEncrypted` is decrypted and JSON-decoded to `QuantumKeyMaterial?` and passed as the `quantumKeyMaterial` parameter when constructing `Contact.Draft.Key`. The blob now carries complete key material for both Design A (where it is currently unused but correct) and Design B (where it is the sole restoration source).
+
+**2. `hasUnreadableKeys` rebuild removed from `deactivateSecureMode` Step 5b** (`Manager+Security.swift`). Under Design A, Step 4's `reEncryptKeyRecords` already migrates all key records correctly; Step 5b only needs to restore text fields and depth metadata from the blob. The rebuild path, along with its redundant second `reEncryptKeyRecords` call, was deleted. The Design B path in `plan.md` documents when and how to restore it correctly (item 3 of Design B requirements).
+
+---
+
 ## Bug 29 — Vault items flicker (show → blank → show) after entering normal PIN with Secure Mode active
 
 **Status:** Closed (Fixed)

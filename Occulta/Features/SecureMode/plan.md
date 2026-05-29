@@ -328,6 +328,14 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 
 **Design B considered and deferred.** The original design had sensitive contacts as unreadable shells (fields left under the deleted old key) with an `inMemorySensitiveContacts` array populated from the blob on normal unlock and wiped on lock. Design B provides a cryptographic guarantee — no DB-key access grants access to sensitive contacts during a duress exposure. It was deferred in favour of Design A for implementation simplicity. The residual forensic gap is explicitly accepted for Phase 1 and documented in `forensic-trace-avoidance.md` S5. Design B remains the correct upgrade path if the threat model is elevated.
 
+**What Design B requires before it can be implemented:**
+
+1. **Skip sensitive contacts in activation Step 8's re-encryption loop.** Under Design A, all contacts (including sensitive) are re-encrypted to K_staged. Under Design B, sensitive contacts must be left with their key records under the old canonical key so they become genuinely unreadable after the key is deleted. Only text fields for sensitive contacts may be re-encrypted (so the shell is syntactically valid but cryptographically inaccessible).
+
+2. [x] **Fix `convertToMutableCopy` to carry `quantumKeyMaterialEncrypted` through to the draft.** `Contact+Manager.swift` now decrypts and JSON-decodes `record.quantumKeyMaterialEncrypted` and passes it as `quantumKeyMaterial` when constructing `Contact.Draft.Key`. This makes the blob complete under both designs — Design A ignores it (key records are never rebuilt from the blob); Design B depends on it.
+
+3. **Restore the `hasUnreadableKeys` rebuild path in deactivation Step 5b.** Under Design B, sensitive contacts' key records are left under the deleted activation key; `reEncryptKeyRecords` cannot decrypt them; the rebuild path is the correct recovery. The rebuild code that was removed from `deactivateSecureMode` belongs here. It must now also re-encrypt the `quantumKeyMaterialEncrypted` field from the blob draft's `key.quantumKeyMaterial` (point 2 above must be fixed first, or the rebuilt records will have nil quantum material).
+
 - [x] **[bug]** Fix `isVisible(_:atDepth:)` fallback: `visibleThroughDepth` non-nil + decrypt failure → `return false`. Defense-in-depth — should not trigger in normal operation under Design A since all contacts are re-encrypted at activation and remain readable.
 
 - [x] **Deactivation sequence:** (implemented in `Manager+Security.deactivateSecureMode`; deviations from original plan noted below)
@@ -336,7 +344,7 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
   3. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs not in blob; no biometrics needed.
   4. Create staged DB key (same pattern as activation step 3) to derive the new key for re-encrypting restored contacts.
   5. Re-encrypt safe contacts (currently in DB) under `stagedDBKey`. Clear their `visibleThroughDepth` to `nil` (erases activation watermark — Bug 12 fix). Sensitive shells are skipped (their fields remain unreadable; overwritten in step 5b).
-  5b. Restore sensitive contacts from blob: fetch existing shell by identifier, re-encrypt all fields under `stagedDBKey`, restore `signedAttributes`. Re-encode `record.visibleThroughDepth ?? 0` (Bug 23 fix — preserves sensitivity across activation cycles, fallback `0` for old blobs). Rebuild key records that are still encrypted under the deleted activation key.
+  5b. Restore sensitive contacts from blob: fetch existing shell by identifier, re-encrypt text fields under `stagedDBKey` via the UPDATE save path. Restore `signedAttributes` and `record.visibleThroughDepth ?? 0` (Bug 23 fix). Key records are **not** rebuilt here — Step 4's `reEncryptKeyRecords` already migrated them from K_activation → K_staged under Design A. The `hasUnreadableKeys` rebuild path that was previously here was a Design B artefact (see Design B below) and has been removed; under Design A it fired spuriously because Step 4's migration made key records unreadable to K_activation, causing quantum material to be wiped.
   6. ~~Restore vault PEKs~~ — **removed** (Bug 8). Restore vault entries to depth-visible under staged key; clear `visibleThroughDepth` to `nil` (erases watermark — Bug 12 fix). No PEK re-wrapping required.
   7. ~~Generate fresh prekeys for all restored contacts~~ — **not implemented**. Prekey records are re-encrypted in-place via `reEncryptKeyRecords`; shells with unreadable prekeys are rebuilt from blob plaintext. Fresh batch generation deferred.
   8. Commit staged key → canonical (point of no return).

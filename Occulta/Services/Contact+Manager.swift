@@ -791,9 +791,16 @@ extension ContactManager {
             let ownerHash = (try? self.cryptoManager.decrypt(data: record.owner)) ?? Data()
             let date = String(data: (try? self.cryptoManager.decrypt(data: record.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
 
+            let quantumMaterial: QuantumKeyMaterial? = {
+                guard let enc = record.quantumKeyMaterialEncrypted,
+                      let dec = try? self.cryptoManager.decrypt(data: enc)
+                else { return nil }
+                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+            }()
+
             // ownerHash is already SHA-256(identity_key) from the DB.
             // Draft.Key.init would sha256 it again (double-hash) — override after construction.
-            var key = Contact.Draft.Key(material: material, owner: ownerHash, date: date)
+            var key = Contact.Draft.Key(material: material, owner: ownerHash, date: date, quantumKeyMaterial: quantumMaterial)
             key?.owner = ownerHash
             return key
         }
