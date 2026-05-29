@@ -517,7 +517,7 @@ This ensures every entry ends up with a `visibleThroughDepth` encrypted under th
 
 ## Bug 28 — Sensitive contacts visible as eligible trustees in shard backup setup while in duress mode
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Critical
 When in duress mode, the vault backup / shard distribution trustee picker shows sensitive contacts as eligible trustees. These contacts are hidden from the main contact list at duress depth, but the shard setup UI fetches eligible trustees through a code path that does not apply the same depth filter. A coercer who navigates to vault backup setup can enumerate the sensitive contacts by observing which contacts appear as selectable trustees — contacts that are invisible everywhere else in the duress view.
