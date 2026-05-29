@@ -316,12 +316,16 @@ extension Manager {
                     try contactManager.save(contact: draft, using: stagedCrypto)
                 }
                 // Re-encrypt VaultEntry.visibleThroughDepth (encrypted under local DB key).
+                // Every entry must end up with a staged-key ciphertext — no silent skips:
+                //   • nil depth (Bug 26): pre-existing entry never stamped → hide at all duress depths.
+                //   • non-nil but unreadable (Bug 27): corrupt/wrong-key ciphertext → treat as hidden.
+                //   • non-nil and readable: re-encrypt the existing value verbatim.
+                let hiddenData = try JSONEncoder().encode(0)
                 for entry in try vaultManager.fetchAllEntries() {
-                    if let old = entry.visibleThroughDepth, let plain = old.decrypt() {
-                        entry.visibleThroughDepth = try AES.GCM.seal(
-                            plain, using: stagedKey, authenticating: aad
-                        ).combined
-                    }
+                    let plain = entry.visibleThroughDepth.flatMap { $0.decrypt() } ?? hiddenData
+                    entry.visibleThroughDepth = try AES.GCM.seal(
+                        plain, using: stagedKey, authenticating: aad
+                    ).combined
                 }
                 try vaultManager.modelContext.save()
 
