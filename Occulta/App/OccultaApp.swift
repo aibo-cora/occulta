@@ -373,12 +373,15 @@ struct OccultaApp: App {
                     // Only lock when a PIN is configured AND the gate is active.
                     // When appLockEnabled is false the device is operating in coercion mode:
                     // re-locking on background would expose the gate state.
-                    if newPhase == .inactive, self.security.requiresPIN, self.security.appLockEnabled {
+                    if newPhase == .inactive, self.security.requiresPIN, self.security.appLockEnabled,
+                       self.vaultManager.isUnlocked {
                         // Blank the screen on .inactive to block app-switcher screenshots.
                         // Do NOT set isLocked here — that triggers fullScreenCover, which
                         // conflicts with UIActivityViewController already on screen when the
                         // user picks a share target (e.g. WhatsApp): the app briefly goes
                         // .inactive and two UIKit modal presentations collide.
+                        // Only blank when vault is unlocked — when locked, lockGate is already
+                        // showing and there is nothing sensitive to protect (e.g. during Face ID).
                         self.showScreenshotBlank = true
                         // Restrict the share index the moment the app loses focus so the
                         // Share Extension cannot read sensitive contacts while locked.
