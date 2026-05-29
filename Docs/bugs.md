@@ -432,7 +432,7 @@ This fix is complete for Phase 1 (two layers). For Phase 2 multi-layer, two furt
 
 ## Bug 26 — Pre-existing vault entries visible in duress mode after activation
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 `activateSecureMode` Step 8 re-encrypts `VaultEntry.visibleThroughDepth` but only touches entries where the field is non-nil. Entries created before this branch (i.e. before `addEntry` started stamping `encrypt(0)`) have `visibleThroughDepth = nil`. Step 8 skips them silently. After activation, `isEntryVisible` returns `true` for `nil`:
@@ -484,7 +484,7 @@ Additionally, `deactivateSecureMode` Step 6 already sets `entry.visibleThroughDe
 
 ## Bug 27 — Silent skip in Step 8 when `old.decrypt()` fails; entry hidden by stale ciphertext
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 In `activateSecureMode` Step 8, the inner guard `if let old = entry.visibleThroughDepth, let plain = old.decrypt()` silently skips an entry when `old.decrypt()` returns `nil`. This can happen if the ciphertext is corrupt or was encrypted under a different key. The entry's `visibleThroughDepth` is left as-is — still encrypted under the old canonical key, which is deleted at Step 9 (`commitStagedLocalDBKey`). After commit, `isEntryVisible` cannot decrypt the field and reaches:

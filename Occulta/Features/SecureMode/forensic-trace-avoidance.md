@@ -59,6 +59,7 @@ Measures that prevent recovery of deleted or sensitive data from the raw databas
 | S4 | `.completeFileProtection` re-applied on every save | Medium | ✅ |
 | S5 | Sensitive contacts depth-filtered at UI (Design A — accepted forensic gap); page slack covered by S1 + S2 | Medium | ✅ Design decision |
 | S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed |
+| S7 | All vault entries stamped hidden under staged key during activation | High | ✅ Bugs 26 & 27 fixed |
 
 ### S1 — DB key rotation on activation (cryptographic erasure)
 The local DB key is `ECDH(ourSEKey_localDB, G)` — device-bound and accessible when the device is unlocked. In duress mode the device is unlocked, so the current DB key is derivable. Without rotation, an examiner who extracts the raw SQLite file could use the current DB key to decrypt page-slack still containing deleted sensitive contacts. After rotation, deleted pages are encrypted under the old key, which is deleted after commit — the current DB key decrypts nothing from those pages. This is the core reason the DB key rotates on activation.
@@ -85,6 +86,15 @@ Page-slack protection from *pre-activation* rows is handled by S1 (DB key rotati
 
 ### S6 — `visibleThroughDepth` watermark erased on deactivation
 Activation Step 5 migrates `nil → encrypt(Int.max)` for all safe contacts. Before Bug 12's fix, deactivation re-encrypted this value rather than clearing it, leaving a permanent non-null field on contacts that existed at activation time. An examiner could identify which contacts predated activation without decrypting anything. Deactivation now sets `visibleThroughDepth = nil` for all contacts and vault entries, restoring the pre-activation default.
+
+### S7 — All vault entries stamped hidden under staged key during activation
+`activateSecureMode` Step 8 re-encrypts every `VaultEntry.visibleThroughDepth` under the staged key, guaranteeing no entry leaks into duress mode. Three cases are handled without exception:
+
+- **Non-nil, readable** — existing depth value re-encrypted under staged key verbatim.
+- **Nil** (Bug 26 — entries predating `addEntry`'s depth stamp) — stamped `encode(0)` under staged key: hidden at all duress depths, visible at depth 0. Consistent with `addEntry`'s own convention for normal-mode entries.
+- **Non-nil, unreadable** (Bug 27 — corrupt or wrong-key ciphertext) — treated as `encode(0)` under staged key. Fail-safe to hidden: an entry that is invisible in duress mode is a UX inconvenience; one that is visible is a security failure.
+
+Deactivation Step 6 sets `entry.visibleThroughDepth = nil` unconditionally, restoring the pre-activation default for all entries.
 
 ---
 
