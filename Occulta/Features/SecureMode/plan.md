@@ -353,20 +353,25 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 - [x] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install." Implemented: `Blob.maintainNoOpBlob()`, called from `OccultaApp.init()` behind the `secureMode` feature flag.
 - [x] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. `rewriteNoOpBlob()` added to `Manager.Blob`; subscribed in `OccultaApp` gated on `!security.isSecureModeActive` — never rewrites a real payload. Blob timestamps mirror normal app activity before first activation.
 - [x] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events. `maxAge = 86_400`; `isStale(_:)` gates every `maintainNoOpBlob()` call.
-- [x] **Activation sequence — staged key rotation, old key deleted last:** (implemented in `Manager+Security.activateSecureMode`; two open bugs noted below)
+- [ ] **Activation sequence — single atomic commit, crash-safe without a recovery record.** Needs refactoring from the current interleaved Keychain+DB write pattern. Target sequence:
   1. State guard + PIN verification (normal PIN check, duress PIN collision check) — abort immediately on failure, no side effects.
   2. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs are not in the blob; no biometric gate needed.
-  3. Create staged DB key: new SE key at tag `"local.db.se.key.occulta.staged"` + new 32-byte random at Keychain account `"local.db.random.key.occulta.staged"`. Derive `stagedDBKey` from these. **Old canonical key still valid throughout.**
-  4. Decrypt all contacts using old canonical DB key. Partition into sensitive and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes` and `visibleThroughDepth` — Bug 23 fix).
-  5. Migrate `visibleThroughDepth`: write `encrypt(Int.max)` to all safe contacts with nil field; write `encrypt(0)` to all vault entries with nil field. Batch write unifies `ZMODIFICATIONDATE` — no activation timestamp fingerprint.
-  6. ~~Unwrap vault PEKs~~ — **removed** (Bug 8).
-  7. Seal blob: `Manager.Blob.seal(BlobPayload(contacts: sensitiveRecords), blobKey:)`. Replaces the no-op blob.
-  8. Re-encrypt **all** contacts' fields (safe + sensitive) under `stagedDBKey`. Sensitive contacts remain in the DB and must stay readable after key rotation — depth-based visibility (`visibleThroughDepth`) gates the UI. See "Post-activation contact access" below for the design rationale.
-  9. WAL checkpoint (runs after commit — Bug 14 fix; old description had wrong order).
-  10. Promote staged key to canonical. **Old canonical key is now uncomputable — sensitive rows locked in-place.**
-  11. Delete superseded artefacts. Build duress verifier; write `AppLayerConfig`; transition state → `.normal`. `lastUnlockDate` cleared (Bug 5 fix).
+  3. Create new SE key at a fresh UUID tag + new 32-byte random in Keychain. Derive `newDBKey`. **Old canonical key still valid. If the app crashes here, the new key is an orphaned Keychain entry — detect and delete on next launch.**
+  4. `modelContext.autosaveEnabled = false`; `defer { modelContext.autosaveEnabled = true }`. All subsequent DB mutations accumulate in memory until the explicit save in step 9.
+  5. Decrypt all contacts using old canonical DB key. Partition into sensitive and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes` and `visibleThroughDepth` — Bug 23 fix).
+  6. Migrate `visibleThroughDepth` in memory: `encrypt(Int.max)` for all safe contacts with nil field; `encrypt(0)` for all vault entries with nil field. Batch mutation unifies `ZMODIFICATIONDATE` — no activation timestamp fingerprint.
+  7. ~~Unwrap vault PEKs~~ — **removed** (Bug 8).
+  8. Seal blob: `Manager.Blob.push(BlobPayload(contacts: sensitiveRecords), blobKey:)`. Replaces the no-op blob.
+  9. Re-encrypt **all** contacts' fields (safe + sensitive) under `newDBKey` in memory. Sensitive contacts remain in the DB — depth-based visibility (`visibleThroughDepth`) gates the UI. See "Post-activation contact access" below.
+  10. Accumulate remaining in-memory mutations: update `AppLayerConfig` with new key tag (encrypted), duress verifier, `lastUnlockDate = nil` (Bug 5 fix).
+  11. `modelContext.save()` — **point of no return.** Single atomic SQLite commit: re-encrypted contacts + `visibleThroughDepth` values + `AppLayerConfig` (new key tag + duress verifier). A crash before this line leaves the DB byte-for-byte unchanged. A crash during this line is handled by SQLite WAL atomicity.
+  12. `PRAGMA wal_checkpoint(TRUNCATE)`.
+  13. Delete old SE key + old Keychain random — cleanup only. A crash here leaves an orphaned old key; harmless since `AppLayerConfig` now references the new key tag. Detect and delete on next launch.
+  14. Transition state → `.normal`.
 
-  **Old SE key is deleted in step 11, after all data has been written in steps 8–9.** If the app crashes before step 10, the old key is still canonical and the app recovers cleanly on next launch. The crash window where data is in an inconsistent state is steps 10–11 (milliseconds); `SecureModeOperation` (below) will close this gap in a future iteration.
+  **`AppLayerConfig` requires a new encrypted field:** `activeDBKeyTagEncrypted: Data?` — stores the UUID tag of the SE key currently protecting the DB. `nil` on existing installs = use the legacy fixed tag. Written in step 10, read by `Manager.Security.init` to derive the canonical DB key on every launch. This replaces the "promote staged key to canonical Keychain tag" step — the DB save in step 11 is what makes the new key authoritative, not a Keychain rename.
+
+  **Crash recovery is implicit:** on any launch, `AppLayerConfig` reflects the last successfully committed state. If a crash occurred before step 11, the config still references the old key — clean state. If a crash occurred after step 11, the config references the new key — activation is complete. No separate recovery record needed.
 
 ### Post-activation contact access
 
@@ -395,26 +400,24 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 
 - [x] **[bug]** Fix `isVisible(_:atDepth:)` fallback: `visibleThroughDepth` non-nil + decrypt failure → `return false`. Defense-in-depth — should not trigger in normal operation under Design A since all contacts are re-encrypted at activation and remain readable.
 
-- [x] **Deactivation sequence:** (implemented in `Manager+Security.deactivateSecureMode`; deviations from original plan noted below)
+- [ ] **Deactivation sequence — single atomic commit, crash-safe.** Needs refactoring to match the autosave approach used in activation.
   1. State guard + verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
-  2. `unseal(blobKey:)` → `BlobPayload`. Abort if blob is missing or decryption fails.
+  2. `pop(blobKey:)` → `BlobPayload`. Abort if blob is missing or decryption fails.
   3. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs not in blob; no biometrics needed.
-  4. Create staged DB key (same pattern as activation step 3) to derive the new key for re-encrypting restored contacts.
-  5. Re-encrypt safe contacts (currently in DB) under `stagedDBKey`. Clear their `visibleThroughDepth` to `nil` (erases activation watermark — Bug 12 fix). Sensitive shells are skipped (their fields remain unreadable; overwritten in step 5b).
-  5b. Restore sensitive contacts from blob: fetch existing shell by identifier, re-encrypt text fields under `stagedDBKey` via the UPDATE save path. Restore `signedAttributes` and `record.visibleThroughDepth ?? 0` (Bug 23 fix). Key records are **not** rebuilt here — Step 4's `reEncryptKeyRecords` already migrated them from K_activation → K_staged under Design A. The `hasUnreadableKeys` rebuild path that was previously here was a Design B artefact (see Design B below) and has been removed; under Design A it fired spuriously because Step 4's migration made key records unreadable to K_activation, causing quantum material to be wiped.
-  6. ~~Restore vault PEKs~~ — **removed** (Bug 8). Restore vault entries to depth-visible under staged key; clear `visibleThroughDepth` to `nil` (erases watermark — Bug 12 fix). No PEK re-wrapping required.
-  7. ~~Generate fresh prekeys for all restored contacts~~ — **not implemented**. Prekey records are re-encrypted in-place via `reEncryptKeyRecords`; shells with unreadable prekeys are rebuilt from blob plaintext. Fresh batch generation deferred.
-  8. Commit staged key → canonical (point of no return).
-  9. `PRAGMA wal_checkpoint(TRUNCATE)` — runs *after* commit (Bug 14 fix).
-  10. Delete superseded artefacts.
-  11. `rewriteNoOpBlob()` — real payload discarded; fresh no-op written. Clear `sealedDuressVerifier`, transition state → `.normal` then back to `.pinOnly`.
+  4. Create new SE key at a fresh UUID tag + new Keychain random. Derive `newDBKey`. **Old canonical key still valid. Crash here = orphaned new key, clean state.**
+  5. `modelContext.autosaveEnabled = false`; `defer { modelContext.autosaveEnabled = true }`.
+  6. Re-encrypt safe contacts in memory under `newDBKey`. Clear their `visibleThroughDepth` to `nil` in memory (erases activation watermark — Bug 12 fix).
+  6b. Restore sensitive contacts from blob in memory: fetch existing shell by identifier, re-encrypt all fields under `newDBKey`, restore `signedAttributes` and `record.visibleThroughDepth ?? 0` (Bug 23 fix). Key records re-encrypted in-place via `reEncryptKeyRecords`. No rebuild path needed under Design A.
+  7. ~~Restore vault PEKs~~ — **removed** (Bug 8). Restore vault entries in memory under `newDBKey`; clear `visibleThroughDepth` to `nil` (Bug 12 fix).
+  8. ~~Generate fresh prekeys~~ — **not implemented**. Deferred.
+  9. Accumulate remaining in-memory mutations: update `AppLayerConfig` with new key tag, clear `sealedDuressVerifier`.
+  10. `modelContext.save()` — **point of no return.** Single atomic commit: restored contacts + cleared watermarks + `AppLayerConfig` (new key tag, no duress verifier). Crash before = DB unchanged, old key still in config, Secure Mode still active. Crash after = deactivation complete.
+  11. `PRAGMA wal_checkpoint(TRUNCATE)`.
+  12. Delete old SE key + old Keychain random — cleanup only.
+  13. `rewriteNoOpBlob()` — fresh no-op written.
+  14. Transition state → `.pinOnly`.
 
-- [ ] `SecureModeOperation` SwiftData record — tracks activation/deactivation stage. Written before operation begins, deleted on clean completion. All fields encrypted; record's existence must not reveal the operation type. **On next launch, incomplete record → automatic resume or rollback:**
-  - Resume: re-enter the operation from the last completed stage (idempotent stage design required)
-  - Rollback: restore the previous verifier state, delete any partial blob payload, roll back staged key, leave DB rows in their pre-operation encrypted state
-  - Activation crash before step 10 (canonical tag update) → old key still valid → safe rollback
-  - Activation crash after step 10 → new key is canonical but verifiers not written → must complete forward
-  - Runs in a background `Task`; user sees a progress indicator; app backgrounding suspends and resumes on next foreground
+- ~~`SecureModeOperation` SwiftData record~~ — **superseded.** The original design required a recovery record because Keychain key-promotion and DB writes were interleaved, creating a crash window between steps 10–11 that neither key could recover. The autosave approach above eliminates this: `modelContext.autosaveEnabled = false` accumulates all mutations in memory; a single `modelContext.save()` atomically commits contacts + `AppLayerConfig` (new key tag + verifier changes) as the sole point of no return. A crash before that save leaves the DB unchanged and the old key still authoritative. No stage tracking, no resume/rollback logic, no new data model required.
 - [x] Blob stored in App Group container (`group.com.occulta.shared/blobs/`) with `.completeFileProtection`. `blobDirectory()` creates the directory if absent; `payload.write(to:options:.completeFileProtection)` sets the attribute at creation.
 - [x] **[security]** Set `isExcludedFromBackup = true` (`URLResourceValues`) on the blob file immediately after creation. Without this, the blob is included in iCloud backups by default. A forensic examiner with iCloud credentials or a court order can recover the blob from a backup taken before a wipe, reversing the wipe entirely. `.completeFileProtection` does not prevent iCloud backup. Implemented in `writeNoOpBlob(to:)`.
 
