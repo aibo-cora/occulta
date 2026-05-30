@@ -655,7 +655,7 @@ Pending. Add `.navigationBarBackButtonHidden(self.isActivating)` (or equivalent 
 
 ## Bug 33 — Contacts briefly flash on screen during app load when PIN is active
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 When the app launches with a PIN configured, the contacts list is rendered and visible for a brief moment before the `fullScreenCover` PIN gate appears. During this window, contact names and fingerprints are readable on screen. Reproducible on every cold launch; also visible in the app switcher thumbnail taken just before the cover appears.
