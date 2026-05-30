@@ -190,6 +190,11 @@ extension Manager {
             contactManager:     ContactManager,
             vaultManager:       VaultManager
         ) async throws {
+            // Prevent accidental mid-sequence autosaves on this context.
+            // Explicit saves still work; only the RunLoop-triggered autosave is suppressed.
+            self.modelContext.autosaveEnabled = false
+            defer { self.modelContext.autosaveEnabled = true }
+
             // ── Step 1: State guard + PIN verification ──────────────────────────────
             guard self.requiresPIN else { throw SecurityError.invalidStateTransition }
             
@@ -397,6 +402,9 @@ extension Manager {
             contactManager:     ContactManager,
             vaultManager:       VaultManager
         ) async throws {
+            self.modelContext.autosaveEnabled = false
+            defer { self.modelContext.autosaveEnabled = true }
+
             // ── Step 1: State guard + PIN verification ──────────────────────────────
             let config = try self.requireConfig()
             
