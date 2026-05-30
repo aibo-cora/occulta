@@ -321,6 +321,7 @@ private struct SummaryView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: self.isActivating)
         .interactiveDismissDisabled(self.isActivating)
+        .navigationBarBackButtonHidden()
         .alert("Activation Failed", isPresented: self.$activationFailed) {
             Button("OK", role: .cancel) { }
         } message: {
