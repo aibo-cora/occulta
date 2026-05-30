@@ -585,13 +585,33 @@ The contact's quantum material becomes nil after a Secure Mode activation → de
 Re-exchange keys with the contact via UWB proximity. This rebuilds the contact's quantum material on the send side. Subsequent messages will use hybrid key derivation, which both parties can decrypt correctly.
 
 ### Resolution
-Pending. Two changes required together:
+Pending. Add two new `Mode` cases to `OccultaBundle` so the receiver knows exactly which key derivation to use — no ambiguity, no retry.
 
-**1. Receive side: retry with classical on hybrid decryption failure.**
-In `decryptSealed`, if `deriveSessionKey(using:quantumMaterial:)` with non-nil quantum material produces a key that fails `AES.GCM.open`, retry with `quantumMaterial: nil`. This handles the case where the sender fell back to classical without a protocol signal. The retry is safe: the GCM tag still authenticates the bundle; an attacker cannot exploit the two-attempt path to expose plaintext or inject a different key.
+**Wire format — four unambiguous modes:**
 
-**2. Send side: surface the quantum material gap to the user before sending.**
-Rather than silently falling back to classical, the b226068 catch should notify the user that the contact's quantum material is missing and prompt a re-exchange. The shard ops stay queued. No bundle is sent until the material is restored. This prevents the asymmetric-derivation scenario from arising in the first place.
+| Mode | Key source | Quantum |
+|---|---|---|
+| `forwardSecret` | ephemeral/prekey ECDH | yes — `createHybridFSSharedSecret` |
+| `longTermFallback` | long-term identity ECDH | yes — `createHybridSharedSecret` |
+| `forwardSecretNoPQ` | ephemeral/prekey ECDH | no — `createSharedSecret(ephemeralPrivateKey:recipientMaterial:)` |
+| `longTermNoPQ` | long-term identity ECDH | no — `createSharedSecret(using:)` |
+
+Old builds decode `forwardSecretNoPQ` / `longTermNoPQ` as `.unsupported` and throw `BundleError.unsupportedMode` — an explicit, actionable error rather than CryptoKitError 3. The AAD includes the mode string, so new sender + new receiver always agree on the same AAD.
+
+**Send side (`Crypto+Manager+ForwardSecrecy.swift`):**
+In `seal()`, select mode based on whether `quantumMaterial` is non-nil:
+- prekey present + quantum → `forwardSecret`
+- prekey present + no quantum → `forwardSecretNoPQ`
+
+In `fallback()`, same logic:
+- quantum present → `longTermFallback`
+- no quantum → `longTermNoPQ`
+
+**Receive side (`Contact+Manager.swift` — `decryptSealed`):**
+Restructure quantum material resolution to be mode-conditional — only resolve (and only throw `quantumKeyMaterialCorrupted`) for the two hybrid modes. Add two new switch cases for the NoPQ modes that derive with `quantumMaterial: nil`.
+
+**Send side — b226068 fallback (UI layer):**
+The existing encryption scheme label already surfaces the PQ degradation to the user. No additional action needed there.
 
 ---
 

@@ -298,7 +298,7 @@ struct VaultShardSetup: View {
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
         let sel    = selectedIDs.contains(contact.identifier)
         let record = shardRecord(for: contact.identifier)
-        // A contact is selectable if they have no shard record yet, or their shard
+        // A contact is selectable if he has no shard record yet, or their shard
         // is in an active (non-revoked/non-lost) state.
         let isSelectable = record.map { Self.activeStatuses.contains($0.status) } ?? true
 

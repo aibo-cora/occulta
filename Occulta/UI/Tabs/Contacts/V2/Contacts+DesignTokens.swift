@@ -139,7 +139,7 @@ extension Contact.Profile {
         let activeKey = self.contactPublicKeys?.last(where: { $0.expiredOn == nil })
         
         guard let enc = activeKey?.quantumKeyMaterialEncrypted else {
-            return "Classical (v1) · exchange for full protection if they have iOS 26+"
+            return "Classical (v1) · exchange for full protection if the contact's device has iOS 26+"
         }
         guard let dec = enc.decrypt(),
               (try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)) != nil

@@ -69,7 +69,8 @@ extension Manager.Crypto {
 
             // ephemeralPrivateKey goes out of scope here — never persisted.
 
-            let secrecy = OccultaBundle.SecrecyContext(mode: .forwardSecret, ephemeralPublicKey: ephemeralPublicKeyData, prekeyID: contactPrekey.id)
+            let mode    = quantumMaterial != nil ? OccultaBundle.Mode.forwardSecret : .forwardSecretNoPQ
+            let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: ephemeralPublicKeyData, prekeyID: contactPrekey.id)
 
             /// Adding `version` and `secrecy` to authenticate against tampering.
             let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
@@ -140,7 +141,8 @@ extension Manager.Crypto {
         }
         /// We are passing an empty `Data` object because the recipient already has our public key.
         /// There is no reason to expose it.
-        let secrecy = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil)
+        let mode    = quantumMaterial != nil ? OccultaBundle.Mode.longTermFallback : .longTermNoPQ
+        let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: Data(), prekeyID: nil)
         /// Adding `version` and `secrecy` to authenticate against tampering.
         let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
 

@@ -109,23 +109,36 @@ struct OccultaBundle: Codable {
 
     // MARK: - Mode
 
-    /// ⚠️ Same rule as `Version`: adding a case here breaks existing builds.
-    /// Route new behaviour through a dedicated optional envelope on
-    /// `SealedPayload` (e.g. `identityChallenge`), not new modes.
+    /// Each mode encodes exactly one key derivation path — no ambiguity, no
+    /// fallback on the receive side. Adding a case here makes old builds decode
+    /// the bundle as `.unsupported`, producing `BundleError.unsupportedMode`
+    /// (explicit, actionable) rather than a cryptic authentication failure.
     enum Mode: String, Codable {
-        /// Full forward secrecy.
-        /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
+        /// Full forward secrecy + hybrid PQ.
+        /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub) ∥ ML-KEM).
         /// Recipient's prekey private key deleted from SE on successful open.
         case forwardSecret
 
-        /// Prekey exhaustion fallback.
-        /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub)).
+        /// Forward secrecy, classical-only (no ML-KEM).
+        /// Session key = HKDF(ECDH(senderEphemeralPriv, recipientPrekeyPub)).
+        /// Used when the recipient's ML-KEM material is absent or corrupt.
+        /// Old builds decode this as `.unsupported`.
+        case forwardSecretNoPQ
+
+        /// Prekey exhaustion fallback + hybrid PQ.
+        /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub) ∥ ML-KEM).
         /// Bundle always carries a fresh PrekeySyncBatch (inside ciphertext)
         /// so the next message can use the forward secret path.
         ///
         /// Identity challenges also ride this mode — they are long-term ECDH
         /// bundles with an `IdentityChallengeEnvelope` inside the payload.
         case longTermFallback
+
+        /// Prekey exhaustion fallback, classical-only (no ML-KEM).
+        /// Session key = HKDF(ECDH(senderLongTermPriv, recipientLongTermPub)).
+        /// Used when the recipient's ML-KEM material is absent or corrupt.
+        /// Old builds decode this as `.unsupported`.
+        case longTermNoPQ
 
         /// Mode this build does not understand. Same semantics as `Version.unsupported`.
         case unsupported
@@ -415,16 +428,17 @@ struct OccultaBundle: Codable {
 
     // MARK: - UI helpers
 
-    var isForwardSecret: Bool { self.secrecy.mode == .forwardSecret }
+    var isForwardSecret: Bool {
+        self.secrecy.mode == .forwardSecret || self.secrecy.mode == .forwardSecretNoPQ
+    }
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:    
-            return "Forward Secret"
-        case .longTermFallback: 
-            return "Standard Encryption"
-        case .unsupported:      
-            return "Unsupported"
+        case .forwardSecret:       return "Forward Secret"
+        case .forwardSecretNoPQ:   return "Forward Secret"
+        case .longTermFallback:    return "Standard Encryption"
+        case .longTermNoPQ:        return "Standard Encryption"
+        case .unsupported:         return "Unsupported"
         }
     }
 }

@@ -1010,6 +1010,36 @@ extension ContactManager {
 }
 
 // MARK: - v3fs bundle decryption
+
+extension ContactManager {
+    /// Resolves the sender's ML-KEM quantum key material for hybrid session key derivation.
+    ///
+    /// Only called for `.forwardSecret` and `.longTermFallback` modes — the two paths
+    /// that fold quantum material into the session key. NoPQ modes never call this.
+    ///
+    /// - Throws: `quantumKeyMaterialCorrupted` if the stored ciphertext exists but
+    ///   cannot be decoded. A missing field (`nil`) is not an error — it simply means
+    ///   no quantum material was exchanged and classical derivation should be used.
+    fileprivate func resolveQuantumMaterial(
+        for sender: Contact.Profile,
+        using cryptoOps: Manager.Crypto
+    ) throws -> QuantumKeyMaterial? {
+        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        guard
+            let enc       = validKey?.quantumKeyMaterialEncrypted,
+            let decrypted = try? cryptoOps.decrypt(data: enc)
+        else { return nil }
+
+        do {
+            #if DEBUG
+            debugPrint("Opening bundle using quantum material to derive session key...")
+            #endif
+            return try JSONDecoder().decode(QuantumKeyMaterial.self, from: decrypted)
+        } catch {
+            throw Errors.quantumKeyMaterialCorrupted
+        }
+    }
+}
  
 extension ContactManager {
     /// Decrypt a v3fs bundle and return the plaintext message bytes.
@@ -1061,87 +1091,106 @@ extension ContactManager {
         // ── 4. Key derivation + open ─────────────────────────────────────
         //
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
+        //
+        // Quantum material is resolved only for the two hybrid modes. NoPQ modes
+        // never touch the sender's quantum material — deriving with nil is correct
+        // and `quantumKeyMaterialCorrupted` must not fire for those cases.
         let decryptedSealedPayload: Data?
-        
+
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
-        
-        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
-        let decryptedQuantum = try? cryptoOps.decrypt(data: validKey?.quantumKeyMaterialEncrypted)
-        var quantumMaterial: QuantumKeyMaterial? = nil
-        
-        if let decryptedQuantum {
-            do {
-                quantumMaterial = try JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
-            } catch {
-                throw Errors.quantumKeyMaterialCorrupted
-            }
-            
-            #if DEBUG
-            debugPrint("Opening bundle using quantum material to derive session key...")
-            #endif
-        }
- 
+
         switch bundle.secrecy.mode {
         case .forwardSecret:
+            // Hybrid FS: ECDH(ephemeral, prekey) + ML-KEM.
+            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+
             let decrypted: Data? = try {
-                guard
-                    let prekeyID = bundle.secrecy.prekeyID
-                else {
-                    return nil
-                }
+                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
                 #if DEBUG
                 debugPrint("Using prekey, ID = \(prekeyID)")
                 #endif
-                /// Temp prekey just for the tag,
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
                 guard
-                    let privKey  = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey  = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey, quantumMaterial: quantumMaterial)
+                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
+                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
+                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
+                                                             quantumMaterial:     quantumMaterial)
                 else { return nil }
-                
                 return try cryptoOps.open(bundle, using: sessKey)
             }()
- 
+
             if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
-                /// Temp prekey just for the tag,
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
                 #if DEBUG
                 debugPrint("Opened bundle using prekey = \(temp), consuming key...")
                 #endif
-                
                 prekeyManager.consume(prekey: temp)
-                /// The message was opened successfully. FS was used, we don't need to send more batches - clearing.
                 try sender.clearPendingBatch()
-                
                 debugPrint("Message successfully opened in .forwardSecret mode. Pending batch cleared.")
             } else {
                 debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekeyID = \(String(describing: bundle.secrecy.prekeyID))")
             }
-            
+
             decryptedSealedPayload = decrypted
-        case .longTermFallback:
-            debugPrint("🔥 longTermFallback detected — forcing fresh pending batch for sender \(sender.identifier)")
-            
-            let validKey = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil })
-            
-            guard
-                let sendersEncryptedIdentityKey = validKey,
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: sendersEncryptedIdentityKey.material)
-            else {
-                debugPrint("Opening message, could not derive session key. Aborting open...")
-                
-                throw Errors.decryptionFailed
-            }
-            
-            guard
-                let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey, quantumMaterial: quantumMaterial)
-            else {
-                throw Manager.Crypto.EncryptionError.keyDerivationFailed
+
+        case .forwardSecretNoPQ:
+            // Classical FS: ECDH(ephemeral, prekey) only — no ML-KEM.
+            let decrypted: Data? = try {
+                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
+                #if DEBUG
+                debugPrint("Using prekey (NoPQ), ID = \(prekeyID)")
+                #endif
+                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                guard
+                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
+                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
+                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
+                                                             quantumMaterial:     nil)
+                else { return nil }
+                return try cryptoOps.open(bundle, using: sessKey)
+            }()
+
+            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
+                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                prekeyManager.consume(prekey: temp)
+                try sender.clearPendingBatch()
+                debugPrint("Message successfully opened in .forwardSecretNoPQ mode. Pending batch cleared.")
             }
 
+            decryptedSealedPayload = decrypted
+
+        case .longTermFallback:
+            // Hybrid long-term: ECDH(longTerm, longTerm) + ML-KEM.
+            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+
+            guard
+                let keyRecord          = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
+            else {
+                debugPrint("Opening message, could not derive session key. Aborting open...")
+                throw Errors.decryptionFailed
+            }
+            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
+                                                              quantumMaterial: quantumMaterial)
+            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
+
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+
+        case .longTermNoPQ:
+            // Classical long-term: ECDH(longTerm, longTerm) only — no ML-KEM.
+            guard
+                let keyRecord            = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
+            else {
+                debugPrint("Opening message (NoPQ), could not derive session key. Aborting open...")
+                throw Errors.decryptionFailed
+            }
+            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
+                                                              quantumMaterial: nil)
+            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
+
+            decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+
         case .unsupported:
             // Already rejected above — exhaustiveness only.
             throw OccultaBundle.BundleError.unsupportedMode
@@ -1154,8 +1203,9 @@ extension ContactManager {
         // A .longTermFallback bundle means the sender is out of our prekeys.
         // Generate a new batch immediately so Alice's next outbound message
         // to Bob carries it.
-        if bundle.secrecy.mode == .longTermFallback && sender.hasPendingBatch == false {
-            debugPrint("🔥 longTermFallback detected — storing fresh pending batch for sender \(sender.identifier)")
+        if (bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ)
+            && sender.hasPendingBatch == false {
+            debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
             
             let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
             /// These prekeys do not contain any useful information for an attacker. They have been stripped of anything meaningful.
