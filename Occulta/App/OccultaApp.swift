@@ -500,6 +500,17 @@ struct OccultaApp: App {
                         .environment(self.security)
                     }
                 }
+                .overlay {
+                    // Opaque cover that prevents the contacts list from being visible
+                    // during the initial render before fullScreenCover appears (Bug 33).
+                    // Fades out after PIN entry so contacts reveal smoothly rather than
+                    // snapping into view when the PIN gate dismisses.
+                    Color(.systemBackground)
+                        .ignoresSafeArea()
+                        .opacity(self.isLocked ? 1 : 0)
+                        .animation(.easeInOut(duration: 0.25).delay(0.15), value: self.isLocked)
+                        .allowsHitTesting(false)
+                }
                 .animation(.none, value: self.isLocked)
             }
         }
