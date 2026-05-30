@@ -316,8 +316,9 @@ struct OccultaApp: App {
                         } catch ContactManager.Errors.noPublicKeyToEncryptWith {
                             self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
                             self.showError = true
-                        } catch OccultaBundle.BundleError.unsupportedMode {
-                            self.errorMessage = "Unsupported bundle version. You need to update the app."
+                        } catch OccultaBundle.BundleError.unsupportedVersion,
+                                OccultaBundle.BundleError.unsupportedMode {
+                            self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
                             self.showError = true
                         } catch {
                             self.errorMessage = "There was an error. \(error.localizedDescription)"
@@ -572,8 +573,10 @@ struct OccultaApp: App {
                 }
 
                 decrypted = (sealed.message, ownerID)
+            case .unsupported:
+                throw OccultaBundle.BundleError.unsupportedVersion
             default:
-                // Legacy path — v1, v2, or pre-versioned files.
+                // Legacy path — nil, v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
                 decrypted = try self.contactManager.decrypt(data: fileContents)
             }
