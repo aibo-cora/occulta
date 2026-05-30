@@ -335,14 +335,16 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 
   ### The cap
 
-  `maxLayers = 8` is an explicit hard cap. With 8 slots there are at most 8 real layers. This conflicts with the Phase 2 invariant "every layer presents an identical Activate option — a cap is a smoking gun." The tension is irresolvable without leaking the count:
+  `maxLayers` is a hard cap. With N slots there are at most N real layers. This conflicts with the Phase 2 invariant "every layer presents an identical Activate option — a cap is a smoking gun." The tension is irresolvable without leaking the count:
 
   - **Fixed slots** → count hidden, depth capped at `maxLayers`
   - **Dynamic growth** → depth uncapped, file size directly encodes count
 
-  **Resolution: accept the cap.** 8 layers of nested duress is effectively theoretical in the real threat model. At depth 8, the "Activate" flow runs normally to completion but writes no new verifier and no new payload — the user sees a successful activation, no real layer is created. The same cap and the same padding strategy are used for `AppLayerConfig` verifier arrays; `maxLayers` must be the same constant in both places so neither leaks more information than the other.
+  **"Fake success" at max depth is a behavioural tell — not indistinguishable.** At every genuine activation, contacts the user classified as sensitive visibly disappear when the new duress PIN is entered, and the new PIN is recognised. A fake-success path (flow completes but no verifier is written and no payload is sealed) produces neither effect: the same contacts remain visible and the new PIN is not recognised. A coercer who has lived through real activations at prior depths will immediately notice the 8th produces no state change. The UI not revealing the cap is not sufficient — the observable behaviour reveals it.
 
-  **What the cap does NOT do:** it does not make the cap visible to a coercer. The UI shows "Activate" at every depth including 8. The fake-success path is indistinguishable from a real activation from the coercer's perspective.
+  **Resolution: set `maxLayers` high enough that it is never reached in practice.** `maxLayers = 32` (or 64). No real coercion scenario involves 32 consecutive successful duress activations. The fake-success path exists in the code as a theoretical failsafe but the indistinguishability property holds for all practical depths. The cap is a known limitation only for an adversarial scenario that is itself implausible.
+
+  `maxLayers` must be the same constant used for `AppLayerConfig` verifier array padding so neither the blob file size nor the verifier array length leaks more information than the other.
 
   ### What does not change
 
