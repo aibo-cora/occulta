@@ -635,3 +635,33 @@ Two changes applied together:
 **`Manager+Security.swift`** — `self.state = .normal` and `self.state = .duress` removed from `verify()`. A new `applyVerifyState(for:)` method added immediately after `verify()` that applies only the state transition.
 
 **`PINEntry.swift`** — `submitVerify`'s `asyncAfter` callback now calls `security.applyVerifyState(for: result)` before `route(result, pin:)`. Both mutations (`state` and `isLocked = false` via `onNormal`) now occur in the same synchronous main-thread task; SwiftUI batches them into one render pass and the vault tab renders `lockGate` correctly on first reveal.
+
+---
+
+## Bug 32 — Back button visible through the "Securing your data…" activation overlay
+
+**Status:** Open
+
+### Severity: Low
+While Secure Mode activation is in progress, `ActivatingOverlay` is applied as a SwiftUI `.overlay` on `SummaryView`. SwiftUI overlays cover the view's content area but not the navigation bar. The `NavigationStack` back button remains visible and tappable in the navigation bar above the overlay, allowing the user to navigate back mid-rotation — potentially interrupting a critical key rotation step.
+
+### Root Cause
+`ActivatingOverlay` is a content overlay, not a full-screen modal. The navigation bar sits outside the overlay's layout rect and is unaffected by it.
+
+### Resolution
+Pending. Add `.navigationBarBackButtonHidden(self.isActivating)` (or equivalent toolbar modifier) to `SummaryView` so the back button is hidden for the duration of the activation. `.interactiveDismissDisabled(self.isActivating)` already blocks swipe-to-dismiss; the back button needs the same treatment.
+
+---
+
+## Bug 33 — Contacts briefly flash on screen during app load when PIN is active
+
+**Status:** Open
+
+### Severity: High
+When the app launches with a PIN configured, the contacts list is rendered and visible for a brief moment before the `fullScreenCover` PIN gate appears. During this window, contact names and fingerprints are readable on screen. Reproducible on every cold launch; also visible in the app switcher thumbnail taken just before the cover appears.
+
+### Root Cause
+`isLocked` is initialised to `true` synchronously in `OccultaApp.init`, but `fullScreenCover` is a UIKit modal presentation — it cannot appear until after the first SwiftUI render pass completes. The contacts tab renders fully in that first pass, producing a frame of visible contact data before the cover dismisses it.
+
+### Resolution
+Pending. Place an opaque placeholder view in a `ZStack` above the tab content that is visible whenever `isLocked` is `true`. Unlike `fullScreenCover`, a `ZStack` layer is part of the SwiftUI layout and renders in the same pass as the content below it — no UIKit presentation delay. The placeholder can be a plain `Color(.systemBackground)` or the app's launch screen appearance. Remove it once `isLocked` becomes `false` (PIN entered successfully).
