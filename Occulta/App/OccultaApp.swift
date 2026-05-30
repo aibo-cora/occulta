@@ -316,6 +316,9 @@ struct OccultaApp: App {
                         } catch ContactManager.Errors.noPublicKeyToEncryptWith {
                             self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
                             self.showError = true
+                        } catch OccultaBundle.BundleError.unsupportedMode {
+                            self.errorMessage = "Unsupported bundle version. You need to update the app."
+                            self.showError = true
                         } catch {
                             self.errorMessage = "There was an error. \(error.localizedDescription)"
                             self.showError = true
