@@ -555,6 +555,46 @@ Two fixes applied together:
 
 ---
 
+## Bug 31 — Classical-only fallback bundle undecryptable by receivers with sender's quantum material
+
+**Status:** Open
+
+### Severity: High
+When a shard-carrying message fails with `trusteeLacksQuantumMaterial` (contact's ML-KEM key material is nil or corrupt), the b226068 fallback re-sends the message classically. The receiver, however, may still have the **sender's** quantum material stored from a prior UWB exchange. v1.7.0's (and current version's) receive path unconditionally uses hybrid key derivation when the sender's quantum material is available — regardless of what the sender actually used. The sender's classical session key and the receiver's hybrid session key are different. AES-GCM authentication fails with CryptoKitError 3.
+
+### Root Cause
+
+Two compounding issues:
+
+**1. b226068 fallback sends classical without signalling this to the receiver.**
+The catch-all for `trusteeLacksQuantumMaterial` re-calls `encryptBundle(data:for:)` with no shards and no quantum material. The resulting bundle (`.longTermFallback` or `.forwardSecret`) is encrypted with `createSharedSecret` — pure classical ECDH. No field in the bundle's wire format encodes whether quantum was included in the session key derivation.
+
+**2. The receive path always uses hybrid if the sender's quantum material is available.**
+`decryptSealed` resolves the sender's stored quantum material and passes it to `deriveSessionKey(using:quantumMaterial:)`. If non-nil, this calls `createHybridSharedSecret`, which produces a different key than `createSharedSecret`. There is no fallback attempt with classical on decryption failure.
+
+**Why adding a signal to `SecrecyContext` is blocked:**
+`computeAdditionalAuthentication` encodes the entire `SecrecyContext` as JSON for the GCM AAD. Adding any new field changes the AAD. Old builds that don't know the field compute a different AAD and fail authentication — a wire-format-breaking change for all deployed versions.
+
+### Why this wasn't triggered before b226068
+Before that commit, `trusteeLacksQuantumMaterial` was an unhandled throw — the send failed visibly with an error. No bundle reached the receiver. b226068 made the failure silent by swallowing the error and sending a classical bundle, which the receiver cannot decrypt when it has the sender's quantum material.
+
+### Root cause of nil quantum material on the send side
+The contact's quantum material becomes nil after a Secure Mode activation → deactivation cycle that predates Bug 30's fix. Bug 30 fixed future deactivations but did not retroactively restore quantum material for contacts already damaged by prior deactivations. The send side thus permanently lacks the contact's quantum material until a fresh UWB key exchange is performed.
+
+### User-facing workaround
+Re-exchange keys with the contact via UWB proximity. This rebuilds the contact's quantum material on the send side. Subsequent messages will use hybrid key derivation, which both parties can decrypt correctly.
+
+### Resolution
+Pending. Two changes required together:
+
+**1. Receive side: retry with classical on hybrid decryption failure.**
+In `decryptSealed`, if `deriveSessionKey(using:quantumMaterial:)` with non-nil quantum material produces a key that fails `AES.GCM.open`, retry with `quantumMaterial: nil`. This handles the case where the sender fell back to classical without a protocol signal. The retry is safe: the GCM tag still authenticates the bundle; an attacker cannot exploit the two-attempt path to expose plaintext or inject a different key.
+
+**2. Send side: surface the quantum material gap to the user before sending.**
+Rather than silently falling back to classical, the b226068 catch should notify the user that the contact's quantum material is missing and prompt a re-exchange. The shard ops stay queued. No bundle is sent until the material is restored. This prevents the asymmetric-derivation scenario from arising in the first place.
+
+---
+
 ## Bug 29 — Vault items flicker (show → blank → show) after entering normal PIN with Secure Mode active
 
 **Status:** Closed (Fixed)
