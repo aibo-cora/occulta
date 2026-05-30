@@ -849,9 +849,19 @@ extension Manager {
         /// This helper closes that gap for both activation (safe contacts) and deactivation
         /// (safe + restored blob contacts).
         ///
-        /// Fields whose decrypt attempt returns `nil` are left unchanged — this covers
-        /// nil/empty values and records that are already staged-key-encrypted (idempotent
-        /// on second call).
+        /// Fields whose decrypt attempt returns `nil` are left unchanged. Two legitimate
+        /// cases produce a nil decrypt:
+        ///   1. The field is nil/empty — no data to migrate (e.g. no quantum material).
+        ///   2. The field is already staged-key-encrypted — decrypt with the canonical key
+        ///      naturally fails, making this call idempotent on a second pass (deactivation
+        ///      Step 5 calls this after Step 4 already migrated sensitive contacts).
+        ///
+        /// ⚠️ Invariant: every non-nil field must be encrypted under the current canonical
+        /// key when this function runs. If that invariant is violated — e.g. by a prior
+        /// failed key rotation that left a field under a deleted key — the field will be
+        /// silently skipped and become permanently unreadable after the new rotation
+        /// commits. This is an accepted gap: storage corruption or partial-rotation
+        /// state are prerequisites, both of which are beyond normal control flow.
         private static func reEncryptKeyRecords(
             for profile: Contact.Profile,
             using key: SymmetricKey,
