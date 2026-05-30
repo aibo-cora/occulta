@@ -308,8 +308,8 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
   **Slot assignment — sequential from the top:**
   Real payloads fill from the last slot downward (slot N-1 = most recently pushed). Padding fills all remaining slots. Sequential placement keeps pop logic O(1): always read slot N-1, try to decrypt; if it opens as valid `BlobPayload` JSON it is real, otherwise the stack is logically empty (only padding slots occupied). No position inference needed.
 
-  **Padding regeneration — on every write:**
-  Every `push` and `pop` regenerates ALL non-real slots with fresh random bytes. This is mandatory. Without it, a forensic examiner who captures two blob snapshots can diff them and identify which slot changed, revealing both the real-payload position and the write event timestamp. With full regeneration every slot changes on every write — a diff between two snapshots reveals nothing about which slot is real or what operation occurred.
+  **Full regeneration — on every write, every slot:**
+  Every `push` and `pop` re-seals ALL slots with fresh AES-GCM nonces — real payloads and padding alike. Without this, a forensic examiner diffing two blob snapshots can identify unchanged slots. This matters in two places: (1) padding slots that didn't change reveal which slots are real; (2) the depth-0 base payload is permanent (its content never discarded by FIFO — see below) and if its ciphertext were left unchanged while all others changed it would be immediately identifiable. Re-sealing everything on every write makes all slots look freshly random on every operation. No slot is distinguishable from any other.
 
   **Sequence number inside each `BlobPayload`:**
   Each `BlobPayload` includes a `sequenceNumber: Int` field, written at push time and strictly increasing. This is not used for ordering (position handles that) — it is a corruption-detection signal. If `pop()` decrypts slot N-1 and the sequence number is unexpected (e.g. lower than the number known at activation), the payload may be from an older interrupted cycle and the deactivation should abort rather than restore stale data.
@@ -335,16 +335,43 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 
   ### The cap
 
-  `maxLayers` is a hard cap. With N slots there are at most N real layers. This conflicts with the Phase 2 invariant "every layer presents an identical Activate option — a cap is a smoking gun." The tension is irresolvable without leaking the count:
+  `maxLayers = 32`. With 32 slots the file is `32 × fixedSlotSize` bytes. This conflicts with the Phase 2 invariant "every layer presents an identical Activate option — a cap is a smoking gun." The tension cannot be resolved without either leaking the count (dynamic growth) or accepting a cap (fixed slots). Fixed slots are chosen.
 
-  - **Fixed slots** → count hidden, depth capped at `maxLayers`
-  - **Dynamic growth** → depth uncapped, file size directly encodes count
+  **"Fake success" at max depth is a behavioural tell — not indistinguishable.** At every genuine activation, contacts the user classified as sensitive visibly disappear when the new duress PIN is entered, and the new PIN is recognised. A fake-success path (flow completes but no verifier written, no payload sealed) produces neither: contacts don't change, new PIN not recognised. A coercer who has lived through real activations notices immediately that nothing changed. The UI not revealing the cap is not sufficient — the observable behaviour reveals it.
 
-  **"Fake success" at max depth is a behavioural tell — not indistinguishable.** At every genuine activation, contacts the user classified as sensitive visibly disappear when the new duress PIN is entered, and the new PIN is recognised. A fake-success path (flow completes but no verifier is written and no payload is sealed) produces neither effect: the same contacts remain visible and the new PIN is not recognised. A coercer who has lived through real activations at prior depths will immediately notice the 8th produces no state change. The UI not revealing the cap is not sufficient — the observable behaviour reveals it.
+  **Resolution: FIFO circular buffer for duress-layer slots.**
 
-  **Resolution: set `maxLayers` high enough that it is never reached in practice.** `maxLayers = 32` (or 64). No real coercion scenario involves 32 consecutive successful duress activations. The fake-success path exists in the code as a theoretical failsafe but the indistinguishability property holds for all practical depths. The cap is a known limitation only for an adversarial scenario that is itself implausible.
+  When all duress-layer slots are occupied and a new push arrives, overwrite the oldest duress-layer payload rather than refusing. The new payload is real: contacts genuinely hide, the new PIN genuinely works. Every activation at every depth produces identical observable behaviour. The cap becomes invisible to behavioural observation.
 
-  `maxLayers` must be the same constant used for `AppLayerConfig` verifier array padding so neither the blob file size nor the verifier array length leaks more information than the other.
+  **Slot roles:**
+
+  | Slot | Role | FIFO eligibility |
+  |---|---|---|
+  | Base slot (1 slot) | Depth-0 payload — original sensitive contacts, sealed at first activation | Never overwritten by FIFO |
+  | Duress slots (`maxLayers - 1` slots) | Payloads from duress-layer activations (depth 1, 2, …) | FIFO cycles here |
+
+  The depth-0 payload is the most important: it contains the user's original sensitive contacts and is the one restored on full deactivation back to depth 0. It must never be discarded by FIFO. Oldest duress-layer slot = the one with the lowest sequence number among the duress payloads; that is the FIFO eviction target.
+
+  **The cost of FIFO:** when overflow occurs, the oldest duress-layer payload is permanently discarded. If the user deactivates all the way back to the depth where that slot was the top of stack, the contacts from that layer are not restored — replaced by newer layer contacts instead. For practical use (2–4 real layers with `maxLayers = 32`) FIFO never fires and the cost never materialises.
+
+  **The FIFO tell — and why it is outside the threat model:**
+
+  FIFO does not eliminate all tells; it moves the observable tell to a much harder-to-reach position. After FIFO has fired, the tell is:
+  1. Record the exact contact list at depth 0 before any activations
+  2. Force `maxLayers` activations (triggering FIFO overflow)
+  3. Force `maxLayers` sequential deactivations back to depth 0
+  4. Compare the final contact list to the original — some contacts from the overwritten layer are missing
+
+  This requires `2 × maxLayers` (64) forced operations, perfect written records throughout, and multiple cooperative sessions. Secure Mode's threat model is a time-limited physical coercion encounter. 64 sequential forced operations with record-keeping across sessions is outside that model.
+
+  **The depth-0 ciphertext tell — and why it does not apply:**
+
+  The depth-0 slot's payload is permanent (never discarded) but its ciphertext changes on every operation because all slots are re-sealed with fresh nonces on every write (see "Full regeneration" above). An examiner diffing two snapshots sees all 32 slots changed — no slot is identifiable as the permanent one.
+
+  **Why not force-wipe at max depth instead of FIFO:**
+  A wipe at depth 32 is a more obvious tell: the device self-destructs at a predictable depth, which signals the boundary to the coercer and can be triggered deliberately by a coercer whose goal is evidence destruction. The panic trigger (duress PIN × 3 = wipe) already gives the user a voluntary wipe when they judge the situation calls for it. FIFO keeps the cap invisible; the panic trigger handles the voluntary nuclear option. The two mechanisms cover different ends of the coercion spectrum.
+
+  `maxLayers = 32` must be the same constant used for `AppLayerConfig` verifier array padding so neither the blob file size nor the verifier array length leaks more information than the other.
 
   ### What does not change
 
