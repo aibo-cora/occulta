@@ -640,7 +640,7 @@ Two changes applied together:
 
 ## Bug 32 — Back button visible through the "Securing your data…" activation overlay
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Low
 While Secure Mode activation is in progress, `ActivatingOverlay` is applied as a SwiftUI `.overlay` on `SummaryView`. SwiftUI overlays cover the view's content area but not the navigation bar. The `NavigationStack` back button remains visible and tappable in the navigation bar above the overlay, allowing the user to navigate back mid-rotation — potentially interrupting a critical key rotation step.
