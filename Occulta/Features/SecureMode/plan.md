@@ -289,7 +289,64 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
   - **Vault PEKs are NOT stored in the blob** (Bug 8 fix). The vault key is derived from a dedicated SE key independent of the local DB key rotation; vault PEKs never need re-wrapping. Removing them from the blob eliminates an unnecessary attack surface: a blob compromise requires only the SE Secure Mode key (no biometrics), so storing raw PEK bytes would bypass the biometric gate that normally protects vault content.
   - Prekeys are not serialised — locked in-place alongside contact rows.
   - `CustodyShard` records (shards we hold for others) are not serialised — their accessibility in duress mode is a deferred decision.
-- [ ] Blob is a stack of independently-encrypted payloads in a single file. Push appends; pop removes outermost. Partial-read reveals nothing about other layers.
+- [ ] **Blob stack — Phase 2 wire format upgrade.** The blob must become a fixed-slot stack of independently-encrypted payloads so Phase 2 multi-layer activation works without leaking the active layer count.
+
+  ### Design
+
+  **File format — fixed `maxLayers` slots, constant file size:**
+
+  ```
+  slot 0  │ AES-GCM(random bytes or BlobPayload)  ← padding or real
+  slot 1  │ AES-GCM(random bytes or BlobPayload)  ← padding or real
+  ...
+  slot N-2│ AES-GCM(BlobPayload — layer 2)        ← real (second activation)
+  slot N-1│ AES-GCM(BlobPayload — layer 1)        ← real (first activation) ← top
+  ```
+
+  The file always contains exactly `maxLayers` slots (e.g. 8). Every slot is the same fixed byte length — the largest power-of-2 bucket that comfortably fits a realistic maximum payload. File size is therefore constant at all depths: `maxLayers × fixedSlotSize`. An examiner always sees `maxLayers` identical-looking AES-GCM blobs regardless of how many real layers are active.
+
+  **Slot assignment — sequential from the top:**
+  Real payloads fill from the last slot downward (slot N-1 = most recently pushed). Padding fills all remaining slots. Sequential placement keeps pop logic O(1): always read slot N-1, try to decrypt; if it opens as valid `BlobPayload` JSON it is real, otherwise the stack is logically empty (only padding slots occupied). No position inference needed.
+
+  **Padding regeneration — on every write:**
+  Every `push` and `pop` regenerates ALL non-real slots with fresh random bytes. This is mandatory. Without it, a forensic examiner who captures two blob snapshots can diff them and identify which slot changed, revealing both the real-payload position and the write event timestamp. With full regeneration every slot changes on every write — a diff between two snapshots reveals nothing about which slot is real or what operation occurred.
+
+  **Sequence number inside each `BlobPayload`:**
+  Each `BlobPayload` includes a `sequenceNumber: Int` field, written at push time and strictly increasing. This is not used for ordering (position handles that) — it is a corruption-detection signal. If `pop()` decrypts slot N-1 and the sequence number is unexpected (e.g. lower than the number known at activation), the payload may be from an older interrupted cycle and the deactivation should abort rather than restore stale data.
+
+  **`BlobPayload` addition:**
+  ```swift
+  struct BlobPayload: Codable {
+      let sequenceNumber: Int           // ← new; monotonically increasing per push
+      let contacts: [ContactBlobRecord]
+  }
+  ```
+
+  **API rename:**
+
+  | Phase 1 | Phase 2 |
+  |---|---|
+  | `seal(_ payload:blobKey:)` | `push(_ payload:blobKey:)` — writes real payload into slot N-1, regenerates all other slots, overwrites full file |
+  | `unseal(blobKey:)` | `pop(blobKey:)` — decrypts slot N-1, validates sequence number, zeroes that slot, regenerates all other slots, overwrites full file |
+  | `writeNoOpBlob()` | unchanged name — now writes `maxLayers` random padding slots instead of one |
+  | `rewriteNoOpBlob()` | unchanged name — same, full file of `maxLayers` random slots |
+
+  Activation step 7 changes `seal` → `push`. Deactivation step 2 changes `unseal` → `pop`. All other call sites are unchanged.
+
+  ### The cap
+
+  `maxLayers = 8` is an explicit hard cap. With 8 slots there are at most 8 real layers. This conflicts with the Phase 2 invariant "every layer presents an identical Activate option — a cap is a smoking gun." The tension is irresolvable without leaking the count:
+
+  - **Fixed slots** → count hidden, depth capped at `maxLayers`
+  - **Dynamic growth** → depth uncapped, file size directly encodes count
+
+  **Resolution: accept the cap.** 8 layers of nested duress is effectively theoretical in the real threat model. At depth 8, the "Activate" flow runs normally to completion but writes no new verifier and no new payload — the user sees a successful activation, no real layer is created. The same cap and the same padding strategy are used for `AppLayerConfig` verifier arrays; `maxLayers` must be the same constant in both places so neither leaks more information than the other.
+
+  **What the cap does NOT do:** it does not make the cap visible to a coercer. The UI shows "Activate" at every depth including 8. The fake-success path is indistinguishable from a real activation from the coercer's perspective.
+
+  ### What does not change
+
+  `BlobPayload` (except `sequenceNumber`), `ContactBlobRecord`, `deriveBlobKey()`, `bucketSize()`, AES-GCM encryption with random nonce per slot, file protection attributes, backup exclusion — all carry forward unchanged. The only changes are the file write/read pattern and the `writeNoOpBlob` initial content.
 - [x] Blob encryption: `AES-GCM(HKDF(seKey, info: "blob-key"), content)`. SE binding prevents offline attacks. No PBKDF2 (same rationale as PIN verifier). Implemented: `Blob.deriveBlobKey(from:)` in `SecureMode+Blob.swift`.
 - [x] Each payload padded to nearest power-of-2 bucket boundary before encryption. File size reveals only bucket tier, not contact/vault count. Implemented: `Blob.bucketSize(for:)`.
 - [x] Blob file: no header, no magic bytes, no version field, no layer count. UUID filename with `.occbak` extension — indistinguishable from vault backup. Implemented in `writeNoOpBlob(to:)`.
