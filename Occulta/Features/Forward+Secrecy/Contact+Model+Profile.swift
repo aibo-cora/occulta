@@ -14,7 +14,8 @@ import CryptoKit
 extension Contact.Profile {
     /// Init an empty object that we can change as we start using Forward Secrecy.
     func configureForwardSecrecy() throws {
-        if let _ = self.forwardSecrecyEncrypted {
+        /// Bail if we already have something configured AND it is readable, no corrupted.
+        if let fsEncrypted = self.forwardSecrecyEncrypted, let _ = fsEncrypted.decrypt() {
             return
         } else {
             let secrecy = ForwardSecrecy()
@@ -40,7 +41,12 @@ extension Contact.Profile {
     /// Encrypting forward secrecy and updating it for a contact.
     private func update(secrecy: ForwardSecrecy) throws {
         let encoded = try JSONEncoder().encode(secrecy)
-        let encrypted = try encoded.encrypt()
+        
+        guard
+            let encrypted = try encoded.encrypt()
+        else {
+            throw ForwardSecrecyError.encryptionFailed
+        }
         
         self.forwardSecrecyEncrypted = encrypted
     }
