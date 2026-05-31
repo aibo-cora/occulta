@@ -364,90 +364,29 @@ struct OccultaApp: App {
                     )
                 }
                 .onChange(of: self.scenePhase) { _, newPhase in
-                    // Only lock when a PIN is configured AND the gate is active.
-                    // When appLockEnabled is false the device is operating in coercion mode:
-                    // re-locking on background would expose the gate state.
-                    if newPhase == .inactive, self.security.requiresPIN, self.security.appLockEnabled,
-                       self.vaultManager.isUnlocked {
-                        // Blank the screen on .inactive to block app-switcher screenshots.
-                        // Do NOT set isLocked here — that triggers fullScreenCover, which
-                        // conflicts with UIActivityViewController already on screen when the
-                        // user picks a share target (e.g. WhatsApp): the app briefly goes
-                        // .inactive and two UIKit modal presentations collide.
-                        // Only blank when vault is unlocked — when locked, lockGate is already
-                        // showing and there is nothing sensitive to protect (e.g. during Face ID).
-                        self.showScreenshotBlank = true
-                        // Restrict the share index the moment the app loses focus so the
-                        // Share Extension cannot read sensitive contacts while locked.
-                        self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
-                        self.contactManager.syncShareIndex()
-                    }
-                    if newPhase == .background, self.security.requiresPIN, self.security.appLockEnabled {
-                        // App is fully backgrounded — safe to raise the lock now.
-                        self.isLocked = true
-                        self.showScreenshotBlank = false
-                    }
-                    if newPhase == .active {
-                        self.showScreenshotBlank = false
-                        // Auto-unlock within grace period — skip PIN prompt for quick app switches.
-                        // Grace period is always zero in restricted mode: every return requires PIN.
-                        if self.isLocked && self.isWithinGracePeriod {
-                            self.isLocked = false
-                        }
-                        // Rebuild share index with the correct depth filter. When locked (PIN
-                        // not yet entered) or in restricted mode, hold at depth-1 so the
-                        // extension cannot read sensitive contacts during this foreground cycle.
-                        if self.isLocked || self.security.isRestricted {
-                            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
-                        } else {
-                            self.contactManager.shareIndexAllowedIDs = nil
-                        }
-                        self.contactManager.syncShareIndex()
-                        self.contactManager.cleanupPendingSessions()
+                    switch newPhase {
+                    case .inactive:
+                        self.handleInactive()
+                    case .background:
+                        self.handleBackground()
+                    case .active:
+                        self.handleActive()
+                    default:
+                        break
                     }
                 }
-                // Key-rotation → two-sided response:
-                // Alice's path: mark any shards distributed TO this contact as .lost.
-                // Bob's path: mismatch-fingerprint shards are returned via .handback on
-                // the next outbound bundle (detected at build time, no scheduling needed).
-                .onReceive(self.contactManager.contactKeyRotated) { identifier in
-                    self.vaultManager.markShardsLost(forContact: identifier)
-                }
-                // Reapply .completeFileProtection after every save.
-                // SwiftData recreates -wal/-shm sidecar files on WAL merges,
-                // migrations, and conflict resolution — outside the app's init
-                // lifecycle. Re-stamp each time a context saves so no sidecar
-                // can sit with weaker default protection.
-                .onReceive(NotificationCenter.default.publisher(
-                    for: NSManagedObjectContext.didSaveObjectIDsNotification
-                ).receive(on: DispatchQueue.main)) { _ in
-                    self.reapplyFileProtection()
-                }
-                // Rewrite the no-op blob on every save (debounced 30 s) so the
-                // blob's Last-Modified timestamp correlates with normal app activity,
-                // not with Secure Mode activation. Only rewrites when Secure Mode is
-                // inactive — when active the blob holds a real payload that must not
-                // be overwritten.
-                .onReceive(NotificationCenter.default.publisher(
-                    for: NSManagedObjectContext.didSaveObjectIDsNotification
-                )
-                .receive(on: DispatchQueue.main)
-                .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
-                    guard FeatureFlags.isEnabled(.secureMode) else { return }
-                    
-                    guard !self.security.isSecureModeActive else { return }
-                    
-                    DispatchQueue.global(qos: .utility).async {
-                        Manager.Blob.rewriteNoOpBlob()
-                    }
-                }
-                // Screenshot blank: SwiftUI overlay, NOT a UIKit modal, so it does
-                // not conflict with UIActivityViewController or other sheets.
-                // Shown only during .inactive (app-switcher) when a PIN is set.
+                // Single opaque cover serving two roles:
+                //   1. Screenshot blank (.inactive) — instant, no animation.
+                //   2. Contact-flash prevention + fade-in on unlock (Bug 33).
+                // showScreenshotBlank fires instantly (.none); isLocked fades (.easeInOut).
+                // SwiftUI overlay — does NOT conflict with UIActivityViewController.
                 .overlay {
-                    if self.showScreenshotBlank {
-                        Color(.systemBackground).ignoresSafeArea()
-                    }
+                    Color(.systemBackground)
+                        .ignoresSafeArea()
+                        .opacity(self.showScreenshotBlank || self.isLocked ? 1 : 0)
+                        .animation(.easeInOut(duration: 0.25).delay(0.15), value: self.isLocked)
+                        .animation(.none, value: self.showScreenshotBlank)
+                        .allowsHitTesting(false)
                 }
                 // fullScreenCover rather than overlay: a UIKit modal presentation
                 // stacks above any existing sheets, so it cannot be underlapped by
@@ -492,16 +431,40 @@ struct OccultaApp: App {
                         .environment(self.security)
                     }
                 }
-                .overlay {
-                    // Opaque cover that prevents the contacts list from being visible
-                    // during the initial render before fullScreenCover appears (Bug 33).
-                    // Fades out after PIN entry so contacts reveal smoothly rather than
-                    // snapping into view when the PIN gate dismisses.
-                    Color(.systemBackground)
-                        .ignoresSafeArea()
-                        .opacity(self.isLocked ? 1 : 0)
-                        .animation(.easeInOut(duration: 0.25).delay(0.15), value: self.isLocked)
-                        .allowsHitTesting(false)
+                // Key-rotation → two-sided response:
+                // Alice's path: mark any shards distributed TO this contact as .lost.
+                // Bob's path: mismatch-fingerprint shards are returned via .handback on
+                // the next outbound bundle (detected at build time, no scheduling needed).
+                .onReceive(self.contactManager.contactKeyRotated) { identifier in
+                    self.vaultManager.markShardsLost(forContact: identifier)
+                }
+                // Reapply .completeFileProtection after every save.
+                // SwiftData recreates -wal/-shm sidecar files on WAL merges,
+                // migrations, and conflict resolution — outside the app's init
+                // lifecycle. Re-stamp each time a context saves so no sidecar
+                // can sit with weaker default protection.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSManagedObjectContext.didSaveObjectIDsNotification
+                ).receive(on: DispatchQueue.main)) { _ in
+                    self.reapplyFileProtection()
+                }
+                // Rewrite the no-op blob on every save (debounced 30 s) so the
+                // blob's Last-Modified timestamp correlates with normal app activity,
+                // not with Secure Mode activation. Only rewrites when Secure Mode is
+                // inactive — when active the blob holds a real payload that must not
+                // be overwritten.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: NSManagedObjectContext.didSaveObjectIDsNotification
+                )
+                .receive(on: DispatchQueue.main)
+                .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
+                    guard FeatureFlags.isEnabled(.secureMode) else { return }
+                    
+                    guard !self.security.isSecureModeActive else { return }
+                    
+                    DispatchQueue.global(qos: .utility).async {
+                        Manager.Blob.rewriteNoOpBlob()
+                    }
                 }
                 .animation(.none, value: self.isLocked)
             }
@@ -792,6 +755,62 @@ struct OccultaApp: App {
     /// SwiftData (via SQLite) can recreate `-wal` and `-shm` sidecar files after
     /// checkpoints, schema migrations, or WAL merges. The initial `setAttributes`
     /// call in `init()` covers the baseline; this method re-stamps every time a
+    // MARK: - Scene phase handlers
+
+    /// App is losing focus but not yet backgrounded.
+    /// Show the screenshot blank to protect the app switcher thumbnail.
+    /// Do NOT set isLocked — that triggers fullScreenCover, which conflicts
+    /// with UIActivityViewController when the user picks a share target.
+    private func handleInactive() {
+        guard self.security.requiresPIN,
+              self.security.appLockEnabled,
+              self.vaultManager.isUnlocked else { return }
+        
+        self.showScreenshotBlank = true
+        self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+        self.contactManager.syncShareIndex()
+    }
+
+    /// App is fully backgrounded — safe to raise the lock.
+    /// Bug 34: coalesce isLocked = true + false in the same update when within
+    /// grace period so UIKit never presents the fullScreenCover unnecessarily.
+    private func handleBackground() {
+        guard self.security.requiresPIN, self.security.appLockEnabled else { return }
+        
+        self.isLocked = true
+        if self.isWithinGracePeriod { self.isLocked = false }
+        self.showScreenshotBlank = false
+    }
+
+    /// App has returned to the foreground.
+    /// Bug 34: re-lock if grace period expired while the app was backgrounded.
+    /// Bug 35: drain any pending bundle queued while locked — the grace period
+    /// auto-unlock bypasses onNormal, so process the file here instead.
+    private func handleActive() {
+        self.showScreenshotBlank = false
+        // Re-lock if grace period expired while backgrounded.
+        if self.security.requiresPIN, self.security.appLockEnabled, !self.isWithinGracePeriod {
+            self.isLocked = true
+        }
+        // Auto-unlock within grace period — skip PIN prompt for quick app switches.
+        // Grace period is always zero in restricted mode: every return requires PIN.
+        if self.isLocked && self.isWithinGracePeriod {
+            self.isLocked = false
+            if let data = self.pendingFileData {
+                self.pendingFileData = nil
+                Task { await self.processInboundFile(data) }
+            }
+        }
+        // Rebuild share index at correct depth for this foreground cycle.
+        if self.isLocked || self.security.isRestricted {
+            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+        } else {
+            self.contactManager.shareIndexAllowedIDs = nil
+        }
+        self.contactManager.syncShareIndex()
+        self.contactManager.cleanupPendingSessions()
+    }
+
     /// `ModelContext` saves so newly-created sidecar files are always protected.
     ///
     /// Called via `.onReceive(NSManagedObjectContext.didSaveNotification)` in `body`.
