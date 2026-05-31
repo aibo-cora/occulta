@@ -460,29 +460,31 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 - [ ] **[security]** `eraseAllData()` must also delete the blob file from the App Group container. Currently it covers prekeys, contacts, vault, and SE keys but has no knowledge of the blob. When Step 4 lands, `Manager.App.eraseAllData()` must receive a reference to the blob file path and delete it as part of the wipe sequence — before SE key deletion so the deletion itself cannot be blocked by an encrypted path lookup.
 - [ ] **`onOpenURL` respects Secure Mode — Option B: raw data queued, zero processing before PIN depth is known.**
 
-  **Design:** add `pendingFileData: Data?` to `OccultaApp`. The basket is never built until the PIN is entered and the routing depth is confirmed.
+  **Design:** one new `@State private var pendingFileData: Data?` and one new `private func processInboundFile(_ data: Data) async` that centralises all processing logic. `buildOwnedBasket` is only ever called from `processInboundFile` — both the unlocked-on-arrival path and the post-PIN path call the same function. No continuations, no advanced concurrency primitives.
 
-  **`onOpenURL` (locked path):**
-  When `isLocked && security.requiresPIN`, after reading the file bytes into memory:
-  - Store raw encrypted bytes in `pendingFileData`; return immediately.
-  - No call to `buildOwnedBasket` — no decryption, no sender identification, no shard operations, no identity challenge routing, no fingerprint lookup.
-  - `.occbak` vault restore check runs before this gate and is unaffected.
-  - Share extension temp file is deleted as usual after the data is read into memory.
+  **`processInboundFile(_ data: Data) async` — the single processing path:**
+  Contains everything that currently lives inline in the `onOpenURL` Task after the file is read: call `buildOwnedBasket(data)`, apply check point A (`isRestricted && !isSafeContact` gate), set `openedFileContents` or show error, handle all error cases. This function is called from two sites only — see below.
+
+  **`onOpenURL`:**
+  After reading file bytes into memory (`.occbak` vault restore check runs first, unaffected):
+  - If `isLocked && security.requiresPIN`: store bytes in `pendingFileData`; return. No processing of any kind — no decryption, no sender identification, no shard operations, no identity challenge routing.
+  - If not locked: `Task { await self.processInboundFile(data) }` — same as today, inline logic extracted to the shared function.
+  - Share extension temp file deletion fires in `defer` after data is read into memory — unaffected.
 
   **`onNormal` (normal PIN entered):**
-  After `isLocked = false`, if `pendingFileData` is set: dispatch a `Task`, call `buildOwnedBasket(pendingFileData)`, apply check point A (`isRestricted && !isSafeContact` gate), set `openedFileContents` or show error, clear `pendingFileData`.
+  After unlock: if `pendingFileData` is set, capture it, clear `pendingFileData`, dispatch `Task { await self.processInboundFile(captured) }`. One new block, three lines.
 
   **`onDuress` (duress PIN entered):**
-  If `pendingFileData` is set: clear it without any processing, show "This message was not addressed to you." No decryption, no shard operations, nothing. The raw bytes are discarded as if the file never arrived. The error is the same generic message used for any non-addressable file — indistinguishable from the legitimate wrong-recipient case.
+  If `pendingFileData` is set: clear it without calling `processInboundFile`, show "This message was not addressed to you." Raw bytes discarded — identical error to any non-addressable file.
 
   **`onWipe` (wipe triggered):**
   Clear `pendingFileData` silently.
 
   **Already-unlocked paths (no queuing):**
-  - Depth 0 (normal): `buildOwnedBasket` runs immediately, existing path unchanged.
-  - Depth 1 (duress): `buildOwnedBasket` runs, check point A suppresses if sender not safe. Note: shard operations inside `buildOwnedBasket` still fire before check point A in this path — out of scope for this item.
+  - Depth 0: `processInboundFile` runs immediately via `onOpenURL` — no change to observable behaviour.
+  - Depth 1 (duress): same, check point A inside `processInboundFile` suppresses if sender not safe. Note: shard operations fire before check point A in this path — out of scope.
 
-  **What does not change:** `openedFileContents` → `.sheet` pipeline, check point A, error messages, `.occbak` vault restore path.
+  **What does not change:** `openedFileContents` → `.sheet` pipeline, check point A logic, all error messages, `.occbak` vault restore path.
 - [ ] Panic trigger accessible from decoy view. **Do not use back tap or shake.** Back tap requires Accessibility settings to be enabled (a tell on a forensic image), and shake fires accidentally. Preferred mechanism: entering the duress PIN three consecutive times without an intervening normal PIN triggers wipe while displaying identical "incorrect PIN" feedback to the coercer. The user memorises "duress PIN × 3 = wipe" — the gesture is indistinguishable from three failed attempts. Implement as: if `consecutiveDuressCount >= 3` return `.wipe` instead of `.duress`. Note: this changes `consecutiveDuressCount` from a "too many duress entries" guard to the panic trigger itself — set the threshold clearly and document it during activation setup.
 - [x] **Decryption-failure contract** — enforced via `Manager.Security.isDisplayable(_:)` which wraps `isVisible(_:atDepth:)`. `ContactsListV2.visibleContacts` always filters through `isDisplayable` — a contact with a non-decryptable `visibleThroughDepth` is excluded regardless of depth or restricted state. `String.decrypt()` returning `""` on failure is intentional; the gate is at the list level, not the field level. `SECURE_MODE_DECRYPT_CONTRACT.md` documents every display call site. Timing normalisation deferred to Design B (see contract doc).
 - [x] **Decryption side-channel audit** — all display paths enumerated in `SECURE_MODE_DECRYPT_CONTRACT.md`. Primary list gate (`isDisplayable`) provides consistent exclusion. Timing differences under Design A are theoretical (decrypt never fails in normal operation); documented as pre-Design-B requirement in contract doc.
