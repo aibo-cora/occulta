@@ -664,4 +664,63 @@ When the app launches with a PIN configured, the contacts list is rendered and v
 `isLocked` is initialised to `true` synchronously in `OccultaApp.init`, but `fullScreenCover` is a UIKit modal presentation — it cannot appear until after the first SwiftUI render pass completes. The contacts tab renders fully in that first pass, producing a frame of visible contact data before the cover dismisses it.
 
 ### Resolution
-Pending. Place an opaque placeholder view in a `ZStack` above the tab content that is visible whenever `isLocked` is `true`. Unlike `fullScreenCover`, a `ZStack` layer is part of the SwiftUI layout and renders in the same pass as the content below it — no UIKit presentation delay. The placeholder can be a plain `Color(.systemBackground)` or the app's launch screen appearance. Remove it once `isLocked` becomes `false` (PIN entered successfully).
+Place an opaque `Color(.systemBackground)` overlay (not a `ZStack` layer, to avoid re-introducing Bug 1) that renders in the same SwiftUI pass as the contacts list. The overlay fades out with a short `easeInOut` delay after PIN entry so contacts reveal smoothly rather than snapping into view.
+
+---
+
+## Bug 34 — White screen animation on every background/foreground cycle within grace period
+
+**Status:** Open
+
+### Severity: Medium
+Every time the app is backgrounded and returned to foreground within the 5-minute grace period, the user sees a blank white screen slide up and then immediately slide back down. This is jarring UX and leaks the fact that a PIN is configured — a no-PIN device would show nothing.
+
+### Root Cause
+The `.background` phase handler unconditionally sets `isLocked = true`, which triggers the `fullScreenCover`. Within grace period, the cover shows a blank `Color(.systemBackground)` rather than the PIN entry. The `.active` phase handler then immediately clears `isLocked = false` via the grace period check. The full UIKit modal present/dismiss cycle runs on every background/foreground switch, regardless of whether a PIN will actually be demanded.
+
+### Resolution
+Pending. Coalesce the lock and grace-period unlock in the same synchronous SwiftUI update so UIKit never sees the intermediate `true` state:
+
+```swift
+if newPhase == .background, self.security.requiresPIN, self.security.appLockEnabled {
+    self.isLocked = true
+    if self.isWithinGracePeriod { self.isLocked = false }
+    self.showScreenshotBlank = false
+}
+```
+
+SwiftUI batches `@State` mutations within a single `onChange` closure — setting `true` then immediately `false` coalesces into no net change, so the `fullScreenCover` never presents. Add a complementary check on `.active` return to re-lock if the grace period has expired while the app was backgrounded:
+
+```swift
+if newPhase == .active {
+    if self.security.requiresPIN && self.security.appLockEnabled && !self.isWithinGracePeriod {
+        self.isLocked = true  // grace period expired while backgrounded
+    }
+    // existing: if self.isLocked && self.isWithinGracePeriod { self.isLocked = false }
+}
+```
+
+---
+
+## Bug 35 — Pending bundle not processed after grace period auto-unlock
+
+**Status:** Open
+
+### Severity: High
+When a bundle notification is tapped while the app is backgrounded and locked, `onOpenURL` fires and hits the gate at line 307 (`if self.isLocked && self.security.requiresPIN`), storing the raw bytes in `pendingFileData` rather than processing them. If the app is within grace period, `.active` then sets `isLocked = false` — but the grace period unlock path never calls `processInboundFile`. `pendingFileData` is only consumed inside `onNormal` (the PIN entry success callback), which is never triggered by an auto-unlock. The bundle is silently discarded; the user sees only the white screen animation from Bug 34.
+
+### Root Cause
+The grace period unlock in the `.active` handler is a direct `isLocked = false` assignment — it has no awareness of `pendingFileData` and does not mirror the `onNormal` path that processes it.
+
+### Resolution
+Pending. After the grace period unlock, drain `pendingFileData` exactly as `onNormal` does:
+
+```swift
+if self.isLocked && self.isWithinGracePeriod {
+    self.isLocked = false
+    if let data = self.pendingFileData {
+        self.pendingFileData = nil
+        Task { await self.processInboundFile(data) }
+    }
+}
+```
