@@ -382,11 +382,14 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 - [x] **[security]** Create the blob with a no-op encrypted payload on first app launch — before Secure Mode is ever configured. Every Occulta install then has a blob file in the App Group container from day one; its presence is no longer Secure Mode-specific. A forensic examiner seeing the blob cannot distinguish "Secure Mode was used" from "this is a normal Occulta install." Implemented: `Blob.maintainNoOpBlob()`, called from `OccultaApp.init()` behind the `secureMode` feature flag.
 - [x] Continuous background blob maintenance triggered by `ModelContext.didSave`. Debounced 30s. `rewriteNoOpBlob()` added to `Manager.Blob`; subscribed in `OccultaApp` gated on `!security.isSecureModeActive` — never rewrites a real payload. Blob timestamps mirror normal app activity before first activation.
 - [x] No-op blob rewrites on a 24h schedule — decouples Last Modified timestamp from meaningful events. `maxAge = 86_400`; `isStale(_:)` gates every `maintainNoOpBlob()` call.
-- [ ] **Activation sequence — single atomic commit, crash-safe without a recovery record.** Needs refactoring from the current interleaved Keychain+DB write pattern. Target sequence:
+- [x] **Activation sequence — implemented.** Full key rotation, blob seal, contact re-encryption, and state transition are in `Manager+Security.activateSecureMode`. `modelContext.autosaveEnabled = false` + `defer` guards against accidental mid-sequence autosaves. Current POI is `commitStagedLocalDBKey()` (Keychain rename); `modelContext.save()` follows milliseconds later to write the duress verifier and state transition. A kill in that window requires a manual re-activation — no data loss. Documented in Known Limitations.
+
+  **Deferred upgrade — `activeDBKeyTagEncrypted` refactor:** make `modelContext.save()` the POI by storing the new SE key's UUID tag in `AppLayerConfig` before the save, then completing the Keychain rename as post-save cleanup. `Manager.Security.init` detects an uncleared tag on launch and finishes the rename automatically — no manual retry needed. Benefit: automatic crash recovery in a sub-millisecond window. Not a ship blocker; deferred. Full target sequence preserved below for when this is implemented:
+
   1. State guard + PIN verification (normal PIN check, duress PIN collision check) — abort immediately on failure, no side effects.
   2. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs are not in the blob; no biometric gate needed.
   3. Create new SE key at a fresh UUID tag + new 32-byte random in Keychain. Derive `newDBKey`. **Old canonical key still valid. If the app crashes here, the new key is an orphaned Keychain entry — detect and delete on next launch.**
-  4. `modelContext.autosaveEnabled = false`; `defer { modelContext.autosaveEnabled = true }`. All subsequent DB mutations accumulate in memory until the explicit save in step 9.
+  4. `modelContext.autosaveEnabled = false`; `defer { modelContext.autosaveEnabled = true }`. All subsequent DB mutations accumulate in memory until the explicit save in step 11.
   5. Decrypt all contacts using old canonical DB key. Partition into sensitive and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes` and `visibleThroughDepth` — Bug 23 fix).
   6. Migrate `visibleThroughDepth` in memory: `encrypt(Int.max)` for all safe contacts with nil field; `encrypt(0)` for all vault entries with nil field. Batch mutation unifies `ZMODIFICATIONDATE` — no activation timestamp fingerprint.
   7. ~~Unwrap vault PEKs~~ — **removed** (Bug 8).
@@ -397,10 +400,6 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
   12. `PRAGMA wal_checkpoint(TRUNCATE)`.
   13. Delete old SE key + old Keychain random — cleanup only. A crash here leaves an orphaned old key; harmless since `AppLayerConfig` now references the new key tag. Detect and delete on next launch.
   14. Transition state → `.normal`.
-
-  **`AppLayerConfig` requires a new encrypted field:** `activeDBKeyTagEncrypted: Data?` — stores the UUID tag of the SE key currently protecting the DB. `nil` on existing installs = use the legacy fixed tag. Written in step 10, read by `Manager.Security.init` to derive the canonical DB key on every launch. This replaces the "promote staged key to canonical Keychain tag" step — the DB save in step 11 is what makes the new key authoritative, not a Keychain rename.
-
-  **Crash recovery is implicit:** on any launch, `AppLayerConfig` reflects the last successfully committed state. If a crash occurred before step 11, the config still references the old key — clean state. If a crash occurred after step 11, the config references the new key — activation is complete. No separate recovery record needed.
 
 ### Post-activation contact access
 
@@ -429,7 +428,8 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 
 - [x] **[bug]** Fix `isVisible(_:atDepth:)` fallback: `visibleThroughDepth` non-nil + decrypt failure → `return false`. Defense-in-depth — should not trigger in normal operation under Design A since all contacts are re-encrypted at activation and remain readable.
 
-- [ ] **Deactivation sequence — single atomic commit, crash-safe.** Needs refactoring to match the autosave approach used in activation.
+- [x] **Deactivation sequence — implemented.** Full key rotation, blob unseal, contact restoration, and state transition are in `Manager+Security.deactivateSecureMode`. `modelContext.autosaveEnabled = false` + `defer` added. Same crash window and deferred upgrade as activation above. Target sequence for `activeDBKeyTagEncrypted` refactor:
+
   1. State guard + verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
   2. `pop(blobKey:)` → `BlobPayload`. Abort if blob is missing or decryption fails.
   3. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs not in blob; no biometrics needed.
