@@ -557,7 +557,7 @@ Two fixes applied together:
 
 ## Bug 31 — Classical-only fallback bundle undecryptable by receivers with sender's quantum material
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 When a shard-carrying message fails with `trusteeLacksQuantumMaterial` (contact's ML-KEM key material is nil or corrupt), the b226068 fallback re-sends the message classically. The receiver, however, may still have the **sender's** quantum material stored from a prior UWB exchange. v1.7.0's (and current version's) receive path unconditionally uses hybrid key derivation when the sender's quantum material is available — regardless of what the sender actually used. The sender's classical session key and the receiver's hybrid session key are different. AES-GCM authentication fails with CryptoKitError 3.
@@ -585,7 +585,7 @@ The contact's quantum material becomes nil after a Secure Mode activation → de
 Re-exchange keys with the contact via UWB proximity. This rebuilds the contact's quantum material on the send side. Subsequent messages will use hybrid key derivation, which both parties can decrypt correctly.
 
 ### Resolution
-Pending. Add two new `Mode` cases to `OccultaBundle` so the receiver knows exactly which key derivation to use — no ambiguity, no retry.
+Add two new `Mode` cases to `OccultaBundle` so the receiver knows exactly which key derivation to use — no ambiguity, no retry.
 
 **Wire format — four unambiguous modes:**
 
