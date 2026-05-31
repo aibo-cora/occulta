@@ -163,10 +163,10 @@ Measures that prevent sensitive message content from crossing the lock/depth bou
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
 | C1 | Inbound message suppressed at set-time when restricted | High | ✅ Bug 1 fixed |
-| C2 | Inbound message suppressed at duress-unlock if sender not safe | High | ✅ Bug 1 fixed |
+| C2 | Inbound message discarded at duress-unlock — zero processing before depth known | High | ✅ |
 
 ### C1 — Content gate at set-time
 When the app is already unlocked in restricted mode (duress depth) and `buildOwnedBasket` runs inside `onOpenURL`, if the sender is not a safe contact the basket is suppressed and the standard "not addressed to you" error is surfaced. Without this, a notification tap while in duress mode could surface a message from a sensitive contact before the depth gate could prevent it.
 
-### C2 — Content gate at duress-unlock
-A message may arrive and queue into `openedFileContents` while the app is locked, before any PIN determines the security depth. If the duress PIN is then entered, the `onDuress` callback checks `isSafeContact` against the pending basket owner before clearing `isLocked`. If the sender is not visible at duress depth, the basket is cleared and the error shown. Sensitive contacts are absent from the DB in Secure Mode, so `isSafeContact` returns `false` for them naturally.
+### C2 — Raw data discarded at duress-unlock (Option B)
+When the app is locked and a `.occ` file arrives, `onOpenURL` stores the raw encrypted bytes in `pendingFileData` without any processing — no decryption, no sender identification, no shard operations. If the duress PIN is then entered, `onDuress` clears `pendingFileData` without ever calling `buildOwnedBasket` and shows "This message was not addressed to you." If the normal PIN is entered, `onNormal` calls `processInboundFile(pendingFileData)` — the single function that owns all decryption and display logic. The content never crosses the depth boundary because it is never decrypted until the depth is confirmed as normal.

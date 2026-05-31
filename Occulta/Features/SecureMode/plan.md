@@ -458,7 +458,7 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 - [x] `onDuress` / `onWipe` stubs in place (empty — dry-test deferred)
 - [ ] `onWipe` wired to `Manager.App.eraseAllData()` — **after dry-testing the full flow**
 - [ ] **[security]** `eraseAllData()` must also delete the blob file from the App Group container. Currently it covers prekeys, contacts, vault, and SE keys but has no knowledge of the blob. When Step 4 lands, `Manager.App.eraseAllData()` must receive a reference to the blob file path and delete it as part of the wipe sequence — before SE key deletion so the deletion itself cannot be blocked by an encrypted path lookup.
-- [ ] **`onOpenURL` respects Secure Mode — Option B: raw data queued, zero processing before PIN depth is known.**
+- [x] **`onOpenURL` respects Secure Mode — Option B: raw data queued, zero processing before PIN depth is known.**
 
   **Design:** one new `@State private var pendingFileData: Data?` and one new `private func processInboundFile(_ data: Data) async` that centralises all processing logic. `buildOwnedBasket` is only ever called from `processInboundFile` — both the unlocked-on-arrival path and the post-PIN path call the same function. No continuations, no advanced concurrency primitives.
 

@@ -175,6 +175,10 @@ struct OccultaApp: App {
 
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
+    /// Raw encrypted `.occ` bytes queued while the app is locked.
+    /// Held without any processing until the PIN depth is known.
+    /// Cleared by onNormal (process), onDuress (discard), or onWipe (discard).
+    @State private var pendingFileData: Data?
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
@@ -297,29 +301,15 @@ struct OccultaApp: App {
                                 return
                             }
 
-                            if let ownedBasket = try await self.buildOwnedBasket(from: data) {
-                                // Content gate (check point A): if already in restricted
-                                // mode, suppress messages from contacts not visible at
-                                // this depth rather than presenting their content.
-                                if self.security.isRestricted && !self.security.isSafeContact(ownedBasket.owner) {
-                                    self.errorMessage = "This message was not addressed to you."
-                                    self.showError = true
-                                } else {
-                                    self.openedFileContents = ownedBasket
-                                }
-                            } else {
-                                /// Identity challenge - processed separately.
+                            // Secure Mode gate: if the app is locked, queue raw bytes
+                            // without any processing. PIN entry determines depth; onNormal
+                            // processes the data, onDuress discards it.
+                            if self.isLocked && self.security.requiresPIN {
+                                self.pendingFileData = data
+                                return
                             }
-                        } catch ContactManager.Errors.messageHasNoData {
-                            self.errorMessage = "This message contains no data."
-                            self.showError = true
-                        } catch ContactManager.Errors.noPublicKeyToEncryptWith {
-                            self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
-                            self.showError = true
-                        } catch OccultaBundle.BundleError.unsupportedVersion,
-                                OccultaBundle.BundleError.unsupportedMode {
-                            self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
-                            self.showError = true
+
+                            await self.processInboundFile(data)
                         } catch {
                             self.errorMessage = "There was an error. \(error.localizedDescription)"
                             self.showError = true
@@ -475,19 +465,19 @@ struct OccultaApp: App {
                                 self.contactManager.shareIndexAllowedIDs = nil
                                 self.contactManager.syncShareIndex()
                                 self.isLocked = false
+                                // Process any file that arrived while the app was locked.
+                                // Depth is now confirmed as normal — safe to decrypt and display.
+                                if let data = self.pendingFileData {
+                                    self.pendingFileData = nil
+                                    Task { await self.processInboundFile(data) }
+                                }
                             },
                             onDuress: {
                                 self.security.recordUnlock()
-                                // Content gate (check point B): a message may have been
-                                // queued in openedFileContents while the app was locked,
-                                // before PIN entry determined the security depth. Now that
-                                // the duress PIN has been entered, suppress any pending
-                                // basket whose sender is not visible at duress depth.
-                                // Sensitive contacts are absent from the DB in Secure Mode,
-                                // so isSafeContact returns false for them naturally.
-                                if let basket = self.openedFileContents,
-                                   !self.security.isSafeContact(basket.owner) {
-                                    self.openedFileContents = nil
+                                // Discard any file queued while locked — duress depth must
+                                // not reveal content from sensitive contacts.
+                                if self.pendingFileData != nil {
+                                    self.pendingFileData = nil
                                     self.errorMessage = "This message was not addressed to you."
                                     self.showError = true
                                 }
@@ -495,7 +485,9 @@ struct OccultaApp: App {
                                 self.contactManager.syncShareIndex()
                                 self.isLocked = false
                             },
-                            onWipe: {}
+                            onWipe: {
+                                self.pendingFileData = nil
+                            }
                         )
                         .environment(self.security)
                     }
@@ -631,6 +623,43 @@ struct OccultaApp: App {
             )
  
             return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
+        }
+    }
+
+    // MARK: - Inbound file processing
+
+    /// Decrypts and displays an inbound `.occ` file.
+    ///
+    /// Single entry point for all inbound message processing — called from `onOpenURL`
+    /// when the app is already unlocked, and from `onNormal` after PIN entry clears
+    /// a queued file. Never called from `onDuress` or `onWipe` — those paths discard.
+    ///
+    /// All error handling lives here so neither call site needs to repeat it.
+    private func processInboundFile(_ data: Data) async {
+        do {
+            if let ownedBasket = try await self.buildOwnedBasket(from: data) {
+                // Content gate (check point A): if already in restricted mode, suppress
+                // messages from contacts not visible at this depth.
+                if self.security.isRestricted && !self.security.isSafeContact(ownedBasket.owner) {
+                    self.errorMessage = "This message was not addressed to you."
+                    self.showError = true
+                } else {
+                    self.openedFileContents = ownedBasket
+                }
+            }
+        } catch ContactManager.Errors.messageHasNoData {
+            self.errorMessage = "This message contains no data."
+            self.showError = true
+        } catch ContactManager.Errors.noPublicKeyToEncryptWith {
+            self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
+            self.showError = true
+        } catch OccultaBundle.BundleError.unsupportedVersion,
+                OccultaBundle.BundleError.unsupportedMode {
+            self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
+            self.showError = true
+        } catch {
+            self.errorMessage = "There was an error. \(error.localizedDescription)"
+            self.showError = true
         }
     }
 
