@@ -294,42 +294,11 @@ extension Manager {
                 // old canonical key is deleted in Step 11, any contact still encrypted
                 // under it becomes permanently unreadable. Depth-based visibility
                 // (visibleThroughDepth) controls what appears in the UI — not the key.
-                let stagedCrypto = StagedCryptoManager(key: stagedKey)
-                let aad          = EncryptionScheme.v2_hybridPQ.aad
+                let aad = EncryptionScheme.v2_hybridPQ.aad
 
                 for profile in allProfiles {
-                    // Pre-fix all fields that save(contact:using:) does not touch
-                    // (visibleThroughDepth, signedAttributes, contactPublicKeys).
-                    // These must be staged before the modelContext.save() inside
-                    // save(contact:using:) so they land in the same write batch.
-                    // Key records are fixed before convertToMutableCopy — convertToMutableCopy
-                    // will produce nil keys for them (canonical-key decrypt fails on
-                    // staged-key ciphertext), but the UPDATE save path ignores keys.
-                    if let old = profile.visibleThroughDepth, let plain = old.decrypt() {
-                        profile.visibleThroughDepth = try AES.GCM.seal(
-                            plain, using: stagedKey, authenticating: aad
-                        ).combined
-                    }
-                    if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
-                        profile.signedAttributes = try AES.GCM.seal(
-                            plain, using: stagedKey, authenticating: aad
-                        ).combined
-                    }
-                    if let old = profile.forwardSecrecyEncrypted {
-                        if let plain = old.decrypt() {
-                            profile.forwardSecrecyEncrypted = try AES.GCM.seal(
-                                plain, using: stagedKey, authenticating: aad
-                            ).combined
-                        } else {
-                            // Unreadable under the current key — drop it.
-                            // configureForwardSecrecy() reinitialises on next use.
-                            profile.forwardSecrecyEncrypted = nil
-                        }
-                    }
-                    try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
-
-                    let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
-                    try contactManager.save(contact: draft, using: stagedCrypto)
+                    try profile.reencryptAllFields(to: stagedKey, aad: aad)
+                    try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
                 }
                 // Re-encrypt VaultEntry.visibleThroughDepth (encrypted under local DB key).
                 // Every entry must end up with a staged-key ciphertext — no silent skips:
@@ -468,33 +437,16 @@ extension Manager {
                 // Instead, the shell stays in the DB; Step 5 overwrites its text fields via
                 // the UPDATE path using blob plaintext re-encrypted under the staged key.
                 for profile in try contactManager.fetchAllContacts() {
+                    try profile.reencryptAllFields(to: stagedKey, aad: aad)
+                    try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
+                    // Clear visibleThroughDepth to erase the activation watermark — nil is
+                    // the pre-activation default and isVisible treats it identically to Int.max.
+                    // Sensitive shell text fields left unreadable here are overwritten in Step 5.
                     profile.visibleThroughDepth = nil
-                    if let old = profile.signedAttributes, !old.isEmpty, let plain = old.decrypt() {
-                        profile.signedAttributes = try AES.GCM.seal(
-                            plain, using: stagedKey, authenticating: aad
-                        ).combined
-                    }
-                    if let old = profile.forwardSecrecyEncrypted {
-                        if let plain = old.decrypt() {
-                            profile.forwardSecrecyEncrypted = try AES.GCM.seal(
-                                plain, using: stagedKey, authenticating: aad
-                            ).combined
-                        } else {
-                            profile.forwardSecrecyEncrypted = nil
-                        }
-                    }
-                    try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
-
-                    do {
-                        let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
-                        try contactManager.save(contact: draft, using: stagedCrypto)
-                    } catch {
-                        // Sensitive shell — skip; restored from blob in Step 5.
-                    }
                 }
 
                 // ── Step 5: Restore sensitive contacts from blob ────────────────────
-                // Step 4's reEncryptKeyRecords already migrated all contacts' key records
+                // Step 4's reencryptKeyRecords already migrated all contacts' key records
                 // (including sensitive contacts') from K_activation → K_staged. This step
                 // re-encrypts text fields from blob plaintext under the staged key and
                 // restores depth / signedAttributes. Key records are not touched — they
@@ -890,38 +842,6 @@ extension Manager {
         /// silently skipped and become permanently unreadable after the new rotation
         /// commits. This is an accepted gap: storage corruption or partial-rotation
         /// state are prerequisites, both of which are beyond normal control flow.
-        private static func reEncryptKeyRecords(
-            for profile: Contact.Profile,
-            using key: SymmetricKey,
-            aad: Data
-        ) throws {
-            for keyRecord in (profile.contactPublicKeys ?? []) {
-                if let plain = keyRecord.material?.decrypt() {
-                    keyRecord.material = try AES.GCM.seal(
-                        plain, using: key, authenticating: aad
-                    ).combined
-                }
-                if !keyRecord.owner.isEmpty, let plain = keyRecord.owner.decrypt(),
-                   let combined = try AES.GCM.seal(plain, using: key, authenticating: aad).combined {
-                    keyRecord.owner = combined
-                }
-                if let plain = keyRecord.acquiredAt?.decrypt() {
-                    keyRecord.acquiredAt = try AES.GCM.seal(
-                        plain, using: key, authenticating: aad
-                    ).combined
-                }
-                if let plain = keyRecord.expiredOn?.decrypt() {
-                    keyRecord.expiredOn = try AES.GCM.seal(
-                        plain, using: key, authenticating: aad
-                    ).combined
-                }
-                if let plain = keyRecord.quantumKeyMaterialEncrypted?.decrypt() {
-                    keyRecord.quantumKeyMaterialEncrypted = try AES.GCM.seal(
-                        plain, using: key, authenticating: aad
-                    ).combined
-                }
-            }
-        }
     }
 }
 
