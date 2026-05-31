@@ -670,7 +670,7 @@ Place an opaque `Color(.systemBackground)` overlay (not a `ZStack` layer, to avo
 
 ## Bug 34 — White screen animation on every background/foreground cycle within grace period
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium
 Every time the app is backgrounded and returned to foreground within the 5-minute grace period, the user sees a blank white screen slide up and then immediately slide back down. This is jarring UX and leaks the fact that a PIN is configured — a no-PIN device would show nothing.
@@ -704,7 +704,7 @@ if newPhase == .active {
 
 ## Bug 35 — Pending bundle not processed after grace period auto-unlock
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 When a bundle notification is tapped while the app is backgrounded and locked, `onOpenURL` fires and hits the gate at line 307 (`if self.isLocked && self.security.requiresPIN`), storing the raw bytes in `pendingFileData` rather than processing them. If the app is within grace period, `.active` then sets `isLocked = false` — but the grace period unlock path never calls `processInboundFile`. `pendingFileData` is only consumed inside `onNormal` (the PIN entry success callback), which is never triggered by an auto-unlock. The bundle is silently discarded; the user sees only the white screen animation from Bug 34.
