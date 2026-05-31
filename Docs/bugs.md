@@ -724,3 +724,25 @@ if self.isLocked && self.isWithinGracePeriod {
     }
 }
 ```
+
+---
+
+## Bug 36 — Contacts briefly visible when returning to app after grace period expires
+
+**Status:** Open
+
+### Severity: High
+When the user returns to the app after the grace period has expired, `handleActive()` sets `isLocked = true`. The Bug 33 overlay (`Color(.systemBackground)` driven by `isLocked`) is supposed to immediately cover the contacts, but it doesn't — it fades in with the same `.easeInOut(duration: 0.25).delay(0.15)` animation that was added for the unlock reveal. The 0.15s delay plus a portion of the 0.25s fade means contacts are visible for ~0.3s before the overlay fully covers them. The `fullScreenCover` then appears on top once UIKit catches up.
+
+### Root Cause
+The overlay's `.animation(.easeInOut(duration: 0.25).delay(0.15), value: self.isLocked)` modifier fires in **both** directions — `false → true` (lock) and `true → false` (unlock). The delay was intentional for the unlock direction (smooth reveal after PIN entry), but it makes the lock direction slow, leaving a window where contacts are readable. `.animation(_:value:)` is a view-level modifier that overrides the transaction animation — `withAnimation(.none)` at the call site does not suppress it.
+
+### Resolution
+Pending. The overlay needs directional animation: instant on lock (`false → true`), delayed fade on unlock (`true → false`). Introduce a separate `@State var isUnlocking = false` that the animation responds to instead of `isLocked` directly:
+
+```swift
+.opacity(self.showScreenshotBlank || self.isLocked ? 1 : 0)
+.animation(self.isUnlocking ? .easeInOut(duration: 0.25).delay(0.15) : .none, value: self.isLocked)
+```
+
+Set `isUnlocking = true` just before every `isLocked = false` (PIN entry `onNormal`, grace period auto-unlock). Set `isUnlocking = false` just before every `isLocked = true` (initial launch, `handleBackground`, `handleActive` re-lock). SwiftUI batches mutations in the same synchronous closure, so the animation flag and the lock state change land in the same render pass.
