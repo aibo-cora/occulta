@@ -315,6 +315,17 @@ extension Manager {
                             plain, using: stagedKey, authenticating: aad
                         ).combined
                     }
+                    if let old = profile.forwardSecrecyEncrypted {
+                        if let plain = old.decrypt() {
+                            profile.forwardSecrecyEncrypted = try AES.GCM.seal(
+                                plain, using: stagedKey, authenticating: aad
+                            ).combined
+                        } else {
+                            // Unreadable under the current key — drop it.
+                            // configureForwardSecrecy() reinitialises on next use.
+                            profile.forwardSecrecyEncrypted = nil
+                        }
+                    }
                     try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
 
                     let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
@@ -462,6 +473,15 @@ extension Manager {
                         profile.signedAttributes = try AES.GCM.seal(
                             plain, using: stagedKey, authenticating: aad
                         ).combined
+                    }
+                    if let old = profile.forwardSecrecyEncrypted {
+                        if let plain = old.decrypt() {
+                            profile.forwardSecrecyEncrypted = try AES.GCM.seal(
+                                plain, using: stagedKey, authenticating: aad
+                            ).combined
+                        } else {
+                            profile.forwardSecrecyEncrypted = nil
+                        }
                     }
                     try Self.reEncryptKeyRecords(for: profile, using: stagedKey, aad: aad)
 
