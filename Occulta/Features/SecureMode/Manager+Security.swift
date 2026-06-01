@@ -82,9 +82,6 @@ extension Manager {
         /// `nil` (default) → production app-group path.
         /// Non-nil → per-test temp directory that avoids cross-test blob collisions.
         private let blobDirectory:   URL?
-        /// Mirrors the `enabled` init parameter. Used by blob-maintenance methods
-        /// so they can self-guard without the caller checking the feature flag.
-        private let enabled:         Bool
 
         private var wrongPINCount          = 0
         private var consecutiveDuressCount = 0
@@ -110,7 +107,6 @@ extension Manager {
             self.keyManager      = keyManager
             self.storeURL        = storeURL
             self.blobDirectory   = blobDirectory
-            self.enabled         = enabled
 
             // Feature-flag off path: skip all DB reads. requiresPIN returns false,
             // isRestricted = false. All properties stay at defaults.
@@ -218,7 +214,7 @@ extension Manager {
         /// No-op when Secure Mode is active (blob holds a real payload that must
         /// not be overwritten) or when the feature flag is off.
         func maintainBlobOnLaunch() {
-            guard self.enabled, !self.isSecureModeActive else { return }
+            guard !self.isSecureModeActive else { return }
             Manager.Blob.maintainNoOpBlob()
         }
 
@@ -229,7 +225,7 @@ extension Manager {
         /// spiking only at meaningful events (activation, PIN changes, etc.).
         /// No-op when Secure Mode is active or the feature flag is off.
         func rewriteNoOpBlob() {
-            guard self.enabled, !self.isSecureModeActive else { return }
+            guard !self.isSecureModeActive else { return }
             DispatchQueue.global(qos: .utility).async {
                 Manager.Blob.rewriteNoOpBlob()
             }

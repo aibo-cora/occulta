@@ -76,7 +76,9 @@ struct OccultaApp: App {
         let security             = Manager.Security(modelContainer: sharedModelContainer,
                                                      storeURL: url,
                                                      enabled: FeatureFlags.isEnabled(.secureMode))
-        security.maintainBlobOnLaunch()
+        if FeatureFlags.isEnabled(.secureMode) {
+            security.maintainBlobOnLaunch()
+        }
         self.security            = security
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
@@ -433,6 +435,7 @@ struct OccultaApp: App {
                 )
                 .receive(on: DispatchQueue.main)
                 .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
+                    guard FeatureFlags.isEnabled(.secureMode) else { return }
                     self.security.rewriteNoOpBlob()
                 }
                 .animation(.none, value: self.security.needsPINEntry)
