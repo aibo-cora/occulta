@@ -67,20 +67,6 @@ struct OccultaApp: App {
         self.storeURL = url
         Self.applySecureDeletePragma(at: url)
 
-        if FeatureFlags.isEnabled(.secureMode) {
-            // Only maintain the no-op blob when Secure Mode is not active.
-            // When active, the blob holds a real payload (sensitive contact data);
-            // maintainNoOpBlob treats blobs older than 24 h as stale and replaces
-            // them with random-byte no-op content — destroying the payload and making
-            // deactivation fail with a JSON decoding error.
-            // Checking for a duress verifier does not require the SE key.
-            let initCtx = ModelContext(sharedModelContainer)
-            let secureModeActive = (try? initCtx.fetch(FetchDescriptor<AppLayerConfig>()).first)?.sealedDuressVerifier != nil
-            if !secureModeActive {
-                Manager.Blob.maintainNoOpBlob()
-            }
-        }
-
         let contactManager = ContactManager(modelContainer: sharedModelContainer)
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
@@ -90,6 +76,7 @@ struct OccultaApp: App {
         let security             = Manager.Security(modelContainer: sharedModelContainer,
                                                      storeURL: url,
                                                      enabled: FeatureFlags.isEnabled(.secureMode))
+        security.maintainBlobOnLaunch()
         self.security            = security
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
@@ -446,13 +433,7 @@ struct OccultaApp: App {
                 )
                 .receive(on: DispatchQueue.main)
                 .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
-                    guard FeatureFlags.isEnabled(.secureMode) else { return }
-                    
-                    guard !self.security.isSecureModeActive else { return }
-                    
-                    DispatchQueue.global(qos: .utility).async {
-                        Manager.Blob.rewriteNoOpBlob()
-                    }
+                    self.security.rewriteNoOpBlob()
                 }
                 .animation(.none, value: self.security.needsPINEntry)
             }
