@@ -18,7 +18,8 @@ These must hold **at all times** between any two successful app launches:
 | I3 | `contactManager.modelContext` and `vaultManager.modelContext` are **fully flushed to the WAL** before `commitStagedLocalDBKey()` is called. |
 | I4 | The WAL checkpoint runs **after** `commitStagedLocalDBKey()`, never before. Checkpointing before commit would move pre-rotation ciphertext into the main file. |
 | I5 | The old canonical SE key is deleted **only after** a successful WAL checkpoint. |
-| I6 | The blob is sealed with real payload if and only if `sealedDuressVerifier != nil`. At all other times the blob is a no-op payload of indistinguishable size. |
+| I6 | The app group **always** contains a blob — either a real payload (Secure Mode active) or an indistinguishable no-op. This is true regardless of which `BlobStore` destination is active. An absent app-group blob is a forensic tell. |
+| I7 | `AppLayerConfig` **always** exists from the very first launch. Its presence is not a forensic tell for PIN or Secure Mode usage. Sensitive fields (`sealedNormalVerifier`, `sealedDuressVerifier`) are nil when those features are not configured; the row itself is always there. Never delete the row — reset fields to nil instead. |
 
 ---
 
@@ -142,10 +143,116 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
       The blob holds a real payload; overwriting it destroys deactivation data.
 - [ ] `rewriteNoOpBlob` is debounced (30 s) and gated on `!security.isSecureModeActive`
       in `OccultaApp`. Maintain both guards if the call site changes.
+- [ ] App group no-op maintenance must run regardless of which `BlobStore` destination
+      is active. If a future destination stores the real payload externally, the app group
+      still needs its no-op blob — see I6 and the BlobStore section below.
+
+### Modifying `AppLayerConfig`
+
+- [ ] Never `modelContext.delete(config)`. Reset sensitive fields to nil instead.
+      See I7. The row must outlive any particular feature state.
+- [ ] New fields that encode a user preference or security state must always be
+      written on first launch (bootstrap in `Security.init()`). A field that only
+      appears when a feature is active is itself a forensic tell.
+- [ ] The bootstrap seed must encode the same safe default a user who never touched
+      the feature would expect: nil verifiers, `.normal` depth, `pinEnabled = true`,
+      `blobStoreDestination = .appGroup` (once added).
 
 ---
 
-## Testing
+## BlobStore Refactor (Planned)
+
+### Motivation
+
+`Manager.Blob.seal/unseal` currently take a `directory: URL?` which is nil in
+production (hard-coded app group path) and a temp URL in tests. Adding alternative
+destinations (external storage, etc.) by extending this parameter is not scalable.
+The refactor decouples blob I/O from blob crypto behind a protocol.
+
+### Protocol contract (I/O only — no crypto)
+
+```swift
+/// Blob I/O back-end. Manager.Blob owns all crypto (padding, AES-GCM, HKDF).
+/// Implementations handle only reading and writing raw ciphertext bytes.
+protocol BlobStore {
+    /// Write already-encrypted, already-padded ciphertext, replacing any
+    /// existing blob. Throws on I/O failure (permissions, device full, etc.).
+    func write(_ encryptedData: Data) throws
+
+    /// Return raw ciphertext. Throws `BlobError.noBlobFound` if absent,
+    /// `BlobError.decryptionFailed` if data is present but unreadable.
+    func read() throws -> Data
+
+    /// Delete the current blob. No-op if absent.
+    func delete()
+
+    /// True if a blob file exists at this location (content not checked).
+    var hasBlob: Bool { get }
+}
+```
+
+`Manager.Blob.seal(_:blobKey:store:)` and `unseal(blobKey:store:)` accept a
+`BlobStore` instead of `directory: URL?`. The call sites in `activateSecureMode`
+and `deactivateSecureMode` pass the store from a `Security` property (injectable,
+like `keyManager` and `blobDirectory` already are).
+
+No-op maintenance (`maintainNoOpBlob`, `rewriteNoOpBlob`) always targets the
+`AppGroupBlobStore` regardless of which store holds the real payload — I6.
+
+### Phase 1 — protocol shell, app group only (current scope)
+
+- Introduce `BlobStore` protocol and `AppGroupBlobStore` (wraps current logic).
+- Remove `directory: URL?` from `seal/unseal`; replace with `store: any BlobStore`.
+- `Manager.Security` gets `private let blobStore: any BlobStore` replacing `blobDirectory: URL?`.
+- Tests switch from `blobDirectory: tempURL` to an `InMemoryBlobStore` — eliminates
+  temp-directory collisions and the `URL?` hack.
+- No user-facing behaviour change. No new `AppLayerConfig` field yet.
+
+### Phase 2 — additional destinations (future)
+
+**New `AppLayerConfig` field**
+
+```swift
+// Encrypted enum — which store holds the real payload.
+// Always written during bootstrap so its presence is not a tell.
+var blobStoreDestinationEncrypted: Data?   // default: .appGroup
+```
+
+The field is encrypted (same local DB key) so a raw DB examiner cannot read the
+destination without the canonical key. It is set during bootstrap (`.appGroup`) so
+it exists on every install from day one.
+
+**Destination enum**
+
+```swift
+enum BlobStoreDestination: Codable {
+    case appGroup                          // default, always available
+    case externalDocument(bookmark: Data)  // security-scoped bookmark, iOS Files / flash drive
+    // future cases here
+}
+```
+
+The `bookmark` is a security-scoped bookmark created from the URL returned by
+`UIDocumentPickerViewController`. It is stored encrypted inside the enum's associated
+value — a single encrypted blob that contains both the destination tag and the
+bookmark data.
+
+**What future destinations must honour**
+
+| Concern | Requirement |
+|---|---|
+| No-op in app group | App group always has a no-op blob regardless of destination (I6). |
+| Availability at deactivation | If the external store is unavailable, deactivation falls back to `BlobPayload(contacts: [])` and continues — same as today's `noBlobFound` path. User loses sensitive contacts; that is a documented tradeoff. |
+| Crash / orphan | If activation seals to an external store and then crashes before the key commits, the orphaned blob on the external store is encrypted (harmless). The next successful activation overwrites it via `store.write()`. |
+| No metadata trail | External destinations must not write any local file that records which destination was chosen, beyond the encrypted `AppLayerConfig` field. The picker UI should be presented at a point in the flow that does not correlate with the activation timestamp. |
+| Destination change | The destination stored in `AppLayerConfig` is fixed for the lifetime of one activation. Changing the destination takes effect only on the next activation cycle (deactivate → change → activate). Mid-cycle destination migration is not supported. |
+
+**When to present the destination picker**
+
+The picker (if any) is presented in Settings, separately from the activation
+flow, before the user starts activation. The chosen destination is stored in
+`AppLayerConfig` before activation begins. The activation sequence reads
+`config.blobStoreDestination` at the start and uses that store throughout.
 
 Every activation/deactivation bug to date was caught only at runtime, not by tests.
 For any change in this area:
@@ -160,4 +267,4 @@ For any change in this area:
 
 ---
 
-_Last updated: 2026-06-01. Update this document whenever the rotation sequence changes._
+_Last updated: 2026-06-01. Update this document whenever the rotation sequence or BlobStore design changes._
