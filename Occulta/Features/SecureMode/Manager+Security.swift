@@ -108,19 +108,36 @@ extension Manager {
             self.storeURL        = storeURL
             self.blobDirectory   = blobDirectory
 
-            // Feature-flag off path: skip all DB reads. requiresPIN returns false
-            // (no config row), isRestricted = false. All properties stay at defaults.
+            // Feature-flag off path: skip all DB reads. requiresPIN returns false,
+            // isRestricted = false. All properties stay at defaults.
             guard enabled else { return }
 
-            let config = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first
+            // Bootstrap: ensure the config row exists from the very first launch.
+            // AppLayerConfig must always be present regardless of whether a PIN or
+            // Secure Mode has ever been configured — its absence would be a forensic
+            // tell that the feature was never used. All sensitive fields default to nil
+            // (no PIN, no duress verifier), which is functionally equivalent to a
+            // fresh install that has never touched Settings.
+            let config: AppLayerConfig
+            if let existing = try? context.fetch(FetchDescriptor<AppLayerConfig>()).first {
+                config = existing
+            } else {
+                let seed = AppLayerConfig()
+                try? seed.writeRoutingDepth(.normal)
+                try? seed.writePinEnabled(true)
+                try? seed.setWipeThreshold(3)
+                context.insert(seed)
+                try? context.save()
+                config = seed
+            }
 
             // Restore routing depth and gate state so depth-filtering and the PIN
             // overlay behave correctly after an app kill or restart. Both fields
             // fall back to the safe default on any decode failure.
-            self.state          = config?.readRoutingDepth() ?? .normal
-            self.appLockEnabled = config?.readPinEnabled() ?? true
+            self.state          = config.readRoutingDepth()
+            self.appLockEnabled = config.readPinEnabled()
 
-            let pinRequired     = config?.sealedNormalVerifier != nil
+            let pinRequired      = config.sealedNormalVerifier != nil
             self.isContentHidden = pinRequired && self.appLockEnabled
             self.needsPINEntry   = pinRequired && self.appLockEnabled
         }
@@ -194,29 +211,27 @@ extension Manager {
         /// Builds a normal PIN verifier, persists config, and transitions from no-PIN to PIN-only
         /// (`requiresPIN` becomes `true`, `isSecureModeActive` remains `false`).
         ///
-        /// Also initialises `persistedDepth` and `pinEnabled` so both fields are non-nil
-        /// from the first config write onward — a consistently present field prevents
-        /// forensic tools from inferring special state from field presence or absence.
         func configurePIN(_ pin: String) throws {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
             let sealedNormal = try PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: seKey)
 
-            let existing = try self.modelContext.fetch(FetchDescriptor<AppLayerConfig>())
-            for c in existing { self.modelContext.delete(c) }
-
-            let config = AppLayerConfig()
+            // Update the always-present row in place — never delete and recreate.
+            let config = try self.requireConfig()
             config.sealedNormalVerifier = sealedNormal
             try config.setWipeThreshold(3)
             try self.setState(.normal, config: config)
-            self.modelContext.insert(config)
             try self.modelContext.save()
 
             self.resetCounters()
         }
 
-        /// Verifies the normal PIN and removes the entire config row, making `requiresPIN` false.
+        /// Verifies the normal PIN and clears all verifiers, making `requiresPIN` false.
+        ///
+        /// The config row is **not** deleted — AppLayerConfig must always be present so its
+        /// existence is not a forensic tell for PIN or Secure Mode usage. All sensitive fields
+        /// are reset to nil; the row is otherwise identical to a fresh-install row.
         ///
         /// Throws `.invalidStateTransition` if `isSecureModeActive` is true — the caller must
         /// deactivate Secure Mode (removing the duress verifier) before removing the PIN entirely.
@@ -232,7 +247,8 @@ extension Manager {
                                          verifier: verifier, seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
-            self.modelContext.delete(config)
+            config.sealedNormalVerifier = nil
+            try self.setState(.normal, config: config)
             try self.modelContext.save()
             self.resetCounters()
             self.appLockEnabled = true
