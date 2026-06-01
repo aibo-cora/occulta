@@ -22,11 +22,6 @@ struct OccultaApp: App {
     @State private var vaultManager: VaultManager
     @State private var shardCustodyManager: ShardCustodyManager
     @State private var security: Manager.Security
-    @State private var isLocked: Bool
-    /// True while the app is `.inactive` and a PIN is configured — shows a blank
-    /// overlay to block app-switcher screenshots without a UIKit modal presentation
-    /// (which would conflict with an active UIActivityViewController share sheet).
-    @State private var showScreenshotBlank = false
     @State private var appManager: Manager.App
     @AppStorage("hasCompletedOnboarding") private var hasCompleted = false
     @Environment(\.scenePhase) private var scenePhase
@@ -96,10 +91,6 @@ struct OccultaApp: App {
                                                      storeURL: url,
                                                      enabled: FeatureFlags.isEnabled(.secureMode))
         self.security            = security
-        // Lock on launch only when a PIN is configured AND the gate is active.
-        // When appLockEnabled is false (gate lowered under coercion), the app
-        // opens without the PIN overlay even though all verifiers are intact.
-        self._isLocked           = State(initialValue: security.requiresPIN && security.appLockEnabled)
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
         
@@ -159,20 +150,6 @@ struct OccultaApp: App {
             }
         }
     }
-    /// How long a successful PIN unlock suppresses the next PIN prompt.
-    /// Zero when in restricted (duress) mode — every return from background requires PIN.
-    private static let gracePeriod: TimeInterval = 5 * 60
-
-    /// True when the last unlock is recent enough that PIN re-entry can be skipped.
-    /// Never applies in restricted mode.
-    private var isWithinGracePeriod: Bool {
-        guard !self.security.isRestricted else { return false }
-        
-        guard let last = self.security.lastUnlockDate else { return false }
-        
-        return Date().timeIntervalSince(last) < Self.gracePeriod
-    }
-
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
     /// Raw encrypted `.occ` bytes queued while the app is locked.
@@ -304,7 +281,7 @@ struct OccultaApp: App {
                             // Secure Mode gate: if the app is locked, queue raw bytes
                             // without any processing. PIN entry determines depth; onNormal
                             // processes the data, onDuress discards it.
-                            if self.isLocked && self.security.requiresPIN {
+                            if self.security.needsPINEntry {
                                 self.pendingFileData = data
                                 return
                             }
@@ -366,70 +343,81 @@ struct OccultaApp: App {
                 .onChange(of: self.scenePhase) { _, newPhase in
                     switch newPhase {
                     case .inactive:
-                        self.handleInactive()
+                        self.security.handleInactive(vaultUnlocked: self.vaultManager.isUnlocked)
+                        if self.security.requiresPIN, self.security.appLockEnabled,
+                           self.vaultManager.isUnlocked {
+                            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+                            self.contactManager.syncShareIndex()
+                        }
                     case .background:
-                        self.handleBackground()
+                        self.security.handleBackground()
                     case .active:
-                        self.handleActive()
+                        self.security.handleActive()
+                        // Drain any bundle queued while locked on grace-period auto-unlock.
+                        // PIN-entry unlock is handled by onNormal; this covers the path
+                        // where needsPINEntry became false without a PIN being entered.
+                        if !self.security.needsPINEntry, let data = self.pendingFileData {
+                            self.pendingFileData = nil
+                            Task { await self.processInboundFile(data) }
+                        }
+                        // Rebuild share index at correct depth for this foreground cycle.
+                        if self.security.needsPINEntry || self.security.isRestricted {
+                            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+                        } else {
+                            self.contactManager.shareIndexAllowedIDs = nil
+                        }
+                        self.contactManager.syncShareIndex()
+                        self.contactManager.cleanupPendingSessions()
                     default:
                         break
                     }
                 }
-                // Single opaque cover serving two roles:
-                //   1. Screenshot blank (.inactive) — instant, no animation.
-                //   2. Contact-flash prevention + fade-in on unlock (Bug 33).
-                // showScreenshotBlank fires instantly (.none); isLocked fades (.easeInOut).
+                // Opaque overlay: covers content instantly on lock and during .inactive
+                // for screenshot protection (Bug 33/36). Always instant — no fade animation.
                 // SwiftUI overlay — does NOT conflict with UIActivityViewController.
                 .overlay {
                     Color(.systemBackground)
                         .ignoresSafeArea()
-                        .opacity(self.showScreenshotBlank || self.isLocked ? 1 : 0)
-                        .animation(.easeInOut(duration: 0.25).delay(0.15), value: self.isLocked)
-                        .animation(.none, value: self.showScreenshotBlank)
+                        .opacity(self.security.isContentHidden ? 1 : 0)
+                        .animation(.none, value: self.security.isContentHidden)
                         .allowsHitTesting(false)
                 }
                 // fullScreenCover rather than overlay: a UIKit modal presentation
                 // stacks above any existing sheets, so it cannot be underlapped by
                 // conversation or identity-challenge sheets triggered while locked.
-                .fullScreenCover(isPresented: self.$isLocked) {
-                    if self.isWithinGracePeriod {
-                        // Within grace period: show a blank screen to block the
-                        // app-switcher screenshot without demanding PIN re-entry.
-                        // Cleared immediately by the scenePhase .active handler.
-                        Color(.systemBackground).ignoresSafeArea()
-                    } else {
-                        PINEntry(
-                            onNormal: { _ in
-                                self.security.recordUnlock()
-                                self.contactManager.shareIndexAllowedIDs = nil
-                                self.contactManager.syncShareIndex()
-                                self.isLocked = false
-                                // Process any file that arrived while the app was locked.
-                                // Depth is now confirmed as normal — safe to decrypt and display.
-                                if let data = self.pendingFileData {
-                                    self.pendingFileData = nil
-                                    Task { await self.processInboundFile(data) }
-                                }
-                            },
-                            onDuress: {
-                                self.security.recordUnlock()
-                                // Discard any file queued while locked — duress depth must
-                                // not reveal content from sensitive contacts.
-                                if self.pendingFileData != nil {
-                                    self.pendingFileData = nil
-                                    self.errorMessage = "This message was not addressed to you."
-                                    self.showError = true
-                                }
-                                self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
-                                self.contactManager.syncShareIndex()
-                                self.isLocked = false
-                            },
-                            onWipe: {
+                .fullScreenCover(isPresented: Binding(
+                    get: { self.security.needsPINEntry },
+                    set: { self.security.needsPINEntry = $0 }
+                )) {
+                    PINEntry(
+                        onNormal: { _ in
+                            self.security.unlockNormal()
+                            self.contactManager.shareIndexAllowedIDs = nil
+                            self.contactManager.syncShareIndex()
+                            // Process any file that arrived while the app was locked.
+                            // Depth is now confirmed as normal — safe to decrypt and display.
+                            if let data = self.pendingFileData {
                                 self.pendingFileData = nil
+                                Task { await self.processInboundFile(data) }
                             }
-                        )
-                        .environment(self.security)
-                    }
+                        },
+                        onDuress: {
+                            self.security.unlockDuress()
+                            // Discard any file queued while locked — duress depth must
+                            // not reveal content from sensitive contacts.
+                            if self.pendingFileData != nil {
+                                self.pendingFileData = nil
+                                self.errorMessage = "This message was not addressed to you."
+                                self.showError = true
+                            }
+                            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
+                            self.contactManager.syncShareIndex()
+                        },
+                        onWipe: {
+                            self.pendingFileData = nil
+                        }
+                    )
+                    .environment(self.security)
                 }
                 // Key-rotation → two-sided response:
                 // Alice's path: mark any shards distributed TO this contact as .lost.
@@ -466,7 +454,7 @@ struct OccultaApp: App {
                         Manager.Blob.rewriteNoOpBlob()
                     }
                 }
-                .animation(.none, value: self.isLocked)
+                .animation(.none, value: self.security.needsPINEntry)
             }
         }
         .modelContainer(self.sharedModelContainer)
@@ -755,62 +743,6 @@ struct OccultaApp: App {
     /// SwiftData (via SQLite) can recreate `-wal` and `-shm` sidecar files after
     /// checkpoints, schema migrations, or WAL merges. The initial `setAttributes`
     /// call in `init()` covers the baseline; this method re-stamps every time a
-    // MARK: - Scene phase handlers
-
-    /// App is losing focus but not yet backgrounded.
-    /// Show the screenshot blank to protect the app switcher thumbnail.
-    /// Do NOT set isLocked — that triggers fullScreenCover, which conflicts
-    /// with UIActivityViewController when the user picks a share target.
-    private func handleInactive() {
-        guard self.security.requiresPIN,
-              self.security.appLockEnabled,
-              self.vaultManager.isUnlocked else { return }
-        
-        self.showScreenshotBlank = true
-        self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
-        self.contactManager.syncShareIndex()
-    }
-
-    /// App is fully backgrounded — safe to raise the lock.
-    /// Bug 34: coalesce isLocked = true + false in the same update when within
-    /// grace period so UIKit never presents the fullScreenCover unnecessarily.
-    private func handleBackground() {
-        guard self.security.requiresPIN, self.security.appLockEnabled else { return }
-        
-        self.isLocked = true
-        if self.isWithinGracePeriod { self.isLocked = false }
-        self.showScreenshotBlank = false
-    }
-
-    /// App has returned to the foreground.
-    /// Bug 34: re-lock if grace period expired while the app was backgrounded.
-    /// Bug 35: drain any pending bundle queued while locked — the grace period
-    /// auto-unlock bypasses onNormal, so process the file here instead.
-    private func handleActive() {
-        self.showScreenshotBlank = false
-        // Re-lock if grace period expired while backgrounded.
-        if self.security.requiresPIN, self.security.appLockEnabled, !self.isWithinGracePeriod {
-            self.isLocked = true
-        }
-        // Auto-unlock within grace period — skip PIN prompt for quick app switches.
-        // Grace period is always zero in restricted mode: every return requires PIN.
-        if self.isLocked && self.isWithinGracePeriod {
-            self.isLocked = false
-            if let data = self.pendingFileData {
-                self.pendingFileData = nil
-                Task { await self.processInboundFile(data) }
-            }
-        }
-        // Rebuild share index at correct depth for this foreground cycle.
-        if self.isLocked || self.security.isRestricted {
-            self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
-        } else {
-            self.contactManager.shareIndexAllowedIDs = nil
-        }
-        self.contactManager.syncShareIndex()
-        self.contactManager.cleanupPendingSessions()
-    }
-
     /// `ModelContext` saves so newly-created sidecar files are always protected.
     ///
     /// Called via `.onReceive(NSManagedObjectContext.didSaveNotification)` in `body`.

@@ -58,6 +58,14 @@ extension Manager {
         /// Always `true` after any clean state transition.
         private(set) var appLockEnabled: Bool = true
 
+        /// Drives the opaque overlay — true means content is hidden.
+        /// Set instantly in both directions; the overlay uses .animation(.none).
+        private(set) var isContentHidden: Bool = false
+
+        /// Drives the fullScreenCover PIN gate — true means the PIN entry sheet is presented.
+        /// Not private(set) so the fullScreenCover binding can clear it on system-initiated dismiss.
+        var needsPINEntry: Bool = false
+
         /// Record a successful authentication. Call from `PINEntry.onNormal` and `onDuress`.
         func recordUnlock() {
             self.lastUnlockDate = Date()
@@ -111,6 +119,10 @@ extension Manager {
             // fall back to the safe default on any decode failure.
             self.state          = config?.readRoutingDepth() ?? .normal
             self.appLockEnabled = config?.readPinEnabled() ?? true
+
+            let pinRequired     = config?.sealedNormalVerifier != nil
+            self.isContentHidden = pinRequired && self.appLockEnabled
+            self.needsPINEntry   = pinRequired && self.appLockEnabled
         }
 
         // MARK: - State transition
@@ -122,6 +134,59 @@ extension Manager {
             try config.writePinEnabled(pinEnabled)
             self.state          = depth
             self.appLockEnabled = pinEnabled
+        }
+
+        // MARK: - App lock
+
+        private static let gracePeriod: TimeInterval = 5 * 60
+
+        private var isWithinGracePeriod: Bool {
+            guard !self.isRestricted, let last = self.lastUnlockDate else { return false }
+            return Date().timeIntervalSince(last) < Self.gracePeriod
+        }
+
+        /// App went .inactive (share sheet, Spotlight). Cover content for screenshot protection;
+        /// do not present the PIN gate (conflicts with UIActivityViewController).
+        func handleInactive(vaultUnlocked: Bool) {
+            guard self.requiresPIN, self.appLockEnabled, vaultUnlocked else { return }
+            self.isContentHidden = true
+        }
+
+        /// App fully backgrounded. Cover content; raise PIN gate only when grace period has expired.
+        func handleBackground() {
+            guard self.requiresPIN, self.appLockEnabled else { return }
+            self.isContentHidden = true
+            self.needsPINEntry   = !self.isWithinGracePeriod
+        }
+
+        /// App returned to foreground. Auto-unlock within grace period; re-lock when expired.
+        func handleActive() {
+            guard self.requiresPIN, self.appLockEnabled else {
+                self.isContentHidden = false
+                self.needsPINEntry   = false
+                return
+            }
+            if self.isWithinGracePeriod {
+                self.isContentHidden = false
+                self.needsPINEntry   = false
+            } else {
+                self.isContentHidden = true
+                self.needsPINEntry   = true
+            }
+        }
+
+        /// Call from onNormal after PIN entry — clears the lock gate and records the unlock.
+        func unlockNormal() {
+            self.recordUnlock()
+            self.isContentHidden = false
+            self.needsPINEntry   = false
+        }
+
+        /// Call from onDuress after duress PIN entry — same lock-state transition as unlockNormal.
+        func unlockDuress() {
+            self.recordUnlock()
+            self.isContentHidden = false
+            self.needsPINEntry   = false
         }
 
         // MARK: - PIN Setup
@@ -594,7 +659,7 @@ extension Manager {
         /// Applies the routing-depth state transition for a verified result.
         ///
         /// Intentionally separated from `verify()` so the state mutation fires in
-        /// the same synchronous context as `isLocked = false` (inside PINEntry's
+        /// the same synchronous context as `unlockNormal/Duress()` (inside PINEntry's
         /// gateDuration asyncAfter). SwiftUI then batches the state change and the
         /// cover dismissal into one render pass, preventing the vault tab from
         /// briefly showing a stale duress-mode render when the cover dismisses.
