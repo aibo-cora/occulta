@@ -199,14 +199,14 @@ like `keyManager` and `blobDirectory` already are).
 No-op maintenance (`maintainNoOpBlob`, `rewriteNoOpBlob`) always targets the
 `AppGroupBlobStore` regardless of which store holds the real payload — I6.
 
-### Phase 1 — protocol shell, app group only (current scope)
+### Phase 1 — protocol shell, app group only ✅
 
-- Introduce `BlobStore` protocol and `AppGroupBlobStore` (wraps current logic).
-- Remove `directory: URL?` from `seal/unseal`; replace with `store: any BlobStore`.
-- `Manager.Security` gets `private let blobStore: any BlobStore` replacing `blobDirectory: URL?`.
-- Tests switch from `blobDirectory: tempURL` to an `InMemoryBlobStore` — eliminates
-  temp-directory collisions and the `URL?` hack.
-- No user-facing behaviour change. No new `AppLayerConfig` field yet.
+- `BlobStore` protocol and `AppGroupBlobStore` in `SecureMode+BlobStore.swift`.
+- `seal/unseal` take `store: any BlobStore`; `directory: URL?` is gone.
+- `Manager.Security` holds `private let blobStore: any BlobStore` (default `AppGroupBlobStore()`).
+- Tests use `InMemoryBlobStore` (in `OccultaTests/SecureMode/InMemoryBlobStore.swift`) —
+  no temp-directory creation, no filesystem access, no cross-test contamination.
+- No user-facing behaviour change. No new `AppLayerConfig` field.
 
 ### Phase 2 — additional destinations (future)
 

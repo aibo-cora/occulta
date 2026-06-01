@@ -33,19 +33,15 @@ private func makeSecurity() throws -> Manager.Security {
 
 /// Creates a security manager plus the contact/vault managers needed by `activateSecureMode`.
 /// The vault manager starts locked (no LAContext) so vault PEK extraction is skipped.
-/// A per-invocation temp directory is used for blob storage so concurrent tests don't
-/// cross-contaminate each other's blob files.
+/// An `InMemoryBlobStore` is injected so tests never touch the filesystem.
 @MainActor
 private func makeSecurityAndManagers() throws -> (security: Manager.Security,
                                                     container: ModelContainer,
                                                     contacts: ContactManager,
                                                     vault: VaultManager) {
     let container = try makeContainer()
-    let blobDir   = FileManager.default.temporaryDirectory
-                        .appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: blobDir, withIntermediateDirectories: true)
     let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager(),
-                                     blobDirectory: blobDir)
+                                     blobStore: InMemoryBlobStore())
     let contacts  = ContactManager(modelContainer: container)
     let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return (security, container, contacts, vault)

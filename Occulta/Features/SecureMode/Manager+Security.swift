@@ -78,10 +78,9 @@ extension Manager {
         /// SwiftData store URL for WAL checkpoint during key rotation.
         /// `nil` in tests (TestKeyManager, in-memory store).
         private let storeURL:        URL?
-        /// Override for the blob directory used by `Manager.Blob.seal/unseal`.
-        /// `nil` (default) → production app-group path.
-        /// Non-nil → per-test temp directory that avoids cross-test blob collisions.
-        private let blobDirectory:   URL?
+        /// Blob I/O back-end for `seal` and `unseal` during key rotation.
+        /// Defaults to `AppGroupBlobStore` (production). Tests inject `InMemoryBlobStore`.
+        private let blobStore: any BlobStore
 
         private var wrongPINCount          = 0
         private var consecutiveDuressCount = 0
@@ -100,13 +99,13 @@ extension Manager {
         init(modelContainer: ModelContainer,
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
-             blobDirectory: URL? = nil,
+             blobStore: any BlobStore = AppGroupBlobStore(),
              enabled: Bool = true) {
-            let context          = ModelContext(modelContainer)
-            self.modelContext    = context
-            self.keyManager      = keyManager
-            self.storeURL        = storeURL
-            self.blobDirectory   = blobDirectory
+            let context       = ModelContext(modelContainer)
+            self.modelContext = context
+            self.keyManager   = keyManager
+            self.storeURL     = storeURL
+            self.blobStore    = blobStore
 
             // Feature-flag off path: skip all DB reads. requiresPIN returns false,
             // isRestricted = false. All properties stay at defaults.
@@ -391,7 +390,7 @@ extension Manager {
                 // the attack surface: blob compromise (SE Secure Mode key, no biometrics)
                 // would also yield all vault entry symmetric keys, bypassing the biometric gate.
                 let payload = BlobPayload(contacts: blobContacts)
-                try Manager.Blob.seal(payload, blobKey: blobKey, directory: self.blobDirectory)
+                try Manager.Blob.seal(payload, blobKey: blobKey, store: self.blobStore)
 
                 // ── Step 8: Re-encrypt ALL contacts + vault depth fields ──────────────
                 //
@@ -519,7 +518,7 @@ extension Manager {
             let payload: BlobPayload
             
             do {
-                payload = try Manager.Blob.unseal(blobKey: blobKey, directory: self.blobDirectory)
+                payload = try Manager.Blob.unseal(blobKey: blobKey, store: self.blobStore)
             } catch {
                 // Blob is missing or corrupted (e.g. overwritten by maintainNoOpBlob after 24 h).
                 // Sensitive contacts that were hard-deleted during activation are unrecoverable,

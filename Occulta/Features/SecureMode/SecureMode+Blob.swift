@@ -193,23 +193,11 @@ extension Manager {
             case decryptionFailed
         }
 
-        /// Encrypts `payload` and writes it as the current blob, replacing whatever
-        /// file was there before (no-op or a previous real payload).
+        /// Encrypts `payload` and writes it to `store`, replacing whatever was there before.
         ///
-        /// The plaintext is bucket-padded before sealing so the file size reveals
-        /// only a tier, not the exact contact count.
-        ///
-        /// - Parameter directory: Override the default app-group blob directory.
-        ///   Pass `nil` (default) in production; pass a per-test temp URL in unit tests
-        ///   to avoid cross-test blob collisions when tests run concurrently.
-        static func seal(_ payload: BlobPayload, blobKey: SymmetricKey, directory: URL? = nil) throws {
-            guard let dir = directory ?? self.blobDirectory() else { throw BlobError.encryptionFailed }
-
-            // Replace existing blob (no-op or previous real payload).
-            if let existing = self.findBlob(in: dir) {
-                try FileManager.default.removeItem(at: existing)
-            }
-
+        /// The plaintext is bucket-padded before sealing so the ciphertext size reveals
+        /// only a tier, not the exact contact count. All I/O is delegated to `store`.
+        static func seal(_ payload: BlobPayload, blobKey: SymmetricKey, store: any BlobStore) throws {
             // Encode → pad → seal. Zero the plaintext buffer before returning.
             var plaintext = try JSONEncoder().encode(payload)
             let padded    = self.bucketSize(for: plaintext.count)
@@ -224,29 +212,15 @@ extension Manager {
                 throw BlobError.encryptionFailed
             }
 
-            let url = dir.appendingPathComponent("\(UUID().uuidString).occbak")
-            try combined.write(to: url, options: .completeFileProtection)
-            var mutableURL = url
-            var values     = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try mutableURL.setResourceValues(values)
+            try store.write(combined)
         }
 
-        /// Decrypts the current blob and returns its payload.
+        /// Decrypts the blob from `store` and returns its payload.
         ///
-        /// Throws `BlobError.noBlobFound` when no `.occbak` file exists (the blob
-        /// directory is empty or was never written). Throws `BlobError.decryptionFailed`
-        /// when the file exists but cannot be opened with `blobKey` — wrong key or
-        /// corrupt data. Both are fatal for the deactivation sequence.
-        ///
-        /// - Parameter directory: Override the default app-group blob directory.
-        ///   Must match the `directory` passed to `seal`. Pass `nil` (default) in production.
-        static func unseal(blobKey: SymmetricKey, directory: URL? = nil) throws -> BlobPayload {
-            guard let dir = directory ?? self.blobDirectory(),
-                  let url = self.findBlob(in: dir)
-            else { throw BlobError.noBlobFound }
-
-            let combined = try Data(contentsOf: url)
+        /// Throws `BlobError.noBlobFound` when the store has no blob.
+        /// Throws `BlobError.decryptionFailed` when the ciphertext cannot be opened.
+        static func unseal(blobKey: SymmetricKey, store: any BlobStore) throws -> BlobPayload {
+            let combined = try store.read()
             guard let box       = try? AES.GCM.SealedBox(combined: combined),
                   let plaintext = try? AES.GCM.open(box, using: blobKey)
             else { throw BlobError.decryptionFailed }
