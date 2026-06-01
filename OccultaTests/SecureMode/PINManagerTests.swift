@@ -213,7 +213,9 @@ struct SecurityVerifyActiveTests {
         try s.configurePIN("123456")
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        #expect(try s.verify("999999") == .duress)
+        let result = try s.verify("999999")
+        s.applyVerifyState(for: result)   // verify() and applyVerifyState() are intentionally separate
+        #expect(result == .duress)
         #expect(s.state == .duress)
     }
 
