@@ -365,6 +365,13 @@ extension Manager {
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
                     try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
                 }
+                // Flush re-encrypted contacts to the WAL BEFORE committing the staged key.
+                // reencryptAllFields only mutates the in-memory SwiftData objects; without
+                // an explicit save the WAL checkpoint in Step 10 would flush an empty WAL,
+                // leaving the main SQLite file with pre-activation ciphertext. After Step 11
+                // deletes the old canonical key, those rows become permanently unreadable.
+                try contactManager.modelContext.save()
+
                 // Re-encrypt VaultEntry.visibleThroughDepth (encrypted under local DB key).
                 // Every entry must end up with a staged-key ciphertext — no silent skips:
                 //   • nil depth (Bug 26): pre-existing entry never stamped → hide at all duress depths.
@@ -509,6 +516,10 @@ extension Manager {
                     // Sensitive shell text fields left unreadable here are overwritten in Step 5.
                     profile.visibleThroughDepth = nil
                 }
+                // Flush re-encrypted contacts to the WAL before the staged key is committed.
+                // Same invariant as activation: in-memory changes must reach SQLite BEFORE
+                // commitStagedLocalDBKey() or the WAL checkpoint will miss them.
+                try contactManager.modelContext.save()
 
                 // ── Step 5: Restore sensitive contacts from blob ────────────────────
                 // Step 4's reencryptKeyRecords already migrated all contacts' key records

@@ -17,7 +17,9 @@ import CryptoKit
 class ContactManager {
     private let modelExecutor: any ModelExecutor
     private let modelContainer: ModelContainer
-    private var modelContext: ModelContext { self.modelExecutor.modelContext }
+    // Internal (not private) so Manager.Security can flush the context during key rotation.
+    // Swift `private` is file-scoped; extensions in other files cannot see it.
+    var modelContext: ModelContext { self.modelExecutor.modelContext }
     
     private let cryptoManager: CryptoProtocol = Manager.Crypto()
     
