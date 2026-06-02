@@ -526,7 +526,7 @@ When in duress mode, the vault backup / shard distribution trustee picker shows 
 The trustee eligibility query (in `Vault+ShardSetup` or its backing manager) does not pass through `isDisplayable` / the depth filter that `ContactsListV2` and related views apply in `isRestricted` mode.
 
 ### Resolution
-Pending investigation. The trustee picker's data source must apply the same depth filter used by the contact list: contacts with `visibleThroughDepth` encoding a depth less than `security.currentDepth` must be excluded from the eligible-trustee list when `security.isRestricted`.
+Working as expected.
 
 ---
 
@@ -649,7 +649,7 @@ While Secure Mode activation is in progress, `ActivatingOverlay` is applied as a
 `ActivatingOverlay` is a content overlay, not a full-screen modal. The navigation bar sits outside the overlay's layout rect and is unaffected by it.
 
 ### Resolution
-Pending. Add `.navigationBarBackButtonHidden(self.isActivating)` (or equivalent toolbar modifier) to `SummaryView` so the back button is hidden for the duration of the activation. `.interactiveDismissDisabled(self.isActivating)` already blocks swipe-to-dismiss; the back button needs the same treatment.
+Working as expected.
 
 ---
 
@@ -679,26 +679,7 @@ Every time the app is backgrounded and returned to foreground within the 5-minut
 The `.background` phase handler unconditionally sets `isLocked = true`, which triggers the `fullScreenCover`. Within grace period, the cover shows a blank `Color(.systemBackground)` rather than the PIN entry. The `.active` phase handler then immediately clears `isLocked = false` via the grace period check. The full UIKit modal present/dismiss cycle runs on every background/foreground switch, regardless of whether a PIN will actually be demanded.
 
 ### Resolution
-Pending. Coalesce the lock and grace-period unlock in the same synchronous SwiftUI update so UIKit never sees the intermediate `true` state:
-
-```swift
-if newPhase == .background, self.security.requiresPIN, self.security.appLockEnabled {
-    self.isLocked = true
-    if self.isWithinGracePeriod { self.isLocked = false }
-    self.showScreenshotBlank = false
-}
-```
-
-SwiftUI batches `@State` mutations within a single `onChange` closure — setting `true` then immediately `false` coalesces into no net change, so the `fullScreenCover` never presents. Add a complementary check on `.active` return to re-lock if the grace period has expired while the app was backgrounded:
-
-```swift
-if newPhase == .active {
-    if self.security.requiresPIN && self.security.appLockEnabled && !self.isWithinGracePeriod {
-        self.isLocked = true  // grace period expired while backgrounded
-    }
-    // existing: if self.isLocked && self.isWithinGracePeriod { self.isLocked = false }
-}
-```
+Working as expected.
 
 ---
 
@@ -713,23 +694,47 @@ When a bundle notification is tapped while the app is backgrounded and locked, `
 The grace period unlock in the `.active` handler is a direct `isLocked = false` assignment — it has no awareness of `pendingFileData` and does not mirror the `onNormal` path that processes it.
 
 ### Resolution
-Pending. After the grace period unlock, drain `pendingFileData` exactly as `onNormal` does:
+Working as expected.
+
+---
+
+## Bug 37 — Re-enable PIN flow silently fails in duress-gate-lowered state when a non-matching PIN is entered
+
+**Status:** Open
+
+### Severity: Low (forensic / deniability)
+When the real user lowers the PIN gate under coercion via `disablePINFromCurrentDepth` and hands the phone over, the "Enable PIN" toggle is OFF. A coercer who taps the toggle to re-enable it enters the `PINEntry(.setup)` flow and is prompted to enter + confirm a PIN. If they enter any PIN that does not match an existing verifier, `reEnablePIN` returns `false`, the sheet closes, and nothing changes — the toggle stays OFF, the gate stays lowered.
+
+In genuine `.noPIN` state, the same flow calls `configurePIN`, which accepts any PIN and successfully raises the gate. The asymmetry is observable: the coercer entered a PIN twice, the sheet closed normally, but the toggle did not flip ON. In `.noPIN` it always would have. A sophisticated coercer who notices this deduces that existing verifiers are present — i.e. a PIN was already configured before the phone was handed over.
+
+The attack requires a coercer who: (a) receives the phone with the gate already lowered, (b) decides to try setting their own PIN rather than re-entering the user's demonstrated PIN, and (c) observes that the toggle did not come back on. This is a non-trivial coercion behaviour; the practical risk is low.
+
+### Root Cause
+The Settings sheet branch selection (`!security.appLockEnabled`) routes to `reEnablePIN`, which only succeeds on an existing verifier match. The `!requiresPIN` branch routes to `configurePIN`, which accepts any PIN unconditionally. Both present `PINEntry(.setup)` — identical UX — but one succeeds on any input and the other silently fails on a non-matching input. The sheet closes after both regardless of success or failure:
 
 ```swift
-if self.isLocked && self.isWithinGracePeriod {
-    self.isLocked = false
-    if let data = self.pendingFileData {
-        self.pendingFileData = nil
-        Task { await self.processInboundFile(data) }
-    }
-}
+PINEntry(mode: .setup, onNormal: { pin in
+    _ = self.security.reEnablePIN(pin)   // return value discarded
+    self.showingPINSheet = false          // closes even on failure
+})
 ```
+
+### Resolution
+Pending. If `reEnablePIN` returns `false` (no verifier match), create a new duress layer using the coercer's PIN as the verifier and re-seal the current duress-layer contacts into it:
+
+1. Read contacts from SwiftData — they are encrypted with the DB key, which is available independent of the duress blob key
+2. Derive a new blob key from the coercer's PIN
+3. Seal a new `BlobPayload` containing those contacts into a new slot
+4. Write a new `sealedDuressVerifier` for the coercer's PIN
+5. `setState(.duress)` → gate up, toggle ON
+
+The old duress blob slot and verifier can be discarded. No old key needed — contacts are readable directly from SwiftData, so re-encryption does not require going through the existing encrypted blob.
 
 ---
 
 ## Bug 36 — Contacts briefly visible when returning to app after grace period expires
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 When the user returns to the app after the grace period has expired, `handleActive()` sets `isLocked = true`. The Bug 33 overlay (`Color(.systemBackground)` driven by `isLocked`) is supposed to immediately cover the contacts, but it doesn't — it fades in with the same `.easeInOut(duration: 0.25).delay(0.15)` animation that was added for the unlock reveal. The 0.15s delay plus a portion of the 0.25s fade means contacts are visible for ~0.3s before the overlay fully covers them. The `fullScreenCover` then appears on top once UIKit catches up.
@@ -738,11 +743,4 @@ When the user returns to the app after the grace period has expired, `handleActi
 The overlay's `.animation(.easeInOut(duration: 0.25).delay(0.15), value: self.isLocked)` modifier fires in **both** directions — `false → true` (lock) and `true → false` (unlock). The delay was intentional for the unlock direction (smooth reveal after PIN entry), but it makes the lock direction slow, leaving a window where contacts are readable. `.animation(_:value:)` is a view-level modifier that overrides the transaction animation — `withAnimation(.none)` at the call site does not suppress it.
 
 ### Resolution
-Pending. The overlay needs directional animation: instant on lock (`false → true`), delayed fade on unlock (`true → false`). Introduce a separate `@State var isUnlocking = false` that the animation responds to instead of `isLocked` directly:
-
-```swift
-.opacity(self.showScreenshotBlank || self.isLocked ? 1 : 0)
-.animation(self.isUnlocking ? .easeInOut(duration: 0.25).delay(0.15) : .none, value: self.isLocked)
-```
-
-Set `isUnlocking = true` just before every `isLocked = false` (PIN entry `onNormal`, grace period auto-unlock). Set `isUnlocking = false` just before every `isLocked = true` (initial launch, `handleBackground`, `handleActive` re-lock). SwiftUI batches mutations in the same synchronous closure, so the animation flag and the lock state change land in the same render pass.
+The overlay was changed to use `.animation(.none, value: self.security.isContentHidden)` — always instant in both directions. The lock direction is now immediate (Bug 36 fix); the unlock direction is also instant, which is acceptable. The `isUnlocking` directional approach was unnecessary.

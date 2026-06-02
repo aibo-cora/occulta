@@ -33,7 +33,7 @@ private func makeSecurity() throws -> Manager.Security {
 
 /// Creates a security manager plus the contact/vault managers needed by `activateSecureMode`.
 /// The vault manager starts locked (no LAContext) so vault PEK extraction is skipped.
-/// An `InMemoryBlobStore` is injected so tests never touch the filesystem.
+/// An `InMemoryLayerStoreBackend` is injected so tests never touch the filesystem.
 @MainActor
 private func makeSecurityAndManagers() throws -> (security: Manager.Security,
                                                     container: ModelContainer,
@@ -41,7 +41,7 @@ private func makeSecurityAndManagers() throws -> (security: Manager.Security,
                                                     vault: VaultManager) {
     let container = try makeContainer()
     let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager(),
-                                     blobStore: InMemoryBlobStore())
+                                     blobStore: InMemoryLayerStoreBackend())
     let contacts  = ContactManager(modelContainer: container)
     let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return (security, container, contacts, vault)

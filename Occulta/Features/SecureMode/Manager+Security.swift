@@ -79,8 +79,8 @@ extension Manager {
         /// `nil` in tests (TestKeyManager, in-memory store).
         private let storeURL:        URL?
         /// Blob I/O back-end for `seal` and `unseal` during key rotation.
-        /// Defaults to `AppGroupBlobStore` (production). Tests inject `InMemoryBlobStore`.
-        private let blobStore: any BlobStore
+        /// Defaults to `AppGroupLayerStoreBackend` (production). Tests inject `InMemoryLayerStoreBackend`.
+        private let blobStore: any LayerStoreBackend
 
         private var wrongPINCount          = 0
         private var consecutiveDuressCount = 0
@@ -99,7 +99,7 @@ extension Manager {
         init(modelContainer: ModelContainer,
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
-             blobStore: any BlobStore = AppGroupBlobStore(),
+             blobStore: any LayerStoreBackend = AppGroupLayerStoreBackend(),
              enabled: Bool = true) {
             let context       = ModelContext(modelContainer)
             self.modelContext = context
@@ -205,28 +205,26 @@ extension Manager {
             self.needsPINEntry   = false
         }
 
-        // MARK: - Blob maintenance
+        // MARK: - Layer store maintenance
 
-        /// Creates or refreshes the app-group no-op blob on launch.
+        /// Creates or refreshes the no-op layer store file on launch.
         ///
-        /// Call once from `OccultaApp.init()` after this object is initialised.
-        /// No-op when Secure Mode is active (blob holds a real payload that must
-        /// not be overwritten) or when the feature flag is off.
-        func maintainBlobOnLaunch() {
+        /// Call once from `OccultaApp.init()`. No-op when Secure Mode is active
+        /// (file holds a real payload) or when the feature flag is off.
+        func maintainLayerStore() {
             guard !self.isSecureModeActive else { return }
-            Manager.Blob.maintainNoOpBlob()
+            Manager.LayerStore.maintain()
         }
 
-        /// Rewrites the app-group no-op blob on a background thread.
+        /// Rewrites the no-op layer store file on a background thread.
         ///
-        /// Call from `OccultaApp`'s debounced save notification so the blob's
-        /// Last-Modified timestamp correlates with normal app activity rather than
-        /// spiking only at meaningful events (activation, PIN changes, etc.).
+        /// Call from `OccultaApp`'s debounced save notification so the file's
+        /// Last-Modified timestamp correlates with normal app activity.
         /// No-op when Secure Mode is active or the feature flag is off.
-        func rewriteNoOpBlob() {
+        func rewriteLayerStore() {
             guard !self.isSecureModeActive else { return }
             DispatchQueue.global(qos: .utility).async {
-                Manager.Blob.rewriteNoOpBlob()
+                Manager.LayerStore.rewrite()
             }
         }
 
@@ -337,7 +335,7 @@ extension Manager {
                 let stagedKey = try self.keyManager.createStagedLocalDBKey()
                 // ── Step 3: Derive blob key ──────────────────────────────────────────
                 guard
-                    let blobKey = Manager.Blob.deriveBlobKey(from: seKey)
+                    let layerKey = Manager.LayerStore.deriveKey(from: seKey)
                 else {
                     throw SecurityError.keyDerivationFailed
                 }
@@ -345,7 +343,7 @@ extension Manager {
                 // ── Step 4: Classify contacts ────────────────────────────────────────
                 // sensitive → blob; safe → re-encrypt in DB.
                 let allProfiles = try contactManager.fetchAllContacts()
-                var blobContacts:  [ContactBlobRecord] = []
+                var blobContacts:  [LayerContact] = []
                 var safeProfiles:  [Contact.Profile]   = []
 
                 for profile in allProfiles {
@@ -371,7 +369,7 @@ extension Manager {
                             depth = nil
                         }
                         blobContacts.append(
-                            ContactBlobRecord(draft: draft, signedAttributes: signedAttrs,
+                            LayerContact(draft: draft, signedAttributes: signedAttrs,
                                               visibleThroughDepth: depth)
                         )
                     }
@@ -389,8 +387,8 @@ extension Manager {
                 // deactivation. Storing raw PEK bytes in the blob would unnecessarily widen
                 // the attack surface: blob compromise (SE Secure Mode key, no biometrics)
                 // would also yield all vault entry symmetric keys, bypassing the biometric gate.
-                let payload = BlobPayload(contacts: blobContacts)
-                try Manager.Blob.seal(payload, blobKey: blobKey, store: self.blobStore)
+                let payload = LayerPayload(contacts: blobContacts)
+                try Manager.LayerStore.seal(payload, layerKey: blobKey, store: self.blobStore)
 
                 // ── Step 8: Re-encrypt ALL contacts + vault depth fields ──────────────
                 //
@@ -511,20 +509,20 @@ extension Manager {
             else { throw SecurityError.incorrectPIN }
 
             // ── Step 2: Derive blob key + unseal ────────────────────────────────────
-            guard let blobKey = Manager.Blob.deriveBlobKey(from: seKey) else {
+            guard let layerKey = Manager.LayerStore.deriveKey(from: seKey) else {
                 throw SecurityError.keyDerivationFailed
             }
             
-            let payload: BlobPayload
+            let payload: LayerPayload
             
             do {
-                payload = try Manager.Blob.unseal(blobKey: blobKey, store: self.blobStore)
+                payload = try Manager.LayerStore.unseal(layerKey: blobKey, store: self.blobStore)
             } catch {
-                // Blob is missing or corrupted (e.g. overwritten by maintainNoOpBlob after 24 h).
+                // Blob is missing or corrupted (e.g. overwritten by maintain after 24 h).
                 // Sensitive contacts that were hard-deleted during activation are unrecoverable,
                 // but continuing with an empty list is strictly better than being permanently
                 // stuck: safe contacts in the DB are intact and the key rotation still runs.
-                payload = BlobPayload(contacts: [])
+                payload = LayerPayload(contacts: [])
             }
 
             // ── Step 3: Create staged key (point of no return begins) ───────────────
@@ -636,7 +634,7 @@ extension Manager {
             try self.setState(.normal, config: config)
             try self.modelContext.save()
 
-            Manager.Blob.rewriteNoOpBlob()
+            Manager.LayerStore.rewrite()
             self.resetCounters()
         }
 
@@ -666,7 +664,7 @@ extension Manager {
             try self.setState(.normal, config: config)
             try self.modelContext.save()
 
-            Manager.Blob.rewriteNoOpBlob()
+            Manager.LayerStore.rewrite()
             self.resetCounters()
         }
 

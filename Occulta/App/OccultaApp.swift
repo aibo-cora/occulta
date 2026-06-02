@@ -77,7 +77,7 @@ struct OccultaApp: App {
                                                      storeURL: url,
                                                      enabled: FeatureFlags.isEnabled(.secureMode))
         if FeatureFlags.isEnabled(.secureMode) {
-            security.maintainBlobOnLaunch()
+            security.maintainLayerStore()
         }
         self.security            = security
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
@@ -436,7 +436,7 @@ struct OccultaApp: App {
                 .receive(on: DispatchQueue.main)
                 .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
                     guard FeatureFlags.isEnabled(.secureMode) else { return }
-                    self.security.rewriteNoOpBlob()
+                    self.security.rewriteLayerStore()
                 }
                 .animation(.none, value: self.security.needsPINEntry)
             }
