@@ -159,7 +159,7 @@ struct SecureModeBlobLifecycleTests {
         else { throw TestError("could not derive blob key from TestKeyManager") }
 
         // Should not throw — proves the sealed payload is readable with the right key.
-        let payload = try Manager.LayerStore.unseal(layerKey: blobKey, store: c.blobStore)
+        let payload = try Manager.LayerStore.unseal(layerKey: layerKey, store: c.blobStore)
         _ = payload  // structure is valid; contact content depends on SE availability
     }
 
@@ -212,7 +212,7 @@ struct SecureModeClassificationTests {
               let layerKey = Manager.LayerStore.deriveKey(from: seKey)
         else { throw TestError("could not derive blob key") }
 
-        let payload = try Manager.LayerStore.unseal(layerKey: blobKey, store: c.blobStore)
+        let payload = try Manager.LayerStore.unseal(layerKey: layerKey, store: c.blobStore)
         let identifiersInBlob = payload.contacts.map { $0.draft.identifier }
         #expect(identifiersInBlob.contains(sensitiveID),
                 "sensitive contact must be sealed in the blob during activation")
@@ -239,7 +239,7 @@ struct SecureModeClassificationTests {
               let layerKey = Manager.LayerStore.deriveKey(from: seKey)
         else { throw TestError("could not derive blob key") }
 
-        let payload           = try Manager.LayerStore.unseal(layerKey: blobKey, store: c.blobStore)
+        let payload           = try Manager.LayerStore.unseal(layerKey: layerKey, store: c.blobStore)
         let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
 
         #expect(!identifiersInBlob.contains(safeID),

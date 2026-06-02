@@ -388,7 +388,7 @@ extension Manager {
                 // the attack surface: blob compromise (SE Secure Mode key, no biometrics)
                 // would also yield all vault entry symmetric keys, bypassing the biometric gate.
                 let payload = LayerPayload(contacts: blobContacts)
-                try Manager.LayerStore.seal(payload, layerKey: blobKey, store: self.blobStore)
+                try Manager.LayerStore.seal(payload, layerKey: layerKey, store: self.blobStore)
 
                 // ── Step 8: Re-encrypt ALL contacts + vault depth fields ──────────────
                 //
@@ -516,7 +516,7 @@ extension Manager {
             let payload: LayerPayload
             
             do {
-                payload = try Manager.LayerStore.unseal(layerKey: blobKey, store: self.blobStore)
+                payload = try Manager.LayerStore.unseal(layerKey: layerKey, store: self.blobStore)
             } catch {
                 // Blob is missing or corrupted (e.g. overwritten by maintain after 24 h).
                 // Sensitive contacts that were hard-deleted during activation are unrecoverable,

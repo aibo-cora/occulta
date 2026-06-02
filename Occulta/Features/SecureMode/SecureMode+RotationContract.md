@@ -18,7 +18,7 @@ These must hold **at all times** between any two successful app launches:
 | I3 | `contactManager.modelContext` and `vaultManager.modelContext` are **fully flushed to the WAL** before `commitStagedLocalDBKey()` is called. |
 | I4 | The WAL checkpoint runs **after** `commitStagedLocalDBKey()`, never before. Checkpointing before commit would move pre-rotation ciphertext into the main file. |
 | I5 | The old canonical SE key is deleted **only after** a successful WAL checkpoint. |
-| I6 | The app group **always** contains a blob — either a real payload (Secure Mode active) or an indistinguishable no-op. This is true regardless of which `BlobStore` destination is active. An absent app-group blob is a forensic tell. |
+| I6 | The app group **always** contains a blob — either a real payload (Secure Mode active) or an indistinguishable no-op. This is true regardless of which `LayerStoreBackend` destination is active. An absent app-group blob is a forensic tell. |
 | I7 | `AppLayerConfig` **always** exists from the very first launch. Its presence is not a forensic tell for PIN or Secure Mode usage. Sensitive fields (`sealedNormalVerifier`, `sealedDuressVerifier`) are nil when those features are not configured; the row itself is always there. Never delete the row — reset fields to nil instead. |
 
 ---
@@ -43,7 +43,7 @@ These must hold **at all times** between any two successful app launches:
 11. deleteSupersededLocalDBArtefacts()             ← only safe AFTER checkpoint (I5)
 12. [Activation] self.modelContext.save()          ← persist duress verifier
     [Deactivation] config.sealedDuressVerifier = nil; self.modelContext.save()
-13. [Deactivation] rewriteNoOpBlob()
+13. [Deactivation] rewriteLayerStore()
 ```
 
 **Rule**: any new save added to the sequence must appear at or before step 9.
@@ -84,7 +84,7 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
       → Verify the save occurs **before** step 9 (`commitStagedLocalDBKey`).
 - [ ] Does the change move or remove `contactManager.modelContext.save()`?
       → Stop. Confirm I3 is preserved by another explicit flush.
-- [ ] Does the change affect `ContactBlobRecord` or `BlobPayload`?
+- [ ] Does the change affect `LayerContact` or `LayerPayload`?
       → Update both `seal()` in activation and the restore loop in deactivation.
 - [ ] Does the change modify `visibleThroughDepth` classification?
       → Verify `isVisible` at depth 0 (normal) and depth .max return correct results.
@@ -109,7 +109,7 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
 - [ ] Add the field to `reencryptAllFields` in `Contact+Model+Reencrypt.swift`.
 - [ ] If the field is a `Data` blob (not a base64 string), use the `reencrypt(data:)` overload.
 - [ ] If the field must survive activation (i.e., must be restored on deactivation),
-      add it to `ContactBlobRecord`, update `ContactBlobRecord` encoder/decoder,
+      add it to `LayerContact`, update `LayerContact` encoder/decoder,
       and update the blob restore loop in `deactivateSecureMode` Step 5.
 - [ ] Update the deactivation Step 4 if the field needs to be cleared (like `visibleThroughDepth`).
 - [ ] Write a unit test in `StagedKeyTests` that verifies the field round-trips
@@ -137,15 +137,15 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
 - [ ] In restricted (duress) mode the grace period is always zero. Any shortcut
       that auto-unlocks must guard on `!isRestricted`.
 
-### Modifying blob maintenance (`maintainNoOpBlob`, `rewriteNoOpBlob`)
+### Modifying blob maintenance (`maintain`, `rewriteLayerStore`)
 
-- [ ] Never call `rewriteNoOpBlob` when `sealedDuressVerifier != nil`.
+- [ ] Never call `rewriteLayerStore` when `sealedDuressVerifier != nil`.
       The blob holds a real payload; overwriting it destroys deactivation data.
-- [ ] `rewriteNoOpBlob` is debounced (30 s) and gated on `!security.isSecureModeActive`
+- [ ] `rewriteLayerStore` is debounced (30 s) and gated on `!security.isSecureModeActive`
       in `OccultaApp`. Maintain both guards if the call site changes.
-- [ ] App group no-op maintenance must run regardless of which `BlobStore` destination
+- [ ] App group no-op maintenance must run regardless of which `LayerStoreBackend` destination
       is active. If a future destination stores the real payload externally, the app group
-      still needs its no-op blob — see I6 and the BlobStore section below.
+      still needs its no-op blob — see I6 and the LayerStoreBackend section below.
 
 ### Modifying `AppLayerConfig`
 
@@ -160,55 +160,28 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
 
 ---
 
-## BlobStore Refactor (Planned)
+## Layer Store Protocol (Implemented)
 
-### Motivation
-
-`Manager.Blob.seal/unseal` currently take a `directory: URL?` which is nil in
-production (hard-coded app group path) and a temp URL in tests. Adding alternative
-destinations (external storage, etc.) by extending this parameter is not scalable.
-The refactor decouples blob I/O from blob crypto behind a protocol.
-
-### Protocol contract (I/O only — no crypto)
+`LayerStoreBackend` protocol decouples layer store I/O from crypto. `Manager.LayerStore` owns
+all cryptography; backends handle only raw ciphertext bytes.
 
 ```swift
-/// Blob I/O back-end. Manager.Blob owns all crypto (padding, AES-GCM, HKDF).
-/// Implementations handle only reading and writing raw ciphertext bytes.
-protocol BlobStore {
-    /// Write already-encrypted, already-padded ciphertext, replacing any
-    /// existing blob. Throws on I/O failure (permissions, device full, etc.).
+/// Layer store I/O back-end. Manager.LayerStore owns all crypto (padding, AES-GCM, HKDF).
+protocol LayerStoreBackend {
     func write(_ encryptedData: Data) throws
-
-    /// Return raw ciphertext. Throws `BlobError.noBlobFound` if absent,
-    /// `BlobError.decryptionFailed` if data is present but unreadable.
-    func read() throws -> Data
-
-    /// Delete the current blob. No-op if absent.
+    func read() throws -> Data   // throws Manager.LayerStore.Error.notFound if absent
     func delete()
-
-    /// True if a blob file exists at this location (content not checked).
-    var hasBlob: Bool { get }
+    var exists: Bool { get }
 }
 ```
 
-`Manager.Blob.seal(_:blobKey:store:)` and `unseal(blobKey:store:)` accept a
-`BlobStore` instead of `directory: URL?`. The call sites in `activateSecureMode`
-and `deactivateSecureMode` pass the store from a `Security` property (injectable,
-like `keyManager` and `blobDirectory` already are).
+- `LayerStoreBackend` protocol and `AppGroupLayerStoreBackend` in `SecureMode+LayerStoreBackend.swift`. ✅
+- `seal/unseal` take `store: any LayerStoreBackend`. ✅
+- `Manager.Security` holds `private let blobStore: any LayerStoreBackend` (default `AppGroupLayerStoreBackend()`). ✅
+- Tests use `InMemoryLayerStoreBackend` (`OccultaTests/SecureMode/InMemoryLayerStoreBackend.swift`). ✅
+- No-op maintenance (`maintain`, `rewriteLayerStore`) targets `AppGroupLayerStoreBackend` — I6. ✅
 
-No-op maintenance (`maintainNoOpBlob`, `rewriteNoOpBlob`) always targets the
-`AppGroupBlobStore` regardless of which store holds the real payload — I6.
-
-### Phase 1 — protocol shell, app group only ✅
-
-- `BlobStore` protocol and `AppGroupBlobStore` in `SecureMode+BlobStore.swift`.
-- `seal/unseal` take `store: any BlobStore`; `directory: URL?` is gone.
-- `Manager.Security` holds `private let blobStore: any BlobStore` (default `AppGroupBlobStore()`).
-- Tests use `InMemoryBlobStore` (in `OccultaTests/SecureMode/InMemoryBlobStore.swift`) —
-  no temp-directory creation, no filesystem access, no cross-test contamination.
-- No user-facing behaviour change. No new `AppLayerConfig` field.
-
-### Phase 2 — additional destinations (future)
+## Alternative Destinations (Future)
 
 **New `AppLayerConfig` field**
 
@@ -225,7 +198,7 @@ it exists on every install from day one.
 **Destination enum**
 
 ```swift
-enum BlobStoreDestination: Codable {
+enum LayerStoreBackendDestination: Codable {
     case appGroup                          // default, always available
     case externalDocument(bookmark: Data)  // security-scoped bookmark, iOS Files / flash drive
     // future cases here
@@ -242,7 +215,7 @@ bookmark data.
 | Concern | Requirement |
 |---|---|
 | No-op in app group | App group always has a no-op blob regardless of destination (I6). |
-| Availability at deactivation | If the external store is unavailable, deactivation falls back to `BlobPayload(contacts: [])` and continues — same as today's `noBlobFound` path. User loses sensitive contacts; that is a documented tradeoff. |
+| Availability at deactivation | If the external store is unavailable, deactivation falls back to `LayerPayload(contacts: [])` and continues — same as today's `notFound` path. User loses sensitive contacts; that is a documented tradeoff. |
 | Crash / orphan | If activation seals to an external store and then crashes before the key commits, the orphaned blob on the external store is encrypted (harmless). The next successful activation overwrites it via `store.write()`. |
 | No metadata trail | External destinations must not write any local file that records which destination was chosen, beyond the encrypted `AppLayerConfig` field. The picker UI should be presented at a point in the flow that does not correlate with the activation timestamp. |
 | Destination change | The destination stored in `AppLayerConfig` is fixed for the lifetime of one activation. Changing the destination takes effect only on the next activation cycle (deactivate → change → activate). Mid-cycle destination migration is not supported. |
@@ -267,4 +240,4 @@ For any change in this area:
 
 ---
 
-_Last updated: 2026-06-01. Update this document whenever the rotation sequence or BlobStore design changes._
+_Last updated: 2026-06-01. Update this document whenever the rotation sequence or LayerStoreBackend design changes._

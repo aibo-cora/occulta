@@ -201,14 +201,15 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] "Enable PIN" toggle — transitions `.noPIN ↔ .pinOnly` via `PINEntry` sheet
 - [x] **[security]** Add `checkNormalPIN(_ pin: String) -> Bool` to `Manager.Security` — thin wrapper around `PINManager.checkVerifier` with no counter mutation. Replace the `security.verify()` call in `PINEntry.submitConfirmPhase` with this method. Using `verify()` for Settings-level PIN confirmation incorrectly increments `wrongPINCount` on each wrong attempt, which is semantically wrong (a Settings confirmation is not a lock-screen attack attempt) and pollutes the in-memory counter state.
 - [x] "Activate" button confirmation PIN (depth 0): `checkNormalPIN`. Sheet calls `activateSecureMode(confirmingEntryPIN:duressPIN:)` on success.
-- [ ] "Activate" button confirmation PIN (depth N > 0): `checkDuressPIN(N-1)` — the duress PIN that opened this layer. Requires `Manager.Security.checkCurrentLayerEntryPIN(_ pin: String) -> Bool`. Using `checkNormalPIN` at depth > 0 would expose the master PIN to an observer during setup.
+- [x] "Activate" button confirmation PIN (depth N > 0): `checkCurrentLayerPIN(_:)` on `Manager.Security` checks `sealedDuressVerifier` in `.duress` state, `sealedNormalVerifier` otherwise — no counter mutation. `PINEntry.submitConfirmPhase` (`.confirmThenSet` phase 1) already calls it. Activation actually succeeding at depth N > 0 (writing to `sealedNormalVerifiers[N]` / `sealedDuressVerifiers[N]`) deferred to Step 4 `AppLayerConfig` array migration.
 - [x] **[design — pre-ship]** Biometric unlock is not possible. `LAContext` cannot be routed to different app states — Face ID success always returns the same result regardless of which depth is active, meaning biometrics would always open the real app and bypass the duress view entirely. The app is PIN-only. Grace period implemented: lock on `.inactive` for screenshot protection; suppress PIN prompt on `.active` if `lastUnlockDate` is within 5 min. Zero grace period in restricted mode. `lastUnlockDate: Date?` on `Manager.Security` (in-memory only). Overlay shows blank screen within grace period (screenshot protection without PIN friction), full `PINEntry` outside it.
 - [x] "Deactivate" button — visible when `state == .normal`. Sheet calls `deactivateSecureMode(confirmingNormalPIN:)` on success.
-- [ ] **[design]** Activate / Deactivate button visibility — same cycle repeats at every depth:
-  - Activate visible at: `.pinOnly` and `.duress` (can always go one layer deeper from where you are)
-  - Deactivate visible at: `.normal` only (never at `.duress` — coercer in duress mode never sees it)
-  - After deactivating from "normal at depth N", returns to `.duress` at depth N-1 (the beginning of the cycle at this level)
-  - Confirmation PIN = the PIN that unlocked the current depth (normal PIN at depth 0, duress PIN at depth N > 0)
+- [x] **[design]** Activate / Deactivate button visibility — single-layer depth implemented:
+  - Activate ("Learn more") visible at: `!isSecureModeActive` (covers `.noPIN`/`.pinOnly`) and `state == .duress`; hidden at `.normal`. ✓
+  - Deactivate visible at: `isSecureModeActive && state == .normal && appLockEnabled` — hidden in `.duress`. ✓
+  - Toggle disabled when `isSecureModeActive && state == .normal && appLockEnabled`; intentionally enabled in `.duress` so `disablePINFromCurrentDepth` remains accessible via toggle tap (uses `.verifyCurrentLayer`, no `verify()` counter mutation). ✓
+  - `SecureModeDeactivateFlow` uses `.verifyCurrentLayer` → confirmation PIN = current layer's PIN at depth 0. ✓
+  - Multi-layer: after deactivating from depth N, returns to `.duress` at N-1; confirmation PIN at depth N > 0 deferred to Step 4 array migration.
 - [x] **[design]** Contact selection must be part of the activation flow, not a standalone Settings item visited later. Implemented as `SecureModeSetupFlow`: Education → PIN setup (confirmThenSet) → Contact classification → Summary/Activate (4 steps, step-dots indicator). `activateSecureMode` called only on the final confirm step.
 - [x] **Bug 24** — "Activation Failed" alert reveals Secure Mode state when flow is traversed in duress mode. See `Docs/bugs.md`.
 - [x] **Bug 25** — `ContactClassification` exposes sensitive contacts when opened in duress mode. See `Docs/bugs.md`.
@@ -329,7 +330,7 @@ Filter at depth N: show entries where `(decrypt(visibleThroughDepth) ?? 0) >= N`
 
 See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptography, no-op maintenance, and capacity estimation.
 
-- [x] Layer store infrastructure (`SecureMode+Blob.swift`, `SecureMode+BlobStore.swift`): `LayerPayload` / `LayerContact` payload types; `seal`/`unseal` (→ `push`/`pop` pending upgrade); HKDF key derivation; bucket padding; no-op `maintain()` called from `OccultaApp.init()`, 24 h rewrite schedule, `ModelContext.didSave` rewrite debounced 30 s (gated on `!isSecureModeActive`); App Group storage at `group.com.occulta.shared/blobs/` with `.completeFileProtection` and `isExcludedFromBackup = true`. Rename to `Manager.Security.LayerStore` / `LayerStoreBackend` / `AppGroupLayerStoreBackend` pending.
+- [x] Layer store infrastructure: `LayerPayload` / `LayerContact` payload types; `seal`/`unseal` (→ `push`/`pop` pending wire format upgrade); HKDF key derivation; bucket padding; no-op `maintain()` called from `OccultaApp.init()`, 24 h rewrite schedule, `ModelContext.didSave` rewrite debounced 30 s (gated on `!isSecureModeActive`); App Group storage at `group.com.occulta.shared/blobs/` with `.completeFileProtection` and `isExcludedFromBackup = true`. Files: `SecureMode+LayerStore.swift`, `SecureMode+LayerStoreBackend.swift`; types: `Manager.LayerStore` / `LayerStoreBackend` / `AppGroupLayerStoreBackend`.
 - [ ] **Layer store wire format upgrade** — `push`/`pop` replacing `seal`/`unseal`, 32-slot fixed-size file, full slot regeneration on every write, sequence number validation, `payloadTooLarge` guard. Full design in **LayerStore.md**.
 - [x] **Activation sequence — implemented.** Full key rotation, blob seal, contact re-encryption, and state transition are in `Manager+Security.activateSecureMode`. `modelContext.autosaveEnabled = false` + `defer` guards against accidental mid-sequence autosaves. Current POI is `commitStagedLocalDBKey()` (Keychain rename); `modelContext.save()` follows milliseconds later to write the duress verifier and state transition. A kill in that window requires a manual re-activation — no data loss. Documented in Known Limitations.
 
@@ -342,7 +343,7 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
   5. Decrypt all contacts using old canonical DB key. Partition into sensitive and safe. Build `ContactBlobRecord` for each sensitive contact (includes `signedAttributes` and `visibleThroughDepth` — Bug 23 fix).
   6. Migrate `visibleThroughDepth` in memory: `encrypt(Int.max)` for all safe contacts with nil field; `encrypt(0)` for all vault entries with nil field. Batch mutation unifies `ZMODIFICATIONDATE` — no activation timestamp fingerprint.
   7. ~~Unwrap vault PEKs~~ — **removed** (Bug 8).
-  8. Seal blob: `Manager.Blob.push(BlobPayload(contacts: sensitiveRecords), blobKey:)`. Replaces the no-op blob.
+  8. Seal blob: `Manager.LayerStore.seal(LayerPayload(contacts: sensitiveRecords), layerKey:)`. Replaces the no-op blob. (→ `push` once 32-slot upgrade lands)
   9. Re-encrypt **all** contacts' fields (safe + sensitive) under `newDBKey` in memory. Sensitive contacts remain in the DB — depth-based visibility (`visibleThroughDepth`) gates the UI. See "Post-activation contact access" below.
   10. Accumulate remaining in-memory mutations: update `AppLayerConfig` with new key tag (encrypted), duress verifier, `lastUnlockDate = nil` (Bug 5 fix).
   11. `modelContext.save()` — **point of no return.** Single atomic SQLite commit: re-encrypted contacts + `visibleThroughDepth` values + `AppLayerConfig` (new key tag + duress verifier). A crash before this line leaves the DB byte-for-byte unchanged. A crash during this line is handled by SQLite WAL atomicity.
@@ -379,8 +380,8 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 
 - [x] **Deactivation sequence — implemented.** Full key rotation, blob unseal, contact restoration, and state transition are in `Manager+Security.deactivateSecureMode`. `modelContext.autosaveEnabled = false` + `defer` added. Same crash window and deferred upgrade as activation above. Target sequence for `activeDBKeyTagEncrypted` refactor:
 
-  1. State guard + verify normal PIN. Derive blob key from `deriveSecureModeKey()`.
-  2. `pop(blobKey:)` → `BlobPayload`. Abort if blob is missing or decryption fails.
+  1. State guard + verify normal PIN. Derive layer key from `deriveSecureModeKey()`.
+  2. `unseal(layerKey:)` → `LayerPayload`. Abort if blob is missing or decryption fails. (→ `pop` once 32-slot upgrade lands)
   3. ~~Evaluate `LAContext` for biometrics~~ — **removed** (Bug 8). Vault PEKs not in blob; no biometrics needed.
   4. Create new SE key at a fresh UUID tag + new Keychain random. Derive `newDBKey`. **Old canonical key still valid. Crash here = orphaned new key, clean state.**
   5. `modelContext.autosaveEnabled = false`; `defer { modelContext.autosaveEnabled = true }`.
@@ -392,7 +393,7 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
   10. `modelContext.save()` — **point of no return.** Single atomic commit: restored contacts + cleared watermarks + `AppLayerConfig` (new key tag, no duress verifier). Crash before = DB unchanged, old key still in config, Secure Mode still active. Crash after = deactivation complete.
   11. `PRAGMA wal_checkpoint(TRUNCATE)`.
   12. Delete old SE key + old Keychain random — cleanup only.
-  13. `rewriteNoOpBlob()` — fresh no-op written.
+  13. `rewriteLayerStore()` — fresh no-op written.
   14. Transition state → `.pinOnly`.
 
 - ~~`SecureModeOperation` SwiftData record~~ — **superseded.** The original design required a recovery record because Keychain key-promotion and DB writes were interleaved, creating a crash window between steps 10–11 that neither key could recover. The autosave approach above eliminates this: `modelContext.autosaveEnabled = false` accumulates all mutations in memory; a single `modelContext.save()` atomically commits contacts + `AppLayerConfig` (new key tag + verifier changes) as the sole point of no return. A crash before that save leaves the DB unchanged and the old key still authoritative. No stage tracking, no resume/rollback logic, no new data model required.
