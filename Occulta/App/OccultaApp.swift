@@ -343,8 +343,8 @@ struct OccultaApp: App {
                     case .active:
                         self.security.handleActive()
                         // Drain any bundle queued while locked on grace-period auto-unlock.
-                        // PIN-entry unlock is handled by onNormal; this covers the path
-                        // where needsPINEntry became false without a PIN being entered.
+                        // PIN-entry unlock drains via fullScreenCover.onDismiss; this covers
+                        // the grace-period path where no cover was ever presented.
                         if !self.security.needsPINEntry, let data = self.pendingFileData {
                             self.pendingFileData = nil
                             Task { await self.processInboundFile(data) }
@@ -374,21 +374,29 @@ struct OccultaApp: App {
                 // fullScreenCover rather than overlay: a UIKit modal presentation
                 // stacks above any existing sheets, so it cannot be underlapped by
                 // conversation or identity-challenge sheets triggered while locked.
+                //
+                // pendingFileData is drained in onDismiss (not in onNormal) so the
+                // message sheet is only presented after the cover has fully dismissed.
+                // Presenting a sheet while a fullScreenCover is still animating out
+                // creates a UIKit conflict that causes the cover to re-present when
+                // the sheet is later dismissed.
                 .fullScreenCover(isPresented: Binding(
                     get: { self.security.needsPINEntry },
                     set: { self.security.needsPINEntry = $0 }
-                )) {
+                ), onDismiss: {
+                    // Cover fully gone — safe to present the message sheet now.
+                    // onDuress/onWipe already cleared pendingFileData; only onNormal leaves it set.
+                    if let data = self.pendingFileData {
+                        self.pendingFileData = nil
+                        Task { await self.processInboundFile(data) }
+                    }
+                }) {
                     PINEntry(
                         onNormal: { _ in
                             self.security.unlockNormal()
                             self.contactManager.shareIndexAllowedIDs = nil
                             self.contactManager.syncShareIndex()
-                            // Process any file that arrived while the app was locked.
-                            // Depth is now confirmed as normal — safe to decrypt and display.
-                            if let data = self.pendingFileData {
-                                self.pendingFileData = nil
-                                Task { await self.processInboundFile(data) }
-                            }
+                            // pendingFileData drain moved to the fullScreenCover's onDismiss.
                         },
                         onDuress: {
                             self.security.unlockDuress()

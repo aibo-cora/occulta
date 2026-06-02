@@ -2,21 +2,30 @@
 
 ---
 
-## Bug 1 — Messages visible over PIN lock
+## Bug 1 — PIN gate / message sheet interaction on notification open
 
 **Status:** Closed (Fixed)
 
 ### Severity: High
+
+This entry covers two separate incidents with the same root area: the interaction between the PIN gate `fullScreenCover` and the message `.sheet` when the app is opened from a notification.
+
+---
+
+#### Incident A — Messages visible over PIN lock (original)
+
 An authenticated attacker with brief physical access to an unlocked device can open a sheet (e.g. via a notification tap or an in-app action) and read message content without ever entering the PIN. The PIN layer is present but rendered below sheets in the SwiftUI hierarchy, making it visually and interactively bypassable.
 
 A secondary issue exists independently of the z-order problem: if the app is locked and a message notification is tapped, `buildOwnedBasket` runs inside the `onOpenURL` Task before any PIN is entered. If the basket is from a safe contact and `openedFileContents` is set at that point, entering the duress PIN afterward would still present the sheet — because `openedFileContents` was populated while the security state had not yet been determined by PIN entry.
 
-### Root Cause
+**Root Cause**
+
 `PINEntry` was applied as an `.overlay` on `TabView`. SwiftUI overlays are layout primitives — iOS modal presentations (`.sheet`, `.fullScreenCover`) are UIKit-level operations that attach to the window's root view controller, completely outside the SwiftUI view tree. They render above any overlay regardless of z-order.
 
 The content gate gap is a timing issue: `openedFileContents` is set inside an async Task that can run while the app is locked, before the user's PIN determines the security depth.
 
-### Resolution
+**Resolution**
+
 Two fixes applied together:
 
 **1. z-order fix** — replaced `.overlay { if self.isLocked { ... } }` with `.fullScreenCover(isPresented: self.$isLocked)`. A `fullScreenCover` is itself a UIKit modal presentation; iOS stacks it above any existing sheets so it cannot be underlapped.
@@ -24,6 +33,35 @@ Two fixes applied together:
 **2. Content gate** — two check points added:
 - *At set-time* (app already unlocked in restricted mode): after `buildOwnedBasket` returns, if `security.isRestricted` and the sender is not a safe contact, suppress the basket and show the standard "not addressed to you" error instead of setting `openedFileContents`.
 - *After duress unlock* (message queued while locked, duress PIN entered after): in the `onDuress` callback, before clearing `isLocked`, check any pending `openedFileContents` against `isSafeContact`. If the sender is not visible at duress depth, clear the basket and surface the error. Sensitive contacts are absent from the DB in Secure Mode, so `isSafeContact` returns `false` for them naturally.
+
+---
+
+#### Incident B — PIN gate re-appears after dismissing message sheet (regression)
+
+When the user cold-opens the app via a notification tap, enters their PIN, and then dismisses the resulting message sheet, the PIN gate re-presents itself:
+
+1. App opens from notification → PIN gate appears (expected)
+2. User enters PIN → gate lowers
+3. Message sheet presents
+4. User dismisses message sheet → PIN gate re-appears (unexpected)
+
+**Root Cause**
+
+`onNormal` drained `pendingFileData` by starting an async `Task { await processInboundFile(data) }` immediately after calling `unlockNormal()`. `unlockNormal()` sets `needsPINEntry = false`, triggering the `fullScreenCover` dismiss animation — but the animation takes ~300 ms to complete. The async task can set `openedFileContents` during this window, while the cover is still mid-dismiss.
+
+UIKit prevents two modal presentations from the same host view controller simultaneously. The `.sheet` triggered by `openedFileContents` cannot present while the `fullScreenCover` is still animating out, so UIKit queues it for a retry. When the user later dismisses the message sheet, UIKit's presentation-hierarchy cleanup for the queued presentation causes the `fullScreenCover` binding setter to be called, re-raising the gate.
+
+Introduced in commit `182bbd7` when the lock state moved from `OccultaApp.isLocked` into `Manager.Security.needsPINEntry`. The old code had the same structural pattern, but switching to a `Binding(get:set:)` on an `@Observable` property changed how SwiftUI reconciles presentation state, making the UIKit conflict more likely to surface.
+
+**Resolution**
+
+Moved the `pendingFileData` drain from `onNormal` to the `fullScreenCover`'s `onDismiss` callback. `onDismiss` fires after the cover has fully dismissed and its UIKit view controller is removed from the hierarchy, so the message sheet presentation no longer conflicts with a mid-dismiss cover.
+
+Two drain paths:
+- **Grace-period auto-unlock** (cover never presented): the `.active` scene handler drains `pendingFileData` immediately, as before.
+- **Normal PIN entry**: `onDismiss` drains `pendingFileData` after the cover is gone.
+
+`onDuress` and `onWipe` already clear `pendingFileData`, so `onDismiss` is a no-op for those paths.
 
 ---
 
@@ -793,3 +831,4 @@ The same gap exists for shard operations, which the plan notes as out of scope.
 
 ### Resolution
 Pending. Guard `handleInboundChallenge` with `!security.isRestricted || security.isSafeContact(ownerID)` before calling the handler. If the sender is a hidden contact and the app is in restricted mode, silently discard the challenge.
+
