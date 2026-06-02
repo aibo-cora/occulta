@@ -36,15 +36,18 @@ struct AppGroupLayerStoreBackend: LayerStoreBackend {
         guard let dir = Self.storeDirectory() else {
             throw Manager.LayerStore.Error.encryptionFailed
         }
-        if let existing = Self.findFile(in: dir) {
-            try FileManager.default.removeItem(at: existing)
-        }
+        // Capture the old file URL BEFORE writing the new one.
+        // Write first, delete after — so the directory is never momentarily empty.
+        // A crash between write and delete leaves two files; findFile returns the
+        // newer one (correct). A crash during write leaves the old file intact (I6).
+        let old = Self.findFile(in: dir)
         let url = dir.appendingPathComponent("\(UUID().uuidString).occbak")
         try data.write(to: url, options: .completeFileProtection)
         var mutableURL = url
         var values     = URLResourceValues()
         values.isExcludedFromBackup = true
         try mutableURL.setResourceValues(values)
+        if let old { try? FileManager.default.removeItem(at: old) }
     }
 
     func read() throws -> Data {

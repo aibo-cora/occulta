@@ -744,3 +744,52 @@ The overlay's `.animation(.easeInOut(duration: 0.25).delay(0.15), value: self.is
 
 ### Resolution
 The overlay was changed to use `.animation(.none, value: self.security.isContentHidden)` — always instant in both directions. The lock direction is now immediate (Bug 36 fix); the unlock direction is also instant, which is acceptable. The `isUnlocking` directional approach was unnecessary.
+
+---
+
+## Bug 38 — `AppGroupLayerStoreBackend.write()` deletes old file before writing new one
+
+**Status:** Closed (Fixed)
+
+### Severity: Medium
+The original write sequence was: (1) delete old `.occbak`, (2) write new `.occbak`. A crash or process kill between these two steps leaves the `blobs/` directory empty — no layer store file exists. On next launch `maintain()` recreates it, but the window where the file is absent is a forensic tell: a crash-report timestamp correlatable with "something was being written to the layer store" is visible to anyone who examines the filesystem. This violates Invariant I6 (the app group always contains a layer store file).
+
+### Root Cause
+Defensive ordering: the old file was deleted first to avoid having two `.occbak` files present simultaneously. The atomic-write requirement was not considered.
+
+### Resolution
+Write-new-first, delete-old-after: capture the old file URL before the write, write the new file, apply resource attributes, then delete the old file. A crash during write leaves the old file intact (I6 preserved). A crash between write and delete leaves two files; `findFile` returns the newer one by modification date (correct). Implemented in `SecureMode+LayerStoreBackend.swift`.
+
+---
+
+## Bug 39 — `maintainLayerStore()` blocks the main thread on launch
+
+**Status:** Closed (Fixed)
+
+### Severity: Low
+`maintainLayerStore()` is called synchronously from `OccultaApp.init()` on the main thread. Internally it calls `Manager.LayerStore.maintain()`, which performs Secure Enclave key derivation (`Manager.Key().deriveSecureModeKey()`) and file I/O. On first install the SE key is created here; on any launch where the no-op file is stale (>24 h), the old file is deleted and a new one written. Both operations block the main thread — SE access can take tens of milliseconds on first use, delaying app launch.
+
+`rewriteLayerStore()` already dispatched to `DispatchQueue.global(qos: .utility)`. The two call sites were inconsistent.
+
+### Root Cause
+`maintainLayerStore()` was not given a background dispatch when the no-op blob maintenance was first implemented.
+
+### Resolution
+Added `DispatchQueue.global(qos: .background).async { }` wrapper inside `maintainLayerStore()`, matching `rewriteLayerStore()`. The `isSecureModeActive` guard check remains on the calling thread (main) before dispatch so no model-context access crosses threads. Implemented in `Manager+Security.swift`.
+
+---
+
+## Bug 40 — Identity challenge packets from hidden contacts are processed in duress mode
+
+**Status:** Open
+
+### Severity: Low
+In `OccultaApp.buildOwnedBasket`, identity challenge packets are routed to `identityChallenge.handleInboundChallenge` and return `nil` before reaching check point A (the depth filter that suppresses messages from hidden contacts). If a hidden sensitive contact sends an identity challenge while the app is unlocked at duress depth, the challenge is processed: `contactManager.fetchContact(by: ownerID)` succeeds (hidden contacts are in the DB, only filtered at the UI layer), and the handler may produce visible state (e.g. an approval sheet).
+
+The same gap exists for shard operations, which the plan notes as out of scope.
+
+### Root Cause
+`buildOwnedBasket` short-circuits on identity challenge packets before the depth check. Check point A only runs on the returned `OwnedBasket`, which is `nil` for challenges.
+
+### Resolution
+Pending. Guard `handleInboundChallenge` with `!security.isRestricted || security.isSafeContact(ownerID)` before calling the handler. If the sender is a hidden contact and the app is in restricted mode, silently discard the challenge.

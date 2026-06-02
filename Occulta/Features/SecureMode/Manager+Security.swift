@@ -213,7 +213,9 @@ extension Manager {
         /// (file holds a real payload) or when the feature flag is off.
         func maintainLayerStore() {
             guard !self.isSecureModeActive else { return }
-            Manager.LayerStore.maintain()
+            DispatchQueue.global(qos: .background).async {
+                Manager.LayerStore.maintain()
+            }
         }
 
         /// Rewrites the no-op layer store file on a background thread.
