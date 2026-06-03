@@ -20,10 +20,14 @@ extension Manager {
 
         // MARK: - State
 
-        private(set) var state: RoutingDepth = .normal
+        private(set) var state:        RoutingDepth = .normal
+        /// In-memory depth counter. Resets to 0 on every app kill — never persisted.
+        /// `currentDepth > 0` means a decoy layer is active. The PIN is the routing key:
+        /// after a cold start `verify()` scans all normal verifiers and sets `currentDepth`
+        /// directly to the matched depth without walking through intermediate layers.
+        private(set) var currentDepth: Int          = 0
 
-        var currentDepth:      Int  { self.state.rawValue }
-        var isRestricted:      Bool { self.state == .duress }
+        var isRestricted: Bool { self.currentDepth > 0 }
 
         /// Whether a normal PIN verifier exists. Reads config on every call — not reactive
         /// for SwiftUI; views that need reactive updates should use `@Query` on `AppLayerConfig`.
@@ -77,10 +81,10 @@ extension Manager {
         private let keyManager:      any KeyManagerProtocol
         /// SwiftData store URL for WAL checkpoint during key rotation.
         /// `nil` in tests (TestKeyManager, in-memory store).
-        private let storeURL:        URL?
-        /// Blob I/O back-end for `seal` and `unseal` during key rotation.
-        /// Defaults to `AppGroupLayerStoreBackend` (production). Tests inject `InMemoryLayerStoreBackend`.
-        private let blobStore: any LayerStoreBackend
+        private let storeURL:    URL?
+        /// Layer store for push/pop during key rotation.
+        /// Defaults to AppGroupLayerStoreBackend (production). Tests inject InMemoryLayerStoreBackend.
+        private let layerStore: Manager.LayerStore
 
         private var wrongPINCount          = 0
         private var consecutiveDuressCount = 0
@@ -99,13 +103,13 @@ extension Manager {
         init(modelContainer: ModelContainer,
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
-             blobStore: any LayerStoreBackend = AppGroupLayerStoreBackend(),
+             layerStore: Manager.LayerStore = Manager.LayerStore(),
              enabled: Bool = true) {
-            let context       = ModelContext(modelContainer)
-            self.modelContext = context
-            self.keyManager   = keyManager
-            self.storeURL     = storeURL
-            self.blobStore    = blobStore
+            let context        = ModelContext(modelContainer)
+            self.modelContext  = context
+            self.keyManager    = keyManager
+            self.storeURL      = storeURL
+            self.layerStore    = layerStore
 
             // Feature-flag off path: skip all DB reads. requiresPIN returns false,
             // isRestricted = false. All properties stay at defaults.
@@ -128,6 +132,21 @@ extension Manager {
                 context.insert(seed)
                 try? context.save()
                 config = seed
+            }
+
+            // Migration: populate verifier arrays from scalar fields on first launch after
+            // the multi-layer upgrade. Scalars remain as nil/non-nil flags for requiresPIN
+            // and isSecureModeActive; arrays are the source of truth for verify() scanning.
+            if config.sealedNormalVerifiers.isEmpty {
+                var normals = AppLayerConfig.verifierFillerArray()
+                if let scalar = config.sealedNormalVerifier { normals[0] = scalar }
+                config.sealedNormalVerifiers = normals
+
+                var duresses = AppLayerConfig.verifierFillerArray()
+                if let scalar = config.sealedDuressVerifier { duresses[0] = scalar }
+                config.sealedDuressVerifiers = duresses
+
+                try? context.save()
             }
 
             // Restore routing depth and gate state so depth-filtering and the PIN
@@ -157,7 +176,7 @@ extension Manager {
         private static let gracePeriod: TimeInterval = 5 * 60
 
         private var isWithinGracePeriod: Bool {
-            guard !self.isRestricted, let last = self.lastUnlockDate else { return false }
+            guard let last = self.lastUnlockDate else { return false }
             return Date().timeIntervalSince(last) < Self.gracePeriod
         }
 
@@ -213,8 +232,9 @@ extension Manager {
         /// (file holds a real payload) or when the feature flag is off.
         func maintainLayerStore() {
             guard !self.isSecureModeActive else { return }
+            let store = self.layerStore
             DispatchQueue.global(qos: .background).async {
-                Manager.LayerStore.maintain()
+                store.maintain()
             }
         }
 
@@ -225,8 +245,9 @@ extension Manager {
         /// No-op when Secure Mode is active or the feature flag is off.
         func rewriteLayerStore() {
             guard !self.isSecureModeActive else { return }
+            let store = self.layerStore
             DispatchQueue.global(qos: .utility).async {
-                Manager.LayerStore.rewrite()
+                store.rewrite()
             }
         }
 
@@ -243,7 +264,8 @@ extension Manager {
 
             // Update the always-present row in place — never delete and recreate.
             let config = try self.requireConfig()
-            config.sealedNormalVerifier = sealedNormal
+            config.sealedNormalVerifier = sealedNormal   // scalar: nil/non-nil flag for requiresPIN
+            config.writeNormalVerifier(sealedNormal, at: 0)  // array[0]: scanned by verify()
             try config.setWipeThreshold(3)
             try self.setState(.normal, config: config)
             try self.modelContext.save()
@@ -265,18 +287,19 @@ extension Manager {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            guard
-                let verifier = config.sealedNormalVerifier,
-                PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
-                                         verifier: verifier, seKey: seKey)
+            guard config.sealedNormalVerifiers.indices.contains(0),
+                  PINManager.checkVerifier(pin: confirmingNormalPIN, label: Self.normalLabel,
+                                           verifier: config.sealedNormalVerifiers[0], seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
-            config.sealedNormalVerifier = nil
+            config.sealedNormalVerifier = nil  // scalar
+            config.writeNormalVerifier(AppLayerConfig.verifierFiller(), at: 0)  // reset array[0]
             try self.setState(.normal, config: config)
             try self.modelContext.save()
             self.resetCounters()
-            self.appLockEnabled = true
-            self.state = .normal
+            self.appLockEnabled  = true
+            self.state           = .normal
+            self.currentDepth    = 0
         }
 
         // MARK: - Secure Mode
@@ -301,34 +324,63 @@ extension Manager {
             defer { self.modelContext.autosaveEnabled = true }
 
             // ── Step 1: State guard + PIN verification ──────────────────────────────
+            // Activation is valid from: .pinOnly (depth 0, creating first duress layer)
+            //                           .duress  (depth N, adding a deeper layer)
+            // It is NOT valid from .normal when Secure Mode is already active — the
+            // Activate button is hidden in that state; this guard prevents API misuse.
             guard self.requiresPIN else { throw SecurityError.invalidStateTransition }
-            
+            // Valid activation states:
+            //   isRestricted (currentDepth > 0): inside a decoy layer — add a deeper layer.
+            //   !isSecureModeActive: no layers yet (pinOnly) — create the first duress layer.
+            // Invalid: depth 0 with Secure Mode already active (real app; Activate is hidden there).
+            guard self.isRestricted || !self.isSecureModeActive else {
+                throw SecurityError.invalidStateTransition
+            }
+
             let config = try self.requireConfig()
-            
-            guard config.sealedDuressVerifier == nil else { throw SecurityError.invalidStateTransition }
-            
-            guard
-                let seKey = try self.keyManager.deriveSecureModeKey()
-            else {
+            let depth  = self.currentDepth
+
+            guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            
-            guard
-                let verifier = config.sealedNormalVerifier,
-                PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
-                                         verifier: verifier, seKey: seKey)
-            else {
-                throw SecurityError.incorrectPIN
+
+            // Confirm entry PIN against the normal verifier at the current depth.
+            guard depth < config.sealedNormalVerifiers.count,
+                  PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
+                                           verifier: config.sealedNormalVerifiers[depth], seKey: seKey)
+            else { throw SecurityError.incorrectPIN }
+
+            // Duress PIN must not match ANY existing verifier (normal or duress at any depth).
+            for v in config.sealedNormalVerifiers {
+                guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: v, seKey: seKey)
+                else { throw SecurityError.pinCollision }
+            }
+            for v in config.sealedDuressVerifiers {
+                guard !PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: v, seKey: seKey)
+                else { throw SecurityError.pinCollision }
             }
 
-            guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel,
-                                            verifier: verifier, seKey: seKey)
-            else { throw SecurityError.pinCollision }
+            // Build verifiers now so they are in scope for the post-catch config write.
+            let duressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: seKey)
+            let routingAlias   = try PINManager.buildVerifier(pin: duressPIN, label: Self.normalLabel, seKey: seKey)
 
-            config.sealedDuressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: seKey)
-            // Do NOT save the verifier yet — deferred until key rotation succeeds.
-            // If anything below throws, the catch block clears this in-memory change so
-            // a retry attempt doesn't hit `sealedDuressVerifier != nil` guard.
+            // Depth-0 scalar written in-memory now; cleared by catch on failure.
+            // All array writes happen in the post-catch section (new canonical key).
+            if depth == 0 {
+                config.sealedDuressVerifier = duressVerifier
+                // Do NOT save yet — deferred until key rotation succeeds.
+                // If anything below throws, catch clears this in-memory mutation.
+            }
+
+            // Slot index and sequence number chosen before the do/catch block so they
+            // are in scope for the post-catch config write.
+            // Slot exclusion: the real layer (depth 0) slot is permanently excluded from
+            // all depth > 0 writes so it can never be overwritten or statistically identified.
+            let excludedSlots: Set<Int> = depth == 0
+                ? []
+                : Set([config.readBlobSlot(at: 0)].compactMap { $0 })
+            let slotIndex      = self.layerStore.randomSlot(excluding: excludedSlots)
+            let sequenceNumber = Self.randomSequenceNumber()
 
             // ── Step 2: Create staged local DB key ──────────────────────────────────
             // On any failure past this point we rollback staged artefacts.
@@ -336,9 +388,7 @@ extension Manager {
             do {
                 let stagedKey = try self.keyManager.createStagedLocalDBKey()
                 // ── Step 3: Derive blob key ──────────────────────────────────────────
-                guard
-                    let layerKey = Manager.LayerStore.deriveKey(from: seKey)
-                else {
+                guard let layerKey = self.layerStore.deriveKey(from: seKey) else {
                     throw SecurityError.keyDerivationFailed
                 }
 
@@ -382,15 +432,19 @@ extension Manager {
                     profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
                 }
 
-                // ── Step 6: Seal blob ────────────────────────────────────────────────
+                // ── Step 6: Push blob ────────────────────────────────────────────────
                 // Vault entries are not included in the blob. Their per-entry keys (PEKs)
                 // are derived from a dedicated SE key entirely independent of the local DB
                 // key rotation — vault entries never need re-keying during activation or
                 // deactivation. Storing raw PEK bytes in the blob would unnecessarily widen
                 // the attack surface: blob compromise (SE Secure Mode key, no biometrics)
                 // would also yield all vault entry symmetric keys, bypassing the biometric gate.
-                let payload = LayerPayload(contacts: blobContacts)
-                try Manager.LayerStore.seal(payload, layerKey: layerKey, store: self.blobStore)
+                let payload = LayerPayload(
+                    sequenceNumber: sequenceNumber,
+                    slotIndex:      slotIndex,
+                    contacts:       blobContacts
+                )
+                try self.layerStore.push(payload, key: layerKey, slotIndex: slotIndex)
 
                 // ── Step 8: Re-encrypt ALL contacts + vault depth fields ──────────────
                 //
@@ -470,14 +524,27 @@ extension Manager {
 
             } catch {
                 self.keyManager.rollbackStagedLocalDBKey()
-                // Clear the in-memory duress verifier so the context doesn't persist
-                // a partial state — retrying activation must see nil here.
-                config.sealedDuressVerifier = nil
+                // Clear in-memory depth-0 scalar mutation so a retry doesn't hit the
+                // `!isSecureModeActive` guard. Array writes are deferred so nothing to undo.
+                if depth == 0 { config.sealedDuressVerifier = nil }
                 throw error
             }
 
-            // Key rotation succeeded. Persist the duress verifier now that the DB
-            // is fully consistent under the new canonical key.
+            // Key rotation succeeded. All config writes use the new canonical DB key
+            // (post-commit) so they are encrypted correctly for the post-rotation state.
+            //
+            // Write duress verifier at `depth` and routing alias at `depth + 1`.
+            // The routing alias is the SAME duress PIN built with normalLabel so that
+            // verify()'s step-1 scan (which uses normalLabel for all entries) can find it
+            // at cold start without walking through intermediate depths.
+            config.writeDuressVerifier(duressVerifier, at: depth)
+            config.writeNormalVerifier(routingAlias, at: depth + 1)
+            // Update depth-0 scalar (isSecureModeActive / requiresPIN flags).
+            if depth == 0 {
+                config.sealedDuressVerifier = duressVerifier
+            }
+            try config.writeBlobSlot(slotIndex, at: depth)
+            try config.writeSequenceNumber(sequenceNumber, at: depth)
             try self.modelContext.save()
             self.resetCounters()
             self.lastUnlockDate = nil
@@ -499,32 +566,52 @@ extension Manager {
 
             // ── Step 1: State guard + PIN verification ──────────────────────────────
             let config = try self.requireConfig()
-            
+            let depth  = self.currentDepth
+
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
+            // depth 0 (real app) and depth 1 (first duress view) both deactivate the
+            // depth 0→1 layer and return to pinOnly. depth 0 is valid here — the real
+            // app owner deactivates from their master view.
+
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            guard
-                let verifier = config.sealedNormalVerifier,
-                PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
-                                         verifier: verifier, seKey: seKey)
+            // Confirm PIN against the normal verifier at the current depth.
+            // depth 0 → sealedNormalVerifiers[0] (master PIN).
+            // depth 1 → sealedNormalVerifiers[1] (routing alias = duress PIN).
+            guard depth < config.sealedNormalVerifiers.count,
+                  PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
+                                           verifier: config.sealedNormalVerifiers[depth], seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
-            // ── Step 2: Derive blob key + unseal ────────────────────────────────────
-            guard let layerKey = Manager.LayerStore.deriveKey(from: seKey) else {
+            // ── Step 2: Derive blob key + pop ───────────────────────────────────────
+            // Blob index per depth:
+            //   depth 0 → blobDepth 0 (blob from activation at depth 0)
+            //   depth 1 → blobDepth 0 (same blob; deactivating the depth 0→1 layer)
+            //   depth N ≥ 2 → blobDepth N-1 (cascade: removes expendable layer,
+            //                  preserves depth 0→1 layer until the final deactivation)
+            guard let layerKey = self.layerStore.deriveKey(from: seKey) else {
                 throw SecurityError.keyDerivationFailed
             }
-            
+
+            let blobDepth = max(0, depth - 1)
+
+            // Both slot index and sequence number must be present. If either is missing,
+            // skip pop — guessing a slot is not safe.
             let payload: LayerPayload
-            
-            do {
-                payload = try Manager.LayerStore.unseal(layerKey: layerKey, store: self.blobStore)
-            } catch {
-                // Blob is missing or corrupted (e.g. overwritten by maintain after 24 h).
-                // Sensitive contacts that were hard-deleted during activation are unrecoverable,
-                // but continuing with an empty list is strictly better than being permanently
-                // stuck: safe contacts in the DB are intact and the key rotation still runs.
-                payload = LayerPayload(contacts: [])
+            if let slotIndex = config.readBlobSlot(at: blobDepth),
+               let expectedSeq = config.readSequenceNumber(at: blobDepth) {
+                do {
+                    payload = try self.layerStore.pop(key: layerKey, slotIndex: slotIndex,
+                                                      expectedSequenceNumber: expectedSeq)
+                } catch {
+                    // Blob corrupted, overwritten by maintain(), or seqnum mismatch.
+                    // Sensitive contacts unrecoverable; safe contacts in DB are intact.
+                    payload = LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: [])
+                }
+            } else {
+                // No slot metadata — pre-upgrade install or config corruption.
+                payload = LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: [])
             }
 
             // ── Step 3: Create staged key (point of no return begins) ───────────────
@@ -631,12 +718,36 @@ extension Manager {
                 throw error
             }
 
-            // Remove duress verifier, reset to normal layer, persist config, replace blob.
-            config.sealedDuressVerifier = nil
-            try self.setState(.normal, config: config)
+            // Clear verifiers and blob metadata, then transition state.
+            //
+            // clearVerifiers(from: clearFrom) removes normalVerifiers[clearFrom..31]
+            // and duressVerifiers[(clearFrom-1)..31], leaving shallower depths intact.
+            //
+            //   depth ≤ 1 (last layer): clearFrom = 1 keeps normalVerifiers[0] (master PIN)
+            //             and removes the entire depth 0→1 configuration.
+            //   depth ≥ 2 (expendable): clearFrom = depth keeps the first duress layer
+            //             (depth 0→1) intact so the coercer still passes through it.
+            let clearFrom = max(1, depth)
+            config.clearVerifiers(from: clearFrom)
+            config.clearBlobSlot(at: blobDepth)
+            config.clearSequenceNumber(at: blobDepth)
+
+            if depth <= 1 {
+                // depth 0 (real app) or depth 1 (first duress view) — last duress layer
+                // removed. Secure Mode fully off; return to pinOnly.
+                config.sealedDuressVerifier = nil
+                try self.setState(.normal, config: config)
+                self.currentDepth = 0
+            } else {
+                // Expendable layer removed. Per the deactivation chain, always land at
+                // depth 1 (.duress) — the convincing first-duress view must be the final
+                // stop before the real app is reachable.
+                try self.setState(.duress, config: config)
+                self.currentDepth = 1
+            }
             try self.modelContext.save()
 
-            Manager.LayerStore.rewrite()
+            if depth <= 1 { self.layerStore.rewrite() }
             self.resetCounters()
         }
 
@@ -656,51 +767,72 @@ extension Manager {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
-            guard
-                let verifier = config.sealedNormalVerifier,
-                PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
-                                         verifier: verifier, seKey: seKey)
+            // Use the master normal verifier (depth 0) for force-deactivation.
+            guard config.sealedNormalVerifiers.indices.contains(0),
+                  PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
+                                           verifier: config.sealedNormalVerifiers[0], seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
+            // Clear everything — force deactivation resets all layers.
             config.sealedDuressVerifier = nil
+            config.clearVerifiers(from: 1)  // keep normalVerifiers[0] (master PIN intact)
+            config.clearBlobSlot(at: 0)
+            config.clearSequenceNumber(at: 0)
             try self.setState(.normal, config: config)
+            self.currentDepth = 0
             try self.modelContext.save()
 
-            Manager.LayerStore.rewrite()
+            self.layerStore.rewrite()
             self.resetCounters()
         }
 
         // MARK: - Verify
 
         /// Verifies a PIN entry and drives all state transitions.
+        ///
+        /// Algorithm (given `currentDepth = N`):
+        /// 1. Scan **all** `sealedNormalVerifiers` with `normalLabel` — first match at index K
+        ///    returns `.normal(depth: K)`. This handles both the master PIN (K=0) and duress
+        ///    PINs that have a routing alias written at K=N+1 during activation (enabling cold-start
+        ///    routing: entering any duress PIN after a kill reaches the correct depth directly).
+        /// 2. Try `sealedDuressVerifiers[N]` with `duressLabel` — match returns `.duress`
+        ///    (push-down transition). This path fires only when no routing alias exists yet at
+        ///    index N+1 (single-layer backward compat or pre-activation duress entry).
+        /// 3. No match → `.wrong`; increment `wrongPINCount`.
         func verify(_ pin: String) throws -> PINVerifyResult {
             guard self.requiresPIN else { throw SecurityError.notConfigured }
-            
+
             let config = try self.requireConfig()
-            
+
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
 
-            if let verifier = config.sealedNormalVerifier,
-               PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                        verifier: verifier, seKey: seKey) {
-                self.resetCounters()
-                return .normal
+            // ── Step 1: Scan all normal verifiers ────────────────────────────────────
+            for (k, verifier) in config.sealedNormalVerifiers.enumerated() {
+                if PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                            verifier: verifier, seKey: seKey) {
+                    self.resetCounters()
+                    return .normal(depth: k)
+                }
             }
 
-            if let duressVerifier = config.sealedDuressVerifier,
-               PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
-                                        verifier: duressVerifier, seKey: seKey) {
-                self.wrongPINCount          = 0
-                self.consecutiveDuressCount += 1
-                return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
+            // ── Step 2: Try duress verifier at current depth ──────────────────────────
+            if self.currentDepth < config.sealedDuressVerifiers.count {
+                let dv = config.sealedDuressVerifiers[self.currentDepth]
+                if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
+                                            verifier: dv, seKey: seKey) {
+                    self.wrongPINCount          = 0
+                    self.consecutiveDuressCount += 1
+                    return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
+                }
             }
 
+            // ── Step 3: No match ──────────────────────────────────────────────────────
             self.consecutiveDuressCount  = 0
             self.wrongPINCount          += 1
 
-            if config.sealedDuressVerifier != nil,
+            if self.isSecureModeActive,
                self.wrongPINCount >= PINManager.wrongPINLimit {
                 return .wipe
             }
@@ -716,9 +848,14 @@ extension Manager {
         /// briefly showing a stale duress-mode render when the cover dismisses.
         func applyVerifyState(for result: PINVerifyResult) {
             switch result {
-            case .normal: self.state = .normal
-            case .duress: self.state = .duress
-            case .wrong, .wipe: break
+            case .normal(let depth):
+                self.currentDepth = depth
+                self.state        = .normal
+            case .duress:
+                self.currentDepth += 1
+                self.state         = .duress
+            case .wrong, .wipe:
+                break
             }
         }
 
@@ -726,14 +863,16 @@ extension Manager {
 
         /// Returns true if pin matches the current normal verifier without modifying any counters.
         /// Use this for Settings-level confirmation — not the lock-screen path.
+        /// Returns true if `pin` matches the master normal verifier (depth 0).
+        /// No counter mutation. Use for Settings-level confirmation, not the lock-screen path.
         func checkNormalPIN(_ pin: String) -> Bool {
             guard
-                let config   = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let verifier = config.sealedNormalVerifier,
-                let seKey    = try? self.keyManager.deriveSecureModeKey()
+                let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
+                let seKey  = try? self.keyManager.deriveSecureModeKey(),
+                config.sealedNormalVerifiers.indices.contains(0)
             else { return false }
             return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                            verifier: verifier, seKey: seKey)
+                                            verifier: config.sealedNormalVerifiers[0], seKey: seKey)
         }
 
         // MARK: - Coercion-resistant gate
@@ -779,6 +918,9 @@ extension Manager {
         ///
         /// - Parameter pin: The digit string entered and confirmed by the user.
         /// - Returns: `true` if a verifier matched and the gate was re-enabled; `false` otherwise.
+        /// Re-enables the PIN gate by silently routing the entered PIN to its depth.
+        /// Scans normal verifiers first (like `verify()` step 1), then duress verifiers.
+        /// Sets `currentDepth` and `state` to match. No new verifier is written.
         @discardableResult
         func reEnablePIN(_ pin: String) -> Bool {
             guard
@@ -786,20 +928,28 @@ extension Manager {
                 let seKey  = try? self.keyManager.deriveSecureModeKey()
             else { return false }
 
-            // Normal PIN — restore to depth 0 (real layer).
-            if let verifier = config.sealedNormalVerifier,
-               PINManager.checkVerifier(pin: pin, label: Self.normalLabel, verifier: verifier, seKey: seKey) {
-                try? self.setState(.normal, config: config)
-                try? self.modelContext.save()
-                return true
+            // Step 1: Scan normal verifiers — same logic as verify().
+            for (k, verifier) in config.sealedNormalVerifiers.enumerated() {
+                if PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                            verifier: verifier, seKey: seKey) {
+                    self.currentDepth = k
+                    self.state        = .normal
+                    try? self.setState(.normal, config: config)
+                    try? self.modelContext.save()
+                    return true
+                }
             }
 
-            // Duress PIN — re-enable gate at depth 1 (duress layer stays active).
-            if let verifier = config.sealedDuressVerifier,
-               PINManager.checkVerifier(pin: pin, label: Self.duressLabel, verifier: verifier, seKey: seKey) {
-                try? self.setState(.duress, config: config)
-                try? self.modelContext.save()
-                return true
+            // Step 2: Scan duress verifiers — match at K pushes to depth K+1.
+            for (k, verifier) in config.sealedDuressVerifiers.enumerated() {
+                if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
+                                            verifier: verifier, seKey: seKey) {
+                    self.currentDepth = k + 1
+                    self.state        = .duress
+                    try? self.setState(.duress, config: config)
+                    try? self.modelContext.save()
+                    return true
+                }
             }
 
             return false
@@ -812,21 +962,19 @@ extension Manager {
         /// and no state transitions occur — used by `disablePINFromCurrentDepth` and by
         /// `PINEntry.submitConfirmPhase` so the activation flow's first phase accepts the
         /// correct PIN at any depth (duress PIN in `.duress`, normal PIN otherwise).
+        /// Returns true if `pin` matches the normal verifier for `currentDepth`.
+        /// In `.duress` state, `sealedNormalVerifiers[currentDepth]` equals the routing alias
+        /// for the duress PIN that triggered the push-down — the user's "current" PIN.
+        /// No counter mutation. No state transition.
         func checkCurrentLayerPIN(_ pin: String) -> Bool {
             guard
                 let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let seKey  = try? self.keyManager.deriveSecureModeKey()
+                let seKey  = try? self.keyManager.deriveSecureModeKey(),
+                config.sealedNormalVerifiers.indices.contains(self.currentDepth)
             else { return false }
-            switch self.state {
-            case .duress:
-                guard let verifier = config.sealedDuressVerifier else { return false }
-                return PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
-                                                verifier: verifier, seKey: seKey)
-            case .normal:
-                guard let verifier = config.sealedNormalVerifier else { return false }
-                return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                                verifier: verifier, seKey: seKey)
-            }
+            return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                            verifier: config.sealedNormalVerifiers[self.currentDepth],
+                                            seKey: seKey)
         }
 
         // MARK: - Safe contacts
@@ -926,6 +1074,15 @@ extension Manager {
         private func resetCounters() {
             self.wrongPINCount          = 0
             self.consecutiveDuressCount = 0
+        }
+
+        /// A fresh random UInt32 cast to Int, used as the per-activation sequence number.
+        /// Random rather than incrementing so no activation-count information persists in
+        /// AppLayerConfig after deactivation clears the entry back to random filler.
+        private static func randomSequenceNumber() -> Int {
+            var value: UInt32 = 0
+            _ = SecRandomCopyBytes(kSecRandomDefault, MemoryLayout<UInt32>.size, &value)
+            return Int(value)
         }
 
         /// Forces a full WAL checkpoint (TRUNCATE mode) so all pending writes land in

@@ -17,6 +17,8 @@ protocol LayerStoreBackend {
     func read() throws -> Data
     func delete()
     var exists: Bool { get }
+    /// Modification date of the backing store; nil when unavailable or non-persistent.
+    var modificationDate: Date? { get }
 }
 
 // MARK: - AppGroupLayerStoreBackend
@@ -67,6 +69,13 @@ struct AppGroupLayerStoreBackend: LayerStoreBackend {
     var exists: Bool {
         guard let dir = Self.storeDirectory() else { return false }
         return Self.findFile(in: dir) != nil
+    }
+
+    var modificationDate: Date? {
+        guard let dir = Self.storeDirectory(),
+              let url = Self.findFile(in: dir)
+        else { return nil }
+        return (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
     private static func storeDirectory() -> URL? {

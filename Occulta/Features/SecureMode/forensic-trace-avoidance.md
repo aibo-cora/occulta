@@ -18,7 +18,7 @@ Measures that prevent the `.occbak` file from being identified as a Secure Mode 
 |---|---------|----------|--------|
 | B1 | No-op blob exists from first launch | High | ✅ |
 | B2 | Last-Modified timestamp normalised to app activity | High | ✅ |
-| B3 | Ciphertext size bucket-padded to power-of-2 | Medium | ✅ |
+| B3 | Fixed 32-slot file — constant size regardless of payload | Medium | ✅ |
 | B4 | UUID filename + `.occbak` extension, no header | Medium | ✅ |
 | B5 | SE key created at first launch, not at activation | High | ✅ |
 | B6 | Random nonce per write | Low | ✅ |
@@ -30,8 +30,8 @@ Measures that prevent the `.occbak` file from being identified as a Secure Mode 
 ### B2 — Last-Modified timestamp normalisation
 `rewriteNoOpBlob()` is called on every `ModelContext` save, debounced to 30 s, when Secure Mode is not active. The blob's Last-Modified timestamp tracks normal app activity (contact edits, vault saves) rather than spiking only at meaningful events like activation or PIN entry. Without this, a single modification timestamp would pinpoint exactly when Secure Mode ran.
 
-### B3 — Bucket padding
-Before AES-GCM encryption, plaintext is zero-padded to the nearest power-of-2 boundary (256, 512, 1024 … bytes). The ciphertext size on disk reveals only a tier — "between 256 and 512 bytes" — not the exact number of contacts serialised into the blob. Without padding, file size would directly encode the sensitive contact count.
+### B3 — Fixed 32-slot file
+The store file is always exactly `32 × (32 KB + 28)` = **1,049,472 bytes**, regardless of how many sensitive contacts exist or whether Secure Mode has ever been activated. Every slot — real payload or random padding — is sealed to exactly 32 KB of plaintext, producing an identical-sized ciphertext. The file size is constant across all states: no activation, freshly activated with 0 contacts, activated with 30 contacts. Without this, file size would vary with payload size and encode the sensitive contact count or activation state. (Prior to this format, plaintext was bucket-padded to the nearest power-of-2, which was weaker — size still revealed a tier.)
 
 ### B4 — UUID filename + `.occbak` extension, no identifying header
 Vault backups use the same `.occbak` extension and are indistinguishable at the filesystem level. Vault backups start with a 4-byte "OCBK" magic; blobs do not — the vault restore path rejects blobs via `BackupError.invalidFormat`. No magic bytes, version field, layer count, or anything in the blob that labels it as Secure Mode data.
@@ -39,8 +39,8 @@ Vault backups use the same `.occbak` extension and are indistinguishable at the 
 ### B5 — SE key created at first launch
 `writeNoOpBlob()` calls `Manager.Key().deriveSecureModeKey()` as a side effect. The Secure Mode SE key is created on first launch, not when Secure Mode is configured. Its Keychain entry's creation timestamp predates activation by the full install lifetime of the app.
 
-### B6 — Random nonce per write
-Each `seal()` and `writeNoOpBlob()` generates a fresh 96-bit random nonce. Two consecutive blob files are cryptographically unrelated — diffing them reveals nothing about what changed between writes.
+### B6 — Random nonce per write; full slot regeneration
+Each `push()`, `pop()`, and `rewrite()` re-seals **all 32 slots** with fresh 96-bit random nonces — real payloads and padding alike. Two consecutive blob files are cryptographically unrelated. Without full regeneration, static ciphertext in padding slots would be identifiable by diff, directly flagging which slots hold real payloads and making the permanently-excluded real slot trivially detectable after a few activation cycles.
 
 ### B7 — Excluded from backup
 `isExcludedFromBackup = true` is set on every blob write. The blob does not appear in iCloud or iTunes/Finder backups. An examiner who obtains a device backup cannot find it.

@@ -165,10 +165,16 @@ struct Settings: View {
                     // the PIN can be removed. Interactive in .duress so the coercion gate-drop
                     // path (disablePINFromCurrentDepth) remains available without a forensic tell.
                     Toggle("Enable PIN", isOn: self.pinEnabledBinding)
-                        .disabled(self.isSecureModeActive && self.security.state == .normal && self.security.appLockEnabled)
+                        // Disabled at depth 0 in .normal (PIN cannot be removed while Secure Mode
+                        // is active from the real app). Enabled at depth > 0 (decoy view) so
+                        // disablePINFromCurrentDepth remains accessible under coercion.
+                        .disabled(self.isSecureModeActive && self.security.state == .normal
+                                  && self.security.currentDepth == 0 && self.security.appLockEnabled)
                 }
 
-                if !self.isSecureModeActive || self.security.state == .duress || !self.security.appLockEnabled {
+                // Activate shown when: no Secure Mode configured, OR in a decoy layer
+                // (depth > 0 — user can add another layer), OR gate is lowered under coercion.
+                if !self.isSecureModeActive || self.security.currentDepth > 0 || !self.security.appLockEnabled {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Learn how you can protect your data.")
@@ -214,8 +220,10 @@ struct Settings: View {
                         self.showingPINSheet = false
                     })
                     .environment(self.security)
-                } else if self.security.state == .duress {
-                    // Coercion path — lower the gate at depth 1 without removing verifiers.
+                } else if self.security.state == .duress || self.security.currentDepth > 0 {
+                    // Coercion path — lower the gate at the current depth without removing
+                    // verifiers. Covers both the legacy .duress state and the multi-layer
+                    // .normal state at depth > 0 (reached via routing alias).
                     PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
                         try? self.security.disablePINFromCurrentDepth(confirmingPIN: pin)
                         self.showingPINSheet = false

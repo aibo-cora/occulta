@@ -55,7 +55,10 @@ private struct ActivationComponents {
     let container:  ModelContainer
     let contacts:   ContactManager
     let vault:      VaultManager
-    let blobStore:  InMemoryLayerStoreBackend
+    /// Raw backend — used for low-level assertions (e.g. `.exists`).
+    let backend:    InMemoryLayerStoreBackend
+    /// Layer store — used for readPayload() in blob-content tests.
+    let layerStore: Manager.LayerStore
     let keyManager: TestKeyManager
 }
 
@@ -63,11 +66,12 @@ private struct ActivationComponents {
 private func makeComponents() throws -> ActivationComponents {
     let container  = try makeActivationContainer()
     let keyManager = TestKeyManager()
-    let blobStore  = InMemoryLayerStoreBackend()
+    let backend    = InMemoryLayerStoreBackend()
+    let layerStore = Manager.LayerStore(backend: backend)
     let security   = Manager.Security(
         modelContainer: container,
         keyManager:     keyManager,
-        blobStore:      blobStore
+        layerStore:     layerStore
     )
     let contacts = ContactManager(modelContainer: container)
     let vault    = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -76,7 +80,8 @@ private func makeComponents() throws -> ActivationComponents {
         container:  container,
         contacts:   contacts,
         vault:      vault,
-        blobStore:  blobStore,
+        backend:    backend,
+        layerStore: layerStore,
         keyManager: keyManager
     )
 }
@@ -125,6 +130,22 @@ private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
 }
 
+// MARK: - Blob helpers
+
+/// Reads the activation payload non-destructively from the blob store.
+/// Uses the slot index stored in AppLayerConfig to locate the right slot.
+@MainActor
+private func readActivationPayload(from c: ActivationComponents) throws -> LayerPayload {
+    let config = try c.container.mainContext.fetch(FetchDescriptor<AppLayerConfig>()).first!
+    guard let slotIndex = config.readBlobSlot(at: 0) else {
+        throw TestError("no blob slot stored in config after activation")
+    }
+    guard let seKey    = try c.keyManager.deriveSecureModeKey(),
+          let layerKey = c.layerStore.deriveKey(from: seKey)
+    else { throw TestError("could not derive blob key from TestKeyManager") }
+    return try c.layerStore.readPayload(key: layerKey, slotIndex: slotIndex)
+}
+
 // MARK: - Blob lifecycle
 
 @MainActor
@@ -134,18 +155,18 @@ struct SecureModeBlobLifecycleTests {
     @Test func activation_writesBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
-        #expect(!c.blobStore.exists, "blob should not exist before activation")
+        #expect(!c.backend.exists, "blob should not exist before activation")
 
         try await c.security.activateSecureMode(
             confirmingEntryPIN: "111111", duressPIN: "999999",
             contactManager: c.contacts, vaultManager: c.vault
         )
 
-        #expect(c.blobStore.exists, "blob must be written during activation")
+        #expect(c.backend.exists, "blob must be written during activation")
     }
 
-    @Test func activation_blobUnsealableWithCorrectKey() async throws {
-        // Verifies that seal/unseal are symmetric end-to-end using TestKeyManager's
+    @Test func activation_blobReadableWithCorrectKey() async throws {
+        // Verifies push/pop are symmetric end-to-end using TestKeyManager's
         // SecureMode key — entirely SE-independent (no Manager.Key involvement).
         let c = try makeComponents()
         try c.security.configurePIN("111111")
@@ -154,18 +175,14 @@ struct SecureModeBlobLifecycleTests {
             contactManager: c.contacts, vaultManager: c.vault
         )
 
-        guard let seKey   = try c.keyManager.deriveSecureModeKey(),
-              let layerKey = Manager.LayerStore.deriveKey(from: seKey)
-        else { throw TestError("could not derive blob key from TestKeyManager") }
-
-        // Should not throw — proves the sealed payload is readable with the right key.
-        let payload = try Manager.LayerStore.unseal(layerKey: layerKey, store: c.blobStore)
+        // readPayload should not throw — proves the push payload is decodable.
+        let payload = try readActivationPayload(from: c)
         _ = payload  // structure is valid; contact content depends on SE availability
     }
 
     @Test func deactivation_blobStillReadableDuringDeactivation() async throws {
-        // The deactivation sequence reads the blob to restore sensitive contacts.
-        // If unseal throws, it falls back to an empty payload — verify it doesn't throw.
+        // The deactivation sequence pops the blob to restore sensitive contacts.
+        // If pop throws, it falls back to an empty payload — verify it doesn't throw.
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
@@ -179,6 +196,18 @@ struct SecureModeBlobLifecycleTests {
             contactManager: c.contacts, vaultManager: c.vault
         )
         #expect(!c.security.isSecureModeActive)
+    }
+
+    @Test func activation_blobIsCorrectSize() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        let data = try c.backend.read()
+        let expectedSize = Manager.LayerStore.slotCount * Manager.LayerStore.slotCiphertextSize
+        #expect(data.count == expectedSize, "blob must be exactly \(expectedSize) bytes (32 fixed slots)")
     }
 }
 
@@ -208,11 +237,7 @@ struct SecureModeClassificationTests {
             contactManager: c.contacts, vaultManager: c.vault
         )
 
-        guard let seKey   = try c.keyManager.deriveSecureModeKey(),
-              let layerKey = Manager.LayerStore.deriveKey(from: seKey)
-        else { throw TestError("could not derive blob key") }
-
-        let payload = try Manager.LayerStore.unseal(layerKey: layerKey, store: c.blobStore)
+        let payload           = try readActivationPayload(from: c)
         let identifiersInBlob = payload.contacts.map { $0.draft.identifier }
         #expect(identifiersInBlob.contains(sensitiveID),
                 "sensitive contact must be sealed in the blob during activation")
@@ -235,11 +260,7 @@ struct SecureModeClassificationTests {
             contactManager: c.contacts, vaultManager: c.vault
         )
 
-        guard let seKey   = try c.keyManager.deriveSecureModeKey(),
-              let layerKey = Manager.LayerStore.deriveKey(from: seKey)
-        else { throw TestError("could not derive blob key") }
-
-        let payload           = try Manager.LayerStore.unseal(layerKey: layerKey, store: c.blobStore)
+        let payload           = try readActivationPayload(from: c)
         let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
 
         #expect(!identifiersInBlob.contains(safeID),

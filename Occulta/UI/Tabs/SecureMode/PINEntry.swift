@@ -261,7 +261,7 @@ struct PINEntry: View {
 
     private func route(_ result: PINVerifyResult, pin: String) {
         switch result {
-        case .normal: self.onNormal(pin)
+        case .normal(depth: _): self.onNormal(pin)   // depth carried by applyVerifyState; not needed here
         case .duress: self.onDuress()
         case .wrong:
             self.clearDigits()

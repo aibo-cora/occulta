@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftData
+import Security
 
 /// Routing depth — which contact layer the app is currently showing.
 ///
@@ -45,7 +46,190 @@ final class AppLayerConfig {
     /// silently opening the app.
     var pinEnabled: Data?
 
-    init() {}
+    /// Encrypted slot index per depth, parallel to sealedDuressVerifiers.
+    /// Index 0 = real layer (depth 0). Padded to 32 entries with random filler
+    /// so the array length does not reveal how many real layers are configured.
+    /// Initialised at row creation; random filler entries fail to decrypt gracefully.
+    var sealedBlobSlots: [Data] = []
+
+    /// Random UInt32 written at each activation push; validated on pop to detect stale
+    /// blobs from prior activation cycles. Cleared to random filler on deactivation so
+    /// no activation history persists in the DB.
+    /// One value per depth, parallel to sealedBlobSlots.
+    var layerSequenceNumbers: [Data] = []
+
+    // MARK: - Verifier arrays (multi-layer)
+    //
+    // Both arrays are always padded to maxVerifierCount entries. Filler entries are
+    // random bytes of exactly verifierFillerSize (= PINManager.verifierSize = 53 bytes),
+    // indistinguishable in size from real verifiers. `verify()` simply ignores entries
+    // that fail to open — filler always fails. A forensic examiner always sees exactly
+    // maxVerifierCount blobs per array regardless of how many real layers are active.
+    //
+    // Must equal LayerStore.slotCount (32) so neither the file size nor the verifier
+    // array length leaks more information than the other.
+
+    /// `[0]` = master PIN (normalLabel). `[N]` = routing alias for `sealedDuressVerifiers[N-1]`
+    /// (same PIN as duressVerifiers[N-1], built with normalLabel). Enables cold-start routing:
+    /// entering any duress PIN matches the alias at index N and routes directly to depth N.
+    var sealedNormalVerifiers: [Data] = []
+
+    /// `[N]` = verifier for the duress PIN that pushes depth N → N+1 (duressLabel).
+    var sealedDuressVerifiers: [Data] = []
+
+    /// The fixed capacity of both verifier arrays. Must equal `Manager.LayerStore.slotCount`
+    /// so the file and the array lengths are forensically coupled — neither reveals more.
+    static let maxVerifierCount: Int = 32
+
+    init() {
+        self.sealedBlobSlots       = Self.randomFillerArray()
+        self.layerSequenceNumbers  = Self.randomFillerArray()
+        self.sealedNormalVerifiers = Self.verifierFillerArray()
+        self.sealedDuressVerifiers = Self.verifierFillerArray()
+    }
+
+    // MARK: - Blob slot
+
+    func readBlobSlot(at depth: Int) -> Int? {
+        guard depth < self.sealedBlobSlots.count,
+              let decrypted = self.sealedBlobSlots[depth].decrypt(),
+              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return nil }
+        return value
+    }
+
+    func writeBlobSlot(_ slot: Int, at depth: Int) throws {
+        // encrypt() on non-nil Data should never return nil — nil only arises from the
+        // encrypt(data: Data?) overload when input is nil. Treat nil as a key failure
+        // and throw rather than silently skipping: a missing blob slot means deactivation
+        // will never find the blob and sensitive contacts will be permanently lost.
+        guard let encrypted = try JSONEncoder().encode(slot).encrypt() else {
+            throw CocoaError(.coderValueNotFound)
+        }
+        self.ensurePadded()
+        if depth < self.sealedBlobSlots.count {
+            self.sealedBlobSlots[depth] = encrypted
+        }
+    }
+
+    func clearBlobSlot(at depth: Int) {
+        self.ensurePadded()
+        
+        if depth < self.sealedBlobSlots.count {
+            self.sealedBlobSlots[depth] = Self.randomFiller()
+        }
+    }
+
+    // MARK: - Sequence number
+
+    func readSequenceNumber(at depth: Int) -> Int? {
+        guard depth < self.layerSequenceNumbers.count,
+              let decrypted = self.layerSequenceNumbers[depth].decrypt(),
+              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return nil }
+        return value
+    }
+
+    func writeSequenceNumber(_ seqNum: Int, at depth: Int) throws {
+        // Same invariant as writeBlobSlot — nil from encrypt() is a key failure, not a
+        // valid code path for non-nil input. Throw so activation aborts rather than
+        // succeeding silently with missing deactivation metadata.
+        guard let encrypted = try JSONEncoder().encode(seqNum).encrypt() else {
+            throw CocoaError(.coderValueNotFound)
+        }
+        self.ensurePadded()
+        if depth < self.layerSequenceNumbers.count {
+            self.layerSequenceNumbers[depth] = encrypted
+        }
+    }
+
+    func clearSequenceNumber(at depth: Int) {
+        self.ensurePadded()
+        
+        if depth < self.layerSequenceNumbers.count {
+            self.layerSequenceNumbers[depth] = Self.randomFiller()
+        }
+    }
+
+    // MARK: - Verifier array helpers
+
+    /// Writes a normal verifier at `depth`, padding the array to `maxVerifierCount` first.
+    func writeNormalVerifier(_ verifier: Data, at depth: Int) {
+        self.ensureVerifiersPadded()
+        if depth < self.sealedNormalVerifiers.count {
+            self.sealedNormalVerifiers[depth] = verifier
+        }
+    }
+
+    /// Writes a duress verifier at `depth`, padding the array to `maxVerifierCount` first.
+    func writeDuressVerifier(_ verifier: Data, at depth: Int) {
+        self.ensureVerifiersPadded()
+        if depth < self.sealedDuressVerifiers.count {
+            self.sealedDuressVerifiers[depth] = verifier
+        }
+    }
+
+    /// Replaces `sealedNormalVerifiers[depth]` and above with fresh random filler,
+    /// removing all verifiers for layers at or deeper than `depth`.
+    func clearVerifiers(from depth: Int) {
+        self.ensureVerifiersPadded()
+        for i in depth..<self.sealedNormalVerifiers.count {
+            self.sealedNormalVerifiers[i] = Self.verifierFiller()
+        }
+        for i in (depth == 0 ? 0 : depth - 1)..<self.sealedDuressVerifiers.count {
+            self.sealedDuressVerifiers[i] = Self.verifierFiller()
+        }
+    }
+
+    // MARK: - Private
+
+    private static let paddedArrayCount = 32  // Manager.LayerStore.slotCount
+    /// Byte size of random filler for blob-slot and sequence-number arrays.
+    private static let fillerSize = 30
+    /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize (53).
+    static let verifierFillerSize = 53
+
+    private func ensurePadded() {
+        while self.sealedBlobSlots.count < Self.paddedArrayCount {
+            self.sealedBlobSlots.append(Self.randomFiller())
+        }
+        while self.layerSequenceNumbers.count < Self.paddedArrayCount {
+            self.layerSequenceNumbers.append(Self.randomFiller())
+        }
+    }
+
+    private func ensureVerifiersPadded() {
+        while self.sealedNormalVerifiers.count < Self.maxVerifierCount {
+            self.sealedNormalVerifiers.append(Self.verifierFiller())
+        }
+        while self.sealedDuressVerifiers.count < Self.maxVerifierCount {
+            self.sealedDuressVerifiers.append(Self.verifierFiller())
+        }
+    }
+
+    private static func randomFiller() -> Data {
+        var data = Data(count: fillerSize)
+        _ = data.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, fillerSize, $0.baseAddress!)
+        }
+        return data
+    }
+
+    static func verifierFiller() -> Data {
+        var data = Data(count: verifierFillerSize)
+        _ = data.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, verifierFillerSize, $0.baseAddress!)
+        }
+        return data
+    }
+
+    private static func randomFillerArray() -> [Data] {
+        (0..<paddedArrayCount).map { _ in Self.randomFiller() }
+    }
+
+    static func verifierFillerArray() -> [Data] {
+        (0..<maxVerifierCount).map { _ in Self.verifierFiller() }
+    }
 
     // MARK: - Wipe threshold
 

@@ -10,7 +10,7 @@ import Foundation
 @testable import Occulta
 
 /// In-memory backend for unit tests only. Not thread-safe.
-/// Injected via `Manager.Security(blobStore: InMemoryLayerStoreBackend())`.
+/// Injected via `Manager.LayerStore(backend: InMemoryLayerStoreBackend())`.
 final class InMemoryLayerStoreBackend: LayerStoreBackend {
     private var stored: Data?
 
@@ -28,4 +28,7 @@ final class InMemoryLayerStoreBackend: LayerStoreBackend {
     }
 
     var exists: Bool { self.stored != nil }
+
+    // Non-persistent — never stale.
+    var modificationDate: Date? { nil }
 }

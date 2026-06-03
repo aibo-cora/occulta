@@ -22,6 +22,11 @@ extension Manager {
 
         private static let sentinel = Data("SECURE_MODE_VERIFIED_2026".utf8)
 
+        /// Byte size of a verifier blob: nonce(12) + ciphertext(sentinel.count) + tag(16).
+        /// Referenced by AppLayerConfig to generate indistinguishable random filler for
+        /// the verifier arrays — filler must be identical in size to a real verifier.
+        static let verifierSize: Int = 12 + sentinel.count + 16  // = 53
+
         // MARK: - Verifier construction
 
         /// Builds AES-GCM(HKDF(seKey, info: label ∥ pin), sentinel).
@@ -59,7 +64,12 @@ extension Manager {
 // MARK: - Result
 
 enum PINVerifyResult: Equatable {
-    case normal
+    /// PIN matched a normal verifier at the given depth. Depth 0 = real app; N > 0 = decoy layer N.
+    case normal(depth: Int)
+    /// PIN matched the duress verifier at `currentDepth` — push-down transition to the next depth.
+    /// In the routing-alias design this result is only reached when no normal verifier exists yet
+    /// for the next depth (i.e., the duress layer has not been activated). Kept for backward
+    /// compatibility and for the single-layer cold-start path before routing aliases are written.
     case duress
     case wrong
     case wipe

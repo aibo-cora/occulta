@@ -240,11 +240,18 @@ the permanently-protected real and first-duress slots would be trivially identif
 
 ## Sequence numbers
 
-Each `LayerPayload` carries a `sequenceNumber: Int` that is strictly increasing per push.
-`pop` validates `payload.sequenceNumber == expectedSequenceNumber` (stored encrypted in
-`AppLayerConfig`) before returning. A lower-than-expected sequence number indicates the
-decrypted payload is from an older interrupted activation cycle; deactivation aborts rather
-than restoring stale contact data.
+Each `LayerPayload` carries a `sequenceNumber: Int` that is a **fresh random UInt32** chosen
+at activation time. `pop` validates `payload.sequenceNumber == expectedSequenceNumber`
+(stored encrypted in `AppLayerConfig`) before returning. A mismatch indicates the decrypted
+payload is from an older activation cycle (stale blob); deactivation aborts rather than
+restoring stale contact data.
+
+**Why random, not incrementing.** An incrementing counter persisted in `AppLayerConfig` after
+deactivation would encode the activation cycle count — directly readable by anyone who can
+decrypt the field. On deactivation, `layerSequenceNumbers[depth]` is cleared back to random
+filler, so no activation history survives. A random value achieves the same stale-blob
+protection: the probability that a restored old blob's embedded sequence number matches the
+new random expected value is 1/2³². An incrementing counter provides no stronger guarantee.
 
 ---
 
@@ -312,7 +319,8 @@ for all contacts on appear (O(n), no crypto), then update a running total on eac
 /// length does not reveal how many real layers are active.
 var sealedBlobSlots: [Data]
 
-/// Strictly increasing counter written at each push; read back to validate
-/// on pop. One value per depth, parallel to sealedBlobSlots.
+/// Random UInt32 written at each activation push; read back to validate on pop.
+/// Cleared to random filler on deactivation — no activation history persists.
+/// One value per depth, parallel to sealedBlobSlots.
 var layerSequenceNumbers: [Data]
 ```
