@@ -296,7 +296,7 @@ private struct SummaryView: View {
                             self.isActivating = false
                             self.onDone()
                         } catch {
-                            debugPrint("Error activating: \(error.localizedDescription)")
+                            debugPrint("Error activating [\(type(of: error))]: \(error)")
                             self.isActivating     = false
                             self.activationFailed = true
                         }

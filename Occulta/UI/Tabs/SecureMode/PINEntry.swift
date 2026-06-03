@@ -61,7 +61,7 @@ struct PINEntry: View {
         case .setup:
             return self.firstPIN != nil ? "Confirm Passcode" : "Passcode"
         case .confirmThenSet:
-            guard self.confirmedPIN != nil else { return "Passcode" }
+            guard self.confirmedPIN != nil else { return "Current Passcode" }
             return self.firstPIN != nil ? "Confirm Passcode" : "New Passcode"
         }
     }

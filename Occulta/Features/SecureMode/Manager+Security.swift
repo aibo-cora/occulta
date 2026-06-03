@@ -420,9 +420,15 @@ extension Manager {
                         } else {
                             depth = nil
                         }
+                        // Strip images — they stay in the DB and are re-encrypted in
+                        // Step 8, so the blob doesn't need to carry them. Including a
+                        // contact photo can push the JSON over the 32 KB slot limit.
+                        var blobDraft = draft
+                        blobDraft.imageData          = nil
+                        blobDraft.thumbnailImageData = nil
                         blobContacts.append(
-                            LayerContact(draft: draft, signedAttributes: signedAttrs,
-                                              visibleThroughDepth: depth)
+                            LayerContact(draft: blobDraft, signedAttributes: signedAttrs,
+                                         visibleThroughDepth: depth)
                         )
                     }
                 }
@@ -747,7 +753,10 @@ extension Manager {
             }
             try self.modelContext.save()
 
-            if depth <= 1 { self.layerStore.rewrite() }
+            if depth <= 1 {
+                let store = self.layerStore
+                DispatchQueue.global(qos: .utility).async { store.rewrite() }
+            }
             self.resetCounters()
         }
 
@@ -957,23 +966,36 @@ extension Manager {
 
         /// Checks the entered PIN against the verifier for the **current layer**, with no side effects.
         ///
-        /// In `.duress` state the check is against `sealedDuressVerifier`; in all other states
-        /// it is against `sealedNormalVerifier`. No counters are mutated
-        /// and no state transitions occur — used by `disablePINFromCurrentDepth` and by
-        /// `PINEntry.submitConfirmPhase` so the activation flow's first phase accepts the
-        /// correct PIN at any depth (duress PIN in `.duress`, normal PIN otherwise).
-        /// Returns true if `pin` matches the normal verifier for `currentDepth`.
-        /// In `.duress` state, `sealedNormalVerifiers[currentDepth]` equals the routing alias
-        /// for the duress PIN that triggered the push-down — the user's "current" PIN.
+        /// Primary check: `sealedNormalVerifiers[currentDepth]` with `normalLabel`.
+        /// At depth 0 this is the master PIN. At depth > 0 this is the routing alias
+        /// (duress PIN re-verified via `normalLabel`) written during activation.
+        ///
+        /// Fallback (depth > 0 only): `sealedDuressVerifiers[currentDepth - 1]` with
+        /// `duressLabel`. Fires when the routing alias is absent — configs created before
+        /// routing aliases were introduced, or migrated from scalar fields, hit this path.
+        ///
         /// No counter mutation. No state transition.
         func checkCurrentLayerPIN(_ pin: String) -> Bool {
             guard
                 let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                let seKey  = try? self.keyManager.deriveSecureModeKey(),
-                config.sealedNormalVerifiers.indices.contains(self.currentDepth)
+                let seKey  = try? self.keyManager.deriveSecureModeKey()
             else { return false }
-            return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
-                                            verifier: config.sealedNormalVerifiers[self.currentDepth],
+
+            let depth = self.currentDepth
+
+            if config.sealedNormalVerifiers.indices.contains(depth),
+               PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                        verifier: config.sealedNormalVerifiers[depth],
+                                        seKey: seKey) {
+                return true
+            }
+
+            let duressIdx = depth - 1
+            guard depth > 0, config.sealedDuressVerifiers.indices.contains(duressIdx) else {
+                return false
+            }
+            return PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
+                                            verifier: config.sealedDuressVerifiers[duressIdx],
                                             seKey: seKey)
         }
 

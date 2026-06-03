@@ -689,6 +689,24 @@ struct SecurityPINCheckTests {
         #expect(!s.checkCurrentLayerPIN("111111"))
     }
 
+    @Test func checkCurrentLayerPIN_atDepth1_fallsBackToDuressVerifierWhenRoutingAliasMissing() async throws {
+        let (s, container, cm, vm) = try makeSecurityAndManagers()
+        try s.configurePIN("111111")
+        try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
+        // Erase the routing alias at index 1 to simulate a pre-routing-alias config.
+        let ctx = ModelContext(container)
+        let config = try #require(try ctx.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        config.sealedNormalVerifiers[1] = AppLayerConfig.verifierFiller()
+        try ctx.save()
+        // Simulate verify() routing via the duress verifier (Step 2) — state = .duress, depth = 1.
+        s.applyVerifyState(for: .duress)
+        #expect(s.currentDepth == 1)
+        // Fallback to sealedDuressVerifiers[0] (duressLabel) must accept the duress PIN.
+        #expect(s.checkCurrentLayerPIN("999999"))
+        #expect(!s.checkCurrentLayerPIN("111111"))
+    }
+
     @Test func checkCurrentLayerPIN_doesNotIncrementWrongCounter() async throws {
         let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("111111")

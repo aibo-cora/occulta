@@ -314,8 +314,8 @@ class ContactManager {
             existing.departmentName = encryptedDepartmentName
             existing.jobTitle = encryptedJobTitle
             existing.birthday = encryptedBirthday
-            existing.imageData = encryptedImageData
-            existing.thumbnailImageData = encryptedThumbnailImageData
+            if let encryptedImageData          { existing.imageData          = encryptedImageData }
+            if let encryptedThumbnailImageData { existing.thumbnailImageData = encryptedThumbnailImageData }
             existing.phoneNumbers = encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) }
             existing.emailAddresses = encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) }
             existing.postalAddresses = encryptedPostalAddresses

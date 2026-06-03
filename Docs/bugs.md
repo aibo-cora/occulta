@@ -817,6 +817,26 @@ Added `DispatchQueue.global(qos: .background).async { }` wrapper inside `maintai
 
 ---
 
+## Bug 41 — Grace period skipped in duress mode — behavioral tell
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+In duress mode, backgrounding the app via the app switcher raises the PIN gate immediately. In normal mode the 5-minute grace period holds. The different behavior is observable and reveals that duress mode is active.
+
+### Root Cause
+
+`isWithinGracePeriod` had an unconditional `guard !self.isRestricted` that short-circuited to `false` whenever `currentDepth > 0`, bypassing the grace period check entirely. `handleBackground()` then always set `needsPINEntry = true` in duress mode. The guard was apparently added to force re-lock in duress mode, but it produced a tell.
+
+The `activateSecureMode` flow already sets `lastUnlockDate = nil` to force re-lock on activation — the `isRestricted` guard was redundant for that purpose and incorrect for the duress PIN entry path.
+
+### Resolution
+
+Removed `!self.isRestricted,` from the `isWithinGracePeriod` guard in `Manager+Security.swift`. Grace period now applies uniformly at any depth. The `lastUnlockDate = nil` in `activateSecureMode` continues to handle the post-activation re-lock case correctly.
+
+---
+
 ## Bug 40 — Identity challenge packets from hidden contacts are processed in duress mode
 
 **Status:** Open
@@ -831,4 +851,165 @@ The same gap exists for shard operations, which the plan notes as out of scope.
 
 ### Resolution
 Pending. Guard `handleInboundChallenge` with `!security.isRestricted || security.isSafeContact(ownerID)` before calling the handler. If the sender is a hidden contact and the app is in restricted mode, silently discard the challenge.
+
+---
+
+## Bug 42 — Duress PIN rejected during Secure Mode activation
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+Two distinct failure modes both result in the duress PIN being rejected when the user enters it during the `SecureModeSetupFlow` activation sequence. In both cases the user sees a shake animation with no explanation.
+
+---
+
+#### Failure Mode A — UX confusion at depth 0 (first activation)
+
+**Scenario:** Secure Mode has never been activated. The user opens Settings → Security → "Learn more" and navigates to the `PINEntry(.confirmThenSet)` step.
+
+`confirmThenSet` has two phases:
+- **Phase 1** — verify identity: expects the user's CURRENT normal PIN (calls `checkCurrentLayerPIN`, which checks `sealedNormalVerifiers[0]` with `normalLabel`).
+- **Phase 2** — set new PIN: the user enters and confirms the new duress PIN; this becomes the `duressPIN` argument to `activateSecureMode`.
+
+The phase-1 title is `"Passcode"` — identical to every other PIN prompt in the app. There is no indication that this entry expects the *existing* normal PIN, not the new duress PIN being created. A user who enters their intended duress PIN in phase 1 receives a shake rejection with no feedback about which PIN was expected.
+
+**Root Cause:** `PINEntry.title` for `.confirmThenSet` when `confirmedPIN == nil` returns `"Passcode"`, indistinguishable from the lock-screen entry prompt. No guidance text or sub-label distinguishes "confirm your identity" from "enter a new PIN."
+
+**Resolution:** Changed the `.confirmThenSet` phase-1 case in `PINEntry.title` from `"Passcode"` to `"Current Passcode"`. Phase 2 already uses `"New Passcode"` / `"Confirm Passcode"`, which are unambiguous.
+
+---
+
+#### Failure Mode B — `checkCurrentLayerPIN` fails for pre-routing-alias configs at depth 1
+
+**Scenario:** Secure Mode is active and the user enters their duress PIN at the lock screen. If the routing alias was not written at `sealedNormalVerifiers[1]` (e.g. the config was created before routing aliases were introduced, or the array was migrated from scalar fields), `verify()` cannot match the duress PIN via Step 1 (normal verifier scan). It falls through to Step 2, matching `sealedDuressVerifiers[0]` with `duressLabel`, and returns `.duress`. State becomes `(.duress, currentDepth = 1)`.
+
+The user then opens "Learn more" → `SecureModeSetupFlow` → `PINEntry(.confirmThenSet)`. Phase 1 calls `checkCurrentLayerPIN(duressPIN)`:
+
+```swift
+func checkCurrentLayerPIN(_ pin: String) -> Bool {
+    ...
+    return PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
+                                    verifier: config.sealedNormalVerifiers[self.currentDepth],
+                                    seKey: seKey)
+}
+```
+
+`sealedNormalVerifiers[1]` is random filler (routing alias was never written) → `checkVerifier` returns `false` → the correct duress PIN is rejected.
+
+The migration in `Manager.Security.init()` populates `sealedNormalVerifiers[0]` from the scalar `sealedNormalVerifier` and `sealedDuressVerifiers[0]` from `sealedDuressVerifier`, but cannot reconstruct the routing alias at index 1 because it requires the plaintext duress PIN.
+
+**Root Cause:** `checkCurrentLayerPIN` unconditionally checks `sealedNormalVerifiers[currentDepth]` with `normalLabel`. This is correct only when the routing alias exists. When it is absent, the method has no fallback to check `sealedDuressVerifiers[currentDepth - 1]` with `duressLabel`, even though that verifier holds the correct answer.
+
+**Resolution:** `checkCurrentLayerPIN` in `Manager+Security.swift` now tries `sealedNormalVerifiers[depth]` (routing alias, `normalLabel`) first. If that check fails and `depth > 0`, it falls back to `sealedDuressVerifiers[depth - 1]` with `duressLabel`. The fallback is safe: `duressLabel ≠ normalLabel`, so a normal PIN cannot satisfy the duress check. Existing configs with a valid routing alias are unaffected — the fallback only fires on a genuine routing-alias miss.
+
+---
+
+## Bug 43 — LayerStore `rewrite()` in `deactivateSecureMode` runs synchronously on calling thread; `LayerStore.Error` codes were unstable
+
+**Status:** Closed (Fixed)
+
+### Severity: Low
+
+**Part A — Synchronous rewrite:** `deactivateSecureMode` called `self.layerStore.rewrite()` synchronously at line 750, blocking the calling actor (typically the main thread) with SE key derivation and ~1 MB of file I/O. This was inconsistent with `maintainLayerStore()` and `rewriteLayerStore()`, which both dispatch to background queues (see Bug 39). Under memory pressure, the synchronous file write on the main thread could fail, leaving the system in a state where re-activation would fail on the very next attempt.
+
+**Part B — Unstable error codes:** `Manager.LayerStore.Error` did not conform to `CustomNSError`. Swift's default NSError bridging produces implementation-defined codes (sometimes 0-indexed, sometimes 1-indexed depending on runtime version). A user reported `Occulta.Manager.LayerStore.Error error 2` during re-activation after deactivation — the ambiguous code made it impossible to determine from logs alone whether the error was `encryptionFailed` (code 1, thrown from `push()`) or `decryptionFailed` (code 2, not throwable from `push()`).
+
+### Root Cause
+
+Part A: The `rewrite()` call was written without the background-dispatch wrapper that the other layer store maintenance calls use.
+
+Part B: No `CustomNSError` conformance — NSError bridging was left to the Swift runtime default.
+
+### Resolution
+
+**Part A:** `self.layerStore.rewrite()` in `deactivateSecureMode` now dispatches to `DispatchQueue.global(qos: .utility)` (matching `rewriteLayerStore()`). The file I/O no longer blocks the calling thread.
+
+**Part B:** `Manager.LayerStore.Error` now conforms to `CustomNSError` with explicit, stable codes: `notFound`=0, `encryptionFailed`=1, `decryptionFailed`=2, `sequenceNumberMismatch`=3, `slotIndexMismatch`=4, `payloadTooLarge`=5. The `errorDomain` is pinned to `"Occulta.Manager.LayerStore.Error"`.
+
+The activation error handler's `debugPrint` was also updated from `error.localizedDescription` to `"[\(type(of: error))]: \(error)"` so the Swift type name is always visible alongside the description, regardless of NSError bridging.
+
+---
+
+## Bug 44 — `payloadTooLarge` when sensitive contact has a photo; images included in blob unnecessarily
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+Activation fails with `payloadTooLarge(contacts: 1, encodedBytes: 294562, limit: 32768)` when a sensitive contact has a full-resolution profile photo. The JSON-encoded `LayerContact` for a single contact with a ~220 KB photo exceeds the 32 KB slot limit by nearly 9×.
+
+### Root Cause
+
+`LayerContact.draft` carried the full `Contact.Draft` including `imageData` and `thumbnailImageData`. These fields are raw binary data (JPEG/PNG), which expands further when JSON-base64-encoded. A moderately sized contact photo is enough to exceed the slot.
+
+Image data does not need to be in the blob for correctness. Sensitive contacts are never hard-deleted from the DB (Bug 13). Their image fields remain in the DB and are re-encrypted from K_old → K_staged in activation Step 8 and again from K_activation → K_staged in deactivation Step 4. By the time deactivation Step 5 runs, the DB already holds the correct image ciphertext under K_staged.
+
+A secondary issue: the `save(contact:using:)` UPDATE path unconditionally set `existing.imageData = encryptedImageData`. When the blob draft had nil images (after this fix), that write would have cleared the re-encrypted image data from Step 4.
+
+### Resolution
+
+Three changes applied together:
+
+**1. Strip images from blob draft** (`Manager+Security.swift`, activation Step 6): After `convertToMutableCopy`, create a `var blobDraft = draft` with `imageData = nil` and `thumbnailImageData = nil` before building `LayerContact`. Images stay in the DB, correctly re-encrypted in Steps 8 and 4.
+
+**2. Preserve existing image data in `save(contact:using:)` UPDATE path** (`Contact+Manager.swift`): Changed `existing.imageData = encryptedImageData` and `existing.thumbnailImageData = encryptedThumbnailImageData` to guard on non-nil (`if let encryptedImageData { ... }`). This path is only called from deactivation Step 5 (key-rotation restore); the regular `save(contact:currentDepth:)` path is unchanged.
+
+**3. Remove images from `estimatedSize(for:)`** (`SecureMode+LayerStore.swift`): The capacity indicator excluded images from its estimate since the blob no longer carries them.
+
+---
+
+## Bug 45 — "Deactivate Protection" visible in Settings at duress depth via routing alias — forensic tell
+
+**Status:** Closed (Fixed)
+
+### Severity: Critical (forensic)
+
+When the duress PIN is entered and matched via the routing alias (`sealedNormalVerifiers[K]` for K > 0), Settings shows **both** "Deactivate Protection" and "Learn more" simultaneously. A coercer browsing Settings sees the deactivation button, directly confirming that Secure Mode is active.
+
+The bug is not limited to depth 1. With N duress layers, every depth from 1 through N-1 is affected.
+
+### Threat scenario
+
+The entire forensic value of the "Learn more" cover in Settings is that it looks identical to a device that has never activated Secure Mode. Showing "Deactivate Protection" alongside it collapses the deniability completely — it is a literal label that says "Secure Mode is on."
+
+### Root Cause
+
+The "Deactivate Protection" condition was:
+```swift
+isSecureModeActive && security.state == .normal && security.appLockEnabled
+```
+
+Before the multi-layer routing-alias mechanism, entering the duress PIN always produced `state = .duress`, so this condition was reliably false in duress state. With routing aliases, `verify()` matches `sealedNormalVerifiers[K]` for any depth K and returns `.normal(depth: K)`. `applyVerifyState` then sets `state = .normal` and `currentDepth = K`. Because `state` is `.normal` at every depth reachable via routing alias — including all duress depths 1, 2, 3 ... N-1 — the condition evaluates to `true` for all of them.
+
+The depth-0 guard was already present in the PIN toggle's `.disabled` modifier but was never applied to the Deactivate button.
+
+### Why `currentDepth == 0` is the correct predicate for any number of layers
+
+`currentDepth == 0` identifies the real app layer exactly, regardless of how many duress layers are stacked above it:
+
+| Depth | Layer                        | Show Deactivate? | Reason                                                           |
+|-------|------------------------------|------------------|------------------------------------------------------------------|
+| 0     | Real app (master PIN)        | YES              | Real user. Deactivation terminates the depth-0→1 binding.       |
+| 1     | First duress view            | NO               | Coercer is here. Button is a tell.                               |
+| 2     | Expendable layer             | NO               | Coercer is here. Button is a tell.                               |
+| N     | Any further expendable layer | NO               | Same — coercer could be at any depth above 0.                   |
+
+The real user always reaches depth 0 by entering their master PIN. That is the only entry point from which deactivation is appropriate. Deactivation from depth > 0 is technically supported by `deactivateSecureMode` (it strips the outermost layer and returns to depth 1), but exposing that path in the UI would require showing a tell at every duress depth. The correct design is: deactivate only from depth 0, using the master PIN.
+
+The `state` field is no longer a reliable proxy for "real app" now that routing aliases can produce `.normal` at any depth. `currentDepth` is the authoritative signal.
+
+### Resolution
+
+`Settings.swift` — "Deactivate Protection" condition updated from:
+```swift
+isSecureModeActive && security.state == .normal && security.appLockEnabled
+```
+to:
+```swift
+isSecureModeActive && security.state == .normal
+    && security.currentDepth == 0 && security.appLockEnabled
+```
+
+At depth 1, 2, ... N, the button is suppressed regardless of `state`. At depth 0, behavior is unchanged. The PIN toggle's `.disabled` modifier already had `currentDepth == 0`; the deactivate button now matches it exactly.
 

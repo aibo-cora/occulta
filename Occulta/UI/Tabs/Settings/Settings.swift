@@ -188,7 +188,8 @@ struct Settings: View {
                     .opacity(!self.requiresPIN ? 0.4 : 1)
                 }
 
-                if self.isSecureModeActive && self.security.state == .normal && self.security.appLockEnabled {
+                if self.isSecureModeActive && self.security.state == .normal
+                   && self.security.currentDepth == 0 && self.security.appLockEnabled {
                     Section {
                         Button("Deactivate Protection", role: .destructive) {
                             self.showingDeactivateSheet = true

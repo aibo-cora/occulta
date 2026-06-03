@@ -73,7 +73,7 @@ extension Manager {
 
         // MARK: - Errors
 
-        enum Error: Swift.Error {
+        enum Error: Swift.Error, CustomNSError {
             case notFound
             case encryptionFailed
             case decryptionFailed
@@ -81,6 +81,21 @@ extension Manager {
             case slotIndexMismatch(expected: Int, got: Int)
             /// Thrown from push() before any I/O when encoded payload exceeds slotPlaintextSize.
             case payloadTooLarge(contacts: Int, encodedBytes: Int, limit: Int)
+
+            static var errorDomain: String { "Occulta.Manager.LayerStore.Error" }
+
+            var errorCode: Int {
+                switch self {
+                case .notFound:                 return 0
+                case .encryptionFailed:         return 1
+                case .decryptionFailed:         return 2
+                case .sequenceNumberMismatch:   return 3
+                case .slotIndexMismatch:        return 4
+                case .payloadTooLarge:          return 5
+                }
+            }
+
+            var errorUserInfo: [String: Any] { [:] }
         }
 
         // MARK: - Constants
@@ -243,8 +258,7 @@ extension Manager {
         /// contact classification capacity indicator.
         func estimatedSize(for profile: Contact.Profile) -> Int {
             var total = 0
-            total += profile.thumbnailImageData?.count      ?? 0
-            total += profile.imageData?.count               ?? 0
+            // imageData and thumbnailImageData are stripped from the blob (Bug 43b fix).
             total += profile.forwardSecrecyEncrypted?.count ?? 0
             total += profile.signedAttributes?.count        ?? 0
             total += profile.visibleThroughDepth?.count     ?? 0
