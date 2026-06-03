@@ -839,7 +839,7 @@ Removed `!self.isRestricted,` from the `isWithinGracePeriod` guard in `Manager+S
 
 ## Bug 40 — Identity challenge packets from hidden contacts are processed in duress mode
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Low
 In `OccultaApp.buildOwnedBasket`, identity challenge packets are routed to `identityChallenge.handleInboundChallenge` and return `nil` before reaching check point A (the depth filter that suppresses messages from hidden contacts). If a hidden sensitive contact sends an identity challenge while the app is unlocked at duress depth, the challenge is processed: `contactManager.fetchContact(by: ownerID)` succeeds (hidden contacts are in the DB, only filtered at the UI layer), and the handler may produce visible state (e.g. an approval sheet).
@@ -850,7 +850,14 @@ The same gap exists for shard operations, which the plan notes as out of scope.
 `buildOwnedBasket` short-circuits on identity challenge packets before the depth check. Check point A only runs on the returned `OwnedBasket`, which is `nil` for challenges.
 
 ### Resolution
-Pending. Guard `handleInboundChallenge` with `!security.isRestricted || security.isSafeContact(ownerID)` before calling the handler. If the sender is a hidden contact and the app is in restricted mode, silently discard the challenge.
+Added `passSecurityControl(identifier:)` — a throwing depth gate called inside `buildOwnedBasket` for every bundle format before any processing occurs:
+
+- **`.v3fs`**: called immediately after `decryptSealed`, before the identity-challenge branch and before basket assembly. Blocks both challenges and regular messages from hidden contacts.
+- **Legacy `default`** (nil/v1/v2): called after `decrypt` resolves the `ownerID`, before `JSONDecoder().decode(Basket.self, ...)`.
+
+When `isRestricted && !isSafeContact(identifier)` the gate throws `ContactManager.Errors.noPublicKeyToEncryptWith`, which surfaces as the same generic decryption-failure message already shown for unrelated key errors — not a unique tell that a contact is being depth-filtered.
+
+Check point A was removed from `processInboundFile` because the gate now fires inside `buildOwnedBasket` for all paths that can produce an `OwnedBasket`; the post-basket check is fully superseded.
 
 ---
 

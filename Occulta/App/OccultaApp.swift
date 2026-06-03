@@ -487,6 +487,8 @@ struct OccultaApp: App {
                 // bytes) so we can peek at the identity-challenge envelope and
                 // route that traffic out of the basket pipeline entirely.
                 let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
+                
+                try self.passSecurityControl(identifier: ownerID)
 
                 // Identity-challenge traffic rides on .v3fs/.longTermFallback
                 // but is NOT a basket — hand it to the coordinator and bail.
@@ -525,6 +527,8 @@ struct OccultaApp: App {
                 // Legacy path — nil, v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
                 decrypted = try self.contactManager.decrypt(data: fileContents)
+                /// If the bundle is in legacy format, make sure it goes through the checkpoint before processing it.
+                try self.passSecurityControl(identifier: decrypted.ownerID)
             }
 
             let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
@@ -581,14 +585,7 @@ struct OccultaApp: App {
     private func processInboundFile(_ data: Data) async {
         do {
             if let ownedBasket = try await self.buildOwnedBasket(from: data) {
-                // Content gate (check point A): if already in restricted mode, suppress
-                // messages from contacts not visible at this depth.
-                if self.security.isRestricted && !self.security.isSafeContact(ownedBasket.owner) {
-                    self.errorMessage = "This message was not addressed to you."
-                    self.showError = true
-                } else {
-                    self.openedFileContents = ownedBasket
-                }
+                self.openedFileContents = ownedBasket
             }
         } catch ContactManager.Errors.messageHasNoData {
             self.errorMessage = "This message contains no data."
@@ -603,6 +600,16 @@ struct OccultaApp: App {
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
+        }
+    }
+    
+    /// Checkpoint A.
+    ///
+    /// We need to make sure that sensitive contacts' messages are being treated as wrong recipient events.
+    /// - Parameter identifier: Contact identifier.
+    private func passSecurityControl(identifier: String) throws {
+        if self.security.isRestricted && self.security.isSafeContact(identifier) == false {
+            throw ContactManager.Errors.noPublicKeyToEncryptWith
         }
     }
 
