@@ -397,12 +397,20 @@ struct SecuritySafeContactTests {
         self.insertContact(identifier: "ghi", in: ctx)
         try ctx.save()
 
-        // mark "abc" and "ghi" safe, "def" sensitive
+        // mark "abc" and "ghi" safe (vtd=Int.max), "def" sensitive (vtd=0 at depth 0).
         try s.updateSafeContacts(["abc", "ghi"])
-        let safe = s.safeContactIDs()
-        #expect(safe.contains("abc"))
-        #expect(safe.contains("ghi"))
-        #expect(!safe.contains("def"))
+
+        // At depth 0 (real app) ALL contacts are visible — vtd=0 >= depth=0.
+        let safeAtDepth0 = s.safeContactIDs()
+        #expect(safeAtDepth0.contains("abc"))
+        #expect(safeAtDepth0.contains("ghi"))
+        #expect(safeAtDepth0.contains("def"))  // visible in real app; hidden at depth 1+
+
+        // At depth 1 (duress) only truly safe contacts appear.
+        let safeAtDepth1 = s.safeContactIDs(atDepth: 1)
+        #expect(safeAtDepth1.contains("abc"))
+        #expect(safeAtDepth1.contains("ghi"))
+        #expect(!safeAtDepth1.contains("def"))  // vtd=0 < 1 → hidden
     }
 
     @Test func isSafeContact_unknownID_returnsFalse() throws {
@@ -410,7 +418,7 @@ struct SecuritySafeContactTests {
         #expect(s.isSafeContact("xyz") == false)
     }
 
-    @Test func isSafeContact_markedSensitive_returnsFalse() throws {
+    @Test func isSafeContact_markedSensitive_hiddenAtDepth1() throws {
         let container = try makeContainer()
         let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
         let ctx = ModelContext(container)
@@ -418,7 +426,14 @@ struct SecuritySafeContactTests {
         self.insertContact(identifier: "def", in: ctx)
         try ctx.save()
 
-        try s.updateSafeContacts(["abc"])  // "def" → sensitive
+        try s.updateSafeContacts(["abc"])  // "def" → sensitive (vtd=0)
+
+        // At depth 0 both contacts are visible (real app shows everything).
+        #expect(s.isSafeContact("abc") == true)
+        #expect(s.isSafeContact("def") == true)
+
+        // At depth 1 "def" (vtd=0) is filtered out.
+        s.applyVerifyState(for: .normal(depth: 1))
         #expect(s.isSafeContact("abc") == true)
         #expect(s.isSafeContact("def") == false)
     }
@@ -545,6 +560,101 @@ struct SecurityMultiLayerTests {
             try await s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "999999",
                                             contactManager: cm, vaultManager: vm)
         }
+    }
+
+    // MARK: - Multi-layer contact classification
+
+    /// At depth 1, updateSafeContacts must stamp non-safe contacts with vtd=1 (not vtd=0).
+    @Test func updateSafeContacts_atDepth1_stampsCurrentDepthNotZero() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let ctx = ModelContext(container)
+
+        // Insert two contacts, mark "abc" as depth-0-sensitive, "def" as safe.
+        let abc = Contact.Profile(identifier: "abc", givenName: "", familyName: "", middleName: "",
+                                  nickname: "", organizationName: "", departmentName: "", jobTitle: "")
+        let def_ = Contact.Profile(identifier: "def", givenName: "", familyName: "", middleName: "",
+                                   nickname: "", organizationName: "", departmentName: "", jobTitle: "")
+        ctx.insert(abc)
+        ctx.insert(def_)
+        try ctx.save()
+
+        // Classify at depth 0: "abc" sensitive (vtd=0), "def" safe (vtd=Int.max).
+        try s.updateSafeContacts(["def"])
+        #expect(s.isSensitive("abc"))  // vtd == 0 == currentDepth(0)
+
+        // Move to depth 1.
+        s.applyVerifyState(for: .normal(depth: 1))
+        #expect(s.currentDepth == 1)
+
+        // At depth 1, classify "def" as sensitive for depth 2.
+        // "abc" (vtd=0) is below current depth and must not be touched.
+        try s.updateSafeContacts([])  // no contacts safe at this depth
+
+        // "def" should now have vtd=1 (hidden at depth 2), not vtd=0.
+        #expect(s.isSensitive("def"))          // vtd == 1 == currentDepth(1)
+        // "abc" must be untouched — still vtd=0, not bumped to 1.
+        s.applyVerifyState(for: .normal(depth: 0))
+        #expect(s.isSensitive("abc"))          // still vtd == 0 == currentDepth(0)
+        // "abc" (vtd=0) is hidden at depth 1 but visible at depth 0 (real app).
+        #expect(!s.safeContactIDs(atDepth: 1).contains("abc"))
+        // "def" (vtd=1) is hidden at depth 2 but visible at depths 0 and 1.
+        #expect(s.safeContactIDs(atDepth: 1).contains("def"))
+        #expect(!s.safeContactIDs(atDepth: 2).contains("def"))
+    }
+
+    /// At depth 1, updateSafeContacts must not touch contacts already hidden
+    /// below the current depth (vtd < currentDepth).
+    @Test func updateSafeContacts_atDepth1_skipsAlreadyHiddenContacts() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let ctx = ModelContext(container)
+
+        let hidden = Contact.Profile(identifier: "hidden", givenName: "", familyName: "", middleName: "",
+                                     nickname: "", organizationName: "", departmentName: "", jobTitle: "")
+        ctx.insert(hidden)
+        try ctx.save()
+
+        // Classify at depth 0: "hidden" is sensitive (vtd=0).
+        try s.updateSafeContacts([])
+
+        // Move to depth 1 and re-classify — "hidden" is not visible here.
+        s.applyVerifyState(for: .normal(depth: 1))
+        try s.updateSafeContacts([])  // no contacts in scope, nothing to change
+
+        // "hidden" must still have vtd=0, not vtd=1 (depth-1 classification must not touch it).
+        s.applyVerifyState(for: .normal(depth: 0))
+        #expect(s.isSensitive("hidden"))       // vtd still == 0 == currentDepth(0)
+    }
+
+    /// isSensitive at depth 1 should recognise vtd=1 contacts as sensitive,
+    /// not vtd=0 contacts (those belong to the depth-0 classification).
+    @Test func isSensitive_atDepth1_checksCurrentDepthValue() throws {
+        let container = try makeContainer()
+        let s = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let ctx = ModelContext(container)
+
+        let a = Contact.Profile(identifier: "a", givenName: "", familyName: "", middleName: "",
+                                nickname: "", organizationName: "", departmentName: "", jobTitle: "")
+        let b = Contact.Profile(identifier: "b", givenName: "", familyName: "", middleName: "",
+                                nickname: "", organizationName: "", departmentName: "", jobTitle: "")
+        ctx.insert(a)
+        ctx.insert(b)
+        try ctx.save()
+
+        // "a" → vtd=0, "b" → vtd=1 (visible at depth 1, hidden at depth 2).
+        try s.updateSafeContacts(["b"])   // depth 0: "a" sensitive
+        s.applyVerifyState(for: .normal(depth: 1))
+        try s.updateSafeContacts([])      // depth 1: "b" sensitive
+
+        // At depth 1: "b" is sensitive (vtd==1==currentDepth), "a" is not (vtd=0 < currentDepth).
+        #expect(s.isSensitive("b"))
+        #expect(!s.isSensitive("a"))
+
+        // Back at depth 0: "a" is sensitive (vtd==0==currentDepth), "b" is not.
+        s.applyVerifyState(for: .normal(depth: 0))
+        #expect(s.isSensitive("a"))
+        #expect(!s.isSensitive("b"))
     }
 }
 

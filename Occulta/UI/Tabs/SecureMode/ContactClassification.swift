@@ -23,8 +23,16 @@ struct ContactClassification: View {
 
     // MARK: - Derived lists
 
+    /// Contacts in scope for this classification pass: visible at the current depth.
+    /// At depth 0 this is all contacts. At depth N this excludes contacts already
+    /// hidden below depth N (classified at a shallower layer), so the user only
+    /// sees and edits contacts they can actually control at this layer.
+    private var classifiableContacts: [Contact.Profile] {
+        self.contacts.filter { self.security.isDisplayable($0) }
+    }
+
     private var visibleContacts: [Contact.Profile] {
-        self.contacts.filter { !self.sensitiveIDs.contains($0.identifier) }
+        self.classifiableContacts.filter { !self.sensitiveIDs.contains($0.identifier) }
     }
 
     private var verifiedVisible: [Contact.Profile] {
@@ -36,7 +44,7 @@ struct ContactClassification: View {
     }
 
     private var sensitiveContacts: [Contact.Profile] {
-        self.contacts.filter { self.sensitiveIDs.contains($0.identifier) }
+        self.classifiableContacts.filter { self.sensitiveIDs.contains($0.identifier) }
     }
 
     // MARK: - Body
@@ -148,7 +156,9 @@ struct ContactClassification: View {
         // Never persist classification changes while restricted. The coercer must
         // not be able to reclassify contacts from within the duress view.
         guard !self.security.isRestricted else { return }
-        let safeIDs = Set(self.contacts.map { $0.identifier }).subtracting(self.sensitiveIDs)
+        // Use classifiableContacts so already-hidden contacts are not included in safeIDs.
+        // updateSafeContacts has the same guard, but being explicit here is cleaner.
+        let safeIDs = Set(self.classifiableContacts.map { $0.identifier }).subtracting(self.sensitiveIDs)
         try? self.security.updateSafeContacts(safeIDs)
     }
 }

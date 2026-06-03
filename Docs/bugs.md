@@ -1013,3 +1013,45 @@ isSecureModeActive && security.state == .normal
 
 At depth 1, 2, ... N, the button is suppressed regardless of `state`. At depth 0, behavior is unchanged. The PIN toggle's `.disabled` modifier already had `currentDepth == 0`; the deactivate button now matches it exactly.
 
+---
+
+## Bug 46 — `excludedSlots` only protects the real-layer blob; depth-1 (convincing duress) blob can be overwritten at depth ≥ 2 activation
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+When activating a third (or deeper) layer at depth ≥ 2, `randomSlot()` could select the same file slot that holds the depth-1 blob. `push()` would then overwrite that slot with the new payload, destroying the depth-1 layer's contact data. The next deactivation at depth ≥ 2 reads `blobDepth = depth - 1`, which resolves to the depth-1 slot. `pop()` decrypts it and finds a sequenceNumber mismatch (the depth-2 payload is there instead of the depth-1 payload), falls back to empty contacts, and the convincing duress view loses all its contacts.
+
+### Two layers that must never be overwritten
+
+The design has two permanently protected layers:
+
+| Blob depth | Layer | Why permanent |
+|---|---|---|
+| 0 | Real layer (depth-0 activation) | Contains the user's real sensitive contacts |
+| 1 | First duress layer (depth-1 activation) | The "convincing" decoy — must remain intact for deniability |
+
+Blobs at depth 2+ are expendable fake data. Overwriting them is acceptable — the coercer sees the convincing depth-1 view either way, and the deactivation cascade at those depths falls back gracefully to empty contacts without data loss that matters.
+
+### Root Cause
+
+`excludedSlots` was built from only the depth-0 blob slot:
+```swift
+Set([config.readBlobSlot(at: 0)].compactMap { $0 })
+```
+The depth-1 blob slot was never added to the exclusion set, so at depth ≥ 2 activations the random slot picker could legitimately choose it.
+
+The fix is narrower than excluding all prior blobs (`0..<depth`): only depths 0 and 1 need permanent protection. `min(depth, 2)` gives `[0]` at depth 1 (depth-1 blob doesn't exist yet) and `[0, 1]` at depth ≥ 2 (both permanent layers protected), leaving expendable blobs at depth 2+ freely selectable.
+
+### Resolution
+
+`Manager+Security.swift` — `excludedSlots` changed from:
+```swift
+Set([config.readBlobSlot(at: 0)].compactMap { $0 })
+```
+to:
+```swift
+Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
+```
+

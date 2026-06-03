@@ -374,11 +374,15 @@ extension Manager {
 
             // Slot index and sequence number chosen before the do/catch block so they
             // are in scope for the post-catch config write.
-            // Slot exclusion: the real layer (depth 0) slot is permanently excluded from
-            // all depth > 0 writes so it can never be overwritten or statistically identified.
+            // Slot exclusion: the real layer (depth 0) and the first duress layer (depth 1)
+            // are permanently excluded from all writes — they must never be overwritten.
+            // Depth-2+ blobs are expendable; their slots are NOT excluded so the random
+            // pool stays as large as possible.
+            //   depth 1 activation → exclude slot 0 only (slot 1 doesn't exist yet)
+            //   depth 2+ activation → exclude slots 0 and 1
             let excludedSlots: Set<Int> = depth == 0
                 ? []
-                : Set([config.readBlobSlot(at: 0)].compactMap { $0 })
+                : Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
             let slotIndex      = self.layerStore.randomSlot(excluding: excludedSlots)
             let sequenceNumber = Self.randomSequenceNumber()
 
@@ -399,27 +403,26 @@ extension Manager {
                 var safeProfiles:  [Contact.Profile]   = []
 
                 for profile in allProfiles {
-                    if Self.isVisible(profile, atDepth: .max) {
+                    // Decode the contact's visibility ceiling.
+                    // nil = legacy pre-activation value; treat as Int.max (safe at all depths).
+                    let contactDepth: Int = {
+                        guard let data = profile.visibleThroughDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return Int.max }
+                        return value
+                    }()
+
+                    if contactDepth > depth {
+                        // Safe for this activation: visible at the new deeper layer too.
                         safeProfiles.append(profile)
-                    } else {
-                        // Sensitive: decrypt and capture for blob.
-                        let draft = try contactManager.convertToMutableCopy(
-                            using: profile.identifier
-                        )
-                        let signedAttrs: Data?
-                        if let enc = profile.signedAttributes, !enc.isEmpty {
-                            signedAttrs = enc.decrypt()
-                        } else {
-                            signedAttrs = nil
-                        }
-                        let depth: Int?
-                        if let data = profile.visibleThroughDepth,
-                           let plain = data.decrypt(),
-                           let value = try? JSONDecoder().decode(Int.self, from: plain) {
-                            depth = value
-                        } else {
-                            depth = nil
-                        }
+                    } else if contactDepth == depth {
+                        // Sensitive for this layer: visible now, hidden at depth+1 → seal in blob.
+                        let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
+                        let signedAttrs: Data? = {
+                            guard let enc = profile.signedAttributes, !enc.isEmpty else { return nil }
+                            return enc.decrypt()
+                        }()
                         // Strip images — they stay in the DB and are re-encrypted in
                         // Step 8, so the blob doesn't need to carry them. Including a
                         // contact photo can push the JSON over the 32 KB slot limit.
@@ -428,9 +431,11 @@ extension Manager {
                         blobDraft.thumbnailImageData = nil
                         blobContacts.append(
                             LayerContact(draft: blobDraft, signedAttributes: signedAttrs,
-                                         visibleThroughDepth: depth)
+                                         visibleThroughDepth: contactDepth)
                         )
                     }
+                    // contactDepth < depth: already hidden from a previous layer.
+                    // Not sealed in this blob. Step 8 still re-encrypts under the staged key.
                 }
 
                 // ── Step 5: Migrate nil visibleThroughDepth (should be a no-op) ─────
@@ -1030,18 +1035,25 @@ extension Manager {
             return Set(contacts.compactMap { Self.isVisible($0, atDepth: d) ? $0.identifier : nil })
         }
 
-        /// Marks contacts in `ids` as always visible (`encrypt(Int.max)`) and all others
-        /// as hidden (`encrypt(0)`). Never writes nil — every row gets an encrypted value.
+        /// Classifies contacts relative to `currentDepth`.
+        ///
+        /// Contacts in `ids` are marked always-visible (`encrypt(Int.max)`).
+        /// Contacts not in `ids` that are currently visible are marked hidden at the next
+        /// layer (`encrypt(currentDepth)`). Contacts already hidden below `currentDepth`
+        /// (classified at a shallower layer) are left untouched — this call does not own them.
         func updateSafeContacts(_ ids: Set<String>) throws {
             let contacts = try self.modelContext.fetch(Contact.Profile.descriptor)
             for contact in contacts {
-                let depthValue = ids.contains(contact.identifier) ? Int.max : 0
+                // Only update contacts in scope for this classification pass.
+                guard Self.isVisible(contact, atDepth: self.currentDepth) else { continue }
+                let depthValue = ids.contains(contact.identifier) ? Int.max : self.currentDepth
                 contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             }
             try self.modelContext.save()
         }
 
-        /// Returns true if the contact is explicitly marked sensitive (depth 0).
+        /// Returns true if the contact is sensitive at `currentDepth` — i.e. visible now
+        /// but hidden at the next layer (`visibleThroughDepth == currentDepth`).
         /// Does not infer from unknown contacts — only reads the stored field.
         func isSensitive(_ identifier: String) -> Bool {
             let descriptor = FetchDescriptor<Contact.Profile>(
@@ -1052,16 +1064,21 @@ extension Manager {
                   let decrypted = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)
             else { return false }
-            return value == 0
+            return value == self.currentDepth
         }
 
-        /// Sets a single contact's visibility without touching any other contact records.
+        /// Sets a single contact's visibility relative to `currentDepth`.
+        ///
+        /// Sensitive → `encrypt(currentDepth)`: visible through the current layer, hidden at the next.
+        /// Safe → `encrypt(Int.max)`: visible at all depths.
         func setVisibility(for identifier: String, isSensitive: Bool) throws {
             let descriptor = FetchDescriptor<Contact.Profile>(
                 predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
             )
             guard let contact = try? self.modelContext.fetch(descriptor).first else { return }
-            contact.visibleThroughDepth = try JSONEncoder().encode(isSensitive ? 0 : Int.max).encrypt()
+            contact.visibleThroughDepth = try JSONEncoder().encode(
+                isSensitive ? self.currentDepth : Int.max
+            ).encrypt()
             try self.modelContext.save()
         }
 
