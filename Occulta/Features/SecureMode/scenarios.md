@@ -428,14 +428,89 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ## 13. Wipe
 
-### 13.1 `onWipe` triggered — current state (Bug 18)
-**Result:** `onWipe: { self.pendingFileData = nil }` — only clears queued file. **No data is erased. User stays on PIN screen.** Bug 18 open.
+### Wipe depth model
 
-### 13.2 `onWipe` — intended behaviour
-**Correct result:** `appManager.eraseAllData()` (delete prekeys, contacts, vault, SE keys) + delete blob file from App Group + delete/clear `AppLayerConfig` → state → `.noPIN`. App opens to empty contacts.
+Every wipe fires from a specific depth — the layer being attacked — and destroys that layer plus all layers that follow it (deeper), leaving all preceding layers intact.
 
-### 13.3 `eraseAllData()` — blob not deleted (current)
-**Result:** `Manager.App.eraseAllData()` does not reference the layer store file. Blob remains in App Group after wipe. SE key deleted — blob is inaccessible (can't derive blob key) but persists on disk. Forensic artifact.
+```
+wipeDepth = max(currentDepth, coercerBaseDepth)
+```
+
+`currentDepth` identifies who authenticated last in this session. `coercerBaseDepth` is the persisted floor — it survives app kills and ensures the coercer who re-enabled their PIN never triggers a shallower wipe than their own layer, even if they kill the app and relaunch.
+
+**What "wipe from depth N" means:**
+
+| Data | Preserved (depth < N) | Wiped (depth ≥ N) |
+|---|---|---|
+| Contacts | `visibleThroughDepth < N` stays in DB | `visibleThroughDepth == N` deleted |
+| Vault entries | `visibleThroughDepth < N` stays | `visibleThroughDepth == N` deleted |
+| Verifiers | `sealedNormalVerifiers[0..N-1]` intact | `sealedNormalVerifiers[N..]` → filler |
+| | `sealedDuressVerifiers[0..N-2]` intact | `sealedDuressVerifiers[N-1..]` → filler |
+| Blobs | slots 0..N-1 intact in layer store file | slot N reference cleared |
+| SE keys | intact | intact (not deleted in selective wipe) |
+| DB canonical key | intact | intact |
+
+When `wipeDepth == 0`: total wipe (all data, SE keys, AppLayerConfig reset).
+
+### 13.1 `onWipe` — total wipe (wipeDepth == 0)
+**Pre-state:** Wrong PINs hit `wrongPINLimit`, `wipeDepth == 0`
+**Sequence:**
+1. `pendingFileData` cleared.
+2. `security.wipeAllSecureState()` — nils verifier scalars, resets verifier arrays to filler, deletes blob file, resets in-memory state (`needsPINEntry = false` dismisses cover).
+3. `appManager.eraseAllData()` — prekeys, contacts, vault, SE keys (SE keys last).
+**Result:** App opens to empty state, no PIN, no contacts. `AppLayerConfig` row persists but has no non-nil verifiers — forensically indistinguishable from a fresh install. (Bug 18 fix)
+
+### 13.2 `onWipe` — selective wipe (wipeDepth N > 0)
+**Pre-state:** Wrong PINs hit limit, `wipeDepth = N > 0` (coercer or adversary at a non-root depth)
+**Sequence:**
+1. `pendingFileData` cleared.
+2. `security.selectiveWipe(at: N)`:
+   a. Fetch contacts where `decrypt(visibleThroughDepth) == N` → delete from DB.
+   b. Fetch vault entries where `decrypt(visibleThroughDepth) == N` → delete.
+   c. `config.clearVerifiers(from: N)` — clears `sealedNormalVerifiers[N..]` and `sealedDuressVerifiers[N-1..]`.
+   d. If `N <= 1`: also nil `sealedDuressVerifier` scalar → `isSecureModeActive = false`.
+   e. `config.clearBlobSlot(at: N)`, `config.clearSequenceNumber(at: N)`.
+   f. `writeCoercerBaseDepth(0)`.
+   g. Save. Reset in-memory state, restore lock gate.
+**Result:** Layers 0..N-1 completely intact. The wiped layer and all deeper layers gone. App returns to lock screen — the real user's master PIN still opens depth 0.
+
+### 13.3 Wipe depth source — `currentDepth` vs `coercerBaseDepth`
+
+`currentDepth` resets to 0 on every cold start. Without a persisted floor, a coercer who kills and relaunches the app always sees `currentDepth = 0`, making wrong PINs a total wipe even when their layer is at depth N+1. `coercerBaseDepth` is persisted in `AppLayerConfig` and provides the floor:
+
+```
+wipeDepth = max(currentDepth, coercerBaseDepth)
+```
+
+| Scenario | `currentDepth` | `coercerBaseDepth` | `wipeDepth` | Result |
+|---|---|---|---|---|
+| Attacker, cold start, no coercion layer | 0 | 0 | 0 | Total wipe ✓ |
+| Coercer at their layer N+1, authenticated | N+1 | N+1 | N+1 | Selective ✓ |
+| Coercer kills + relaunches, wrong PINs | 0 | N+1 | N+1 | Selective ✓ |
+| After coercer's layer selectively wiped | 0 | 0 (reset) | 0 | Total wipe ✓ |
+| Adversary at depth 1, duress route | 1 | 0 | 1 | Selective ✓ |
+| Adversary kills + relaunches at depth 1 | 0 | 0 | 0 | Total wipe (gap — see below) |
+
+**Remaining gap — adversary at depth N, no coercion layer:**
+If the adversary authenticated to depth N (via duress PIN) and then kills and relaunches, `coercerBaseDepth = 0` and `currentDepth = 0`. Wrong PINs → total wipe, defeating the selective model. This gap only affects the adversary-at-duress-depth scenario without a coercion re-enable event. The coercer-with-own-PIN scenario (the primary concern) is fully resolved by `coercerBaseDepth`. Closing the duress-route gap requires persisting `currentDepth` separately — deferred.
+
+### 13.4 Coercer deliberately wipes to destroy evidence
+**Scenario:** Coercer (`coercerBaseDepth = N+1`) wants to destroy real user's data by entering wrong PINs.
+**Result:** `wipeDepth = max(currentDepth, N+1) = N+1`. Selective wipe runs. Real user's contacts at depths 0..N are untouched. Coercer's own layer is wiped. Coercer achieves the opposite of their goal — they lose their own access and the real user's data survives.
+
+### 13.5 Coercer's adversary enters wrong PINs
+**Scenario:** Coercer's adversary (someone who got the coercer's device) enters wrong PINs at the lock screen. `coercerBaseDepth = N+1` (coercion layer still set up).
+**Result:** `wipeDepth = N+1`. Selective wipe. Same outcome as 13.4 — coercer's layer gone, real user's stack preserved.
+
+### 13.6 Selective wipe — blob slot handling
+**Pre-state:** Coercer had activated SM from depth N+1, sealing a blob at slot index S.
+**Result:** `config.clearBlobSlot(at: N+1)` sets `sealedBlobSlots[N+1]` to random filler. The 32-slot layer store file is not rewritten — the ciphertext at slot S remains in the file but is permanently unreachable (slot index gone, no key rotation, SE key unchanged). On next launch `maintainLayerStore()` rewrites the file as a fresh no-op if `!isSecureModeActive`. If SM is still active (depth N survived), the file is left as-is; it will be rewritten normally during a future no-op maintenance cycle.
+
+### 13.7 Selective wipe — AppLayerConfig scalar handling
+**Pre-state:** Selective wipe at depth N.
+- `N > 1`: `sealedDuressVerifier` scalar remains non-nil — `isSecureModeActive = true`. The depth-0→1 layer is intact.
+- `N <= 1`: `sealedDuressVerifier` scalar nil'd — `isSecureModeActive = false`. Full Secure Mode structure removed.
+In both cases, `sealedNormalVerifier` scalar remains non-nil (`requiresPIN = true`). The app shows the lock screen after wipe; the real user can authenticate.
 
 ---
 
