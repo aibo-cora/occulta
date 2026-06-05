@@ -259,7 +259,7 @@ final class AppLayerConfig {
         return data
     }
 
-    private static func randomFillerArray() -> [Data] {
+    static func randomFillerArray() -> [Data] {
         (0..<paddedArrayCount).map { _ in Self.randomFiller() }
     }
 

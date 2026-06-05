@@ -819,6 +819,67 @@ extension Manager {
             self.resetCounters()
         }
 
+        // MARK: - Wipe
+
+        /// Clears all Secure Mode state as the first step of an emergency wipe.
+        ///
+        /// Called from `OccultaApp.onWipe` before `Manager.App.eraseAllData()`.
+        /// The order is load-bearing:
+        ///
+        /// 1. **AppLayerConfig reset** (this method, first) — nils both scalar verifiers
+        ///    (`sealedNormalVerifier`, `sealedDuressVerifier`) and replaces both verifier
+        ///    arrays with fresh random filler. After the save, a cold start reads
+        ///    `sealedNormalVerifier == nil` → `requiresPIN = false` → app opens directly.
+        ///    This must precede SE key deletion so the save can succeed (the model context
+        ///    encrypts fields using SE-derived keys; once the key is gone, field writes
+        ///    that use it would silently fail or produce undecipherable data).
+        ///
+        /// 2. **Layer store blob deletion** (this method, second) — removes the `.occbak`
+        ///    file from the App Group container before the SE key is gone. After wipe,
+        ///    `maintainLayerStore()` on the next launch recreates the file as a fresh
+        ///    no-op, giving it a post-wipe creation timestamp indistinguishable from a
+        ///    fresh install.
+        ///
+        /// 3. **`Manager.App.eraseAllData()`** (caller, third) — deletes prekeys, contacts,
+        ///    vault data, and finally the SE keys. SE keys last because all prior steps
+        ///    depend on them (DB field encryption, Keychain access, blob key derivation).
+        ///
+        /// This method does not throw. Individual failures (config save error, file not
+        /// found) are silently absorbed — the device is being wiped regardless, and the
+        /// SE key deletion in `eraseAllData()` makes any remaining encrypted artefacts
+        /// permanently inaccessible even if a cleanup step is skipped.
+        func wipeAllSecureState() {
+            // ── Step 1: Reset AppLayerConfig ──────────────────────────────────────────
+            // Nil the scalar verifiers so requiresPIN / isSecureModeActive return false.
+            // Replace both verifier arrays with fresh random filler so the arrays are
+            // forensically indistinguishable from a fresh-install row — no activation
+            // history is visible in a raw DB dump after wipe.
+            if let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first {
+                config.sealedNormalVerifier    = nil
+                config.sealedDuressVerifier    = nil
+                config.sealedNormalVerifiers   = AppLayerConfig.verifierFillerArray()
+                config.sealedDuressVerifiers   = AppLayerConfig.verifierFillerArray()
+                config.sealedBlobSlots         = AppLayerConfig.randomFillerArray()
+                config.layerSequenceNumbers    = AppLayerConfig.randomFillerArray()
+                try? config.writeCoercerBaseDepth(0)
+                try? self.modelContext.save()
+            }
+
+            // ── Step 2: Delete blob file ──────────────────────────────────────────────
+            self.layerStore.deleteFile()
+
+            // ── Step 3: Reset in-memory state ─────────────────────────────────────────
+            // needsPINEntry = false dismisses the fullScreenCover. The app presents an
+            // empty contacts list — correct for a wiped device.
+            self.state           = .normal
+            self.currentDepth    = 0
+            self.appLockEnabled  = true
+            self.isContentHidden = false
+            self.needsPINEntry   = false
+            self.lastUnlockDate  = nil
+            self.resetCounters()
+        }
+
         // MARK: - Emergency recovery
 
         /// Clears Secure Mode state without performing a key rotation or re-encryption.

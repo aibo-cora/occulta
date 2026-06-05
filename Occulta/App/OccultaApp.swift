@@ -411,7 +411,20 @@ struct OccultaApp: App {
                             self.contactManager.syncShareIndex()
                         },
                         onWipe: {
+                            // Discard any queued inbound file — no content should
+                            // survive a wipe, and processInboundFile must never run.
                             self.pendingFileData = nil
+
+                            // Step 1: Clear Secure Mode state and delete the blob.
+                            // Must precede eraseAllData() so the AppLayerConfig save
+                            // succeeds while the SE key is still present, and so the
+                            // blob file is gone before the blob key becomes underivable.
+                            self.security.wipeAllSecureState()
+
+                            // Step 2: Erase all user data and SE keys (in that order).
+                            // SE keys last — prior steps depend on them for field
+                            // encryption and Keychain access.
+                            try? self.appManager.eraseAllData()
                         }
                     )
                     .environment(self.security)
