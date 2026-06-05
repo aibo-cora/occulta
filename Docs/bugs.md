@@ -333,7 +333,7 @@ When `appLockEnabled` is `false` the section renders regardless of `state`, so g
 
 ## Bug 18 — `onWipe` closure is empty — wipe threshold triggers no action
 
-**Status:** Open
+**Status:** Pending Implementation
 
 ### Severity: High
 When `Manager.Security.verify()` returns `.wipe` (wrong PIN limit reached, or duress consecutive-entry threshold exceeded), `PINEntry` calls `onWipe()`. The lock-screen `PINEntry` in `OccultaApp` passes `onWipe: {}`. No data is erased. The user stays on the PIN screen and can continue guessing indefinitely, defeating the entire wipe-threshold feature.

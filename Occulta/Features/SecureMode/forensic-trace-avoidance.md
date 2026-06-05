@@ -130,7 +130,7 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
 | U1 | Settings PIN toggle interactive in `.normal` / `.duress` | High | ✅ |
-| U2 | Grace period zero in restricted mode | High | ✅ |
+| U2 | Grace period uniform across all depths (no tell from asymmetric behaviour) | High | ✅ Bug 41 fixed |
 | U3 | `lastUnlockDate = nil` on activation | High | ✅ Bug 5 fixed |
 | U4 | `fullScreenCover` for PIN lock — not underlappable by sheets | High | ✅ Bug 1 fixed |
 | U5 | Screenshot blank on `.inactive` via SwiftUI overlay | Low | ✅ |
@@ -139,8 +139,8 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 ### U1 — PIN toggle always interactive
 In `.normal` and `.duress` states (Secure Mode active), disabling the Settings PIN toggle calls `disablePINFromCurrentDepth` — it lowers the gate without removing verifiers. When Secure Mode is not active (`isSecureModeActive == false`), the toggle calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
 
-### U2 — Grace period always zero in restricted mode
-`isWithinGracePeriod` returns `false` when `isRestricted`. In duress mode, every return from background requires PIN re-entry. An attacker cannot use a brief background-foreground cycle to skip the PIN prompt after the device has been handed over unlocked.
+### U2 — Grace period uniform across all depths
+`isWithinGracePeriod` applies at any depth — no `isRestricted` short-circuit. Bug 41 removed the unconditional `!self.isRestricted` guard that forced re-lock on every background transition in duress mode. That guard was itself a tell: a coercer who backgrounds and re-foregrounds the app would notice that no grace window exists in duress mode while one clearly existed at the normal-mode unlock screen. Uniform behaviour removes the asymmetry. The `lastUnlockDate = nil` call in `activateSecureMode` continues to force re-lock immediately after activation; no tell is introduced there.
 
 ### U3 — Grace period cleared on activation
 `activateSecureMode` sets `lastUnlockDate = nil` before transitioning state. The timestamp from the PIN entry that unlocked the app before setup would otherwise allow a ~5 minute window after activation where background→foreground transitions bypass the PIN prompt entirely.
