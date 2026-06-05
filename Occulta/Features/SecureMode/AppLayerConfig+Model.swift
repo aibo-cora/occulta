@@ -46,6 +46,42 @@ final class AppLayerConfig {
     /// silently opening the app.
     var pinEnabled: Data?
 
+    /// Encrypted Int. The depth that is the "home" layer for the current operator.
+    ///
+    /// **Background — the coercer re-enable problem (Bugs 37, 47, 48):**
+    ///
+    /// When the user lowers the PIN gate under coercion at depth N and the coercer
+    /// re-enables it with a PIN C that matches no existing verifier, the system creates
+    /// a new layer: `sealedDuressVerifiers[N]` and `sealedNormalVerifiers[N+1]` are
+    /// written for C. The coercer's PIN therefore routes them to depth N+1.
+    ///
+    /// From that point on, depth N+1 is the coercer's effective "depth 0". The app must
+    /// present a fully functional Secure Mode experience from that depth — including the
+    /// "Deactivate Protection" button after the coercer activates their own SM layer, and
+    /// a working `ContactClassification` flow — otherwise observable differences from a
+    /// real depth-0 session reveal that Secure Mode was already active when the device
+    /// was received. This field records the coercer's home depth so those UI affordances
+    /// can be selectively unlocked at the right depth.
+    ///
+    /// **Why 0 is the correct default (and safe fallback):**
+    ///
+    /// `0` means "the real user's depth is the home". Every install that has never been
+    /// through a coercion re-enable has `coercerBaseDepth == 0`, so the conditions
+    /// `currentDepth == 0 || currentDepth == coercerBaseDepth` simplify to
+    /// `currentDepth == 0` — preserving the original behaviour exactly.
+    ///
+    /// On any decode failure the field falls back to 0, which is conservative: it
+    /// restricts rather than opens. A coercer who loses their home depth due to a
+    /// decode failure reverts to pre-fix behaviour (the two tells reappear), not to a
+    /// state that exposes the real user's data.
+    ///
+    /// **Forensic neutrality:**
+    ///
+    /// Written unconditionally at first config creation (value 0) alongside `persistedDepth`
+    /// and `pinEnabled`, so its presence never leaks coercion history. A field that
+    /// appears only after a coercion event would itself be a forensic tell.
+    var coercerBaseDepth: Data? = nil
+
     /// Encrypted slot index per depth, parallel to sealedDuressVerifiers.
     /// Index 0 = real layer (depth 0). Padded to 32 entries with random filler
     /// so the array length does not reveal how many real layers are configured.
@@ -277,5 +313,24 @@ final class AppLayerConfig {
 
     func writePinEnabled(_ enabled: Bool) throws {
         self.pinEnabled = try JSONEncoder().encode(enabled).encrypt()
+    }
+
+    // MARK: - Coercer base depth
+
+    /// Decodes the coercer's home depth. Falls back to 0 on any decode failure.
+    ///
+    /// 0 is the real user's depth and the correct default for all installs that have
+    /// never been through a coercion re-enable. See `coercerBaseDepth` field docs.
+    func readCoercerBaseDepth() -> Int {
+        guard
+            let data      = self.coercerBaseDepth,
+            let decrypted = data.decrypt(),
+            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return 0 }
+        return value
+    }
+
+    func writeCoercerBaseDepth(_ depth: Int) throws {
+        self.coercerBaseDepth = try JSONEncoder().encode(depth).encrypt()
     }
 }

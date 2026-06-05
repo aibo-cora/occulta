@@ -42,6 +42,37 @@ extension Manager {
                 .sealedDuressVerifier != nil
         }
 
+        /// The depth that is the "home" layer for the current operator.
+        ///
+        /// For the real user this is always 0. For a coercer who re-enabled the PIN at
+        /// gate-lowered depth N with a foreign PIN, this is N+1 — the depth their PIN
+        /// cold-start routes them to via `sealedNormalVerifiers[N+1]`.
+        ///
+        /// **Why computed (not stored):**
+        ///
+        /// `coercerBaseDepth` only changes alongside other tracked `@Observable` properties
+        /// (`appLockEnabled`, `state`). SwiftUI re-renders triggered by those properties
+        /// will re-read this computed property from the freshly saved config, so reactivity
+        /// is preserved without maintaining a separate in-memory copy that could drift.
+        ///
+        /// **Why the predicate is `currentDepth == 0 || currentDepth == coercerBaseDepth`:**
+        ///
+        /// Using only `currentDepth == coercerBaseDepth` would break the real user after a
+        /// coercion event: once `coercerBaseDepth = N+1 > 0`, the real user at depth 0
+        /// sees `0 ≠ N+1` and loses the "Deactivate Protection" button and
+        /// `ContactClassification`. The OR clause `currentDepth == 0` preserves
+        /// depth-0 access unconditionally. The only side-effect is that an adversary at
+        /// depth N where N happens to equal `coercerBaseDepth` also sees these affordances
+        /// — but deactivating there only strips the coercer's layer, not the real user's
+        /// sensitive contacts, so the security impact is limited.
+        ///
+        /// Defaults to 0 on any decode failure — the conservative, restricting choice.
+        var coercerBaseDepth: Int {
+            guard let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first
+            else { return 0 }
+            return config.readCoercerBaseDepth()
+        }
+
         /// Date of the most recent successful PIN verification. In-memory only — nil after kill.
         /// Used by `OccultaApp` to skip the PIN prompt within the grace period.
         private(set) var lastUnlockDate: Date? = nil
@@ -129,9 +160,24 @@ extension Manager {
                 try? seed.writeRoutingDepth(.normal)
                 try? seed.writePinEnabled(true)
                 try? seed.setWipeThreshold(3)
+                // coercerBaseDepth seeded to 0 at row creation so its presence is
+                // forensically constant — a field that first appears after a coercion
+                // event would itself be a tell. Value 0 means "real user's depth is
+                // home", which is always correct for a fresh install.
+                try? seed.writeCoercerBaseDepth(0)
                 context.insert(seed)
                 try? context.save()
                 config = seed
+            }
+
+            // Migration: ensure coercerBaseDepth is always non-nil on existing configs.
+            // The field was added after the initial multi-layer release, so rows created
+            // before this version have nil. Writing 0 here (the correct default — real
+            // user's home is depth 0) makes the field forensically indistinguishable from
+            // a freshly seeded row.
+            if config.coercerBaseDepth == nil {
+                try? config.writeCoercerBaseDepth(0)
+                try? context.save()
             }
 
             // Migration: populate verifier arrays from scalar fields on first launch after
@@ -756,6 +802,14 @@ extension Manager {
                 try self.setState(.duress, config: config)
                 self.currentDepth = 1
             }
+
+            // Reset coercerBaseDepth to 0: the stripped layer is gone, so any previous
+            // coercion re-enable is no longer relevant. After this deactivation, depth 0
+            // is the effective home (real user) and the UI conditions
+            // `currentDepth == 0 || currentDepth == coercerBaseDepth` collapse back to
+            // `currentDepth == 0` — standard behaviour.
+            try? config.writeCoercerBaseDepth(0)
+
             try self.modelContext.save()
 
             if depth <= 1 {
@@ -917,24 +971,34 @@ extension Manager {
 
         /// Re-enables the PIN gate after it was lowered by `disablePINFromCurrentDepth`.
         ///
-        /// The entered PIN is silently checked against all existing verifiers. No new verifier
-        /// is created. The Settings UI uses `.setup` mode (enter + confirm) for this call,
-        /// making the re-enable flow visually identical to initial PIN setup — no tell.
+        /// The Settings UI always uses `.setup` mode (enter + confirm two matching entries),
+        /// making this flow visually identical to initial PIN setup from the coercer's
+        /// perspective — no observable tell from whichever branch fires.
         ///
-        /// - **Normal PIN match** → gate re-enabled at depth 0. `state` transitions to `.normal`,
-        ///   `currentDepth` resets to 0. The user returns to the real layer.
-        /// - **Duress PIN match** → gate re-enabled at depth 1. `state` transitions to `.duress`,
-        ///   `currentDepth` set to 1. The device continues showing the duress view.
-        /// - **No match** → returns `false`; caller shows wrong-PIN feedback and allows retry.
+        /// **Three outcomes, all indistinguishable to the caller:**
         ///
-        /// Returns a Bool rather than throwing so callers can stay in the `.setup` sheet and
-        /// show feedback without catching errors through a multi-layer sheet hierarchy.
+        /// 1. **Known PIN match (step-1 normal scan)** — the entered PIN matches an existing
+        ///    normal verifier at index K. Gate re-enabled; `currentDepth` set to K, `state`
+        ///    to `.normal`. The operator returns to their actual authenticated layer.
         ///
-        /// - Parameter pin: The digit string entered and confirmed by the user.
-        /// - Returns: `true` if a verifier matched and the gate was re-enabled; `false` otherwise.
-        /// Re-enables the PIN gate by silently routing the entered PIN to its depth.
-        /// Scans normal verifiers first (like `verify()` step 1), then duress verifiers.
-        /// Sets `currentDepth` and `state` to match. No new verifier is written.
+        /// 2. **Known PIN match (step-2 duress scan)** — the entered PIN matches an existing
+        ///    duress verifier at index K. Gate re-enabled; `currentDepth` set to K+1, `state`
+        ///    to `.duress`. The operator continues in the decoy view they were already in.
+        ///
+        /// 3. **Unknown PIN at depth > 0 — coercion acceptance (Bug 37 fix)** — the entered
+        ///    PIN matches nothing AND `currentDepth > 0` (gate was lowered while in a duress
+        ///    or coercer layer). Rather than returning `false` (which would leave the toggle
+        ///    OFF — a tell that existing verifiers are present), the system silently accepts
+        ///    the PIN as a new layer. See the "Coercion acceptance" block below for details.
+        ///
+        /// 4. **Unknown PIN at depth 0** — returns `false`. At depth 0 the coercion
+        ///    acceptance path is not triggered because depth 0 is the real user's layer; a
+        ///    foreign PIN there should not silently create a new verifier without key rotation.
+        ///    This leaves the known tell at depth 0 (Bug 37 scope), which is accepted as
+        ///    a low-severity edge case requiring more extreme prior coercion to reach.
+        ///
+        /// Returns `Bool` rather than throwing so callers can stay in the `.setup` sheet
+        /// without catching errors through the sheet hierarchy.
         @discardableResult
         func reEnablePIN(_ pin: String) -> Bool {
             guard
@@ -942,7 +1006,9 @@ extension Manager {
                 let seKey  = try? self.keyManager.deriveSecureModeKey()
             else { return false }
 
-            // Step 1: Scan normal verifiers — same logic as verify().
+            // ── Step 1: Scan all normal verifiers (same ordering as verify()) ────────
+            // A match at index K means the entered PIN is that layer's routing PIN.
+            // Route to that depth and re-enable the gate.
             for (k, verifier) in config.sealedNormalVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                             verifier: verifier, seKey: seKey) {
@@ -954,7 +1020,8 @@ extension Manager {
                 }
             }
 
-            // Step 2: Scan duress verifiers — match at K pushes to depth K+1.
+            // ── Step 2: Scan all duress verifiers ────────────────────────────────────
+            // A match at index K means the entered PIN is the push-down from depth K to K+1.
             for (k, verifier) in config.sealedDuressVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                             verifier: verifier, seKey: seKey) {
@@ -966,7 +1033,64 @@ extension Manager {
                 }
             }
 
-            return false
+            // ── Coercion acceptance (Bug 37 fix) ──────────────────────────────────────
+            //
+            // The entered PIN matched nothing. At depth 0, return false — creating a new
+            // verifier at depth 0 without a full key rotation is not safe (and reaching
+            // this path at depth 0 requires the coercer to already have the master PIN,
+            // making it a minor remaining tell).
+            //
+            // At depth N > 0, returning false leaves the toggle OFF. The coercer observes:
+            //   - In genuine `.noPIN` → `.pinOnly` setup: any PIN succeeds, toggle flips ON.
+            //   - Here: PIN entered twice, sheet closed, toggle stays OFF.
+            // This asymmetry reveals that verifiers already exist — i.e. Secure Mode is
+            // running and the gate was deliberately lowered. The fix: silently create a new
+            // layer for the coercer's PIN so the toggle always flips ON.
+            //
+            // What "creating a new layer" means:
+            //   • `sealedDuressVerifiers[N]` — the push-down verifier: entering PIN C from
+            //     depth N advances to depth N+1. Built with duressLabel.
+            //   • `sealedNormalVerifiers[N+1]` — the routing alias: cold-start entry of
+            //     PIN C matches here and routes directly to depth N+1 (state = .normal),
+            //     exactly as if the coercer is at their "depth 0". Built with normalLabel
+            //     (same label as all other normal verifiers so the step-1 scan in verify()
+            //     finds it consistently).
+            //   • `coercerBaseDepth = N+1` — records the coercer's home depth so the UI
+            //     can present a fully functional Secure Mode experience from that depth
+            //     (deactivation button, ContactClassification). See AppLayerConfig field docs.
+            //
+            // No DB key rotation is performed. The coercer's layer uses the same canonical
+            // key as the existing stack. Key rotation is only needed when the user wants
+            // to cryptographically hide contacts from a lower-depth examiner; the coercer
+            // here is operating inside the already-restricted duress view and has no access
+            // to the hidden contacts regardless.
+            //
+            // No blob is sealed. The blob is only needed for deactivation (to restore
+            // sensitive contacts). The "Deactivate Protection" UI at the coercer's depth
+            // is gated on `coercerBaseDepth`, and deactivating the coercer's own layer
+            // (depth N+1) uses the existing layer store infrastructure from activateSecureMode;
+            // the coercion-acceptance path itself is lightweight.
+            guard self.currentDepth > 0 else { return false }
+
+            guard
+                let duressVerifier = try? PINManager.buildVerifier(pin: pin, label: Self.duressLabel, seKey: seKey),
+                let routingAlias   = try? PINManager.buildVerifier(pin: pin, label: Self.normalLabel, seKey: seKey)
+            else { return false }
+
+            config.writeDuressVerifier(duressVerifier, at: self.currentDepth)
+            config.writeNormalVerifier(routingAlias,   at: self.currentDepth + 1)
+
+            // Record the coercer's home depth. UI checks use
+            //   `currentDepth == 0 || currentDepth == coercerBaseDepth`
+            // so this does not affect the real user at depth 0.
+            try? config.writeCoercerBaseDepth(self.currentDepth + 1)
+
+            // Re-enable the gate. State stays .duress (we are at a depth above 0);
+            // currentDepth is unchanged (still N — the gate fires on next foreground and
+            // verify() will set currentDepth = N+1 when the coercer enters PIN C).
+            try? self.setState(.duress, pinEnabled: true, config: config)
+            try? self.modelContext.save()
+            return true
         }
 
         /// Checks the entered PIN against the verifier for the **current layer**, with no side effects.

@@ -738,7 +738,7 @@ Working as expected.
 
 ## Bug 37 — Re-enable PIN flow silently fails in duress-gate-lowered state when a non-matching PIN is entered
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Low (forensic / deniability)
 When the real user lowers the PIN gate under coercion via `disablePINFromCurrentDepth` and hands the phone over, the "Enable PIN" toggle is OFF. A coercer who taps the toggle to re-enable it enters the `PINEntry(.setup)` flow and is prompted to enter + confirm a PIN. If they enter any PIN that does not match an existing verifier, `reEnablePIN` returns `false`, the sheet closes, and nothing changes — the toggle stays OFF, the gate stays lowered.
@@ -1066,7 +1066,7 @@ Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
 
 ## Bug 47 — "Deactivate Protection" button invisible after coercer activates Secure Mode from their depth
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium (forensic)
 
@@ -1097,7 +1097,7 @@ At depth N (real user's decoy, unmodified): `coercerBaseDepth = 0`, `currentDept
 
 ## Bug 48 — ContactClassification save silently no-ops at coercer's re-enabled depth — tell during activation
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium (forensic)
 

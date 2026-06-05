@@ -141,10 +141,36 @@ struct ContactClassification: View {
     // MARK: - Persistence
 
     private func loadSensitiveIDs() {
-        // In duress mode, do not reveal which contacts are sensitive.
-        // save() has the same guard — the view intentionally appears as if no contacts
-        // have been classified (consistent with tell-avoidance: attacker sees normal state).
-        guard !self.security.isRestricted else { return }
+        // Classification is allowed only at the operator's home depth.
+        //
+        // The predicate `currentDepth == 0 || currentDepth == coercerBaseDepth` identifies
+        // the home depth for two kinds of operators:
+        //
+        //   • Real user (coercerBaseDepth == 0): reduces to `currentDepth == 0`. Only
+        //     the real app layer can classify contacts. At any depth > 0 reached via a
+        //     duress PIN, the view freezes — sensitiveIDs stays empty, the Sensitive
+        //     section shows "None marked sensitive", and save() is a no-op. This prevents:
+        //       (a) Info leak — contacts with visibleThroughDepth == N (sensitive at
+        //           depth N+1) would otherwise appear in the Sensitive section, revealing
+        //           to an adversary at depth N that a deeper classification structure exists.
+        //       (b) Mutation — an adversary could reclassify the real user's contacts.
+        //     (Bug 25 fix preserved.)
+        //
+        //   • Coercer (coercerBaseDepth == N+1): their home depth is N+1. Allowing
+        //     classification there is safe because classifiableContacts is filtered through
+        //     isDisplayable(atDepth: N+1) — contacts with visibleThroughDepth < N+1
+        //     (including the real user's sensitive contacts at value 0) are excluded before
+        //     this function ever sees them. isSensitive at depth N+1 returns true only for
+        //     visibleThroughDepth == N+1, which means contacts the coercer themselves
+        //     classified in this session — no real-user sensitive data is exposed. (Bug 48 fix.)
+        //
+        // Side-effect of the OR: an adversary at depth M == coercerBaseDepth also passes
+        // this guard. At that depth classifiableContacts excludes real-user sensitive contacts
+        // (they are not visible at depth M+1, so isDisplayable filters them), and isSensitive
+        // checks visibleThroughDepth == M — the coercer's classifications only. Limited impact.
+        guard self.security.currentDepth == 0
+                || self.security.currentDepth == self.security.coercerBaseDepth
+        else { return }
         self.sensitiveIDs = Set(
             self.contacts
                 .filter { self.security.isSensitive($0.identifier) }
@@ -153,9 +179,12 @@ struct ContactClassification: View {
     }
 
     private func save() {
-        // Never persist classification changes while restricted. The coercer must
-        // not be able to reclassify contacts from within the duress view.
-        guard !self.security.isRestricted else { return }
+        // Same guard as loadSensitiveIDs — same rationale. The two guards must always
+        // match: if load is blocked, save must also be blocked (frozen view); if load
+        // runs, save must be permitted so the loaded state can be persisted.
+        guard self.security.currentDepth == 0
+                || self.security.currentDepth == self.security.coercerBaseDepth
+        else { return }
         // Use classifiableContacts so already-hidden contacts are not included in safeIDs.
         // updateSafeContacts has the same guard, but being explicit here is cleaner.
         let safeIDs = Set(self.classifiableContacts.map { $0.identifier }).subtracting(self.sensitiveIDs)
