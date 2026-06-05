@@ -1062,3 +1062,69 @@ to:
 Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
 ```
 
+---
+
+## Bug 47 — "Deactivate Protection" button invisible after coercer activates Secure Mode from their depth
+
+**Status:** Open
+
+### Severity: Medium (forensic)
+
+When a coercer re-enables the PIN at gate-lowered depth N (Bug 37 scenario) and the system routes them to depth N+1, the coercer can navigate to Settings → "Learn more" and activate Secure Mode, successfully creating a duress layer at depth N+2. However, after activation the "Deactivate Protection" button never appears. A normal user at depth 0 who activates Secure Mode sees the button immediately. The coercer, testing whether the app behaves normally, sees the screen look different from what they expect — directly revealing that the device was not in a pristine state when they received it.
+
+### Root Cause
+
+The "Deactivate Protection" condition in `Settings.swift`:
+```swift
+isSecureModeActive && state == .normal && currentDepth == 0 && appLockEnabled
+```
+`currentDepth == 0` is false at depth N+1, so the button is unconditionally hidden at any depth above 0, even if the user at that depth has their own active Secure Mode layer. The guard was introduced by Bug 45 to prevent the button appearing at duress depths, but it is now too broad: it blocks the button for the coercer who legitimately activated a new layer from their depth.
+
+### Resolution
+
+Pending. Requires a persisted `coercerBaseDepth` concept on `AppLayerConfig` so that "Deactivate Protection" shows when `currentDepth == coercerBaseDepth` rather than `currentDepth == 0`. When `reEnablePIN` accepts a non-matching PIN at depth N (Bug 37 fix), it writes `coercerBaseDepth = N+1`. On cold start this is restored alongside `persistedDepth` and `pinEnabled`. The condition becomes:
+
+```swift
+isSecureModeActive && state == .normal
+    && security.currentDepth == security.coercerBaseDepth && appLockEnabled
+```
+
+At depth 0 (real user): `coercerBaseDepth` defaults to 0, so `currentDepth == 0 == coercerBaseDepth` — unchanged behaviour.
+At depth N+1 (coercer): `coercerBaseDepth = N+1`, `currentDepth = N+1` — button appears after the coercer activates their own layer.
+At depth N (real user's decoy, unmodified): `coercerBaseDepth = 0`, `currentDepth = N ≠ 0` — button hidden. ✓
+
+---
+
+## Bug 48 — ContactClassification save silently no-ops at coercer's re-enabled depth — tell during activation
+
+**Status:** Open
+
+### Severity: Medium (forensic)
+
+When the coercer is at depth N+1 (after Bug 37 re-enable) and opens the Secure Mode activation flow, step 3 is `ContactClassification`. The coercer can drag contacts to the Sensitive section — the UI responds normally. When they tap "Activate," `save()` silently returns without writing anything because of the `guard !isRestricted else { return }` guard (added in Bug 25). After activation, entering their duress PIN (depth N+2) reveals the same contacts the coercer thought they had classified as hidden. The classification did not stick. A coercer testing normal functionality would immediately notice the discrepancy.
+
+### Root Cause
+
+`ContactClassification.loadSensitiveIDs()` and `save()` both guard on `!security.isRestricted`. `isRestricted = currentDepth > 0` is absolute: depth N+1 is always restricted, even though it is the coercer's home layer. The guard was added to prevent two distinct problems at adversary-controlled duress depths:
+
+1. **Info leak** — `loadSensitiveIDs` would expose contacts the real user classified as sensitive-at-depth-N (those with `visibleThroughDepth == N`) in the Sensitive section, revealing the depth structure.
+2. **Mutation** — `save()` would allow the adversary to reclassify the real user's contacts.
+
+Both problems exist at depth N (real adversary depth) but not at depth N+1 (coercer's fresh depth), because no contacts have `visibleThroughDepth == N+1` until the coercer themselves classifies some. The guard cannot distinguish between these cases using only `isRestricted`.
+
+### Resolution
+
+Pending. Also requires `coercerBaseDepth`. The guards become:
+
+```swift
+// loadSensitiveIDs
+guard security.currentDepth == security.coercerBaseDepth else { return }
+
+// save
+guard security.currentDepth == security.coercerBaseDepth else { return }
+```
+
+At depth 0 (real user, `coercerBaseDepth = 0`): `0 == 0` — loads and saves. ✓  
+At depth N+1 (coercer, `coercerBaseDepth = N+1`): `N+1 == N+1` — loads and saves. ✓  
+At depth N (real adversary, `coercerBaseDepth = 0`): `N ≠ 0` — blocked. ✓ (no info leak, no mutation)
+
