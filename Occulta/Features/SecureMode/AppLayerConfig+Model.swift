@@ -43,8 +43,16 @@ final class AppLayerConfig {
     /// Depth-filtering still applies when `false`.
     ///
     /// Padded to `paddedArrayCount` entries so array length is forensically constant.
-    /// Filler entries are encrypted `true` — indistinguishable from a real entry where
+    /// Filler entries are encrypted `1` — indistinguishable from a real entry where
     /// the gate is up. Falls back to `true` per entry on any decode failure.
+    ///
+    /// **Encoding — UInt8, not Bool:**
+    /// Each entry is JSON-encoded as `UInt8(1)` (enabled) or `UInt8(0)` (disabled),
+    /// producing a single-byte payload in both cases. A `Bool` encoding would produce
+    /// `"true"` (4 bytes) vs `"false"` (5 bytes); AES-GCM does not pad, so the sealed
+    /// box sizes would differ by one byte. A forensic examiner could identify the
+    /// disabled slot by size alone — without the SE key and without decryption.
+    /// See `pinEnabledFillerArray()` for the canonical explanation.
     var pinEnabledPerDepth: [Data] = []
 
     /// Encrypted Int. The depth that is the "home" layer for the current operator.
@@ -330,6 +338,7 @@ final class AppLayerConfig {
         return value != 0
     }
 
+    /// - Note: Encoded as `UInt8` — see `pinEnabledPerDepth` field docs for the length-leak rationale.
     func writePinEnabled(_ enabled: Bool, at depth: Int) throws {
         guard let encrypted = try JSONEncoder().encode(enabled ? UInt8(1) : UInt8(0)).encrypt() else {
             throw CocoaError(.coderValueNotFound)

@@ -1233,6 +1233,9 @@ Replaced the global `appLockEnabled: Bool` with a per-layer `pinEnabledPerDepth:
 
 The "Learn more" section's `disabled` guard now evaluates `!security.pinEnabled`, which is `true` whenever the gate is deliberately lowered — fixing Bug 51A.
 
+**Forensic note — UInt8 encoding, not Bool:**
+Each `pinEnabledPerDepth` entry is JSON-encoded as `UInt8(1)` (enabled) or `UInt8(0)` (disabled). A `Bool` encoding would produce `"true"` (4 bytes) vs `"false"` (5 bytes). AES-GCM does not pad ciphertext, so the sealed-box sizes would differ by one byte. A forensic examiner with access to the database could identify the disabled slot by size alone — without the SE key and without decryption. Encoding as `UInt8` makes both values encode to a single byte (`"1"` vs `"0"`), producing equal-length sealed boxes across all 32 entries regardless of value.
+
 ---
 
 ## Bug 48 — ContactClassification save silently no-ops at coercer's re-enabled depth — tell during activation
