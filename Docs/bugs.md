@@ -1476,7 +1476,45 @@ Even with Incident B fixed, `isContentHidden = true` schedules a SwiftUI re-rend
 
 A persistent KTX snapshot file containing real contact names or vault labels would survive a duress PIN session and be recoverable by forensic tools from `Library/SplashBoard/Snapshots/`. This directly undermines the duress model's plausible-deniability guarantee.
 
-**Why no callback-based fix works:** the app-switcher snapshot is captured by SpringBoard at the moment the user initiates the gesture — before any IPC notification reaches the app process. Every hook (`willResignActiveNotification`, `sceneWillResignActive`, `applicationWillResignActive`) arrives after the capture. Testing with a UIKit window installed synchronously in each of these confirmed a 1-2 second visible delay regardless of which hook was used. The capture has already happened.
+**Affected surfaces:** contacts list, contact detail views, vault entry detail (if vault was unlocked). The vault lockGate and PIN entry screen are safe — they contain no sensitive content.
 
-**What would work:** the cover must be in place before the gesture, not in response to it. Sensitive content should be hidden by default and revealed only during active user interaction, with a short inactivity timeout reinstating the cover — so the idle/covered state is what SpringBoard always captures. This is a UX architecture decision, not a UIKit fix.
+---
+
+#### What was tried and why it doesn't work
+
+Every callback-based approach was attempted and tested. All fail for the same structural reason.
+
+**SwiftUI `isContentHidden` overlay** (`onChange(of: scenePhase) { .inactive }`)
+
+Schedules a re-render via SwiftUI's declarative update cycle. Re-renders are batched and deferred to the next frame commit. The OS snapshot is taken before the frame is committed. Confirmed: contacts visible in app switcher thumbnail.
+
+**UIKit `UIWindow` at `.alert + 1` via `willResignActiveNotification`**
+
+`UIWindow.isHidden = false` is synchronous within the app process. However, `willResignActiveNotification` is delivered via IPC from SpringBoard to the app after the snapshot has already been taken. Installed via Combine (async to main queue) and via direct `NotificationCenter.addObserver` with `queue: nil` (synchronous on posting thread). Both showed 1-2 second delay — the snapshot had already been captured before either executed.
+
+**`sceneWillResignActive` via `UIWindowSceneDelegate`**
+
+Wired through `UIApplicationSceneManifest` in Info.plist. Fires earlier in the scene lifecycle than app-level notifications, and the `UIWindowScene` is passed directly as a parameter. Still arrives after SpringBoard's capture. Same 1-2 second visible delay observed.
+
+**Root cause common to all approaches:**
+
+The app-switcher snapshot is captured by SpringBoard — a separate OS process — at the moment the gesture is recognised, via the render server's pixel buffer. The app process is not involved in the capture. Every hook available to the app (`willResignActive`, `sceneWillResignActive`, `applicationWillResignActive`) is an IPC delivery that arrives in the app process after the capture is complete. No amount of synchronous UIKit or CALayer manipulation inside the app process can affect a capture that has already happened in another process.
+
+---
+
+#### Proposed resolution
+
+The fix requires inverting the content visibility model. Rather than installing a cover reactively when the user leaves, sensitive content should be covered by default and revealed proactively during active reading:
+
+1. **Default state: covered.** Sensitive views (contacts list, contact detail, vault entry detail) render behind a cover layer at rest. The cover is always in place between interactions.
+
+2. **Reveal on interaction.** The user taps or explicitly requests to view content. The cover lifts for the duration of that interaction.
+
+3. **Inactivity timeout reinstates cover.** A short timer (e.g. 30–60 seconds of no interaction) re-covers content automatically. The cover is also reinstated immediately on any gesture that would leave the view (scroll to switch contacts, tab switch, etc.).
+
+4. **SpringBoard always captures the covered state.** Because the cover is in place at rest, any app-switch gesture captures the covered view regardless of timing.
+
+This is a UX architecture decision. It changes how content is revealed, not how it is hidden. The cover itself can reuse the existing `Color(.systemBackground)` layer or a branded lock state. The inactivity timeout is similar to the vault's existing 5-minute auto-lock, applied at the view level rather than the vault level.
+
+**Scope of change:** contacts list, contact detail, vault entry detail. The vault tab already has a lockGate that covers entries when `isUnlocked = false` — the vault's existing auto-lock behaviour (5-minute inactivity timer in `VaultManager`) already provides this for vault entries when the vault locks. The gap is contacts, which have no equivalent idle cover.
 
