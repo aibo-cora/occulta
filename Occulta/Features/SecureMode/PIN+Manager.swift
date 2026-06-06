@@ -18,8 +18,6 @@ extension Manager {
 
         // MARK: - Constants
 
-        static let wrongPINLimit = 3
-
         private static let sentinel = Data("SECURE_MODE_VERIFIED_2026".utf8)
 
         /// Byte size of a verifier blob: nonce(12) + ciphertext(sentinel.count) + tag(16).
@@ -72,7 +70,8 @@ enum PINVerifyResult: Equatable {
     /// compatibility and for the single-layer cold-start path before routing aliases are written.
     case duress
     case wrong
-    case wipe
+    /// Too many consecutive wrong attempts. No verification was performed; try again after `until`.
+    case locked(until: Date)
 }
 
 // MARK: - Errors

@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import Combine
 
 // MARK: - View
 
@@ -35,7 +36,6 @@ struct PINEntry: View {
     var mode:     Mode             = .verify
     var onNormal: (String) -> Void = { _ in }
     var onDuress: () -> Void       = {}
-    var onWipe:   () -> Void       = {}
 
     // MARK: Dependencies
 
@@ -43,14 +43,19 @@ struct PINEntry: View {
 
     // MARK: State
 
-    @State private var digits:       Data    = Data()
-    @State private var shakeOffset:  CGFloat = 0
-    @State private var isVerifying:  Bool    = false
-    @State private var firstPIN:     String? = nil
-    @State private var confirmedPIN: String? = nil  // phase-1 result for .confirmThenSet
+    @State private var digits:           Data    = Data()
+    @State private var shakeOffset:      CGFloat = 0
+    @State private var isVerifying:      Bool    = false
+    @State private var firstPIN:         String? = nil
+    @State private var confirmedPIN:     String? = nil  // phase-1 result for .confirmThenSet
+    @State private var lockoutUntil:     Date?   = nil
+    @State private var lockoutRemaining: String  = ""
 
     private let pinLength:    Int          = 6
     private let gateDuration: TimeInterval = 0.5
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var isLockedOut: Bool { self.lockoutUntil != nil }
 
     // MARK: Derived
 
@@ -73,10 +78,16 @@ struct PINEntry: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                Text(self.title)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
+                Group {
+                    if self.isLockedOut {
+                        Text(self.lockoutRemaining)
+                    } else {
+                        Text(self.title)
+                    }
+                }
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
 
                 Spacer().frame(height: 36)
 
@@ -95,7 +106,7 @@ struct PINEntry: View {
                     ForEach([[1,2,3],[4,5,6],[7,8,9]], id: \.self) { row in
                         HStack(spacing: 20) {
                             ForEach(row, id: \.self) { digit in
-                                KeypadButton(label: "\(digit)", disabled: self.isVerifying) {
+                                KeypadButton(label: "\(digit)", disabled: self.isVerifying || self.isLockedOut) {
                                     self.append(digit)
                                 }
                             }
@@ -103,10 +114,10 @@ struct PINEntry: View {
                     }
                     HStack(spacing: 20) {
                         Color.clear.frame(width: 88, height: 88)
-                        KeypadButton(label: "0", disabled: self.isVerifying) {
+                        KeypadButton(label: "0", disabled: self.isVerifying || self.isLockedOut) {
                             self.append(0)
                         }
-                        KeypadButton(label: "⌫", isSymbol: true, disabled: self.isVerifying) {
+                        KeypadButton(label: "⌫", isSymbol: true, disabled: self.isVerifying || self.isLockedOut) {
                             self.deleteLast()
                         }
                     }
@@ -116,12 +127,27 @@ struct PINEntry: View {
             }
             .padding(.horizontal, 32)
         }
+        .onAppear {
+            if let expiry = self.security.lockoutExpiry() {
+                self.lockoutUntil     = expiry
+                self.lockoutRemaining = Self.countdownText(until: expiry, from: Date.now)
+            }
+        }
+        .onReceive(self.timer) { now in
+            guard let until = self.lockoutUntil else { return }
+            if now >= until {
+                self.lockoutUntil     = nil
+                self.lockoutRemaining = ""
+            } else {
+                self.lockoutRemaining = Self.countdownText(until: until, from: now)
+            }
+        }
     }
 
     // MARK: Input
 
     private func append(_ digit: Int) {
-        guard !self.isVerifying, self.digits.count < self.pinLength else { return }
+        guard !self.isVerifying, !self.isLockedOut, self.digits.count < self.pinLength else { return }
         self.digits.append(UInt8(digit))
         if self.digits.count == self.pinLength { self.submit() }
     }
@@ -267,7 +293,21 @@ struct PINEntry: View {
             self.clearDigits()
             self.isVerifying = false
             self.shake()
-        case .wipe:   self.onWipe()
+        case .locked(let until):
+            self.clearDigits()
+            self.isVerifying     = false
+            self.lockoutUntil    = until
+            self.lockoutRemaining = Self.countdownText(until: until, from: Date.now)
+        }
+    }
+
+    private static func countdownText(until: Date, from now: Date) -> String {
+        let seconds = max(0, Int(until.timeIntervalSince(now)))
+        if seconds >= 3600 {
+            return String(format: "Try again in %d:%02d:%02d",
+                          seconds / 3600, (seconds % 3600) / 60, seconds % 60)
+        } else {
+            return String(format: "Try again in %d:%02d", seconds / 60, seconds % 60)
         }
     }
 

@@ -143,7 +143,7 @@ struct OccultaApp: App {
     @State private var openedFileContents: OwnedBasket?
     /// Raw encrypted `.occ` bytes queued while the app is locked.
     /// Held without any processing until the PIN depth is known.
-    /// Cleared by onNormal (process), onDuress (discard), or onWipe (discard).
+    /// Cleared by onNormal (process) or onDuress (discard).
     @State private var pendingFileData: Data?
     // Error feedback
     @State private var showError = false
@@ -385,7 +385,7 @@ struct OccultaApp: App {
                     set: { self.security.needsPINEntry = $0 }
                 ), onDismiss: {
                     // Cover fully gone — safe to present the message sheet now.
-                    // onDuress/onWipe already cleared pendingFileData; only onNormal leaves it set.
+                    // onDuress already cleared pendingFileData; only onNormal leaves it set.
                     if let data = self.pendingFileData {
                         self.pendingFileData = nil
                         Task { await self.processInboundFile(data) }
@@ -409,22 +409,6 @@ struct OccultaApp: App {
                             }
                             self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
                             self.contactManager.syncShareIndex()
-                        },
-                        onWipe: {
-                            // Discard any queued inbound file — no content should
-                            // survive a wipe, and processInboundFile must never run.
-                            self.pendingFileData = nil
-
-                            // Step 1: Clear Secure Mode state and delete the blob.
-                            // Must precede eraseAllData() so the AppLayerConfig save
-                            // succeeds while the SE key is still present, and so the
-                            // blob file is gone before the blob key becomes underivable.
-                            self.security.wipeAllSecureState()
-
-                            // Step 2: Erase all user data and SE keys (in that order).
-                            // SE keys last — prior steps depend on them for field
-                            // encryption and Keychain access.
-                            try? self.appManager.eraseAllData()
                         }
                     )
                     .environment(self.security)
@@ -592,7 +576,7 @@ struct OccultaApp: App {
     ///
     /// Single entry point for all inbound message processing — called from `onOpenURL`
     /// when the app is already unlocked, and from `onNormal` after PIN entry clears
-    /// a queued file. Never called from `onDuress` or `onWipe` — those paths discard.
+    /// a queued file. Never called from `onDuress` — that path discards.
     ///
     /// All error handling lives here so neither call site needs to repeat it.
     private func processInboundFile(_ data: Data) async {

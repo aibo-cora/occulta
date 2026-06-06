@@ -230,14 +230,14 @@ struct SecurityVerifyActiveTests {
         #expect(s.isRestricted)  // depth > 0 → decoy filter active
     }
 
-    @Test func active_threeWrongPINs_returnsWipe() async throws {
+    @Test func active_threeWrongPINs_returnsWrong() async throws {
         let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
         _ = try s.verify("000000")
         _ = try s.verify("000000")
-        #expect(try s.verify("000000") == .wipe)
+        #expect(try s.verify("000000") == .wrong)
     }
 
     @Test func depth1_masterPIN_routesToDepth0() async throws {
@@ -271,19 +271,6 @@ struct SecurityVerifyActiveTests {
         #expect(try s.verify("000000") == .wrong)
     }
 
-    @Test func consecutiveDuressRoutings_doNotAccumulateDuressCounter() async throws {
-        // Entering duress PIN hits routing alias (step 1) → .normal(depth:1) → resets counters.
-        // The consecutive-duress panic trigger (Step 5) requires a separate mechanism
-        // since step 1 always preempts step 2 when routing aliases are present.
-        let (s, _, cm, vm) = try makeSecurityAndManagers()
-        try s.configurePIN("123456")
-        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
-                                        contactManager: cm, vaultManager: vm)
-        _ = try s.verify("999999")   // step 1 match → .normal(depth:1), counter reset
-        _ = try s.verify("999999")   // same
-        // Third entry should NOT wipe — counter never accumulates via step 1 path.
-        #expect(try s.verify("999999") == .normal(depth: 1))
-    }
 }
 
 // MARK: - Counter cross-reset
@@ -292,7 +279,7 @@ struct SecurityVerifyActiveTests {
 @Suite("Security — Counter cross-reset")
 struct SecurityCounterTests {
 
-    @Test func normalPIN_resetsWrongCounter_preventsEarlyWipe() async throws {
+    @Test func normalPIN_resetsWrongCounter() async throws {
         let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
@@ -302,8 +289,8 @@ struct SecurityCounterTests {
         _ = try s.verify("123456")   // normal → resets wrong counter
         _ = try s.verify("000000")
         _ = try s.verify("000000")
-        // Only 2 wrongs since last reset — must not wipe yet.
-        #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
+        // Counter reset: subsequent wrong PINs still return .wrong (no accumulated state).
+        #expect(try s.verify("000000") == .wrong)
     }
 
     @Test func duressPIN_resetsWrongCounter() async throws {
@@ -316,8 +303,7 @@ struct SecurityCounterTests {
         _ = try s.verify("999999")   // duress → resets wrong counter
         _ = try s.verify("000000")
         _ = try s.verify("000000")
-        // Only 2 wrongs since reset — not yet wipe.
-        #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
+        #expect(try s.verify("000000") == .wrong)
     }
 
     @Test func duressPINViaRoutingAlias_resetsWrongCounter() async throws {
@@ -332,45 +318,7 @@ struct SecurityCounterTests {
         _ = try s.verify("999999")   // routing alias → .normal(depth:1), resets wrong counter
         _ = try s.verify("000000")
         _ = try s.verify("000000")
-        // Only 2 wrongs since reset — not yet wipe.
-        #expect(try s.verify("000000") == .wipe)  // 3rd wrong since reset
-    }
-}
-
-// MARK: - Wipe threshold fallback
-
-@MainActor
-@Suite("AppLayerConfig — Wipe threshold fallback")
-struct WipeThresholdFallbackTests {
-
-    @Test func nilEncryptedData_returnsFallback() throws {
-        let container = try makeContainer()
-        let ctx = ModelContext(container)
-        let config = AppLayerConfig()
-        // wipeThresholdEncrypted defaults to nil
-        ctx.insert(config)
-        try ctx.save()
-        #expect(config.wipeThreshold() == 3)
-    }
-
-    @Test func corruptEncryptedData_returnsFallback() throws {
-        let container = try makeContainer()
-        let ctx = ModelContext(container)
-        let config = AppLayerConfig()
-        config.wipeThresholdEncrypted = Data([0xFF, 0xFE, 0xFD, 0x00])  // not valid AES-GCM
-        ctx.insert(config)
-        try ctx.save()
-        #expect(config.wipeThreshold() == 3)
-    }
-
-    @Test func validThreshold_roundTrips() throws {
-        let container = try makeContainer()
-        let ctx = ModelContext(container)
-        let config = AppLayerConfig()
-        try config.setWipeThreshold(7)
-        ctx.insert(config)
-        try ctx.save()
-        #expect(config.wipeThreshold() == 7)
+        #expect(try s.verify("000000") == .wrong)
     }
 }
 
@@ -769,13 +717,13 @@ struct SecurityPINCheckTests {
         try s.configurePIN("111111")
         try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        // Call wrong PIN twice — should NOT bring us closer to wipe.
+        // checkNormalPIN must not increment wrongPINCount.
         _ = s.checkNormalPIN("000000")
         _ = s.checkNormalPIN("000000")
-        // Real verify with wrong PIN should still be at count 0 (not 2).
+        // verify() starts from count 0, not 2.
         _ = try s.verify("000000")  // count = 1
         _ = try s.verify("000000")  // count = 2
-        #expect(try s.verify("000000") == .wipe)  // count = 3 → wipe threshold
+        #expect(try s.verify("000000") == .wrong)  // count = 3; below lockout threshold (6)
     }
 
     @Test func checkCurrentLayerPIN_atDepth0_matchesMasterPIN() async throws {
@@ -826,7 +774,7 @@ struct SecurityPINCheckTests {
         _ = s.checkCurrentLayerPIN("000000")
         _ = try s.verify("000000")
         _ = try s.verify("000000")
-        #expect(try s.verify("000000") == .wipe)
+        #expect(try s.verify("000000") == .wrong)
     }
 }
 
@@ -892,5 +840,66 @@ struct VerifierArrayPaddingTests {
 
     @Test func fillerSize_matchesPINManagerVerifierSize() {
         #expect(AppLayerConfig.verifierFillerSize == Manager.PINManager.verifierSize)
+    }
+}
+
+// MARK: - Lockout counter
+
+@MainActor
+@Suite("Security — Lockout counter")
+struct LockoutCounterTests {
+
+    @Test func fiveWrongPINs_noLockout() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
+        try s.configurePIN("123456")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
+        for _ in 0..<5 { _ = try s.verify("000000") }
+        #expect(try s.verify("000000") == .wrong)  // 6th attempt triggers lockout on NEXT call
+    }
+
+    @Test func sixthWrongPIN_triggersLockout() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
+        try s.configurePIN("123456")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
+        for _ in 0..<6 { _ = try s.verify("000000") }
+        // 7th attempt — count is 6, expiry was written → locked
+        let result = try s.verify("000000")
+        if case .locked = result { } else { Issue.record("Expected .locked, got \(result)") }
+    }
+
+    @Test func correctPIN_resetsLockoutCounter() async throws {
+        let (s, _, cm, vm) = try makeSecurityAndManagers()
+        try s.configurePIN("123456")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
+        for _ in 0..<5 { _ = try s.verify("000000") }
+        // Correct PIN resets counter
+        _ = try s.verify("123456")
+        // Counter back to 0 — five more wrong attempts should not lock out
+        for _ in 0..<5 { _ = try s.verify("000000") }
+        #expect(try s.verify("000000") == .wrong)  // 6th wrong since reset → triggers delay on next
+    }
+
+    @Test func lockoutDelaySchedule_milestones() {
+        #expect(Manager.Security.lockoutDelay(for: 5)  == nil)
+        #expect(Manager.Security.lockoutDelay(for: 6)  == 60)
+        #expect(Manager.Security.lockoutDelay(for: 12) == 3_600)
+        #expect(Manager.Security.lockoutDelay(for: 20) == 86_400)
+        #expect(Manager.Security.lockoutDelay(for: 99) == 86_400)
+    }
+
+    @Test func lockoutExpiry_survivesAppKill() async throws {
+        let (s, container, cm, vm) = try makeSecurityAndManagers()
+        try s.configurePIN("123456")
+        try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
+                                        contactManager: cm, vaultManager: vm)
+        for _ in 0..<6 { _ = try s.verify("000000") }
+        _ = try s.verify("000000")  // now locked
+
+        // Simulate app kill + relaunch with a fresh Manager.Security on the same container
+        let s2 = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        #expect(s2.lockoutExpiry() != nil)
     }
 }

@@ -251,16 +251,6 @@ extension Manager {
         }
 
         /// Deletes the layer store file from the App Group container.
-        ///
-        /// Called as part of the wipe sequence in `Manager.Security.wipeAllSecureState()`.
-        /// Must run BEFORE SE key deletion so the blob key (HKDF-derived from the SE key)
-        /// cannot be used to verify whether the deleted bytes were a real payload or a no-op.
-        /// After the SE key is gone this distinction is cryptographically unrecoverable anyway,
-        /// but deleting the file first removes the ciphertext from disk entirely.
-        ///
-        /// After wipe, `Manager.Security.wipeAllSecureState()` does not call `rewrite()` —
-        /// a fresh no-op file will be created on the next launch by `maintainLayerStore()`,
-        /// which gives it a post-wipe creation timestamp indistinguishable from a fresh install.
         func deleteFile() {
             self.backend.delete()
         }

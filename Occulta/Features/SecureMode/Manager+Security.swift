@@ -117,9 +117,6 @@ extension Manager {
         /// Defaults to AppGroupLayerStoreBackend (production). Tests inject InMemoryLayerStoreBackend.
         private let layerStore: Manager.LayerStore
 
-        private var wrongPINCount          = 0
-        private var consecutiveDuressCount = 0
-
         private static let normalLabel = Data("secure-mode-normal-pin-2026".utf8)
         private static let duressLabel = Data("secure-mode-duress-pin-2026".utf8)
 
@@ -159,7 +156,6 @@ extension Manager {
                 let seed = AppLayerConfig()
                 try? seed.writeRoutingDepth(.normal)
                 try? seed.writePinEnabled(true)
-                try? seed.setWipeThreshold(3)
                 // coercerBaseDepth seeded to 0 at row creation so its presence is
                 // forensically constant — a field that first appears after a coercion
                 // event would itself be a tell. Value 0 means "real user's depth is
@@ -312,7 +308,6 @@ extension Manager {
             let config = try self.requireConfig()
             config.sealedNormalVerifier = sealedNormal   // scalar: nil/non-nil flag for requiresPIN
             config.writeNormalVerifier(sealedNormal, at: 0)  // array[0]: scanned by verify()
-            try config.setWipeThreshold(3)
             try self.setState(.normal, config: config)
             try self.modelContext.save()
 
@@ -819,67 +814,6 @@ extension Manager {
             self.resetCounters()
         }
 
-        // MARK: - Wipe
-
-        /// Clears all Secure Mode state as the first step of an emergency wipe.
-        ///
-        /// Called from `OccultaApp.onWipe` before `Manager.App.eraseAllData()`.
-        /// The order is load-bearing:
-        ///
-        /// 1. **AppLayerConfig reset** (this method, first) — nils both scalar verifiers
-        ///    (`sealedNormalVerifier`, `sealedDuressVerifier`) and replaces both verifier
-        ///    arrays with fresh random filler. After the save, a cold start reads
-        ///    `sealedNormalVerifier == nil` → `requiresPIN = false` → app opens directly.
-        ///    This must precede SE key deletion so the save can succeed (the model context
-        ///    encrypts fields using SE-derived keys; once the key is gone, field writes
-        ///    that use it would silently fail or produce undecipherable data).
-        ///
-        /// 2. **Layer store blob deletion** (this method, second) — removes the `.occbak`
-        ///    file from the App Group container before the SE key is gone. After wipe,
-        ///    `maintainLayerStore()` on the next launch recreates the file as a fresh
-        ///    no-op, giving it a post-wipe creation timestamp indistinguishable from a
-        ///    fresh install.
-        ///
-        /// 3. **`Manager.App.eraseAllData()`** (caller, third) — deletes prekeys, contacts,
-        ///    vault data, and finally the SE keys. SE keys last because all prior steps
-        ///    depend on them (DB field encryption, Keychain access, blob key derivation).
-        ///
-        /// This method does not throw. Individual failures (config save error, file not
-        /// found) are silently absorbed — the device is being wiped regardless, and the
-        /// SE key deletion in `eraseAllData()` makes any remaining encrypted artefacts
-        /// permanently inaccessible even if a cleanup step is skipped.
-        func wipeAllSecureState() {
-            // ── Step 1: Reset AppLayerConfig ──────────────────────────────────────────
-            // Nil the scalar verifiers so requiresPIN / isSecureModeActive return false.
-            // Replace both verifier arrays with fresh random filler so the arrays are
-            // forensically indistinguishable from a fresh-install row — no activation
-            // history is visible in a raw DB dump after wipe.
-            if let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first {
-                config.sealedNormalVerifier    = nil
-                config.sealedDuressVerifier    = nil
-                config.sealedNormalVerifiers   = AppLayerConfig.verifierFillerArray()
-                config.sealedDuressVerifiers   = AppLayerConfig.verifierFillerArray()
-                config.sealedBlobSlots         = AppLayerConfig.randomFillerArray()
-                config.layerSequenceNumbers    = AppLayerConfig.randomFillerArray()
-                try? config.writeCoercerBaseDepth(0)
-                try? self.modelContext.save()
-            }
-
-            // ── Step 2: Delete blob file ──────────────────────────────────────────────
-            self.layerStore.deleteFile()
-
-            // ── Step 3: Reset in-memory state ─────────────────────────────────────────
-            // needsPINEntry = false dismisses the fullScreenCover. The app presents an
-            // empty contacts list — correct for a wiped device.
-            self.state           = .normal
-            self.currentDepth    = 0
-            self.appLockEnabled  = true
-            self.isContentHidden = false
-            self.needsPINEntry   = false
-            self.lastUnlockDate  = nil
-            self.resetCounters()
-        }
-
         // MARK: - Emergency recovery
 
         /// Clears Secure Mode state without performing a key rotation or re-encryption.
@@ -927,11 +861,16 @@ extension Manager {
         /// 2. Try `sealedDuressVerifiers[N]` with `duressLabel` — match returns `.duress`
         ///    (push-down transition). This path fires only when no routing alias exists yet at
         ///    index N+1 (single-layer backward compat or pre-activation duress entry).
-        /// 3. No match → `.wrong`; increment `wrongPINCount`.
+        /// 3. No match → `.wrong`; increment persistent lockout counter; set expiry when threshold reached.
         func verify(_ pin: String) throws -> PINVerifyResult {
             guard self.requiresPIN else { throw SecurityError.notConfigured }
 
             let config = try self.requireConfig()
+
+            // ── Lockout check ─────────────────────────────────────────────────────────
+            if let expiry = config.readLockoutExpiry(), Date.now < expiry {
+                return .locked(until: expiry)
+            }
 
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
@@ -951,21 +890,52 @@ extension Manager {
                 let dv = config.sealedDuressVerifiers[self.currentDepth]
                 if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                             verifier: dv, seKey: seKey) {
-                    self.wrongPINCount          = 0
-                    self.consecutiveDuressCount += 1
-                    return self.consecutiveDuressCount >= config.wipeThreshold() ? .wipe : .duress
+                    self.resetCounters()
+                    return .duress
                 }
             }
 
-            // ── Step 3: No match ──────────────────────────────────────────────────────
-            self.consecutiveDuressCount  = 0
-            self.wrongPINCount          += 1
-
-            if self.isSecureModeActive,
-               self.wrongPINCount >= PINManager.wrongPINLimit {
-                return .wipe
+            // ── Step 3: No match — persist incremented counter and expiry ─────────────
+            let newCount = config.readLockoutCount() + 1
+            try config.writeLockoutCount(newCount)
+            if let delay = Self.lockoutDelay(for: newCount) {
+                try config.writeLockoutExpiry(Date.now.addingTimeInterval(delay))
             }
+            try self.modelContext.save()
             return .wrong
+        }
+
+        /// Incremental lockout delay for consecutive wrong attempts.
+        /// Returns nil for the first 5 attempts (no lockout). Caps at 24 h from attempt 20 onward.
+        static func lockoutDelay(for count: Int) -> TimeInterval? {
+            switch count {
+            case ..<6:  return nil
+            case 6:     return 60         // 1 min
+            case 7:     return 120        // 2 min
+            case 8:     return 300        // 5 min
+            case 9:     return 600        // 10 min
+            case 10:    return 900        // 15 min
+            case 11:    return 1_800      // 30 min
+            case 12:    return 3_600      // 1 hr
+            case 13:    return 7_200      // 2 hr
+            case 14:    return 14_400     // 4 hr
+            case 15:    return 21_600     // 6 hr
+            case 16:    return 28_800     // 8 hr
+            case 17:    return 43_200     // 12 hr
+            case 18:    return 57_600     // 16 hr
+            case 19:    return 72_000     // 20 hr
+            default:    return 86_400     // 24 hr (attempt 20+)
+            }
+        }
+
+        /// Returns the lockout expiry date if the device is currently locked out, nil otherwise.
+        /// Used by PINEntry on appear to restore a persisted lockout after an app kill.
+        func lockoutExpiry() -> Date? {
+            guard let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
+                  let expiry = config.readLockoutExpiry(),
+                  Date.now < expiry
+            else { return nil }
+            return expiry
         }
 
         /// Applies the routing-depth state transition for a verified result.
@@ -983,7 +953,7 @@ extension Manager {
             case .duress:
                 self.currentDepth += 1
                 self.state         = .duress
-            case .wrong, .wipe:
+            case .wrong, .locked:
                 break
             }
         }
@@ -1296,8 +1266,10 @@ extension Manager {
         }
 
         private func resetCounters() {
-            self.wrongPINCount          = 0
-            self.consecutiveDuressCount = 0
+            if let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first {
+                config.resetLockout()
+                try? self.modelContext.save()
+            }
         }
 
         /// A fresh random UInt32 cast to Int, used as the per-activation sequence number.

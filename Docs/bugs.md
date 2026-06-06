@@ -342,7 +342,7 @@ When `Manager.Security.verify()` returns `.wipe` (wrong PIN limit reached, or du
 `onWipe` was left unimplemented as a placeholder.
 
 ### Resolution
-Pending. `onWipe` should call `appManager.eraseAllData()` (the same path used by Settings → Manage Contacts → Delete) and transition `Manager.Security` to `.noPIN` by deleting the `AppLayerConfig` row.
+`onWipe` was wired to call `security.wipeAllSecureState()` followed by `appManager.eraseAllData()`. Subsequently, the entire wipe model was removed by design decision: `PINVerifyResult.wipe`, `onWipe`, `wipeAllSecureState()`, and the wrong-PIN threshold are all gone. Bug 18 is superseded — the scenario it describes cannot occur.
 
 ---
 

@@ -98,25 +98,6 @@ Deactivation Step 6 sets `entry.visibleThroughDepth = nil` unconditionally, rest
 
 ---
 
-## Wipe State Forensics
-
-Measures that prevent the content-wipe state from being detectable as a forensic artifact.
-
-| # | Measure | Severity | Status |
-|---|---------|----------|--------|
-| W1 | `activeWipeDepth` always non-nil — sentinel masks wipe occurrence | Low | ⬜ Pending implementation |
-| W2 | Content deletion via hard-delete + `secure_delete = ON` | Medium | ⬜ Pending implementation |
-
-### W1 — `activeWipeDepth` always non-nil
-
-`AppLayerConfig.activeWipeDepth` could trivially reveal wipe history if it were nil in the normal case and non-nil only after a wipe event. The same forensic-neutrality principle applied to `persistedDepth`, `pinEnabled`, and `coercerBaseDepth` applies here: the field is written from first PIN configuration using a sentinel value (`Int.max` = no active wipe). On disk it is always a non-nil encrypted blob. Without the SE key the value is indistinguishable from any other encrypted `AppLayerConfig` field. With the SE key a forensic examiner can decode it, but that is the same access level required to read all other state — not an incremental exposure.
-
-### W2 — Content deletion leaves WAL timestamp
-
-Hard-deleting contacts and vault entries at wipe time writes deletion records to the SQLite WAL. With `PRAGMA secure_delete = ON`, freed pages are zeroed before release, removing ciphertext residue. The WAL checkpoint following the wipe flushes these to the main file. A forensic examiner inspecting the WAL before checkpoint would see deletion timestamps correlated with the wipe event. This is analogous to the mass `ZMODIFICATIONDATE` update at activation (already accepted in Known Limitations) and has no additional mitigation.
-
----
-
 ## Keychain / AppLayerConfig Forensics
 
 Measures that prevent detection via Keychain metadata or the persisted config row.

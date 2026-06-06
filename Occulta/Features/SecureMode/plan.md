@@ -69,7 +69,6 @@ SE key prevents all off-device attacks. PBKDF2 was removed: it added ~1s of main
 @Model final class AppLayerConfig {
     var sealedNormalVerifier:     Data?   // nil → no PIN configured (requiresPIN == false)
     var sealedDuressVerifier:     Data?   // nil → Secure Mode not active (isSecureModeActive == false)
-    var wipeThresholdEncrypted:   Data?   // encrypted Int; default 3
     var persistedDepth:           Data?   // encrypted RoutingDepth; always non-nil after first config write
     var pinEnabled:               Data?   // encrypted Bool; false = gate suppressed under coercion
 
@@ -87,7 +86,7 @@ The existing `sealedNormalVerifier` / `sealedDuressVerifier` scalar fields becom
 `pinEnabled` stores the gate state (Bool) via `writePinEnabled` / `readPinEnabled`. Falls back to `true` on any decode failure — always demand a PIN rather than silently opening the app.
 Both fields are written at first config creation so their presence never leaks state — a consistently non-nil field is forensically opaque.
 
-All properties optional to avoid SwiftData migration on schema evolution. `wipeThreshold` is encrypted because it reveals Secure Mode configuration to a forensic examiner.
+All properties optional to avoid SwiftData migration on schema evolution.
 
 Contact visibility is tracked per-contact on `Contact.Profile` via `visibleThroughDepth` (see Step 3). There is no central safe-contact list on `AppLayerConfig`.
 
@@ -112,7 +111,7 @@ Step 1 scans all normal verifiers regardless of `currentDepth`. This is what mak
 
 At every setup step, validate the candidate PIN against all existing verifiers at all depths. Reject if any verifier opens with the candidate PIN.
 
-**[security]** This validation must use a pure `checkPIN(_:against:)` method — not `verify()`. `verify()` increments `wrongPINCount` on each non-match. Checking N verifiers for uniqueness would increment the counter N times, potentially triggering a spurious wipe. `PINManager.checkVerifier()` already exists as a pure function; the uniqueness check must call it directly without going through `Manager.Security.verify()`.
+**[security]** This validation must use a pure `checkPIN(_:against:)` method — not `verify()`. `verify()` increments `wrongPINCount` on each non-match. Checking N verifiers for uniqueness would increment the counter N times, falsely advancing the rate-limit counter. `PINManager.checkVerifier()` already exists as a pure function; the uniqueness check must call it directly without going through `Manager.Security.verify()`.
 
 ### `Manager.Security` public interface
 
@@ -147,9 +146,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - `verify()` in `.noPIN` throws `.notConfigured` — `PINEntry` should never appear in that state.
 - `isLocked: Bool` lives in `OccultaApp` (UI layer), not in `Manager.Security`. It is set to `true` on every `scenePhase == .active` when `security.requiresPIN`, and cleared to `false` in `onNormal`. `Manager.Security` owns state; `OccultaApp` owns the lock gate.
 
-**Wipe threshold behaviour:**
-- `.noPIN` / `.pinOnly` — no wipe
-- `.normal` / `.duress` — 3 wrong PINs → `.wipe`; N consecutive duress entries → `.wipe`
+**Wipe threshold behaviour:** No wipe in any mode. Wrong PINs always return `.wrong`. SE hardware rate-limiting is the brute-force defence. `wipeThresholdEncrypted` and `PINVerifyResult.wipe` are removed; `consecutiveDuressCount` is removed.
 
 ---
 
@@ -158,7 +155,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] `Tags` enum `CaseIterable`, `secureModePin` case, `deleteAllKeys()`
 - [x] `deriveSecureModeKey()` on `Manager.Key` and `KeyManagerProtocol`
 - [x] `TestKeyManager` in-memory implementation
-- [x] `SecureModeConfig` SwiftData model — all optional, `wipeThresholdEncrypted`, no salt, no boolean flags
+- [x] `SecureModeConfig` SwiftData model — all optional, no salt, no boolean flags
 - [x] `Manager.Security` — own `ModelContext`, `PINManager` internal, state machine `.noPIN/.pinOnly/.normal/.duress`
 - [x] `Manager.Security.configurePIN(_:)` — builds `sealedNormalVerifier`, inserts config, transitions `.noPIN → .pinOnly`
 - [x] `Manager.Security.activateSecureMode(confirmingNormalPIN:duressPIN:)` — verifies normal PIN, builds `sealedDuressVerifier`; key rotation TODO deferred to Step 4
@@ -173,7 +170,6 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] **[security]** Set `NSPersistentStoreFileProtectionKey: FileProtectionType.complete` on the SwiftData persistent store. The current default (`completeUntilFirstUserAuthentication`) leaves the SQLite file readable after first device unlock even when the screen is locked. SwiftData's `ModelConfiguration` doesn't expose this — requires setting file attributes on the store URL post-creation via `FileManager.setAttributes`. Note: all field values are additionally encrypted at the app level, so the exposure is schema + row count, not plaintext data.
 - [x] **[security]** `FileManager.setAttributes` for `.completeFileProtection` is applied once at container creation. SwiftData can create new `-wal` or `-shm` files outside the app's init lifecycle (WAL merges, schema migrations, conflict resolution). The attribute must be reapplied after every `ModelContext.didSave` notification — subscribe in `OccultaApp` and call `setAttributes` on all three paths (`store`, `store-wal`, `store-shm`) each time. Implemented: `storeURL` stored as property; `reapplyFileProtection()` helper; `.onReceive(NSManagedObjectContextDidSaveNotification)` in `body`.
 - [x] **[security]** Set `PRAGMA secure_delete = ON` on the SQLite connection before any writes. Without this, deleted and updated rows leave plaintext content in SQLite free-list pages that survive WAL checkpoint. A hidden contact's name or vault label could persist in raw page data long after the row is soft-deleted or re-encrypted. Applied via a short-lived C API helper connection in `OccultaApp.init()` immediately after store creation — in SQLite 3.12+ the setting is stored in the database header and persists for all future connections including SwiftData's. Step 4's key-rotation path sets it explicitly on its direct connection as belt-and-suspenders, independent of header persistence.
-- [x] **[security]** `wipeThreshold()` fallback behavior must be explicitly defined and tested. If `wipeThresholdEncrypted` fails to decrypt (corrupt data, wrong key, migration issue), the method must return a hardcoded secure default (3) — not 0 (immediate wipe on first wrong attempt) and not a large number (no wipe ever). Unit tests added: `nilEncryptedData_returnsFallback`, `corruptEncryptedData_returnsFallback`, `validThreshold_roundTrips`.
 - [x] **[security]** Create the no-op blob payload at Step 1 migration time, not at Step 4 activation. A forensic timeline that shows the blob file appearing when the user updates to the Step 4 version directly correlates blob presence with Secure Mode usage on all pre-Step-4 installs. Backporting blob creation to the Step 1 migration (already shipped) decouples the timestamps: every Occulta install will have had a blob file for months before Step 4 ships. Implemented in `SecureMode+Blob.swift` (`Manager.Blob`): UUID-named `.occbak` file in `group.com.occulta.shared/blobs/`, AES-GCM with HKDF-SHA256 blob key, bucket-padded random plaintext, 24-hour rewrite. Called from `OccultaApp.init()` behind the `secureMode` feature flag.
 
 ---
@@ -184,13 +180,12 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] 6-digit keypad, `isVerifying` lock preventing double-submission
 - [x] Fixed 500ms gate equalising timing across all outcomes
 - [x] Two-phase setup: first entry stores PIN, second confirms; label switches "Passcode" → "Confirm Passcode"
-- [x] Routes on result: `.normal` → `onNormal(String)`, `.duress` → `onDuress()`, `.wrong` → shake, `.wipe` → `onWipe()`
+- [x] Routes on result: `.normal` → `onNormal(String)`, `.duress` → `onDuress()`, `.wrong` → shake. `.wipe` case and `onWipe` callback removed.
 - [x] Reads `Manager.Security` from environment; counter lifetime off the view
 - [x] `onNormal: (String) -> Void` (widened from `()` so Settings can pass PIN to `deactivatePIN`)
 - [x] App launch gate in `OccultaApp` — `isLocked` state, `.overlay` on `TabView`, no animation, locks on every `scenePhase == .active`
 - [x] **[security]** Also set `isLocked = true` on `scenePhase == .inactive`. iOS captures the app-switcher screenshot on `.inactive` (before going to background), while the current implementation only locks on `.active` (returning to foreground). Every time the user backgrounds the app, the live screen content is frozen in the app switcher and readable without unlocking.
 - [x] **[security]** Zero PIN digits after use. Replace `[Int]` digits storage with a `Data`-backed buffer; after `submit()` routes the result, zero the buffer with `memset`. Removes PIN heap residue. Low practical exploit risk given SE binding, but correct hygiene and removes the finding from security audits.
-- [ ] `onWipe` wired to `Manager.App.eraseAllData()` — **deferred; dry-test first**
 
 ---
 
@@ -213,7 +208,7 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] **[design]** Contact selection must be part of the activation flow, not a standalone Settings item visited later. Implemented as `SecureModeSetupFlow`: Education → PIN setup (confirmThenSet) → Contact classification → Summary/Activate (4 steps, step-dots indicator). `activateSecureMode` called only on the final confirm step.
 - [x] **Bug 24** — "Activation Failed" alert reveals Secure Mode state when flow is traversed in duress mode. See `Docs/bugs.md`.
 - [x] **Bug 25** — `ContactClassification` exposes sensitive contacts when opened in duress mode. See `Docs/bugs.md`.
-- [x] **[design]** "Deactivate Secure Mode" sheet calls `verify()` internally (via `PINEntry` in `.verify` mode), then `onNormal` calls `deactivateSecureMode(confirmingNormalPIN:)` which calls `PINManager.checkVerifier` again — double-verification plus counter mutation. Wrong attempts in this sheet increment `wrongPINCount` and can trigger wipe. Replace with a verify-without-counters path using `checkNormalPIN`, same as the activate flow's phase 1. Requires either a new `PINEntry` mode or calling `checkNormalPIN` directly in the sheet.
+- [x] **[design]** "Deactivate Secure Mode" sheet calls `verify()` internally (via `PINEntry` in `.verify` mode), then `onNormal` calls `deactivateSecureMode(confirmingNormalPIN:)` which calls `PINManager.checkVerifier` again — double-verification plus counter mutation. Wrong attempts in this sheet increment `wrongPINCount` and pollute the rate-limit counter. Replace with a verify-without-counters path using `checkNormalPIN`, same as the activate flow's phase 1. Requires either a new `PINEntry` mode or calling `checkNormalPIN` directly in the sheet.
 - [x] **[design]** "Enable PIN" toggle was initially disabled in `.normal` and `.duress` states. Revisited by the sticky-depth design and the Settings UI re-evaluation (both below). Final state: toggle remains disabled in `.duress` — this is load-bearing, not cosmetic (see Settings UI entry for rationale). `disablePINFromCurrentDepth` is the coercion-safe gate mechanism that doesn't go through the toggle.
 - [x] **[security]** `activateSecureMode` must validate that the proposed duress PIN does not open any existing normal verifier. Currently no collision check — if duress PIN == normal PIN, `verify()` always matches normal first and duress is never triggerable. Validate with `PINManager.checkVerifier` (not `verify()`) before building the duress verifier; reject with a user-facing error if any existing verifier opens.
 - [x] **[design — pre-ship]** `Enable PIN` toggle in `.duress`: the goal was to make the gate lowerable under coercion without exposing the master PIN. Enabling the toggle trivially is not safe: the Settings sheet calls `security.verify()` internally, so entering the normal PIN from `.duress` would silently transition to `.normal` at depth 0, breaking duress. The final resolution (see Settings UI entry below): toggle stays disabled in `.duress`; `disablePINFromCurrentDepth` is the coercion-safe gate mechanism. The residual tell (toggle appearance differs from `.pinOnly`) is accepted — the alternative is worse.
@@ -400,12 +395,12 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 
 ---
 
-## Step 5 — Wipe + Panic Trigger
+## Step 5 — Lock Gate & Counters
+
+No wipe in any mode. `PINVerifyResult.wipe` is removed; `verify()` always returns `.wrong` on PIN mismatch. `consecutiveDuressCount` is removed. `wipeThresholdEncrypted` is removed from `AppLayerConfig`. Coercion resistance relies entirely on deniability (decoy view) and SE hardware rate-limiting for brute-force protection.
 
 - [x] `PINEntry` shown on every `scenePhase == .active` when `security.requiresPIN`
-- [x] `onDuress` / `onWipe` stubs in place (empty — dry-test deferred)
-- [ ] `onWipe` wired to `Manager.App.eraseAllData()` — **after dry-testing the full flow**
-- [ ] **[security]** `eraseAllData()` must also delete the blob file from the App Group container. Currently it covers prekeys, contacts, vault, and SE keys but has no knowledge of the blob. When Step 4 lands, `Manager.App.eraseAllData()` must receive a reference to the blob file path and delete it as part of the wipe sequence — before SE key deletion so the deletion itself cannot be blocked by an encrypted path lookup.
+- [x] `onDuress` stub in place. `onWipe` callback removed — `verify()` never returns `.wipe`.
 - [x] **`onOpenURL` respects Secure Mode — Option B: raw data queued, zero processing before PIN depth is known.**
 
   **Design:** one new `@State private var pendingFileData: Data?` and one new `private func processInboundFile(_ data: Data) async` that centralises all processing logic. `buildOwnedBasket` is only ever called from `processInboundFile` — both the unlocked-on-arrival path and the post-PIN path call the same function. No continuations, no advanced concurrency primitives.
@@ -425,22 +420,12 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
   **`onDuress` (duress PIN entered):**
   If `pendingFileData` is set: clear it without calling `processInboundFile`, show "This message was not addressed to you." Raw bytes discarded — identical error to any non-addressable file.
 
-  **`onWipe` (wipe triggered):**
-  Clear `pendingFileData` silently.
-
   **Already-unlocked paths (no queuing):**
   - Depth 0: `processInboundFile` runs immediately via `onOpenURL` — no change to observable behaviour.
   - Depth 1 (duress): same, check point A inside `processInboundFile` suppresses if sender not safe. Note: shard operations fire before check point A in this path — out of scope.
 
   **What does not change:** `openedFileContents` → `.sheet` pipeline, check point A logic, all error messages, `.occbak` vault restore path.
-- [ ] Panic trigger accessible from decoy view. **Do not use back tap or shake.** Back tap requires Accessibility settings to be enabled (a tell on a forensic image), and shake fires accidentally. Preferred mechanism: entering the duress PIN three consecutive times without an intervening normal PIN triggers wipe while displaying identical "incorrect PIN" feedback to the coercer. The user memorises "duress PIN × 3 = wipe" — the gesture is indistinguishable from three failed attempts. Implement as: if `consecutiveDuressCount >= 3` return `.wipe` instead of `.duress`. Note: this changes `consecutiveDuressCount` from a "too many duress entries" guard to the panic trigger itself — set the threshold clearly and document it during activation setup.
-- [ ] **[security]** Replace in-memory `wrongPINCount` with a Keychain-encrypted counter that survives app kills. A coercer who kills and relaunches currently resets the counter, enabling unlimited brute-force attempts. With a persistent counter, each `verify()` call decrements it before the check; a successful verification increments it back; reaching zero triggers wipe. The counter is stored as an AES-GCM–encrypted integer in the Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`), domain-separated from all other keys.
-
-  **Time-based refill:** the counter refills to its starting value (e.g. 10) after a configurable period of continuous device lock (e.g. 24 h). This prevents permanent lockout from accidental wrong entries while keeping the brute-force window small. The refill timestamp is stored alongside the counter in the same Keychain item.
-
-  **Design constraint:** the counter must be decremented *before* the verification attempt, not after failure. Decrement-after-failure allows an attacker to kill the app on failure before the decrement is written. Decrement-before + increment-on-success means a crash between decrement and verification counts as one consumed attempt — acceptable.
-
-  **`consecutiveDuressCount`** stays in-memory. It drives the panic trigger, which the user invokes deliberately; it is not a brute-force defence and does not benefit from persistence.
+- [x] **[security]** Persistent incremental lockout counter stored in `AppLayerConfig` (two encrypted fields: `lockoutCountEncrypted`, `lockoutExpiryEncrypted`). Survives app kills. 5 free attempts; attempt 6 triggers a 1-minute lockout, escalating per attempt to a 24-hour cap at attempt 20. `verify()` checks the expiry before touching verifiers; wrong attempts persist count + expiry; any correct verification resets both fields to nil via `resetCounters()`. `PINEntry` shows a live countdown and disables the keypad while locked. `lockoutExpiry()` on `Manager.Security` lets `PINEntry.onAppear` restore a persisted lockout after an app kill.
 - [x] **Decryption-failure contract** — enforced via `Manager.Security.isDisplayable(_:)` which wraps `isVisible(_:atDepth:)`. `ContactsListV2.visibleContacts` always filters through `isDisplayable` — a contact with a non-decryptable `visibleThroughDepth` is excluded regardless of depth or restricted state. `String.decrypt()` returning `""` on failure is intentional; the gate is at the list level, not the field level. `SECURE_MODE_DECRYPT_CONTRACT.md` documents every display call site. Timing normalisation deferred to Design B (see contract doc).
 - [x] **Decryption side-channel audit** — all display paths enumerated in `SECURE_MODE_DECRYPT_CONTRACT.md`. Primary list gate (`isDisplayable`) provides consistent exclusion. Timing differences under Design A are theoretical (decrypt never fails in normal operation); documented as pre-Design-B requirement in contract doc.
 
@@ -460,12 +445,12 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 
 ## Known Limitations
 
-- **`consecutiveDuressCount` is cyclable with both PINs.** A coercer who has extracted both the normal and duress PINs (through more extreme coercion) can cycle duress → normal → duress indefinitely without reaching the wipe threshold. `consecutiveDuressCount` resets to 0 on any normal PIN match. This is intentional — the threshold must not trigger on a user who accidentally enters their duress PIN and then corrects with the normal PIN — but it means the wipe condition is only effective against a coercer who has the duress PIN and not the normal PIN. Accepted; documented.
+- **No deliberate data destruction mechanism.** The design relies entirely on deniability (decoy view) for coercion resistance. There is no panic trigger or wipe-on-wrong-PIN. Under severe coercion where deniability fails, the user has no in-app recourse beyond SE hardware rate-limiting. Explicit design decision — the wipe model was removed for simplicity and to eliminate accidental destruction risk.
 - **Row count mismatch.** More rows exist than the app displays. Soft-deleted and locked rows each have plausible innocent explanations. Soft-deleted rows are capped at 50 per entity type (evicted FIFO) to prevent unbounded database growth. Soft-deleted rows must never appear in any UI, Share Index, or query result.
 - **SE key rotation is observable. No mitigation.** A forensic examiner checking the Keychain will see a new SE key created and an old one deleted. The timestamp is correlatable with activation. The deletion IS the security mechanism — there is no way to hide it.
 - **The blob file exists. Partially mitigated — backport pending.** The blob will be created at Step 1 migration time (see Step 1 security item), UUID-named, and continuously maintained via Step 4's background schedule. Until the backport ships, the blob file first appears with the Step 4 update, which correlates its presence with Secure Mode usage on all pre-Step-4 installs. After the backport, every Occulta install will have had a blob file for months before Step 4, decoupling the timestamps entirely.
 - **App deletion while Secure Mode is active is unrecoverable. No mitigation.** The App Group container is deleted with the app. This is an OS constraint. Users must be warned before activation; no code fix is possible.
-- **Counter resets on app kill. Mitigated by panic trigger and persistent counter (Step 5).** `wrongPINCount` and `consecutiveDuressCount` are in-memory only. A coercer who kills and relaunches resets both counters, enabling unlimited PIN attempts. The SE hardware rate-limits verification operations, making brute-force expensive regardless of counter state. The panic trigger (duress PIN × 3) provides a user-controlled wipe independent of the wrong-PIN counter. The persistent Keychain-encrypted attempt counter (Step 5) closes the brute-force gap.
+- **Counter resets on app kill. Mitigated by SE rate-limiting and persistent counter (Step 5).** `wrongPINCount` is in-memory only and resets on every app kill, enabling unlimited PIN attempts per session. SE hardware rate-limiting makes brute-force expensive regardless of counter state. The persistent Keychain-encrypted counter (Step 5) adds session-independent rate-limiting. No wipe is triggered — brute-force protection is entirely rate-based.
 - **Crash logs may capture sensitive data.** iOS crash logs contain stack traces and register snapshots. A crash during blob serialization, contact re-encryption, or PIN verification could capture plaintext field data or PIN string fragments. Crash logs survive device wipe and are included in iCloud backups. If any external crash reporting (Crashlytics, Sentry, etc.) is ever added, it must sanitize all contact field data before transmission. Currently no crash reporting is used — document this constraint explicitly so it is not accidentally introduced.
 - **SwiftData schema name is a forensic artifact. Mitigated.** Renaming `SecureModeConfig` to an opaque class name (Step 1) changes the table name to something non-descriptive. The schema fingerprint survives row deletion (store file is not deleted by `eraseAllData()`), but the table name no longer names the feature.
 - **SwiftData WAL captures re-encryption transitions. Mitigated.** Activation sequence step 9 runs `PRAGMA wal_checkpoint(TRUNCATE)` before the staged key is promoted to canonical, zeroing the WAL and eliminating the re-encryption timestamp record.
@@ -475,3 +460,46 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 - **HKDF with PIN in the `info` field is non-standard. No mitigation planned.** `HKDF(inputKeyMaterial: seKey, info: label ∥ pin)` works correctly. Migrating to a more standard construction (PIN as IKM) would invalidate all existing verifiers. The current scheme has no known exploit; the finding is documented for external audits.
 - **PIN strings are not zeroed after use. Mitigated.** Replacing `[Int]` digit storage with a `Data`-backed buffer and zeroing with `memset` after routing (Step 2) removes PIN heap residue.
 - **Secure Mode raises the bar against coercion and mid-tier adversaries. It is not state-actor proof.**
+
+---
+
+## Deferred: Panic Wipe
+
+A deliberate, hard-to-trigger destruction mechanism for scenarios where deniability has failed and the user faces extreme duress with no exit. This is a future feature — **not implemented in the current version**. The wipe model (wrong-PIN counter → wipe) was removed for accidental-destruction risk; panic wipe replaces it with an explicit, deliberate trigger.
+
+### Goals
+
+- **Irreversible and immediate.** SE key deletion makes all encrypted artefacts permanently unreadable before the app closes. No network required.
+- **Hard to trigger accidentally.** Cannot be initiated by a wrong PIN, a miscount, or a UI tap in a normal flow.
+- **No forensic tell that the mechanism exists.** The trigger must be invisible from the normal UI; no button labelled "emergency erase."
+- **No coercer-visible confirmation dialog.** A confirmation prompt would alert a coercer that destruction is in progress and give them time to abort. The trigger itself must be the confirmation.
+- **Works in duress mode.** Must be reachable from the decoy view, not only from the real app.
+
+### Candidate trigger designs
+
+| Option | Mechanism | Notes |
+|--------|-----------|-------|
+| A | Hardware button sequence (hold Volume Up + Side Button ≥ 5 s while app is foregrounded) | No UI at all; very hard to discover accidentally; requires UIApplication event interception |
+| B | Dedicated "destroy PIN" — a third PIN slot verified before the normal scan | Symmetric with the existing duress PIN; discoverable by an attacker who reads `AppLayerConfig` schema; requires a fourth verifier slot |
+| C | Hidden gesture in the decoy contact list (e.g., three-finger long-press ≥ 3 s) | Low discoverability; gesture recogniser can be registered on the root view; risk of accidental trigger on a tablet |
+| D | Remote kill switch — a specially crafted `.occ` message signed with a pre-registered kill key | Requires network; key management is a new attack surface; not offline-first |
+
+**Preferred starting point: Option A (hardware button sequence).** It requires no new UI, no new crypto, and no additional verifier slots. The 5-second hold threshold and the requirement that the app be in the foreground make accidental triggering very unlikely.
+
+### Implementation sketch (Option A)
+
+1. **Register a `UILongPressGestureRecognizer` on the side button + volume-up chord** via `UIApplication.shared.beginReceivingRemoteControlEvents()` or a custom `UIEvent` subclass — or intercept via `UIWindow.sendEvent(_:)`. This requires UIKit bridging from the SwiftUI app.
+2. **Threshold: 5 seconds continuous hold** before any action fires. Visual feedback must be absent or indistinguishable from the normal iOS screenshot/power-off affordance.
+3. **Destruction sequence** (same order as the old `wipeAllSecureState` + `eraseAllData` chain):
+   - Call `Manager.Security` to nil verifiers, replace arrays with fresh filler, and save `AppLayerConfig`.
+   - Delete the blob file (`LayerStore.deleteFile()`).
+   - Call `Manager.App.eraseAllData()` — deletes contacts, vault, prekeys, and finally SE keys.
+   - On return, navigate to an empty app state (no splash, no error — indistinguishable from a first-launch install).
+4. **No callback to `PINEntry`.** The trigger fires from the app level, bypassing the PIN flow entirely. `Manager.Security.needsPINEntry` is set to `false` after erasure.
+5. **Forensic note.** After erasure, `maintainLayerStore()` on the next launch recreates the blob as a fresh no-op. The creation timestamp will postdate the wipe event — a forensic examiner can detect that the blob was recently recreated. This is the same limitation as the old wipe model and has no mitigation short of a secure-boot sealed log.
+
+### Open questions before implementation
+
+- Is UIKit event interception acceptable in a SwiftUI lifecycle app on iOS 16+?
+- Should the trigger also post a silent iCloud note or AirDrop beacon so a remote party knows destruction succeeded? (Adds network dependency — conflicts with offline-first.)
+- Should the destroy sequence be available before first Secure Mode activation (e.g., to destroy the app entirely before a border crossing)?

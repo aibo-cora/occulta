@@ -20,9 +20,6 @@ enum RoutingDepth: Int, Codable {
 final class AppLayerConfig {
     var sealedNormalVerifier: Data?
     var sealedDuressVerifier: Data?
-    /// Encrypted Int — consecutive wrong-PIN entries before wipe. Default 3.
-    var wipeThresholdEncrypted: Data?
-
     /// Encrypted `RoutingDepth`. Records which layer (real vs decoy) was active
     /// when config was last written, so `Manager.Security.init` can restore
     /// depth-filtering and `.duress` state after a process kill without
@@ -81,6 +78,13 @@ final class AppLayerConfig {
     /// and `pinEnabled`, so its presence never leaks coercion history. A field that
     /// appears only after a coercion event would itself be a forensic tell.
     var coercerBaseDepth: Data? = nil
+
+    /// Encrypted Int. Consecutive wrong attempt count since last successful verification.
+    /// nil = 0 (no wrong attempts). Reset to nil on any successful verification or activation.
+    var lockoutCountEncrypted: Data? = nil
+
+    /// Encrypted Date. When the current lockout expires; nil = not currently locked out.
+    var lockoutExpiryEncrypted: Data? = nil
 
     /// Encrypted slot index per depth, parallel to sealedDuressVerifiers.
     /// Index 0 = real layer (depth 0). Padded to 32 entries with random filler
@@ -267,21 +271,6 @@ final class AppLayerConfig {
         (0..<maxVerifierCount).map { _ in Self.verifierFiller() }
     }
 
-    // MARK: - Wipe threshold
-
-    func wipeThreshold() -> Int {
-        guard
-            let encrypted = self.wipeThresholdEncrypted,
-            let decrypted = encrypted.decrypt(),
-            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
-        else { return 3 }
-        return value
-    }
-
-    func setWipeThreshold(_ threshold: Int) throws {
-        let data = try JSONEncoder().encode(threshold)
-        self.wipeThresholdEncrypted = try data.encrypt()
-    }
 
     // MARK: - Routing depth
 
@@ -332,5 +321,36 @@ final class AppLayerConfig {
 
     func writeCoercerBaseDepth(_ depth: Int) throws {
         self.coercerBaseDepth = try JSONEncoder().encode(depth).encrypt()
+    }
+
+    // MARK: - Lockout counter
+
+    func readLockoutCount() -> Int {
+        guard let data      = self.lockoutCountEncrypted,
+              let decrypted = data.decrypt(),
+              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return 0 }
+        return value
+    }
+
+    func writeLockoutCount(_ count: Int) throws {
+        self.lockoutCountEncrypted = try JSONEncoder().encode(count).encrypt()
+    }
+
+    func readLockoutExpiry() -> Date? {
+        guard let data      = self.lockoutExpiryEncrypted,
+              let decrypted = data.decrypt(),
+              let value     = try? JSONDecoder().decode(Date.self, from: decrypted)
+        else { return nil }
+        return value
+    }
+
+    func writeLockoutExpiry(_ date: Date) throws {
+        self.lockoutExpiryEncrypted = try JSONEncoder().encode(date).encrypt()
+    }
+
+    func resetLockout() {
+        self.lockoutCountEncrypted  = nil
+        self.lockoutExpiryEncrypted = nil
     }
 }

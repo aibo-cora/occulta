@@ -97,33 +97,18 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 **Result:** `verify()` step 1: no normal verifier match (routing alias written at depth N+1, not N). Step 2: `sealedDuressVerifiers[N]` matches → `.duress`. `currentDepth = N+1`, `state = .duress`. Gate lowers to depth N+1 view.
 **Note:** This path only occurs when entering the duress PIN from WITHIN depth N (not from cold start). Cold start always routes via step 1.
 
-### 3.4 Wrong PIN — below threshold
+### 3.4 Wrong PIN
 **State:** `SM` or `.pinOnly`, locked
 **Entry:** Unrecognised PIN
-**Result:** `verify()` → `.wrong`. `wrongPINCount++`. `consecutiveDuressCount = 0`. Shake animation. Counter persists in memory only (survives within session; resets on app kill — known limitation).
+**Result:** `verify()` → `.wrong`. `wrongPINCount++`. Shake animation. No wipe in any mode — counter accumulates but never triggers data destruction. Counter resets on app kill (known limitation); persistent Keychain counter (Step 5) adds session-independent rate-limiting.
 
-### 3.5 Wrong PIN — threshold reached
-**State:** `SM`, locked, `wrongPINCount >= wipeThreshold - 1`
-**Entry:** One more wrong PIN
-**Result:** `verify()` → `.wipe`. `onWipe` fires. **Currently a stub** (Bug 18) — no data is erased. Full resolution: `eraseAllData()` + delete blob + clear `AppLayerConfig`.
-
-### 3.6 Panic trigger — duress PIN entered consecutively
-**State:** `SM`, locked, `consecutiveDuressCount >= wipeThreshold - 1`
-**Entry:** Duress PIN again (no normal PIN in between)
-**Result:** `verify()` step 2 matches duress verifier → `consecutiveDuressCount >= wipeThreshold` → `.wipe`. Same stub issue as 3.5.
-**Design intent:** User memorises "duress PIN × N = wipe." Indistinguishable from N failed attempts to an observer.
-
-### 3.7 PIN entry with pending inbound file — normal unlock
+### 3.5 PIN entry with pending inbound file — normal unlock
 **State:** Locked, `pendingFileData` set (file arrived while locked)
 **Result:** Normal PIN entered → `onNormal` fires → captures `pendingFileData`, clears it, dispatches `processInboundFile`. File is processed after gate fully dismisses (`onDismiss` callback).
 
-### 3.8 PIN entry with pending inbound file — duress unlock
+### 3.6 PIN entry with pending inbound file — duress unlock
 **State:** Locked, `pendingFileData` set
 **Result:** Duress PIN entered → `onDuress` fires → `pendingFileData` cleared without processing. "Not addressed to you" message shown. Raw bytes permanently discarded.
-
-### 3.9 PIN entry with pending inbound file — wipe
-**State:** Locked, `pendingFileData` set
-**Result:** Wipe triggered → `onWipe` clears `pendingFileData` silently. No file content ever reaches the app layer.
 
 ---
 
@@ -366,10 +351,6 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 **Pre-state:** `pendingFileData` set, duress PIN entered
 **Result:** `onDuress` clears `pendingFileData` without processing. "Not addressed to you" shown.
 
-### 9.9 Inbound `.occ` — unlocked at wiped depth
-**Pre-state:** `isWipedLayer = true` (`currentDepth >= activeWipeDepth`)
-**Result:** `passSecurityControl` checks `isWipedLayer` → throws regardless of sender identity. "Not addressed to you." No message content shown, no contact enumeration. The wiped layer is fully inert to inbound message processing — a message arriving while the contact list appears empty would be a tell that contacts exist. (Issue 3 resolution)
-
 ---
 
 ## 10. Share Extension
@@ -382,11 +363,7 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 **Pre-state:** `SM`, `depth:0`, unlocked
 **Result:** Index contains all contacts. Extension shows full recipient list.
 
-### 10.3 Share extension — app at wiped depth
-**Pre-state:** `isWipedLayer = true`
-**Result:** `safeContactIDs()` returns empty set. Share index rebuilt with no contacts. Extension shows no Occulta recipients — consistent with the empty contact list the adversary sees in-app. (Issue 3 resolution)
-
-### 10.4 Share extension — app unlocked depth N
+### 10.3 Share extension — app unlocked depth N
 **Pre-state:** `SM`, `depth:N`, unlocked
 **Result:** `syncShareIndex` on `onNormal` passes `safeContactIDs()` at depth N. Extension shows only depth-N-visible contacts.
 
@@ -434,179 +411,41 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ---
 
-## 13. Wipe
+## 13. Multi-Layer Stack (N > 1 depths)
 
-### Wipe model — three rules
-
-**Rule 1 — No Secure Mode (`.pinOnly`):** wrong PINs after `wrongPINLimit` attempts → total wipe. Existing behaviour unchanged.
-
-**Rule 2 — Secure Mode active, `currentDepth == 0`:** wrong PINs → `.wrong`, no wipe. The real layer is protected by SE hardware rate-limiting. Wiping anything at depth 0 risks destroying the real user's own data; the wrong-PIN counter must not be a vector against depth-0 content. *(Issue 1 resolution — see below)*
-
-**Rule 3 — Secure Mode active, `currentDepth > 0`:** wrong PINs → **content wipe at `currentDepth`**. Only content created at that depth is deleted. All structure (verifiers, blob references, SE keys, DB key) is untouched. The layer appears completely empty; the gate stays up; real layer fully accessible via master PIN.
-
-`coercerBaseDepth` is **not** used in the wipe depth formula. The kill+relaunch problem solves itself under Rule 2: an adversary at cold start (`currentDepth = 0`) always gets `.wrong` when SM is active, regardless of `coercerBaseDepth`. They cannot damage anything until they authenticate to a depth > 0.
-
----
-
-### `activeWipeDepth` — the visibility suppression filter
-
-**`AppLayerConfig.activeWipeDepth`** (encrypted `Int`, **always non-nil** from first PIN configuration — sentinel value `Int.max` = no active wipe) records the shallowest depth at which a content wipe has fired.
-
-**Filter rule:** hide any contact or vault entry when `currentDepth >= activeWipeDepth`.
-
-Applied at every security boundary via `Manager.Security.isWipedLayer: Bool` (computed: `currentDepth >= activeWipeDepth`):
-
-| Gate | Behaviour when `isWipedLayer` |
-|---|---|
-| `isVisible(_:atDepth:)` — contact list | Hide all contacts (safe contacts included) |
-| `isEntryVisible(_:)` — vault tab | Hide all vault entries |
-| `isSafeContact(_:)` / `safeContactIDs()` | Return `false` / empty set |
-| `passSecurityControl` / `buildOwnedBasket` | Throw — block all inbound message processing |
-| Share extension index rebuild | `safeContactIDs()` returns empty → index empty |
-| Shard trustee picker | `safeContactIDs()` returns empty → no trustees |
-| Contact / vault entry creation | Blocked — writes at wiped depth create invisible orphans |
-
-**Why a filter rather than modifying contacts:** changing safe contacts' `visibleThroughDepth` from `Int.max` to `N-1` would permanently reclassify them and corrupt future activation cycles. The filter is non-destructive and reversible (reset by deactivation or fresh activation).
-
-**Multiple-wipe rule (Issue 4 resolution):** `activeWipeDepth` is always updated with `min(existing, new)`. A shallower wipe always supersedes a deeper one; a later deeper wipe cannot un-wipe a shallower layer. Once depth 1 is wiped, depths 1, 2, 3, … are all empty. A subsequent wrong-PIN sequence at depth 2 leaves `activeWipeDepth = 1` unchanged.
-
-**Forensic neutrality (Issue 8 resolution):** Field is written from first PIN configuration (sentinel `Int.max`). Always non-nil on disk — no nil/non-nil distinction reveals whether a wipe has occurred. The encrypted value is opaque without the SE key; with the SE key a forensic examiner can read it, which is in the same category as all other encrypted `AppLayerConfig` fields.
-
----
-
-### What content wipe does
-
-| Data | Action |
-|---|---|
-| Contacts with `visibleThroughDepth == currentDepth` | Hard-deleted from DB |
-| Vault entries with `visibleThroughDepth == currentDepth` | Hard-deleted from DB |
-| All other contacts / vault entries | Untouched |
-| `activeWipeDepth` | Set to `min(existing, currentDepth)` |
-| Safe contacts (`visibleThroughDepth = Int.max`) | Untouched in DB — hidden by filter |
-| Verifiers, blob slot references, SE keys, DB key | All intact |
-| Gate (`needsPINEntry`) | Stays `true` — adversary remains locked out |
-
----
-
-### 13.1 Wrong PINs — no Secure Mode (`.pinOnly`)
-**Pre-state:** `!isSecureModeActive`, `wrongPINCount >= wrongPINLimit`
-**Result:** Total wipe. `pendingFileData` cleared. `security.wipeAllSecureState()` — verifier arrays reset to filler, blob file deleted, in-memory state reset (`needsPINEntry = false` dismisses cover). `appManager.eraseAllData()` — prekeys, contacts, vault, SE keys. App opens to `.noPIN`. (Bug 18 fix)
-
-### 13.2 Wrong PINs — Secure Mode active, cold start / depth 0
-**Pre-state:** `isSecureModeActive = true`, `currentDepth = 0`, wrong PINs
-**Result:** `.wrong`. No wipe. No data touched. Counter resets on kill (known limitation). SE hardware rate-limiting is the active mitigation.
-**Why not wipe:** depth 0 is the real layer. Wiping at depth 0 would target contacts with `visibleThroughDepth == 0` (the real user's sensitive contacts). Any formula that produces `wipeDepth = 0` risks destroying real data. *(Issue 1 resolution)*
-
-### 13.3 Wrong PINs — Secure Mode active, depth N > 0 (content wipe)
-**Pre-state:** `isSecureModeActive = true`, `currentDepth = N > 0`, `wrongPINCount >= wrongPINLimit`
-**Sequence:**
-1. `pendingFileData` cleared.
-2. Hard-delete contacts where `decrypt(visibleThroughDepth) == N`.
-3. Hard-delete vault entries where `decrypt(visibleThroughDepth) == N`.
-4. `config.writeActiveWipeDepth(min(existing, N))`.
-5. `modelContext.save()`. Gate stays up (`needsPINEntry` unchanged).
-**Result:** Layer N appears completely empty. All contacts (safe, sensitive, depth-specific) invisible at depth N and deeper. Real user authenticates to depth 0 → all contacts visible, unaffected.
-
-### 13.4 Cold-start adversary enters wrong PINs — no damage possible
-**Pre-state:** `isSecureModeActive = true`, cold start → `currentDepth = 0`
-**Result:** Rule 2 fires — `.wrong`, no wipe. Adversary cannot damage any layer regardless of `coercerBaseDepth`. They can retry indefinitely per session (in-memory counter). SE hardware rate-limiting is the mitigation between sessions.
-**Note (Issue 1 resolution):** The previous `max(1, currentDepth, coercerBaseDepth)` formula produced `wipeDepth = 1` here, letting the adversary destroy the real user's depth-1 convincing duress layer without ever authenticating. Removed.
-
-### 13.5 Coercer at depth N+1 enters wrong PINs (authenticated)
-**Pre-state:** `currentDepth = N+1 > 0`, `coercerBaseDepth = N+1`
-**Result:** Content wipe at depth N+1. Coercer's layer-specific contacts and vault entries deleted. `activeWipeDepth = N+1`. Depths 0..N completely intact. Gate stays up. Coercer destroyed their own layer.
-
-### 13.6 Coercer kills + relaunches, enters wrong PINs
-**Pre-state:** `coercerBaseDepth = N+1`, cold start → `currentDepth = 0`
-**Result:** Rule 2 — `.wrong`, no wipe. Cold start cannot trigger a wipe regardless of `coercerBaseDepth`. Coercer must authenticate first; after authenticating to depth N+1, wrong PINs → content wipe at N+1 (scenario 13.5).
-
-### 13.7 Adversary at depth N (duress route) — wrong PINs
-**Pre-state:** `currentDepth = N > 0` (reached via duress PIN), `coercerBaseDepth = 0`
-**Result:** Content wipe at depth N. The real user's depth-N decoy content is deleted; `activeWipeDepth = N`. Depths 0..N-1 intact. Real user can still authenticate to depth 0.
-**Residual gap:** After adversary kills + relaunches (`currentDepth = 0`), further wrong PINs → `.wrong` (Rule 2). They cannot wipe depth 0.
-
-### 13.8 Safe contacts invisible at wiped depth, visible at real layer
-**Pre-state:** Content wipe at depth N, `activeWipeDepth = N`
-**Contact type:** Safe contact (`visibleThroughDepth = Int.max`)
-**At depth N:** `isWipedLayer = true` → hidden. Contact list shows nothing. ✓
-**At depth 0 (real user):** `currentDepth = 0 < N` → `isWipedLayer = false` → visible. ✓
-**In DB:** Contact record untouched. No `visibleThroughDepth` modification. ✓
-
-### 13.9 Deactivation blocked at wiped depth — prevents un-wipe (Issue 2 resolution)
-**Pre-state:** `activeWipeDepth = N`, `currentDepth = N` (coercer authenticated to their wiped layer)
-**Problem:** If `deactivateSecureMode` were allowed at depth N, step 5 would restore contacts from the coercer's blob — un-wiping the deleted content.
-**Resolution:**
-- UI level: "Deactivate Protection" button hidden when `isWipedLayer` (`currentDepth >= activeWipeDepth`). The deactivation flow is unreachable.
-- Belt-and-suspenders: `deactivateSecureMode` itself checks `isWipedLayer` and skips blob contact restoration (step 5) for any depth at or deeper than `activeWipeDepth`. Contacts that were hard-deleted are not restored.
-
-### 13.10 Inbound message at wiped depth — blocked (Issue 3 resolution)
-**Pre-state:** `isWipedLayer = true` (depth N, `activeWipeDepth = N`)
-**Event:** `.occ` file arrives, `buildOwnedBasket` runs.
-**Result:** `passSecurityControl` checks `isWipedLayer` → throws. "Not addressed to you." No message content shown. No contact enumeration through message processing.
-**Why needed:** `isSafeContact()` without the wipe gate would return `true` for safe contacts — a safe contact's message would display even though the contact list appears empty. Observable tell.
-
-### 13.11 Share extension at wiped depth — empty (Issue 3 resolution)
-**Pre-state:** `isWipedLayer = true`
-**Result:** `safeContactIDs()` returns empty set when `isWipedLayer`. Share index rebuilt with empty set. Extension shows no recipients.
-
-### 13.12 Contact creation at wiped depth — blocked (Issue 5 resolution)
-**Pre-state:** `isWipedLayer = true`, user attempts to add a contact
-**Problem:** New contacts at depth N receive `visibleThroughDepth = N`. The wipe filter immediately hides them. Contact exists in DB but is invisible — silent orphan accumulation.
-**Resolution:** Contact and vault entry creation blocked at UI and manager level when `isWipedLayer`. The layer is frozen for writes; it functions as read-only (no content can be added to a wiped depth).
-
-### 13.13 `activeWipeDepth` reset ordering in deactivation (Issue 6 resolution)
-**Problem:** If `activeWipeDepth` is reset at the START of `deactivateSecureMode` and the operation fails mid-rotation, the field is nil but the layer structure is intact. On next launch the filter is gone — safe contacts reappear in a layer that should be empty.
-**Resolution:** `activeWipeDepth` reset to sentinel (`Int.max`) occurs at the END of `deactivateSecureMode`, in the same atomic `modelContext.save()` call as verifier clearing and state transition. A failed deactivation leaves `activeWipeDepth` at its original value.
-
-### 13.14 Multiple wipes at different depths (Issue 4 resolution)
-**Scenario A:** Wipe at depth 2 (`activeWipeDepth = 2`), then wrong PINs at depth 1 (`new = 1`).
-**Result:** `min(2, 1) = 1` → `activeWipeDepth = 1`. Filter now covers depths 1 and 2. Correct.
-
-**Scenario B:** Wipe at depth 1 (`activeWipeDepth = 1`), then wrong PINs at depth 2 (`new = 2`).
-**Result:** `min(1, 2) = 1` → `activeWipeDepth = 1`. Unchanged. Depth 1 filter stays in place; depth 2's deeper wipe cannot un-wipe depth 1. Correct.
-
-### 13.15 `activeWipeDepth` reset on new activation (Issue 6 / 9 resolution)
-**Pre-state:** `activeWipeDepth = N` (prior wipe), user activates SM from depth N.
-**Problem:** A new activation at depth N creates fresh content for that depth. The wipe filter would immediately hide the new content.
-**Resolution:** `activateSecureMode` resets `activeWipeDepth` to sentinel (`Int.max`) as part of the activation sequence — in the post-catch config write, alongside the duress verifier and blob slot writes. Fresh activation at a previously wiped depth is a clean slate.
-
----
-
-## 14. Multi-Layer Stack (N > 1 depths)
-
-### 14.1 Cold start — enter depth-2 PIN directly
+### 13.1 Cold start — enter depth-2 PIN directly
 **Pre-state:** Three layers configured (depths 0, 1, 2)
 **Entry:** Depth-2 PIN (stored as `sealedNormalVerifiers[2]`)
 **Result:** `verify()` step 1 scans all normal verifiers — hits index 2. `currentDepth = 2`, `state = .normal`. Depth-2 decoy view presented. No walk through depths 0 and 1.
 
-### 14.2 Enter depth-1 PIN from depth 1 — push down
+### 13.2 Enter depth-1 PIN from depth 1 — push down
 **Pre-state:** `depth:1`, gate:up (depth-1 PIN is the duress PIN for depth-0→1 boundary, also stored as `sealedNormalVerifiers[1]`)
 **Entry:** The depth-1 PIN at the lock screen while already at depth 1
 **Result:** `verify()` step 1 finds `sealedNormalVerifiers[1]` — routes back to `currentDepth = 1` (not a push-down). Step 2 (`sealedDuressVerifiers[1]`) would push to depth 2 only if a different depth-2 duress PIN is entered.
 
-### 14.3 Push from depth 1 to depth 2
+### 13.3 Push from depth 1 to depth 2
 **Pre-state:** `depth:1`, gate:up
 **Entry:** The depth-2 duress PIN (stored as `sealedDuressVerifiers[1]`)
 **Result:** `verify()` step 1: no match (depth-2 PIN not in normal verifiers at index matching current scan; the routing alias at index 2 uses normalLabel but scanning starts from 0 — it WILL match at index 2 in step 1). Actually: step 1 finds `sealedNormalVerifiers[2]` → routes to `currentDepth = 2` directly.
 **Note:** Push-down via step 2 (`sealedDuressVerifiers[N]`) only fires if step 1 finds NO match. Since the depth-2 PIN's routing alias is at `sealedNormalVerifiers[2]`, step 1 always finds it. Step 2 only fires for a PIN that is a duress verifier but has no corresponding routing alias yet — which does not occur in the current design.
 
-### 14.4 Activation from depth 2 (create depth 3)
+### 13.4 Activation from depth 2 (create depth 3)
 **Pre-state:** `SM`, `depth:2`, gate:up
 **Result:** `activateSecureMode` guard: `isRestricted = true` → passes. `excludedSlots` = `Set((0..<min(2,2)).compactMap {...})` = slots 0 and 1 excluded (real and convincing-duress blobs protected). Random slot chosen from remaining 30. Depth-2 blob may be overwritten (expendable). (Bug 46 fix)
 
-### 14.5 Deactivation cascade from depth 3
+### 13.5 Deactivation cascade from depth 3
 **Pre-state:** `SM`, `depth:3`, gate:up (theoretical, UI unreachable)
 **Note:** Deactivation UI is blocked at any depth > `coercerBaseDepth` (currently > 0). Only depth-0 deactivation is reachable via UI. Programmatic deactivation from depth 3 strips to depth 2; from depth 2 to depth 1; from depth 1 to depth 0 (full deactivation to `.pinOnly`).
 
-### 14.6 Blob slot exhaustion (all 32 slots used)
+### 13.6 Blob slot exhaustion (all 32 slots used)
 **Pre-state:** 32 activations across the full stack
 **Result:** `push()` throws `payloadTooLarge` or returns no valid slot. Activation fails. In practice, the maximum useful stack is far below 32 — each depth requires a new PIN and intentional adversarial setup. Not a realistic limit.
 
 ---
 
-## 15. Coercion Scenarios
+## 14. Coercion Scenarios
 
-### 15.1 Single-layer coercion — adversary knows only duress PIN
+### 14.1 Single-layer coercion — adversary knows only duress PIN
 **Sequence:**
 1. Real user activates SM (depth 0 → depth 1 available)
 2. Adversary coerces duress PIN → enters at depth 1
@@ -616,7 +455,7 @@ Applied at every security boundary via `Manager.Security.isWipedLayer: Bool` (co
 6. Adversary enters new duress PIN → depth 2 (empty)
 **What adversary cannot determine:** Whether depth 0 exists. Whether the decoy is convincing.
 
-### 15.2 Multi-layer coercion — adversary traverses multiple layers
+### 14.2 Multi-layer coercion — adversary traverses multiple layers
 **Sequence:**
 1. Real user has N layers configured
 2. Adversary coerces first duress PIN → depth 1
@@ -624,7 +463,7 @@ Applied at every security boundary via `Manager.Security.isWipedLayer: Bool` (co
 4. At any depth > 0: "Deactivate Protection" hidden, decoy contacts shown, sensitive contacts inaccessible
 **What adversary cannot determine:** How many layers the real user configured. Whether they have reached the bottom.
 
-### 15.3 Gate-lowered device — adversary receives phone unlocked
+### 14.3 Gate-lowered device — adversary receives phone unlocked
 **Sequence:**
 1. Real user at depth N enables gate-lowered mode (`disablePINFromCurrentDepth`)
 2. Device handed over — adversary sees depth-N decoy content without PIN prompt
@@ -633,71 +472,62 @@ Applied at every security boundary via `Manager.Security.isWipedLayer: Bool` (co
 **Fork A — adversary enters real PIN:** `reEnablePIN` matches normal verifier → gate re-enabled at matched depth → toggle ON.
 **Fork B — adversary enters unknown PIN:** `reEnablePIN` returns false (depth 0) or coercion-acceptance path (depth N > 0, Bug 37 pending fix).
 
-### 15.4 Gate-lowered device — adversary tests full SM functionality (Bugs 47, 48 — fixed)
+### 14.4 Gate-lowered device — adversary tests full SM functionality (Bugs 47, 48 — fixed)
 **Sequence (depth N > 0):**
 1. Adversary enters PIN C (not matching) → coercion-acceptance path creates depth N+1, gate re-enabled. `coercerBaseDepth = N+1`.
 2. Adversary enters C at lock screen → depth N+1, `currentDepth = N+1`.
 3. Adversary tries "Learn more" → activation flow opens. `ContactClassification` loads and saves (guard: `currentDepth == coercerBaseDepth`). ✓
 4. Adversary activates SM from depth N+1 → creates depth N+2.
 5. Adversary returns to Settings → "Deactivate Protection" visible (condition: `currentDepth == 0 || currentDepth == coercerBaseDepth`). ✓
-6. Adversary deactivates → strips depth N+2. `activeWipeDepth` reset to sentinel.
+6. Adversary deactivates → strips depth N+2. Returns to depth N+1 state.
 **All tells from Bugs 47/48 resolved.** `coercerBaseDepth` persisted in `AppLayerConfig` enables the correct UI at depth N+1.
 
-### 15.5 Panic trigger — real user's deliberate wipe under coercion
-**Sequence:**
-1. Real user at depth 0, gate up, knows wipe gesture (duress PIN × threshold)
-2. User enters duress PIN threshold times consecutively
-3. `consecutiveDuressCount >= wipeThreshold` → `verify()` returns `.wipe`
-4. `onWipe` fires → total wipe (Bug 18 fixed). `pendingFileData` cleared. `wipeAllSecureState()` runs. `eraseAllData()` runs. App resets to `.noPIN`.
-**Tell-avoidance:** The adversary watching sees "incorrect PIN" shake N times. Identical to N wrong guesses.
-**Known gap:** the consecutive-duress mechanism only fires via step 2 of `verify()` (duress verifier, no routing alias). With modern configs every duress PIN has a routing alias at `sealedNormalVerifiers[N]`, so step 1 always matches first and calls `resetCounters()`. The consecutive count never accumulates. Deferred.
-
-### 15.6 Adversary observes Settings PIN toggle state
+### 14.5 Adversary observes Settings PIN toggle state
 **At depth 0 (SM active, gate up):** Toggle ON + disabled. Only "Deactivate Protection" distinguishes this from `.pinOnly` with toggle disabled for another reason.
 **At depth N (adversary duress, gate up):** Toggle ON + disabled. "Learn more" visible. "Deactivate Protection" hidden. Identical to `.pinOnly` appearance for a user who has enabled SM elsewhere.
 **At depth 0 (gate down):** Toggle OFF + enabled. "Deactivate Protection" hidden (requires `appLockEnabled`). "Learn more" visible. Identical to `.pinOnly` gate-down.
 
-### 15.7 Adversary checks app switcher / screenshots
+### 14.6 Adversary checks app switcher / screenshots
 **Result:** `handleInactive()` fires on `.inactive` → `isContentHidden = true` → opaque overlay applied synchronously. App-switcher thumbnail is blank regardless of current depth or lock state. (Bug 33 / U5 fix)
 
-### 15.8 Adversary uses Share extension to enumerate contacts
+### 14.7 Adversary uses Share extension to enumerate contacts
 **Result:** Share index always filtered to `safeContactIDs(atDepth: 1)` when locked, or current-depth safe contacts when unlocked in duress. Sensitive contacts never appear in the extension's contact list. (Bug 6 fix)
 
 ---
 
-## 16. Edge Cases
+## 15. Edge Cases
 
-### 16.1 `maintainNoOpBlob` encounters real blob
+### 15.1 `maintainNoOpBlob` encounters real blob
 **Pre-state:** SM active, `maintainNoOpBlob()` called on launch
 **Result:** `init()` checks `AppLayerConfig` for duress verifier presence before calling `maintainNoOpBlob`. If SM active: skipped entirely. Real blob preserved. (Bug 11 fix)
 
-### 16.2 Multiple `.occbak` files in App Group
+### 15.2 Multiple `.occbak` files in App Group
 **Result:** `findBlob` sorts by `contentModificationDateKey` descending and returns the most recently written file. Stale files from interrupted writes are ignored. (Bug 9 fix)
 
-### 16.3 Sensitive contact with profile photo — activation blob
+### 15.3 Sensitive contact with profile photo — activation blob
 **Result:** `convertToMutableCopy` strips `imageData` and `thumbnailImageData` before building `LayerContact`. Images remain in DB (re-encrypted in Step 8). Blob stays within 32 KB slot limit. (Bug 44 fix)
 
-### 16.4 Deactivation — `save(contact:using:)` UPDATE path with nil images
+### 15.4 Deactivation — `save(contact:using:)` UPDATE path with nil images
 **Pre-state:** Blob draft has nil images (post Bug 44 fix)
 **Result:** UPDATE path in `save(contact:using:)` uses `if let encryptedImageData { ... }` guard. Nil draft images do not overwrite the existing re-encrypted image data in the DB. (Bug 44 fix)
 
-### 16.5 `visibleThroughDepth` watermark after deactivation
+### 15.5 `visibleThroughDepth` watermark after deactivation
 **Result:** Deactivation clears `visibleThroughDepth = nil` on all safe contacts and all vault entries. No activation-era encrypted blob remains in these fields. Raw SQLite dump post-deactivation is indistinguishable from a pre-activation state. (Bug 12 fix)
 
-### 16.6 Sensitive contacts lose sensitivity after deactivation cycle
+### 15.6 Sensitive contacts lose sensitivity after deactivation cycle
 **Pre-state:** Activate → deactivate cycle
 **Result:** `ContactBlobRecord.visibleThroughDepth` carries the original depth value through the blob. Deactivation restores `record.visibleThroughDepth ?? 0` — contacts classified as sensitive retain their classification after deactivation. (Bug 23 fix)
 
-### 16.7 Quantum key material after deactivation cycle
+### 15.7 Quantum key material after deactivation cycle
 **Result:** `convertToMutableCopy` carries `quantumKeyMaterialEncrypted` through to the draft. Restored contacts have quantum material intact. (Bug 30 fix)
 
-### 16.8 Classical-only bundle sent to receiver with sender's quantum material
+### 15.8 Classical-only bundle sent to receiver with sender's quantum material
 **Pre-state:** Sender's contact lacks quantum material (prior Bug 30 cycle); receiver has sender's quantum material stored
 **Result:** Bundle sent with `forwardSecretNoPQ` or `longTermNoPQ` mode. Receiver decrypts using classical path (mode-matched). No CryptoKitError 3. (Bug 31 fix)
 
-### 16.9 `AppLayerConfig` always present
+### 15.9 `AppLayerConfig` always present
 **Pre-state:** Fresh install
 **Result:** `init()` creates `AppLayerConfig` if absent. All `sealedNormalVerifiers` and `sealedDuressVerifiers` padded to `maxVerifierCount` with random filler of identical byte size. `persistedDepth` and `pinEnabled` both written immediately — always non-nil regardless of whether a PIN is ever configured.
 
-### 16.10 File protection re-applied after WAL merge
+### 15.10 File protection re-applied after WAL merge
 **Result:** `OccultaApp` listens to `NSManagedObjectContextDidSaveObjectIDsNotification`. On each save, `reapplyFileProtection()` stamps `.completeFileProtection` on the main `.sqlite`, `-wal`, and `-shm` files. Sidecar files recreated by SwiftData always receive `complete` protection before the next read. (S3/S4 fix)
