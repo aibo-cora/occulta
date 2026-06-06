@@ -253,8 +253,8 @@ extension Manager {
 
         /// App went .inactive (share sheet, Spotlight). Cover content for screenshot protection;
         /// do not present the PIN gate (conflicts with UIActivityViewController).
-        func handleInactive(vaultUnlocked: Bool) {
-            guard self.requiresPIN, self.pinEnabled, vaultUnlocked else { return }
+        func handleInactive() {
+            guard self.requiresPIN, self.pinEnabled else { return }
             self.isContentHidden = true
         }
 

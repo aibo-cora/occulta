@@ -332,9 +332,8 @@ struct OccultaApp: App {
                 .onChange(of: self.scenePhase) { _, newPhase in
                     switch newPhase {
                     case .inactive:
-                        self.security.handleInactive(vaultUnlocked: self.vaultManager.isUnlocked)
-                        if self.security.requiresPIN, self.security.pinEnabled,
-                           self.vaultManager.isUnlocked {
+                        self.security.handleInactive()
+                        if self.security.requiresPIN, self.security.pinEnabled {
                             self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
                             self.contactManager.syncShareIndex()
                         }

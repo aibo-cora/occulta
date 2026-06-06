@@ -145,8 +145,11 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 | U2 | Grace period uniform across all depths (no tell from asymmetric behaviour) | High | ✅ Bug 41 fixed |
 | U3 | `lastUnlockDate = nil` on activation | High | ✅ Bug 5 fixed |
 | U4 | `fullScreenCover` for PIN lock — not underlappable by sheets | High | ✅ Bug 1 fixed |
-| U5 | Screenshot blank on `.inactive` via SwiftUI overlay | Low | ✅ |
-| U6 | Share index filtered to depth-1 on lock | Critical | ✅ Bug 6 fixed |
+| U5a | SwiftUI opacity overlay on `.inactive` / `.background` — hides content for PIN gate UX | High | ✅ Bug 54B fixed |
+| U5b | Vault `lockGate` — replaces vault list with lock screen when `vault.isUnlocked = false` | High | ✅ (wins race via UIKit notification, SwiftUI render may lag) |
+| U5c | `.privacySensitive(true)` on vault entry detail and new-entry sheet | Low | ✅ (widget/Focus Mode redaction only — no effect on OS snapshots) |
+| U5d | OS app-switcher snapshot — SpringBoard captures before any app callback fires; requires proactive content hiding | Critical | ⚠️ Open — callback-based approach is architecturally insufficient |
+| U6 | Share index filtered to depth-1 on lock | Critical | ✅ Bug 6 / Bug 54A fixed |
 
 ### U1 — PIN toggle always interactive
 In `.normal` and `.duress` states (Secure Mode active), disabling the Settings PIN toggle calls `disablePIN(at:confirmingPIN:)` — it lowers the gate without removing verifiers. When Secure Mode is not active (`isSecureModeActive == false`), the toggle calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
@@ -160,11 +163,86 @@ In `.normal` and `.duress` states (Secure Mode active), disabling the Settings P
 ### U4 — `fullScreenCover` for PIN lock
 The PIN gate uses `.fullScreenCover` rather than `.overlay`. SwiftUI overlays are layout primitives — iOS modal presentations (`.sheet`, `.fullScreenCover`) are UIKit-level operations that stack above any overlay unconditionally. A `.sheet` triggered by a notification tap or in-app action while locked was previously visible above the overlay PIN lock.
 
-### U5 — Screenshot blank on `.inactive`
-A `Color(.systemBackground)` overlay is shown when `scenePhase == .inactive` and a PIN is configured. This blocks the app-switcher screenshot without a UIKit modal presentation, which would conflict with a concurrently presented `UIActivityViewController`. The blank is cleared immediately on `.active`.
+### U5a — SwiftUI opacity overlay (`isContentHidden`)
+
+**Scope:** entire app root. **Layer:** SwiftUI (async render).
+
+`Color(.systemBackground)` at opacity 1 when `security.isContentHidden = true`, opacity 0 otherwise. Applied as a SwiftUI `.overlay` on the root `TabView` — it does not conflict with `UIActivityViewController` or other UIKit modal presentations, which stack above SwiftUI's layer.
+
+`isContentHidden` is set to `true` in:
+- `handleInactive()` — when PIN is configured and the app becomes inactive (share sheet, home button, incoming call). Fixed in Bug 54B to remove the `vaultUnlocked` guard that was always false.
+- `handleBackground()` — when the app fully backgrounds.
+- `handleActive()` — when outside the grace period on foreground return (locked state).
+
+`isContentHidden` is cleared to `false` in:
+- `handleActive()` — when within the grace period (auto-unlock).
+- `unlockNormal()` / `unlockDuress()` — after successful PIN entry.
+
+**Role:** covers the app content during the PIN gate presentation gap — the window between `needsPINEntry = true` and the `fullScreenCover` PIN entry screen finishing its animation in. Also provides defense-in-depth for background transitions.
+
+**Limitation:** SwiftUI state changes schedule a re-render and do not paint pixels synchronously. The OS may take the app-switcher snapshot before the overlay renders. This is the remaining gap addressed by U5d.
+
+---
+
+### U5b — Vault `lockGate`
+
+**Scope:** vault tab only. **Layer:** SwiftUI conditional (replaces list content).
+
+When `vault.isUnlocked = false`, the vault tab renders a "🔒 Unlock Vault" screen instead of the entry list. The vault locks synchronously via `UIApplication.willResignActiveNotification` — the same notification that fires before `onChange(.inactive)`. This means the lockGate transition is driven by the same UIKit notification that the vault uses to call `lock()`, so the vault's view update is queued at the same time as the UIKit notification processing.
+
+**Why it partially wins the race:** `vault.lock()` runs synchronously in the notification sink, immediately clearing `authContext`. SwiftUI observes the `isUnlocked = false` change and schedules a re-render. This render is still async — on a loaded device it may not complete before the OS snapshot. The lockGate does not unconditionally win the race.
+
+**Role:** ensures that a user who returns to the vault tab after the grace period sees the lock screen, not a stale list. Provides a second layer of content protection on the vault tab specifically.
+
+**Does not replace U5a or U5d:** operates only on the vault tab, not the contacts list, chat screen, or any other sensitive view.
+
+---
+
+### U5c — `.privacySensitive(true)` on vault views
+
+**Scope:** `VaultEntryDetail` (full view), `VaultNewEntrySheet` (seed phrase / note text editor). **Layer:** SwiftUI redaction system.
+
+Marks content as privacy-sensitive for SwiftUI's `\.redactionReasons` environment. Causes automatic redaction in widget contexts and Lock Screen scenarios where the system sets `privacyReasons` in the environment.
+
+**Does not affect OS snapshots.** `.privacySensitive` operates at SwiftUI's layout level; the OS snapshot is a CALayer-level capture of the rendered pixel buffer. The two systems are orthogonal. A `privacySensitive` view is not redacted in the app-switcher KTX file.
+
+**Role:** prevents vault content appearing in Spring Board widgets, Focus Mode summaries, and other system surfaces that may render app content out of context. Correct and worth keeping; not a snapshot defence.
+
+---
+
+### U5d — UIKit privacy window (open — Bug 54 remaining gap)
+
+**Scope:** entire app. **Layer:** UIKit `UIWindow` at `windowLevel > .alert` (synchronous).
+
+A second `UIWindow` created at app init with a neutral view (app logo or blank `systemBackground`). Shown by setting `isHidden = false` synchronously in `UIApplication.willResignActiveNotification`. Torn down by setting `isHidden = true` in `UIApplication.didBecomeActiveNotification`.
+
+**Why this closes the race unconditionally:** `UIWindow.isHidden = false` is a UIKit operation that modifies the `CALayer` tree synchronously before the function returns. The OS takes the app-switcher snapshot during the `willResignActive` → background transition; by the time that snapshot is captured, the UIKit window is already in the layer hierarchy and is what gets photographed.
+
+**Ordering with PIN `fullScreenCover`:** `didBecomeActiveNotification` fires before SwiftUI's `onChange(of: scenePhase)` for `.active`. The UIKit window is torn down (notification sink) before `handleActive()` sets `needsPINEntry = true` and the `fullScreenCover` begins presenting. No overlap.
+
+**Relationship to U5a:** the SwiftUI overlay (U5a) remains after this is implemented. The two serve different purposes:
+- UIKit window: wins the OS snapshot race (synchronous, inactive → background)
+- SwiftUI overlay: covers the PIN gate presentation gap (async, active while PIN entry animates in)
+
+**Condition:** only shown when `security.requiresPIN && security.pinEnabled`, matching the `handleInactive` guard. No-op for users without a PIN configured.
+
+**Why callback-based approaches fail:**
+
+The app-switcher snapshot is captured by SpringBoard — a separate process — at the moment the user initiates the gesture, before it sends any IPC notifications into the app process. Every app-level hook (`willResignActiveNotification`, `sceneWillResignActive`, `applicationWillResignActive`) arrives after the capture. A UIKit window installed in any of these handlers is synchronous within the app process but the render server has already shipped the pixel buffer to SpringBoard by then. Testing confirmed 1-2 second visible delay regardless of hook used.
+
+**What would work:**
+
+The cover must be in place before the gesture, not in response to it. This requires a proactive model: sensitive content is hidden by default and revealed only during active user interaction, with a short inactivity timeout reinstating the cover. The app switcher then captures the covered idle state unconditionally. This is a UX architecture decision, not a UIKit fix.
+
+---
 
 ### U6 — Share index filtered to depth-1 on lock
-The share extension reads `ShareIndex.sqlite` directly — it has no PIN prompt. When the main app goes `.inactive` with a PIN active, the index is immediately rebuilt with `safeContactIDs(atDepth: 1)` before the app suspends. Sensitive contacts are removed from the index before the extension could query it. When the app returns to the foreground while still locked, the index stays at depth-1 until a successful PIN entry.
+
+The share extension reads `ShareIndex.sqlite` from the app group directly — it has no PIN prompt and no access to the main app's security state. When the main app goes `.inactive` with a PIN configured (`requiresPIN && pinEnabled`), the index is immediately rebuilt with `safeContactIDs(atDepth: 1)` — contacts visible at the real layer but hidden at the first duress depth are excluded. Sensitive contacts are removed before the extension can query the index.
+
+`syncShareIndex()` uses the contact DB key (`createHybridLocalEncryptionKey()`), not the vault key — it does not require `vault.isUnlocked`. Bug 54A removed the erroneous `vaultManager.isUnlocked` guard that caused the sync to be skipped on every inactive transition (vault always locks via `willResignActiveNotification` before `onChange(.inactive)` fires).
+
+When the app returns to the foreground while still locked (`needsPINEntry = true`) or in restricted mode (`isRestricted = true`), the index stays at depth-1. On successful PIN entry (`unlockNormal`), the index is rebuilt with `shareIndexAllowedIDs = nil` (full contact list at depth 0).
 
 ---
 

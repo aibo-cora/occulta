@@ -1360,3 +1360,123 @@ At depth N (adversary, `coercerBaseDepth = 0`): `N ≠ 0` and `N ≠ 0` — bloc
 
 `coercerBaseDepth` is the same field introduced for Bug 47. No additional model changes required.
 
+---
+
+## Bug 54 — `vaultManager.isUnlocked` always false in `.inactive` handler; share index unfiltered and screenshot overlay inactive
+
+**Status:** Partially closed (Incidents A and B fixed; OS snapshot race open)
+
+### Severity: High (security / forensic)
+
+Two separate guards in `OccultaApp.swift` checked `self.vaultManager.isUnlocked` at the point where `onChange(of: scenePhase)` fires for `.inactive`. Both guards were structurally impossible to pass: `UIApplication.willResignActiveNotification` fires before SwiftUI's scene phase change, and `VaultManager` calls `lock()` synchronously in its subscription to that notification — clearing `authContext` and making `isUnlocked = false`. By the time the `.inactive` handler runs, the vault is already locked regardless of whether it was unlocked a moment earlier.
+
+---
+
+#### Incident A — Share extension shows all contacts when PIN is configured
+
+**Severity:** High (security)
+
+When PIN is configured and the app goes inactive (share sheet opens, home button pressed), the share index should be re-filtered to only the contacts visible at depth 1 — hiding any contacts the user has classified as sensitive. Instead, the share extension received the full contact list.
+
+**Root Cause**
+
+`OccultaApp.swift`, `.inactive` case:
+
+```swift
+if self.security.requiresPIN, self.security.pinEnabled,
+   self.vaultManager.isUnlocked {         // always false here
+    self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
+    self.contactManager.syncShareIndex()
+}
+```
+
+`vaultManager.isUnlocked` is always `false` by the time this executes (vault locked via `willResignActiveNotification` before `onChange` fires). The entire block is skipped. The share index retains whatever was written during the last `.active` sync — which used `shareIndexAllowedIDs = nil` (all contacts) whenever the user was authenticated within the grace period and not in restricted mode.
+
+`syncShareIndex()` does not require vault access. It decrypts contact names via `String.decrypt()` / `Manager.Crypto.decrypt()`, which uses the contact DB key (`createHybridLocalEncryptionKey()`), entirely separate from the vault key. The `vaultManager.isUnlocked` guard was not necessary.
+
+**Resolution**
+
+Removed `self.vaultManager.isUnlocked` from the condition:
+
+```swift
+// Before
+if self.security.requiresPIN, self.security.pinEnabled,
+   self.vaultManager.isUnlocked {
+
+// After
+if self.security.requiresPIN, self.security.pinEnabled {
+```
+
+---
+
+#### Incident B — Screenshot-protection overlay not shown when app becomes inactive
+
+**Severity:** High (forensic — relates to Bugs 33/36)
+
+When the app goes inactive (share sheet opens, home button pressed, incoming call, Control Center), the opaque `Color(.systemBackground)` overlay is supposed to cover the app content immediately so the OS app-switcher snapshot captures a blank screen instead of contact names or vault labels. The overlay was not activating.
+
+**Root Cause**
+
+`handleInactive` in `Manager+Security.swift`:
+
+```swift
+func handleInactive(vaultUnlocked: Bool) {
+    guard self.requiresPIN, self.pinEnabled, vaultUnlocked else { return }  // vaultUnlocked always false
+    self.isContentHidden = true
+}
+```
+
+Same structural problem as Incident A: `vaultUnlocked` is always `false` by the time `handleInactive` is called from the `.inactive` handler. `isContentHidden` is never set to `true` here. The overlay stays transparent during the inactive transition.
+
+`handleBackground` — the analogous function that fires on full background — correctly has no vault guard:
+
+```swift
+func handleBackground() {
+    guard self.requiresPIN, self.pinEnabled else { return }
+    self.isContentHidden = true
+    self.needsPINEntry = !self.isWithinGracePeriod
+}
+```
+
+The vault guard in `handleInactive` was an inconsistency: the overlay's job is to protect content from OS snapshots, which is independent of vault state.
+
+**Resolution**
+
+Removed `vaultUnlocked` parameter from `handleInactive` entirely, matching the `handleBackground` pattern:
+
+```swift
+// Before
+func handleInactive(vaultUnlocked: Bool) {
+    guard self.requiresPIN, self.pinEnabled, vaultUnlocked else { return }
+    self.isContentHidden = true
+}
+
+// After
+func handleInactive() {
+    guard self.requiresPIN, self.pinEnabled else { return }
+    self.isContentHidden = true
+}
+```
+
+Call site updated to match:
+
+```swift
+// Before
+self.security.handleInactive(vaultUnlocked: self.vaultManager.isUnlocked)
+
+// After
+self.security.handleInactive()
+```
+
+---
+
+### Remaining gap — OS snapshot race (open)
+
+Even with Incident B fixed, `isContentHidden = true` schedules a SwiftUI re-render — it does not paint pixels synchronously. The OS may take the app-switcher snapshot before the render completes.
+
+A persistent KTX snapshot file containing real contact names or vault labels would survive a duress PIN session and be recoverable by forensic tools from `Library/SplashBoard/Snapshots/`. This directly undermines the duress model's plausible-deniability guarantee.
+
+**Why no callback-based fix works:** the app-switcher snapshot is captured by SpringBoard at the moment the user initiates the gesture — before any IPC notification reaches the app process. Every hook (`willResignActiveNotification`, `sceneWillResignActive`, `applicationWillResignActive`) arrives after the capture. Testing with a UIKit window installed synchronously in each of these confirmed a 1-2 second visible delay regardless of which hook was used. The capture has already happened.
+
+**What would work:** the cover must be in place before the gesture, not in response to it. Sensitive content should be hidden by default and revealed only during active user interaction, with a short inactivity timeout reinstating the cover — so the idle/covered state is what SpringBoard always captures. This is a UX architecture decision, not a UIKit fix.
+
