@@ -1238,6 +1238,58 @@ Each `pinEnabledPerDepth` entry is JSON-encoded as `UInt8(1)` (enabled) or `UInt
 
 ---
 
+## Bug 52 — Bundle message not shown after cold-start unlock following a duress session
+
+**Status:** Open
+
+### Severity: High (usability)
+
+After a session where a bundle was received and rejected via duress PIN, killing the app and tapping the same bundle again produces the wrong outcome: the app launches, the user enters the correct normal PIN, the PIN cover dismisses — but the message is never shown and no error appears. Tapping the bundle a second time from the backgrounded app (after a grace-period expiry, so PIN is required again) works correctly.
+
+### Reproduction
+
+1. Receive a bundle from a normal contact.
+2. Enter duress PIN — error "not addressed to you" appears (correct).
+3. Kill the app.
+4. Tap the bundle again in iMessage → app cold-starts.
+5. Enter normal PIN → app opens, message absent, no error.
+6. Minimize app, wait for grace period to expire, tap bundle again → enter normal PIN → message shows correctly.
+
+### Observed behaviour
+
+- Step 5: `pendingFileData` appears to never be drained, or `processInboundFile` is called but produces no visible result.
+- Step 6: the background → foreground path (non-cold-start) works correctly for the identical bundle data.
+
+### Root Cause (hypothetical — needs instrumentation to confirm)
+
+Two candidate explanations are consistent with the observed difference between cold-start and background-resume paths:
+
+**Candidate A — `processInboundFile` called before `fullScreenCover` is presented (UIKit conflict)**
+
+On cold start the scene phase callbacks (`handleBackground`, `handleActive`) fire in rapid succession before UIKit has presented the `fullScreenCover`. If `onOpenURL`'s Task reads `security.needsPINEntry` at a moment when it is transiently `false` — either before `handleActive()` has set it back to `true`, or because `requiresPIN` fetches from a not-yet-warmed SwiftData context and returns `false` — then `processInboundFile(data)` is called directly instead of queuing `pendingFileData`.
+
+Inside `processInboundFile`, `buildOwnedBasket` succeeds and sets `openedFileContents` (triggering the `.sheet`). But UIKit cannot present the sheet while the `fullScreenCover` is simultaneously being presented (SwiftUI forces the cover to present because `needsPINEntry` has since been corrected to `true` by `handleActive()`). The conflicting presentation is silently dropped by UIKit, `openedFileContents` may be reset to `nil`, and no error surfaces. When the PIN cover then dismisses, `onDismiss` finds `pendingFileData = nil` — nothing to drain.
+
+On the background-resume path this race does not exist because `handleBackground()` sets `needsPINEntry = true` before the app becomes active, giving the cover time to be presented before `onOpenURL` fires.
+
+**Candidate B — `onDismiss` not invoked on the first cold-start `fullScreenCover`**
+
+iOS may not call `onDismiss` when a `fullScreenCover` whose `isPresented` binding was `true` from the very first render is programmatically dismissed before UIKit has completed its initial presentation animation. In this case `pendingFileData` is set correctly but the drain never fires.
+
+### Key code sites
+
+- `OccultaApp.swift:197` — `onOpenURL` handler and `needsPINEntry` gate
+- `OccultaApp.swift:383` — `fullScreenCover(isPresented:onDismiss:)` and drain logic  
+- `OccultaApp.swift:332` — `onChange(of: scenePhase)` calling `handleActive()`
+- `Manager+Security.swift:268` — `handleActive()` / `handleBackground()` transitions
+- `Manager+Security.swift:34` — `requiresPIN` computed property (fresh DB fetch each call)
+
+### Debugging approach
+
+Add `print` statements (or `os_signpost` intervals) at: (1) entry to `onOpenURL` Task with `needsPINEntry` value at the async resume point; (2) entry to `handleActive()` with before/after `needsPINEntry`; (3) entry to `processInboundFile`; (4) `onDismiss` closure. Reproduce on device with console attached to confirm which candidate fires.
+
+---
+
 ## Bug 48 — ContactClassification save silently no-ops at coercer's re-enabled depth — tell during activation
 
 **Status:** Closed (Fixed)

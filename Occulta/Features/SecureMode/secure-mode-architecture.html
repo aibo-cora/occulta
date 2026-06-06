@@ -375,12 +375,10 @@ const DATA = {
     props: [
       { name: 'state: State',                  desc: '.noPIN / .pinOnly / .active / .duress. Derived from AppLayerConfig on init — never a stored plaintext flag. All UI branching in Settings and elsewhere reads this.' },
       { name: 'currentDepth: Int',             desc: 'In-memory only. 0 = real layer, 1+ = duress depth. Reset to 0 on app kill. Determines which contacts and vault entries the filter passes. Restored on launch from persistedDepth when gate is down.' },
-      { name: 'appLockEnabled: Bool',          desc: 'Whether OccultaApp shows the PIN gate overlay. False when PIN was disabled via disablePINFromCurrentDepth(). Persisted inside persistedDepth in AppLayerConfig — survives app kill without a separate field.' },
-      { name: 'requiresPIN: Bool',             desc: 'Computed: state != .noPIN. True whenever any verifier exists. Distinct from appLockEnabled — verifiers can exist while the gate is intentionally down (coerced disable-PIN scenario).' },
+      { name: 'pinEnabled: Bool',              desc: 'Whether the PIN gate overlay is shown at the current depth. False when the gate was lowered via disablePIN(at:confirmingPIN:). Persisted per-depth in AppLayerConfig.pinEnabledPerDepth — survives app kill.' },
+      { name: 'requiresPIN: Bool',             desc: 'Computed: sealedNormalVerifier != nil. True whenever any verifier exists. Distinct from pinEnabled — verifiers can exist while the gate is intentionally down (coerced disable-PIN scenario).' },
       { name: 'isRestricted: Bool',            desc: 'Computed: currentDepth > 0. Guards all write paths that must not execute from a duress layer: contact reclassification, share index rebuild with full contact list.' },
       { name: 'lastUnlockDate: Date?',         desc: 'In-memory. Records last successful PINEntry verification. OccultaApp suppresses the PIN prompt within a 5-min grace period. Always nil in restricted mode — every return from background requires PIN.' },
-      { name: 'wrongPINCount: Int',            desc: 'In-memory consecutive wrong lock-screen PINs. Resets on any correct PIN or app kill. SE hardware rate-limits brute force regardless of whether this counter persists.' },
-      { name: 'consecutiveDuressCount: Int',   desc: 'In-memory consecutive duress-PIN entries. Resets on normal PIN. At wipeThreshold → .wipe. Also the panic trigger: entering duress PIN 3× in a row wipes while showing "wrong PIN" to a coercer.' },
     ],
     deps: ['AppLayerConfig', 'PINManager', 'KeyManagerProtocol', 'Contact.Profile', 'VaultEntry'],
   },
@@ -426,10 +424,10 @@ const DATA = {
   'Settings.SecuritySettings': {
     layer: 'ui',
     pos: { x: 1155, y: 300 },
-    desc: 'Private nested struct inside Settings. 4-state security panel. All branching is driven by Manager.Security.state and appLockEnabled — zero local security state. One of three sheet triggers.',
+    desc: 'Private nested struct inside Settings. 4-state security panel. All branching is driven by Manager.Security.state and pinEnabled — zero local security state. One of three sheet triggers.',
     props: [
-      { name: 'pinEnabledBinding: Binding<Bool>',  desc: 'get: security.appLockEnabled (not requiresPIN). Reflects the true user-visible toggle state — OFF when the gate is down even though verifiers still exist. set: always opens the PIN sheet.' },
-      { name: 'showingPINSheet: Bool',             desc: 'Presents a context-sensitive PINEntry sheet. Branch: !appLockEnabled → .setup for re-enable. state==.pinOnly → .verifyNormal + deactivatePIN. state==.active/.duress → .setup + disablePINFromCurrentDepth.' },
+      { name: 'pinEnabledBinding: Binding<Bool>',  desc: 'get: security.pinEnabled (not requiresPIN). Reflects the true user-visible toggle state — OFF when the gate is down even though verifiers still exist. set: always opens the PIN sheet.' },
+      { name: 'showingPINSheet: Bool',             desc: 'Presents a context-sensitive PINEntry sheet. Branch: !pinEnabled → .setup for re-enable. state==.pinOnly → .verifyNormal + deactivatePIN. state==.active/.duress → .setup + disablePIN(at:confirmingPIN:).' },
       { name: 'showingSetupFlow: Bool',            desc: 'Presents SecureModeSetupFlow. Shown when state ∈ {.pinOnly, .duress} — both states can go deeper. Dimmed (disabled) in .noPIN since a PIN must exist before Secure Mode can be activated.' },
       { name: 'showingDeactivateSheet: Bool',      desc: 'Presents PINEntry(.verifyNormal) → deactivateSecureMode(). Visible only in .active state. Hidden in .duress — showing "Deactivate Protection" in the duress view directly reveals Secure Mode is on.' },
     ],
@@ -442,9 +440,7 @@ const DATA = {
     desc: '@main app entry. Owns Manager.Security and drives the PIN gate overlay. Applies .completeFileProtection on every SwiftData save notification. Filters the share index at every scene activation.',
     props: [
       { name: 'security: Manager.Security',  desc: 'Owned here as @State and injected into the entire view hierarchy via .environment(). Single owner — never duplicated in child views.' },
-      { name: 'isLocked: Bool',              desc: 'Drives the PINEntry overlay. Set true on .inactive (screenshot block) and .active (return from background). Init: security.requiresPIN && security.appLockEnabled — skips gate when gate is intentionally down.' },
       { name: 'storeURL: URL',               desc: 'Retained from ModelConfiguration at init. Used by reapplyFileProtection() to re-stamp .completeFileProtection on store + -wal + -shm after every NSManagedObjectContextDidSaveNotification.' },
-      { name: 'isWithinGracePeriod: Bool',   desc: 'Computed from security.lastUnlockDate. Suppresses PIN prompt within 5 min of last unlock. Always false when isRestricted — duress mode requires PIN on every return from background.' },
       { name: 'security.maintainLayerStore()', desc: 'Called in init() after applySecureDeletePragma, gated on FeatureFlags.isEnabled(.secureMode). Runs before any manager is constructed so the SE key creation and layer store file timestamp both predate Secure Mode configuration.' },
     ],
     deps: ['Manager.Security', 'PINEntry', 'Manager.LayerStore'],
