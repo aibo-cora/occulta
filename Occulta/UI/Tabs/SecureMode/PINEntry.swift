@@ -148,12 +148,14 @@ struct PINEntry: View {
 
     private func append(_ digit: Int) {
         guard !self.isVerifying, !self.isLockedOut, self.digits.count < self.pinLength else { return }
+        self.hapticSelection()
         self.digits.append(UInt8(digit))
         if self.digits.count == self.pinLength { self.submit() }
     }
 
     private func deleteLast() {
         guard !self.digits.isEmpty else { return }
+        self.hapticSelection()
         self.digits[self.digits.count - 1] = 0
         self.digits.removeLast()
     }
@@ -190,6 +192,7 @@ struct PINEntry: View {
     private func submitSetup(pin: String) {
         if let first = self.firstPIN {
             if pin == first {
+                self.hapticResult(.success)
                 self.onNormal(pin)
             } else {
                 self.firstPIN    = nil
@@ -229,6 +232,7 @@ struct PINEntry: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             if matched {
+                self.hapticResult(.success)
                 self.onNormal(pin)
             } else {
                 self.clearDigits()
@@ -251,6 +255,7 @@ struct PINEntry: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             if matched {
+                self.hapticResult(.success)
                 self.confirmedPIN = pin
                 self.clearDigits()
                 self.isVerifying  = false
@@ -269,6 +274,7 @@ struct PINEntry: View {
 
         if let first = self.firstPIN {
             if pin == first {
+                self.hapticResult(.success)
                 onComplete(normalPIN, pin)
             } else {
                 self.firstPIN    = nil
@@ -287,16 +293,21 @@ struct PINEntry: View {
 
     private func route(_ result: PINVerifyResult, pin: String) {
         switch result {
-        case .normal(depth: _): self.onNormal(pin)   // depth carried by applyVerifyState; not needed here
-        case .duress: self.onDuress()
+        case .normal(depth: _):
+            self.hapticResult(.success)
+            self.onNormal(pin)   // depth carried by applyVerifyState; not needed here
+        case .duress:
+            self.hapticResult(.success)  // identical to normal — deniability requires same feedback
+            self.onDuress()
         case .wrong:
             self.clearDigits()
             self.isVerifying = false
-            self.shake()
+            self.shake()   // shake() fires .error internally
         case .locked(let until):
+            self.hapticResult(.warning)
             self.clearDigits()
-            self.isVerifying     = false
-            self.lockoutUntil    = until
+            self.isVerifying      = false
+            self.lockoutUntil     = until
             self.lockoutRemaining = Self.countdownText(until: until, from: Date.now)
         }
     }
@@ -314,6 +325,7 @@ struct PINEntry: View {
     // MARK: Shake
 
     private func shake() {
+        self.hapticResult(.error)
         let a       = Animation.easeOut(duration: 0.06)
         let offsets: [CGFloat] = [14, -14, 8, -8, 0]
         for (i, offset) in offsets.enumerated() {
@@ -321,6 +333,16 @@ struct PINEntry: View {
                 withAnimation(a) { self.shakeOffset = offset }
             }
         }
+    }
+
+    // MARK: Haptics
+
+    private func hapticSelection() {
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func hapticResult(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+        UINotificationFeedbackGenerator().notificationOccurred(type)
     }
 }
 
