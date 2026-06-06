@@ -606,7 +606,7 @@ struct SecurityMultiLayerTests {
     }
 }
 
-// MARK: - disablePINFromCurrentDepth / reEnablePIN
+// MARK: - disablePIN(at:confirmingPIN:) / reEnablePIN
 
 @MainActor
 @Suite("Security — Coercion gate (disable/re-enable PIN)", .serialized)
@@ -618,7 +618,7 @@ struct SecurityCoercionGateTests {
         try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
         #expect(throws: Manager.Security.SecurityError.incorrectPIN) {
-            try s.disablePINFromCurrentDepth(confirmingPIN: "000000")
+            try s.disablePIN(at: s.currentDepth, confirmingPIN: "000000")
         }
     }
 
@@ -627,8 +627,8 @@ struct SecurityCoercionGateTests {
         try s.configurePIN("111111")
         try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        try s.disablePINFromCurrentDepth(confirmingPIN: "111111")
-        #expect(!s.appLockEnabled)
+        try s.disablePIN(at: s.currentDepth, confirmingPIN: "111111")
+        #expect(!s.pinEnabled)
         // Verifiers must remain intact — Secure Mode still active.
         #expect(s.isSecureModeActive)
         #expect(s.currentDepth == 0)
@@ -643,8 +643,8 @@ struct SecurityCoercionGateTests {
         #expect(s.currentDepth == 1)
 
         // Confirm with the depth-1 PIN (routing alias = duress PIN).
-        try s.disablePINFromCurrentDepth(confirmingPIN: "999999")
-        #expect(!s.appLockEnabled)
+        try s.disablePIN(at: s.currentDepth, confirmingPIN: "999999")
+        #expect(!s.pinEnabled)
         #expect(s.isSecureModeActive)
         #expect(s.currentDepth == 1)
     }
@@ -654,12 +654,12 @@ struct SecurityCoercionGateTests {
         try s.configurePIN("111111")
         try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        try s.disablePINFromCurrentDepth(confirmingPIN: "111111")
-        #expect(!s.appLockEnabled)
+        try s.disablePIN(at: s.currentDepth, confirmingPIN: "111111")
+        #expect(!s.pinEnabled)
 
         let matched = s.reEnablePIN("111111")
         #expect(matched)
-        #expect(s.appLockEnabled)
+        #expect(s.pinEnabled)
         #expect(s.currentDepth == 0)
         #expect(s.state == .normal)
     }
@@ -669,12 +669,12 @@ struct SecurityCoercionGateTests {
         try s.configurePIN("111111")
         try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        try s.disablePINFromCurrentDepth(confirmingPIN: "111111")
+        try s.disablePIN(at: s.currentDepth, confirmingPIN: "111111")
 
         // Re-enable with duress PIN → routes to depth 1.
         let matched = s.reEnablePIN("999999")
         #expect(matched)
-        #expect(s.appLockEnabled)
+        #expect(s.pinEnabled)
         #expect(s.currentDepth == 1)
     }
 
@@ -683,10 +683,10 @@ struct SecurityCoercionGateTests {
         try s.configurePIN("111111")
         try await s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
-        try s.disablePINFromCurrentDepth(confirmingPIN: "111111")
+        try s.disablePIN(at: s.currentDepth, confirmingPIN: "111111")
 
         #expect(s.reEnablePIN("000000") == false)
-        #expect(!s.appLockEnabled)  // gate stays down
+        #expect(!s.pinEnabled)  // gate stays down
     }
 }
 

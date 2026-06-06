@@ -758,15 +758,11 @@ PINEntry(mode: .setup, onNormal: { pin in
 ```
 
 ### Resolution
-Pending. If `reEnablePIN` returns `false` (no verifier match), create a new duress layer using the coercer's PIN as the verifier and re-seal the current duress-layer contacts into it:
+`reEnablePIN(_:)` in `Manager+Security.swift` has two branches:
 
-1. Read contacts from SwiftData — they are encrypted with the DB key, which is available independent of the duress blob key
-2. Derive a new blob key from the coercer's PIN
-3. Seal a new `BlobPayload` containing those contacts into a new slot
-4. Write a new `sealedDuressVerifier` for the coercer's PIN
-5. `setState(.duress)` → gate up, toggle ON
+**Depth > 0 — coercion-acceptance path (the primary fix):** When the entered PIN matches no existing verifier, the coercion-acceptance path fires. It writes `sealedDuressVerifiers[currentDepth]` and `sealedNormalVerifiers[currentDepth + 1]` for the coercer's PIN, records `coercerBaseDepth = currentDepth + 1` in `AppLayerConfig`, saves, and transitions to depth N+1 `.normal` state. The toggle flips ON and the gate re-enables — the coercer's experience is indistinguishable from a real PIN re-enable.
 
-The old duress blob slot and verifier can be discarded. No old key needed — contacts are readable directly from SwiftData, so re-encryption does not require going through the existing encrypted blob.
+**Depth 0 — accepted tell:** At depth 0, `reEnablePIN` still fails silently if no verifier matches (the toggle does not flip on). This is accepted as a lower-priority concern: the depth-0 gate-lowering scenario is a different threat model, and fixing it would require the same blob re-sealing machinery without the coercion-acceptance framing that makes depth > 0 viable. Documented as a known limitation.
 
 ---
 
@@ -1132,16 +1128,22 @@ isSecureModeActive && state == .normal && currentDepth == 0 && appLockEnabled
 
 ### Resolution
 
-Pending. Requires a persisted `coercerBaseDepth` concept on `AppLayerConfig` so that "Deactivate Protection" shows when `currentDepth == coercerBaseDepth` rather than `currentDepth == 0`. When `reEnablePIN` accepts a non-matching PIN at depth N (Bug 37 fix), it writes `coercerBaseDepth = N+1`. On cold start this is restored alongside `persistedDepth` and `pinEnabled`. The condition becomes:
+`coercerBaseDepth: Data?` field added to `AppLayerConfig` — an encrypted `Int` with `readCoercerBaseDepth()` / `writeCoercerBaseDepth(_:)` accessors. Written unconditionally at row creation (value 0) so its presence is always forensically opaque. A computed property `coercerBaseDepth: Int` on `Manager.Security` reads from config.
+
+`reEnablePIN`'s coercion-acceptance path (Bug 37 fix) writes `coercerBaseDepth = currentDepth + 1` when it creates a new layer for the coercer's PIN. This value survives app kills, restored in `Manager.Security.init()`.
+
+"Deactivate Protection" condition in `Settings.swift`:
 
 ```swift
 isSecureModeActive && state == .normal
-    && security.currentDepth == security.coercerBaseDepth && appLockEnabled
+    && (currentDepth == 0 || currentDepth == coercerBaseDepth) && pinEnabled
 ```
 
-At depth 0 (real user): `coercerBaseDepth` defaults to 0, so `currentDepth == 0 == coercerBaseDepth` — unchanged behaviour.
-At depth N+1 (coercer): `coercerBaseDepth = N+1`, `currentDepth = N+1` — button appears after the coercer activates their own layer.
-At depth N (real user's decoy, unmodified): `coercerBaseDepth = 0`, `currentDepth = N ≠ 0` — button hidden. ✓
+The OR rather than a plain `== coercerBaseDepth` is necessary: once `coercerBaseDepth = N+1 > 0`, the real user at depth 0 would otherwise lose the button. The OR collapses to `currentDepth == 0` for installs that have never gone through a coercion re-enable (`coercerBaseDepth == 0`), preserving existing behaviour exactly.
+
+At depth 0 (real user): `0 == 0` — button visible. ✓
+At depth N+1 (coercer, `coercerBaseDepth = N+1`): `N+1 == N+1` — button visible after coercer activates their own layer. ✓
+At depth N (adversary, `coercerBaseDepth = 0`): `N ≠ 0` and `N ≠ 0` — button hidden. ✓
 
 ---
 
@@ -1345,17 +1347,16 @@ Both problems exist at depth N (real adversary depth) but not at depth N+1 (coer
 
 ### Resolution
 
-Pending. Also requires `coercerBaseDepth`. The guards become:
+`ContactClassification.loadSensitiveIDs()` and `save()` guards replaced from `guard !isRestricted else { return }` to:
 
 ```swift
-// loadSensitiveIDs
-guard security.currentDepth == security.coercerBaseDepth else { return }
-
-// save
-guard security.currentDepth == security.coercerBaseDepth else { return }
+guard security.currentDepth == 0
+        || security.currentDepth == security.coercerBaseDepth else { return }
 ```
 
-At depth 0 (real user, `coercerBaseDepth = 0`): `0 == 0` — loads and saves. ✓  
-At depth N+1 (coercer, `coercerBaseDepth = N+1`): `N+1 == N+1` — loads and saves. ✓  
-At depth N (real adversary, `coercerBaseDepth = 0`): `N ≠ 0` — blocked. ✓ (no info leak, no mutation)
+At depth 0 (real user, `coercerBaseDepth = 0`): `0 == 0` — loads and saves. ✓
+At depth N+1 (coercer, `coercerBaseDepth = N+1`): `N+1 == N+1` — loads and saves. ✓
+At depth N (adversary, `coercerBaseDepth = 0`): `N ≠ 0` and `N ≠ 0` — blocked, no info leak, no mutation. ✓
+
+`coercerBaseDepth` is the same field introduced for Bug 47. No additional model changes required.
 

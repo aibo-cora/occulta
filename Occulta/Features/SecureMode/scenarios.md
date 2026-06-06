@@ -13,8 +13,8 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 | `SM` | Secure Mode active (`sealedDuressVerifier != nil`) |
 | `!SM` | Secure Mode not active |
 | `depth:N` | `currentDepth == N` (0 = real layer; N > 0 = duress/coercer layer) |
-| `gate:up` | `appLockEnabled = true` (PIN required on foreground) |
-| `gate:down` | `appLockEnabled = false` (gate deliberately lowered) |
+| `gate:up` | `pinEnabled = true` (PIN required on foreground) |
+| `gate:down` | `pinEnabled = false` (gate deliberately lowered) |
 | `locked` | PIN entry screen is showing (`needsPINEntry = true`) |
 | `grace` | Within 5-minute grace period (`lastUnlockDate` recent) |
 
@@ -37,11 +37,11 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ### 1.3 Cold launch — Secure Mode active, gate up
 **State:** `SM`, `depth:0` (reset on launch), gate:up
-**Result:** PIN gate shows. `state` restored from `persistedDepth`. `appLockEnabled` restored from `pinEnabled`. `currentDepth` always resets to 0 — routing depth is determined by PIN entry, not a persisted counter.
+**Result:** PIN gate shows. `state` restored from `persistedDepth`. `Manager.Security.pinEnabled` restored from `AppLayerConfig.pinEnabledPerDepth`. `currentDepth` always resets to 0 — routing depth is determined by PIN entry, not a persisted counter.
 
 ### 1.4 Cold launch — Secure Mode active, gate previously lowered
 **State:** `SM`, gate:down (persisted)
-**Result:** App opens directly to depth-filtered content. `appLockEnabled = false` restored from `pinEnabled`. Contacts visible at `currentDepth = 0` (full list, since depth restarts at 0 on launch). Gate does not fire.
+**Result:** App opens directly to depth-filtered content. `Manager.Security.pinEnabled = false` restored from `AppLayerConfig.pinEnabledPerDepth`. `currentDepth` restored from `persistedDepth` (non-zero when gate was lowered at depth N). Gate does not fire.
 **Note:** The adversary who had gate-lowered the device at depth N and killed the app will see depth 0 content on relaunch — not depth N — until they re-enter their PIN.
 
 ### 1.5 Cold launch — Secure Mode active, previously in duress (`persistedDepth = .duress`)
@@ -74,7 +74,7 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ### 2.5 Background → foreground — gate previously lowered
 **State:** `SM`, gate:down
-**Result:** `handleBackground()` guard `requiresPIN && appLockEnabled` — `appLockEnabled = false` → returns immediately. No gate, no content hide. `handleActive()` similarly inert. The device opens to the same depth-filtered content. Coercer/adversary can background and foreground freely.
+**Result:** `handleBackground()` guard `requiresPIN && security.pinEnabled` — `pinEnabled = false` → returns immediately. No gate, no content hide. `handleActive()` similarly inert. The device opens to the same depth-filtered content. Coercer/adversary can background and foreground freely.
 
 ---
 
@@ -117,7 +117,7 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 ### 4.1 Toggle ON: from `.noPIN`
 **Pre-state:** `.noPIN`
 **Sheet:** `PINEntry(.setup)` — enter + confirm
-**Result:** `configurePIN(pin)` → `sealedNormalVerifier` + `sealedNormalVerifiers[0]` written. State transitions to `.pinOnly`. `writeRoutingDepth(.normal)` + `writePinEnabled(true)` written for forensic consistency.
+**Result:** `configurePIN(pin)` → `sealedNormalVerifier` + `sealedNormalVerifiers[0]` written. State transitions to `.pinOnly`. `writePersistedDepth(0)` + all `pinEnabledPerDepth` entries seeded to encrypted `1` for forensic consistency.
 
 ### 4.2 Toggle OFF: from `.pinOnly`
 **Pre-state:** `.pinOnly`, gate:up
@@ -126,13 +126,13 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ### 4.3 Toggle OFF: from depth 0 (SM active, gate up)
 **Pre-state:** `SM`, `depth:0`, gate:up
-**UI:** Toggle is disabled (`.disabled(isSecureModeActive && currentDepth == 0 && appLockEnabled)`).
+**UI:** Toggle is disabled (`.disabled(isSecureModeActive && currentDepth == 0 && pinEnabled)`).
 **Result:** No-op. User must deactivate Secure Mode before removing PIN.
 
 ### 4.4 Toggle OFF: from depth N adversary view (SM active, gate up)
 **Pre-state:** `SM`, `depth:N > 0`, gate:up
 **Sheet:** `PINEntry(.verifyCurrentLayer)` — single entry
-**Result:** `disablePINFromCurrentDepth(confirmingPIN:)` — checks `sealedNormalVerifiers[N]` (routing alias). On match: `appLockEnabled = false`, `writeRoutingDepth(.duress)`, `writePinEnabled(false)`. Gate lowered. Verifiers intact. Depth filter still active. Tell-avoidance: coercer at depth N receives phone with gate down and full depth-N decoy view.
+**Result:** `disablePIN(at:confirmingPIN:)` — checks `sealedNormalVerifiers[N]` (routing alias). On match: `pinEnabled = false` persisted via `pinEnabledPerDepth[N]`, `writePersistedDepth(currentDepth)`. Gate lowered. Verifiers intact. Depth filter still active. Tell-avoidance: coercer at depth N receives phone with gate down and full depth-N decoy view.
 
 ### 4.5 Toggle ON: gate lowered at depth 0, correct PIN
 **Pre-state:** `SM`, `depth:0`, gate:down
@@ -200,8 +200,8 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 **Result:** `loadSensitiveIDs()` has `guard !isRestricted` → early return. `sensitiveIDs = []`. All visible contacts appear in Visible section. "None marked sensitive." `save()` also no-ops. Classification is frozen — adversary cannot reclassify, and no sensitive contacts are exposed. (Bug 25 fix)
 
 ### 5.9 ContactClassification during activation — depth N+1 (coercer)
-**Pre-state:** `SM`, `depth:N+1` (after Bug 37 re-enable)
-**Result:** Same `guard !isRestricted` triggers. `save()` no-ops. Coercer's classification does not stick. (Bug 48 — open)
+**Pre-state:** `SM`, `depth:N+1` (after Bug 37 re-enable), `coercerBaseDepth = N+1`
+**Result:** Guard condition `currentDepth == 0 || currentDepth == coercerBaseDepth` evaluates to `true` at depth N+1. `loadSensitiveIDs()` runs normally; coercer can classify contacts. `save()` writes depth stamps. (Bug 48 fix)
 
 ### 5.10 Activation overlay — back button
 **Pre-state:** Activation in progress (`isActivating = true`)
@@ -220,8 +220,8 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 ## 6. Deactivate Secure Mode
 
 ### 6.1 Deactivation from depth 0
-**Pre-state:** `SM`, `depth:0`, gate:up, `appLockEnabled = true`
-**UI:** "Deactivate Protection" button visible (`isSecureModeActive && state == .normal && currentDepth == 0 && appLockEnabled`)
+**Pre-state:** `SM`, `depth:0`, gate:up, `pinEnabled = true`
+**UI:** "Deactivate Protection" button visible (`isSecureModeActive && state == .normal && (currentDepth == 0 || currentDepth == coercerBaseDepth) && pinEnabled`)
 **Flow:** `SecureModeDeactivateFlow` → `PINEntry(.verifyCurrentLayer)` → `deactivateSecureMode(confirmingEntryPIN:)`
 **Result:** Full reverse key rotation. Sensitive contacts restored from blob. `visibleThroughDepth` cleared to `nil` on all contacts and vault entries (Bug 12 fix). `sealedDuressVerifiers` cleared. Blob replaced with fresh no-op. State → `.pinOnly`.
 
@@ -239,9 +239,9 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 **Note:** `deactivateSecureMode` technically supports stripping the outermost layer from depth N, but the UI does not expose this path at any depth above 0. Only depth 0 can deactivate.
 
 ### 6.5 Deactivation from depth N+1 after coercer activation (Bug 47)
-**Pre-state:** `SM`, `depth:N+1`, gate:up, `sealedDuressVerifiers[N+1]` exists
-**UI:** "Deactivate Protection" button hidden (`currentDepth = N+1 ≠ 0`). (Bug 47 — open)
-**Expected (post-fix):** Button shows when `currentDepth == coercerBaseDepth` and `sealedDuressVerifiers[coercerBaseDepth]` exists. Deactivation strips the coercer's layer and returns to state before their activation.
+**Pre-state:** `SM`, `depth:N+1`, gate:up, `sealedDuressVerifiers[N+1]` exists, `coercerBaseDepth = N+1`
+**UI:** "Deactivate Protection" button visible — condition `currentDepth == 0 || currentDepth == coercerBaseDepth` evaluates to `true` at depth N+1. (Bug 47 fix)
+**Flow:** Same `SecureModeDeactivateFlow` as depth 0. Deactivation strips the coercer's layer and returns to the pre-coercer-activation state.
 
 ---
 
@@ -357,7 +357,7 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ### 10.1 Share extension — app locked
 **Pre-state:** `SM`, locked
-**Result:** On `scenePhase == .inactive` with `requiresPIN && appLockEnabled`, share index rebuilt with `safeContactIDs(atDepth: 1)`. Sensitive contacts removed before app suspends. Extension reads depth-1 index. (Bug 6 fix)
+**Result:** On `scenePhase == .inactive` with `requiresPIN && security.pinEnabled`, share index rebuilt with `safeContactIDs(atDepth: 1)`. Sensitive contacts removed before app suspends. Extension reads depth-1 index. (Bug 6 fix)
 
 ### 10.2 Share extension — app unlocked depth 0
 **Pre-state:** `SM`, `depth:0`, unlocked
@@ -465,12 +465,12 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ### 14.3 Gate-lowered device — adversary receives phone unlocked
 **Sequence:**
-1. Real user at depth N enables gate-lowered mode (`disablePINFromCurrentDepth`)
+1. Real user at depth N enables gate-lowered mode (`disablePIN(at:confirmingPIN:)`)
 2. Device handed over — adversary sees depth-N decoy content without PIN prompt
 3. Adversary browses everything visible at depth N
 4. Adversary taps "Enable PIN" toggle → `PINEntry(.setup)` appears
 **Fork A — adversary enters real PIN:** `reEnablePIN` matches normal verifier → gate re-enabled at matched depth → toggle ON.
-**Fork B — adversary enters unknown PIN:** `reEnablePIN` returns false (depth 0) or coercion-acceptance path (depth N > 0, Bug 37 pending fix).
+**Fork B — adversary enters unknown PIN at depth 0:** `reEnablePIN` returns false; toggle stays OFF (accepted tell at depth 0). **At depth N > 0:** coercion-acceptance path fires — new layer created for the adversary's PIN, `coercerBaseDepth = N+1`, gate re-enabled. (Bug 37 fix)
 
 ### 14.4 Gate-lowered device — adversary tests full SM functionality (Bugs 47, 48 — fixed)
 **Sequence (depth N > 0):**
@@ -485,7 +485,7 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 ### 14.5 Adversary observes Settings PIN toggle state
 **At depth 0 (SM active, gate up):** Toggle ON + disabled. Only "Deactivate Protection" distinguishes this from `.pinOnly` with toggle disabled for another reason.
 **At depth N (adversary duress, gate up):** Toggle ON + disabled. "Learn more" visible. "Deactivate Protection" hidden. Identical to `.pinOnly` appearance for a user who has enabled SM elsewhere.
-**At depth 0 (gate down):** Toggle OFF + enabled. "Deactivate Protection" hidden (requires `appLockEnabled`). "Learn more" visible. Identical to `.pinOnly` gate-down.
+**At depth 0 (gate down):** Toggle OFF + enabled. "Deactivate Protection" hidden (requires `pinEnabled`). "Learn more" visible. Identical to `.pinOnly` gate-down.
 
 ### 14.6 Adversary checks app switcher / screenshots
 **Result:** `handleInactive()` fires on `.inactive` → `isContentHidden = true` → opaque overlay applied synchronously. App-switcher thumbnail is blank regardless of current depth or lock state. (Bug 33 / U5 fix)

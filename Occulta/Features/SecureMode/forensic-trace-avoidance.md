@@ -60,6 +60,7 @@ Measures that prevent recovery of deleted or sensitive data from the raw databas
 | S5 | Sensitive contacts depth-filtered at UI (Design A — accepted forensic gap); page slack covered by S1 + S2 | Medium | ✅ Design decision |
 | S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed |
 | S7 | All vault entries stamped hidden under staged key during activation | High | ✅ Bugs 26 & 27 fixed |
+| S8 | Vault entry row count and empty-vault UI visible during biometric-coerced duress — accepted gap (content cryptographically protected) | Medium | ✅ Design decision |
 
 ### S1 — DB key rotation on activation (cryptographic erasure)
 The local DB key is `ECDH(ourSEKey_localDB, G)` — device-bound and accessible when the device is unlocked. In duress mode the device is unlocked, so the current DB key is derivable. Without rotation, an examiner who extracts the raw SQLite file could use the current DB key to decrypt page-slack still containing deleted sensitive contacts. After rotation, deleted pages are encrypted under the old key, which is deleted after commit — the current DB key decrypts nothing from those pages. This is the core reason the DB key rotates on activation.
@@ -96,6 +97,17 @@ Activation Step 5 migrates `nil → encrypt(Int.max)` for all safe contacts. Bef
 
 Deactivation Step 6 sets `entry.visibleThroughDepth = nil` unconditionally, restoring the pre-activation default for all entries.
 
+### S8 — Vault entry row count and empty-vault UI: accepted gap
+`VaultEntry.id` (UUID) and `createdAt` (Date) are plaintext SwiftData columns. A raw SQLite dump without any key material reveals how many vault entries exist and when they were created. This count is not depth-gated — it is the same whether read at depth 0 or depth N.
+
+**UI mismatch tell.** A coercer who can also force biometric unlock (Face ID) sees the vault UI show 0 entries ("No entries yet") while the raw database contains N rows. That mismatch is a direct tell, structurally identical to the S5 contact-row gap.
+
+**Why this is less severe than S5.** Vault entry *content* (`encryptedLabel`, `encryptedContent`, `encryptedEntryKey`) is sealed under a dedicated SE key that requires a fresh biometric evaluation — entirely independent of the local DB key that rotates during activation. A duress examiner who only holds the duress PIN cannot unlock the vault at all; they see "Vault Locked" with no UI evidence of hidden entries. The mismatch only materialises under the conjunction of duress PIN *and* forced biometric auth — a more demanding attack than PIN-only coercion.
+
+**`visibleThroughDepth` at depth 0.** `addEntry` stamps every new entry with `visibleThroughDepth = encrypt(currentDepth)` even before Secure Mode is configured, so a non-nil value is not itself a Secure Mode tell. However, decrypting the field (canonical DB key, device unlocked) and finding `0` reveals the entry is hidden at all duress depths — confirming that the entry was deliberately excluded from the duress view.
+
+**No mitigation path without architectural change.** Eliminating the row-count tell requires either (a) not persisting vault entries in SQLite — instead keeping them entirely in memory from an SE-encrypted blob, analogous to Design B for contacts — or (b) padding with decoy rows, which adds complexity without a strong attacker model. Both are deferred. The biometric gate on vault content means the current gap exposes only metadata (count, timestamps), not secrets, without biometric coercion.
+
 ---
 
 ## Keychain / AppLayerConfig Forensics
@@ -104,19 +116,19 @@ Measures that prevent detection via Keychain metadata or the persisted config ro
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
-| K1 | `persistedDepth` + `pinEnabled` two-field encoding — gate state opaque | Medium | ✅ |
-| K2 | `persistedDepth` always non-nil from first PIN config | Low | ✅ |
+| K1 | `persistedDepth` + `pinEnabledPerDepth` encoding — gate state opaque | Medium | ✅ |
+| K2 | `persistedDepth` and `pinEnabledPerDepth` always populated from first PIN write | Low | ✅ |
 | K3 | Blob key HKDF-domain-separated from PIN verifier keys | Medium | ✅ |
 
-### K1 — `persistedDepth` + `pinEnabled` two-field encoding
-The lock state is stored as two independent encrypted fields on `AppLayerConfig`:
-- `persistedDepth` — AES-GCM encrypted `RoutingDepth` (`.normal` or `.duress`); restored by `Manager.Security.init` via `readRoutingDepth()`.
-- `pinEnabled` — AES-GCM encrypted `Bool`; `false` = gate suppressed under coercion while verifiers remain intact; restored via `readPinEnabled()`.
+### K1 — `persistedDepth` + `pinEnabledPerDepth` encoding
+The lock state is stored as two independent encrypted structures on `AppLayerConfig`:
+- `persistedDepth` — AES-GCM encrypted `Int`; the full `currentDepth` value persisted when the gate is lowered. Restored via `readPersistedDepth()`. Widened from the two-case `RoutingDepth` enum (Bug 50 fix) to carry depths > 1 from multi-layer coercion stacks.
+- `pinEnabledPerDepth` — 32-entry padded array of AES-GCM encrypted `UInt8` values (`1` = gate active, `0` = gate suppressed under coercion). All 32 entries are always present, including random filler entries encrypted to `1`. The entry for the current depth is set to `0` when the user calls `disablePIN(at:confirmingPIN:)`. Restored per-depth via `readPinEnabled(at:)`. Each entry is forensically constant in size: `UInt8` encodes to one byte, so both values produce equal-length sealed boxes regardless of gate state (Bug 51 fix — a `Bool` encoding would differ by one byte).
 
-No plaintext boolean flags. A raw `AppLayerConfig` row reveals four opaque `Data` blobs — nothing about current gate state or routing depth without the SE key.
+No plaintext boolean flags. A raw `AppLayerConfig` row is all opaque `Data` — nothing about current gate state or routing depth is recoverable without the SE key.
 
-### K2 — `persistedDepth` and `pinEnabled` always non-nil from first PIN write
-`configurePIN` calls `writeRoutingDepth(.normal)` and `writePinEnabled(true)` immediately so both fields are non-nil from the moment any PIN is set. Without this, field absence vs. presence would distinguish no-PIN from PIN-only or Secure Mode states without needing any keys. Now both fields are always present and always opaque.
+### K2 — `persistedDepth` and `pinEnabledPerDepth` always populated from first PIN write
+`configurePIN` calls `writePersistedDepth(0)` and initialises all 32 `pinEnabledPerDepth` entries to encrypted `1` immediately, so both structures are present from the moment any PIN is set. Without this, field absence vs. presence would distinguish no-PIN from PIN-only or Secure Mode states without any keys. Both structures are always present and always opaque.
 
 ### K3 — Blob key HKDF domain separation
 Blob key: `HKDF(seKey_secureMode, info: "blob-key")`. PIN verifier keys: `HKDF(seKey_secureMode, info: label ∥ pin)`. Different `info` strings guarantee independent key streams. A blob compromise — requiring SE access but not biometrics — yields nothing about the PIN. A PIN verifier compromise yields nothing about blob content.
@@ -137,7 +149,7 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 | U6 | Share index filtered to depth-1 on lock | Critical | ✅ Bug 6 fixed |
 
 ### U1 — PIN toggle always interactive
-In `.normal` and `.duress` states (Secure Mode active), disabling the Settings PIN toggle calls `disablePINFromCurrentDepth` — it lowers the gate without removing verifiers. When Secure Mode is not active (`isSecureModeActive == false`), the toggle calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
+In `.normal` and `.duress` states (Secure Mode active), disabling the Settings PIN toggle calls `disablePIN(at:confirmingPIN:)` — it lowers the gate without removing verifiers. When Secure Mode is not active (`isSecureModeActive == false`), the toggle calls `deactivatePIN`. In all cases the toggle is interactive and the UI is indistinguishable. A coerced user asked to "turn off the PIN" produces the same visual result regardless of which state the app is in.
 
 ### U2 — Grace period uniform across all depths
 `isWithinGracePeriod` applies at any depth — no `isRestricted` short-circuit. Bug 41 removed the unconditional `!self.isRestricted` guard that forced re-lock on every background transition in duress mode. That guard was itself a tell: a coercer who backgrounds and re-foregrounds the app would notice that no grace window exists in duress mode while one clearly existed at the normal-mode unlock screen. Uniform behaviour removes the asymmetry. The `lastUnlockDate = nil` call in `activateSecureMode` continues to force re-lock immediately after activation; no tell is introduced there.

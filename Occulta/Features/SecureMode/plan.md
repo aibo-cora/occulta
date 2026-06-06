@@ -67,24 +67,34 @@ SE key prevents all off-device attacks. PBKDF2 was removed: it added ~1s of main
 
 ```swift
 @Model final class AppLayerConfig {
-    var sealedNormalVerifier:     Data?   // nil → no PIN configured (requiresPIN == false)
-    var sealedDuressVerifier:     Data?   // nil → Secure Mode not active (isSecureModeActive == false)
-    var persistedDepth:           Data?   // encrypted RoutingDepth; always non-nil after first config write
-    var pinEnabled:               Data?   // encrypted Bool; false = gate suppressed under coercion
+    var sealedNormalVerifier:     Data?   // legacy scalar — migration source only; [0] of sealedNormalVerifiers is canonical
+    var sealedDuressVerifier:     Data?   // legacy scalar — migration source only; [0] of sealedDuressVerifiers is canonical
+    var persistedDepth:           Data?   // encrypted Int (widened from RoutingDepth in Bug 50); always non-nil after first config write
+    var pinEnabled:               Data?   // legacy scalar — migration source only; pinEnabledPerDepth is canonical
+    var pinEnabledPerDepth:       [Data]  // 32-entry padded array; encrypted UInt8 per depth (0=suppressed, 1=active)
+    var coercerBaseDepth:         Data?   // encrypted Int; 0 default; set by reEnablePIN coercion-acceptance path
 
-    // Multi-layer fields — parallel arrays, one entry per depth
-    var sealedNormalVerifiers:    [Data]   // index = depth; [0] is master; [N] == sealedDuressVerifiers[N-1]
-    var sealedDuressVerifiers:    [Data]   // index = depth; entry at N drives push to N+1
+    // Verifier arrays (multi-layer)
+    var sealedNormalVerifiers:    [Data]   // 32 entries; [0] is master; [N] == sealedDuressVerifiers[N-1] (routing alias)
+    var sealedDuressVerifiers:    [Data]   // 32 entries; entry at N drives push to N+1
+
+    // Blob tracking
+    var sealedBlobSlots:          [Data]   // 32-entry padded; encrypted Int slot index per depth
+    var layerSequenceNumbers:     [Data]   // 32-entry padded; encrypted Int sequence number per depth
+
+    // Lockout
+    var lockoutCountEncrypted:    Data?
+    var lockoutExpiryEncrypted:   Data?
 }
 ```
 
-The existing `sealedNormalVerifier` / `sealedDuressVerifier` scalar fields become `sealedNormalVerifiers[0]` / `sealedDuressVerifiers[0]`. Migration: on first launch after multi-layer support ships, wrap existing scalar values into index-0 of the arrays.
+The scalar `sealedNormalVerifier` / `sealedDuressVerifier` fields are legacy migration sources; `sealedNormalVerifiers[0]` / `sealedDuressVerifiers[0]` are canonical. Migration runs in `Manager.Security.init()` on first launch after the multi-layer upgrade.
 
-**[security]** Array length directly encodes layer depth to a forensic examiner. Both arrays must be padded to a fixed maximum length (e.g. 8) with random entries of identical byte size to real verifiers on every write. The padding entries must be indistinguishable from real verifiers (same-length AES-GCM ciphertext, randomly generated). `verify()` simply ignores entries that fail to open. A forensic examiner always sees exactly 8 blobs per array on every install, regardless of actual depth.
+**[security]** Both verifier arrays are padded to 32 entries (`maxVerifierCount == LayerStore.slotCount`) with random filler of exactly `verifierFillerSize` (53) bytes — identical to real verifier size. `verify()` ignores entries that fail to open. A forensic examiner always sees exactly 32 blobs per array regardless of actual depth. The `pinEnabledPerDepth` array is also always 32 entries, each an encrypted `UInt8` (`1` for active, `0` for suppressed) — equal-length sealed boxes in all cases (Bool encoding would differ by one byte; see Bug 51).
 
-`persistedDepth` stores the current `RoutingDepth` (`.normal` or `.duress`) via `writeRoutingDepth` / `readRoutingDepth`.
-`pinEnabled` stores the gate state (Bool) via `writePinEnabled` / `readPinEnabled`. Falls back to `true` on any decode failure — always demand a PIN rather than silently opening the app.
-Both fields are written at first config creation so their presence never leaks state — a consistently non-nil field is forensically opaque.
+`persistedDepth` stores the full `currentDepth` integer via `writePersistedDepth(_:)` / `readPersistedDepth()`. Widened from the two-case `RoutingDepth` enum (Bug 50) to carry depths > 1 from multi-layer coercion stacks.
+`pinEnabledPerDepth[N]` stores the gate state for depth N via `writePinEnabled(_:at:)` / `readPinEnabled(at:)`. Falls back to `true` on any decode failure — always demand a PIN rather than silently opening the app.
+Both structures are populated at first config creation so their presence never leaks state — consistently non-nil and constant-length fields are forensically opaque.
 
 All properties optional to avoid SwiftData migration on schema evolution.
 
@@ -119,7 +129,7 @@ At every setup step, validate the candidate PIN against all existing verifiers a
 // State
 var requiresPIN:    Bool    // state != .noPIN
 var isRestricted:   Bool    // currentDepth > 0
-var appLockEnabled: Bool    // whether the PIN overlay gate fires on scene activation
+var pinEnabled: Bool        // whether the PIN overlay gate fires on scene activation (per-depth; see pinEnabledPerDepth)
 
 // Setup
 func configurePIN(_ pin: String) throws                                              // .noPIN → .pinOnly
@@ -128,8 +138,8 @@ func deactivateSecureMode(confirmingEntryPIN: String) throws                    
 func deactivatePIN(confirmingNormalPIN: String) throws                               // .pinOnly → .noPIN
 
 // Coercion-resistant gate (sticky-depth)
-func disablePINFromCurrentDepth(confirmingPIN: String) throws     // lowers gate; verifiers intact; depth filter stays
-func reEnablePIN(_ pin: String) -> Bool                           // routes entered PIN to matched verifier depth; returns false on no match
+func disablePIN(at depth: Int, confirmingPIN: String) throws      // lowers gate; verifiers intact; depth filter stays
+func reEnablePIN(_ pin: String) -> Bool                           // routes PIN to matched verifier depth; at depth>0 accepts unknown PIN via coercion-acceptance path
 
 // Verification (owns all state transitions)
 func verify(_ pin: String) throws -> PINVerifyResult
@@ -201,38 +211,41 @@ func updateSafeContacts(_ ids: Set<String>) throws
 - [x] "Deactivate" button — visible when `state == .normal`. Sheet calls `deactivateSecureMode(confirmingNormalPIN:)` on success.
 - [x] **[design]** Activate / Deactivate button visibility — single-layer depth implemented:
   - Activate ("Learn more") visible at: `!isSecureModeActive` (covers `.noPIN`/`.pinOnly`) and `state == .duress`; hidden at `.normal`. ✓
-  - Deactivate visible at: `isSecureModeActive && state == .normal && appLockEnabled` — hidden in `.duress`. ✓
-  - Toggle disabled when `isSecureModeActive && state == .normal && appLockEnabled`; intentionally enabled in `.duress` so `disablePINFromCurrentDepth` remains accessible via toggle tap (uses `.verifyCurrentLayer`, no `verify()` counter mutation). ✓
+  - Deactivate visible at: `isSecureModeActive && state == .normal && (currentDepth == 0 || currentDepth == coercerBaseDepth) && pinEnabled` — hidden in `.duress`. ✓ (Bug 45, 47 fixes)
+  - Toggle disabled when `isSecureModeActive && state == .normal && pinEnabled`; intentionally enabled in `.duress` so `disablePIN(at:confirmingPIN:)` remains accessible via toggle tap (uses `.verifyCurrentLayer`, no `verify()` counter mutation). ✓
   - `SecureModeDeactivateFlow` uses `.verifyCurrentLayer` → confirmation PIN = current layer's PIN at depth 0. ✓
   - Multi-layer: after deactivating from depth N, returns to `.duress` at N-1; confirmation PIN at depth N > 0 deferred to Step 4 array migration.
 - [x] **[design]** Contact selection must be part of the activation flow, not a standalone Settings item visited later. Implemented as `SecureModeSetupFlow`: Education → PIN setup (confirmThenSet) → Contact classification → Summary/Activate (4 steps, step-dots indicator). `activateSecureMode` called only on the final confirm step.
 - [x] **Bug 24** — "Activation Failed" alert reveals Secure Mode state when flow is traversed in duress mode. See `Docs/bugs.md`.
 - [x] **Bug 25** — `ContactClassification` exposes sensitive contacts when opened in duress mode. See `Docs/bugs.md`.
 - [x] **[design]** "Deactivate Secure Mode" sheet calls `verify()` internally (via `PINEntry` in `.verify` mode), then `onNormal` calls `deactivateSecureMode(confirmingNormalPIN:)` which calls `PINManager.checkVerifier` again — double-verification plus counter mutation. Wrong attempts in this sheet increment `wrongPINCount` and pollute the rate-limit counter. Replace with a verify-without-counters path using `checkNormalPIN`, same as the activate flow's phase 1. Requires either a new `PINEntry` mode or calling `checkNormalPIN` directly in the sheet.
-- [x] **[design]** "Enable PIN" toggle was initially disabled in `.normal` and `.duress` states. Revisited by the sticky-depth design and the Settings UI re-evaluation (both below). Final state: toggle remains disabled in `.duress` — this is load-bearing, not cosmetic (see Settings UI entry for rationale). `disablePINFromCurrentDepth` is the coercion-safe gate mechanism that doesn't go through the toggle.
+- [x] **[design]** "Enable PIN" toggle was initially disabled in `.normal` and `.duress` states. Revisited by the sticky-depth design and the Settings UI re-evaluation (both below). Final state: toggle remains disabled in `.duress` — this is load-bearing, not cosmetic (see Settings UI entry for rationale). `disablePIN(at:confirmingPIN:)` is the coercion-safe gate mechanism that doesn't go through the toggle.
 - [x] **[security]** `activateSecureMode` must validate that the proposed duress PIN does not open any existing normal verifier. Currently no collision check — if duress PIN == normal PIN, `verify()` always matches normal first and duress is never triggerable. Validate with `PINManager.checkVerifier` (not `verify()`) before building the duress verifier; reject with a user-facing error if any existing verifier opens.
-- [x] **[design — pre-ship]** `Enable PIN` toggle in `.duress`: the goal was to make the gate lowerable under coercion without exposing the master PIN. Enabling the toggle trivially is not safe: the Settings sheet calls `security.verify()` internally, so entering the normal PIN from `.duress` would silently transition to `.normal` at depth 0, breaking duress. The final resolution (see Settings UI entry below): toggle stays disabled in `.duress`; `disablePINFromCurrentDepth` is the coercion-safe gate mechanism. The residual tell (toggle appearance differs from `.pinOnly`) is accepted — the alternative is worse.
+- [x] **[design — pre-ship]** `Enable PIN` toggle in `.duress`: the goal was to make the gate lowerable under coercion without exposing the master PIN. Enabling the toggle trivially is not safe: the Settings sheet calls `security.verify()` internally, so entering the normal PIN from `.duress` would silently transition to `.normal` at depth 0, breaking duress. The final resolution (see Settings UI entry below): toggle stays disabled in `.duress`; `disablePIN(at:confirmingPIN:)` is the coercion-safe gate mechanism. The residual tell (toggle appearance differs from `.pinOnly`) is accepted — the alternative is worse.
 
-  **Chosen design — sticky depth with `appLockEnabled`:**
+  **Chosen design — sticky depth with `pinEnabledPerDepth`:**
 
   The insight is to decouple the PIN gate from depth routing. "Disable PIN" does not mean "forget all verifiers" — it means "lower the gate while remembering where we are." Verifiers remain intact.
 
-  **`AppLayerConfig` addition:**
-  - `persistedDepth: Data?` — encrypted `RoutingDepth` (`.normal` / `.duress`). Always non-nil after first config write.
-  - `pinEnabled: Data?` — encrypted `Bool`. `true` = gate active (PIN required on foreground); `false` = gate suppressed under coercion. Always non-nil after first config write. Decoding falls back to `true` (require PIN) on any failure.
+  **`AppLayerConfig` fields (see schema above):**
+  - `persistedDepth: Data?` — encrypted `Int` (full `currentDepth`). Widened from `RoutingDepth` enum (Bug 50) to carry depths > 1. Always non-nil after first config write.
+  - `pinEnabledPerDepth: [Data]` — 32-entry padded array. `pinEnabledPerDepth[N]` is an encrypted `UInt8`; `1` = gate active at depth N, `0` = gate suppressed. Encoded as `UInt8` (not `Bool`) so both values produce equal-length sealed boxes (Bug 51). Always 32 entries, all non-nil.
 
   **`Manager.Security` in-memory property:**
-  - `appLockEnabled: Bool` — restored from `config.readPinEnabled()` in `init`. `false` only when gate was deliberately lowered.
+  - `pinEnabled: Bool` — restored from `config.readPinEnabled(at: persistedDepth)` in `init`. `false` only when gate was deliberately lowered at the restored depth.
 
-  **Disable PIN from current depth (`disablePINFromCurrentDepth(confirmingPIN:)`):**
-  1. Checks entered PIN against the current layer's verifier via `checkCurrentLayerEntryPIN` (private) — no `verify()`, no counter mutation, no state transition.
-  2. On pass: calls `writeRoutingDepth(currentDepth)` + `writePinEnabled(false)`, saves, sets `appLockEnabled = false`. Verifiers are left untouched.
+  **Disable PIN (`disablePIN(at:confirmingPIN:)`):**
+  1. Checks entered PIN against the current layer's verifier — no `verify()`, no counter mutation, no state transition.
+  2. On pass: calls `writePersistedDepth(currentDepth)` + `writePinEnabled(false, at: currentDepth)`, saves, sets `pinEnabled = false`. Verifiers are left untouched.
   3. App opens directly to depth-N content. Coercer sees: toggle OFF, no PIN required, decoy content.
 
   **Re-enable PIN (enter + confirm — same UX as always):**
-  `PINEntry` in `.setup` mode collects two matching entries and delivers the confirmed PIN to Settings. Settings calls `reEnablePIN(_:)` which silently checks against all existing verifiers: normal PIN match → depth 0, `.normal`; duress PIN match → depth 1, `.duress`. No new verifier is written; no observable UX difference.
+  `PINEntry` in `.setup` mode collects two matching entries and delivers the confirmed PIN to Settings. Settings calls `reEnablePIN(_:)`:
+  - PIN matches an existing verifier → gate re-enabled at matched depth.
+  - No match at depth > 0 → coercion-acceptance path creates a new layer for the PIN; `coercerBaseDepth = currentDepth + 1` recorded (Bug 37 fix).
+  - No match at depth 0 → gate stays down (accepted tell at depth 0).
 
-  **Why both fields are always non-nil:** a field that is nil in normal operation and non-nil only when PIN has been force-disabled is itself a forensic tell. Always writing `writeRoutingDepth(.normal)` + `writePinEnabled(true)` at first config creation means every Occulta install shows the same field structure regardless of state.
+  **Why all structures are always fully populated:** a nil field or short array that only appears when the gate has been force-disabled is itself a forensic tell. `configurePIN` seeds `persistedDepth`, all 32 `pinEnabledPerDepth` entries, and `coercerBaseDepth` immediately so every install shows the same field structure regardless of gate state.
 
 - [x] **[design — pre-ship]** `Settings → Security` appearance in `.duress` is wrong. The duress experience must be indistinguishable from `.pinOnly` — the coercer must believe Secure Mode was never activated. Correct state table:
 
