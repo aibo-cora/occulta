@@ -1260,33 +1260,69 @@ After a session where a bundle was received and rejected via duress PIN, killing
 - Step 5: `pendingFileData` appears to never be drained, or `processInboundFile` is called but produces no visible result.
 - Step 6: the background → foreground path (non-cold-start) works correctly for the identical bundle data.
 
-### Root Cause (hypothetical — needs instrumentation to confirm)
+### Instrumentation findings (inconclusive)
 
-Two candidate explanations are consistent with the observed difference between cold-start and background-resume paths:
+Extensive `[Bug52]` logging was added across `onOpenURL`, `handleActive`, `fullScreenCover onDismiss`, `buildOwnedBasket`, and all `processInboundFile` catch branches. The bug could not be reproduced while logs were active. In one early capture (before full logging), `onOpenURL fired` was absent entirely and `onDismiss` showed `pendingFileData=false`. A subsequent reproduction with full logging showed the complete pipeline working correctly through to `openedFileContents` being set. The bug appears intermittent and may be sensitive to launch timing.
 
-**Candidate A — `processInboundFile` called before `fullScreenCover` is presented (UIKit conflict)**
+### Leading hypothesis
 
-On cold start the scene phase callbacks (`handleBackground`, `handleActive`) fire in rapid succession before UIKit has presented the `fullScreenCover`. If `onOpenURL`'s Task reads `security.needsPINEntry` at a moment when it is transiently `false` — either before `handleActive()` has set it back to `true`, or because `requiresPIN` fetches from a not-yet-warmed SwiftData context and returns `false` — then `processInboundFile(data)` is called directly instead of queuing `pendingFileData`.
-
-Inside `processInboundFile`, `buildOwnedBasket` succeeds and sets `openedFileContents` (triggering the `.sheet`). But UIKit cannot present the sheet while the `fullScreenCover` is simultaneously being presented (SwiftUI forces the cover to present because `needsPINEntry` has since been corrected to `true` by `handleActive()`). The conflicting presentation is silently dropped by UIKit, `openedFileContents` may be reset to `nil`, and no error surfaces. When the PIN cover then dismisses, `onDismiss` finds `pendingFileData = nil` — nothing to drain.
-
-On the background-resume path this race does not exist because `handleBackground()` sets `needsPINEntry = true` before the app becomes active, giving the cover time to be presented before `onOpenURL` fires.
-
-**Candidate B — `onDismiss` not invoked on the first cold-start `fullScreenCover`**
-
-iOS may not call `onDismiss` when a `fullScreenCover` whose `isPresented` binding was `true` from the very first render is programmatically dismissed before UIKit has completed its initial presentation animation. In this case `pendingFileData` is set correctly but the drain never fires.
+On cold start, iOS delivers the `occulta://inbound` URL via `connectionOptions.urlContexts` during scene connection — before SwiftUI has finished evaluating the `body` and registering the `onOpenURL` modifier. SwiftUI is expected to buffer and replay the URL once the modifier is ready, but may occasionally drop the replay. When this happens, `pendingFileData` is never set, `onDismiss` drains nothing, and the message is silently lost.
 
 ### Key code sites
 
-- `OccultaApp.swift:197` — `onOpenURL` handler and `needsPINEntry` gate
-- `OccultaApp.swift:383` — `fullScreenCover(isPresented:onDismiss:)` and drain logic  
-- `OccultaApp.swift:332` — `onChange(of: scenePhase)` calling `handleActive()`
-- `Manager+Security.swift:268` — `handleActive()` / `handleBackground()` transitions
-- `Manager+Security.swift:34` — `requiresPIN` computed property (fresh DB fetch each call)
+- `OccultaApp.swift` — `onOpenURL` handler and `needsPINEntry` gate
+- `OccultaApp.swift` — `fullScreenCover(isPresented:onDismiss:)` and drain logic
+- `OccultaApp.swift` — `onChange(of: scenePhase)` calling `handleActive()`
+- `Manager+Security.swift` — `handleActive()` / `handleBackground()` transitions
 
-### Debugging approach
+---
 
-Add `print` statements (or `os_signpost` intervals) at: (1) entry to `onOpenURL` Task with `needsPINEntry` value at the async resume point; (2) entry to `handleActive()` with before/after `needsPINEntry`; (3) entry to `processInboundFile`; (4) `onDismiss` closure. Reproduce on device with console attached to confirm which candidate fires.
+## Bug 53 — Vault tab skips Face ID gate in duress mode — forensic tell
+
+**Status:** Closed (Fixed)
+
+### Severity: High (forensic)
+
+In normal mode (depth 0), opening the Vault tab presents a Face ID (biometric) authentication gate before any vault content is shown. In duress mode (depth ≥ 1), the Face ID gate does not appear — the vault tab renders directly without prompting for biometric authentication. A coercer who opens the vault tab in duress mode observes the absence of the Face ID prompt and can infer that the device is not in its normal unlocked state, collapsing deniability.
+
+### Root Cause
+
+`Vault+Tab.swift` line 103:
+
+```swift
+if self.security.isRestricted || self.vault.isUnlocked {
+    self.list
+} else {
+    self.lockGate
+}
+```
+
+The `isRestricted` short-circuit causes the Face ID gate to be unconditionally skipped whenever duress mode is active, regardless of `vault.isUnlocked`. The intent was presumably "in duress mode, the vault is safe to show (it's already filtered)" — but this trades depth-filtering correctness for a visible behavioral asymmetry.
+
+`visibleEntries` in the same file already handles depth filtering independently:
+
+```swift
+private var visibleEntries: [VaultEntry] {
+    guard self.security.isRestricted else { return self.entries }
+    return self.entries.filter { self.security.isEntryVisible($0) }
+}
+```
+
+The Face ID gate and the entry filter are orthogonal. The gate should fire at every depth; the list shows only depth-visible entries after authentication succeeds.
+
+### Resolution
+
+Remove the `isRestricted` short-circuit from the gate condition in `Vault+Tab.swift`:
+
+```swift
+// Before
+if self.security.isRestricted || self.vault.isUnlocked {
+
+// After
+if self.vault.isUnlocked {
+```
+
+`visibleEntries` continues to filter entries by depth — in duress mode the vault shows only entries stamped with the appropriate `visibleThroughDepth`, but the Face ID gate precedes them uniformly at all depths.
 
 ---
 

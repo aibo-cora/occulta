@@ -100,7 +100,7 @@ struct VaultTab: View {
     var body: some View {
         NavigationStack {
             Group {
-                if self.security.isRestricted || self.vault.isUnlocked {
+                if self.vault.isUnlocked {
                     self.list
                 } else {
                     self.lockGate

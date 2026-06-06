@@ -197,20 +197,20 @@ struct OccultaApp: App {
                 .onOpenURL { url in
                     let fileLocation: URL
                     var openedThroughShareExtension = false
-                    
+
                     if url.scheme == "occulta",
                        let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                         // Handle share extension handoff (outbound) and inbound .occ routing.
-                        
+
                         guard
                             let rawSessionID = components.queryItems?.first(where: { $0.name == "session" })?.value,
                             let sessionUUID = UUID(uuidString: rawSessionID)
                         else {
                             return
                         }
-                        
+
                         let sessionID = sessionUUID.uuidString  // guaranteed: only [0-9a-fA-F-], no path separators
-                        
+
                         switch url.host {
                         case "inbound":
                             /// Process an inbound `.occ` file handed off from the share extension via
@@ -225,14 +225,14 @@ struct OccultaApp: App {
                             let fileURL = containerURL
                                 .appendingPathComponent("inbound")
                                 .appendingPathComponent("\(sessionID).occ")
-                            
+
                             fileLocation = fileURL
                             openedThroughShareExtension = true
-                            
+
                             break
                         case "share":
                             self.processShareSession(sessionID: sessionID)
-                            
+
                             return
                         default:
                             return  // unknown host — ignore silently
@@ -240,7 +240,7 @@ struct OccultaApp: App {
                     } else {
                         fileLocation = url
                     }
-                    
+
                     Task {
                         defer {
                             if openedThroughShareExtension {
@@ -250,13 +250,13 @@ struct OccultaApp: App {
                         /// This is the case when we open occulta files that are located in `Files`
                         /// "file://"
                         let accessing = fileLocation.startAccessingSecurityScopedResource()
-                        
+
                         defer {
                             if accessing {
                                 fileLocation.stopAccessingSecurityScopedResource()
                             }
                         }
-                        
+
                         do {
                             /// Contents of the encrypted file we opened.
                             let (data, _) = try await URLSession.shared.data(from: fileLocation)
@@ -499,10 +499,10 @@ struct OccultaApp: App {
                             sender:   sender
                         )
                     }
-                    
+
                     return nil
                 }
-                
+
                 #if DEBUG
                 debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
                 debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
