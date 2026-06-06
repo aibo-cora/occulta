@@ -1145,6 +1145,96 @@ At depth N (real user's decoy, unmodified): `coercerBaseDepth = 0`, `currentDept
 
 ---
 
+## Bug 50 — Real layer exposed after disable-PIN in duress mode + kill/relaunch
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+After entering the app with the duress PIN (`currentDepth = 1`), disabling the PIN toggle (`disablePINFromCurrentDepth`), killing the app, and relaunching, the real layer is shown — all contacts visible, no depth-1 filtering.
+
+### Root Cause
+
+`currentDepth` is an in-memory `Int` that defaults to `0` on every cold start. It is set correctly during a live session by `applyVerifyState` (after PIN entry routes to the correct depth), but it was never persisted to `AppLayerConfig`.
+
+This is safe when `appLockEnabled = true`: the PIN gate fires on launch, the user enters their PIN, `verify()` scans the normal verifier array and calls `applyVerifyState`, which sets `currentDepth` from the matched index. Depth filtering is established before any content is shown.
+
+When `appLockEnabled = false` (gate deliberately lowered via `disablePINFromCurrentDepth`), there is no PIN entry on launch. `currentDepth` stays at `0` — the default — and no filtering is applied. All contacts are visible regardless of what `state` says.
+
+`disablePINFromCurrentDepth` called `setState(self.state, pinEnabled: false, config:)`, which persisted `state = .duress` and `appLockEnabled = false` but wrote nothing for `currentDepth`. On cold relaunch, `init()` restored `state = .duress` and `appLockEnabled = false` but left `currentDepth = 0`. All contact and vault filtering predicates (`isDisplayable`, `isEntryVisible`, `isRestricted`) read `currentDepth` — with `currentDepth = 0`, everything is visible.
+
+`state = .duress` with `currentDepth = 0` is an internally inconsistent state that `init()` never guarded against.
+
+### Resolution
+
+`persistedDepth` (stored in `AppLayerConfig` as an encrypted value) was widened from `RoutingDepth` enum (limited to `.normal = 0` / `.duress = 1`) to a raw `Int`, enabling it to carry the full `currentDepth` value including depths > 1 from multi-layer coercion stacks. The on-disk encoding is unchanged — existing rows store `0` or `1` as JSON integers, which decode correctly as `Int`.
+
+Three changes applied together:
+
+**1. `AppLayerConfig` — `readRoutingDepth` / `writeRoutingDepth` → `readPersistedDepth() -> Int` / `writePersistedDepth(_ depth: Int)`.**
+Encoding and decoding changed from `RoutingDepth` to `Int`. Fallback changed from `.normal` to `0`. Backward compatible.
+
+**2. `Manager.Security.setState` — signature changed from `(_ depth: RoutingDepth, ...)` to `(_ depth: Int, ...)`.**
+Each call site now passes an explicit integer literal rather than an enum case, eliminating any hidden dependency on `self.currentDepth` mutation order. `self.state` is derived internally as `depth > 0 ? .duress : .normal`. The critical site — `disablePINFromCurrentDepth` — was changed from `setState(self.state, pinEnabled: false, ...)` to `setState(self.currentDepth, pinEnabled: false, ...)`, persisting the live authenticated depth at the moment of disable.
+
+**3. `Manager.Security.init()` — `currentDepth` restored when gate is down.**
+
+```swift
+let persistedDepth   = config.readPersistedDepth()
+self.state          = persistedDepth > 0 ? .duress : .normal
+self.appLockEnabled = config.readPinEnabled()
+if !self.appLockEnabled { self.currentDepth = persistedDepth }
+```
+
+The `!self.appLockEnabled` guard is intentional: when the gate is up, `verify()` + `applyVerifyState()` must re-establish `currentDepth` from the PIN scan on every cold start — pre-seeding it would bypass the routing design. When the gate is down, no PIN entry occurs, and the persisted value is the only source of truth.
+
+---
+
+## Bug 51 — `appLockEnabled` conflated with PIN toggle state; no dedicated PIN-appearance property
+
+**Status:** Closed (Fixed)
+
+### Severity: Low (architectural / forensic)
+
+`appLockEnabled` was a lock screen scheduling flag — it controls whether the PIN overlay fires on launch and foreground. It is not a PIN state property. The PIN is on when a verifier exists (`requiresPIN`), regardless of whether the overlay fires.
+
+Despite this, the PIN toggle's `get` was:
+
+```swift
+get: { self.requiresPIN && self.security.appLockEnabled }
+```
+
+`appLockEnabled` was drafted into the toggle formula as a tell-avoidance shortcut. After `disablePIN(at:confirmingPIN:)`, the overlay is suppressed (`appLockEnabled = false`) and the coercer should see a device that looks PIN-free. Since `appLockEnabled` happened to be `false` in exactly that scenario, it was used to suppress the toggle — conflating a lock screen concern with PIN appearance.
+
+### Consequences
+
+The conflation spread to every UI element that needs to reflect PIN state. Each must independently combine `requiresPIN` (from `@Query` / SwiftData) and `appLockEnabled` (from `@Observable`), two properties from two different reactive sources. Any guard that checks only one of the two will be wrong in the gate-down scenario.
+
+Bug 51A — **"Learn more" section interactive when toggle is OFF.** The section's disabled guard checked only `!requiresPIN`. With the gate lowered, `requiresPIN = true` (verifiers intact), so the guard evaluated to `false` — section remained interactive. Tapping "Learn more" presented `SecureModeSetupFlow`, which cannot complete from this state (`activateSecureMode` checks `sealedNormalVerifiers[0]` specifically; the duress PIN matches only `sealedNormalVerifiers[1]`). A dead-end UX with no security impact.
+
+### Why verifiers cannot replace `appLockEnabled` as the PIN state signal
+
+The natural fix — drive toggle state from verifier presence at `sealedNormalVerifiers[currentDepth]` — requires clearing that slot in `disablePIN(at:confirmingPIN:)`. This cannot be done cleanly:
+
+- `disablePIN(at:confirmingPIN:)` is specifically designed to keep all verifiers intact so `reEnablePIN` can restore the gate by matching the existing PIN. Clearing the routing alias at `[currentDepth]` would require `reEnablePIN` to write a brand new verifier instead of re-enabling the existing one.
+- The routing alias at `sealedNormalVerifiers[N]` enables cold-start routing for the duress PIN. Clearing it forces all cold-start duress entry through the push-down path, adding a dependency on `persistedDepth` restoration being correct.
+- "Lower the gate" and "partially tear down the layer" are distinct operations. Collapsing them changes the semantics of `disablePIN` and introduces new failure modes into the re-enable path.
+
+### Resolution
+
+Replaced the global `appLockEnabled: Bool` with a per-layer `pinEnabledPerDepth: [Data]` array on `AppLayerConfig` and a corresponding `private(set) var pinEnabled: Bool` on `Manager.Security`.
+
+- `AppLayerConfig.pinEnabledPerDepth` is a 32-entry padded array of encrypted Bools (one per depth). All entries are initialised to encrypted `true` at row creation. Filler entries are also encrypted `true`, so array length and content are forensically indistinguishable from any other configuration.
+- `AppLayerConfig.writePinEnabled(_:at:)` / `readPinEnabled(at:)` read and write a single depth's gate state.
+- `Manager.Security.pinEnabled` is the in-memory mirror, updated by `setState(_:pinEnabled:config:)` on every clean transition and restored in `init` from `readPinEnabled(at: persistedDepth)`.
+- Migration: on first launch after the upgrade, if `pinEnabledPerDepth` is empty, the legacy `pinEnabled` scalar is read and its value is written to `pinEnabledPerDepth[persistedDepth]`. All other entries default to `true`.
+- All UI sites (`Settings.swift`, `OccultaApp.swift`) reference `security.pinEnabled` exclusively. `appLockEnabled` is fully removed.
+- `disablePINFromCurrentDepth(confirmingPIN:)` renamed to `disablePIN(at:confirmingPIN:)` for clarity.
+
+The "Learn more" section's `disabled` guard now evaluates `!security.pinEnabled`, which is `true` whenever the gate is deliberately lowered — fixing Bug 51A.
+
+---
+
 ## Bug 48 — ContactClassification save silently no-ops at coercer's re-enabled depth — tell during activation
 
 **Status:** Closed (Fixed)

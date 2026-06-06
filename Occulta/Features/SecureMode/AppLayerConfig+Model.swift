@@ -32,16 +32,20 @@ final class AppLayerConfig {
     /// Falls back to `.normal` on any decode failure — the safe default.
     var persistedDepth: Data?
 
-    /// Encrypted Bool. `true` = PIN overlay shown on next foreground (normal operation).
-    /// `false` = gate suppressed while all verifiers remain intact — the coercion path
-    /// where the user called `disablePINFromCurrentDepth` so the app opens without
-    /// demanding a PIN. Depth-filtering still applies when `false`.
-    ///
-    /// Always non-nil after the first config write.
-    ///
-    /// Falls back to `true` on any decode failure — always demand a PIN rather than
-    /// silently opening the app.
+    /// Encrypted Bool. Legacy scalar kept for migration reads in `Manager.Security.init()`.
+    /// Source of truth is `pinEnabledPerDepth`. New rows leave this nil.
     var pinEnabled: Data?
+
+    /// Per-depth PIN gate state. `pinEnabledPerDepth[N]` decrypts to `true` when the
+    /// PIN overlay fires at depth N; `false` when the gate is suppressed while all
+    /// verifiers remain intact — the coercion path where the user called
+    /// `disablePIN(at:confirmingPIN:)` so the app opens without demanding a PIN.
+    /// Depth-filtering still applies when `false`.
+    ///
+    /// Padded to `paddedArrayCount` entries so array length is forensically constant.
+    /// Filler entries are encrypted `true` — indistinguishable from a real entry where
+    /// the gate is up. Falls back to `true` per entry on any decode failure.
+    var pinEnabledPerDepth: [Data] = []
 
     /// Encrypted Int. The depth that is the "home" layer for the current operator.
     ///
@@ -126,6 +130,7 @@ final class AppLayerConfig {
         self.layerSequenceNumbers  = Self.randomFillerArray()
         self.sealedNormalVerifiers = Self.verifierFillerArray()
         self.sealedDuressVerifiers = Self.verifierFillerArray()
+        self.pinEnabledPerDepth    = Self.pinEnabledFillerArray()
     }
 
     // MARK: - Blob slot
@@ -236,6 +241,9 @@ final class AppLayerConfig {
         while self.layerSequenceNumbers.count < Self.paddedArrayCount {
             self.layerSequenceNumbers.append(Self.randomFiller())
         }
+        while self.pinEnabledPerDepth.count < Self.paddedArrayCount {
+            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(true).encrypt()) ?? Self.randomFiller())
+        }
     }
 
     private func ensureVerifiersPadded() {
@@ -271,6 +279,15 @@ final class AppLayerConfig {
         (0..<maxVerifierCount).map { _ in Self.verifierFiller() }
     }
 
+    /// Returns a 32-entry array of encrypted `true` values — the default for a fresh install
+    /// or any depth that has never had the gate explicitly disabled. All entries are encrypted
+    /// so they are indistinguishable from a real entry where the gate is up.
+    static func pinEnabledFillerArray() -> [Data] {
+        (0..<paddedArrayCount).map { _ in
+            (try? JSONEncoder().encode(true).encrypt()) ?? randomFiller()
+        }
+    }
+
 
     // MARK: - Routing depth
 
@@ -295,20 +312,35 @@ final class AppLayerConfig {
         self.persistedDepth = try JSONEncoder().encode(depth).encrypt()
     }
 
-    // MARK: - PIN enabled
+    // MARK: - PIN enabled (per depth)
 
-    /// Decodes the persisted gate state. Falls back to `true` (PIN required) on any decode failure.
-    func readPinEnabled() -> Bool {
-        guard
-            let data      = self.pinEnabled,
-            let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(Bool.self, from: decrypted)
+    /// Decodes the gate state for `depth`. Falls back to `true` (PIN required) on any decode failure.
+    func readPinEnabled(at depth: Int) -> Bool {
+        guard depth < self.pinEnabledPerDepth.count,
+              let decrypted = self.pinEnabledPerDepth[depth].decrypt(),
+              let value     = try? JSONDecoder().decode(Bool.self, from: decrypted)
         else { return true }
         return value
     }
 
-    func writePinEnabled(_ enabled: Bool) throws {
-        self.pinEnabled = try JSONEncoder().encode(enabled).encrypt()
+    func writePinEnabled(_ enabled: Bool, at depth: Int) throws {
+        guard let encrypted = try JSONEncoder().encode(enabled).encrypt() else {
+            throw CocoaError(.coderValueNotFound)
+        }
+        self.ensurePadded()
+        if depth < self.pinEnabledPerDepth.count {
+            self.pinEnabledPerDepth[depth] = encrypted
+        }
+    }
+
+    /// Legacy scalar read — used only during migration in `Manager.Security.init()`.
+    /// After migration, `readPinEnabled(at:)` is the sole source of truth.
+    func readPinEnabledLegacy() -> Bool {
+        guard let data      = self.pinEnabled,
+              let decrypted = data.decrypt(),
+              let value     = try? JSONDecoder().decode(Bool.self, from: decrypted)
+        else { return true }
+        return value
     }
 
     // MARK: - Coercer base depth

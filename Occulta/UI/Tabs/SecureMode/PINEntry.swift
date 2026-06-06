@@ -23,7 +23,7 @@ struct PINEntry: View {
         /// Two-phase entry: first entry sets `firstPIN`, second entry must match it.
         /// On match, calls `onNormal(pin)` with the confirmed PIN and does **not** call
         /// any security method internally — the caller's `onNormal` closure is responsible
-        /// for the actual security operation (e.g. `configurePIN`, `disablePINFromCurrentDepth`,
+        /// for the actual security operation (e.g. `configurePIN`, `disablePIN(at:confirmingPIN:)`,
         /// `reEnablePIN`). This keeps the view decoupled from which operation is being confirmed.
         case setup
         /// Phase 1: verify existing normal PIN. Phase 2: enter + confirm new PIN.

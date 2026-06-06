@@ -51,7 +51,7 @@ extension Manager {
         /// **Why computed (not stored):**
         ///
         /// `coercerBaseDepth` only changes alongside other tracked `@Observable` properties
-        /// (`appLockEnabled`, `state`). SwiftUI re-renders triggered by those properties
+        /// (`pinEnabled`, `state`). SwiftUI re-renders triggered by those properties
         /// will re-read this computed property from the freshly saved config, so reactivity
         /// is preserved without maintaining a separate in-memory copy that could drift.
         ///
@@ -77,21 +77,21 @@ extension Manager {
         /// Used by `OccultaApp` to skip the PIN prompt within the grace period.
         private(set) var lastUnlockDate: Date? = nil
 
-        /// Whether the PIN overlay gate is currently enabled.
+        /// Whether the PIN overlay gate is enabled at the current depth.
         ///
         /// When `false`, the app opens without showing the PIN prompt even though all PIN
         /// verifiers remain intact. This happens when the user explicitly lowers the gate
-        /// via `disablePINFromCurrentDepth(confirmingPIN:)` — typically under coercion
-        /// while in `.normal` or `.duress` state — so that the Settings toggle shows no
-        /// observable difference from a device with no PIN configured.
+        /// via `disablePIN(at:confirmingPIN:)` — typically under coercion while in
+        /// `.normal` or `.duress` state — so that the Settings toggle shows no observable
+        /// difference from a device with no PIN configured.
         ///
         /// Critically, depth-filtering still applies when the gate is down: contacts and vault
         /// entries whose `visibleThroughDepth` is set remain hidden at the stored depth,
         /// regardless of whether the PIN overlay fires on scene activation.
         ///
-        /// Persisted across app kills via `AppLayerConfig.pinEnabled`. Restored in `init`.
+        /// Persisted per depth via `AppLayerConfig.pinEnabledPerDepth`. Restored in `init`.
         /// Always `true` after any clean state transition.
-        private(set) var appLockEnabled: Bool = true
+        private(set) var pinEnabled: Bool = true
 
         /// Drives the opaque overlay — true means content is hidden.
         /// Set instantly in both directions; the overlay uses .animation(.none).
@@ -155,7 +155,7 @@ extension Manager {
             } else {
                 let seed = AppLayerConfig()
                 try? seed.writePersistedDepth(0)
-                try? seed.writePinEnabled(true)
+                // pinEnabledPerDepth initialised to all-true in AppLayerConfig.init().
                 // coercerBaseDepth seeded to 0 at row creation so its presence is
                 // forensically constant — a field that first appears after a coercion
                 // event would itself be a tell. Value 0 means "real user's depth is
@@ -191,24 +191,38 @@ extension Manager {
                 try? context.save()
             }
 
+            // Migration: populate pinEnabledPerDepth from legacy scalar pinEnabled.
+            // Installs created before per-layer PIN tracking have an empty array.
+            // Seed all entries as `true`; if the old scalar was `false`, record that
+            // at the persisted depth so the gate stays down after the upgrade.
+            let persistedDepth = config.readPersistedDepth()
+            if config.pinEnabledPerDepth.isEmpty {
+                var array = AppLayerConfig.pinEnabledFillerArray()
+                if !config.readPinEnabledLegacy(), persistedDepth < array.count,
+                   let encrypted = try? JSONEncoder().encode(false).encrypt() {
+                    array[persistedDepth] = encrypted
+                }
+                config.pinEnabledPerDepth = array
+                try? context.save()
+            }
+
             // Restore routing depth and gate state so depth-filtering and the PIN
             // overlay behave correctly after an app kill or restart. Both fields
             // fall back to the safe default on any decode failure.
             //
-            // `currentDepth` is only restored when the gate is down (`appLockEnabled = false`).
+            // `currentDepth` is only restored when the gate is down (`pinEnabled = false`).
             // When the gate is up, `verify()` + `applyVerifyState()` always re-establishes
             // `currentDepth` from the PIN scan, so pre-seeding it here would be wrong.
             // When the gate is down, no PIN entry occurs, so the persisted value is the
             // only source of truth — restoring it prevents the real layer from being
             // exposed after a kill/relaunch with the toggle disabled.
-            let persistedDepth   = config.readPersistedDepth()
-            self.state          = persistedDepth > 0 ? .duress : .normal
-            self.appLockEnabled = config.readPinEnabled()
-            if !self.appLockEnabled { self.currentDepth = persistedDepth }
+            self.state      = persistedDepth > 0 ? .duress : .normal
+            self.pinEnabled = config.readPinEnabled(at: persistedDepth)
+            if !self.pinEnabled { self.currentDepth = persistedDepth }
 
             let pinRequired      = config.sealedNormalVerifier != nil
-            self.isContentHidden = pinRequired && self.appLockEnabled
-            self.needsPINEntry   = pinRequired && self.appLockEnabled
+            self.isContentHidden = pinRequired && self.pinEnabled
+            self.needsPINEntry   = pinRequired && self.pinEnabled
         }
 
         // MARK: - State transition
@@ -222,9 +236,9 @@ extension Manager {
         /// deactivation paths) simply pass the target integer directly.
         private func setState(_ depth: Int, pinEnabled: Bool = true, config: AppLayerConfig) throws {
             try config.writePersistedDepth(depth)
-            try config.writePinEnabled(pinEnabled)
-            self.state          = depth > 0 ? .duress : .normal
-            self.appLockEnabled = pinEnabled
+            try config.writePinEnabled(pinEnabled, at: depth)
+            self.state      = depth > 0 ? .duress : .normal
+            self.pinEnabled = pinEnabled
         }
 
         // MARK: - App lock
@@ -239,20 +253,20 @@ extension Manager {
         /// App went .inactive (share sheet, Spotlight). Cover content for screenshot protection;
         /// do not present the PIN gate (conflicts with UIActivityViewController).
         func handleInactive(vaultUnlocked: Bool) {
-            guard self.requiresPIN, self.appLockEnabled, vaultUnlocked else { return }
+            guard self.requiresPIN, self.pinEnabled, vaultUnlocked else { return }
             self.isContentHidden = true
         }
 
         /// App fully backgrounded. Cover content; raise PIN gate only when grace period has expired.
         func handleBackground() {
-            guard self.requiresPIN, self.appLockEnabled else { return }
+            guard self.requiresPIN, self.pinEnabled else { return }
             self.isContentHidden = true
             self.needsPINEntry   = !self.isWithinGracePeriod
         }
 
         /// App returned to foreground. Auto-unlock within grace period; re-lock when expired.
         func handleActive() {
-            guard self.requiresPIN, self.appLockEnabled else {
+            guard self.requiresPIN, self.pinEnabled else {
                 self.isContentHidden = false
                 self.needsPINEntry   = false
                 return
@@ -352,9 +366,8 @@ extension Manager {
             try self.setState(0, config: config)
             try self.modelContext.save()
             self.resetCounters()
-            self.appLockEnabled  = true
-            self.state           = .normal
-            self.currentDepth    = 0
+            self.state        = .normal
+            self.currentDepth = 0
         }
 
         // MARK: - Secure Mode
@@ -990,11 +1003,11 @@ extension Manager {
 
         // MARK: - Coercion-resistant gate
 
-        /// Lowers the PIN overlay gate while keeping all verifiers and depth-filtering intact.
+        /// Lowers the PIN overlay gate at `depth` while keeping all verifiers and depth-filtering intact.
         ///
         /// After this call:
-        /// - `appLockEnabled` is `false` — the app opens without showing the PIN overlay.
-        /// - `currentDepth` is unchanged — depth-1 filtering (hidden contacts and vault entries)
+        /// - `pinEnabled` is `false` — the app opens without showing the PIN overlay.
+        /// - `currentDepth` is unchanged — depth-filtering (hidden contacts and vault entries)
         ///   continues to apply, so a coerced device still shows the duress view.
         /// - All PIN verifiers are intact — the user can call `reEnablePIN(_:)` to restore the
         ///   gate without entering the setup flow again.
@@ -1003,18 +1016,20 @@ extension Manager {
         /// `sealedDuressVerifier` in `.duress` state, `sealedNormalVerifier` in `.normal`.
         /// This ensures a coercer at depth 1 cannot lower the gate using a PIN they don't know.
         ///
-        /// - Parameter confirmingPIN: Must match the current layer's verifier.
-        /// - Throws: `SecurityError.invalidStateTransition` if not in `.normal` or `.duress`.
+        /// - Parameters:
+        ///   - depth: The depth whose gate is being lowered. Pass `currentDepth`.
+        ///   - confirmingPIN: Must match the current layer's verifier.
+        /// - Throws: `SecurityError.invalidStateTransition` if Secure Mode is not active.
         ///           `SecurityError.incorrectPIN` if the confirming PIN does not match.
-        func disablePINFromCurrentDepth(confirmingPIN: String) throws {
+        func disablePIN(at depth: Int, confirmingPIN: String) throws {
             let config = try self.requireConfig()
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
             guard self.checkCurrentLayerPIN(confirmingPIN) else { throw SecurityError.incorrectPIN }
-            try self.setState(self.currentDepth, pinEnabled: false, config: config)
+            try self.setState(depth, pinEnabled: false, config: config)
             try self.modelContext.save()
         }
 
-        /// Re-enables the PIN gate after it was lowered by `disablePINFromCurrentDepth`.
+        /// Re-enables the PIN gate after it was lowered by `disablePIN(at:confirmingPIN:)`.
         ///
         /// The Settings UI always uses `.setup` mode (enter + confirm two matching entries),
         /// making this flow visually identical to initial PIN setup from the coercer's
