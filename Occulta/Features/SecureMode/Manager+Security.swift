@@ -154,7 +154,7 @@ extension Manager {
                 config = existing
             } else {
                 let seed = AppLayerConfig()
-                try? seed.writeRoutingDepth(.normal)
+                try? seed.writePersistedDepth(0)
                 try? seed.writePinEnabled(true)
                 // coercerBaseDepth seeded to 0 at row creation so its presence is
                 // forensically constant — a field that first appears after a coercion
@@ -194,8 +194,17 @@ extension Manager {
             // Restore routing depth and gate state so depth-filtering and the PIN
             // overlay behave correctly after an app kill or restart. Both fields
             // fall back to the safe default on any decode failure.
-            self.state          = config.readRoutingDepth()
+            //
+            // `currentDepth` is only restored when the gate is down (`appLockEnabled = false`).
+            // When the gate is up, `verify()` + `applyVerifyState()` always re-establishes
+            // `currentDepth` from the PIN scan, so pre-seeding it here would be wrong.
+            // When the gate is down, no PIN entry occurs, so the persisted value is the
+            // only source of truth — restoring it prevents the real layer from being
+            // exposed after a kill/relaunch with the toggle disabled.
+            let persistedDepth   = config.readPersistedDepth()
+            self.state          = persistedDepth > 0 ? .duress : .normal
             self.appLockEnabled = config.readPinEnabled()
+            if !self.appLockEnabled { self.currentDepth = persistedDepth }
 
             let pinRequired      = config.sealedNormalVerifier != nil
             self.isContentHidden = pinRequired && self.appLockEnabled
@@ -206,10 +215,15 @@ extension Manager {
 
         /// Atomically writes routing depth and gate state to config and updates in-memory properties.
         /// The caller is responsible for calling `modelContext.save()` afterward.
-        private func setState(_ depth: RoutingDepth, pinEnabled: Bool = true, config: AppLayerConfig) throws {
-            try config.writeRoutingDepth(depth)
+        ///
+        /// `depth` is the exact integer depth to persist — pass an explicit literal or the
+        /// in-memory `currentDepth` value, never a derived enum. This avoids a mutation-order
+        /// dependency: callers that reset `currentDepth` after calling `setState` (e.g.
+        /// deactivation paths) simply pass the target integer directly.
+        private func setState(_ depth: Int, pinEnabled: Bool = true, config: AppLayerConfig) throws {
+            try config.writePersistedDepth(depth)
             try config.writePinEnabled(pinEnabled)
-            self.state          = depth
+            self.state          = depth > 0 ? .duress : .normal
             self.appLockEnabled = pinEnabled
         }
 
@@ -308,7 +322,7 @@ extension Manager {
             let config = try self.requireConfig()
             config.sealedNormalVerifier = sealedNormal   // scalar: nil/non-nil flag for requiresPIN
             config.writeNormalVerifier(sealedNormal, at: 0)  // array[0]: scanned by verify()
-            try self.setState(.normal, config: config)
+            try self.setState(0, config: config)
             try self.modelContext.save()
 
             self.resetCounters()
@@ -335,7 +349,7 @@ extension Manager {
 
             config.sealedNormalVerifier = nil  // scalar
             config.writeNormalVerifier(AppLayerConfig.verifierFiller(), at: 0)  // reset array[0]
-            try self.setState(.normal, config: config)
+            try self.setState(0, config: config)
             try self.modelContext.save()
             self.resetCounters()
             self.appLockEnabled  = true
@@ -788,13 +802,13 @@ extension Manager {
                 // depth 0 (real app) or depth 1 (first duress view) — last duress layer
                 // removed. Secure Mode fully off; return to pinOnly.
                 config.sealedDuressVerifier = nil
-                try self.setState(.normal, config: config)
+                try self.setState(0, config: config)
                 self.currentDepth = 0
             } else {
                 // Expendable layer removed. Per the deactivation chain, always land at
                 // depth 1 (.duress) — the convincing first-duress view must be the final
                 // stop before the real app is reachable.
-                try self.setState(.duress, config: config)
+                try self.setState(1, config: config)
                 self.currentDepth = 1
             }
 
@@ -841,7 +855,7 @@ extension Manager {
             config.clearVerifiers(from: 1)  // keep normalVerifiers[0] (master PIN intact)
             config.clearBlobSlot(at: 0)
             config.clearSequenceNumber(at: 0)
-            try self.setState(.normal, config: config)
+            try self.setState(0, config: config)
             self.currentDepth = 0
             try self.modelContext.save()
 
@@ -996,7 +1010,7 @@ extension Manager {
             let config = try self.requireConfig()
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
             guard self.checkCurrentLayerPIN(confirmingPIN) else { throw SecurityError.incorrectPIN }
-            try self.setState(self.state, pinEnabled: false, config: config)
+            try self.setState(self.currentDepth, pinEnabled: false, config: config)
             try self.modelContext.save()
         }
 
@@ -1045,7 +1059,7 @@ extension Manager {
                                             verifier: verifier, seKey: seKey) {
                     self.currentDepth = k
                     self.state        = .normal
-                    try? self.setState(.normal, config: config)
+                    try? self.setState(k, config: config)
                     try? self.modelContext.save()
                     return true
                 }
@@ -1058,7 +1072,7 @@ extension Manager {
                                             verifier: verifier, seKey: seKey) {
                     self.currentDepth = k + 1
                     self.state        = .duress
-                    try? self.setState(.duress, config: config)
+                    try? self.setState(k + 1, config: config)
                     try? self.modelContext.save()
                     return true
                 }
@@ -1119,7 +1133,7 @@ extension Manager {
             // Re-enable the gate. State stays .duress (we are at a depth above 0);
             // currentDepth is unchanged (still N — the gate fires on next foreground and
             // verify() will set currentDepth = N+1 when the coercer enters PIN C).
-            try? self.setState(.duress, pinEnabled: true, config: config)
+            try? self.setState(self.currentDepth, pinEnabled: true, config: config)
             try? self.modelContext.save()
             return true
         }

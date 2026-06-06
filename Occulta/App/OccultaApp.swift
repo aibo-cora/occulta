@@ -476,6 +476,10 @@ struct OccultaApp: App {
                 guard let bundle else {
                     throw ContactManager.Errors.messageHasNoData
                 }
+                /// To avoid popping a prekey prematurely, in case this ownerID belongs to a sensitive contact, we are going to run the id through the checkpoint and throw if it is on the list.
+                if let ownerID = try self.contactManager.identifyOwner(of: bundle) {
+                    try self.passSecurityControl(identifier: ownerID)
+                }
 
                 // ContactManager owns sender identification, prekey resolution,
                 // consumed-key cleanup, inbound batch sync, and model persistence.
@@ -484,8 +488,6 @@ struct OccultaApp: App {
                 // bytes) so we can peek at the identity-challenge envelope and
                 // route that traffic out of the basket pipeline entirely.
                 let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
-                
-                try self.passSecurityControl(identifier: ownerID)
 
                 // Identity-challenge traffic rides on .v3fs/.longTermFallback
                 // but is NOT a basket — hand it to the coordinator and bail.

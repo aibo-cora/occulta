@@ -861,6 +861,56 @@ Check point A was removed from `processInboundFile` because the gate now fires i
 
 ---
 
+## Bug 49 — Prekey consumed before depth gate fires; bundle from sensitive contact becomes permanently undecryptable
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+Opening a bundle from a sensitive contact while in duress mode consumes the prekey and then throws a depth-gate error. The bundle cannot be opened again in normal mode because the prekey is gone.
+
+### Reproduction
+
+1. Activate Secure Mode. Mark a contact as sensitive.
+2. That contact sends a forward-secret message (`.v3fs`, `.forwardSecret` mode).
+3. Enter the duress PIN. Open the `.occ` file.
+4. The app shows the correct "not addressed to you" error (depth gate blocked it). ✓
+5. Enter the normal PIN. Try to open the same `.occ` file again.
+6. Decryption fails — the prekey was consumed in step 3 and is gone.
+
+### Root Cause
+
+Bug 40's resolution placed `passSecurityControl` immediately *after* `decryptSealed`:
+
+```swift
+let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
+try self.passSecurityControl(identifier: ownerID)
+```
+
+`decryptSealed` consumes the prekey on successful decryption — before `passSecurityControl` has had any chance to throw. The prekey is gone regardless of what the depth gate decides. The gate is then enforced correctly (the error is shown), but it arrives too late: the cryptographic state has already been mutated.
+
+### Resolution
+
+`ContactManager` gains a new private `identifyOwner(for:)` helper and a public `identifyOwner(of:)` wrapper. Both are fingerprint-only lookups — they iterate stored contact key records, compute `SHA-256(contactPublicKey ∥ fingerprintNonce)`, and return the matching contact identifier. No prekey is touched.
+
+`buildOwnedBasket` now calls `identifyOwner(of:)` **before** `decryptSealed`, passes the result to `passSecurityControl`, and only reaches `decryptSealed` when the gate passes:
+
+```swift
+if let ownerID = try self.contactManager.identifyOwner(of: bundle) {
+    try self.passSecurityControl(identifier: ownerID)
+}
+let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
+```
+
+The depth gate now fires before any prekey is consumed. If a sensitive contact's bundle is rejected in duress mode, the prekey remains intact and the bundle is fully openable in normal mode.
+
+Three regression tests added to `DuressModePrekeyTests.swift`:
+- `identifyOwner_isPrekeySafe_noMatch` — prekey count unchanged after identification with no contact match.
+- `identifyOwner_isPrekeySafe_withMatchingContact` — same, when the contact IS fingerprint-matched (device only).
+- `isSafeContact_sensitiveContact_blockedInDuress` — depth gate fires correctly for sensitive contacts.
+
+---
+
 ## Bug 42 — Duress PIN rejected during Secure Mode activation
 
 **Status:** Closed (Fixed)

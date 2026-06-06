@@ -1044,32 +1044,19 @@ extension ContactManager {
 }
  
 extension ContactManager {
-    /// Decrypt a v3fs bundle and return the plaintext message bytes.
-    ///
-    /// Regular message path. For identity-challenge traffic the caller needs
-    /// the full `SealedPayload` so it can route on `identityChallenge` — use
-    /// ``decryptSealed(bundle:)`` instead.
-    func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
-        let (sealed, ownerID) = try self.decryptSealed(bundle: bundle)
-        return (sealed.message, ownerID)
-    }
-
-    /// Decrypt a v3fs bundle and return the full decoded ``SealedPayload``.
-    ///
-    /// Needed by the identity-challenge routing hook in `OccultaApp`, which
-    /// inspects `identityChallenge` to decide whether to hand the bundle to
-    /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
-    func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
+    private func verifyConsistency(for bundle: OccultaBundle) throws {
         guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
         // Defence-in-depth: never touch a bundle whose version or mode was
         // produced by a future build we don't understand. `Version`/`Mode` both
         // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
         guard bundle.secrecy.mode != .unsupported else { throw OccultaBundle.BundleError.unsupportedMode }
- 
+    }
+    
+    private func identifyOwner(for bundle: OccultaBundle) throws -> Contact.Profile {
+        try self.verifyConsistency(for: bundle)
+        
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
- 
-        // ── 1. Identify sender by fingerprint ───────────────────────────
+        
         let contacts = try self.fetchAllContacts()
         var sender: Contact.Profile?
  
@@ -1086,11 +1073,43 @@ extension ContactManager {
             }
         }
         
-        try sender?.configureForwardSecrecy()
- 
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
+        
+        return sender
+    }
+    
+    func identifyOwner(of bundle: OccultaBundle) throws -> String? {
+        let sender = try self.identifyOwner(for: bundle)
+        
+        return sender.identifier
+    }
+    /// Decrypt a v3fs bundle and return the plaintext message bytes.
+    ///
+    /// Regular message path. For identity-challenge traffic the caller needs
+    /// the full `SealedPayload` so it can route on `identityChallenge` — use
+    /// ``decryptSealed(bundle:)`` instead.
+    func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
+        let (sealed, ownerID) = try self.decryptSealed(bundle: bundle)
+        return (sealed.message, ownerID)
+    }
+
+    /// Decrypt a v3fs bundle and return the full decoded ``SealedPayload``.
+    ///
+    /// Needed by the identity-challenge routing hook in `OccultaApp`, which
+    /// inspects `identityChallenge` to decide whether to hand the bundle to
+    /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
+    func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
+        try self.verifyConsistency(for: bundle)
  
-        // ── 4. Key derivation + open ─────────────────────────────────────
+        let cryptoOps     = Manager.Crypto()
+        let prekeyManager = Manager.PrekeyManager()
+ 
+        // ── 1. Identify sender by fingerprint ───────────────────────────
+        let sender = try self.identifyOwner(for: bundle)
+        
+        try sender.configureForwardSecrecy()
+ 
+        // ── 2. Key derivation + open ─────────────────────────────────────
         //
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
         //
@@ -1200,7 +1219,7 @@ extension ContactManager {
  
         guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
  
-        // ── 6. Detect inbound fallback → schedule fresh batch ─────────────
+        // ── 3. Detect inbound fallback → schedule fresh batch ─────────────
         //
         // A .longTermFallback bundle means the sender is out of our prekeys.
         // Generate a new batch immediately so Alice's next outbound message
@@ -1222,7 +1241,7 @@ extension ContactManager {
         
         let decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
  
-        // ── 7. Store inbound prekey batch ────────────────────────────────
+        // ── 4. Store inbound prekey batch ────────────────────────────────
         if let inboundBatch = decodedPayload.prekeyBatch {
             debugPrint("Decrypting bundle containing inbound prekey sync batch...")
             
@@ -1249,7 +1268,7 @@ extension ContactManager {
             try sender.syncInboundPrekeys(blobs, date: inboundBatch.generatedAt)
         }
  
-        // ── 8. Persist ───────────────────────────────────────────────────
+        // ── 5. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
         
         debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")

@@ -274,17 +274,24 @@ final class AppLayerConfig {
 
     // MARK: - Routing depth
 
-    /// Decodes the persisted routing depth. Falls back to `.normal` on any decode failure.
-    func readRoutingDepth() -> RoutingDepth {
+    /// Decodes the persisted routing depth as a raw integer.
+    ///
+    /// Storing an `Int` (rather than the two-case `RoutingDepth` enum) lets callers
+    /// round-trip the full `currentDepth` value — including depths > 1 that arise in
+    /// multi-layer coercion stacks. On-disk encoding is unchanged: existing rows
+    /// store 0 or 1 as JSON integers, which decode correctly as `Int`.
+    ///
+    /// Falls back to `0` (`.normal`) on any decode failure — the safe default.
+    func readPersistedDepth() -> Int {
         guard
             let data      = self.persistedDepth,
             let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(RoutingDepth.self, from: decrypted)
-        else { return .normal }
+            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return 0 }
         return value
     }
 
-    func writeRoutingDepth(_ depth: RoutingDepth) throws {
+    func writePersistedDepth(_ depth: Int) throws {
         self.persistedDepth = try JSONEncoder().encode(depth).encrypt()
     }
 
