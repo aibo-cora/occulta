@@ -242,7 +242,7 @@ final class AppLayerConfig {
             self.layerSequenceNumbers.append(Self.randomFiller())
         }
         while self.pinEnabledPerDepth.count < Self.paddedArrayCount {
-            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(true).encrypt()) ?? Self.randomFiller())
+            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? Self.randomFiller())
         }
     }
 
@@ -279,12 +279,17 @@ final class AppLayerConfig {
         (0..<maxVerifierCount).map { _ in Self.verifierFiller() }
     }
 
-    /// Returns a 32-entry array of encrypted `true` values — the default for a fresh install
+    /// Returns a 32-entry array of encrypted `1` values — the default for a fresh install
     /// or any depth that has never had the gate explicitly disabled. All entries are encrypted
     /// so they are indistinguishable from a real entry where the gate is up.
+    ///
+    /// Encoded as `UInt8` (not `Bool`) so `enabled=true` and `enabled=false` produce
+    /// equal-length JSON (`"1"` vs `"0"`, both 1 byte). AES-GCM does not pad, so a
+    /// Bool encoding would leak the value through ciphertext length alone — `"true"` (4 bytes)
+    /// vs `"false"` (5 bytes) would differ by one byte without any decryption.
     static func pinEnabledFillerArray() -> [Data] {
         (0..<paddedArrayCount).map { _ in
-            (try? JSONEncoder().encode(true).encrypt()) ?? randomFiller()
+            (try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? randomFiller()
         }
     }
 
@@ -315,16 +320,18 @@ final class AppLayerConfig {
     // MARK: - PIN enabled (per depth)
 
     /// Decodes the gate state for `depth`. Falls back to `true` (PIN required) on any decode failure.
+    ///
+    /// Encoded as `UInt8` (0/1) — see `pinEnabledFillerArray()` for the length-leak rationale.
     func readPinEnabled(at depth: Int) -> Bool {
         guard depth < self.pinEnabledPerDepth.count,
               let decrypted = self.pinEnabledPerDepth[depth].decrypt(),
-              let value     = try? JSONDecoder().decode(Bool.self, from: decrypted)
+              let value     = try? JSONDecoder().decode(UInt8.self, from: decrypted)
         else { return true }
-        return value
+        return value != 0
     }
 
     func writePinEnabled(_ enabled: Bool, at depth: Int) throws {
-        guard let encrypted = try JSONEncoder().encode(enabled).encrypt() else {
+        guard let encrypted = try JSONEncoder().encode(enabled ? UInt8(1) : UInt8(0)).encrypt() else {
             throw CocoaError(.coderValueNotFound)
         }
         self.ensurePadded()
