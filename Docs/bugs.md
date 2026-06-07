@@ -1526,3 +1526,67 @@ Three properties removed: `lastUnlockDate`, `recordUnlock()`, and `isWithinGrace
 
 **Outcome:** a user composing for 30 minutes who shares to WhatsApp and returns in under 5 minutes sees no PIN gate. A user who sets the phone down for 5+ minutes and returns sees the PIN gate. The gate is now tied to actual unattended time, not to authentication history.
 
+---
+
+## Bug 56 — Contacts briefly visible between UIKit cover removal and PIN fullScreenCover presentation
+
+**Status:** Open
+
+### Severity: High
+
+When returning to the app after the grace period has expired, there is a brief window where contacts are visible. The user observes: spinner cover → contacts → PIN view. Contacts should never be visible before PIN entry.
+
+### Root Cause
+
+Two compounding issues:
+
+**1. Wrong call order in `sceneDidBecomeActive` (`SceneDelegate.swift:8–10`):**
+
+```swift
+func sceneDidBecomeActive(_ scene: UIScene) {
+    self.removeCover()            // UIKit cover torn down first
+    self.security?.handleActive() // needsPINEntry set second
+}
+```
+
+The UIKit spinner cover is removed synchronously before `needsPINEntry` is set to `true`. Between these two lines the SwiftUI content (contacts) is live and unobscured.
+
+**2. `fullScreenCover` presentation is asynchronous.** Even if the call order is swapped, SwiftUI does not present the PIN `fullScreenCover` in the same run loop cycle as the `needsPINEntry = true` state change. UIKit modal presentation requires multiple render passes; the contacts view is live beneath it for those frames.
+
+The observable sequence:
+1. Spinner cover (`UIActivityIndicatorView`) — installed by `sceneWillResignActive`
+2. Contacts briefly visible — after `removeCover()`, before PINEntry finishes presenting
+3. PIN view — `fullScreenCover` finally on screen
+
+### Proposed Fix
+
+Keep the UIKit cover in place until `PINEntry` confirms it is on screen via `onAppear`. Only remove the cover immediately when no PIN is needed (grace period still valid).
+
+**`SceneDelegate.sceneDidBecomeActive`:** call `handleActive()` first; skip `removeCover()` when `needsPINEntry` is true.
+
+```swift
+func sceneDidBecomeActive(_ scene: UIScene) {
+    self.security?.handleActive()
+    guard self.security?.needsPINEntry != true else { return }
+    self.removeCover()
+}
+```
+
+**`OccultaApp` fullScreenCover content:** add `.onAppear` that removes the cover once PINEntry is on screen (safe to remove because PINEntry is already covering the content).
+
+```swift
+PINEntry(...)
+    .environment(self.security)
+    .onAppear {
+        if let scene = UIApplication.shared.connectedScenes
+            .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+           let delegate = scene.delegate as? SceneDelegate {
+            delegate.removeCover()
+        }
+    }
+```
+
+`removeCover()` must be made non-private for the call site in the fullScreenCover to compile.
+
+**Invariant:** the UIKit cover is always torn down — either immediately in `sceneDidBecomeActive` (no PIN needed) or in `PINEntry.onAppear` (PIN needed). There is no path where the cover is left up indefinitely.
+
