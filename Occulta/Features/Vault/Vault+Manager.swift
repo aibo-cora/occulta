@@ -45,7 +45,7 @@ final class VaultManager {
 
     /// `true` when a pre-evaluated `LAContext` is held in memory (vault unlocked).
     /// Becomes `false` as soon as `lock()` clears `authContext`.
-    var isUnlocked: Bool { authContext != nil }
+    var isUnlocked: Bool { self.authContext != nil }
 
     // MARK: - Recovery health
 

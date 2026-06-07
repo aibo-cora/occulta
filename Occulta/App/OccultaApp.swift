@@ -385,16 +385,6 @@ struct OccultaApp: App {
                             break
                         }
                     }
-                    // Opaque overlay: covers content instantly on lock and during .inactive
-                    // for screenshot protection (Bug 33/36). Always instant — no fade animation.
-                    // SwiftUI overlay — does NOT conflict with UIActivityViewController.
-                    .overlay {
-                        Color(.systemBackground)
-                            .ignoresSafeArea()
-                            .opacity(self.security.isContentHidden ? 1 : 0)
-                            .animation(.none, value: self.security.isContentHidden)
-                            .allowsHitTesting(false)
-                    }
                     // fullScreenCover rather than overlay: a UIKit modal presentation
                     // stacks above any existing sheets, so it cannot be underlapped by
                     // conversation or identity-challenge sheets triggered while locked.
