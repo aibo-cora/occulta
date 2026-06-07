@@ -74,10 +74,6 @@ extension Manager {
             return config.readCoercerBaseDepth()
         }
 
-        /// Date of the most recent successful PIN verification. In-memory only — nil after kill.
-        /// Used by `OccultaApp` to skip the PIN prompt within the grace period.
-        private(set) var lastUnlockDate: Date? = nil
-
         /// Whether the PIN overlay gate is enabled at the current depth.
         ///
         /// When `false`, the app opens without showing the PIN prompt even though all PIN
@@ -101,11 +97,6 @@ extension Manager {
         /// Drives the fullScreenCover PIN gate — true means the PIN entry sheet is presented.
         /// Not private(set) so the fullScreenCover binding can clear it on system-initiated dismiss.
         var needsPINEntry: Bool = false
-
-        /// Record a successful authentication. Call from `PINEntry.onNormal` and `onDuress`.
-        func recordUnlock() {
-            self.lastUnlockDate = Date()
-        }
 
         // MARK: - Private
 
@@ -245,53 +236,58 @@ extension Manager {
 
         // MARK: - App lock
 
+        /// How long the app must be in the background before the PIN gate re-engages on return.
+        /// Measures actual unattended time, not time since last auth — brief interruptions
+        /// (share sheets, Face ID prompts, notification banners) never trigger a re-lock.
         private static let gracePeriod: TimeInterval = 5 * 60
 
-        private var isWithinGracePeriod: Bool {
-            guard let last = self.lastUnlockDate else { return false }
-            return Date().timeIntervalSince(last) < Self.gracePeriod
-        }
+        /// Set when the app enters the background; cleared on every foreground return.
+        /// `nil` means the app has not yet backgrounded this session (cold start or brief
+        /// inactive-only interruption), which counts as zero background duration.
+        private var backgroundEntryDate: Date? = nil
 
-        /// App went .inactive (share sheet, Spotlight). Cover content for screenshot protection;
-        /// do not present the PIN gate (conflicts with UIActivityViewController).
+        /// App went .inactive (share sheet, Spotlight, Face ID prompt). Cover content for
+        /// screenshot protection; do not present the PIN gate — the app has not been backgrounded.
         func handleInactive() {
             self.isContentHidden = true
         }
 
-        /// App fully backgrounded. Cover content; raise PIN gate only when grace period has expired.
+        /// App fully backgrounded. Cover content and record when the app became unattended.
+        /// The PIN gate decision is deferred to `handleActive()` based on background duration.
         func handleBackground() {
             self.isContentHidden = true
-            if self.requiresPIN, self.pinEnabled {
-                self.needsPINEntry = !self.isWithinGracePeriod
-            }
+            self.backgroundEntryDate = Date()
         }
 
-        /// App returned to foreground. Auto-unlock within grace period; re-lock when expired.
+        /// App returned to foreground. Lock only if the app was in the background longer than
+        /// the grace period — i.e. it was genuinely unattended, not just briefly interrupted.
         func handleActive() {
+            let elapsed = self.backgroundEntryDate.map { Date().timeIntervalSince($0) } ?? 0
+            self.backgroundEntryDate = nil
+
             guard self.requiresPIN, self.pinEnabled else {
                 self.isContentHidden = false
                 self.needsPINEntry   = false
                 return
             }
-            if self.isWithinGracePeriod {
-                self.isContentHidden = false
-                self.needsPINEntry   = false
-            } else {
+
+            if elapsed > Self.gracePeriod {
                 self.isContentHidden = true
                 self.needsPINEntry   = true
+            } else {
+                self.isContentHidden = false
+                self.needsPINEntry   = false
             }
         }
 
-        /// Call from onNormal after PIN entry — clears the lock gate and records the unlock.
+        /// Call from onNormal after PIN entry — clears the lock gate.
         func unlockNormal() {
-            self.recordUnlock()
             self.isContentHidden = false
             self.needsPINEntry   = false
         }
 
         /// Call from onDuress after duress PIN entry — same lock-state transition as unlockNormal.
         func unlockDuress() {
-            self.recordUnlock()
             self.isContentHidden = false
             self.needsPINEntry   = false
         }
@@ -626,7 +622,6 @@ extension Manager {
             try config.writeSequenceNumber(sequenceNumber, at: depth)
             try self.modelContext.save()
             self.resetCounters()
-            self.lastUnlockDate = nil
         }
 
         /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
