@@ -148,7 +148,7 @@ Measures that prevent an observer from inferring Secure Mode state from app beha
 | U5a | SwiftUI opacity overlay on `.inactive` / `.background` — hides content for PIN gate UX | High | ✅ Bug 54B fixed |
 | U5b | Vault `lockGate` — replaces vault list with lock screen when `vault.isUnlocked = false` | High | ✅ (wins race via UIKit notification, SwiftUI render may lag) |
 | U5c | `.privacySensitive(true)` on vault entry detail and new-entry sheet | Low | ✅ (widget/Focus Mode redaction only — no effect on OS snapshots) |
-| U5d | OS app-switcher snapshot — SpringBoard captures before any app callback fires; requires proactive content hiding | Critical | ⚠️ Open — callback-based approach is architecturally insufficient |
+| U5d | OS app-switcher snapshot — KTX file taken after `applicationDidEnterBackground` returns (QA1838); animation frame pre-callback | Critical | ⚠️ Open — wrong hook (`willResignActive`) used in prior attempt; correct `didEnterBackground` cover not yet implemented |
 | U6 | Share index filtered to depth-1 on lock | Critical | ✅ Bug 6 / Bug 54A fixed |
 
 ### U1 — PIN toggle always interactive
@@ -214,25 +214,32 @@ Marks content as privacy-sensitive for SwiftUI's `\.redactionReasons` environmen
 
 **Scope:** entire app. **Layer:** UIKit `UIWindow` at `windowLevel > .alert` (synchronous).
 
-A second `UIWindow` created at app init with a neutral view (app logo or blank `systemBackground`). Shown by setting `isHidden = false` synchronously in `UIApplication.willResignActiveNotification`. Torn down by setting `isHidden = true` in `UIApplication.didBecomeActiveNotification`.
+A second `UIWindow` created at app init with a neutral view (app logo or blank `systemBackground`). Shown by setting `isHidden = false` synchronously inside `applicationDidEnterBackground`. Torn down by setting `isHidden = true` in `applicationDidBecomeActive`.
 
-**Why this closes the race unconditionally:** `UIWindow.isHidden = false` is a UIKit operation that modifies the `CALayer` tree synchronously before the function returns. The OS takes the app-switcher snapshot during the `willResignActive` → background transition; by the time that snapshot is captured, the UIKit window is already in the layer hierarchy and is what gets photographed.
+**Two separate snapshot surfaces:**
 
-**Ordering with PIN `fullScreenCover`:** `didBecomeActiveNotification` fires before SwiftUI's `onChange(of: scenePhase)` for `.active`. The UIKit window is torn down (notification sink) before `handleActive()` sets `needsPINEntry = true` and the `fullScreenCover` begins presenting. No overlap.
+- **KTX forensic file** (`Library/SplashBoard/Snapshots/`): persistent; recoverable by Cellebrite, Magnet AXIOM. Per Apple Technical Q&A QA1838 (https://developer.apple.com/library/archive/qa/qa1838/_index.html): *"The snapshot is captured immediately after `-applicationDidEnterBackground:` returns."* A `UIWindow` installed synchronously in that method — no animation — is in the layer hierarchy when the method returns. iOS photographs the cover, not the underlying content. This measure closes the KTX gap.
+- **Animation frame**: the live pixel buffer SpringBoard captures at gesture-start, before any app callback fires. Not persistent; only visible to a co-present observer. Not closed by this measure.
 
-**Relationship to U5a:** the SwiftUI overlay (U5a) remains after this is implemented. The two serve different purposes:
-- UIKit window: wins the OS snapshot race (synchronous, inactive → background)
-- SwiftUI overlay: covers the PIN gate presentation gap (async, active while PIN entry animates in)
+**Ordering with PIN `fullScreenCover`:** `didBecomeActiveNotification` fires before SwiftUI's `onChange(of: scenePhase)` for `.active`. The UIKit window is torn down before `handleActive()` sets `needsPINEntry = true` and the `fullScreenCover` begins presenting. No overlap.
 
-**Condition:** only shown when `security.requiresPIN && security.pinEnabled`, matching the `handleInactive` guard. No-op for users without a PIN configured.
+**Relationship to U5a:** the SwiftUI overlay (U5a) remains. The two serve different purposes:
+- UIKit window (U5d): closes the KTX snapshot race synchronously in `applicationDidEnterBackground`
+- SwiftUI overlay (U5a): covers the PIN gate presentation gap (async, active while PIN entry animates in)
 
-**Why callback-based approaches fail:**
+**Condition:** only shown when `security.requiresPIN && security.pinEnabled`. No-op for users without a PIN configured.
 
-The app-switcher snapshot is captured by SpringBoard — a separate process — at the moment the user initiates the gesture, before it sends any IPC notifications into the app process. Every app-level hook (`willResignActiveNotification`, `sceneWillResignActive`, `applicationWillResignActive`) arrives after the capture. A UIKit window installed in any of these handlers is synchronous within the app process but the render server has already shipped the pixel buffer to SpringBoard by then. Testing confirmed 1-2 second visible delay regardless of hook used.
+**Why prior implementations using `willResignActive` failed:**
 
-**What would work:**
+`willResignActive` fires for many non-background events: share sheet presentation, incoming call, Face ID prompt, system alert. None of these produce a snapshot. More critically, `willResignActive` fires *before* `applicationDidEnterBackground` — before the KTX capture window opens. The hook was wrong.
 
-The cover must be in place before the gesture, not in response to it. This requires a proactive model: sensitive content is hidden by default and revealed only during active user interaction, with a short inactivity timeout reinstating the cover. The app switcher then captures the covered idle state unconditionally. This is a UX architecture decision, not a UIKit fix.
+Using `willResignActive` also introduces spurious cover flashes: every time the user opens the share sheet, the app momentarily loses focus, the cover installs, then the app returns to active. That is active UX harm for an event that produces no snapshot.
+
+The async Combine delivery (`receive(on: DispatchQueue.main)`) in the first implementation added an additional failure: the UIKit window was enqueued on the run loop rather than installed inline. The 1–2 second visual delay observed in testing was the animation frame showing live content — a pre-callback surface unrelated to which hook was used.
+
+**The remaining open concern — animation frame:**
+
+The animation frame is captured before any app callback. The only reliable defence is a proactive model: sensitive content hidden by default, revealed on interaction, re-covered on inactivity. The app switcher then captures the covered idle state regardless of timing. This is a UX architecture decision, addressed in Bug 54's proposed Level 2 resolution.
 
 ---
 

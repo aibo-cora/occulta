@@ -13,6 +13,7 @@ import Foundation
 import SwiftData
 import CryptoKit
 import SQLite3
+import UIKit
 
 extension Manager {
     @Observable
@@ -254,15 +255,15 @@ extension Manager {
         /// App went .inactive (share sheet, Spotlight). Cover content for screenshot protection;
         /// do not present the PIN gate (conflicts with UIActivityViewController).
         func handleInactive() {
-            guard self.requiresPIN, self.pinEnabled else { return }
             self.isContentHidden = true
         }
 
         /// App fully backgrounded. Cover content; raise PIN gate only when grace period has expired.
         func handleBackground() {
-            guard self.requiresPIN, self.pinEnabled else { return }
             self.isContentHidden = true
-            self.needsPINEntry   = !self.isWithinGracePeriod
+            if self.requiresPIN, self.pinEnabled {
+                self.needsPINEntry = !self.isWithinGracePeriod
+            }
         }
 
         /// App returned to foreground. Auto-unlock within grace period; re-lock when expired.
