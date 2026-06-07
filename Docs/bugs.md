@@ -1364,7 +1364,7 @@ At depth N (adversary, `coercerBaseDepth = 0`): `N ≠ 0` and `N ≠ 0` — bloc
 
 ## Bug 54 — `vaultManager.isUnlocked` always false in `.inactive` handler; share index unfiltered and screenshot overlay inactive
 
-**Status:** Partially closed (Incidents A and B fixed; OS snapshot race open)
+**Status:** Closed (Fixed)
 
 ### Severity: High (security / forensic)
 
@@ -1470,62 +1470,59 @@ self.security.handleInactive()
 
 ---
 
-### Remaining gap — OS app-switcher snapshot (open)
+### OS app-switcher snapshot — Resolution
 
-Two distinct surfaces are at risk, with different root causes:
+Two distinct surfaces were at risk:
 
-**KTX forensic file** (`Library/SplashBoard/Snapshots/`) — persistent; recoverable by Cellebrite, Magnet AXIOM, and similar tools without decrypting the device. A snapshot containing real contact names or vault labels survives a duress PIN session and directly contradicts a plausible-deniability claim.
+**App-switcher card** — the live pixel buffer SpringBoard captures as the user swipes up into the app switcher. Visible to a physical co-present observer; not a persistent forensic file.
 
-**Animation frame** — the live pixel buffer SpringBoard captures at the moment the user initiates the app-switch gesture (~0.5–1 s of visible live content). Not a persistent file; only visible to a physical co-present observer. A separate concern from the KTX file.
+**KTX forensic file** (`Library/SplashBoard/Snapshots/`) — written by iOS after `sceneDidEnterBackground` returns when the user actually switches to another app. Persistent; recoverable by Cellebrite, Magnet AXIOM, and similar tools without decrypting the device.
 
-**Affected surfaces:** contacts list, contact detail views, vault entry detail (if vault was unlocked). The vault lockGate and PIN entry screen contain no sensitive content.
+**Resolution — synchronous UIKit cover via `SceneDelegate`**
 
----
+A `SceneDelegate: NSObject, UIWindowSceneDelegate, ObservableObject` was introduced. SwiftUI's `@UIApplicationDelegateAdaptor` places the `AppDelegate` in the environment; because `SceneDelegate` conforms to `ObservableObject`, SwiftUI automatically injects it into the environment as well. A one-time bootstrapping view (`SecuritySetting`) reads both `SceneDelegate` and `Manager.Security` from the SwiftUI environment on first render and writes the security reference into the delegate, establishing the bridge before any content is shown.
 
-#### What was tried and why it doesn't work
+Three delegate methods are wired:
 
-**SwiftUI `isContentHidden` overlay** (`onChange(of: scenePhase) { .inactive }`)
+- **`sceneWillResignActive`** — installs a cover `UIView` (`.systemBackground` + spinner) directly into the existing `UIWindowScene` window via `CATransaction.setDisableActions(true)`. Synchronous; completes before UIKit composites the frame. Covers the app-switcher card immediately.
+- **`sceneDidBecomeActive`** — removes the cover unconditionally.
+- **`sceneDidEnterBackground`** — calls `security.handleBackground()`. The cover installed by `sceneWillResignActive` is still in the window hierarchy at this point; iOS photographs it for the KTX file.
 
-Schedules a re-render via SwiftUI's declarative update cycle. Re-renders are batched and deferred to the next frame commit. Never paints synchronously — insufficient for either surface.
+Injecting the cover into the *existing* UIWindow (not a new `UIWindow` at a higher level) was essential: a separate window at `.alert + 1` blocked `UIActivityViewController` (share sheet). Subview injection avoids any window-level conflict.
 
-**UIKit `UIWindow` at `.alert + 1` via `willResignActiveNotification`** (Combine async)
-
-Installed via Combine `.receive(on: DispatchQueue.main)` — enqueued on the run loop, not executed inline. 1–2 second visible delay due to async delivery. Wrong lifecycle hook and wrong delivery mechanism.
-
-**`sceneWillResignActive` via `UIWindowSceneDelegate`**
-
-Wired through `UIApplicationSceneManifest` in Info.plist. Synchronous UIKit callback, but still on the wrong lifecycle event. Visual animation delay observed. SceneDelegate and Info.plist wiring subsequently removed.
-
-**Root cause — wrong lifecycle hook:**
-
-All approaches above hooked `willResignActive` / `sceneWillResignActive`. This event fires for many non-background transitions — share sheet presentation, incoming call, Face ID prompt, system alert — none of which produce a snapshot. More critically, it fires *before* the snapshot is taken.
-
-Per Apple Technical Q&A QA1838 (https://developer.apple.com/library/archive/qa/qa1838/_index.html): *"The snapshot is captured immediately after `-applicationDidEnterBackground:` returns."* `willResignActive` is one lifecycle event too early. Using it also causes spurious cover flashes on every share sheet open — the app loses focus without backgrounding, the cover installs, then the app returns to active. That is active UX harm for an event that produces no snapshot.
-
-The 1–2 second delay observed in testing was the animation frame showing live content. That is a separate, pre-callback surface. The KTX file capture — the persistent forensic artifact — happens later and is controllable.
+`sceneWillResignActive` fires for all resign-active events — share sheets, Face ID prompts, incoming calls — not only app-switching. The cover therefore installs and removes on every such event. This is acceptable: the cover is a progress indicator (not a lock screen), it appears and disappears in under a second for brief interruptions, and it ensures the app-switcher card is always covered regardless of what triggered the resign.
 
 ---
 
-#### Proposed resolution
+## Bug 55 — PIN gate fires mid-share flow; composed message lost
 
-Two levels of protection, addressing the two concerns independently:
+**Status:** Closed (Fixed)
 
-**Level 1 — KTX forensic file (synchronous `applicationDidEnterBackground` cover)**
+### Severity: High (usability)
 
-Per QA1838, a `UIWindow` cover installed *synchronously* inside `applicationDidEnterBackground` is in place when the method returns and is what iOS photographs. Implement in `AppDelegate.applicationDidEnterBackground` (or the `UIWindowSceneDelegate.sceneDidEnterBackground` equivalent). Cover must be installed without animation (`CATransaction.disableActions = true` or equivalent). Torn down in `applicationDidBecomeActive`.
+When sharing a bundle via an app that has its own Face ID gate (e.g. WhatsApp), the PIN gate appeared on return to Occulta. If the user had composed a long message (>5 minutes of active use), any in-progress state was lost. The issue was intermittent: it only triggered when the grace period had expired.
 
-Condition: only active when `security.requiresPIN && security.pinEnabled`. No-op for users without a PIN configured. Coexists with the SwiftUI overlay (U5a), which handles a different gap (PIN gate presentation).
+A compounding case: the user composes for more than 5 minutes without any app lifecycle transition. The grace period clock (based on time since last PIN entry) runs out during composition. When the user taps Share and WhatsApp opens, Occulta goes to background, `handleBackground()` evaluates an already-expired grace period, and sets `needsPINEntry = true`. On return from WhatsApp, the PIN sheet appears mid-flow.
 
-**Level 2 — Animation frame (proactive cover model)**
+### Root Cause
 
-The animation frame is captured by the render server before any app callback fires. The only reliable defence is a proactive model:
+The grace period measured **time since last PIN entry** (`lastUnlockDate: Date?`). It answered the wrong question.
 
-1. **Default state: covered.** Sensitive views (contacts list, contact detail, vault entry detail) render behind a cover layer at rest.
-2. **Reveal on interaction.** Cover lifts for the duration of active reading.
-3. **Inactivity timeout reinstates cover.** Short timer (e.g. 30–60 s) re-covers automatically.
-4. **SpringBoard always captures the covered state.** No reactive hook needed — cover is already in place before any gesture.
+- If a user authenticated and immediately started composing, the clock ran from authentication — not from when they stopped being present.
+- If active use lasted longer than 5 minutes, the clock expired even though the user never set the phone down.
+- Any brief background (including a share sheet transition to WhatsApp) evaluated the expired clock and raised the PIN gate.
 
-Level 2 is a UX architecture decision. The vault tab already has a lockGate that covers entries on `isUnlocked = false`. The gap is the contacts list and contact detail views.
+`sceneWillResignActive` fires for share sheet presentation, triggering `handleInactive()` → `isContentHidden = true` (cover installs). When WhatsApp opens, `sceneDidEnterBackground` fires, triggering `handleBackground()`, which evaluated `!isWithinGracePeriod` and set `needsPINEntry = true`.
 
-**Priority:** Level 1 (KTX file) is the persistent forensic artifact recoverable by lab tools. Implement first.
+### Resolution
+
+Replaced the `lastUnlockDate`-based grace period with a **background-duration model**. The question is now: *how long was this app genuinely unattended?*
+
+- `handleBackground()` records `backgroundEntryDate = Date()`. It no longer sets `needsPINEntry`.
+- `handleActive()` computes `elapsed = now - backgroundEntryDate`. Only if `elapsed > gracePeriod` (5 minutes) is the PIN gate raised. Brief interruptions — share sheets, Face ID prompts, notification banners — never background the app, so `backgroundEntryDate` is nil and `elapsed = 0`.
+- `backgroundEntryDate` is cleared on every foreground return.
+
+Three properties removed: `lastUnlockDate`, `recordUnlock()`, and `isWithinGracePeriod`. `backgroundEntryDate` replaces them entirely.
+
+**Outcome:** a user composing for 30 minutes who shares to WhatsApp and returns in under 5 minutes sees no PIN gate. A user who sets the phone down for 5+ minutes and returns sees the PIN gate. The gate is now tied to actual unattended time, not to authentication history.
 
