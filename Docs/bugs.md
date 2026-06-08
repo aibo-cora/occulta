@@ -2089,3 +2089,144 @@ if let first = self.firstPIN {
 
 This catches the collision at the point of entry, where the user can immediately correct it, without reaching SummaryView. It does not cover collisions between the duress PIN and verifiers not visible to `PINEntry` (e.g., a stale duress verifier from a prior cycle), but those cases are forensically acceptable under the Bug 62 silent-dismiss rule — they are rare and the user receives no misleading signal.
 
+---
+
+## Bug 65 — Real-PIN unlock writes all contacts to share index while Secure Mode is active
+
+**Status:** Closed (Fixed)
+
+### Severity: Critical
+
+After entering the real PIN at depth 0, `onAuthenticated` set `shareIndexAllowedIDs = nil` unconditionally, writing every contact — including those classified as sensitive — to `ShareIndex.sqlite`. The Share Extension is a separate process with no authentication gate; it reads the file directly. A coercer who obtained the unlocked device and invoked the share sheet from any app (Photos, Files, etc.) without opening Occulta would see the full real-layer contact list, including contacts the user had explicitly hidden from the duress view.
+
+This is a regression relative to the intent of Bug 6's fix. Bug 6 addressed the `.inactive` / `.active` scene handlers but did not address `onAuthenticated` itself, which is the authoritative write point.
+
+### Root Cause
+
+`onAuthenticated` was written with the assumption that unrestricted access is correct after normal-PIN entry. It did not account for the invariant that the Share Extension is an ambient iOS surface reachable without re-entering Occulta, so the share index must always reflect the duress view when Secure Mode is active — regardless of which depth the main app is authenticated to.
+
+### Resolution
+
+`onAuthenticated` in `OccultaApp.swift` now evaluates `security.isSecureModeActive`:
+
+```swift
+self.contactManager.shareIndexAllowedIDs = self.security.isSecureModeActive
+    ? self.security.safeContactIDs(atDepth: 1)
+    : nil
+self.contactManager.syncShareIndex()
+```
+
+When Secure Mode is active the share index is always restricted to the depth-1 (duress) view, regardless of the authenticated depth of the main app. When inactive all contacts are written as before.
+
+---
+
+## Bug 66 — Scene phase handlers fight PIN-entry share index updates and use wrong depth
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+Two scene phase handlers in `OccultaApp` updated the share index redundantly and incorrectly:
+
+**`.inactive` handler** — on every app-going-inactive transition, set `shareIndexAllowedIDs = safeContactIDs(atDepth: 1)` and called `syncShareIndex()`. This was intended as a last-resort pre-filter before the Share Extension became reachable, but it fires only when Occulta itself triggers the scene transition. A coercer who invokes the share sheet while Occulta is already backgrounded bypasses this handler entirely — the file already has whatever `onAuthenticated` last wrote. With Bug 65's fix in place, `onAuthenticated` always writes the correct restricted view, making this handler redundant.
+
+**`.active` handler** — on every foreground return, applied hardcoded `atDepth: 1` for both the locked (`needsPINEntry = true`) and restricted (`isRestricted = true`) states, then called `syncShareIndex()`. Two problems:
+
+1. **Wrong depth when `isRestricted`**: at `currentDepth = 2`, `safeContactIDs(atDepth: 1)` returns contacts with `visibleThroughDepth >= 1`, which includes contacts that were hidden at depth 2 (`visibleThroughDepth = 1`). These contacts leak into the share index.
+
+2. **Conflicts with PIN entry**: `onAuthenticated` and `onDuress` set the correct state after authentication. The `.active` handler fired on every foreground return — including grace-period re-foregrounds — and overwrote the correct PIN-entry state with the hardcoded depth-1 result. At `currentDepth = 2`, `onDuress` correctly wrote `safeContactIDs(atDepth: 2)`; the next grace-period foreground overwrote it with `safeContactIDs(atDepth: 1)`, re-exposing depth-2-hidden contacts.
+
+### Root Cause
+
+The share index was treated as something to be corrected reactively at scene boundaries rather than maintained proactively at the points where security state actually changes (PIN entry, Secure Mode activation/deactivation). The scene handlers were a compensating patch for the missing updates in those canonical locations.
+
+### Resolution
+
+Both handlers' share index logic removed. The `.active` handler retains `cleanupPendingSessions()`, which genuinely belongs there. The `.inactive` handler is now empty. Share index correctness is owned entirely by `onAuthenticated`, `onDuress`, `activateSecureMode`, and `deactivateSecureMode`.
+
+---
+
+## Bug 67 — `activateSecureMode` and `deactivateSecureMode` do not sync share index
+
+**Status:** Closed (Fixed)
+
+### Severity: High
+
+Neither `activateSecureMode` nor `deactivateSecureMode` updated `shareIndexAllowedIDs` or called `syncShareIndex()` after completing. Two consequences:
+
+**Activation mid-session**: user is at depth 0 with no Secure Mode. `onAuthenticated` wrote `shareIndexAllowedIDs = nil` (Bug 65). The user then activates Secure Mode and classifies contacts as sensitive. `activateSecureMode` completes successfully but does not update the share index. `shareIndexAllowedIDs` remains `nil`. Any subsequent contact mutation calls `syncShareIndex()` with `nil`, writing all contacts — including the newly-classified sensitive ones — to the file. The Share Extension shows the full contact list for the remainder of the session.
+
+**Deactivation mid-session**: after `deactivateSecureMode` (full path, depth ≤ 1), the share index retained the depth-1 restricted view set by `onAuthenticated`. All contacts are restored to the DB and should be visible in the share sheet, but the stale restricted filter prevented newly-restored contacts from appearing.
+
+### Root Cause
+
+Both functions received `contactManager` as a parameter (for contact re-encryption) but did not use it to update the share index. The update responsibility was implicitly left to the scene phase handlers, which is insufficient for mid-session state changes.
+
+### Resolution
+
+Both functions call `contactManager.shareIndexAllowedIDs = ...` and `contactManager.syncShareIndex()` after their final `modelContext.save()`:
+
+- `activateSecureMode`: `safeContactIDs(atDepth: max(self.currentDepth, 1))` — restricts to at least the depth-1 view immediately after activation.
+- `deactivateSecureMode` (full path): corrected in Bug 68 below.
+
+---
+
+## Bug 68 — `deactivateSecureMode` cascade path sets `shareIndexAllowedIDs = nil` while Secure Mode remains active
+
+**Status:** Closed (Fixed)
+
+### Severity: Critical
+
+`deactivateSecureMode` always sets `contactManager.shareIndexAllowedIDs = nil` after completing, regardless of which deactivation path ran. The full-deactivation path (depth ≤ 1) produces `isSecureModeActive = false` and `currentDepth = 0` — `nil` is correct there. The cascade-deactivation path (depth ≥ 2) strips only the expendable top layer, leaving `isSecureModeActive = true` and landing at `currentDepth = 1`. Setting `nil` on this path writes all contacts to the share index, including contacts with `visibleThroughDepth = 0` that are hidden from the depth-1 view. The Share Extension immediately exposes those contacts.
+
+### Example
+
+User has three layers (real at depth 0, duress at depth 1, expendable at depth 2). Contact A has `visibleThroughDepth = 0` — hidden from the coercer. User authenticates at depth 2 and calls `deactivateSecureMode`. Cascade runs, lands at depth 1. Share index is written with `nil` → Contact A is now in the share extension. A coercer who opens any app's share sheet can see Contact A despite the duress layer being intact.
+
+### Root Cause
+
+The `nil` assignment was written as if deactivation always terminates Secure Mode. The two branches (`depth ≤ 1` / `depth ≥ 2`) were correctly distinguished for verifier cleanup and state transitions but not for the share index update.
+
+### Resolution (pending)
+
+Apply the same conditional used everywhere else:
+
+```swift
+contactManager.shareIndexAllowedIDs = self.isSecureModeActive
+    ? self.safeContactIDs(atDepth: max(self.currentDepth, 1))
+    : nil
+contactManager.syncShareIndex()
+```
+
+After full deactivation: `isSecureModeActive = false` → `nil` ✓  
+After cascade deactivation: `isSecureModeActive = true`, `currentDepth = 1` → `safeContactIDs(atDepth: 1)` ✓
+
+---
+
+## Bug 69 — Cold launch with `pinEnabled = false, isSecureModeActive = true` leaves share index uninitialized
+
+**Status:** Open
+
+### Severity: High
+
+`disablePIN(at:confirmingPIN:)` sets `pinEnabled = false` while leaving `isSecureModeActive = true` and `currentDepth` unchanged — the intended coercion path where the PIN gate is lowered but depth-filtering remains active. On the next cold launch, `AppScreen.evaluate(coldLaunch: true)` checks `security.requiresPIN && security.pinEnabled`; with `pinEnabled = false` it skips the PIN gate and transitions directly to `.unlocked`. `onAuthenticated` never fires.
+
+`shareIndexAllowedIDs` defaults to `nil` (in-memory) on every cold launch. Since no authentication event initialises it, it stays `nil`. The share index file on disk retains whatever was last written — correct from the previous session. However, the first contact mutation after this cold launch calls `syncShareIndex()` with `shareIndexAllowedIDs = nil`, overwriting the file with all contacts. Contacts hidden from the depth-1 view (`visibleThroughDepth = 0`) are written to the share index. A coercer who causes or waits for any contact mutation (background sync, incoming key rotation, any save) then opens the share sheet sees the full contact list.
+
+### Root Cause
+
+`onAuthenticated` is the only place that initialises `shareIndexAllowedIDs` based on security state. When it does not fire (no PIN gate), there is no fallback initialiser. The scene phase `.active` handler previously served as that fallback (and was the original motivation for the redundant sync identified in Bug 66), but it was removed as part of Bug 66's fix.
+
+### Resolution (pending)
+
+Add share index initialisation to the startup path taken when `pinEnabled = false`. The earliest safe point is inside `AppScreen.evaluate(coldLaunch:)` in the `guard security.requiresPIN, security.pinEnabled` early-return path, or equivalently in the `OccultaApp` observer of `appScreen.phase` transitioning to `.unlocked` without a PIN entry cycle. The initialisation logic is identical to `onAuthenticated`:
+
+```swift
+contactManager.shareIndexAllowedIDs = security.isSecureModeActive
+    ? security.safeContactIDs(atDepth: max(security.currentDepth, 1))
+    : nil
+contactManager.syncShareIndex()
+```
+
+`currentDepth` is correctly restored from `AppLayerConfig.persistedDepth` in this path (per Bug 50's fix), so `safeContactIDs(atDepth:)` will produce the correct set.
+

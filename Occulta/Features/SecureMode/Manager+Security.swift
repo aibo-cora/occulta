@@ -575,6 +575,8 @@ extension Manager {
 
             try self.modelContext.save()
             self.resetCounters()
+            contactManager.shareIndexAllowedIDs = self.safeContactIDs(atDepth: max(self.currentDepth, 1))
+            contactManager.syncShareIndex()
         }
 
         /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
@@ -789,6 +791,10 @@ extension Manager {
                 DispatchQueue.global(qos: .utility).async { store.rewrite() }
             }
             self.resetCounters()
+            contactManager.shareIndexAllowedIDs = self.isSecureModeActive
+                ? self.safeContactIDs(atDepth: max(self.currentDepth, 1))
+                : nil
+            contactManager.syncShareIndex()
         }
 
         // MARK: - Emergency recovery

@@ -243,21 +243,7 @@ private struct RootView: View {
             }
             .onChange(of: self.scenePhase) { _, newPhase in
                 switch newPhase {
-                case .inactive:
-                    if self.security.requiresPIN, self.security.pinEnabled {
-                        self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
-                        self.contactManager.syncShareIndex()
-                    }
-                case .background:
-                    break
                 case .active:
-                    // Rebuild share index at the correct depth for this foreground cycle.
-                    if self.appScreen.phase == .pinRequired || self.security.isRestricted {
-                        self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs(atDepth: 1)
-                    } else {
-                        self.contactManager.shareIndexAllowedIDs = nil
-                    }
-                    self.contactManager.syncShareIndex()
                     self.contactManager.cleanupPendingSessions()
                 default:
                     break
@@ -308,7 +294,9 @@ private struct RootView: View {
             PINEntry(
                 onAuthenticated: { _ in
                     self.appScreen.pinDidSucceed()
-                    self.contactManager.shareIndexAllowedIDs = nil
+                    self.contactManager.shareIndexAllowedIDs = self.security.isSecureModeActive
+                        ? self.security.safeContactIDs(atDepth: 1)
+                        : nil
                     self.contactManager.syncShareIndex()
                 },
                 onDuress: {
