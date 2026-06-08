@@ -294,7 +294,7 @@ struct PINEntry: View {
         guard let layerAuthenticationPIN = self.authenticatedLayerPIN else { return }
 
         if let duressPIN = self.pendingPINEntry {
-            if currentEntryPIN == duressPIN {
+            if currentEntryPIN == duressPIN && currentEntryPIN != layerAuthenticationPIN {
                 self.hapticResult(.success)
                 onComplete(layerAuthenticationPIN, currentEntryPIN)
             } else {

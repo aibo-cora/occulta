@@ -1242,7 +1242,7 @@ Each `pinEnabledPerDepth` entry is JSON-encoded as `UInt8(1)` (enabled) or `UInt
 
 ## Bug 52 — Bundle message not shown after cold-start unlock following a duress session
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High (usability)
 
@@ -1530,7 +1530,7 @@ Three properties removed: `lastUnlockDate`, `recordUnlock()`, and `isWithinGrace
 
 ## Bug 56 — Contacts briefly visible between UIKit cover removal and PIN fullScreenCover presentation
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 
@@ -1984,7 +1984,7 @@ if depth <= 1 {
 
 ## Bug 64 — `PINEntry` phase 2 does not reject a duress PIN that matches the confirmed normal PIN
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: Medium (UX)
 
