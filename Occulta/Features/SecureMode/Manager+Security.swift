@@ -347,19 +347,15 @@ extension Manager {
             // Duress PIN must not match ANY existing verifier (normal or duress at any depth).
             // On collision, write a dummy blob slot before throwing so the disk footprint
             // (blob file modification, WAL activity) is indistinguishable from a real activation.
-            for v in config.sealedNormalVerifiers {
-                guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: v, seKey: seKey)
-                else {
-                    self.pushDummyBlobSlot(config: config, seKey: seKey, depth: depth)
-                    throw SecurityError.pinCollision
-                }
+            let collidesWithNormal = config.sealedNormalVerifiers.contains {
+                PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: $0, seKey: seKey)
             }
-            for v in config.sealedDuressVerifiers {
-                guard !PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: v, seKey: seKey)
-                else {
-                    self.pushDummyBlobSlot(config: config, seKey: seKey, depth: depth)
-                    throw SecurityError.pinCollision
-                }
+            let collidesWithDuress = config.sealedDuressVerifiers.contains {
+                PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: $0, seKey: seKey)
+            }
+            if collidesWithNormal || collidesWithDuress {
+                self.pushDummyBlobSlot(config: config, seKey: seKey, depth: depth)
+                throw SecurityError.pinCollision
             }
 
             // Build verifiers now so they are in scope for the post-catch config write.
