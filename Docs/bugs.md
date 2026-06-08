@@ -1909,17 +1909,44 @@ Each successful probe creates a new layer and transitions `state` to `.normal` (
 
 ### Resolution (partial — bug remains open)
 
-**Applied:** A dedicated `catch` arm for `pinCollision` was added in `SummaryView`, identical to the `invalidStateTransition` arm. Every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. The tell is removed.
+**Applied:** A dedicated `catch` arm for `pinCollision` was added in `SummaryView`, identical to the `invalidStateTransition` arm. Every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. The signal is removed.
 
-**Not yet resolved:** The oracle attack itself. The silent dismiss removes the signal but not the probe mechanism. A coercer can still issue unlimited activation attempts from their depth, and each non-colliding probe silently creates a real new layer in the verifier array and the blob store. Unlimited probing across sessions is unacceptable.
+**Not yet resolved — three remaining gaps:**
 
-Two mitigations are under consideration:
+---
 
-**Option A — Rate limit:** Allow at most N Secure Mode activations per 24-hour window, stored as an encrypted counter in `AppLayerConfig`. On limit reached, `activateSecureMode` throws a new error that `SummaryView` silently dismisses (same as `pinCollision`). N must be chosen so that legitimate multi-layer setup is not blocked, but brute-forcing the 10,000-candidate 4-digit space across days is not viable in practice.
+#### Gap 1 — The silent dismiss is itself a forensic tell
 
-**Option B — Wipe on collision:** When `pinCollision` fires, treat it as evidence of an active probing attack and wipe all secure state. This is aggressive — a real user who accidentally proposes their own master PIN as their duress PIN would lose all data — and must be weighed against the low probability of accidental collision vs. intentional probing.
+A real activation writes extensively: all contact rows are re-encrypted (new ciphertext, WAL activity), a blob is pushed to the layer store file, and `AppLayerConfig` gains new verifiers, a blob slot index, and a sequence number. A collision writes nothing — the DB is untouched, the WAL is idle, and the blob store is unchanged.
 
-Both options require further design before implementation.
+A forensic examiner comparing filesystem and DB state before and after a "successful" activation attempt can distinguish collision from success without decryption: file modification timestamps, WAL presence, and blob store contents all differ. The UI is indistinguishable; the disk is not.
+
+**Likely fix:** on `pinCollision`, write a dummy blob slot — a random-noise payload pushed to a randomly chosen (non-excluded) slot index, identical in structure to a real `layerStore.push()`. This makes the blob store footprint of a collision forensically indistinguishable from a real activation. The contact DB and AppLayerConfig deltas remain distinguishable (no re-encryption, no new verifier written) — full parity would require a more involved dummy write — but the blob store is the most externally observable artefact and the highest-priority target.
+
+---
+
+#### Gap 2 — Rate limit proposal is flawed
+
+The original Option A (N activations per 24-hour window) was inadequate on multiple dimensions:
+
+- **Threat model mismatch.** A coercer has a bounded physical access window — typically hours, not days. A 24-hour counter resets before the next session and is useless.
+- **Counter is observable.** An encrypted counter that increments after each probe is itself a forensic signal — an examiner who can observe the DB across time can infer that activation attempts were made.
+- **Non-colliding probes create real state.** Each successful (non-colliding) probe creates a real new layer: new verifiers, new blob slot entry, new cryptographic artefacts that accumulate indefinitely. The rate limit constrains collision probes but not layer proliferation.
+- **Clock manipulation.** iOS system time is controllable in some jailbreak or MDM-adjacent scenarios; a 24-hour window tied to wall time is not robust.
+
+**Better framing:** a **session-scoped limit** (1–2 activation attempts per authenticated session at a given depth) is invisible to a legitimate user and makes brute-forcing impractical given the physical access requirement per session. This requires no persistent counter and is not vulnerable to clock manipulation.
+
+---
+
+#### Gap 3 — Wipe on collision is not viable
+
+Option B was rejected on three grounds:
+
+1. **The wipe is itself a tell.** A device that destroys state on a specific input confirms there was state worth destroying — more informative than any alert.
+2. **It becomes an active attack vector.** A coercer who suspects Secure Mode can probe deliberately: a wipe confirms protection and destroys evidence simultaneously. This turns a passive oracle into a kill switch.
+3. **False positives are catastrophic.** The collision check scans all existing verifiers — not only the master PIN, but every routing alias from prior activation cycles. A user who accidentally proposes a PIN that matches any prior verifier loses all data permanently. The false-positive surface is larger than "guess master PIN exactly" and the consequence is total and irreversible.
+
+---
 
 ### Residual risk — accidental master PIN discovery
 
@@ -1933,7 +1960,7 @@ The coercer does not know this happened. They entered what they believed was the
 
 **Why the silent dismiss does not fully solve this:** the fix removes the signal that would have told the coercer they found something meaningful. It does not prevent the routing consequence. A coercer probing PINs against the oracle (with the alert present) would know when they hit the master PIN. A coercer probing with the alert removed would reach the real layer without realising it — a weaker but non-zero exposure.
 
-**Acceptance criteria:** this risk is proportional to the probability of a 4–6 digit PIN collision by chance. For a 6-digit PIN that probability is 1-in-1,000,000 per attempt; for a 4-digit PIN, 1-in-10,000. In a targeted coercion scenario where the coercer is guessing plausible PINs (birthdays, repeated digits), the probability is higher but still bounded by the PIN space. The risk is accepted as low-probability; no code change is planned beyond the oracle-signal fix.
+**Acceptance criteria:** this risk is proportional to the probability of a 4–6 digit PIN collision by chance. For a 6-digit PIN that probability is 1-in-1,000,000 per attempt; for a 4-digit PIN, 1-in-10,000. In a targeted coercion scenario where the coercer is guessing plausible PINs (birthdays, repeated digits), the probability is higher but still bounded by the PIN space. The risk is accepted as low-probability given the session-scoped rate limit and dummy-blob-slot fixes are implemented.
 
 ---
 
