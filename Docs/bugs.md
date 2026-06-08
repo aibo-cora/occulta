@@ -1938,13 +1938,37 @@ The original Option A (N activations per 24-hour window) was inadequate on multi
 
 ---
 
-#### Gap 3 — Wipe on collision is not viable
+#### Gap 3 — Targeted wipe on master PIN collision
 
-Option B was rejected on three grounds:
+The original blanket wipe-on-any-collision was rejected (kill switch, false positives). A narrower variant is still under consideration: split `pinCollision` into two errors — `masterPINCollision` (hit `sealedNormalVerifiers[0]`) and `pinCollision` (hit any other verifier) — and wipe only on the former.
 
-1. **The wipe is itself a tell.** A device that destroys state on a specific input confirms there was state worth destroying — more informative than any alert.
-2. **It becomes an active attack vector.** A coercer who suspects Secure Mode can probe deliberately: a wipe confirms protection and destroys evidence simultaneously. This turns a passive oracle into a kill switch.
-3. **False positives are catastrophic.** The collision check scans all existing verifiers — not only the master PIN, but every routing alias from prior activation cycles. A user who accidentally proposes a PIN that matches any prior verifier loses all data permanently. The false-positive surface is larger than "guess master PIN exactly" and the consequence is total and irreversible.
+**Why the split is correct:** `sealedNormalVerifiers[0]` is exclusively the real user's depth-0 master PIN. Only a collision there means the coercer has found the key to the real layer. Collisions with routing aliases or duress verifiers at other depths do not expose depth 0 and warrant only a silent dismiss. The kill switch objection evaporates: a wipe can only be triggered by finding the master PIN, which is exactly the event worth responding to with destruction.
+
+**Implementation shape:**
+```swift
+// Check master PIN first — collision here means wipe
+guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel,
+                                 verifier: config.sealedNormalVerifiers[0], seKey: seKey)
+else { throw SecurityError.masterPINCollision }
+
+// Remaining normal verifiers (routing aliases) and all duress verifiers → silent dismiss
+for v in config.sealedNormalVerifiers.dropFirst() { ... throw SecurityError.pinCollision }
+for v in config.sealedDuressVerifiers            { ... throw SecurityError.pinCollision }
+```
+
+**Unresolved: what does the app look like after a wipe?**
+
+This is the blocking design question. The wipe fires inside `SummaryView`'s catch block — the sheet dismisses normally and the coercer is back in Settings at their depth. They expect a working app.
+
+If all verifiers are cleared: the coercer's current session survives (no re-check), but on next background → foreground their depth-1 PIN no longer exists. Lock screen appears, PIN fails — an obvious tell.
+
+If only Secure Mode state is cleared but the coercer's depth-1 verifier is preserved: the app remains usable at depth 1, but the master PIN still exists in `sealedNormalVerifiers[0]`. The coercer found it and can still use it. Wiping Secure Mode state without wiping the master PIN verifier accomplishes nothing.
+
+**The deeper structural problem:**
+
+Sensitive contacts are not hard-deleted from the DB (Bug 13 resolution — they remain in SQLite, hidden by `visibleThroughDepth` filtering). Wiping the blob removes the deactivation restoration copy but leaves the sensitive contacts physically in the DB. If the coercer enters the master PIN after the wipe, they reach depth 0 and those contacts are still visible. A wipe that is actually effective at protecting the data requires hard-deleting sensitive contacts from the DB — which reinstates the Bug 13 functional conflict: the real user can no longer see their sensitive contacts after entering the normal PIN.
+
+There is no currently available path that both protects the data on `masterPINCollision` and preserves the real user's access to it. This option remains open pending a design resolution for the hard-delete conflict.
 
 ---
 
