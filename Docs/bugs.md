@@ -1921,7 +1921,7 @@ A real activation writes extensively: all contact rows are re-encrypted (new cip
 
 A forensic examiner comparing filesystem and DB state before and after a "successful" activation attempt can distinguish collision from success without decryption: file modification timestamps, WAL presence, and blob store contents all differ. The UI is indistinguishable; the disk is not.
 
-**Likely fix:** on `pinCollision`, write a dummy blob slot — a random-noise payload pushed to a randomly chosen (non-excluded) slot index, identical in structure to a real `layerStore.push()`. This makes the blob store footprint of a collision forensically indistinguishable from a real activation. The contact DB and AppLayerConfig deltas remain distinguishable (no re-encryption, no new verifier written) — full parity would require a more involved dummy write — but the blob store is the most externally observable artefact and the highest-priority target.
+**Applied:** on `pinCollision`, `pushDummyBlobSlot` writes a random-noise `LayerPayload` (empty contacts, random sequence number) to a non-excluded slot before the throw. `push()` pads all payloads to `slotPlaintextSize` before encrypting, so the ciphertext is the same fixed size as a real activation blob — indistinguishable by byte count. The contact DB and AppLayerConfig remain unmodified (no re-encryption, no new verifier), but the blob store — the most externally observable artefact — now shows a write on every collision.
 
 ---
 

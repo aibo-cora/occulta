@@ -345,13 +345,21 @@ extension Manager {
             else { throw SecurityError.incorrectPIN }
 
             // Duress PIN must not match ANY existing verifier (normal or duress at any depth).
+            // On collision, write a dummy blob slot before throwing so the disk footprint
+            // (blob file modification, WAL activity) is indistinguishable from a real activation.
             for v in config.sealedNormalVerifiers {
                 guard !PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: v, seKey: seKey)
-                else { throw SecurityError.pinCollision }
+                else {
+                    self.pushDummyBlobSlot(config: config, seKey: seKey, depth: depth)
+                    throw SecurityError.pinCollision
+                }
             }
             for v in config.sealedDuressVerifiers {
                 guard !PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: v, seKey: seKey)
-                else { throw SecurityError.pinCollision }
+                else {
+                    self.pushDummyBlobSlot(config: config, seKey: seKey, depth: depth)
+                    throw SecurityError.pinCollision
+                }
             }
 
             // Build verifiers now so they are in scope for the post-catch config write.
@@ -1244,6 +1252,23 @@ extension Manager {
         /// A fresh random UInt32 cast to Int, used as the per-activation sequence number.
         /// Random rather than incrementing so no activation-count information persists in
         /// AppLayerConfig after deactivation clears the entry back to random filler.
+        // Writes a random-noise payload to a non-excluded blob slot so that a pinCollision
+        // produces the same filesystem footprint as a real activation (blob file modified,
+        // same fixed ciphertext size). Called before throwing pinCollision.
+        private func pushDummyBlobSlot(config: AppLayerConfig, seKey: SymmetricKey, depth: Int) {
+            guard let layerKey = self.layerStore.deriveKey(from: seKey) else { return }
+            let excludedSlots: Set<Int> = depth == 0
+                ? []
+                : Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
+            let slotIndex = self.layerStore.randomSlot(excluding: excludedSlots)
+            let payload   = LayerPayload(
+                sequenceNumber: Self.randomSequenceNumber(),
+                slotIndex:      slotIndex,
+                contacts:       []
+            )
+            try? self.layerStore.push(payload, key: layerKey, slotIndex: slotIndex)
+        }
+
         private static func randomSequenceNumber() -> Int {
             var value: UInt32 = 0
             _ = SecRandomCopyBytes(kSecRandomDefault, MemoryLayout<UInt32>.size, &value)
