@@ -1590,3 +1590,408 @@ PINEntry(...)
 
 **Invariant:** the UIKit cover is always torn down — either immediately in `sceneDidBecomeActive` (no PIN needed) or in `PINEntry.onAppear` (PIN needed). There is no path where the cover is left up indefinitely.
 
+---
+
+## Bug 57 — Sensitive contact not sealed in blob during second-layer activation; visible in depth-2 duress view
+
+**Status:** Closed (Fixed)
+
+### Severity: High (security)
+
+When the real user enters their own duress PIN (reaching `currentDepth = 1`) and activates a second Secure Mode layer via the setup flow, any contact dragged to the Sensitive section in `ContactClassification` is silently not classified. On cold launch with the depth-2 duress PIN the contact is visible — defeating the purpose of the classification step.
+
+### Root Cause
+
+`ContactClassification.save()` (and `loadSensitiveIDs()`) are guarded:
+
+```swift
+guard security.currentDepth == 0
+        || security.currentDepth == security.coercerBaseDepth
+else { return }
+```
+
+At `currentDepth = 1` with `coercerBaseDepth = 0` (real user, no coercion-acceptance path has run):
+
+- `1 == 0` → false
+- `1 == coercerBaseDepth (0)` → false
+
+Both conditions fail. The guard returns early. `updateSafeContacts` is never called and the contact's `visibleThroughDepth` is never written.
+
+Inside `activateSecureMode(depth: 1)`, the classification logic reads each contact's stored `visibleThroughDepth`. Because `save()` was a no-op, all contacts still have `visibleThroughDepth = nil`, which decodes as `Int.max`:
+
+```swift
+let contactDepth: Int = {
+    guard let data = profile.visibleThroughDepth, ...
+    else { return Int.max }   // nil → always safe
+    return value
+}()
+
+if contactDepth > depth {       // Int.max > 1 → safe
+    safeProfiles.append(profile)
+} else if contactDepth == depth {  // never reached
+    blobContacts.append(...)
+}
+```
+
+The contact lands in `safeProfiles`; Step 5 stamps it with `visibleThroughDepth = encode(Int.max)`. On cold launch with depth-2 duress PIN, `isVisible` evaluates `Int.max >= 2` → true → contact is shown.
+
+### Context
+
+The Bug 48 fix changed the guard from `!security.isRestricted` to `currentDepth == 0 || currentDepth == coercerBaseDepth` to unblock the coercer who reached depth N+1 via `reEnablePIN`'s coercion-acceptance path (which writes `coercerBaseDepth = N+1`). That path is not taken here — the real user entered their own duress PIN and `activateSecureMode` does not write `coercerBaseDepth`. The guard is therefore never satisfied for this activation path: the real user's duress depth (1) matches neither `== 0` nor `== coercerBaseDepth (0)`.
+
+### Resolution
+
+Removed the depth guard from `ContactClassification.loadSensitiveIDs()` and `save()` entirely. The guard was redundant: `classifiableContacts` filters through `isDisplayable(atDepth: currentDepth)` (contacts hidden at shallower layers are never surfaced), and `isSensitive` returns true only for `visibleThroughDepth == currentDepth` (current-depth classifications only). `updateSafeContacts` has the same `isVisible` guard internally. These three invariants together prevent both info leak and mutation at any depth — the outer guard was not adding protection.
+
+---
+
+## Bug 58 — "Learn more" does not flip to "Deactivate Protection" after second-layer activation from duress depth
+
+**Status:** Closed (Fixed)
+
+### Severity: Medium (forensic tell)
+
+After the real user activates a second Secure Mode layer from duress depth (depth 1), the "Deactivate Protection" button never appears and "Learn more" remains visible. The Settings security screen looks identical before and after activation — a tell that the activation either failed or is hiding state.
+
+### Root Cause
+
+`activateSecureMode` never calls `setState()` and does not update `coercerBaseDepth`. After a successful activation at `depth = 1`:
+
+- `currentDepth` remains `1` (unchanged)
+- `state` remains `.duress` (not updated by activation)
+- `coercerBaseDepth` remains `0` (only written by `reEnablePIN`'s coercion-acceptance path, not by `activateSecureMode`)
+
+The "Deactivate Protection" guard in `Settings.swift`:
+
+```swift
+isSecureModeActive && state == .normal
+    && (currentDepth == 0 || currentDepth == coercerBaseDepth)
+    && pinEnabled
+```
+
+Both `state == .normal` (state is `.duress`) and `currentDepth == coercerBaseDepth` (`1 == 0`) are false. The button never shows.
+
+The "Learn more" guard:
+
+```swift
+!isSecureModeActive || currentDepth > 0 || !pinEnabled
+```
+
+`currentDepth > 0` (= `1 > 0`) remains true, so "Learn more" stays visible regardless of whether a new layer was created.
+
+### Context
+
+Bug 47 resolved the symmetric case for the coercer: after `reEnablePIN`'s coercion-acceptance path writes `coercerBaseDepth = N+1`, the button becomes visible because `currentDepth == coercerBaseDepth`. That fix does not apply here because `activateSecureMode` is not instrumented to write `coercerBaseDepth`. The result is that the real user activating from depth 1 is in a state where neither the coercer path (`coercerBaseDepth`) nor the real-user path (`currentDepth == 0`) satisfies the guard.
+
+Bugs 57 and 58 are causally related: Bug 57 means the underlying contact data is wrong (no contacts sealed in the blob); Bug 58 means the UI gives no feedback that anything happened. Both trace to the same omission: `activateSecureMode` does not record depth 1 as an operator home depth the way `reEnablePIN` does via `coercerBaseDepth`.
+
+### Resolution
+
+At the end of `activateSecureMode`, after the config writes, when `depth > 0`:
+
+1. Write `coercerBaseDepth = depth` — records the operator's home depth so that `currentDepth == coercerBaseDepth` passes in the Deactivate Protection guard. **Note:** the initial implementation incorrectly wrote `depth + 1`; see Bug 61 for the correction.
+2. Set `self.state = .normal` — satisfies the `state == .normal` gate that was blocking the button.
+
+Both writes land in the same `modelContext.save()` that follows, so they are atomic with the rest of the activation config writes.
+
+---
+
+## Bug 59 — PIN collision detected at activation summary after full flow; contact classification work lost
+
+**Status:** Open
+
+### Severity: Medium (UX)
+
+When the user runs the Secure Mode activation flow from duress depth and proposes a new duress PIN that collides with an existing verifier at another layer (e.g. the proposed PIN is the same as the real normal PIN), `activateSecureMode` throws `pinCollision`. This error fires only at "Activate" in `SummaryView` — step 4 of 4 — after the user has already gone through Education, PIN entry, and Contact classification. The classification work is discarded and the user receives a generic "Activation Failed" alert with no explanation. They have no way to know the PIN was rejected, which PIN is conflicting, or that they need to choose a different PIN.
+
+### Root Cause
+
+**Why the collision fires:** The collision check inside `activateSecureMode` scans every slot in `sealedNormalVerifiers` with `normalLabel`. `sealedNormalVerifiers[0]` is the real master normal PIN. If the proposed new duress PIN matches that slot, the check throws `pinCollision`. This is a legitimate routing constraint — entering that PIN at cold start would match `normalVerifiers[0]` and route to depth 0, making the depth-N+1 routing alias unreachable. The rejection is correct.
+
+**Why the timing is wrong:** The collision check only exists inside `activateSecureMode`, which runs at the very end of the 4-step flow. There is no validation at the point where the user enters and confirms the new PIN (step 2). The flow advances to Contact classification with a PIN that is destined to fail.
+
+**Why the error is unhelpful:** `SummaryView` catches `pinCollision` in the generic `catch` block and shows "Activation Failed":
+
+```swift
+} catch {
+    debugPrint("Error activating [\(type(of: error))]: \(error)")
+    self.isActivating     = false
+    self.activationFailed = true
+}
+```
+
+The alert has no message that tells the user to choose a different PIN, and the sheet dismisses entirely — so the contact classification is lost.
+
+### Root Cause
+
+**Why the collision fires legitimately — but at the wrong time and for a non-obvious reason:**
+
+The first activation attempt from depth 1 with duress PIN "2222" *succeeded* cryptographically. The post-catch section of `activateSecureMode` wrote:
+- `sealedDuressVerifiers[1]` — duress verifier for "2222"
+- `sealedNormalVerifiers[2]` — routing alias for "2222" (same PIN, `normalLabel`)
+
+However, Bug 58 — which was present at the time — left `state` at `.duress` and `coercerBaseDepth` at `0`. The "Deactivate Protection" button never appeared. The user concluded activation had failed (the UI was indistinguishable from a no-op), dismissed the flow, and retried.
+
+On the second attempt with the same PIN "2222", the collision check in `activateSecureMode` scans all `sealedNormalVerifiers` and finds the routing alias written during the first (silently-successful) run at index 2. It throws `pinCollision`. The generic `catch` in `SummaryView` shows "Activation Failed" with no explanation.
+
+The device is now in an inconsistent state: activation succeeded (verifiers written, blob pushed, key rotated), but the session has no UI evidence of this. The user cannot reach "Deactivate Protection" from depth 1 because `state` is still `.duress` (Bug 58 was unfixed at activation time). The only recovery path is entering the normal (master) PIN at cold start — `currentDepth = 0`, `state = .normal` — which satisfies the `currentDepth == 0` arm of the Deactivate condition.
+
+**This bug is a cascade of Bug 58.** With Bug 58 now fixed, activation from depth 1 transitions `state` to `.normal` and shows "Deactivate Protection" immediately after the flow dismisses. The user cannot be misled into thinking activation failed, so the retry-with-same-PIN path is no longer reachable in normal operation.
+
+### Resolution
+
+Bug 58 fix prevents recurrence. No code change needed for the collision check itself — rejecting a PIN that already has a routing alias in the array is correct behaviour.
+
+Two hardening improvements remain worth considering as separate work:
+
+**1. Specific `pinCollision` catch in `SummaryView`** — instead of the generic "Activation Failed" alert, navigate back to the PIN step and prompt the user to choose a different PIN. Gives actionable feedback without revealing which verifier collided.
+
+**2. Recovery hint when `pinCollision` fires after a known-inconsistent activation** — if `sealedNormalVerifiers[depth+1]` already contains a valid verifier, the app could surface a recovery path rather than a dead end.
+
+---
+
+## Bug 60 — Visibility toggle hidden at coercer's home depth — forensic tell in contact edit
+
+**Status:** Closed (Fixed)
+
+### Severity: Medium (forensic)
+
+At any depth > 0 (duress, or any decoy layer), opening contact edit presents a form missing the "VISIBILITY" section. At depth 0 the section is present. Any party operating at a depth above 0 — a coercer, an adversary, or the real user navigating their own duress layer — sees a shorter form, which is a tell that the current depth is not the base layer.
+
+### Root Cause
+
+`ContactFormV2.swift` guards the visibility section on `!security.isRestricted`:
+
+```swift
+// VISIBILITY only applies at depth 0. At depth > 0 the contact
+// inherits its visibility from the depth stamp set at creation.
+if !self.security.isRestricted {
+    FormSectionV2(header: "VISIBILITY") { ... }
+}
+```
+
+`isRestricted = currentDepth > 0` is true at every depth above 0, including the coercer's home depth. The same guard applies to the save path:
+
+```swift
+if self.security.currentDepth == 0 {
+    try? self.security.setVisibility(for: self.contact.identifier,
+                                     isSensitive: self.isSensitive)
+}
+```
+
+Both guards use `currentDepth == 0` as a proxy for "real user," which has been incorrect since `coercerBaseDepth` was introduced (Bug 47). `setVisibility` itself is already depth-aware — it encodes `self.currentDepth` as the sensitive sentinel and `Int.max` as safe — so calling it at `coercerBaseDepth` produces the correct result. Only the view and save guards need updating.
+
+### Resolution
+
+Remove the depth guard entirely from both the view and the save path — the same conclusion Bug 57 reached for `ContactClassification`.
+
+`isSensitive` returns true only for `visibleThroughDepth == currentDepth` (depth-relative read). `setVisibility` writes `visibleThroughDepth = currentDepth` (sensitive) or `Int.max` (safe) — correct at any depth. There is no cross-depth info leak and no mutation of contacts outside the current depth's scope. The guard added no protection; it only created a tell.
+
+**`ContactFormV2.swift` — depth guard removed from view:**
+
+```swift
+// Before
+if !self.security.isRestricted {
+    FormSectionV2(header: "VISIBILITY") { ... }
+}
+
+// After
+FormSectionV2(header: "VISIBILITY") { ... }
+```
+
+**`ContactFormV2.swift` — depth guard removed from save:**
+
+```swift
+// Before
+if self.security.currentDepth == 0 {
+    try? self.security.setVisibility(...)
+}
+
+// After
+try? self.security.setVisibility(...)
+```
+
+---
+
+## Bug 61 — Bug 58 fix writes wrong `coercerBaseDepth`; "Deactivate Protection" still absent after depth-1 activation, Bug 47 coercer path regressed
+
+**Status:** Closed (Fixed)
+
+### Severity: High (forensic tell + regression)
+
+The Bug 58 fix writes `coercerBaseDepth = depth + 1` in `activateSecureMode`. The value must be `depth`. With the current code, the "Deactivate Protection" button never appears after activation from depth 1 — the exact symptom Bug 58 was meant to fix. Additionally, the write silently corrupts the value set by `reEnablePIN` for Bug 47's coercer scenario.
+
+### Root Cause
+
+The Bug 58 resolution document states: "Write `coercerBaseDepth = depth + 1` so that `currentDepth == coercerBaseDepth` (`1 == 1`) passes." The arithmetic is incorrect. When `depth = 1`, `depth + 1 = 2`. The condition evaluates as `currentDepth (1) == coercerBaseDepth (2)` → **false**. The parenthetical `(1 == 1)` in the documentation describes the intended outcome (`coercerBaseDepth = 1 = depth`), but the formula `depth + 1` implements a different value.
+
+After activation from depth 1 with the current code:
+
+- `coercerBaseDepth = 2`
+- `currentDepth = 1`
+- `state = .normal`
+- "Deactivate Protection" guard: `(1 == 0 || 1 == 2)` → false → button absent ❌
+
+With the corrected formula `coercerBaseDepth = depth`:
+
+- `coercerBaseDepth = 1`
+- "Deactivate Protection" guard: `(1 == 0 || 1 == 1)` → true → button shown ✓
+
+### Bug 47 regression
+
+Bug 47's `reEnablePIN` coercion-acceptance path writes `coercerBaseDepth = currentDepth + 1` before the coercer re-enters. After re-entry, `currentDepth = N+1` and `coercerBaseDepth = N+1` — the button correctly appears. When the coercer then activates from depth N+1 (`activateSecureMode(depth: N+1)`), the current Bug 58 code writes `coercerBaseDepth = N+2`, overwriting the `reEnablePIN` value. The button condition becomes `N+1 == N+2` → false → **Bug 47 is re-broken**.
+
+With the corrected formula, the write is `coercerBaseDepth = N+1` — identical to the value `reEnablePIN` already wrote. The existing value is preserved and Bug 47 is unaffected.
+
+### Resolution
+
+In `Manager+Security.swift`, change the Bug 58 write from:
+
+```swift
+if depth > 0 {
+    try? config.writeCoercerBaseDepth(depth + 1)
+    self.state = .normal
+}
+```
+
+to:
+
+```swift
+if depth > 0 {
+    try? config.writeCoercerBaseDepth(depth)
+    self.state = .normal
+}
+```
+
+At depth 0 (real user activating the first layer): this branch is not taken, so `coercerBaseDepth` is unchanged (remains 0). The real user's "Deactivate Protection" is governed by `currentDepth == 0`, which is unaffected.
+
+At depth 1 (real user entering their duress PIN and activating a second layer): `coercerBaseDepth = 1`. The button shows at `currentDepth = 1`. ✓
+
+At depth N+1 (Bug 47 coercer after `reEnablePIN`): `coercerBaseDepth = N+1` — same value already written by `reEnablePIN`. No regression. ✓
+
+---
+
+## Bug 62 — `pinCollision` "Activation Failed" alert is a forensic tell; enables coercer PIN oracle at duress depth
+
+**Status:** Open
+
+### Severity: High (forensic)
+
+`SummaryView` catches `pinCollision` in the generic `catch` block and shows an "Activation Failed" alert. A device with no Secure Mode active has no existing verifiers, so it can never produce a `pinCollision` during activation — any PIN the user proposes will succeed. A device with Secure Mode active can produce a collision when the proposed duress PIN matches an existing verifier. Seeing "Activation Failed" (as opposed to a wrong-entry-PIN error, which would have been caught earlier in the flow) confirms that protected verifiers already exist on the device. The alert directly reveals that Secure Mode is running.
+
+Compare with `invalidStateTransition`, which is silently dismissed: that arm was added in Bug 24 precisely for tell-avoidance — the same principle must apply to `pinCollision`.
+
+### PIN oracle attack
+
+A coercer at depth 1 with `state = .duress` (no prior activation from this depth) can exploit the collision signal as a binary oracle to identify the master PIN:
+
+1. Open the activation flow, confirm their PIN ("1111"), propose candidate PIN X.
+2. "Activation Failed" → X collides with an existing verifier. Because `sealedNormalVerifiers[0]` holds the master normal PIN, X = master PIN — found.
+3. No alert (flow dismisses normally) → X is not in use. A new layer is created at depth 2.
+
+Each successful probe creates a new layer and transitions `state` to `.normal` (Bug 58 fix), after which `invalidStateTransition` blocks further activation attempts from depth 1. Each colliding probe leaks whether the proposed PIN is the master PIN. With `pinCollision` silently dismissed the coercer receives no signal — successful activation and a collision are indistinguishable from the UI.
+
+### Root Cause
+
+`SummaryView`'s catch hierarchy treats `invalidStateTransition` as a tell-avoidance case (silent dismiss) and every other error as a genuine failure (visible alert):
+
+```swift
+} catch Manager.Security.SecurityError.invalidStateTransition {
+    self.isActivating = false
+    self.onDone()         // silent dismiss
+} catch {
+    self.isActivating     = false
+    self.activationFailed = true  // "Activation Failed" alert
+}
+```
+
+`pinCollision` falls into the generic `catch` arm. There is no explicit arm for it. The tell-avoidance intent of Bug 24's fix was not extended to the collision case.
+
+### Resolution
+
+Add a dedicated `catch` arm for `pinCollision` that silently dismisses, identical to the `invalidStateTransition` arm:
+
+```swift
+} catch Manager.Security.SecurityError.invalidStateTransition {
+    self.isActivating = false
+    self.onDone()
+} catch Manager.Security.SecurityError.pinCollision {
+    // A collision means the proposed PIN already routes somewhere in the verifier
+    // array. Surfacing "Activation Failed" confirms to the coercer that protected
+    // verifiers exist — a direct tell that Secure Mode is active. Silently dismiss:
+    // indistinguishable from a successful activation on a device with no prior SM.
+    // (Bug 62 fix.)
+    self.isActivating = false
+    self.onDone()
+} catch {
+    self.isActivating     = false
+    self.activationFailed = true
+}
+```
+
+From the coercer's perspective, every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. No information about the device's protected state is leaked.
+
+---
+
+## Bug 63 — Depth-1 sensitive contacts lose their classification after full deactivation; `blobDepth` formula skips `blobSlots[1]`
+
+**Status:** Open
+
+### Severity: Medium (data fidelity)
+
+When the user activates Secure Mode from depth 0 and subsequently activates a second layer from depth 1, two blobs are written: `blobSlots[0]` (depth-0→1 sensitive contacts) and `blobSlots[1]` (depth-1→2 sensitive contacts). Deactivation from depth 0 or depth 1 uses `blobDepth = max(0, depth - 1) = 0` — only `blobSlots[0]` is ever popped. `blobSlots[1]` is ignored. Contacts classified as sensitive during the depth-1 activation lose their `visibleThroughDepth` depth-1 marking after the deactivation key rotation. On the next activation cycle those contacts are no longer pre-classified and must be manually re-marked, violating the invariant established by Bug 23.
+
+### Root Cause
+
+The `blobDepth` formula in `deactivateSecureMode`:
+
+```swift
+// depth 0 → blobDepth 0
+// depth 1 → blobDepth 0 (same blob; deactivating the depth 0→1 layer)
+// depth N ≥ 2 → blobDepth N-1
+let blobDepth = max(0, depth - 1)
+```
+
+The comment "depth 1 → blobDepth 0 (same blob)" was written for the single-activation model where only one blob ever exists. With activation from depth 1 now supported (Bug 57 + 58 fixes), a second blob at `blobSlots[1]` can coexist with `blobSlots[0]`. The formula has no path to pop index 1 when deactivating from depth 0 or 1.
+
+After deactivation from depth 0:
+
+- Step 4 sets `visibleThroughDepth = nil` for all contacts.
+- Step 5 restores contacts from `blobSlots[0]` only — depth-0→1 sensitive contacts regain their `encode(0)` depth flag. ✓
+- Contacts from `blobSlots[1]` are not in the restore set. They end up with `visibleThroughDepth = nil` — treated as always-visible. Their depth-1 classification is silently lost.
+
+The contacts are not deleted from the DB (Bug 13 design decision), so no contacts disappear. Only their per-depth sensitivity marking is lost.
+
+### Cascade with Bug 61
+
+With Bug 61 fixed (`coercerBaseDepth = depth = 1`), the "Deactivate Protection" button appears at depth 1 but not at depth 2. There is no UI path to deactivate exclusively from depth 2 (which would use `blobDepth = 1` and correctly pop `blobSlots[1]`). The only deactivation paths available to the user are depth 0 and depth 1, both of which use `blobDepth = 0`.
+
+Additionally, the `clearBlobSlot` and `clearSequenceNumber` calls at the end of deactivation only clear the metadata recorded at `blobDepth = 0`. The `blobSlots[1]` metadata entry remains set but refers to a file slot that `rewrite()` has already overwritten with random noise. On any future deactivation from depth 2 (if a path to it existed), `readBlobSlot(at: 1)` returns the stale slot index, `pop()` finds random noise, `JSONDecoder` fails, and the fallback returns an empty payload — silently absorbing the error as if the blob contained no contacts.
+
+### Resolution
+
+When deactivating from depth ≤ 1 (full deactivation), check whether `blobSlots[1]` has valid metadata and, if so, pop it before popping `blobSlots[0]`. Merge both payloads' contacts into a single restore list for Step 5. Contacts should not appear in both blobs, so merging is a simple union.
+
+In `deactivateSecureMode`, replace the single-blob pop with a loop that covers both slots when performing a full deactivation:
+
+```swift
+let blobDepths: [Int] = depth <= 1
+    ? [1, 0]       // Full deactivation: pop both blobs, higher depth first.
+    : [depth - 1]  // Cascade deactivation: pop the expendable layer only.
+
+var allRestoredContacts: [LayerContact] = []
+for bd in blobDepths {
+    guard let slotIndex = config.readBlobSlot(at: bd),
+          let expectedSeq = config.readSequenceNumber(at: bd) else { continue }
+    let partial = (try? self.layerStore.pop(key: layerKey, slotIndex: slotIndex,
+                                            expectedSequenceNumber: expectedSeq))
+                  ?? LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: [])
+    allRestoredContacts.append(contentsOf: partial.contacts)
+    config.clearBlobSlot(at: bd)
+    config.clearSequenceNumber(at: bd)
+}
+let payload = LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: allRestoredContacts)
+```
+
+Step 5's restore loop operates on `payload.contacts` unchanged; it receives the merged set and re-stamps each contact's `visibleThroughDepth` from the blob record. Contacts classified at depth 1 (blob records with `visibleThroughDepth = 1`) have their marking restored correctly, preserving the Bug 23 invariant across all activation depths.
+
