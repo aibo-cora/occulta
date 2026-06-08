@@ -1907,29 +1907,33 @@ Each successful probe creates a new layer and transitions `state` to `.normal` (
 
 `pinCollision` falls into the generic `catch` arm. There is no explicit arm for it. The tell-avoidance intent of Bug 24's fix was not extended to the collision case.
 
-### Resolution
+### Resolution (partial — bug remains open)
 
-Add a dedicated `catch` arm for `pinCollision` that silently dismisses, identical to the `invalidStateTransition` arm:
+**Applied:** A dedicated `catch` arm for `pinCollision` was added in `SummaryView`, identical to the `invalidStateTransition` arm. Every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. The tell is removed.
 
-```swift
-} catch Manager.Security.SecurityError.invalidStateTransition {
-    self.isActivating = false
-    self.onDone()
-} catch Manager.Security.SecurityError.pinCollision {
-    // A collision means the proposed PIN already routes somewhere in the verifier
-    // array. Surfacing "Activation Failed" confirms to the coercer that protected
-    // verifiers exist — a direct tell that Secure Mode is active. Silently dismiss:
-    // indistinguishable from a successful activation on a device with no prior SM.
-    // (Bug 62 fix.)
-    self.isActivating = false
-    self.onDone()
-} catch {
-    self.isActivating     = false
-    self.activationFailed = true
-}
-```
+**Not yet resolved:** The oracle attack itself. The silent dismiss removes the signal but not the probe mechanism. A coercer can still issue unlimited activation attempts from their depth, and each non-colliding probe silently creates a real new layer in the verifier array and the blob store. Unlimited probing across sessions is unacceptable.
 
-From the coercer's perspective, every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. No information about the device's protected state is leaked.
+Two mitigations are under consideration:
+
+**Option A — Rate limit:** Allow at most N Secure Mode activations per 24-hour window, stored as an encrypted counter in `AppLayerConfig`. On limit reached, `activateSecureMode` throws a new error that `SummaryView` silently dismisses (same as `pinCollision`). N must be chosen so that legitimate multi-layer setup is not blocked, but brute-forcing the 10,000-candidate 4-digit space across days is not viable in practice.
+
+**Option B — Wipe on collision:** When `pinCollision` fires, treat it as evidence of an active probing attack and wipe all secure state. This is aggressive — a real user who accidentally proposes their own master PIN as their duress PIN would lose all data — and must be weighed against the low probability of accidental collision vs. intentional probing.
+
+Both options require further design before implementation.
+
+### Residual risk — accidental master PIN discovery
+
+The silent dismiss closes the oracle signal, but does not eliminate a related residual risk: a coercer who accidentally proposes the master PIN as their duress PIN will later be routed to the real layer without realising it.
+
+**What is stored on collision:** nothing. `pinCollision` is thrown before any writes occur. The config is unchanged. No new verifier, no new blob, no new layer.
+
+**What happens on next authentication:** `verify()` scans `sealedNormalVerifiers` from index 0. The proposed PIN matches index 0 (the master PIN slot) and routes to `currentDepth = 0` — the real layer, with all real contacts visible.
+
+The coercer does not know this happened. They entered what they believed was their duress PIN, saw a contact list, and have no mechanism to distinguish depth 0 from a decoy layer they think they created. Immediate deniability is not necessarily broken from the coercer's perspective. However, the real user's sensitive contacts are exposed to someone who stumbled onto the master PIN without realising it.
+
+**Why the silent dismiss does not fully solve this:** the fix removes the signal that would have told the coercer they found something meaningful. It does not prevent the routing consequence. A coercer probing PINs against the oracle (with the alert present) would know when they hit the master PIN. A coercer probing with the alert removed would reach the real layer without realising it — a weaker but non-zero exposure.
+
+**Acceptance criteria:** this risk is proportional to the probability of a 4–6 digit PIN collision by chance. For a 6-digit PIN that probability is 1-in-1,000,000 per attempt; for a 4-digit PIN, 1-in-10,000. In a targeted coercion scenario where the coercer is guessing plausible PINs (birthdays, repeated digits), the probability is higher but still bounded by the PIN space. The risk is accepted as low-probability; no code change is planned beyond the oracle-signal fix.
 
 ---
 

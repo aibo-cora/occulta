@@ -295,6 +295,14 @@ private struct SummaryView: View {
                             // the app is in a protected state.
                             self.isActivating = false
                             self.onDone()
+                        } catch Manager.Security.SecurityError.pinCollision {
+                            // The proposed duress PIN matches an existing verifier. Showing
+                            // "Activation Failed" would reveal that protected verifiers exist —
+                            // a direct tell that Secure Mode is active. Silently dismiss so
+                            // collision and success are indistinguishable from the outside.
+                            // NOTE: this does not fully close the oracle attack — see Bug 62.
+                            self.isActivating = false
+                            self.onDone()
                         } catch {
                             debugPrint("Error activating [\(type(of: error))]: \(error)")
                             self.isActivating     = false
