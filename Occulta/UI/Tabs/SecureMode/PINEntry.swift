@@ -20,22 +20,27 @@ struct PINEntry: View {
         /// the normal verifier. Use for Settings-level confirmations where wrong
         /// attempts must not increment the wipe counter.
         case verifyCurrentLayer
-        /// Two-phase entry: first entry sets `firstPIN`, second entry must match it.
-        /// On match, calls `onNormal(pin)` with the confirmed PIN and does **not** call
-        /// any security method internally — the caller's `onNormal` closure is responsible
+        /// Two-phase entry: first entry sets `pendingPINEntry`, second entry must match it.
+        /// On match, calls `onAuthenticated(pin)` with the confirmed PIN and does **not** call
+        /// any security method internally — the caller's `onAuthenticated` closure is responsible
         /// for the actual security operation (e.g. `configurePIN`, `disablePIN(at:confirmingPIN:)`,
         /// `reEnablePIN`). This keeps the view decoupled from which operation is being confirmed.
         case setup
-        /// Phase 1: verify existing normal PIN. Phase 2: enter + confirm new PIN.
-        /// Delivers (confirmedNormalPIN, newPIN) to onComplete.
+        /// Phase 1: verify existing layer PIN. Phase 2: enter + confirm new duress PIN.
+        /// Delivers (authenticatedLayerPIN, newDuressPIN) to onComplete.
         case confirmThenSet(onComplete: (String, String) -> Void)
     }
 
     // MARK: Callbacks
 
-    var mode:     Mode             = .verify
-    var onNormal: (String) -> Void = { _ in }
-    var onDuress: () -> Void       = {}
+    var mode: Mode = .verify
+    /// Called with the authenticated PIN when the entry matches the normal/current-layer verifier,
+    /// or with the confirmed new PIN in `.setup` mode. The caller is responsible for any
+    /// subsequent security operation.
+    var onAuthenticated: (String) -> Void = { _ in }
+    /// Called when the entry matches the duress verifier. No PIN is delivered — the duress
+    /// path must not expose the duress PIN to callers.
+    var onDuress: () -> Void = {}
 
     // MARK: Dependencies
 
@@ -43,18 +48,34 @@ struct PINEntry: View {
 
     // MARK: State
 
-    @State private var digits:           Data    = Data()
-    @State private var shakeOffset:      CGFloat = 0
-    @State private var isVerifying:      Bool    = false
-    @State private var firstPIN:         String? = nil
-    @State private var confirmedPIN:     String? = nil  // phase-1 result for .confirmThenSet
-    @State private var lockoutUntil:     Date?   = nil
-    @State private var lockoutRemaining: String  = ""
+    /// Raw digit input, stored as individual UInt8 values. Zeroed and cleared on every submit.
+    @State private var digits:                Data    = Data()
+    /// Horizontal offset driving the shake animation on a wrong entry.
+    @State private var shakeOffset:           CGFloat = 0
+    /// True while a submission is being processed (SE operation + timing pad). Disables the
+    /// keypad to prevent queued entries during the artificial response window.
+    @State private var isProcessing:          Bool    = false
+    /// First-pass entry for two-pass confirmation modes (.setup, .confirmThenSet phase 2).
+    /// Nil until the user completes their first entry; cleared on mismatch or successful match.
+    @State private var pendingPINEntry:       String? = nil
+    /// The current-layer PIN authenticated in .confirmThenSet phase 1. Stored so phase 2
+    /// can deliver it to the onComplete closure alongside the new duress PIN.
+    @State private var authenticatedLayerPIN: String? = nil
+    /// Non-nil while a lockout is active; the Date at which the lockout expires.
+    @State private var lockoutUntil:          Date?   = nil
+    /// Human-readable countdown string shown in place of the prompt title during lockout.
+    @State private var lockoutRemaining:      String  = ""
 
-    private let pinLength:    Int          = 6
-    private let gateDuration: TimeInterval = 0.5
+    /// Number of digits required to complete a PIN entry.
+    private let pinLength:         Int          = 6
+    /// Minimum wall-clock duration for any PIN response. Each verification path waits at least
+    /// this long before delivering a result, so correct and incorrect entries take identical
+    /// time — timing side-channel resistance.
+    private let timingPadDuration: TimeInterval = 0.5
+    /// Fires every second to update the lockout countdown display.
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
+    /// True when a lockout expiry is set and has not yet elapsed.
     private var isLockedOut: Bool { self.lockoutUntil != nil }
 
     // MARK: Derived
@@ -64,10 +85,10 @@ struct PINEntry: View {
         case .verify, .verifyCurrentLayer:
             return "Passcode"
         case .setup:
-            return self.firstPIN != nil ? "Confirm Passcode" : "Passcode"
+            return self.pendingPINEntry != nil ? "Confirm Passcode" : "Passcode"
         case .confirmThenSet:
-            guard self.confirmedPIN != nil else { return "Current Passcode" }
-            return self.firstPIN != nil ? "Confirm Passcode" : "New Passcode"
+            guard self.authenticatedLayerPIN != nil else { return "Current Passcode" }
+            return self.pendingPINEntry != nil ? "Confirm Passcode" : "New Passcode"
         }
     }
 
@@ -106,7 +127,7 @@ struct PINEntry: View {
                     ForEach([[1,2,3],[4,5,6],[7,8,9]], id: \.self) { row in
                         HStack(spacing: 20) {
                             ForEach(row, id: \.self) { digit in
-                                KeypadButton(label: "\(digit)", disabled: self.isVerifying || self.isLockedOut) {
+                                KeypadButton(label: "\(digit)", disabled: self.isProcessing || self.isLockedOut) {
                                     self.append(digit)
                                 }
                             }
@@ -114,10 +135,10 @@ struct PINEntry: View {
                     }
                     HStack(spacing: 20) {
                         Color.clear.frame(width: 88, height: 88)
-                        KeypadButton(label: "0", disabled: self.isVerifying || self.isLockedOut) {
+                        KeypadButton(label: "0", disabled: self.isProcessing || self.isLockedOut) {
                             self.append(0)
                         }
-                        KeypadButton(label: "⌫", isSymbol: true, disabled: self.isVerifying || self.isLockedOut) {
+                        KeypadButton(label: "⌫", isSymbol: true, disabled: self.isProcessing || self.isLockedOut) {
                             self.deleteLast()
                         }
                     }
@@ -147,7 +168,7 @@ struct PINEntry: View {
     // MARK: Input
 
     private func append(_ digit: Int) {
-        guard !self.isVerifying, !self.isLockedOut, self.digits.count < self.pinLength else { return }
+        guard !self.isProcessing, !self.isLockedOut, self.digits.count < self.pinLength else { return }
         self.hapticSelection()
         self.digits.append(UInt8(digit))
         if self.digits.count == self.pinLength { self.submit() }
@@ -168,7 +189,7 @@ struct PINEntry: View {
     // MARK: Submit
 
     private func submit() {
-        self.isVerifying = true
+        self.isProcessing = true
         let pin = self.digits.map { String($0) }.joined()
 
         switch self.mode {
@@ -179,7 +200,7 @@ struct PINEntry: View {
         case .verifyCurrentLayer:
             self.submitVerifyCurrentLayer(pin: pin)
         case .confirmThenSet(let onComplete):
-            if self.confirmedPIN == nil {
+            if self.authenticatedLayerPIN == nil {
                 self.submitConfirmPhase(pin: pin, onComplete: onComplete)
             } else {
                 self.submitSetPhase(pin: pin, onComplete: onComplete)
@@ -187,23 +208,23 @@ struct PINEntry: View {
         }
     }
 
-    // .setup — enter + confirm → deliver to onNormal (caller handles security)
+    // .setup — enter + confirm → deliver to onAuthenticated (caller handles security)
 
     private func submitSetup(pin: String) {
-        if let first = self.firstPIN {
+        if let first = self.pendingPINEntry {
             if pin == first {
                 self.hapticResult(.success)
-                self.onNormal(pin)
+                self.onAuthenticated(pin)
             } else {
-                self.firstPIN    = nil
+                self.pendingPINEntry = nil
                 self.clearDigits()
-                self.isVerifying = false
+                self.isProcessing    = false
                 self.shake()
             }
         } else {
-            self.firstPIN    = pin
+            self.pendingPINEntry = pin
             self.clearDigits()
-            self.isVerifying = false
+            self.isProcessing    = false
         }
     }
 
@@ -213,7 +234,7 @@ struct PINEntry: View {
         let start     = Date()
         let result    = (try? self.security.verify(pin)) ?? .wrong
         let elapsed   = Date().timeIntervalSince(start)
-        let remaining = max(0, self.gateDuration - elapsed)
+        let remaining = max(0, self.timingPadDuration - elapsed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             self.security.applyVerifyState(for: result)
@@ -228,15 +249,15 @@ struct PINEntry: View {
         let start     = Date()
         let matched   = self.security.checkCurrentLayerPIN(pin)
         let elapsed   = Date().timeIntervalSince(start)
-        let remaining = max(0, self.gateDuration - elapsed)
+        let remaining = max(0, self.timingPadDuration - elapsed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             if matched {
                 self.hapticResult(.success)
-                self.onNormal(pin)
+                self.onAuthenticated(pin)
             } else {
                 self.clearDigits()
-                self.isVerifying = false
+                self.isProcessing = false
                 self.shake()
             }
         }
@@ -251,41 +272,41 @@ struct PINEntry: View {
         let start     = Date()
         let matched   = self.security.checkCurrentLayerPIN(pin)
         let elapsed   = Date().timeIntervalSince(start)
-        let remaining = max(0, self.gateDuration - elapsed)
+        let remaining = max(0, self.timingPadDuration - elapsed)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             if matched {
                 self.hapticResult(.success)
-                self.confirmedPIN = pin
+                self.authenticatedLayerPIN = pin
                 self.clearDigits()
-                self.isVerifying  = false
+                self.isProcessing          = false
             } else {
                 self.clearDigits()
-                self.isVerifying = false
+                self.isProcessing = false
                 self.shake()
             }
         }
     }
 
-    // .confirmThenSet phase 2 — enter + confirm new PIN → onComplete(normalPIN, newPIN)
+    // .confirmThenSet phase 2 — enter + confirm new duress PIN → onComplete(layerAuthenticationPIN, duressPIN)
 
-    private func submitSetPhase(pin: String, onComplete: @escaping (String, String) -> Void) {
-        guard let normalPIN = self.confirmedPIN else { return }
+    private func submitSetPhase(pin currentEntryPIN: String, onComplete: @escaping (String, String) -> Void) {
+        guard let layerAuthenticationPIN = self.authenticatedLayerPIN else { return }
 
-        if let first = self.firstPIN {
-            if pin == first {
+        if let duressPIN = self.pendingPINEntry {
+            if currentEntryPIN == duressPIN {
                 self.hapticResult(.success)
-                onComplete(normalPIN, pin)
+                onComplete(layerAuthenticationPIN, currentEntryPIN)
             } else {
-                self.firstPIN    = nil
+                self.pendingPINEntry = nil
                 self.clearDigits()
-                self.isVerifying = false
+                self.isProcessing    = false
                 self.shake()
             }
         } else {
-            self.firstPIN    = pin
+            self.pendingPINEntry = currentEntryPIN
             self.clearDigits()
-            self.isVerifying = false
+            self.isProcessing    = false
         }
     }
 
@@ -295,18 +316,18 @@ struct PINEntry: View {
         switch result {
         case .normal(depth: _):
             self.hapticResult(.success)
-            self.onNormal(pin)   // depth carried by applyVerifyState; not needed here
+            self.onAuthenticated(pin)   // depth carried by applyVerifyState; not needed here
         case .duress:
             self.hapticResult(.success)  // identical to normal — deniability requires same feedback
             self.onDuress()
         case .wrong:
             self.clearDigits()
-            self.isVerifying = false
+            self.isProcessing = false
             self.shake()   // shake() fires .error internally
         case .locked(let until):
             self.hapticResult(.warning)
             self.clearDigits()
-            self.isVerifying      = false
+            self.isProcessing     = false
             self.lockoutUntil     = until
             self.lockoutRemaining = Self.countdownText(until: until, from: Date.now)
         }

@@ -226,7 +226,7 @@ struct Settings: View {
             .sheet(isPresented: self.$showingPINSheet) {
                 if !self.requiresPIN {
                     // No verifier exists yet. Enter + confirm a new PIN.
-                    PINEntry(mode: .setup, onNormal: { pin in
+                    PINEntry(mode: .setup, onAuthenticated: { pin in
                         try? self.security.configurePIN(pin)
                         self.showingPINSheet = false
                     })
@@ -234,14 +234,14 @@ struct Settings: View {
                 } else if !self.security.pinEnabled {
                     // Gate lowered under coercion. Re-enable via existing PIN (normal or duress).
                     // UX is identical to initial setup — no observable tell from which matched.
-                    PINEntry(mode: .setup, onNormal: { pin in
+                    PINEntry(mode: .setup, onAuthenticated: { pin in
                         _ = self.security.reEnablePIN(pin)
                         self.showingPINSheet = false
                     })
                     .environment(self.security)
                 } else if !self.isSecureModeActive {
                     // Normal PIN set, no duress verifier. User is turning PIN off entirely.
-                    PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
+                    PINEntry(mode: .verifyCurrentLayer, onAuthenticated: { pin in
                         try? self.security.deactivatePIN(confirmingNormalPIN: pin)
                         self.showingPINSheet = false
                     })
@@ -250,7 +250,7 @@ struct Settings: View {
                     // Coercion path — lower the gate at the current depth without removing
                     // verifiers. Covers both the legacy .duress state and the multi-layer
                     // .normal state at depth > 0 (reached via routing alias).
-                    PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
+                    PINEntry(mode: .verifyCurrentLayer, onAuthenticated: { pin in
                         try? self.security.disablePIN(at: self.security.currentDepth, confirmingPIN: pin)
                         self.showingPINSheet = false
                     })

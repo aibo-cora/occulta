@@ -115,7 +115,7 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
         self.removeCover()
     }
 
-    /// Called from onNormal/onDuress after successful authentication.
+    /// Called from onAuthenticated/onDuress after successful authentication.
     func pinDidSucceed() {
         self.phase = .unlocked
     }

@@ -19,7 +19,7 @@ struct SecureModeDeactivateFlow: View {
     @State private var deactivationFailed = false
 
     var body: some View {
-        PINEntry(mode: .verifyCurrentLayer, onNormal: { pin in
+        PINEntry(mode: .verifyCurrentLayer, onAuthenticated: { pin in
             self.isDeactivating = true
             let cm = self.contactManager
             let vm = self.vaultManager

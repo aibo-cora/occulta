@@ -1698,7 +1698,7 @@ Both writes land in the same `modelContext.save()` that follows, so they are ato
 
 ## Bug 59 — PIN collision detected at activation summary after full flow; contact classification work lost
 
-**Status:** Open
+**Status:** Closed (resolved by Bug 58 + Bug 61 fixes; no code change required)
 
 ### Severity: Medium (UX)
 
@@ -1933,65 +1933,104 @@ From the coercer's perspective, every activation attempt — collision, `invalid
 
 ---
 
-## Bug 63 — Depth-1 sensitive contacts lose their classification after full deactivation; `blobDepth` formula skips `blobSlots[1]`
+## Bug 63 — Stale blob metadata after full deactivation; `clearBlobSlot(at: 0)` does not cover higher-depth activations
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
-### Severity: Medium (data fidelity)
+### Severity: Low (stale metadata)
 
-When the user activates Secure Mode from depth 0 and subsequently activates a second layer from depth 1, two blobs are written: `blobSlots[0]` (depth-0→1 sensitive contacts) and `blobSlots[1]` (depth-1→2 sensitive contacts). Deactivation from depth 0 or depth 1 uses `blobDepth = max(0, depth - 1) = 0` — only `blobSlots[0]` is ever popped. `blobSlots[1]` is ignored. Contacts classified as sensitive during the depth-1 activation lose their `visibleThroughDepth` depth-1 marking after the deactivation key rotation. On the next activation cycle those contacts are no longer pre-classified and must be manually re-marked, violating the invariant established by Bug 23.
+When the user activates Secure Mode from depth 0 and subsequently activates a second layer from depth 1, two blobs are written: `blobSlots[0]` and `blobSlots[1]`. Full deactivation (depth ≤ 1) called `clearBlobSlot(at: blobDepth)` where `blobDepth = 0`, leaving `blobSlots[1]` and `sequenceNumbers[1]` populated with stale metadata pointing at a file slot that `rewrite()` has already overwritten with random noise. On any future cascade deactivation that tried to pop slot 1, `readBlobSlot(at: 1)` would return the stale index, `pop()` would find random noise, and the graceful fallback would silently return an empty payload — harmless, but untidy.
+
+The same hardcoding existed in `forceDeactivateForRecovery`, which also called `clearBlobSlot(at: 0)` only.
+
+### Note on classification loss
+
+Depth-1 sensitive contacts coming out of full deactivation with `visibleThroughDepth = nil` is **correct** behaviour. Bug 23's invariant — restoring sensitivity markings across deactivation cycles — only applies at depth 0, where only the real user can ever be. At depth 1, the duress PIN is known to the coercer; any classifications made there may be the coercer's. Automatically restoring depth-1 classifications would be restoring potentially-coercer-written data into the real user's next session. The Bug 23 invariant is intentionally not extended to depth > 0.
 
 ### Root Cause
 
-The `blobDepth` formula in `deactivateSecureMode`:
-
-```swift
-// depth 0 → blobDepth 0
-// depth 1 → blobDepth 0 (same blob; deactivating the depth 0→1 layer)
-// depth N ≥ 2 → blobDepth N-1
-let blobDepth = max(0, depth - 1)
-```
-
-The comment "depth 1 → blobDepth 0 (same blob)" was written for the single-activation model where only one blob ever exists. With activation from depth 1 now supported (Bug 57 + 58 fixes), a second blob at `blobSlots[1]` can coexist with `blobSlots[0]`. The formula has no path to pop index 1 when deactivating from depth 0 or 1.
-
-After deactivation from depth 0:
-
-- Step 4 sets `visibleThroughDepth = nil` for all contacts.
-- Step 5 restores contacts from `blobSlots[0]` only — depth-0→1 sensitive contacts regain their `encode(0)` depth flag. ✓
-- Contacts from `blobSlots[1]` are not in the restore set. They end up with `visibleThroughDepth = nil` — treated as always-visible. Their depth-1 classification is silently lost.
-
-The contacts are not deleted from the DB (Bug 13 design decision), so no contacts disappear. Only their per-depth sensitivity marking is lost.
-
-### Cascade with Bug 61
-
-With Bug 61 fixed (`coercerBaseDepth = depth = 1`), the "Deactivate Protection" button appears at depth 1 but not at depth 2. There is no UI path to deactivate exclusively from depth 2 (which would use `blobDepth = 1` and correctly pop `blobSlots[1]`). The only deactivation paths available to the user are depth 0 and depth 1, both of which use `blobDepth = 0`.
-
-Additionally, the `clearBlobSlot` and `clearSequenceNumber` calls at the end of deactivation only clear the metadata recorded at `blobDepth = 0`. The `blobSlots[1]` metadata entry remains set but refers to a file slot that `rewrite()` has already overwritten with random noise. On any future deactivation from depth 2 (if a path to it existed), `readBlobSlot(at: 1)` returns the stale slot index, `pop()` finds random noise, `JSONDecoder` fails, and the fallback returns an empty payload — silently absorbing the error as if the blob contained no contacts.
+`clearBlobSlot(at: blobDepth)` is a per-index clear. In the full deactivation path it was hardcoded to index 0, so any blobs written at higher depths were not cleared. The fix must be unconditional and index-free.
 
 ### Resolution
 
-When deactivating from depth ≤ 1 (full deactivation), check whether `blobSlots[1]` has valid metadata and, if so, pop it before popping `blobSlots[0]`. Merge both payloads' contacts into a single restore list for Step 5. Contacts should not appear in both blobs, so merging is a simple union.
-
-In `deactivateSecureMode`, replace the single-blob pop with a loop that covers both slots when performing a full deactivation:
+Added `clearAllBlobMetadata()` to `AppLayerConfig`:
 
 ```swift
-let blobDepths: [Int] = depth <= 1
-    ? [1, 0]       // Full deactivation: pop both blobs, higher depth first.
-    : [depth - 1]  // Cascade deactivation: pop the expendable layer only.
-
-var allRestoredContacts: [LayerContact] = []
-for bd in blobDepths {
-    guard let slotIndex = config.readBlobSlot(at: bd),
-          let expectedSeq = config.readSequenceNumber(at: bd) else { continue }
-    let partial = (try? self.layerStore.pop(key: layerKey, slotIndex: slotIndex,
-                                            expectedSequenceNumber: expectedSeq))
-                  ?? LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: [])
-    allRestoredContacts.append(contentsOf: partial.contacts)
-    config.clearBlobSlot(at: bd)
-    config.clearSequenceNumber(at: bd)
+func clearAllBlobMetadata() {
+    self.sealedBlobSlots      = Self.randomFillerArray()
+    self.layerSequenceNumbers = Self.randomFillerArray()
 }
-let payload = LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: allRestoredContacts)
 ```
 
-Step 5's restore loop operates on `payload.contacts` unchanged; it receives the merged set and re-stamps each contact's `visibleThroughDepth` from the blob record. Contacts classified at depth 1 (blob records with `visibleThroughDepth = 1`) have their marking restored correctly, preserving the Bug 23 invariant across all activation depths.
+This replaces both arrays wholesale with fresh random filler — the same initialisation used at row creation. No indices, no hardcoding; handles any number of activated layers.
+
+In `deactivateSecureMode`, the cleanup block was restructured so that `clearAllBlobMetadata()` is called in the `depth ≤ 1` (full deactivation) branch, while the per-index `clearBlobSlot` / `clearSequenceNumber` calls remain in the `depth ≥ 2` (cascade) branch:
+
+```swift
+if depth <= 1 {
+    config.clearAllBlobMetadata()
+    config.sealedDuressVerifier = nil
+    try self.setState(0, config: config)
+} else {
+    config.clearBlobSlot(at: blobDepth)
+    config.clearSequenceNumber(at: blobDepth)
+    try self.setState(1, config: config)
+}
+```
+
+`forceDeactivateForRecovery` updated to use `clearAllBlobMetadata()` in place of `clearBlobSlot(at: 0)` + `clearSequenceNumber(at: 0)`.
+
+---
+
+## Bug 64 — `PINEntry` phase 2 does not reject a duress PIN that matches the confirmed normal PIN
+
+**Status:** Open
+
+### Severity: Medium (UX)
+
+`PINEntry.submitSetPhase` receives the confirmed normal PIN as `confirmedPIN` and the proposed duress PIN as `pin`. It only checks that both entries of the new PIN match each other — it does not check `pin != confirmedPIN`. If the user enters the same digits for both PINs, `onComplete(normalPIN, pin)` is called with identical values, the flow advances through contact classification, and `activateSecureMode` ultimately throws `pinCollision` at the SummaryView step.
+
+The result (post Bug 62 fix) is a silent dismiss: the sheet closes, Secure Mode is not activated, and the user receives no indication that anything went wrong. They would only discover the failure by noticing that "Deactivate Protection" is absent from Settings.
+
+### Root Cause
+
+`submitSetPhase` in `PINEntry.swift`:
+
+```swift
+private func submitSetPhase(pin: String, onComplete: @escaping (String, String) -> Void) {
+    guard let normalPIN = self.confirmedPIN else { return }
+
+    if let first = self.firstPIN {
+        if pin == first {
+            self.hapticResult(.success)
+            onComplete(normalPIN, pin)   // no check: pin != normalPIN
+        } else { ... }
+    } else {
+        self.firstPIN = pin
+        ...
+    }
+}
+```
+
+Both entries of the duress PIN match, so the equality check passes. The duress-equals-normal case is not caught here.
+
+### Resolution
+
+On the second entry (confirmation pass), before calling `onComplete`, verify `pin != normalPIN`. If they match, reject the same way as a mismatch — clear digits, shake:
+
+```swift
+if let first = self.firstPIN {
+    if pin == first && pin != normalPIN {
+        self.hapticResult(.success)
+        onComplete(normalPIN, pin)
+    } else {
+        self.firstPIN    = nil
+        self.clearDigits()
+        self.isVerifying = false
+        self.shake()
+    }
+}
+```
+
+This catches the collision at the point of entry, where the user can immediately correct it, without reaching SummaryView. It does not cover collisions between the duress PIN and verifiers not visible to `PINEntry` (e.g., a stale duress verifier from a prior cycle), but those cases are forensically acceptable under the Bug 62 silent-dismiss rule — they are rare and the user receives no misleading signal.
 

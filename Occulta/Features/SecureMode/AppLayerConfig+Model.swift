@@ -198,10 +198,18 @@ final class AppLayerConfig {
 
     func clearSequenceNumber(at depth: Int) {
         self.ensurePadded()
-        
+
         if depth < self.layerSequenceNumbers.count {
             self.layerSequenceNumbers[depth] = Self.randomFiller()
         }
+    }
+
+    /// Replaces the entire blob-slot and sequence-number arrays with fresh random filler.
+    /// Use on full deactivation (depth ≤ 1) to wipe all blob metadata regardless of how
+    /// many layers were activated above depth 0 — no hardcoded indices required.
+    func clearAllBlobMetadata() {
+        self.sealedBlobSlots      = Self.randomFillerArray()
+        self.layerSequenceNumbers = Self.randomFillerArray()
     }
 
     // MARK: - Verifier array helpers

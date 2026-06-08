@@ -166,7 +166,7 @@ private struct RootView: View {
     @State private var openedFileContents: OwnedBasket?
     /// Raw encrypted `.occ` bytes queued while the app is locked.
     /// Held without any processing until the PIN depth is known.
-    /// Cleared by onNormal (process) or onDuress (discard).
+    /// Cleared by onAuthenticated (process) or onDuress (discard).
     @State private var pendingFileData: Data?
     // Error feedback
     @State private var showError = false
@@ -306,7 +306,7 @@ private struct RootView: View {
 
         case .pinRequired:
             PINEntry(
-                onNormal: { _ in
+                onAuthenticated: { _ in
                     self.appScreen.pinDidSucceed()
                     self.contactManager.shareIndexAllowedIDs = nil
                     self.contactManager.syncShareIndex()
@@ -457,7 +457,7 @@ private struct RootView: View {
                 }
 
                 // Secure Mode gate: if the app is locked, queue raw bytes
-                // without any processing. PIN entry determines depth; onNormal
+                // without any processing. PIN entry determines depth; onAuthenticated
                 // processes the data, onDuress discards it.
                 if self.appScreen.phase != .unlocked {
                     self.pendingFileData = data

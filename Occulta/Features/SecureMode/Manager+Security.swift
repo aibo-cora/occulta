@@ -550,6 +550,25 @@ extension Manager {
             }
             try config.writeBlobSlot(slotIndex, at: depth)
             try config.writeSequenceNumber(sequenceNumber, at: depth)
+
+            // When activating from a duress depth (depth > 0), record the operator's
+            // home depth and transition state to .normal so the "Deactivate Protection"
+            // button becomes visible.
+            //
+            // coercerBaseDepth = depth (not depth+1): the operator is already AT depth
+            // after entering their PIN; no future re-routing occurs. The Deactivate
+            // condition is (currentDepth == coercerBaseDepth), so writing depth makes
+            // currentDepth (1) == coercerBaseDepth (1) true immediately.
+            //
+            // For the Bug 47 coercer: reEnablePIN already wrote coercerBaseDepth = N+1
+            // before the coercer re-entered at depth N+1. activateSecureMode runs with
+            // depth = N+1, so this write is coercerBaseDepth = N+1 — the same value.
+            // Idempotent; no regression. (Bug 58 fix, off-by-one corrected by Bug 61.)
+            if depth > 0 {
+                try? config.writeCoercerBaseDepth(depth)
+                self.state = .normal
+            }
+
             try self.modelContext.save()
             self.resetCounters()
         }
@@ -733,18 +752,22 @@ extension Manager {
             //             (depth 0→1) intact so the coercer still passes through it.
             let clearFrom = max(1, depth)
             config.clearVerifiers(from: clearFrom)
-            config.clearBlobSlot(at: blobDepth)
-            config.clearSequenceNumber(at: blobDepth)
 
             if depth <= 1 {
-                // depth 0 (real app) or depth 1 (first duress view) — last duress layer
-                // removed. Secure Mode fully off; return to pinOnly.
+                // Full deactivation — Secure Mode fully off; return to pinOnly.
+                // Wipe all blob metadata in one shot: clearAllBlobMetadata() replaces
+                // both arrays with fresh random filler regardless of how many layers
+                // were activated above depth 0. No hardcoded indices needed.
+                config.clearAllBlobMetadata()
                 config.sealedDuressVerifier = nil
                 try self.setState(0, config: config)
             } else {
-                // Expendable layer removed. Per the deactivation chain, always land at
-                // depth 1 (.duress) — the convincing first-duress view must be the final
-                // stop before the real app is reachable.
+                // Cascade deactivation — expendable layer removed. Only clear the
+                // metadata for this specific layer; shallower blobs remain intact.
+                // Always land at depth 1 (.duress) — the convincing first-duress view
+                // must be the final stop before the real app is reachable.
+                config.clearBlobSlot(at: blobDepth)
+                config.clearSequenceNumber(at: blobDepth)
                 try self.setState(1, config: config)
             }
 
@@ -789,8 +812,7 @@ extension Manager {
             // Clear everything — force deactivation resets all layers.
             config.sealedDuressVerifier = nil
             config.clearVerifiers(from: 1)  // keep normalVerifiers[0] (master PIN intact)
-            config.clearBlobSlot(at: 0)
-            config.clearSequenceNumber(at: 0)
+            config.clearAllBlobMetadata()
             try self.setState(0, config: config)
             try self.modelContext.save()
 
@@ -890,8 +912,8 @@ extension Manager {
         /// Applies the routing-depth state transition for a verified result.
         ///
         /// Intentionally separated from `verify()` so the state mutation fires in
-        /// the same synchronous context as the onNormal/onDuress callbacks (inside
-        /// PINEntry's gateDuration asyncAfter). SwiftUI then batches currentDepth and
+        /// the same synchronous context as the onAuthenticated/onDuress callbacks (inside
+        /// PINEntry's timingPadDuration asyncAfter). SwiftUI then batches currentDepth and
         /// pinDidSucceed() into one render pass, preventing a stale duress-mode render
         /// from briefly appearing when the content transitions to .unlocked.
         func applyVerifyState(for result: PINVerifyResult) {
