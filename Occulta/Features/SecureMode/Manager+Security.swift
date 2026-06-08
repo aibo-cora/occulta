@@ -13,7 +13,6 @@ import Foundation
 import SwiftData
 import CryptoKit
 import SQLite3
-import UIKit
 
 extension Manager {
     @Observable
@@ -89,14 +88,6 @@ extension Manager {
         /// Persisted per depth via `AppLayerConfig.pinEnabledPerDepth`. Restored in `init`.
         /// Always `true` after any clean state transition.
         private(set) var pinEnabled: Bool = true
-
-        /// Drives the opaque overlay — true means content is hidden.
-        /// Set instantly in both directions; the overlay uses .animation(.none).
-        private(set) var isContentHidden: Bool = false
-
-        /// Drives the fullScreenCover PIN gate — true means the PIN entry sheet is presented.
-        /// Not private(set) so the fullScreenCover binding can clear it on system-initiated dismiss.
-        var needsPINEntry: Bool = false
 
         // MARK: - Private
 
@@ -212,9 +203,6 @@ extension Manager {
             self.pinEnabled = config.readPinEnabled(at: persistedDepth)
             if !self.pinEnabled { self.currentDepth = persistedDepth }
 
-            let pinRequired      = config.sealedNormalVerifier != nil
-            self.isContentHidden = pinRequired && self.pinEnabled
-            self.needsPINEntry   = pinRequired && self.pinEnabled
         }
 
         // MARK: - State transition
@@ -232,64 +220,6 @@ extension Manager {
             self.currentDepth = depth
             self.state        = state ?? (depth > 0 ? .duress : .normal)
             self.pinEnabled   = pinEnabled
-        }
-
-        // MARK: - App lock
-
-        /// How long the app must be in the background before the PIN gate re-engages on return.
-        /// Measures actual unattended time, not time since last auth — brief interruptions
-        /// (share sheets, Face ID prompts, notification banners) never trigger a re-lock.
-        private static let gracePeriod: TimeInterval = 5 * 60
-
-        /// Set when the app enters the background; cleared on every foreground return.
-        /// `nil` means the app has not yet backgrounded this session (cold start or brief
-        /// inactive-only interruption), which counts as zero background duration.
-        private var backgroundEntryDate: Date? = nil
-
-        /// App went .inactive (share sheet, Spotlight, Face ID prompt). Cover content for
-        /// screenshot protection; do not present the PIN gate — the app has not been backgrounded.
-        func handleInactive() {
-            self.isContentHidden = true
-        }
-
-        /// App fully backgrounded. Cover content and record when the app became unattended.
-        /// The PIN gate decision is deferred to `handleActive()` based on background duration.
-        func handleBackground() {
-            self.isContentHidden = true
-            self.backgroundEntryDate = Date()
-        }
-
-        /// App returned to foreground. Lock only if the app was in the background longer than
-        /// the grace period — i.e. it was genuinely unattended, not just briefly interrupted.
-        func handleActive() {
-            let elapsed = self.backgroundEntryDate.map { Date().timeIntervalSince($0) } ?? 0
-            self.backgroundEntryDate = nil
-
-            guard self.requiresPIN, self.pinEnabled else {
-                self.isContentHidden = false
-                self.needsPINEntry   = false
-                return
-            }
-
-            if elapsed > Self.gracePeriod {
-                self.isContentHidden = true
-                self.needsPINEntry   = true
-            } else {
-                self.isContentHidden = false
-                self.needsPINEntry   = false
-            }
-        }
-
-        /// Call from onNormal after PIN entry — clears the lock gate.
-        func unlockNormal() {
-            self.isContentHidden = false
-            self.needsPINEntry   = false
-        }
-
-        /// Call from onDuress after duress PIN entry — same lock-state transition as unlockNormal.
-        func unlockDuress() {
-            self.isContentHidden = false
-            self.needsPINEntry   = false
         }
 
         // MARK: - Layer store maintenance
@@ -960,10 +890,10 @@ extension Manager {
         /// Applies the routing-depth state transition for a verified result.
         ///
         /// Intentionally separated from `verify()` so the state mutation fires in
-        /// the same synchronous context as `unlockNormal/Duress()` (inside PINEntry's
-        /// gateDuration asyncAfter). SwiftUI then batches the state change and the
-        /// cover dismissal into one render pass, preventing the vault tab from
-        /// briefly showing a stale duress-mode render when the cover dismisses.
+        /// the same synchronous context as the onNormal/onDuress callbacks (inside
+        /// PINEntry's gateDuration asyncAfter). SwiftUI then batches currentDepth and
+        /// pinDidSucceed() into one render pass, preventing a stale duress-mode render
+        /// from briefly appearing when the content transitions to .unlocked.
         func applyVerifyState(for result: PINVerifyResult) {
             switch result {
             case .normal(let depth):
