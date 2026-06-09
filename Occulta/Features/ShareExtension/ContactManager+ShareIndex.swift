@@ -33,8 +33,8 @@ extension ContactManager {
         let allContacts = try self.fetchAllContacts()
         // When Secure Mode is active, only contacts visible at depth ≥ 1 are written
         // to the share index. Hidden contacts must not appear in the iOS share sheet.
-        let allowedIDs: Set<String>? = self.security.isSecureModeActive
-            ? self.security.safeContactIDs(atDepth: max(self.security.currentDepth, 1))
+        let allowedIDs: Set<String>? = self.security.isRestricted
+            ? self.security.safeContactIDs(atDepth: self.security.currentDepth)
             : nil
         let contacts = allowedIDs.map { ids in
             allContacts.filter { ids.contains($0.identifier) }
