@@ -42,7 +42,7 @@ private func makeSecurityAndManagers() throws -> (security: Manager.Security,
     let container = try makeContainer()
     let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager(),
                                      layerStore: Manager.LayerStore(backend: InMemoryLayerStoreBackend()))
-    let contacts  = ContactManager(modelContainer: container)
+    let contacts  = ContactManager(modelContainer: container, security: security)
     let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return (security, container, contacts, vault)
 }

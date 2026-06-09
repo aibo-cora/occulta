@@ -95,7 +95,9 @@ private func makeSecurityContainer() throws -> ModelContainer {
             recipientMaterial: recipPub
         )
 
-        let contacts = ContactManager(modelContainer: try makeContactContainer())
+        let container = try makeContactContainer()
+        let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager(), enabled: false)
+        let contacts  = ContactManager(modelContainer: container, security: security)
         let before   = pm.remainingCount(for: contactID)
 
         _ = try? contacts.identifyOwner(of: bundle)   // throws — no contact matches
@@ -155,7 +157,8 @@ private func makeSecurityContainer() throws -> ModelContainer {
             senderFingerprint: fingerprint
         )
 
-        let contacts = ContactManager(modelContainer: container)
+        let security = Manager.Security(modelContainer: container, keyManager: TestKeyManager(), enabled: false)
+        let contacts = ContactManager(modelContainer: container, security: security)
         let before   = pm.remainingCount(for: contactID)
 
         _ = try? contacts.identifyOwner(of: bundle)   // succeeds, then returns ownerID

@@ -575,8 +575,6 @@ extension Manager {
 
             try self.modelContext.save()
             self.resetCounters()
-            contactManager.shareIndexAllowedIDs = self.safeContactIDs(atDepth: max(self.currentDepth, 1))
-            contactManager.syncShareIndex()
         }
 
         /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
@@ -791,10 +789,6 @@ extension Manager {
                 DispatchQueue.global(qos: .utility).async { store.rewrite() }
             }
             self.resetCounters()
-            contactManager.shareIndexAllowedIDs = self.isSecureModeActive
-                ? self.safeContactIDs(atDepth: max(self.currentDepth, 1))
-                : nil
-            contactManager.syncShareIndex()
         }
 
         // MARK: - Emergency recovery
@@ -977,8 +971,10 @@ extension Manager {
         ///           `SecurityError.incorrectPIN` if the confirming PIN does not match.
         func disablePIN(at depth: Int, confirmingPIN: String) throws {
             let config = try self.requireConfig()
+            
             guard config.sealedDuressVerifier != nil else { throw SecurityError.invalidStateTransition }
             guard self.checkCurrentLayerPIN(confirmingPIN) else { throw SecurityError.incorrectPIN }
+            
             try self.setState(depth, pinEnabled: false, config: config)
             try self.modelContext.save()
         }

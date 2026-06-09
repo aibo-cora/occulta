@@ -67,19 +67,20 @@ struct OccultaApp: App {
         self.storeURL = url
         Self.applySecureDeletePragma(at: url)
 
-        let contactManager = ContactManager(modelContainer: sharedModelContainer)
+        let security = Manager.Security(modelContainer: sharedModelContainer,
+                                        storeURL: url,
+                                        enabled: FeatureFlags.isEnabled(.secureMode))
+        if FeatureFlags.isEnabled(.secureMode) {
+            security.maintainLayerStore()
+        }
+        self.security = security
+
+        let contactManager = ContactManager(modelContainer: sharedModelContainer, security: security)
         let vaultManager   = VaultManager(modelContainer: sharedModelContainer)
 
         self.sharedModelContainer = sharedModelContainer
         self.contactManager       = contactManager
         self.vaultManager         = vaultManager
-        let security              = Manager.Security(modelContainer: sharedModelContainer,
-                                                      storeURL: url,
-                                                      enabled: FeatureFlags.isEnabled(.secureMode))
-        if FeatureFlags.isEnabled(.secureMode) {
-            security.maintainLayerStore()
-        }
-        self.security            = security
         self.appManager          = Manager.App(contacts: contactManager, vault: vaultManager)
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
 
@@ -294,9 +295,6 @@ private struct RootView: View {
             PINEntry(
                 onAuthenticated: { _ in
                     self.appScreen.pinDidSucceed()
-                    self.contactManager.shareIndexAllowedIDs = self.security.isSecureModeActive
-                        ? self.security.safeContactIDs(atDepth: 1)
-                        : nil
                     self.contactManager.syncShareIndex()
                 },
                 onDuress: {
@@ -307,7 +305,6 @@ private struct RootView: View {
                         self.errorMessage = "This message was not addressed to you."
                         self.showError = true
                     }
-                    self.contactManager.shareIndexAllowedIDs = self.security.safeContactIDs()
                     self.contactManager.syncShareIndex()
                     self.appScreen.pinDidSucceed()
                 }

@@ -73,7 +73,7 @@ private func makeComponents() throws -> ActivationComponents {
         keyManager:     keyManager,
         layerStore:     layerStore
     )
-    let contacts = ContactManager(modelContainer: container)
+    let contacts = ContactManager(modelContainer: container, security: security)
     let vault    = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return ActivationComponents(
         security:   security,

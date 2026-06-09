@@ -10,6 +10,7 @@ import SwiftData
 import Contacts
 import SwiftUI
 import Combine
+import CoreData
 import Foundation
 import CryptoKit
 
@@ -52,15 +53,26 @@ class ContactManager {
     /// Subscribers (e.g. ShardCustodyManager) use this to schedule auto-returns.
     var contactKeyRotated: PassthroughSubject<String, Never> = .init()
 
-    /// When non-nil, `syncShareIndex()` only writes contacts in this set.
-    /// Set by `OccultaApp` to `security.safeContactIDs()` when `security.isRestricted`,
-    /// and cleared to `nil` when returning to depth 0.
     @ObservationIgnored
-    var shareIndexAllowedIDs: Set<String>? = nil
-    
-    init(modelContainer: ModelContainer) {
+    private let security: Manager.Security
+    @ObservationIgnored
+    private var cancellables = Set<AnyCancellable>()
+
+    init(modelContainer: ModelContainer, security: Manager.Security) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
+        self.security = security
+
+        NotificationCenter.default
+            .publisher(
+                for: NSManagedObjectContext.didSaveObjectsNotification,
+                object: self.modelExecutor.modelContext
+            )
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncShareIndex()
+            }
+            .store(in: &self.cancellables)
     }
     
     var dateFormatter: DateFormatter {
@@ -197,7 +209,6 @@ class ContactManager {
         }
 
         try self.modelContext.save()
-        self.syncShareIndex()
     }
 
     func save(contacts: [Contact.Draft]) throws {
@@ -364,7 +375,6 @@ class ContactManager {
         }
 
         try self.modelContext.save()
-        self.syncShareIndex()
     }
 
     // MARK: - Read
@@ -418,7 +428,6 @@ class ContactManager {
 
         contact.deletionToken = try Data([1]).encrypt()
         try self.modelContext.save()
-        self.syncShareIndex()
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.
@@ -432,8 +441,6 @@ class ContactManager {
     func deleteAllContacts() throws {
         try self.modelContext.delete(model: Contact.Profile.self)
         try self.modelContext.save()
-        
-        self.syncShareIndex()
     }
 
     private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
@@ -630,7 +637,8 @@ extension ContactManager {
             }
         }()
         
-        let manager = ContactManager(modelContainer: sharedModelContainer)
+        let security = Manager.Security(modelContainer: sharedModelContainer, enabled: false)
+        let manager = ContactManager(modelContainer: sharedModelContainer, security: security)
         
         do {
             let cryptoManager = manager.cryptoManager
