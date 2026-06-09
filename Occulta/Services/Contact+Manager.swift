@@ -54,7 +54,7 @@ class ContactManager {
     var contactKeyRotated: PassthroughSubject<String, Never> = .init()
 
     @ObservationIgnored
-    private let security: Manager.Security
+    let security: Manager.Security
     @ObservationIgnored
     private var cancellables = Set<AnyCancellable>()
 

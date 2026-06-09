@@ -63,6 +63,7 @@ struct OccultaApp: App {
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-wal")
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-shm")
+        RootView.excludeStoreFromBackup(url: url)
 
         self.storeURL = url
         Self.applySecureDeletePragma(at: url)
@@ -233,8 +234,8 @@ private struct RootView: View {
                 )
             }
             // Drain any file queued while locked when the app unlocks (PIN entry or
-            // grace-period auto-unlock). onDuress already cleared pendingFileData
-            // before calling pinDidSucceed(), so the drain is a no-op on that path.
+            // grace-period auto-unlock). onDuress silently discards pendingFileData,
+            // so the drain is a no-op on that path.
             .onChange(of: self.appScreen.phase) { _, newPhase in
                 guard newPhase == .unlocked else { return }
                 if let data = self.pendingFileData {
@@ -298,13 +299,7 @@ private struct RootView: View {
                     self.contactManager.syncShareIndex()
                 },
                 onDuress: {
-                    // Discard any file queued while locked — duress depth must
-                    // not reveal content from sensitive contacts.
-                    if self.pendingFileData != nil {
-                        self.pendingFileData = nil
-                        self.errorMessage = "This message was not addressed to you."
-                        self.showError = true
-                    }
+                    self.pendingFileData = nil
                     self.contactManager.syncShareIndex()
                     self.appScreen.pinDidSucceed()
                 }
@@ -726,6 +721,19 @@ private struct RootView: View {
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: path)
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: path + "-wal")
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: path + "-shm")
+        Self.excludeStoreFromBackup(url: self.storeURL)
+    }
+
+    /// Marks the SQLite store and its WAL/SHM sidecars as excluded from iTunes/Finder backup.
+    /// Prevents lockout-counter reset via backup-restore-to-same-device attack.
+    /// Called at init and on every reapplyFileProtection (sidecar files may be recreated by SQLite).
+    static func excludeStoreFromBackup(url: URL) {
+        for suffix in ["", "-wal", "-shm"] {
+            var sidecar = URL(fileURLWithPath: url.path + suffix)
+            var rv = URLResourceValues()
+            rv.isExcludedFromBackup = true
+            try? sidecar.setResourceValues(rv)
+        }
     }
 
     /// Strip EXIF, GPS, camera metadata from image data using CGImageSource/CGImageDestination.

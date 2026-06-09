@@ -56,11 +56,11 @@ struct PINEntry: View {
     /// keypad to prevent queued entries during the artificial response window.
     @State private var isProcessing:          Bool    = false
     /// First-pass entry for two-pass confirmation modes (.setup, .confirmThenSet phase 2).
-    /// Nil until the user completes their first entry; cleared on mismatch or successful match.
-    @State private var pendingPINEntry:       String? = nil
-    /// The current-layer PIN authenticated in .confirmThenSet phase 1. Stored so phase 2
-    /// can deliver it to the onComplete closure alongside the new duress PIN.
-    @State private var authenticatedLayerPIN: String? = nil
+    /// Stored as UTF-8 Data so it can be zeroed via memset before clearing, unlike String.
+    @State private var pendingPINEntry:       Data?   = nil
+    /// The current-layer PIN authenticated in .confirmThenSet phase 1. Stored as UTF-8 Data
+    /// so it can be zeroed before clearing. Converted to String only at the comparison boundary.
+    @State private var authenticatedLayerPIN: Data?   = nil
     /// Non-nil while a lockout is active; the Date at which the lockout expires.
     @State private var lockoutUntil:          Date?   = nil
     /// Human-readable countdown string shown in place of the prompt title during lockout.
@@ -186,6 +186,18 @@ struct PINEntry: View {
         self.digits.removeAll()
     }
 
+    private func clearPending() {
+        guard self.pendingPINEntry != nil else { return }
+        _ = self.pendingPINEntry!.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+        self.pendingPINEntry = nil
+    }
+
+    private func clearAuthPIN() {
+        guard self.authenticatedLayerPIN != nil else { return }
+        _ = self.authenticatedLayerPIN!.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+        self.authenticatedLayerPIN = nil
+    }
+
     // MARK: Submit
 
     private func submit() {
@@ -211,18 +223,19 @@ struct PINEntry: View {
     // .setup — enter + confirm → deliver to onAuthenticated (caller handles security)
 
     private func submitSetup(pin: String) {
-        if let first = self.pendingPINEntry {
-            if pin == first {
+        if let firstData = self.pendingPINEntry {
+            if Data(pin.utf8) == firstData {
                 self.hapticResult(.success)
+                self.clearPending()
                 self.onAuthenticated(pin)
             } else {
-                self.pendingPINEntry = nil
+                self.clearPending()
                 self.clearDigits()
                 self.isProcessing    = false
                 self.shake()
             }
         } else {
-            self.pendingPINEntry = pin
+            self.pendingPINEntry = Data(pin.utf8)
             self.clearDigits()
             self.isProcessing    = false
         }
@@ -277,7 +290,7 @@ struct PINEntry: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) {
             if matched {
                 self.hapticResult(.success)
-                self.authenticatedLayerPIN = pin
+                self.authenticatedLayerPIN = Data(pin.utf8)
                 self.clearDigits()
                 self.isProcessing          = false
             } else {
@@ -291,20 +304,24 @@ struct PINEntry: View {
     // .confirmThenSet phase 2 — enter + confirm new duress PIN → onComplete(layerAuthenticationPIN, duressPIN)
 
     private func submitSetPhase(pin currentEntryPIN: String, onComplete: @escaping (String, String) -> Void) {
-        guard let layerAuthenticationPIN = self.authenticatedLayerPIN else { return }
+        guard let layerAuthData = self.authenticatedLayerPIN else { return }
+        let layerAuthPIN = String(bytes: layerAuthData, encoding: .utf8) ?? ""
 
-        if let duressPIN = self.pendingPINEntry {
-            if currentEntryPIN == duressPIN && currentEntryPIN != layerAuthenticationPIN {
+        if let duressPINData = self.pendingPINEntry {
+            let duressPIN = String(bytes: duressPINData, encoding: .utf8) ?? ""
+            if currentEntryPIN == duressPIN && currentEntryPIN != layerAuthPIN {
                 self.hapticResult(.success)
-                onComplete(layerAuthenticationPIN, currentEntryPIN)
+                self.clearPending()
+                self.clearAuthPIN()
+                onComplete(layerAuthPIN, currentEntryPIN)
             } else {
-                self.pendingPINEntry = nil
+                self.clearPending()
                 self.clearDigits()
                 self.isProcessing    = false
                 self.shake()
             }
         } else {
-            self.pendingPINEntry = currentEntryPIN
+            self.pendingPINEntry = Data(currentEntryPIN.utf8)
             self.clearDigits()
             self.isProcessing    = false
         }
@@ -316,9 +333,11 @@ struct PINEntry: View {
         switch result {
         case .normal(depth: _):
             self.hapticResult(.success)
+            self.clearDigits()
             self.onAuthenticated(pin)   // depth carried by applyVerifyState; not needed here
         case .duress:
             self.hapticResult(.success)  // identical to normal — deniability requires same feedback
+            self.clearDigits()
             self.onDuress()
         case .wrong:
             self.clearDigits()
