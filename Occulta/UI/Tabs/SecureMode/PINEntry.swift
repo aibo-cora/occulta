@@ -334,7 +334,8 @@ struct PINEntry: View {
         case .normal(depth: _):
             self.hapticResult(.success)
             self.clearDigits()
-            self.onAuthenticated(pin)   // depth carried by applyVerifyState; not needed here
+            if self.security.state == .duress { self.onDuress() }
+            else                              { self.onAuthenticated(pin) }
         case .duress:
             self.hapticResult(.success)  // identical to normal — deniability requires same feedback
             self.clearDigits()

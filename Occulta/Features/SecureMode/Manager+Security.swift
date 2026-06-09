@@ -20,12 +20,26 @@ extension Manager {
 
         // MARK: - State
 
-        private(set) var state:        RoutingDepth = .normal
         /// In-memory depth counter. Resets to 0 on every app kill — never persisted.
         /// `currentDepth > 0` means a decoy layer is active. The PIN is the routing key:
         /// after a cold start `verify()` scans all normal verifiers and sets `currentDepth`
         /// directly to the matched depth without walking through intermediate layers.
-        private(set) var currentDepth: Int          = 0
+        private(set) var currentDepth: Int = 0
+
+        /// Derived from `currentDepth` and `coercerBaseDepth` — never set manually.
+        ///
+        /// `.normal` — the current operator is at their home layer:
+        ///   • depth 0 (real user), or
+        ///   • depth == coercerBaseDepth (coercer who re-enabled the PIN with a foreign PIN).
+        /// `.duress` — every other depth > 0 (decoy layer, or the coercer's own deeper layers).
+        ///
+        /// Making this computed eliminates an entire class of bugs where `state` could drift
+        /// out of sync with `currentDepth` across the various code paths that set the depth.
+        var state: RoutingDepth {
+            let cbd = self.coercerBaseDepth
+            return (self.currentDepth == 0 || (cbd > 0 && self.currentDepth == cbd))
+                ? .normal : .duress
+        }
 
         var isRestricted: Bool { self.currentDepth > 0 }
 
@@ -199,7 +213,6 @@ extension Manager {
             // When the gate is down, no PIN entry occurs, so the persisted value is the
             // only source of truth — restoring it prevents the real layer from being
             // exposed after a kill/relaunch with the toggle disabled.
-            self.state      = persistedDepth > 0 ? .duress : .normal
             self.pinEnabled = config.readPinEnabled(at: persistedDepth)
             if !self.pinEnabled { self.currentDepth = persistedDepth }
 
@@ -209,16 +222,10 @@ extension Manager {
 
         /// Atomically writes routing depth and gate state to config and updates in-memory properties.
         /// The caller is responsible for calling `modelContext.save()` afterward.
-        ///
-        /// `state` defaults to the depth-derived value (`depth > 0 ? .duress : .normal`).
-        /// Pass an explicit value when the routing context differs — e.g. a routing-alias match
-        /// in `reEnablePIN` resolves to `.normal` even at depth > 0.
-        private func setState(_ depth: Int, state: RoutingDepth? = nil,
-                              pinEnabled: Bool = true, config: AppLayerConfig) throws {
+        private func setState(_ depth: Int, pinEnabled: Bool = true, config: AppLayerConfig) throws {
             try config.writePersistedDepth(depth)
             try config.writePinEnabled(pinEnabled, at: depth)
             self.currentDepth = depth
-            self.state        = state ?? (depth > 0 ? .duress : .normal)
             self.pinEnabled   = pinEnabled
         }
 
@@ -397,6 +404,33 @@ extension Manager {
                 // ── Step 4: Classify contacts ────────────────────────────────────────
                 // sensitive → blob; safe → re-encrypt in DB.
                 let allProfiles = try contactManager.fetchAllContacts()
+
+                // updateSafeContacts() wrote the correct visibleThroughDepth values to the
+                // store via the Security manager's context. The store is correct.
+                //
+                // However, SwiftData's identity map means that fetching already-loaded
+                // objects returns their in-memory copies, not a fresh store read. Contact-
+                // Manager's context loaded these Contact.Profile objects earlier in the
+                // session (when the contacts list was displayed), before classification was
+                // saved. Those in-memory copies still carry nil for visibleThroughDepth.
+                //
+                // Copy the correct values from this context (which has the right in-memory
+                // state after updateSafeContacts) onto ContactManager's stale profiles.
+                // Without this, reencryptAllFields() re-encrypts nil → nil for every
+                // contact and all contacts appear safe (always-visible) after activation.
+                let classifiedProfiles = try self.modelContext.fetch(Contact.Profile.descriptor)
+                var visibilityByID: [String: Data?] = [:]
+                for classified in classifiedProfiles {
+                    visibilityByID[classified.identifier] = classified.visibleThroughDepth
+                }
+                for profile in allProfiles {
+                    // Only overwrite when Security manager's context has an entry for this
+                    // contact. nil is a valid value (means "always visible"), so copy it too.
+                    if let knownDepth = visibilityByID[profile.identifier] {
+                        profile.visibleThroughDepth = knownDepth
+                    }
+                }
+
                 var blobContacts:  [LayerContact] = []
                 var safeProfiles:  [Contact.Profile]   = []
 
@@ -570,7 +604,6 @@ extension Manager {
             // Idempotent; no regression. (Bug 58 fix, off-by-one corrected by Bug 61.)
             if depth > 0 {
                 try? config.writeCoercerBaseDepth(depth)
-                self.state = .normal
             }
 
             try self.modelContext.save()
@@ -922,14 +955,9 @@ extension Manager {
         /// from briefly appearing when the content transitions to .unlocked.
         func applyVerifyState(for result: PINVerifyResult) {
             switch result {
-            case .normal(let depth):
-                self.currentDepth = depth
-                self.state        = .normal
-            case .duress:
-                self.currentDepth += 1
-                self.state         = .duress
-            case .wrong, .locked:
-                break
+            case .normal(let depth): self.currentDepth = depth
+            case .duress:            self.currentDepth += 1
+            case .wrong, .locked:    break
             }
         }
 
@@ -1022,7 +1050,7 @@ extension Manager {
             for (k, verifier) in config.sealedNormalVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.normalLabel,
                                             verifier: verifier, seKey: seKey) {
-                    try? self.setState(k, state: .normal, config: config)
+                    try? self.setState(k, config: config)
                     try? self.modelContext.save()
                     return true
                 }
@@ -1033,7 +1061,7 @@ extension Manager {
             for (k, verifier) in config.sealedDuressVerifiers.enumerated() {
                 if PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                             verifier: verifier, seKey: seKey) {
-                    try? self.setState(k + 1, state: .duress, config: config)
+                    try? self.setState(k + 1, config: config)
                     try? self.modelContext.save()
                     return true
                 }
