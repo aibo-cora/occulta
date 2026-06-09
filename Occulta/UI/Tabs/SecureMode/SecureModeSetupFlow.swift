@@ -275,17 +275,19 @@ private struct SummaryView: View {
             Section {
                 Button {
                     self.isActivating = true
-                    
+                    let cm = self.contactManager
+
                     Task {
                         try? await Task.sleep(for: .milliseconds(50))
-                        
+
                         do {
                             try await self.security.activateSecureMode(
                                 confirmingEntryPIN: self.normalPIN,
                                 duressPIN:          self.duressPIN,
-                                contactManager:     self.contactManager,
+                                contactManager:     cm,
                                 vaultManager:       self.vaultManager
                             )
+                            cm.syncShareIndex()
                             self.isActivating = false
                             self.onDone()
                         } catch Manager.Security.SecurityError.invalidStateTransition {
