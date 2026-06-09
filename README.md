@@ -504,64 +504,103 @@ Every entry in the vault list carries a 🔮 glyph in its trailing position. Whe
 
 ## Secure Mode
 
-Secure Mode provides defense against coerced device access. It is governed by a feature flag (`secureMode` in `features.plist`, default `true`) and adds no binary overhead when disabled.
+Secure Mode provides defense against coerced device access — border crossings, physical seizure, compelled unlock. It is governed by a feature flag (`secureMode` in `features.plist`, default `true`) and adds no binary overhead when disabled.
 
 ### PIN Lock
 
-When a PIN is configured, `PINEntry` overlays the app on every foreground transition. The lock screen is a neutral 6-digit keypad with no branding — identical in appearance regardless of whether Normal, Duress, or no Secure Mode is active.
+When a PIN is configured, `PINEntry` overlays the app on every cold launch and after five minutes in background. The lock screen is a neutral 6-digit keypad — identical in appearance regardless of whether a normal, duress, or no Secure Mode is active.
 
-PIN verifiers are AES-GCM blobs, not PBKDF2-stretched hashes. PBKDF2 was removed: on-device code execution defeats any KDF regardless, and the 6-digit PIN space (1,000,000 values) is brute-forceable in minutes on GPU independent of iteration count. The Secure Enclave binding is the real protection — the verifier can only be checked on this specific device.
+PIN verifiers are AES-GCM blobs derived via the Secure Enclave:
 
 ```
 verifier = AES-GCM(
   key:  HKDF-SHA256(seKey, info: label ∥ pin),
   msg:  sentinel
 )
-SE key tag: "app.layer.key.occulta.v1"  (opaque — Keychain enumeration does not reveal feature name)
+SE key tag: "app.layer.key.occulta.v1"  (opaque)
 ```
 
-A constant 500ms gate equalizes response time across correct, incorrect, and duress PIN outcomes — timing does not leak which branch was taken.
+The SE binding is the real rate-limiter — the verifier is useless without the physical device. A constant 500 ms timing gate equalizes response time across correct, incorrect, and duress entries so timing does not leak which branch was taken.
 
-**Grace period:** Five minutes after a successful unlock, returning from background skips the PIN prompt. The grace period is zero in restricted (duress) mode — every return from background requires re-entry. A blank screen covers the app-switcher snapshot during the grace window.
+Wrong attempts trigger an incremental lockout: no delay for the first 5 attempts, then 1 min → 2 min → 5 min → … → 24 h from attempt 20 onward. The lockout counter survives app kills (persisted in `AppLayerConfig`, excluded from backup).
+
+**Grace period:** Five minutes after a successful unlock, returning from background skips the PIN prompt. A UIKit cover is installed synchronously in `sceneWillResignActive` so iOS captures it — not live content — in the app-switcher snapshot.
 
 ### Duress PIN & Decoy View
 
-Configuring Secure Mode sets a normal PIN (real app) and a duress PIN (decoy view). Entering the duress PIN transitions the app to `state == .duress` and `currentDepth == 1`. The app is visually identical — the same tabs, the same settings screen — but `Manager.Security.isRestricted` filters the contact list and vault to show only contacts and entries explicitly marked safe.
+Configuring Secure Mode requires two PINs:
 
-The coercer cannot determine:
-- Whether the duress PIN or the real PIN was entered
-- How many contacts are hidden
-- Whether a vault has hidden entries
-- Whether Secure Mode is configured at all (Settings shows the same UI as `.pinOnly`)
+- **Normal PIN** — unlocks the real view. All contacts and vault entries visible.
+- **Duress PIN** — unlocks a decoy view. Contacts and vault entries marked sensitive are hidden.
 
-**Contact visibility** is tracked per-contact via `visibleThroughDepth: Data?` (encrypted `Int?`) on `Contact.Profile`:
-- `nil` — visible at all depths (safe contacts)
-- `0` — visible at the real layer only (sensitive contacts)
-- `N` — visible at depths 0 through N
+Entering either PIN triggers the same UI flow and produces the same haptic. The app is visually identical at both depths — same tabs, same settings, same vault layout — but `Manager.Security.isRestricted` filters based on `currentDepth`.
 
-At depth N, the filter is: show contacts where `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= N`. Vault entries follow the same model via `VaultEntry.visibleThroughDepth`.
+Contact visibility is tracked per-contact via `visibleThroughDepth: Data?` (AES-GCM-encrypted `Int?`) on `Contact.Profile`:
+
+| Value | Meaning |
+|---|---|
+| `nil` | Visible at all depths |
+| `0` | Visible at depth 0 only (sensitive) |
+| `N` | Visible at depths 0 through N |
+
+At depth D, a contact is shown when `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= D`. Vault entries follow the same model via `VaultEntry.visibleThroughDepth`.
+
+The share index — the list of contacts available in the iOS Share Extension — is filtered to match the current depth. Sensitive contacts never appear in the share sheet in the decoy view.
+
+### Key Rotation
+
+Activation triggers an 11-step atomic key rotation to cryptographically separate real and decoy data:
+
+```
+1.  Verify current PIN
+2.  Create a staged local database key
+3.  Derive the layer store encryption key
+4.  Classify contacts: sensitive → blob; safe → stay in DB
+5.  Migrate any untagged contacts
+6.  Seal sensitive contacts into an encrypted slot in the layer store
+7.  (reserved)
+8.  Re-encrypt all contacts and vault depth fields under the staged key
+9.  Commit the staged key  ← point of no return
+10. WAL checkpoint — flush staged-key writes to the main SQLite file
+11. Delete superseded key material
+```
+
+On failure before commit the staged key is rolled back and no state changes. On failure after commit, `forceDeactivateForRecovery` removes the duress verifier without key rotation as a last resort. Deactivation mirrors activation: a new staged key is created, sensitive contacts are restored from the layer store, all data is re-encrypted, and the duress verifier is removed.
+
+### Layer Store
+
+A 32-slot fixed-size file (`<UUID>.occbak`, ≈ 1 MB) holds the sealed sensitive contacts. Every slot is AES-GCM encrypted to exactly 32 KB of plaintext, zero-padded. All 32 slots are re-sealed with fresh nonces on every push and pop — slot layout reveals nothing.
+
+```
+layerKey = HKDF-SHA256(seKey, info: "layer-store-key")
+slot     = AES-GCM(layerKey, zeroPadded(payload), randomNonce)
+```
+
+The file has no header, no magic bytes, and no version field. It exists on every install from first launch and is rewritten every 24 hours when Secure Mode is inactive, so its creation timestamp predates any security event and its modification timestamps correlate with normal app activity.
+
+File properties: `.completeFileProtection`, `isExcludedFromBackup = true`.
+
+### Multi-Layer Support
+
+The architecture supports up to 32 nested duress layers. A second activation from within the decoy view creates a deeper decoy, each with its own duress PIN and contact set. Entering any PIN from a cold start routes directly to the correct depth — cold-start routing aliases written at activation mean no intermediate layers need to be stepped through.
 
 ### Coercion-Resistant Toggle
 
-The "Enable PIN" toggle in Settings uses a *sticky-depth* design. Toggling it off lowers the gate without removing verifiers — the toggle appears off, the PIN prompt stops appearing, and the app opens directly to depth-N content. A coercer who forces the user to "disable their PIN" sees exactly the same result as a user who disabled PIN on an ordinary app.
+The "Enable PIN" toggle in Settings lowers the PIN gate without removing verifiers — the toggle appears off, the PIN prompt stops appearing, and the app opens directly to depth-N content on the next launch. Depth filtering remains active regardless. A coercer who forces the user to "disable their PIN" sees exactly the same result as a user who disabled PIN on an ordinary app.
 
-Re-enabling the toggle presents a standard PIN-entry sheet. The entered PIN is silently matched against existing verifiers: normal PIN match → depth 0; duress PIN match → depth 1. No new verifiers are written; no observable difference in UX.
+Re-enabling the toggle presents a standard setup sheet. The entered PIN is matched against existing verifiers:
 
-`persistedDepth` on `AppLayerConfig` encodes both routing depth and gate state in a single encrypted signed integer: `N ≥ 0` = gate active at depth N; `-(N+1)` = gate inactive at depth N. The field is always non-nil after the first config write — an absent field would itself be a forensic tell.
+- Normal PIN match → re-routes to depth 0 (real view)
+- Duress PIN match → re-routes to depth 1 (decoy view)
+- Unknown PIN at depth > 0 → silently creates a new layer for the coercer's PIN so the toggle always flips on
 
 ### Forensic Deniability
 
-A blob file (`<UUID>.occbak`) is written to `group.com.occulta.shared/blobs/` on every install from first launch and rewritten every 24 hours. Its properties:
-
-- **AES-GCM encrypted** with `HKDF-SHA256(seKey, info: "blob-key")` — domain-separated from PIN verifier keys
-- **Bucket-padded** to the nearest power-of-2 boundary (minimum 256 bytes) — file size reveals only a tier, not payload size
-- **No header, no magic bytes** — identical extension (`.occbak`) and container location as vault backup files; programmatically distinguishable only by the absence of the vault's `"OCBK"` magic
-- **`.completeFileProtection`** — inaccessible when the device is locked
-- **`isExcludedFromBackup = true`** — not included in iCloud backups
-
-Because the blob file exists from the very first launch — months before Secure Mode is configured — a forensic examiner cannot correlate its creation timestamp with any security event.
-
-> **Step 4 (in progress):** Activation will rotate the Secure Enclave key, re-encrypt all safe contact fields under the new key, and serialize hidden contacts and vault Per-Entry Keys into the blob payload. Until Step 4 ships, Secure Mode provides UI-layer filtering backed by the same SE-derived encryption key as the rest of the database — not cryptographic separation. The Step 4 architecture (blob wire format, key derivation, and bucket sizing) is finalized and implemented; payload serialization and the activation/deactivation sequences are next.
+- **`AppLayerConfig`** is written on the very first launch — its presence never indicates PIN or Secure Mode usage.
+- Verifier arrays are always padded to exactly 32 entries. Filler entries are random bytes of identical size to real verifiers; only the SE key can distinguish them.
+- `pinEnabledPerDepth` encodes gate state as `UInt8` (not `Bool`) so enabled and disabled entries produce equal-length ciphertexts — a size difference would reveal the disabled slot without decryption.
+- All metadata fields use constant-size encodings for the same reason.
+- The layer store file exists from first launch and is not excluded from the 24-hour rewrite cycle until Secure Mode is active, making the timestamp profile indistinguishable from any other install.
 
 ---
 
@@ -624,12 +663,14 @@ If you need to confirm a contact hasn't been replaced since your last exchange, 
 | Identity re-verification | ✅ Challenge-response | Signed ECDSA challenge; proves SE key continuity without re-exchange |
 | Backward compatibility | ✅ Classical fallback | v1 peers and iOS < 26 exchange classically, no breakage |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
-| PIN app lock | ✅ Implemented | SE-bound AES-GCM verifier; constant-time 500ms gate; grace period |
-| Duress PIN / decoy view | ✅ Implemented | Coercer cannot distinguish duress from normal unlock |
-| Coerced toggle-off | ✅ Implemented | Sticky-depth gate: verifiers intact, depth filter active, toggle appears off |
+| PIN app lock | ✅ Implemented | SE-bound AES-GCM verifier; constant-time 500ms gate; incremental lockout; grace period |
+| Duress PIN / decoy view | ✅ Implemented | Coercer cannot distinguish duress from normal unlock; share index filtered |
+| Coercion-resistant toggle | ✅ Implemented | Gate lowers without removing verifiers; unknown PIN at depth > 0 silently creates new layer |
+| Key rotation on activation | ✅ Implemented | 11-step atomic sequence; staged key; WAL-checkpoint ordering; rollback on failure |
+| Layer store (sensitive contact recovery) | ✅ Implemented | 32-slot fixed-size AES-GCM file; exists from first launch; excluded from backup |
+| Multi-layer duress | ✅ Implemented | Up to 32 nested layers; cold-start routing aliases; cascade deactivation |
 | SQLite freed-page zeroing | ✅ `secure_delete = ON` | Set in DB header at launch; persists for all connections including SwiftData |
-| Store file protection | ✅ `completeFileProtection` | Stamped on store, WAL, and SHM on every `ModelContext` save |
-| Secure Mode cryptographic separation | 🚧 Step 4 in progress | Currently UI-layer filtering; key rotation + blob serialization makes it a cryptographic guarantee |
+| Store file protection | ✅ `completeFileProtection` | Stamped on store, WAL, and SHM on every `ModelContext` save; excluded from backup |
 
 ---
 
@@ -683,9 +724,10 @@ Occulta/
 │   │   └── ForwardSecrecy.swift   # Per-contact FS state (encrypted at rest)
 │   │
 │   └── SecureMode/
-│       ├── Manager+Security.swift # PIN state machine, verifier ops, depth-aware filtering
-│       ├── SecureMode+Blob.swift  # Blob key derivation, bucket sizing, no-op maintenance
-│       └── SecureModeConfig+Model.swift  # AppLayerConfig SwiftData model
+│       ├── Manager+Security.swift       # PIN state machine, verifier ops, 11-step key rotation
+│       ├── PIN+Manager.swift            # AES-GCM verifier construction and checking (pure crypto)
+│       ├── SecureMode+LayerStore.swift  # 32-slot fixed-size layer store; push/pop/maintain
+│       └── AppLayerConfig+Model.swift   # SwiftData model; verifier arrays; forensic padding
 │
 ├── Models/
 │   ├── Contact+Model.swift        # SwiftData schema (Profile, Key, PhoneNumber, …)
