@@ -147,6 +147,15 @@ struct Settings: View {
         private var requiresPIN:        Bool { self.configs.first?.sealedNormalVerifier != nil }
         private var isSecureModeActive: Bool { self.configs.first?.sealedDuressVerifier != nil }
 
+        /// True when the current operator is at their home depth with Secure Mode active and
+        /// the gate up. Governs both the toggle's disabled state and the Deactivate button.
+        private var isAtSecureModeHomeDepth: Bool {
+            self.isSecureModeActive && self.security.state == .normal
+            && (self.security.currentDepth == 0
+                || self.security.currentDepth == self.security.coercerBaseDepth)
+            && self.security.pinEnabled
+        }
+
         private var pinEnabledBinding: Binding<Bool> {
             Binding(
                 // True only when a PIN is configured AND the gate overlay is active at
@@ -162,20 +171,15 @@ struct Settings: View {
         var body: some View {
             List {
                 Section {
-                    // Disabled in .normal (gate up): Secure Mode must be deactivated before
-                    // the PIN can be removed. Interactive in .duress so the coercion gate-drop
-                    // path (disablePIN(at:confirmingPIN:)) remains available without a forensic tell.
                     Toggle("Enable PIN", isOn: self.pinEnabledBinding)
-                        // Disabled at depth 0 in .normal (PIN cannot be removed while Secure Mode
-                        // is active from the real app). Enabled at depth > 0 (decoy view) so
-                        // disablePIN(at:confirmingPIN:) remains accessible under coercion.
-                        .disabled(self.isSecureModeActive && self.security.state == .normal
-                                  && self.security.currentDepth == 0 && self.security.pinEnabled)
+                        .disabled(self.isAtSecureModeHomeDepth)
                 }
 
-                // Activate shown when: no Secure Mode configured, OR in a decoy layer
-                // (depth > 0 — user can add another layer), OR gate is lowered under coercion.
-                if !self.isSecureModeActive || self.security.currentDepth > 0 || !self.security.pinEnabled {
+                // Activate shown when: no Secure Mode configured, OR state is .duress
+                // (decoy layer — user can add another layer), OR gate is lowered under coercion.
+                // state == .duress (not currentDepth > 0): after the user adds their own SM
+                // layer, coercerBaseDepth = depth flips state to .normal, hiding this section.
+                if !self.isSecureModeActive || self.security.state == .duress || !self.security.pinEnabled {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Learn how you can protect your data.")
@@ -189,32 +193,7 @@ struct Settings: View {
                     .opacity(!self.requiresPIN ? 0.4 : 1)
                 }
 
-                // "Deactivate Protection" is shown when the current operator is at their
-                // home depth and Secure Mode is active above them.
-                //
-                // The predicate `currentDepth == 0 || currentDepth == coercerBaseDepth`
-                // handles two distinct operators:
-                //
-                //   • Real user (coercerBaseDepth == 0, default): collapses to
-                //     `currentDepth == 0`. Deactivation available only at the real app
-                //     layer, not from any duress depth. Bug 45: the old `currentDepth == 0`
-                //     guard is preserved intact for the real user.
-                //
-                //   • Coercer (coercerBaseDepth == N+1): they re-enabled the PIN with a
-                //     foreign PIN at gate-lowered depth N, which wrote new verifiers and
-                //     recorded N+1 as their home. After they activate their own SM layer
-                //     from depth N+1, the button must appear so they can deactivate it —
-                //     otherwise the missing button is a tell that SM was already running
-                //     when they received the device (Bug 47).
-                //
-                // Side-effect of the OR: an adversary at depth M where M == coercerBaseDepth
-                // also sees the button. Deactivating from that depth only strips the
-                // coercer's layer (not the real user's sensitive contacts), so the security
-                // impact is limited. This is accepted as a minor trade-off.
-                if self.isSecureModeActive && self.security.state == .normal
-                   && (self.security.currentDepth == 0
-                       || self.security.currentDepth == self.security.coercerBaseDepth)
-                   && self.security.pinEnabled {
+                if self.isAtSecureModeHomeDepth {
                     Section {
                         Button("Deactivate Protection", role: .destructive) {
                             self.showingDeactivateSheet = true
