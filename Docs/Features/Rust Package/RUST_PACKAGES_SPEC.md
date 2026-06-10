@@ -1,6 +1,6 @@
 # Occulta Rust Package Specifications
-**Date:** May 2026
-**Scope:** `occulta-protocol`, `occulta-crypto`, `occulta-ffi`, SPM build script
+**Date:** May 2026 · **Revised:** June 2026 — incorporates review findings (see `SPEC_REVIEW_FINDINGS.md`)
+**Scope:** `occulta-protocol`, `occulta-crypto`, `occulta-ffi`, iOS (SPM) + Android (AAR) build scripts
 **Source:** Existing Swift codebase — `Key+Manager.swift`, `Crypto+Manager.swift`,
 `OccultaBundle.swift`, `IdentityChallenge+*`, `VAULT_SSS_GUIDE.md`, `CLAUDE.md`
 
@@ -12,19 +12,21 @@
 occulta-protocol                    occulta-crypto
 [serde, serde_json, sha2, zeroize]  [aes-gcm, hkdf, sha2, p256,
                                      rand, zeroize, secrecy,
-  Wire format — no crypto crates      subtle, argon2, thiserror]
-  OccultaBundle, SecrecyContext
-  SealedPayload, WirePrekey          AES-GCM, HKDF, ECDSA verify
-  ForwardSecrecy, SaltInfo           Shamir SSS, Argon2id KDF
-  IdentityChallenge types            key-material validation
-  fingerprint(), compute_aad()
+  Wire format — no crypto crates      subtle, argon2, thiserror,
+  OccultaBundle, SecrecyContext       libcrux-ml-kem (Android only)]
+  SealedPayload, WirePrekey
+  ForwardSecrecy, SaltInfo           AES-GCM, HKDF, ECDSA verify
+  IdentityChallenge types            Shamir SSS, Argon2id KDF
+  fingerprint(), compute_aad()       X9.63 KDF, ML-KEM (Android)
+                                     key-material validation
          ↑                                    ↑
          └──────────── occulta-ffi ───────────┘
                        [uniffi]
                        UniFFI bindings only
-                       Produces .xcframework
-                            ↑
-                       iOS app (Swift)
+                       Produces .xcframework (iOS)
+                       and JNI libs + Kotlin (Android)
+                            ↑              ↑
+                  iOS app (Swift)   Android app (Kotlin)
 ```
 
 Neither `occulta-protocol` nor `occulta-crypto` depends on the other.
@@ -36,15 +38,21 @@ Neither `occulta-protocol` nor `occulta-crypto` depends on the other.
 
 These apply to all three crates. A violation in any one is a critical defect.
 
-1. **Rust never receives a private key.** The Secure Enclave performs all
-   private key operations. Rust receives the output of `SecKeyCopyKeyExchangeResult`
-   with algorithm `.ecdhKeyExchangeCofactorX963SHA256` — a 32-byte X9.63-KDF
-   output, not the raw ECDH x-coordinate — and operates from there. This boundary
-   is absolute. Never document these bytes as "raw ECDH"; the SE applies X9.63/SHA-256
-   internally.
+1. **Rust never receives a private key.** Hardware key storage performs all
+   private key operations on both platforms. This boundary is absolute.
+   - **iOS:** the Secure Enclave performs ECDH. Rust receives the output of
+     `SecKeyCopyKeyExchangeResult` with algorithm `.ecdhKeyExchangeCofactorX963SHA256`
+     — a 32-byte X9.63-KDF output, not the raw ECDH x-coordinate. Never document
+     these bytes as "raw ECDH"; the SE applies X9.63/SHA-256 internally.
+   - **Android:** Keystore `KeyAgreement` returns the **raw** 32-byte ECDH shared
+     secret — Android applies no KDF. The raw secret enters Rust transiently and
+     only through `x963_kdf_sha256()` (`occulta-crypto/x963.rs`), which reproduces
+     the SE's X9.63 step so both platforms feed identical bytes to HKDF. The raw
+     secret is zeroized inside that function. Private keys still never enter Rust
+     on either platform.
 
 2. **Nonces are always generated internally.** `aes_gcm_seal` generates its own
-   96-bit nonce via `rand::thread_rng()`. Callers never supply a nonce.
+   96-bit nonce via `OsRng`. Callers never supply a nonce.
    The output is `nonce(12) ∥ ciphertext ∥ tag(16)` — the nonce is embedded.
 
 3. **All secret material implements `Zeroize`.** Any type holding key bytes,
@@ -77,6 +85,22 @@ These apply to all three crates. A violation in any one is a critical defect.
 9. **Key material is validated before use.** `validate_key_material()` in
    `occulta-crypto` rejects all-zero inputs and wrong-length inputs. Call it
    on every ECDH output before passing to HKDF.
+
+10. **AAD JSON must reproduce Foundation's encoder, not generic JSON.**
+    Swift computes the AAD with `JSONEncoder` + `.sortedKeys`
+    (`OccultaBundle.swift`), which has two behaviours `serde_json` does not share:
+    - **nil optionals are omitted** (synthesised Codable uses `encodeIfPresent`).
+      Every `Option` field needs `skip_serializing_if = "Option::is_none"`.
+      Without it, every `longTermFallback` / `longTermNoPQ` bundle (which always
+      carries `prekeyID: nil`) fails authentication.
+    - **forward slashes are escaped as `\/`** (Foundation default; the encoder
+      does not set `.withoutEscapingSlashes`). Base64 output contains `/`, so
+      most real AADs are affected. `compute_aad` must post-process serde output
+      (see `to_foundation_json` in `bundle.rs`).
+
+    Only the AAD requires byte-exactness. Full-bundle JSON needs round-trip
+    compatibility only — Swift's own `encoded()` uses a default `JSONEncoder`
+    whose key order is not deterministic.
 
 ---
 
@@ -111,8 +135,8 @@ thiserror     = "1"
 ```
 occulta-protocol/src/
 ├── lib.rs                  pub use everything relevant; Base64Data lives here
-├── bundle.rs               OccultaBundle, encode, decode, compute_aad, fingerprint
-├── secrecy.rs              SecrecyContext, Version, Mode, ProtocolError
+├── bundle.rs               OccultaBundle, encode, decode, compute_aad, fingerprint, ProtocolError
+├── secrecy.rs              SecrecyContext, Version, Mode
 ├── payload.rs              SealedPayload, PrekeySyncBatch, WirePrekey, ShardOperation
 ├── forward_secrecy.rs      ForwardSecrecy
 ├── quantum.rs              QuantumKeyMaterial
@@ -233,6 +257,12 @@ alphabetically. `serde_json` with struct serialisation uses declaration order.
 `SecrecyContext` fields are declared in alphabetical order so both orders
 produce identical JSON. **Do not reorder fields** — the AAD depends on this.
 
+Two further Foundation-compatibility rules (cross-cutting invariant 10):
+`prekey_id` carries `skip_serializing_if = "Option::is_none"` because Swift
+omits nil optionals entirely (serde would emit `"prekeyID":null`), and AAD
+serialisation must go through `to_foundation_json()` to reproduce Foundation's
+`\/` slash escaping.
+
 ```rust
 use serde::{Deserialize, Serialize};
 use crate::ProtocolError;
@@ -244,31 +274,49 @@ pub enum Version {
     #[serde(rename = "v1")]   V1,
     #[serde(rename = "v2")]   V2,
     #[serde(rename = "v3fs")] V3Fs,
+    /// Decoded from any unknown version string. Never written.
+    /// Mirrors Swift `Version.unsupported` — `init(from:)` falls back instead
+    /// of throwing `DecodingError`, surfacing "requires a newer version of
+    /// Occulta". Decryption aborts before AAD computation.
+    #[serde(other)]           Unsupported,
 }
 
 impl Version {
     /// UTF-8 bytes of the raw string value. Used in AAD computation.
-    pub fn raw_bytes(&self) -> &'static [u8] {
+    /// `None` for `Unsupported` — the original string is lost on decode, so
+    /// callers must abort (Swift throws `BundleError.unsupportedVersion`).
+    pub fn raw_bytes(&self) -> Option<&'static [u8]> {
         match self {
-            Self::V1   => b"v1",
-            Self::V2   => b"v2",
-            Self::V3Fs => b"v3fs",
+            Self::V1          => Some(b"v1"),
+            Self::V2          => Some(b"v2"),
+            Self::V3Fs        => Some(b"v3fs"),
+            Self::Unsupported => None,
         }
     }
 }
 
 /// Encryption mode. Raw string values are stable.
 ///
+/// Mirrors Swift `OccultaBundle.Mode` exactly — all **four** shipped cases.
+/// The `NoPQ` variants are the classical-only derivation paths used when the
+/// peer's ML-KEM material is absent or corrupt.
+///
 /// Note: identity challenges ride `.longTermFallback` on the wire — they do
 /// not use a separate mode. New behaviour must go inside `SealedPayload`
 /// optional envelopes, not new `Mode` variants, to avoid breaking old builds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
-    #[serde(rename = "forwardSecret")]    ForwardSecret,
-    #[serde(rename = "longTermFallback")] LongTermFallback,
+    /// Full forward secrecy + hybrid PQ.
+    #[serde(rename = "forwardSecret")]      ForwardSecret,
+    /// Forward secrecy, classical-only (no ML-KEM).
+    #[serde(rename = "forwardSecretNoPQ")]  ForwardSecretNoPq,
+    /// Prekey-exhaustion fallback + hybrid PQ. Identity challenges ride this mode.
+    #[serde(rename = "longTermFallback")]   LongTermFallback,
+    /// Prekey-exhaustion fallback, classical-only (no ML-KEM).
+    #[serde(rename = "longTermNoPQ")]       LongTermNoPq,
     /// Decoded from any unknown mode string. Never written.
     /// A bundle carrying `Unsupported` mode aborts before AAD computation.
-    #[serde(other)]                       Unsupported,
+    #[serde(other)]                         Unsupported,
 }
 
 /// Authenticated key-exchange metadata. Transmitted in plaintext as AAD.
@@ -291,8 +339,13 @@ pub struct SecrecyContext {
     pub mode: Mode,                          // JSON: "mode"
 
     /// UUID of the recipient's prekey used for this bundle.
-    /// Non-nil only in `.forwardSecret` mode.
-    #[serde(rename = "prekeyID")]           // explicit: avoids rename_all lowercasing "Id"
+    /// Non-nil only in the forward-secret modes.
+    ///
+    /// `skip_serializing_if` is load-bearing: Swift omits nil optionals, and
+    /// fallback bundles always carry `prekeyID: nil` — emitting `null` here
+    /// would break the AAD for every fallback bundle.
+    #[serde(rename = "prekeyID",            // explicit: avoids rename_all lowercasing "Id"
+            skip_serializing_if = "Option::is_none", default)]
     pub prekey_id: Option<String>,           // JSON: "prekeyID"  ← capital I, capital D
 }
 ```
@@ -305,7 +358,7 @@ pub struct SecrecyContext {
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use crate::{Base64Data, secrecy::{SecrecyContext, Version}};
+use crate::{Base64Data, secrecy::{Mode, SecrecyContext, Version}};
 
 /// Errors from wire-format serialisation / deserialisation.
 #[derive(Debug, Error)]
@@ -314,6 +367,8 @@ pub enum ProtocolError {
     Serialise(#[from] serde_json::Error),
     #[error("deserialisation failed: {0}")]
     Deserialise(serde_json::Error),
+    #[error("unsupported version or mode — decryption must abort")]
+    Unsupported,
 }
 
 /// Top-level wire container. All fields are JSON-serialised.
@@ -329,7 +384,10 @@ pub struct OccultaBundle {
 }
 
 impl OccultaBundle {
-    /// Encode to JSON bytes. Output must be byte-equivalent to Swift's JSONEncoder.
+    /// Encode to JSON bytes. Round-trip compatibility with Swift is required;
+    /// byte-equality is NOT — Swift's own `encoded()` uses a default
+    /// `JSONEncoder` whose key order is non-deterministic. Only the AAD
+    /// (`compute_aad`) is byte-exact.
     pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
         serde_json::to_vec(self).map_err(ProtocolError::Serialise)
     }
@@ -340,20 +398,45 @@ impl OccultaBundle {
     }
 }
 
+/// Serialise to JSON bytes matching Foundation's `JSONSerialization` output.
+///
+/// Foundation escapes `/` as `\/` (the Swift AAD encoder does not set
+/// `.withoutEscapingSlashes`), and base64 strings routinely contain `/`.
+/// `serde_json` never escapes `/`. In serde_json output `/` has no structural
+/// meaning — it occurs only inside string literals — so a byte-level
+/// substitution is exact. A string containing a literal `\` before a `/`
+/// serialises as `\\` + `/` → `\\\/`, which is also what Foundation emits.
+fn to_foundation_json<T: Serialize>(value: &T) -> Result<Vec<u8>, ProtocolError> {
+    let json = serde_json::to_vec(value).map_err(ProtocolError::Serialise)?;
+    let mut out = Vec::with_capacity(json.len() + 8);
+    for &b in &json {
+        if b == b'/' {
+            out.push(b'\\');
+        }
+        out.push(b);
+    }
+    Ok(out)
+}
+
 /// Compute Additional Authenticated Data.
 ///
-/// Formula: version.rawValue.utf8 ∥ JSON(SecrecyContext, sortedKeys: true)
+/// Formula: version.rawValue.utf8 ∥ FoundationJSON(SecrecyContext, sortedKeys)
 ///
 /// `SecrecyContext` fields are declared alphabetically so `serde_json`'s
-/// declaration-order serialisation matches Swift's `.sortedKeys` output.
-/// Validate against extracted Swift test vectors before shipping.
+/// declaration-order serialisation matches Swift's `.sortedKeys` output, and
+/// `to_foundation_json` reproduces Foundation's `\/` escaping (invariant 10).
+/// Aborts on `Unsupported` version or mode — matching Swift, which throws
+/// before AAD computation. Validate against extracted Swift test vectors
+/// before shipping.
 pub fn compute_aad(
     version: &Version,
     secrecy: &SecrecyContext,
 ) -> Result<Vec<u8>, ProtocolError> {
-    let version_bytes = version.raw_bytes();
-    let secrecy_json  = serde_json::to_vec(secrecy)
-        .map_err(ProtocolError::Serialise)?;
+    let version_bytes = version.raw_bytes().ok_or(ProtocolError::Unsupported)?;
+    if matches!(secrecy.mode, Mode::Unsupported) {
+        return Err(ProtocolError::Unsupported);
+    }
+    let secrecy_json = to_foundation_json(secrecy)?;
 
     let mut aad = Vec::with_capacity(version_bytes.len() + secrecy_json.len());
     aad.extend_from_slice(version_bytes);
@@ -383,9 +466,12 @@ pub fn compute_fingerprint(
 
 ### `payload.rs`
 
-Fields added in v1.6–v1.7 (`shard_operations`, `custody_manifest`, `expected_shards`)
-are marked `#[serde(default)]`. If Rust ever re-serialises a `SealedPayload`, all
-fields must be present to avoid silently dropping data from newer Swift builds.
+Optional-field rule (cross-cutting invariant 10): every `Option` field carries
+both `#[serde(default)]` (tolerate older senders) and
+`#[serde(skip_serializing_if = "Option::is_none")]` (Swift omits nil optionals —
+emitting `null` would diverge from every Swift build in the field). If Rust
+ever re-serialises a `SealedPayload`, all fields must be present to avoid
+silently dropping data from newer Swift builds.
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -402,20 +488,20 @@ use crate::Base64Data;
 #[serde(rename_all = "camelCase")]
 pub struct SealedPayload {
     pub message:      Base64Data,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prekey_batch: Option<PrekeySyncBatch>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_challenge: Option<IdentityChallengeEnvelope>,
     /// SSS shard-protocol operations. Added v1.6. Old builds ignore this field.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shard_operations: Option<Vec<ShardOperation>>,
     /// IDs of all custody shards this sender holds for the recipient.
     /// Trustee → owner direction only. Added v1.7.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custody_manifest: Option<Vec<String>>,   // UUID strings
     /// IDs the owner expects this trustee to hold. Added v1.7.
     /// Owner → trustee direction only.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_shards: Option<Vec<String>>,    // UUID strings
 }
 
@@ -439,11 +525,24 @@ pub struct WirePrekey {
 
 /// SSS shard-protocol operation inside SealedPayload. Added v1.6.
 /// Old builds silently ignore this type.
+///
+/// ⚠️ `attribute` is a **nested `SignedAttribute` JSON object** in Swift
+/// (`Features/Vault/SignedAttribute.swift` — Category enum, value, signature, …),
+/// NOT base64 `Data`. Mirror the full Codable shape at scaffold time; the
+/// struct below references it as a placeholder.
+///
+/// ⚠️ The JSON key is `attributeID` (capital I, capital D) — same casing trap
+/// as `prekeyID`; `rename_all` would emit `attributeId`.
 #[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 pub struct ShardOperation {
     pub kind:         ShardOperationKind,
-    pub attribute:    Option<Base64Data>,  // SignedAttribute shard payload
+    /// Nested SignedAttribute object — full struct mirrored from Swift at
+    /// scaffold time (must also derive Zeroize).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribute:    Option<SignedAttribute>,
+    #[serde(rename = "attributeID",
+            default, skip_serializing_if = "Option::is_none")]
     pub attribute_id: Option<String>,      // UUID string — old shard to delete on .replace
 }
 
@@ -474,7 +573,7 @@ pub struct IdentityChallengeEnvelope {
     /// Response  → 32-byte nonce ∥ DER ECDSA signature.
     pub payload:      Base64Data,
     /// Optional freetext from challenger. Always nil on a response.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_note: Option<String>,
 }
 
@@ -506,18 +605,18 @@ use crate::Base64Data;
 pub struct ForwardSecrecy {
     /// Inbound prekeys received from the contact. Consumed FIFO by sender.
     /// `None` and `Some([])` are both treated as "no prekeys available".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoded_prekeys: Option<Vec<Base64Data>>,
 
     /// Timestamp of the last accepted inbound prekey batch.
     /// `None` means no batch has been accepted yet.
     /// Used to reject replayed or reordered batches.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_prekeys_generated_at: Option<f64>,   // Unix timestamp, matches Swift Date?
 
     /// Outbound prekey batch pending delivery to the contact.
     /// Attached to every outbound message until the contact proves receipt.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_outbound_batch: Option<Base64Data>,   // single Data blob, not an array
 }
 ```
@@ -683,6 +782,10 @@ Stateless cryptographic operations. Accepts raw bytes; returns raw bytes.
 No protocol types, no wire format, no serde. Takes `info: &[u8]` as a
 parameter — callers supply constants from `occulta-protocol::SaltInfo`.
 
+Two modules exist solely for Android parity and are never called on iOS:
+`x963.rs` (reproduces the SE's X9.63 KDF step) and `mlkem.rs`
+(ML-KEM-1024, feature `mlkem` — iOS uses CryptoKit `SecureEnclave.MLKEM1024`).
+
 ### Cargo.toml
 
 ```toml
@@ -698,10 +801,17 @@ sha2      = "0.10"
 p256      = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 rand      = { version = "0.8",  features = ["getrandom"] }
 zeroize   = { version = "1.7",  features = ["derive"] }
-secrecy   = "0.8"
+secrecy   = "0.8"        # 0.10 renames Secret → SecretBox; migrate deliberately, not incidentally
 subtle    = "2.5"
 argon2    = "0.5"
 thiserror = "1"
+
+# Android only — iOS uses CryptoKit SecureEnclave.MLKEM1024 (iOS 26+).
+# Formally verified (hax/F*). Pin the newest FIPS 203 (final) release at scaffold time.
+libcrux-ml-kem = { version = "0.0", optional = true }
+
+[features]
+mlkem = ["dep:libcrux-ml-kem"]
 ```
 
 ### Module Structure
@@ -712,6 +822,8 @@ occulta-crypto/src/
 ├── error.rs            CryptoError enum
 ├── aes_gcm.rs          seal(), open()
 ├── hkdf.rs             All HKDF derivation paths
+├── x963.rs             x963_kdf_sha256() — Android only; reproduces the SE's KDF step
+├── mlkem.rs            ML-KEM-1024 (feature "mlkem") — Android only
 ├── ecdsa.rs            verify_ecdsa() — no signing
 ├── shamir.rs           split(), combine() — constant-time GF(2^8)
 └── kdf.rs              argon2id_derive() — replaces SHA-256 passphrase KDF
@@ -1014,6 +1126,89 @@ pub fn xor_salt(a: &[u8; 65], b: &[u8; 65]) -> [u8; 65] {
 
 ---
 
+### `x963.rs` — Android only
+
+On iOS, `SecKeyCopyKeyExchangeResult(.ecdhKeyExchangeCofactorX963SHA256)` makes
+the Secure Enclave apply the ANSI X9.63 KDF to the ECDH shared point before any
+bytes reach the app. Every Swift call site passes `requestedSize: 32` and no
+`SharedInfo` (`Protocols/KeyManagerProtocol.swift`), so the output is a single
+SHA-256 block:
+
+```
+output = SHA256( Z ∥ counter )      Z       = 32-byte ECDH x-coordinate
+                                    counter = 0x00000001 (big-endian)
+                                    SharedInfo = empty
+```
+
+Android Keystore's `KeyAgreement.generateSecret()` returns the raw `Z` with no
+KDF. Android must call `x963_kdf_sha256(Z)` and use the result everywhere iOS
+uses the SE output. iOS never calls this function.
+
+```rust
+use sha2::{Digest, Sha256};
+use secrecy::{Secret, ExposeSecret};
+use crate::error::CryptoError;
+
+/// ANSI X9.63 KDF (SHA-256), single block, empty SharedInfo — exactly what the
+/// Apple SE applies internally for `.ecdhKeyExchangeCofactorX963SHA256` with
+/// `requestedSize: 32`.
+///
+/// - shared_secret: raw 32-byte ECDH x-coordinate from Android Keystore.
+///   Validated for length and all-zero degeneracy before use.
+///
+/// Interop gate: for a known P-256 key pair, this output must byte-match
+/// `SecKeyCopyKeyExchangeResult` on iOS (see test vectors).
+pub fn x963_kdf_sha256(
+    shared_secret: &Secret<Vec<u8>>,
+) -> Result<Secret<[u8; 32]>, CryptoError> {
+    crate::validate_key_material(shared_secret.expose_secret())?;
+    let mut hasher = Sha256::new();
+    hasher.update(shared_secret.expose_secret());
+    hasher.update(&[0u8, 0, 0, 1]);   // X9.63 counter, big-endian
+    Ok(Secret::new(hasher.finalize().into()))
+}
+```
+
+---
+
+### `mlkem.rs` — Android only (feature `mlkem`)
+
+iOS performs ML-KEM-1024 in CryptoKit (`SecureEnclave.MLKEM1024`, iOS 26+,
+gated in `PQProvider.swift`) — the decapsulation key never leaves the SE, and
+iOS never calls this module. Android has no platform or hardware ML-KEM, so the
+lattice operations live here, implemented by `libcrux-ml-kem` (formally
+verified, FIPS 203 final — encapsulation keys and ciphertexts are
+wire-compatible with CryptoKit; proven by cross-implementation vectors).
+
+**Documented security-posture difference:** on Android the ML-KEM decapsulation
+key is held by the app — `Zeroizing` in memory, stored encrypted at rest under
+the hybrid local-DB key. This is weaker than the iOS SE binding and is an
+accepted, documented risk that must appear in the audit notes. The classical
+ECDH half of every hybrid derivation remains hardware-backed (Keystore), so
+ML-KEM key compromise alone never breaks a session key.
+
+```rust
+// Feature-gated: #[cfg(feature = "mlkem")]
+//
+// pub struct MlKemKeyPair {
+//     pub encapsulation_key: Vec<u8>,              // 1568 B — sent to peer
+//     pub decapsulation_key: Zeroizing<Vec<u8>>,   // 3168 B — never leaves device
+// }
+//
+// pub fn generate_keypair() -> Result<MlKemKeyPair, CryptoError>
+//
+// pub fn encapsulate(peer_encapsulation_key: &[u8])
+//     -> Result<(Secret<[u8; 32]>, Vec<u8>), CryptoError>   // (shared_secret, ciphertext 1568 B)
+//
+// pub fn decapsulate(decapsulation_key: &Secret<Vec<u8>>, ciphertext: &[u8])
+//     -> Result<Secret<[u8; 32]>, CryptoError>
+//
+// Reject inputs of any length other than the ML-KEM-1024 sizes above before
+// touching libcrux.
+```
+
+---
+
 ### `ecdsa.rs`
 
 Verification only. Signing is always performed by the Secure Enclave in Swift.
@@ -1238,7 +1433,7 @@ fn gf_split(secret: &[u8], n: u8, k: u8) -> Result<Vec<Zeroizing<Vec<u8>>>, Cryp
                 if i != (k as usize - 1) || coeffs[i] != 0 { break; }
             }
         }
-        for (share_idx, share) in shares.iter_mut().enumerate() {
+        for share in shares.iter_mut() {
             share[byte_idx + 1] = gf_eval(&coeffs, share[0]);
         }
     }
@@ -1319,7 +1514,13 @@ version 0x02: [0x02][salt(16)][aes_gcm_combined]
 ### Responsibility
 
 UniFFI binding layer only. Contains no logic beyond chaining calls from
-`occulta-protocol` and `occulta-crypto`. Produces the `.xcframework`.
+`occulta-protocol` and `occulta-crypto`. Produces the `.xcframework` (iOS) and
+the JNI libraries + Kotlin bindings (Android).
+
+The API is defined **with proc-macros only** (`#[uniffi::export]`,
+`#[derive(uniffi::Record)]`, `#[derive(uniffi::Error)]`) — no `.udl` file and
+no `build.rs`. A UDL file duplicating proc-macro-exported functions generates
+conflicting scaffolding; do not reintroduce one.
 
 ### Cargo.toml
 
@@ -1330,16 +1531,25 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
+name       = "occulta_ffi"
 crate-type = ["cdylib", "staticlib"]
+
+[[bin]]
+# Bindgen must be version-locked to the uniffi crate — `cargo install
+# uniffi-bindgen` is unsupported since 0.23. Run via:
+#   cargo run -p occulta-ffi --bin uniffi-bindgen -- generate ...
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
 
 [dependencies]
 occulta-protocol = { path = "../occulta-protocol" }
 occulta-crypto   = { path = "../occulta-crypto" }
-uniffi           = { version = "0.27", features = ["tokio"] }
+uniffi           = { version = "0.29", features = ["cli"] }
 thiserror        = "1"
 
-[build-dependencies]
-uniffi = { version = "0.27", features = ["build"] }
+[features]
+# Android builds pass --features mlkem; iOS builds do not.
+mlkem = ["occulta-crypto/mlkem"]
 ```
 
 ### Directory Structure
@@ -1347,11 +1557,27 @@ uniffi = { version = "0.27", features = ["build"] }
 ```
 occulta-ffi/
 ├── Cargo.toml
-├── build.rs
-├── occulta_ffi.udl        UniFFI interface definition
+├── uniffi.toml            module / package naming for generated bindings
+├── uniffi-bindgen.rs      fn main() { uniffi::uniffi_bindgen_main() }
 └── src/
-    ├── lib.rs             #[uniffi::export] wrappers + SE capability registration
+    ├── lib.rs             #[uniffi::export] wrappers + capability registration
     └── error.rs           OccultaError — unified error type for FFI
+```
+
+### uniffi.toml
+
+Controls generated names so the build scripts' file checks hold
+(`OccultaCore.swift`, `OccultaCoreFFI.h`, `OccultaCoreFFI.modulemap`). Without
+it, UniFFI derives `occulta_ffi.*` names from the crate and every check fails.
+
+```toml
+[bindings.swift]
+module_name     = "OccultaCore"
+ffi_module_name = "OccultaCoreFFI"
+
+[bindings.kotlin]
+package_name = "app.occulta.core"
+cdylib_name  = "occulta_ffi"
 ```
 
 ---
@@ -1386,179 +1612,148 @@ pub enum OccultaError {
 
 ---
 
-### `occulta_ffi.udl`
+### API Surface (proc-macro exports)
 
-UniFFI UDL error variants with associated data use the `interface` form,
-not the `enum` form.
+All functions return `Result<T, OccultaError>` and wrap their bodies in
+`catch_unwind` (invariant 4). Signatures below are the binding contract;
+bodies chain into `occulta-protocol` / `occulta-crypto`.
 
-```
-namespace occulta_ffi {};
+```rust
+// ── Platform capabilities ────────────────────────────────────────────────────
+// Swift: SecureEnclave.isAvailable. Android: hardware-backed Keystore policy —
+// see "Android Platform Policy". Register at startup, before any key operation.
+#[uniffi::export(callback_interface)]
+pub trait PlatformCapabilityProvider: Send + Sync {
+    fn has_secure_key_storage(&self) -> bool;
+}
 
-// ── Errors ────────────────────────────────────────────────────────────────────
-[Error]
-interface OccultaError {
-    EncryptionFailed();
-    DecryptionFailed();
-    DerivationFailed();
-    VerificationFailed();
-    ShamirError(string message);
-    KdfFailed(string message);
-    ProtocolError(string message);
-    InvalidInput(string message);
-    NoSecureKeyStorage();
-    DegenerateKeyMaterial();
-};
-
-// ── Platform capabilities ──────────────────────────────────────────────────────
-//
-// Swift registers an implementation of PlatformCapabilityProvider at startup.
-// Call register_platform_capabilities() before any key-derivation or AES-GCM
-// function. Call assert_secure_key_storage() as a precondition gate.
-//
-// Swift implementation uses SecureEnclave.isAvailable (CryptoKit) or equivalent.
-callback interface PlatformCapabilityProvider {
-    /// Return true if the device has a Secure Enclave or equivalent hardware
-    /// key storage (T1/T2 chip, Titan M equivalent, etc.).
-    boolean has_secure_key_storage();
-};
-
-void register_platform_capabilities(PlatformCapabilityProvider provider);
-
-/// Assert that the device has secure key storage.
-/// Throws NoSecureKeyStorage if not registered or the provider returns false.
-/// Call once at app startup; abort initialisation on failure.
-[Throws=OccultaError]
-void assert_secure_key_storage();
+pub fn register_platform_capabilities(provider: Box<dyn PlatformCapabilityProvider>);
+pub fn assert_secure_key_storage() -> Result<(), OccultaError>;
 
 // ── AES-256-GCM ──────────────────────────────────────────────────────────────
-// Nonce is always generated internally. Never caller-supplied.
-// Output: nonce(12) ∥ ciphertext ∥ tag(16) — matches CryptoKit .combined format.
-[Throws=OccultaError]
-bytes aes_gcm_seal(bytes key, bytes plaintext, bytes aad);
+// Nonce generated internally (OsRng). Output: nonce(12) ∥ ciphertext ∥ tag(16)
+// — matches CryptoKit .combined format.
+pub fn aes_gcm_seal(key: Vec<u8>, plaintext: Vec<u8>, aad: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
+pub fn aes_gcm_open(key: Vec<u8>, combined: Vec<u8>, aad: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
 
-[Throws=OccultaError]
-bytes aes_gcm_open(bytes key, bytes combined, bytes aad);
-
-// ── Key-material validation ───────────────────────────────────────────────────
+// ── Key-material validation ──────────────────────────────────────────────────
 // Call before any HKDF function. Rejects all-zero and wrong-length IKM.
-[Throws=OccultaError]
-void validate_key_material(bytes key_material);
+pub fn validate_key_material(key_material: Vec<u8>) -> Result<(), OccultaError>;
 
 // ── HKDF ─────────────────────────────────────────────────────────────────────
-// ikm: 32-byte X9.63-KDF output from SE (ecdhKeyExchangeCofactorX963SHA256)
-// salt: XOR(peerPub_x963, ourPub_x963) — 65 bytes each
-// info: SaltInfo constant bytes
-[Throws=OccultaError]
-bytes hkdf_derive(bytes ikm, bytes salt, bytes info);
+// ikm: 32-byte X9.63-KDF output — from the SE on iOS, from x963_kdf_sha256 on
+// Android. salt: XOR(peerPub_x963, ourPub_x963). info: SaltInfo constant bytes.
+pub fn hkdf_derive(ikm: Vec<u8>, salt: Vec<u8>, info: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
 
 // Hybrid: ECDH + ML-KEM. Secrets sorted internally — callers pass unsorted.
-[Throws=OccultaError]
-bytes hkdf_derive_hybrid(
-    bytes ecdh_raw,
-    bytes mlkem_secret_a,
-    bytes mlkem_secret_b,
-    bytes salt,
-    bytes info
-);
+pub fn hkdf_derive_hybrid(
+    ecdh_raw: Vec<u8>, mlkem_secret_a: Vec<u8>, mlkem_secret_b: Vec<u8>,
+    salt: Vec<u8>, info: Vec<u8>,
+) -> Result<Vec<u8>, OccultaError>;
 
-// Hybrid local DB: SE component + Keychain random component
-[Throws=OccultaError]
-bytes hkdf_derive_hybrid_local_db(
-    bytes se_component,
-    bytes random_component,
-    bytes salt,
-    bytes info
-);
+// Hybrid local DB: SE component + Keychain/Keystore random component.
+pub fn hkdf_derive_hybrid_local_db(
+    se_component: Vec<u8>, random_component: Vec<u8>,
+    salt: Vec<u8>, info: Vec<u8>,
+) -> Result<Vec<u8>, OccultaError>;
 
-// Diceware: hybrid IKM + sorted nonces appended to info prefix
-[Throws=OccultaError]
-bytes hkdf_derive_diceware(
-    bytes ecdh_raw,
-    bytes mlkem_secret_a,
-    bytes mlkem_secret_b,
-    bytes salt,
-    bytes info_prefix,
-    bytes nonce_a,
-    bytes nonce_b
-);
+// Diceware: hybrid IKM + sorted nonces appended to info prefix.
+pub fn hkdf_derive_diceware(
+    ecdh_raw: Vec<u8>, mlkem_secret_a: Vec<u8>, mlkem_secret_b: Vec<u8>,
+    salt: Vec<u8>, info_prefix: Vec<u8>, nonce_a: Vec<u8>, nonce_b: Vec<u8>,
+) -> Result<Vec<u8>, OccultaError>;
 
-// XOR salt: byte-wise XOR of two 65-byte X9.63 public keys
-[Throws=OccultaError]
-bytes xor_salt(bytes pub_key_a, bytes pub_key_b);
+// XOR salt: byte-wise XOR of two 65-byte X9.63 public keys.
+pub fn xor_salt(pub_key_a: Vec<u8>, pub_key_b: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
 
-// ── ECDSA ─────────────────────────────────────────────────────────────────────
-// Verify-only. Signing is always performed by the Secure Enclave in Swift.
+// ── X9.63 KDF (Android runtime only; exported on both platforms) ─────────────
+// Raw Keystore ECDH secret → the 32-byte value the SE would have produced.
+pub fn x963_kdf_sha256(shared_secret: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
+
+// ── ML-KEM-1024 (feature "mlkem" — Android builds only) ──────────────────────
+#[derive(uniffi::Record)]
+pub struct MlKemKeyPair { pub encapsulation_key: Vec<u8>, pub decapsulation_key: Vec<u8> }
+#[derive(uniffi::Record)]
+pub struct MlKemEncapsulation { pub shared_secret: Vec<u8>, pub ciphertext: Vec<u8> }
+
+pub fn mlkem_generate_keypair() -> Result<MlKemKeyPair, OccultaError>;
+pub fn mlkem_encapsulate(peer_encapsulation_key: Vec<u8>) -> Result<MlKemEncapsulation, OccultaError>;
+pub fn mlkem_decapsulate(decapsulation_key: Vec<u8>, ciphertext: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
+
+// ── ECDSA ────────────────────────────────────────────────────────────────────
+// Verify-only. Signing is always performed by hardware (SE / Keystore).
 // message: NOT pre-hashed — p256 applies SHA-256 internally.
-[Throws=OccultaError]
-void ecdsa_verify(bytes public_key_x963, bytes message, bytes signature_der);
+pub fn ecdsa_verify(public_key_x963: Vec<u8>, message: Vec<u8>, signature_der: Vec<u8>) -> Result<(), OccultaError>;
 
-// ── Shamir SSS ────────────────────────────────────────────────────────────────
-// Each share in the returned sequence is encoded as:
-//   x_coordinate(1 byte) ∥ share_data(N bytes)
-// where x_coordinate is the 1-based share index. shamir_combine() expects
-// the same format — first byte is the x-coordinate.
-[Throws=OccultaError]
-sequence<bytes> shamir_split(bytes secret, u8 n, u8 k);
+// ── Shamir SSS ───────────────────────────────────────────────────────────────
+// Each share: x_coordinate(1 byte, 1-based) ∥ share_data(32 bytes).
+pub fn shamir_split(secret: Vec<u8>, n: u8, k: u8) -> Result<Vec<Vec<u8>>, OccultaError>;
+pub fn shamir_combine(shares: Vec<Vec<u8>>) -> Result<Vec<u8>, OccultaError>;
 
-[Throws=OccultaError]
-bytes shamir_combine(sequence<bytes> shares);
+// ── Wire format ──────────────────────────────────────────────────────────────
+// BundleRecord is the FFI projection of OccultaBundle — flat, no nested enums.
+#[derive(uniffi::Record)]
+pub struct BundleRecord {
+    pub version_raw:          String,        // "v1" | "v2" | "v3fs"
+    pub mode_raw:             String,        // "forwardSecret" | "forwardSecretNoPQ"
+                                             // | "longTermFallback" | "longTermNoPQ"
+    pub ephemeral_public_key: Vec<u8>,
+    pub prekey_id:            Option<String>,
+    pub ciphertext:           Vec<u8>,
+    pub fingerprint_nonce:    Vec<u8>,
+    pub sender_fingerprint:   Vec<u8>,
+}
 
-// ── Wire format ───────────────────────────────────────────────────────────────
-[Throws=OccultaError]
-bytes bundle_encode(bytes bundle_json);
+pub fn bundle_encode(bundle: BundleRecord) -> Result<Vec<u8>, OccultaError>;
+pub fn bundle_decode(data: Vec<u8>) -> Result<BundleRecord, OccultaError>;
 
-[Throws=OccultaError]
-bytes bundle_decode(bytes data);
-
-// AAD computation — must match Swift's JSONEncoder .sortedKeys output byte-for-byte
-[Throws=OccultaError]
-bytes bundle_compute_aad(bytes version_raw_utf8, bytes secrecy_json);
+// AAD is computed FROM STRUCTURED FIELDS inside Rust — callers never serialise
+// SecrecyContext themselves. This keeps Foundation-JSON canonicalisation
+// (invariant 10: sorted keys, nil omission, \/ escaping) in exactly one place,
+// shared by both platforms. Kotlin must never reimplement it.
+pub fn bundle_compute_aad(
+    version_raw:          String,
+    mode_raw:             String,
+    ephemeral_public_key: Vec<u8>,
+    prekey_id:            Option<String>,
+) -> Result<Vec<u8>, OccultaError>;
 
 // Fingerprint: SHA-256(sender_pub_x963(65) ∥ fingerprint_nonce(16))
-[Throws=OccultaError]
-bytes bundle_compute_fingerprint(bytes sender_public_key_x963, bytes fingerprint_nonce);
+pub fn bundle_compute_fingerprint(sender_public_key_x963: Vec<u8>, fingerprint_nonce: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
 
-// ── Identity Challenge ────────────────────────────────────────────────────────
-// Build the 101-byte signing payload: DOMAIN_PREFIX(29) ∥ nonce(32) ∥ timestamp_be(8) ∥ fingerprint(32)
-// Pass the result directly to SE signing — DO NOT pre-hash.
-[Throws=OccultaError]
-bytes challenge_signing_payload(bytes nonce, bytes timestamp_be, bytes challenger_fingerprint);
+// ── Identity Challenge ───────────────────────────────────────────────────────
+// 101-byte signing payload: DOMAIN_PREFIX(29) ∥ nonce(32) ∥ timestamp_be(8) ∥ fingerprint(32).
+// Pass the result directly to hardware signing — DO NOT pre-hash.
+pub fn challenge_signing_payload(nonce: Vec<u8>, timestamp_be: Vec<u8>, challenger_fingerprint: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
+pub fn challenge_verify(signing_payload: Vec<u8>, signature_der: Vec<u8>, responder_public_key_x963: Vec<u8>) -> Result<(), OccultaError>;
 
-// Verify a challenge response
-[Throws=OccultaError]
-void challenge_verify(
-    bytes signing_payload,
-    bytes signature_der,
-    bytes responder_public_key_x963
-);
+// ── Passphrase KDF ───────────────────────────────────────────────────────────
+// Argon2id — replaces SHA-256. salt: 16 random bytes (caller-generated, stored with export).
+pub fn argon2id_derive(passphrase: String, salt: Vec<u8>) -> Result<Vec<u8>, OccultaError>;
 
-// ── Passphrase KDF ────────────────────────────────────────────────────────────
-// Argon2id — replaces SHA-256. salt: 16 random bytes (caller-generated, stored with export)
-[Throws=OccultaError]
-bytes argon2id_derive(string passphrase, bytes salt);
-
-// ── SaltInfo constants ────────────────────────────────────────────────────────
-// Exposed so Swift can reference them without hardcoding.
-bytes salt_info_transport();
-bytes salt_info_local_db();
-bytes salt_info_hybrid_local_db();
-bytes salt_info_hybrid_transport();
-bytes salt_info_hybrid_fs_transport();
-bytes salt_info_diceware_prefix();
-bytes salt_info_vault();
-bytes salt_info_shard_custody();
-bytes salt_info_secure_mode_pin();
-bytes salt_info_recovery_buffer();
+// ── SaltInfo constants ───────────────────────────────────────────────────────
+// One getter per SaltInfo constant so neither platform hardcodes protocol strings:
+// salt_info_transport(), salt_info_local_db(), salt_info_hybrid_local_db(),
+// salt_info_hybrid_transport(), salt_info_hybrid_fs_transport(),
+// salt_info_diceware_prefix(), salt_info_vault(), salt_info_shard_custody(),
+// salt_info_secure_mode_pin(), salt_info_recovery_buffer() — each -> Vec<u8>.
 ```
+
+**Zeroization residual risk (documented, accepted):** key material crosses the
+FFI as plain `Vec<u8>` copies inside UniFFI `RustBuffer`s, which are freed but
+not zeroized; Swift `Data` / Kotlin `ByteArray` on the far side are likewise
+not zeroized. This is equivalent in practice to CryptoKit `SymmetricKey`
+exposure. Mitigations: keys are derived per-operation and short-lived; never
+logged or persisted. This limitation must be restated in the audit notes.
 
 ---
 
 ### `src/lib.rs` (excerpt)
 
 ```rust
-uniffi::include_scaffolding!("occulta_ffi");
+uniffi::setup_scaffolding!();
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use occulta_crypto::{aes_gcm, hkdf, ecdsa, shamir, kdf, validate_key_material as _validate};
 use occulta_protocol::{bundle, salt_info::SaltInfo, challenge::ChallengeConstants};
 use secrecy::Secret;
@@ -1566,10 +1761,15 @@ use crate::error::OccultaError;
 
 // ── Platform capability gate ───────────────────────────────────────────────────
 
-static PLATFORM: OnceLock<Arc<dyn PlatformCapabilityProvider>> = OnceLock::new();
+#[uniffi::export(callback_interface)]
+pub trait PlatformCapabilityProvider: Send + Sync {
+    fn has_secure_key_storage(&self) -> bool;
+}
+
+static PLATFORM: OnceLock<Box<dyn PlatformCapabilityProvider>> = OnceLock::new();
 
 #[uniffi::export]
-pub fn register_platform_capabilities(provider: Arc<dyn PlatformCapabilityProvider>) {
+pub fn register_platform_capabilities(provider: Box<dyn PlatformCapabilityProvider>) {
     // OnceLock::set silently ignores a second call — first registration wins.
     PLATFORM.set(provider).ok();
 }
@@ -1661,14 +1861,22 @@ the Swift test suite and assert Rust produces identical bytes.
 | `challenge_signing_payload` | Known nonce(32) + timestamp_be(8) + fingerprint(32) | 101-byte blob identical to Swift `buildSignedData` |
 | `shamir split/combine` | Known 32-byte secret, n=5, k=3 | Secret recovered; x-coord byte verified |
 | `xor_salt` | Two known 65-byte keys | XOR output from Swift |
+| `bundle_compute_aad` (nil prekey) | `longTermFallback`, `prekeyID: nil`, empty epk | AAD bytes from Swift — verifies key **omitted**, not `null` |
+| `bundle_compute_aad` (slash) | epk chosen so its base64 contains `/` | AAD bytes from Swift — verifies `\/` escaping |
+| `Mode` raw values | All four shipped modes + one unknown string | Round-trip `forwardSecret`, `forwardSecretNoPQ`, `longTermFallback`, `longTermNoPQ`; unknown → `Unsupported` |
+| `x963_kdf_sha256` | Known P-256 pair (software `SecKey`) | Byte-match `SecKeyCopyKeyExchangeResult(requestedSize: 32)` output |
+| ML-KEM-1024 cross-impl | CryptoKit encapsulates → Rust decapsulates, and reverse | Identical 32-byte shared secrets; NIST FIPS 203 KATs pass |
 
 Place vectors in `occulta-ffi/tests/interop_vectors.rs`.
 These are the acceptance gate — no PR merges that changes any vector output.
 
 **Critical AAD vector note:** Extract `computeAdditionalAuthentication(version:secrecy:)`
-output from `OccultaBundleTests` with a fixed `SecrecyContext` where `prekeyID` is
-non-nil. Verify the Rust output matches byte-for-byte, paying special attention to
-`"prekeyID"` (capital I, capital D) in the JSON. Run this test before any other.
+output from `OccultaBundleTests` for **three** fixed contexts: (a) `prekeyID`
+non-nil, (b) `prekeyID` nil (fallback — verifies the key is omitted, not `null`),
+(c) an `ephemeralPublicKey` whose base64 contains `/` (verifies Foundation's `\/`
+escaping). Pay special attention to `"prekeyID"` (capital I, capital D). Run
+these before any other vector — they encode the three known Foundation/serde
+divergences (invariant 10).
 
 ---
 
@@ -1693,6 +1901,17 @@ delete the corresponding Swift implementation → ship.
 Step 7 is the highest risk. Run it independently with a dedicated review
 before proceeding to step 8.
 
+### Phase 2 — Android enablement
+
+These steps add capability for Android; no Swift call sites change:
+
+| Step | What | Validation gate |
+|---|---|---|
+| 11 | `x963_kdf_sha256` | Byte-match against `SecKeyCopyKeyExchangeResult` for a known key pair |
+| 12 | `mlkem` module (feature-gated) | FIPS 203 KATs + CryptoKit cross-implementation vectors |
+| 13 | `build-android.sh` + Gradle module | Kotlin smoke test: seal/open + AAD vectors pass on emulator |
+| 14 | Android ⇄ iOS end-to-end | Bundle sealed on one platform opens on the other, all four modes |
+
 ---
 
 ## Build Script — `scripts/build-xcframework.sh`
@@ -1706,7 +1925,8 @@ before proceeding to step 8.
 #
 # Prerequisites:
 #   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-#   cargo install uniffi-bindgen
+#   (bindgen runs from the workspace bin, version-locked to the uniffi crate —
+#    `cargo install uniffi-bindgen` is unsupported and must not be used)
 #
 # Usage:
 #   ./scripts/build-xcframework.sh            # release build
@@ -1732,7 +1952,8 @@ else
     BUILD_DIR="debug"
 fi
 
-TARGET_DIR="$CRATE_DIR/target"
+# Cargo workspaces share one target dir at the workspace root — not per-crate.
+TARGET_DIR="$ROOT_DIR/target"
 BINDINGS_DIR="$TARGET_DIR/bindings"
 HEADERS_DIR="$TARGET_DIR/headers"
 
@@ -1762,9 +1983,12 @@ lipo -create \
     -output "$TARGET_DIR/sim-universal/$BUILD_DIR/lib${LIB_NAME}.a"
 lipo -info "$TARGET_DIR/sim-universal/$BUILD_DIR/lib${LIB_NAME}.a"
 
-echo "▸ [3/6] Generating Swift bindings via uniffi-bindgen"
+echo "▸ [3/6] Generating Swift bindings via uniffi-bindgen (workspace bin)"
 mkdir -p "$BINDINGS_DIR"
-uniffi-bindgen generate \
+# Generated names (OccultaCore.swift, OccultaCoreFFI.h/.modulemap) come from
+# occulta-ffi/uniffi.toml — without it, uniffi emits occulta_ffi.* and the
+# checks below fail.
+cargo run -p occulta-ffi --bin uniffi-bindgen -- generate \
     --library "$TARGET_DIR/aarch64-apple-ios/$BUILD_DIR/lib${LIB_NAME}.a" \
     --language swift \
     --out-dir "$BINDINGS_DIR"
@@ -1802,7 +2026,7 @@ import PackageDescription
 
 let package = Package(
     name: "OccultaCore",
-    platforms: [.iOS(.v17)],
+    platforms: [.iOS(.v16)],   // project minimum — CLAUDE.md: iOS 16.0+
     products: [
         .library(name: "OccultaCore", targets: ["OccultaCore"]),
     ],
@@ -1836,6 +2060,58 @@ echo "  Import in Swift:   import OccultaCore"
 
 ---
 
+## Android Build — `scripts/build-android.sh`
+
+Mirror of the iOS script. Outline (full script written at scaffold time):
+
+```bash
+# Prerequisites:
+#   rustup target add aarch64-linux-android x86_64-linux-android
+#   cargo install cargo-ndk        # NDK toolchain wiring only — not bindgen
+
+# 1. JNI libraries (arm64 devices + x86_64 emulator), ML-KEM enabled:
+cargo ndk -t arm64-v8a -t x86_64 \
+    -o "$ROOT_DIR/android/occulta-core/src/main/jniLibs" \
+    build -p occulta-ffi --release --features mlkem
+
+# 2. Kotlin bindings (the same uniffi.toml drives package naming):
+cargo run -p occulta-ffi --bin uniffi-bindgen -- generate \
+    --library "$TARGET_DIR/aarch64-linux-android/release/lib${LIB_NAME}.so" \
+    --language kotlin \
+    --out-dir "$ROOT_DIR/android/occulta-core/src/main/kotlin"
+```
+
+The `android/occulta-core/` Gradle module packages the result as an AAR.
+UniFFI's Kotlin bindings require the JNA dependency (`net.java.dev.jna:jna`).
+
+### Android Platform Policy
+
+Protocol-level decisions, recorded here so the Android app cannot quietly
+weaken them:
+
+1. **minSdk 31 (Android 12).** Keystore ECDH (`KeyAgreement` with a
+   Keystore-resident EC key) requires API 31. No software-key fallback —
+   a device that cannot do hardware ECDH cannot run Occulta.
+2. **`has_secure_key_storage()` returns true for TEE *or* StrongBox.**
+   StrongBox is the closest SE equivalent, but StrongBox ECDH is unsupported
+   on most devices. Policy: keys must be hardware-backed
+   (`KeyInfo.securityLevel` of TEE or StrongBox); prefer StrongBox per-key
+   where the operation is supported; never fall back to software.
+3. **ECDH output must pass through `x963_kdf_sha256()`** before any HKDF call
+   (`occulta-crypto/x963.rs`) — otherwise Android derives different session
+   keys than iOS and nothing decrypts.
+4. **ML-KEM decapsulation keys are software-held on Android** (no hardware
+   ML-KEM exists) — `Zeroizing` in memory, stored encrypted under the hybrid
+   local-DB key. Accepted, documented posture difference vs the iOS SE.
+5. **ECDSA signing** uses Keystore `SHA256withECDSA` (DER output) — compatible
+   with `ecdsa_verify` and with iOS `.ecdsaSignatureMessageX962SHA256`.
+
+Out of the Rust package's scope but tracked: UWB proximity
+(`androidx.core.uwb`) covers far fewer devices than iPhone U1/U2 — the Android
+exchange flow needs a BLE-only fallback path at app level.
+
+---
+
 ## Workspace Layout
 
 ```
@@ -1844,12 +2120,17 @@ occulta-workspace/
 ├── occulta-protocol/
 ├── occulta-crypto/
 ├── occulta-ffi/
+│   ├── uniffi.toml
+│   └── uniffi-bindgen.rs
 ├── OccultaSDK/             ← generated — do not edit manually
 │   ├── Package.swift
 │   ├── Sources/OccultaCore/OccultaCore.swift
 │   └── OccultaCoreFFI.xcframework/
+├── android/
+│   └── occulta-core/       ← Gradle module; jniLibs + Kotlin generated
 └── scripts/
-    └── build-xcframework.sh
+    ├── build-xcframework.sh
+    └── build-android.sh
 ```
 
 ```toml
