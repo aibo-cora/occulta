@@ -2205,7 +2205,7 @@ After cascade deactivation: `isSecureModeActive = true`, `currentDepth = 1` → 
 
 ## Bug 69 — Cold launch with `pinEnabled = false, isSecureModeActive = true` leaves share index uninitialized
 
-**Status:** Open
+**Status:** Closed (Fixed)
 
 ### Severity: High
 
@@ -2229,4 +2229,17 @@ contactManager.syncShareIndex()
 ```
 
 `currentDepth` is correctly restored from `AppLayerConfig.persistedDepth` in this path (per Bug 50's fix), so `safeContactIDs(atDepth:)` will produce the correct set.
+
+### Resolution
+
+Share index initialisation added to the no-PIN cold-launch path. When `AppScreen` transitions to `.unlocked` without a PIN entry cycle (`pinEnabled = false`), the observer in `OccultaApp` initialises `shareIndexAllowedIDs` using the same conditional as `onAuthenticated`:
+
+```swift
+contactManager.shareIndexAllowedIDs = security.isSecureModeActive
+    ? security.safeContactIDs(atDepth: max(security.currentDepth, 1))
+    : nil
+contactManager.syncShareIndex()
+```
+
+`currentDepth` is correctly restored from `persistedDepth` at this point (Bug 50), so `safeContactIDs` produces the correct depth-filtered set before any contact mutation can trigger a sync.
 
