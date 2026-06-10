@@ -222,7 +222,7 @@ private struct SummaryView: View {
     @State private var activationFailed = false
 
     private var sensitiveCount: Int {
-        self.contacts.filter { self.security.isSensitive($0.identifier) }.count
+        self.contacts.filter { self.contactManager.isSensitive($0.identifier) }.count
     }
 
     var body: some View {

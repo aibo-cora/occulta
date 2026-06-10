@@ -176,6 +176,7 @@ private func makeSecurityContainer() throws -> ModelContainer {
     @Test func isSafeContact_sensitiveContact_blockedInDuress() throws {
         let container  = try makeSecurityContainer()
         let security   = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        let contacts   = ContactManager(modelContainer: container, security: security)
 
         let identifier = UUID().uuidString
         let ctx        = ModelContext(container)
@@ -199,7 +200,7 @@ private func makeSecurityContainer() throws -> ModelContainer {
         #expect(security.isRestricted,
                 "applyVerifyState(.duress) must set isRestricted")
         #expect(
-            security.isSafeContact(identifier) == false,
+            contacts.isSafeContact(identifier) == false,
             "sensitive contact must not pass isSafeContact in duress mode"
         )
     }

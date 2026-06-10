@@ -405,32 +405,6 @@ extension Manager {
                 // sensitive → blob; safe → re-encrypt in DB.
                 let allProfiles = try contactManager.fetchAllContacts()
 
-                // updateSafeContacts() wrote the correct visibleThroughDepth values to the
-                // store via the Security manager's context. The store is correct.
-                //
-                // However, SwiftData's identity map means that fetching already-loaded
-                // objects returns their in-memory copies, not a fresh store read. Contact-
-                // Manager's context loaded these Contact.Profile objects earlier in the
-                // session (when the contacts list was displayed), before classification was
-                // saved. Those in-memory copies still carry nil for visibleThroughDepth.
-                //
-                // Copy the correct values from this context (which has the right in-memory
-                // state after updateSafeContacts) onto ContactManager's stale profiles.
-                // Without this, reencryptAllFields() re-encrypts nil → nil for every
-                // contact and all contacts appear safe (always-visible) after activation.
-                let classifiedProfiles = try self.modelContext.fetch(Contact.Profile.descriptor)
-                var visibilityByID: [String: Data?] = [:]
-                for classified in classifiedProfiles {
-                    visibilityByID[classified.identifier] = classified.visibleThroughDepth
-                }
-                for profile in allProfiles {
-                    // Only overwrite when Security manager's context has an entry for this
-                    // contact. nil is a valid value (means "always visible"), so copy it too.
-                    if let knownDepth = visibilityByID[profile.identifier] {
-                        profile.visibleThroughDepth = knownDepth
-                    }
-                }
-
                 var blobContacts:  [LayerContact] = []
                 var safeProfiles:  [Contact.Profile]   = []
 
@@ -715,31 +689,11 @@ extension Manager {
                 // restores depth / signedAttributes. Key records are not touched — they
                 // are already under the staged key from Step 4.
                 for record in payload.contacts {
-                    try contactManager.save(contact: record.draft, using: stagedCrypto)
-
-                    let fetchDesc = FetchDescriptor<Contact.Profile>(
-                        predicate: #Predicate { $0.identifier == record.draft.identifier }
-                    )
-                    guard let restored = try self.modelContext.fetch(fetchDesc).first else { continue }
-
-                    // Restore the depth stored at activation time, encrypted under the staged
-                    // key so it is readable after commitStagedLocalDBKey(). Falls back to 0
-                    // (sensitive) for blobs written before this field was added — any contact
-                    // in the blob had a finite visibleThroughDepth by definition.
-                    let depth     = record.visibleThroughDepth ?? 0
-                    let depthData = try JSONEncoder().encode(depth)
-                    restored.visibleThroughDepth = try AES.GCM.seal(
-                        depthData, using: stagedKey, authenticating: aad
-                    ).combined
-
-                    if let attrs = record.signedAttributes, !attrs.isEmpty {
-                        restored.signedAttributes = try AES.GCM.seal(
-                            attrs, using: stagedKey, authenticating: aad
-                        ).combined
-                    }
+                    try contactManager.restoreContact(record, using: stagedCrypto,
+                                                     stagedKey: stagedKey, aad: aad)
                 }
                 if !payload.contacts.isEmpty {
-                    try self.modelContext.save()
+                    try contactManager.modelContext.save()
                 }
 
                 // ── Step 6: Restore all vault entries to visible under staged key ────
@@ -1172,75 +1126,7 @@ extension Manager {
             Self.isVisible(contact, atDepth: self.currentDepth)
         }
 
-        /// Returns true if the contact is visible at duress depth 1.
-        /// Unknown contacts (not in DB) return false — conservative default.
-        func isSafeContact(_ identifier: String) -> Bool {
-            let descriptor = FetchDescriptor<Contact.Profile>(
-                predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
-            )
-            guard let contact = try? self.modelContext.fetch(descriptor).first else { return false }
-            return Self.isVisible(contact, atDepth: self.currentDepth)
-        }
-
-        /// Returns identifiers of contacts visible at the given depth (defaults to `currentDepth`).
-        ///
-        /// Pass an explicit `depth` when querying from a context where `currentDepth` may not
-        /// yet reflect the desired security level — e.g. when locking the app from `.normal`
-        /// state to pre-filter the share index for the unauthenticated Share Extension process.
-        func safeContactIDs(atDepth depth: Int? = nil) -> Set<String> {
-            let d = depth ?? self.currentDepth
-            guard let contacts = try? self.modelContext.fetch(Contact.Profile.descriptor) else { return [] }
-            return Set(contacts.compactMap { Self.isVisible($0, atDepth: d) ? $0.identifier : nil })
-        }
-
-        /// Classifies contacts relative to `currentDepth`.
-        ///
-        /// Contacts in `ids` are marked always-visible (`encrypt(Int.max)`).
-        /// Contacts not in `ids` that are currently visible are marked hidden at the next
-        /// layer (`encrypt(currentDepth)`). Contacts already hidden below `currentDepth`
-        /// (classified at a shallower layer) are left untouched — this call does not own them.
-        func updateSafeContacts(_ ids: Set<String>) throws {
-            let contacts = try self.modelContext.fetch(Contact.Profile.descriptor)
-            for contact in contacts {
-                // Only update contacts in scope for this classification pass.
-                guard Self.isVisible(contact, atDepth: self.currentDepth) else { continue }
-                let depthValue = ids.contains(contact.identifier) ? Int.max : self.currentDepth
-                contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
-            }
-            try self.modelContext.save()
-        }
-
-        /// Returns true if the contact is sensitive at `currentDepth` — i.e. visible now
-        /// but hidden at the next layer (`visibleThroughDepth == currentDepth`).
-        /// Does not infer from unknown contacts — only reads the stored field.
-        func isSensitive(_ identifier: String) -> Bool {
-            let descriptor = FetchDescriptor<Contact.Profile>(
-                predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
-            )
-            guard let contact = try? self.modelContext.fetch(descriptor).first,
-                  let data = contact.visibleThroughDepth,
-                  let decrypted = data.decrypt(),
-                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-            else { return false }
-            return value == self.currentDepth
-        }
-
-        /// Sets a single contact's visibility relative to `currentDepth`.
-        ///
-        /// Sensitive → `encrypt(currentDepth)`: visible through the current layer, hidden at the next.
-        /// Safe → `encrypt(Int.max)`: visible at all depths.
-        func setVisibility(for identifier: String, isSensitive: Bool) throws {
-            let descriptor = FetchDescriptor<Contact.Profile>(
-                predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
-            )
-            guard let contact = try? self.modelContext.fetch(descriptor).first else { return }
-            contact.visibleThroughDepth = try JSONEncoder().encode(
-                isSensitive ? self.currentDepth : Int.max
-            ).encrypt()
-            try self.modelContext.save()
-        }
-
-        private static func isVisible(_ contact: Contact.Profile, atDepth depth: Int) -> Bool {
+        static func isVisible(_ contact: Contact.Profile, atDepth depth: Int) -> Bool {
             guard let data = contact.visibleThroughDepth else { return true }
             guard let decrypted = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)

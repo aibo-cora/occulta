@@ -126,8 +126,8 @@ extension Contact {
                         Button("Save") {
                             try? self.contactManager.save(contact: self.contact,
                                                           currentDepth: self.security.currentDepth)
-                            try? self.security.setVisibility(for: self.contact.identifier,
-                                                             isSensitive: self.isSensitive)
+                            try? self.contactManager.setVisibility(for: self.contact.identifier,
+                                                                   isSensitive: self.isSensitive)
                             self.dismiss()
                         }
                         .tint(Color.occultaAccent)
@@ -151,7 +151,7 @@ extension Contact {
                     if let mutable = try? self.contactManager.convertToMutableCopy(using: identifier) {
                         self.contact = mutable
                     }
-                    self.isSensitive = self.security.isSensitive(identifier)
+                    self.isSensitive = self.contactManager.isSensitive(identifier)
                 }
             }
         }

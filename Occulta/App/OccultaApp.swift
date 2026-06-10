@@ -604,7 +604,7 @@ private struct RootView: View {
     /// We need to make sure that sensitive contacts' messages are being treated as wrong recipient events.
     /// - Parameter identifier: Contact identifier.
     private func passSecurityControl(identifier: String) throws {
-        if self.security.isRestricted && self.security.isSafeContact(identifier) == false {
+        if self.security.isRestricted && self.contactManager.isSafeContact(identifier) == false {
             throw ContactManager.Errors.noPublicKeyToEncryptWith
         }
     }

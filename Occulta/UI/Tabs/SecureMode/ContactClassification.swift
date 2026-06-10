@@ -15,6 +15,7 @@ struct ContactClassification: View {
 
     @Environment(\.dismiss)             private var dismiss
     @Environment(Manager.Security.self) private var security
+    @Environment(ContactManager.self)   private var contactManager
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
 
@@ -148,11 +149,11 @@ struct ContactClassification: View {
         // who is operating. isSensitive returns true only for visibleThroughDepth ==
         // currentDepth — contacts classified at the current depth only. Together these
         // two invariants make the depth-guard redundant: there is no path for info leak
-        // (shallower-layer contacts are invisible) or mutation (updateSafeContacts only
+        // (shallower-layer contacts are invisible) or mutation (saveClassification only
         // touches contacts currently visible). (Bug 57 fix.)
         self.sensitiveIDs = Set(
             self.contacts
-                .filter { self.security.isSensitive($0.identifier) }
+                .filter { self.contactManager.isSensitive($0.identifier) }
                 .map { $0.identifier }
         )
     }
@@ -160,7 +161,7 @@ struct ContactClassification: View {
     private func save() {
         // Use classifiableContacts so already-hidden contacts are not included in safeIDs.
         let safeIDs = Set(self.classifiableContacts.map { $0.identifier }).subtracting(self.sensitiveIDs)
-        try? self.security.updateSafeContacts(safeIDs)
+        try? self.contactManager.saveClassification(safeIDs: safeIDs)
     }
 }
 

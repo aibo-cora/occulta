@@ -338,7 +338,7 @@ struct SecureModeWALPersistenceTests {
         try insertContact(identifier: id, in: c.container)
 
         // Stamp safe classification so visibleThroughDepth becomes a real ciphertext.
-        try c.security.updateSafeContacts([id])
+        try c.contacts.saveClassification(safeIDs: [id])
 
         // Capture the pre-activation ciphertext from a fresh context.
         let profilesBefore    = try fetchAllProfiles(from: c.container)
@@ -382,7 +382,7 @@ struct SecureModeWALPersistenceTests {
         let id = "contact-sensitive-\(UUID().uuidString)"
         // A valid encrypted 0 value makes isVisible return false → sensitive.
         try insertContact(identifier: id, in: c.container)
-        try c.security.setVisibility(for: id, isSensitive: true)
+        try c.contacts.setVisibility(for: id, isSensitive: true)
 
         let profilesBefore = try fetchAllProfiles(from: c.container)
         let depthBefore    = profilesBefore.first { $0.identifier == id }?.visibleThroughDepth
@@ -475,7 +475,7 @@ struct SecureModeWALPersistenceTests {
 
         let id = "contact-safe-\(UUID().uuidString)"
         try insertContact(identifier: id, in: c.container)
-        try c.security.updateSafeContacts([id])
+        try c.contacts.saveClassification(safeIDs: [id])
 
         let profilesBefore = try fetchAllProfiles(from: c.container)
         guard profilesBefore.first(where: { $0.identifier == id })?.visibleThroughDepth != nil else {
