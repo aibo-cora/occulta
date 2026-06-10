@@ -23,7 +23,7 @@ struct Verify: View {
                 }
                 .prominentButtonStyle()
             }
-            .navigationTitle(OccultaApp.Tabs.verify.rawValue.capitalized)
+            .navigationTitle(Tabs.verify.rawValue.capitalized)
         }
     }
 }

@@ -33,8 +33,6 @@ final class LegacyCryptoManager: CryptoProtocol {
     func decrypt(data: Data?) throws -> Data?                          { try Manager.Crypto().decrypt(data: data) }
     func encrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().encrypt(message: message, using: material) }
     func decrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().decrypt(message: message, using: material) }
-    func encrypt(contacts: Data, using passphrase: String) throws -> Data? { try Manager.Crypto().encrypt(contacts: contacts, using: passphrase) }
-    func decrypt(contacts: Data, using passphrase: String) throws -> Data? { try Manager.Crypto().decrypt(contacts: contacts, using: passphrase) }
     func sign(data: Data?) -> String { Manager.Crypto().sign(data: data) }
 }
 
@@ -123,37 +121,6 @@ extension Manager {
             return try AES.GCM.open(sealed, using: key)
         }
 
-        // MARK: - Passphrase encryption (unchanged)
-
-        func encrypt(contacts: Data, using passphrase: String) throws -> Data? {
-            guard
-                let material = passphrase.data(using: .utf8)
-            else {
-                return nil
-            }
-
-            let hash = Data(SHA256.hash(data: material))
-            let key = SymmetricKey(data: hash)
-
-            let sealed = try AES.GCM.seal(contacts, using: key, nonce: AES.GCM.Nonce())
-            return sealed.combined
-        }
-
-        func decrypt(contacts: Data, using passphrase: String) throws -> Data? {
-            guard
-                contacts.isEmpty == false,
-                let material = passphrase.data(using: .utf8)
-            else {
-                return nil
-            }
-
-            let hash = Data(SHA256.hash(data: material))
-            let key = SymmetricKey(data: hash)
-
-            let box = try AES.GCM.SealedBox(combined: contacts)
-            return try AES.GCM.open(box, using: key)
-        }
-
         // MARK: - Signing (unchanged)
 
         func sign(data: Data?) -> String {
@@ -193,8 +160,6 @@ protocol CryptoProtocol {
     func decryptLegacy(data: Data?) throws -> Data?
     func encrypt(message: Data, using material: Data?) throws -> Data?
     func decrypt(message: Data, using material: Data?) throws -> Data?
-    func encrypt(contacts: Data, using passphrase: String) throws -> Data?
-    func decrypt(contacts: Data, using passphrase: String) throws -> Data?
     func sign(data: Data?) -> String
 }
 

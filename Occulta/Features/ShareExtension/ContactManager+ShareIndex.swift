@@ -30,7 +30,18 @@ extension ContactManager {
     }
 
     private func _syncShareIndex() throws {
-        let contacts = try self.fetchAllContacts()
+        let allContacts = try self.fetchAllContacts()
+        // When Secure Mode is active, only contacts visible at depth ≥ 1 are written
+        // to the share index. Hidden contacts must not appear in the iOS share sheet.
+        // Clamp to depth 1 — the share extension has no auth gate, so even when the owner
+        // is authenticated at depth 0, the extension always shows the duress (depth-1) view.
+        let contacts: [Contact.Profile]
+        if self.security.isSecureModeActive {
+            let depth = max(self.security.currentDepth, 1)
+            contacts = allContacts.filter { Manager.Security.isVisible($0, atDepth: depth) }
+        } else {
+            contacts = allContacts
+        }
         let keyManager = ShareIndexKeyManager()
 
         var entries: [(identifier: Data, displayName: Data)] = []

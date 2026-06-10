@@ -18,9 +18,11 @@ extension Contact {
         @State private var selectedPhotoItem: PhotosPickerItem?
         @State private var displayingRevokeKeyWarning = false
         @State private var displayingDeleteWarning = false
+        @State private var isSensitive = false
 
-        @Environment(\.dismiss)           private var dismiss
-        @Environment(ContactManager.self) private var contactManager
+        @Environment(\.dismiss)              private var dismiss
+        @Environment(ContactManager.self)    private var contactManager
+        @Environment(Manager.Security.self)  private var security
 
         @Query private var profiles: [Contact.Profile]
 
@@ -75,6 +77,27 @@ extension Contact {
                             EmailSectionRowsV2(contact: self.$contact)
                         }
 
+                        // No depth guard — isSensitive and setVisibility are depth-relative;
+                        // hiding the section at depth > 0 is a tell with no security benefit.
+                        // (Bug 60, same reasoning as Bug 57 for ContactClassification.)
+                        FormSectionV2(header: "VISIBILITY") {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Private contact")
+                                        .font(.system(size: 15))
+                                    Text("Hidden in alternate view")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: self.$isSensitive)
+                                    .labelsHidden()
+                                    .tint(Color.occultaDanger)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                        }
+
                         if self.isCreate {
                             EncryptionCTAV2()
 
@@ -101,7 +124,10 @@ extension Contact {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Save") {
-                            try? self.contactManager.save(contact: self.contact)
+                            try? self.contactManager.save(contact: self.contact,
+                                                          currentDepth: self.security.currentDepth)
+                            try? self.contactManager.setVisibility(for: self.contact.identifier,
+                                                                   isSensitive: self.isSensitive)
                             self.dismiss()
                         }
                         .tint(Color.occultaAccent)
@@ -122,10 +148,10 @@ extension Contact {
                 }
                 .task {
                     guard case .edit(let identifier) = self.mode else { return }
-                    
                     if let mutable = try? self.contactManager.convertToMutableCopy(using: identifier) {
                         self.contact = mutable
                     }
+                    self.isSensitive = self.contactManager.isSensitive(identifier)
                 }
             }
         }
@@ -395,11 +421,14 @@ private struct EncryptionCTAV2: View {
 }
 
 #Preview {
+    let container = try! ModelContainer(
+        for: Schema([AppLayerConfig.self, Contact.Profile.self,
+                     Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
+                     Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self,
+                     Contact.Profile.Key.self]),
+        configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+    )
     Contact.FormV2()
         .environment(ContactManager.preview)
-}
-
-#Preview("Edit") {
-    Contact.FormV2(mode: .edit(identifier: UUID().uuidString))
-        .environment(ContactManager.preview)
+        .environment(Manager.Security(modelContainer: container))
 }

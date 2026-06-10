@@ -14,6 +14,8 @@ Because Occulta requires no phone number, no server account, and no password, th
 
 ## Table of Contents
 
+- [Who It's For](#who-its-for)
+- [Threats](#threats)
 - [How It Works](#how-it-works)
 - [Cryptographic Protocol](#cryptographic-protocol)
 - [Post-Quantum Protection](#post-quantum-protection)
@@ -23,6 +25,11 @@ Because Occulta requires no phone number, no server account, and no password, th
 - [Vault & Secret Sharing](#vault--secret-sharing)
   - [Recovery Health Monitoring](#recovery-health-monitoring)
   - [Shard Indicator](#shard-indicator)
+- [Secure Mode](#secure-mode)
+  - [PIN Lock](#pin-lock)
+  - [Duress PIN & Decoy View](#duress-pin--decoy-view)
+  - [Coercion-Resistant Toggle](#coercion-resistant-toggle)
+  - [Forensic Deniability](#forensic-deniability)
 - [Account Takeover Resistance](#account-takeover-resistance)
 - [Security Properties](#security-properties)
 - [Threat Model](#threat-model)
@@ -31,6 +38,36 @@ Because Occulta requires no phone number, no server account, and no password, th
 - [Building](#building)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## Who It's For
+
+Medical staff, lawyers, financial advisors, accountants — anyone whose work is legally privileged or under regulatory protection. When that information moves through a messaging platform, it travels through infrastructure the platform can read, a company can scan, and a subpoena can reach. Occulta removes the infrastructure: the keys never touch a server, so there is nothing to compel.
+
+Journalists and travelers who operate in environments where sensitive information carries real risk. Cryptographic identity in Occulta is bound to hardware that cannot be reached remotely — your keys are on your device, and only your device.
+
+People who don't want their private information readable by third parties. You don't need a specific adversary to want your information to be yours. Anything encrypted in Occulta is inaccessible to the platform it travels through, the company that built it, and any legal process served on that company — because none of them hold the key.
+
+The protection Occulta offers is worth having for anyone. Claiming it means meeting people in person to exchange keys — no shortcuts, no remote setup. The people who do that get something no cloud account can offer.
+
+---
+
+## Threats
+
+**The key custodian problem**
+
+Most encrypted messaging tools share a structural problem: someone else is managing your keys. A server vouches for identity. A company mediates trust. That means the company can be compelled, the server can be breached, and the jurisdiction can reach the infrastructure.
+
+Occulta inverts this. You collect keys in person, at ≤ 25 cm. No server is involved at any step. No company can be compelled to produce what it never held.
+
+**Account takeover and impersonation**
+
+Messaging accounts are compromised through SIM-swapping, credential phishing, and platform-level breaches. When an account is hijacked through any of these vectors, most encrypted tools offer no recourse: the attacker inherits the account and with it the trust your contacts placed in it.
+
+Occulta separates account ownership from cryptographic identity. An attacker who takes over a messaging account can post as you — but they cannot produce a valid `.occ` bundle, because the private key that composes and opens those bundles lives in the Secure Enclave of your physical device. They cannot read inbound `.occ` bundles either.
+
+A stolen account goes silent in Occulta. Your contacts stop receiving valid bundles from "you," and that silence is the signal. A silent takeover becomes a visible one.
 
 ---
 
@@ -74,6 +111,7 @@ Occulta stores several categories of cryptographic material. Understanding where
 | P-256 identity key | `master.key.privacy.turtles.are.cute` | Long-term identity, ECDH for transport and local DB |
 | P-256 local DB key | `local.db.se.key.occulta` | ECDH component of hybrid local encryption key |
 | P-256 prekeys | `prekey.<contactID>.<uuid>` | Per-message forward secrecy, deleted after single use |
+| P-256 Secure Mode key | `app.layer.key.occulta.v1` | PIN verifier derivation and blob key derivation (HKDF input) |
 
 These keys are stored in the Keychain database as SE-wrapped blobs. The Secure Enclave never releases the unwrapped key material — all cryptographic operations (ECDH, signing) are performed inside the SE chip. An attacker who extracts the Keychain database gets wrapped blobs that are unusable without physical access to the specific SE that created them.
 
@@ -464,6 +502,108 @@ Every entry in the vault list carries a 🔮 glyph in its trailing position. Whe
 
 ---
 
+## Secure Mode
+
+Secure Mode provides defense against coerced device access — border crossings, physical seizure, compelled unlock. It is governed by a feature flag (`secureMode` in `features.plist`, default `true`) and adds no binary overhead when disabled.
+
+### PIN Lock
+
+When a PIN is configured, `PINEntry` overlays the app on every cold launch and after five minutes in background. The lock screen is a neutral 6-digit keypad — identical in appearance regardless of whether a normal, duress, or no Secure Mode is active.
+
+PIN verifiers are AES-GCM blobs derived via the Secure Enclave:
+
+```
+verifier = AES-GCM(
+  key:  HKDF-SHA256(seKey, info: label ∥ pin),
+  msg:  sentinel
+)
+SE key tag: "app.layer.key.occulta.v1"  (opaque)
+```
+
+The SE binding is the real rate-limiter — the verifier is useless without the physical device. A constant 500 ms timing gate equalizes response time across correct, incorrect, and duress entries so timing does not leak which branch was taken.
+
+Wrong attempts trigger an incremental lockout: no delay for the first 5 attempts, then 1 min → 2 min → 5 min → … → 24 h from attempt 20 onward. The lockout counter survives app kills (persisted in `AppLayerConfig`, excluded from backup).
+
+**Grace period:** Five minutes after a successful unlock, returning from background skips the PIN prompt. A UIKit cover is installed synchronously in `sceneWillResignActive` so iOS captures it — not live content — in the app-switcher snapshot.
+
+### Duress PIN & Decoy View
+
+Configuring Secure Mode requires two PINs:
+
+- **Normal PIN** — unlocks the real view. All contacts and vault entries visible.
+- **Duress PIN** — unlocks a decoy view. Contacts and vault entries marked sensitive are hidden.
+
+Entering either PIN triggers the same UI flow and produces the same haptic. The app is visually identical at both depths — same tabs, same settings, same vault layout — but `Manager.Security.isRestricted` filters based on `currentDepth`.
+
+Contact visibility is tracked per-contact via `visibleThroughDepth: Data?` (AES-GCM-encrypted `Int?`) on `Contact.Profile`:
+
+| Value | Meaning |
+|---|---|
+| `nil` | Visible at all depths |
+| `0` | Visible at depth 0 only (sensitive) |
+| `N` | Visible at depths 0 through N |
+
+At depth D, a contact is shown when `decrypt(visibleThroughDepth) == nil || decrypt(visibleThroughDepth) >= D`. Vault entries follow the same model via `VaultEntry.visibleThroughDepth`.
+
+The share index — the list of contacts available in the iOS Share Extension — is filtered to match the current depth. Sensitive contacts never appear in the share sheet in the decoy view.
+
+### Key Rotation
+
+Activation triggers an 11-step atomic key rotation to cryptographically separate real and decoy data:
+
+```
+1.  Verify current PIN
+2.  Create a staged local database key
+3.  Derive the layer store encryption key
+4.  Classify contacts: sensitive → blob; safe → stay in DB
+5.  Migrate any untagged contacts
+6.  Seal sensitive contacts into an encrypted slot in the layer store
+7.  (reserved)
+8.  Re-encrypt all contacts and vault depth fields under the staged key
+9.  Commit the staged key  ← point of no return
+10. WAL checkpoint — flush staged-key writes to the main SQLite file
+11. Delete superseded key material
+```
+
+On failure before commit the staged key is rolled back and no state changes. On failure after commit, `forceDeactivateForRecovery` removes the duress verifier without key rotation as a last resort. Deactivation mirrors activation: a new staged key is created, sensitive contacts are restored from the layer store, all data is re-encrypted, and the duress verifier is removed.
+
+### Layer Store
+
+A 32-slot fixed-size file (`<UUID>.occbak`, ≈ 1 MB) holds the sealed sensitive contacts. Every slot is AES-GCM encrypted to exactly 32 KB of plaintext, zero-padded. All 32 slots are re-sealed with fresh nonces on every push and pop — slot layout reveals nothing.
+
+```
+layerKey = HKDF-SHA256(seKey, info: "layer-store-key")
+slot     = AES-GCM(layerKey, zeroPadded(payload), randomNonce)
+```
+
+The file has no header, no magic bytes, and no version field. It exists on every install from first launch and is rewritten every 24 hours when Secure Mode is inactive, so its creation timestamp predates any security event and its modification timestamps correlate with normal app activity.
+
+File properties: `.completeFileProtection`, `isExcludedFromBackup = true`.
+
+### Multi-Layer Support
+
+The architecture supports up to 32 nested duress layers. A second activation from within the decoy view creates a deeper decoy, each with its own duress PIN and contact set. Entering any PIN from a cold start routes directly to the correct depth — cold-start routing aliases written at activation mean no intermediate layers need to be stepped through.
+
+### Coercion-Resistant Toggle
+
+The "Enable PIN" toggle in Settings lowers the PIN gate without removing verifiers — the toggle appears off, the PIN prompt stops appearing, and the app opens directly to depth-N content on the next launch. Depth filtering remains active regardless. A coercer who forces the user to "disable their PIN" sees exactly the same result as a user who disabled PIN on an ordinary app.
+
+Re-enabling the toggle presents a standard setup sheet. The entered PIN is matched against existing verifiers:
+
+- Normal PIN match → re-routes to depth 0 (real view)
+- Duress PIN match → re-routes to depth 1 (decoy view)
+- Unknown PIN at depth > 0 → silently creates a new layer for the coercer's PIN so the toggle always flips on
+
+### Forensic Deniability
+
+- **`AppLayerConfig`** is written on the very first launch — its presence never indicates PIN or Secure Mode usage.
+- Verifier arrays are always padded to exactly 32 entries. Filler entries are random bytes of identical size to real verifiers; only the SE key can distinguish them.
+- `pinEnabledPerDepth` encodes gate state as `UInt8` (not `Bool`) so enabled and disabled entries produce equal-length ciphertexts — a size difference would reveal the disabled slot without decryption.
+- All metadata fields use constant-size encodings for the same reason.
+- The layer store file exists from first launch and is not excluded from the 24-hour rewrite cycle until Secure Mode is active, making the timestamp profile indistinguishable from any other install.
+
+---
+
 ## Account Takeover Resistance
 
 Most end-to-end encrypted tools bind identity to something that can be stolen remotely:
@@ -522,8 +662,15 @@ If you need to confirm a contact hasn't been replaced since your last exchange, 
 | Remote account takeover | ✅ No attack surface | No phone number, server account, or password |
 | Identity re-verification | ✅ Challenge-response | Signed ECDSA challenge; proves SE key continuity without re-exchange |
 | Backward compatibility | ✅ Classical fallback | v1 peers and iOS < 26 exchange classically, no breakage |
-| Backup passphrase KDF | ⚠️ SHA-256 (single round) | Should be PBKDF2/Argon2id |
 | Android interoperability | ❌ Not supported | iOS + Secure Enclave only |
+| PIN app lock | ✅ Implemented | SE-bound AES-GCM verifier; constant-time 500ms gate; incremental lockout; grace period |
+| Duress PIN / decoy view | ✅ Implemented | Coercer cannot distinguish duress from normal unlock; share index filtered |
+| Coercion-resistant toggle | ✅ Implemented | Gate lowers without removing verifiers; unknown PIN at depth > 0 silently creates new layer |
+| Key rotation on activation | ✅ Implemented | 11-step atomic sequence; staged key; WAL-checkpoint ordering; rollback on failure |
+| Layer store (sensitive contact recovery) | ✅ Implemented | 32-slot fixed-size AES-GCM file; exists from first launch; excluded from backup |
+| Multi-layer duress | ✅ Implemented | Up to 32 nested layers; cold-start routing aliases; cascade deactivation |
+| SQLite freed-page zeroing | ✅ `secure_delete = ON` | Set in DB header at launch; persists for all connections including SwiftData |
+| Store file protection | ✅ `completeFileProtection` | Stamped on store, WAL, and SHM on every `ModelContext` save; excluded from backup |
 
 ---
 
@@ -543,13 +690,13 @@ If you need to confirm a contact hasn't been replaced since your last exchange, 
 - Compromise of long-term keys exposing past messages (forward secrecy)
 - A quantum adversary recording public keys today for future decryption (hybrid PQ key agreement)
 - A quantum adversary targeting individual forward-secret messages (ML-KEM secrets mixed into every FS session key for PQ contacts)
+- Coerced device access — entering a duress PIN presents a convincing decoy view; the coercer cannot determine whether hidden data exists
 
 **Occulta does not protect against:**
 
 - An attacker physically present at a key exchange who can observe and intercept the MC channel before NI proximity is confirmed (mitigated but not eliminated by the peer ID guard and Diceware verification)
 - Compromise of the device itself (unlocked phone, jailbreak, MDM) — an attacker with full device access can decrypt the SwiftData store and extract ML-KEM shared secrets, breaking the PQ protection for that contact
 - Loss of your iPhone — contact keys are device-local with no automatic backup
-- Weak passphrases used with the contact export feature
 - Future message confidentiality after device compromise — forward secrecy protects past messages, not future ones
 - Contacts exchanged before the PQ upgrade remain classical-only until re-exchanged in person
 - A quantum attacker targeting classical-only contacts — prekeys and messages are protected by P-256 ECDH only
@@ -571,15 +718,21 @@ Occulta/
 │   │   ├── PQProvider.swift       # ML-KEM-1024 operations (iOS 26+, SE-backed)
 │   │   └── QuantumKeyMaterial.swift  # Codable struct for ML-KEM artifacts
 │   │
-│   └── Forward+Secrecy/
-│       ├── OccultaBundle.swift    # Wire format: version, SecrecyContext, SealedPayload
-│       ├── PrekeyManager.swift    # SE prekey lifecycle: generate, retrieve, consume, delete
-│       └── ForwardSecrecy.swift   # Per-contact FS state (encrypted at rest)
+│   ├── Forward+Secrecy/
+│   │   ├── OccultaBundle.swift    # Wire format: version, SecrecyContext, SealedPayload
+│   │   ├── PrekeyManager.swift    # SE prekey lifecycle: generate, retrieve, consume, delete
+│   │   └── ForwardSecrecy.swift   # Per-contact FS state (encrypted at rest)
+│   │
+│   └── SecureMode/
+│       ├── Manager+Security.swift       # PIN state machine, verifier ops, 11-step key rotation
+│       ├── PIN+Manager.swift            # AES-GCM verifier construction and checking (pure crypto)
+│       ├── SecureMode+LayerStore.swift  # 32-slot fixed-size layer store; push/pop/maintain
+│       └── AppLayerConfig+Model.swift   # SwiftData model; verifier arrays; forensic padding
 │
 ├── Models/
 │   ├── Contact+Model.swift        # SwiftData schema (Profile, Key, PhoneNumber, …)
 │   ├── Identity.swift             # Local device identity record
-│   └── Transfers.swift            # Basket, File, EncryptedFile
+│   └── Transfers.swift            # Basket, File, OwnedBasket
 │
 ├── Protocols/
 │   └── KeyManagerProtocol.swift   # Abstraction for testing (TestKeyManager)

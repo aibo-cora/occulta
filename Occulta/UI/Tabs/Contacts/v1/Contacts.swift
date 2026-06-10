@@ -42,8 +42,8 @@ struct Contacts: View {
     
     @State private var creatingNewContact = false
     
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-    
+    @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
+
     private let addTip = AddMenuTip()
 
     var body: some View {
@@ -158,8 +158,7 @@ struct Contacts: View {
 extension Contact.Profile {
     struct Card: View {
         @Binding var searchText: String
-        /// Stored contacts.
-        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+        @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
         /// Results from our existing contacts list
         var filteredContacts: [Contact.Profile] {
@@ -201,8 +200,7 @@ extension Contact.Profile {
 }
 
 struct BusinessCardContactsView: View {
-    /// Stored contacts.
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
     /// Results from our existing contacts list
     var filteredContacts: [Contact.Profile] {
@@ -261,8 +259,7 @@ struct BusinessCardContactsView: View {
 // MARK: - The actual beautiful business card
 
 struct BusinessCard: View {
-    /// Stored contacts.
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
     
     @Environment(ContactManager.self) private var contactManager: ContactManager
     

@@ -18,16 +18,18 @@ struct VaultShardSetup: View {
 
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(Manager.Security.self) private var security
     @Environment(\.dismiss) private var dismiss
 
-    @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Query private var globalConfigRows: [GlobalShardConfig]
+    @Query private var vaultEntries: [VaultEntry]
+    @Query private var bekRows:      [BackupEncryptionKey]
 
     @State private var selectedIDs: Set<String> = []
     @State private var threshold = 2
     @State private var marking = false
     @State private var error: String?
-    @State private var distributionMeta: ShardDistributionMetadata? = nil
     @State private var snapshotIDs: Set<String> = []
     @State private var snapshotThreshold: Int = 2
     @State private var confirmationMessage: String? = nil
@@ -47,7 +49,9 @@ struct VaultShardSetup: View {
     }
 
     private var mlkemContacts: [Contact.Profile] {
-        allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
+        allContacts
+            .filter { self.security.isDisplayable($0) }
+            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     private var selected: [Contact.Profile] {
@@ -294,7 +298,7 @@ struct VaultShardSetup: View {
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
         let sel    = selectedIDs.contains(contact.identifier)
         let record = shardRecord(for: contact.identifier)
-        // A contact is selectable if they have no shard record yet, or their shard
+        // A contact is selectable if he has no shard record yet, or their shard
         // is in an active (non-revoked/non-lost) state.
         let isSelectable = record.map { Self.activeStatuses.contains($0.status) } ?? true
 
@@ -552,11 +556,17 @@ struct VaultShardSetup: View {
 
     // MARK: - Mode helpers
 
-    /// Load the current shard distribution metadata for whichever mode we're in.
-    private func loadDistributionMetadata() -> ShardDistributionMetadata? {
+    /// Reactive computed property: accesses @Query arrays so SwiftUI re-renders
+    /// whenever VaultEntry or BackupEncryptionKey changes in the persistent store
+    /// (e.g., when processInboundManifest confirms a shard).
+    private var distributionMeta: ShardDistributionMetadata? {
         switch mode {
-        case .entry(let id): return try? vault.shardDistributionMetadata(for: id)
-        case .backup:        return try? vault.bekShardMetadata()
+        case .entry(let id):
+            _ = self.vaultEntries
+            return try? self.vault.shardDistributionMetadata(for: id)
+        case .backup:
+            _ = self.bekRows
+            return try? self.vault.bekShardMetadata()
         }
     }
 
@@ -578,9 +588,7 @@ struct VaultShardSetup: View {
     ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
         if case .backup = self.mode { try? self.vault.setupBEK() }
-        
-        self.distributionMeta = self.loadDistributionMetadata()
-        
+
         if let meta = self.distributionMeta {
             let activeIDs = Set(meta.shards
                 .filter { Self.activeStatuses.contains($0.status) }
@@ -605,7 +613,7 @@ struct VaultShardSetup: View {
             // Contacts staying in the distribution get a .replace op; new ones get .distribute.
             var oldAttrIDs: [String: UUID] = [:]
             
-            if let existingMeta = self.loadDistributionMetadata() {
+            if let existingMeta = self.distributionMeta {
                 let newIDs  = Set(selected.map(\.identifier))
                 let removed = existingMeta.shards.filter {
                     !newIDs.contains($0.contactIdentifier)
@@ -623,15 +631,12 @@ struct VaultShardSetup: View {
 
             let attributes = try self.performPrepareShards()
             for (contact, attribute) in zip(self.selected, attributes) {
-                try? shardCustodyManager?.queueDistribute(
+                try shardCustodyManager?.queueDistribute(
                     attribute: attribute,
                     for:       contact.identifier,
                     replacing: oldAttrIDs[contact.identifier]
                 )
             }
-            // Reload metadata and update snapshot so isDirty becomes false.
-            self.distributionMeta = self.loadDistributionMetadata()
-            
             let activeIDs = Set(
                 self.distributionMeta?.shards
                     .filter { Self.activeStatuses.contains($0.status) }
@@ -653,8 +658,6 @@ struct VaultShardSetup: View {
     private func revokeShard(_ record: ShardRecord) {
         do {
             try self.vault.updateShardStatus(attributeID: record.attributeID, to: .revoked)
-            // Reload metadata so the status chip updates immediately.
-            self.distributionMeta = self.loadDistributionMetadata()
             // Remove from selection so the UI reflects the change.
             self.selectedIDs.remove(record.contactIdentifier)
             self.snapshotIDs.remove(record.contactIdentifier)

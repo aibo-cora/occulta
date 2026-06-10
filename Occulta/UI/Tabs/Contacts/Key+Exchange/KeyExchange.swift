@@ -13,7 +13,7 @@ struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = true
     
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
     
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     @Environment(\.dismiss) private var dismiss
@@ -167,7 +167,7 @@ struct KeyExchange: View {
     private struct DuplicateKey: View {
         let owner: String
         
-        @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
+        @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
         
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         

@@ -76,6 +76,31 @@ protocol KeyManagerProtocol {
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveRecoveryBufferKey() throws -> SymmetricKey?
+
+    /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
+    ///
+    /// No LAContext needed — device-unlock level, no biometric.
+    /// Used by PINManager to wrap/unwrap PIN sentinels in AppLayerConfig.
+    ///
+    /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
+    func deriveSecureModeKey() throws -> SymmetricKey?
+
+    // MARK: - Staged DB key rotation
+
+    /// Create a staged local DB key. Returns the hybrid key derived from staged components.
+    /// Call `rollbackStagedLocalDBKey()` on any failure before `commitStagedLocalDBKey()`.
+    func createStagedLocalDBKey() throws -> SymmetricKey
+
+    /// Promote the staged key to canonical. ⚠️ Point of no return.
+    /// After this call the old canonical SE key is superseded. Call
+    /// `deleteSupersededLocalDBArtefacts()` once AppLayerConfig is written.
+    func commitStagedLocalDBKey() throws
+
+    /// Delete leftover artefacts after `commitStagedLocalDBKey()`. No-op if absent.
+    func deleteSupersededLocalDBArtefacts()
+
+    /// Delete staged artefacts without touching the canonical key. No-op if absent.
+    func rollbackStagedLocalDBKey()
 }
 
 // MARK: - TestKeyManager
@@ -88,8 +113,8 @@ final class TestKeyManager: KeyManagerProtocol {
     private let identityPublicKeyData: Data
 
     /// Separate key pair simulating the dedicated local DB SE key.
-    private let localDBPrivateKey: SecKey
-    private let localDBPublicKeyData: Data
+    private var localDBPrivateKey: SecKey
+    private var localDBPublicKeyData: Data
 
     /// Separate key pair simulating the dedicated vault SE key.
     private let vaultPrivateKey: SecKey
@@ -99,8 +124,17 @@ final class TestKeyManager: KeyManagerProtocol {
     private let shardCustodyPrivateKey: SecKey
     private let shardCustodyPublicKeyData: Data
 
+    /// Separate key pair simulating the dedicated Secure Mode PIN SE key.
+    private let secureModePrivateKey: SecKey
+    private let secureModePublicKeyData: Data
+
     /// Simulates the random Keychain component for the local DB hybrid key (32 bytes).
-    private let randomComponent: Data
+    private var randomComponent: Data
+
+    // Staged key state — nil when no rotation is in progress.
+    private var stagedLocalDBPrivateKey: SecKey?
+    private var stagedLocalDBPublicKeyData: Data?
+    private var stagedRandomComponent: Data?
 
     /// Set to true to make deriveVaultKey(context:) throw — tests lock-on-failure behaviour.
     var simulateVaultKeyFailure = false
@@ -152,6 +186,12 @@ final class TestKeyManager: KeyManagerProtocol {
         let shardCustodyPub  = SecKeyCopyPublicKey(shardCustodyPriv)!
         self.shardCustodyPrivateKey    = shardCustodyPriv
         self.shardCustodyPublicKeyData = SecKeyCopyExternalRepresentation(shardCustodyPub, nil)! as Data
+
+        // Separate Secure Mode PIN key pair (simulates dedicated secureModePin SE key)
+        let secureModePriv = SecKeyCreateRandomKey(attrs, &err)!
+        let secureModePub  = SecKeyCopyPublicKey(secureModePriv)!
+        self.secureModePrivateKey    = secureModePriv
+        self.secureModePublicKeyData = SecKeyCopyExternalRepresentation(secureModePub, nil)! as Data
 
         // Random component (simulates Keychain-stored random bytes)
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -271,6 +311,96 @@ final class TestKeyManager: KeyManagerProtocol {
     /// info, distinct symmetric key.
     func deriveRecoveryBufferKey() throws -> SymmetricKey? {
         try self.deriveCustodySEKey(info: SaltInfo.kRecoveryBufferKeyInfo)
+    }
+
+    func deriveSecureModeKey() throws -> SymmetricKey? {
+        guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
+        var err: Unmanaged<CFError>?
+        guard
+            let rawSecret = SecKeyCopyKeyExchangeResult(
+                secureModePrivateKey, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+                [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+                &err
+            ) as? Data
+        else { return nil }
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: rawSecret),
+            salt: secureModePublicKeyData,
+            info: SaltInfo.kSecureModeKeyInfo,
+            outputByteCount: 32
+        )
+    }
+
+    // MARK: - Staged DB key rotation (TestKeyManager)
+
+    func createStagedLocalDBKey() throws -> SymmetricKey {
+        let attrs: NSDictionary = [
+            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits: 256,
+            kSecPrivateKeyAttrs: [kSecAttrIsPermanent: false]
+        ]
+        var err: Unmanaged<CFError>?
+        let priv = SecKeyCreateRandomKey(attrs, &err)!
+        let pub  = SecKeyCopyPublicKey(priv)!
+        self.stagedLocalDBPrivateKey    = priv
+        self.stagedLocalDBPublicKeyData = SecKeyCopyExternalRepresentation(pub, nil)! as Data
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 32, &bytes)
+        self.stagedRandomComponent = Data(bytes)
+
+        return try self.deriveStagedHybridKey()
+    }
+
+    func commitStagedLocalDBKey() throws {
+        guard let priv   = self.stagedLocalDBPrivateKey,
+              let pubData = self.stagedLocalDBPublicKeyData,
+              let random  = self.stagedRandomComponent
+        else { throw Manager.Key.StagedKeyError.stagedKeyNotFound }
+
+        self.localDBPrivateKey    = priv
+        self.localDBPublicKeyData = pubData
+        self.randomComponent      = random
+
+        self.stagedLocalDBPrivateKey    = nil
+        self.stagedLocalDBPublicKeyData = nil
+        self.stagedRandomComponent      = nil
+    }
+
+    func deleteSupersededLocalDBArtefacts() {
+        // No-op in tests — in-memory keys have no persistent artefacts to remove.
+    }
+
+    func rollbackStagedLocalDBKey() {
+        self.stagedLocalDBPrivateKey    = nil
+        self.stagedLocalDBPublicKeyData = nil
+        self.stagedRandomComponent      = nil
+    }
+
+    /// Derive the hybrid key from the current staged components. Used by `createStagedLocalDBKey`.
+    private func deriveStagedHybridKey() throws -> SymmetricKey {
+        guard let priv   = self.stagedLocalDBPrivateKey,
+              let pubData = self.stagedLocalDBPublicKeyData,
+              let random  = self.stagedRandomComponent,
+              let fixedPubKey = self.makePublicKey(from: fixedX963)
+        else { throw Manager.Key.StagedKeyError.derivationFailed }
+
+        var err: Unmanaged<CFError>?
+        guard let rawSecret = SecKeyCopyKeyExchangeResult(
+            priv, .ecdhKeyExchangeCofactorX963SHA256, fixedPubKey,
+            [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
+            &err
+        ) as? Data else { throw Manager.Key.StagedKeyError.derivationFailed }
+
+        var ikm = rawSecret
+        ikm.append(random)
+
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: pubData,
+            info: SaltInfo.kLocalDBHybridKeyInfo,
+            outputByteCount: 32
+        )
     }
 
     private func deriveCustodySEKey(info: Data) throws -> SymmetricKey? {

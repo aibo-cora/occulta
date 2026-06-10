@@ -45,7 +45,7 @@ final class VaultManager {
 
     /// `true` when a pre-evaluated `LAContext` is held in memory (vault unlocked).
     /// Becomes `false` as soon as `lock()` clears `authContext`.
-    var isUnlocked: Bool { authContext != nil }
+    var isUnlocked: Bool { self.authContext != nil }
 
     // MARK: - Recovery health
 
@@ -202,11 +202,15 @@ final class VaultManager {
     ///
     /// - Returns: The persisted VaultEntry (all fields are ciphertext).
     @discardableResult
-    func addEntry(label: String, content: Data, type: VaultEntryType) throws -> VaultEntry {
+    func addEntry(label: String, content: Data, type: VaultEntryType, currentDepth: Int = 0) throws -> VaultEntry {
         let vaultKey = try self.currentKey()
 
         // Build entry first — id and createdAt must be fixed before AAD is computed.
         let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+
+        // Stamp depth ceiling — always encrypted, never nil.
+        // Depth 0 entries get encrypt(0): real-layer items hidden from all duress views.
+        entry.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)
@@ -256,6 +260,30 @@ final class VaultManager {
     func fetchAllEntries() throws -> [VaultEntry] {
         let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
         return try self.modelContext.fetch(descriptor)
+    }
+
+    func deleteAllEntries() throws {
+        let entries = try fetchAllEntries()
+        for entry in entries { modelContext.delete(entry) }
+        try modelContext.save()
+    }
+
+    func deleteAllData() throws {
+        try deleteAll(BackupEncryptionKey.self)
+        try deleteAll(CustodyShard.self)
+        try deleteAll(PendingShardDistribute.self)
+        try deleteAll(PendingShardStatusUpdate.self)
+        try deleteAll(ReconstructShard.self)
+        try deleteAll(GlobalShardConfig.self)
+        try deleteAll(PotentiallyLostShard.self)
+        try deleteAll(AppLayerConfig.self)
+        try deleteAllEntries()
+    }
+
+    private func deleteAll<T: PersistentModel>(_ type: T.Type) throws {
+        let items = try modelContext.fetch(FetchDescriptor<T>())
+        for item in items { modelContext.delete(item) }
+        try modelContext.save()
     }
 
     /// Find a single vault entry by its UUID.

@@ -14,13 +14,18 @@ struct ContactsV2: View {
     @AppStorage("showFingerprints")  private var showFingerprints  = true
     @AppStorage("showTrustSummary")  private var showTrustSummary  = true
 
-    @Environment(\.modelContext)       private var modelContext
-    @Environment(ContactManager.self)  private var contactManager
+    @Environment(\.modelContext)          private var modelContext
+    @Environment(ContactManager.self)     private var contactManager
+    @Environment(Manager.Security.self)   private var security
 
-    @Query(sort: \Contact.Profile.familyName) private var contacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
+
+    private var visibleContacts: [Contact.Profile] {
+        self.contacts.filter { self.security.isDisplayable($0) }
+    }
 
     private var sortedContacts: [Contact.Profile] {
-        let source = self.searchText.isEmpty ? self.contacts : self.contacts.filter {
+        let source = self.searchText.isEmpty ? self.visibleContacts : self.visibleContacts.filter {
             $0.givenName.decrypt().localizedStandardContains(self.searchText)
             || $0.familyName.decrypt().localizedStandardContains(self.searchText)
             || $0.organizationName.decrypt().localizedStandardContains(self.searchText)
@@ -80,7 +85,7 @@ struct ContactsV2: View {
 
                     if self.searchText.isEmpty {
                         Section {
-                            Text("\(self.contacts.count) contacts · encrypted at rest")
+                            Text("\(self.visibleContacts.count) contacts · encrypted at rest")
                                 .font(.system(size: 10, weight: .regular, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .center)
@@ -136,7 +141,7 @@ struct ContactsV2: View {
             request.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
             var batch = [CNContact]()
             try CNContactStore().enumerateContacts(with: request) { contact, _ in batch.append(contact) }
-            try self.contactManager.createContacts(from: batch)
+            try self.contactManager.createContacts(from: batch, currentDepth: self.security.currentDepth)
         } catch {
             debugPrint("fetchContacts error: \(error.localizedDescription)")
         }
