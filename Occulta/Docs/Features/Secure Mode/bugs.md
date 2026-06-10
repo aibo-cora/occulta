@@ -2243,3 +2243,105 @@ contactManager.syncShareIndex()
 
 `currentDepth` is correctly restored from `persistedDepth` at this point (Bug 50), so `safeContactIDs` produces the correct depth-filtered set before any contact mutation can trigger a sync.
 
+---
+
+## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
+
+**Status:** Open
+
+### Severity: High
+
+An adversary with brief physical access to an unlocked trusted Mac can:
+
+1. Back up the device via iTunes/Finder before any PIN attempts.
+2. Begin brute-forcing the PIN until lockout fires.
+3. Restore from the pre-attempt backup.
+4. Repeat — the lockout counter is gone on every restore.
+
+The 10⁶ keyspace of a 6-digit PIN is the only protection once this loop is available. At one attempt per restore cycle an adversary with sustained access over hours can exhaust a significant fraction of the space.
+
+### Root Cause
+
+`lockoutCountEncrypted` and `lockoutExpiryEncrypted` live in `AppLayerConfig`, which is stored in the SwiftData database. The database is included in iTunes/Finder backups. A restore replaces the entire database file, reverting the lockout fields to whatever state existed at backup time.
+
+The SwiftData store is excluded from iCloud backup (`isExcludedFromBackup = true`) but **not** from local (wired) iTunes/Finder backups. `URLResourceValues.isExcludedFromBackup` excludes a file from both iCloud and local backups. The fix applied in commit `a320e3b` set this flag on the store and its WAL/SHM sidecars. If that flag is being applied correctly, this vector is already closed; if not (e.g. the flag is lost after iOS re-creates a sidecar), it remains open.
+
+A second, independent path: key rotation in `activateSecureMode` and `deactivateSecureMode` re-encrypts contact and vault fields under the staged key but does not re-encrypt `lockoutCountEncrypted` or `lockoutExpiryEncrypted`. After rotation those fields are encrypted under the superseded canonical key and decode as `return 0` / `return nil` (see `AppLayerConfig+Model.swift` fallback). An in-progress lockout is silently reset by any activation or deactivation cycle. This angle is independent of backup and is documented in the repo audit as SEC-2.
+
+### Resolution (pending)
+
+Two independent fixes required:
+
+**1. Verify `isExcludedFromBackup` covers local backups.** Confirm that `excludeStoreFromBackup(url:)` (added in `a320e3b`) prevents the database from appearing in a wired iTunes/Finder backup, not just iCloud. If local backup exclusion requires a different entitlement or API call, apply it.
+
+**2. Carry lockout fields through key rotation.** In the re-encryption loops of `activateSecureMode` and `deactivateSecureMode`, re-encrypt `lockoutCountEncrypted` and `lockoutExpiryEncrypted` under the staged key alongside the other `AppLayerConfig` fields. A test asserting that a lockout in progress at activation time is still active and unexpired after deactivation should be added.
+
+---
+
+## Bug 71 — Layer store file modification timestamp correlates with activation events
+
+**Status:** Open
+
+### Severity: Low (forensic)
+
+The layer store file (`<uuid>.occbak`) is rewritten on every `push()` and `pop()` call — activation, deactivation, and `maintain()`. Its filesystem modification timestamp therefore correlates with significant security state transitions. A forensic examiner who captures a filesystem image at two points in time can infer:
+
+- Whether Secure Mode was activated or deactivated between the captures (timestamp changed unexpectedly relative to the 24-hour maintenance cadence).
+- Approximately when the event occurred.
+
+`maintain()` rewrites the file every 24 hours to provide cover: routine timestamps mask activation events that land within the same window. However, if the examiner's first capture predates an activation that occurred less than 24 hours before the second capture, the out-of-cadence timestamp is distinguishable from a normal maintenance write.
+
+### Root Cause
+
+AES-GCM re-sealing all 32 slots on every write is intentional (freshens nonces, prevents slot-position inference). A write cannot be avoided. The only variable is how distinguishable the write's timestamp is from background activity.
+
+### Resolution (pending)
+
+Two complementary mitigations:
+
+**1. Opportunistic maintenance writes.** In addition to the 24-hour cadence, trigger a no-op `maintain()` write at unpredictable intervals during normal app use (e.g., on contact save, on app foreground after a random back-off). This increases background write density, making any single write less distinguishable.
+
+**2. Jitter the 24-hour cadence.** Replace the fixed `86_400 s` threshold in `LayerStore.maxAge` with a randomised window (e.g., 18–30 hours) so the maintenance cadence itself is not fingerprintable.
+
+Both mitigations reduce the signal strength; neither eliminates it. The residual risk — a write occurred, time unknown within the jitter window — is acceptable given that the file content is cryptographically opaque.
+
+---
+
+## Bug 72 — `randomSlot(excluding:)` has negligible modular bias
+
+**Status:** Open
+
+### Severity: Negligible (informational)
+
+`randomSlot(excluding:)` in `SecureMode+LayerStore.swift` selects a slot index using:
+
+```swift
+let value = Int(raw[0]) | (Int(raw[1]) << 8) | (Int(raw[2]) << 16) | (Int(raw[3]) << 24)
+return pool[abs(value) % pool.count]
+```
+
+`value` is a 32-bit value drawn uniformly from `[0, 2^32)`. `abs(value) % pool.count` introduces modular bias when `pool.count` does not evenly divide `2^32`. For a pool of 30 slots (32 minus 2 excluded), the bias per slot is `(2^32 mod 30) / 2^32 = 16 / 4_294_967_296 ≈ 3.7 × 10⁻⁹`. This is cryptographically negligible.
+
+### Root Cause
+
+Modular reduction of a uniform random integer when the modulus does not divide the sample space.
+
+### Resolution (optional)
+
+Replace with a rejection-sampling loop to eliminate bias entirely:
+
+```swift
+func randomSlot(excluding excluded: Set<Int> = []) -> Int {
+    var pool = Array(Set(0..<Self.slotCount).subtracting(excluded))
+    pool.sort()
+    var raw = [UInt8](repeating: 0, count: 4)
+    repeat {
+        _ = SecRandomCopyBytes(kSecRandomDefault, 4, &raw)
+    } while UInt32(raw[0]) | (UInt32(raw[1]) << 8) | (UInt32(raw[2]) << 16) | (UInt32(raw[3]) << 24)
+           >= UInt32.max - (UInt32.max % UInt32(pool.count))
+    let value = Int(UInt32(raw[0]) | (UInt32(raw[1]) << 8) | (UInt32(raw[2]) << 16) | (UInt32(raw[3]) << 24))
+    return pool[value % pool.count]
+}
+```
+
+Given the negligible magnitude, this is low priority and can be deferred.
