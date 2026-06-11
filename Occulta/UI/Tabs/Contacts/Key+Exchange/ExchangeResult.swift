@@ -23,32 +23,67 @@ struct ExchangeResult: View {
     }
 
     var body: some View {
-        VStack {
-            VStack(spacing: 20) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                    .font(.title)
-                Text("Congrats, you successfully exchanged keys with your contact.")
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal)
-
-            Divider()
-
-            VStack(spacing: 20) {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow)
-                    Text("Please confirm bad guys did not swap your keys with their own. Verify with your contact that the words you are seeing match and are in the correct order.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                self.keyMaterialSection
+                
+                Divider()
+                
                 VerifyExchangeWords(identifier: self.identifier, key: self.receivedKey, exchangeResult: self.exchangeResult)
             }
+            .padding()
         }
         .presentationDetents([.large])
+    }
+
+    // MARK: - Key material
+
+    private var keyMaterialSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            self.keyRow(
+                label: "IDENTITY KEY · P-256",
+                hex: self.identityHex,
+                color: Color(red: 58/255, green: 92/255, blue: 191/255)
+            )
+
+            if let result = self.exchangeResult {
+                self.keyRow(
+                    label: "ML-KEM-1024 · POST-QUANTUM",
+                    hex: self.mlkemHex(result),
+                    color: Color(red: 90/255, green: 74/255, blue: 176/255)
+                )
+            }
+        }
+    }
+
+    private func keyRow(label: String, hex: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 9, design: .monospaced).weight(.semibold))
+                .foregroundStyle(color)
+                .kerning(0.5)
+            Text(hex)
+                .font(.system(size: 13, design: .monospaced).weight(.medium))
+                .foregroundStyle(.primary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.07))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(color.opacity(0.25), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var identityHex: String {
+        guard let material = self.receivedKey.material else { return "—" }
+        let fp = material.sha256
+        return fp.prefix(12).map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    private func mlkemHex(_ result: ExchangeManager.HybridExchangeResult) -> String {
+        result.peerCiphertext.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
     }
 }
 
@@ -62,61 +97,60 @@ struct VerifyExchangeWords: View {
 
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     @Environment(ExchangeManager.self) private var exchangeManager: ExchangeManager?
-    
+
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack {
-            let dicewareKey = self.deriveDicewareKey()
-            let separator = "-"
-            let passphrase = self.passphraseGenerator.generate(separator: separator, sharedKey: dicewareKey)
-            let components = passphrase.components(separatedBy: separator)
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Confirm these words match your contact's screen — in the same order.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
-            VStack(spacing: 20) {
-                ForEach(components, id: \.self) { word in
-                    Text(word)
-                        .transition(.move(edge: .bottom))
-                        .font(.custom("Courier", size: 20))
-                        .bold()
+            let dicewareKey = self.deriveDicewareKey()
+            let words = (self.passphraseGenerator.generate(separator: "-", sharedKey: dicewareKey))
+                .components(separatedBy: "-")
+
+            VStack(spacing: 12) {
+                ForEach(Array(words.enumerated()), id: \.offset) { idx, word in
+                    HStack {
+                        Text("\(idx + 1)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, alignment: .trailing)
+                        Text(word)
+                            .font(.system(size: 20, design: .monospaced).weight(.semibold))
+                    }
                 }
             }
-
-            Text("By confirming these words, you are agreeing to use this contact's key to encrypt data between you two.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding()
 
             if self.exchangeResult != nil {
                 Label("Quantum-resistant exchange", systemImage: "shield.checkered")
                     .font(.caption2)
-                    .foregroundStyle(.green)
-                    .padding(.bottom)
-            } else {
-                Label("Classical exchange", systemImage: "lock.shield")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom)
+                    .foregroundStyle(Color.occultaVerified)
             }
 
             Button("Confirm") {
                 do {
                     try self.contactManager?.update(key: self.key, for: self.identifier)
-                } catch {
-                    
-                }
-                
+                } catch { }
+                self.exchangeManager?.confirm()
                 self.dismiss()
             }
             .buttonStyle(.borderedProminent)
+            .tint(.occultaAccent)
+            .frame(maxWidth: .infinity)
         }
     }
 
     private func deriveDicewareKey() -> Data? {
         if let result = self.exchangeResult {
             let material = QuantumKeyMaterial(from: result)
-            
-            return self.keyManager.createDicewareKey(peerP256Material: result.peerP256PublicKey, quantumMaterial: material, ourNonce: result.ourNonce, peerNonce: result.peerNonce)?.withUnsafeBytes { Data($0) }
+            return self.keyManager.createDicewareKey(
+                peerP256Material: result.peerP256PublicKey,
+                quantumMaterial: material,
+                ourNonce: result.ourNonce,
+                peerNonce: result.peerNonce
+            )?.withUnsafeBytes { Data($0) }
         } else {
             return self.keyManager.createSharedSecret(using: self.key.material)?.withUnsafeBytes { Data($0) }
         }
@@ -124,5 +158,9 @@ struct VerifyExchangeWords: View {
 }
 
 #Preview {
-    VerifyExchangeWords(identifier: UUID().uuidString, key: Contact.Draft.Key(material: nil, owner: Data.randomBytes(32), date: "")!, exchangeResult: nil)
+    VerifyExchangeWords(
+        identifier: UUID().uuidString,
+        key: Contact.Draft.Key(material: nil, owner: Data.randomBytes(32), date: "")!,
+        exchangeResult: nil
+    )
 }
