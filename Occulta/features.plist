@@ -4,12 +4,10 @@
 <dict>
 	<key>enableShamirShardSharing</key>
 	<false/>
+	<key>secureMode</key>
+	<true/>
 	<key>signature</key>
 	<false/>
-	<key>usePassphraseToExportContacts</key>
-	<false/>
-	<key>allowSynchingBetweenDevices</key>
-	<true/>
 	<key>useComposableMessage</key>
 	<true/>
 	<key>useMultipleRecipientMessageFormat</key>

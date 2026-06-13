@@ -16,8 +16,8 @@ struct ComposableMessage: View {
     let identifier: String
     let filename = "message.occ"
     
-    @Query(sort: \Contact.Profile.familyName) var contacts: [Contact.Profile]
-    
+    @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
+
     init(identifier: String) {
         self.identifier = identifier
         
@@ -211,42 +211,50 @@ struct ComposableMessage: View {
         struct MessageBubble: View {
             let file: Occulta.File
             let mode: Conversation.Modes
-            
+
+            @State private var showingFullScreen = false
+            @Environment(\.colorScheme) private var colorScheme
+
             var body: some View {
                 HStack(alignment: .center) {
                     Spacer()
-                    
                     VStack(alignment: .trailing, spacing: 6) {
                         self.contentPreview
-                        
                         if let date = self.file.date {
                             Text(date, format: .dateTime.hour().minute())
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    
-                    switch self.mode {
-                    case .read(_):
-                        if let url = self.file.url {
-                            switch self.file.format {
-                            case .file(_):
-                                ShareLink(item: url) {
-                                    Image(systemName: "square.and.arrow.up")
-                                }
-                            default:
-                                EmptyView()
-                            }
-                        }
-                    case .write:
-                        EmptyView()
-                    }
                 }
                 .padding(.horizontal, 16)
+                .fullScreenCover(isPresented: self.$showingFullScreen) {
+                    self.fullScreenContent
+                }
             }
-            
-            @Environment(\.colorScheme) private var colorScheme
-            
+
+            private var fileSize: String? {
+                guard let url = self.file.url,
+                      let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+                      size > 0
+                else { return nil }
+                return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+            }
+
+            @ViewBuilder
+            private var fullScreenContent: some View {
+                switch self.file.format {
+                case .file(let metadata):
+                    if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
+                        FullScreenImageViewer(url: self.file.url)
+                    } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
+                        FullScreenVideoViewer(url: url)
+                    }
+                default:
+                    EmptyView()
+                }
+            }
+
             @ViewBuilder
             private var contentPreview: some View {
                 switch self.file.format {
@@ -257,59 +265,123 @@ struct ComposableMessage: View {
                             .background(Color.green.opacity(0.2))
                             .foregroundStyle(self.colorScheme == .dark ? .white : .black)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .contextMenu {
+                                Button {
+                                    UIPasteboard.general.setItems([[UIPasteboard.typeAutomatic: text]], options: [.expirationDate: Date().addingTimeInterval(120)])
+                                    UIPasteboard.general.string = text
+                                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                            }
                     }
                 case .file(let metadata):
                     let name = metadata.name ?? "file"
-                    /// Display image.
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
-                        VStack(spacing: 8) {
-                            AsyncImage(url: self.file.url) { image in
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            } placeholder: {
-                                ProgressView()
+                        VStack(spacing: 6) {
+                            AsyncImage(url: self.file.url) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                case .failure(let error):
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "exclamationmark.triangle")
+                                            .foregroundStyle(.secondary)
+                                        Text(error.localizedDescription)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.center)
+                                    }
+                                case .empty:
+                                    ProgressView()
+                                @unknown default:
+                                    ProgressView()
+                                }
                             }
                             .frame(maxWidth: 260, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            
-                            Text(name)
-                                .font(.caption)
-                                .foregroundStyle(.white)
-                        }
-                        .onAppear {
-                            let resources = try? self.file.url?.resourceValues(forKeys: [.fileSizeKey])
-                            let size = UInt64(resources?.fileSize ?? 0)
-                            
-                            debugPrint("Showing async image..., url=\(String(describing: self.file.url)), size=\(size), file=\(self.file)")
+                            .onTapGesture { self.showingFullScreen = true }
+                            .contextMenu {
+                                if case .read = self.mode, let url = self.file.url {
+                                    ShareLink(item: url) {
+                                        Label("Share", systemImage: "square.and.arrow.up")
+                                    }
+                                }
+                            }
+
+                            HStack(spacing: 4) {
+                                Text(name)
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                if let size = self.fileSize {
+                                    Text("·")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.5))
+                                    Text(size)
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.5))
+                                }
+                            }
                         }
                     } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
-                        /// Display video
-                        let player = AVPlayer(url: url)
-                        
-                        VStack(spacing: 8) {
-                            VideoPlayer(player: player)
-                                .frame(width: 260, height: 200)
-                                .clipShape(RoundedRectangle(cornerRadius: 18))
-                                .onDisappear {
-                                    player.pause()
+                        VStack(spacing: 6) {
+                            ZStack {
+                                Color.black
+                                Image(systemName: "play.circle.fill")
+                                    .font(.system(size: 44))
+                                    .foregroundStyle(.white)
+                            }
+                            .frame(width: 260, height: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .onTapGesture { self.showingFullScreen = true }
+                            .contextMenu {
+                                if case .read = self.mode {
+                                    ShareLink(item: url) {
+                                        Label("Share", systemImage: "square.and.arrow.up")
+                                    }
                                 }
-                            Text(name)
-                                .font(.caption)
-                                .foregroundStyle(.white)
+                            }
+
+                            HStack(spacing: 4) {
+                                Text(name)
+                                    .font(.caption)
+                                    .foregroundStyle(.white)
+                                if let size = self.fileSize {
+                                    Text("·")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.5))
+                                    Text(size)
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.5))
+                                }
+                            }
                         }
                     } else {
-                        /// The content is neither image or video, must be a document
                         HStack {
                             Image(systemName: "doc.fill")
                                 .font(.title2)
-                            Text(name)
-                                .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(name).lineLimit(1)
+                                if let size = self.fileSize {
+                                    Text(size)
+                                        .font(.caption2)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                            }
                         }
                         .padding(14)
                         .background(Color.blue)
                         .foregroundStyle(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .contextMenu {
+                            if case .read = self.mode, let url = self.file.url {
+                                ShareLink(item: url) {
+                                    Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                        }
                     }
                 default:
                     Text("Unsupported content")
@@ -458,13 +530,26 @@ struct ComposableMessage: View {
                     expected = nil
                 }
 
-                let encryptedData = try self.contactManager?.encryptBundle(
-                    data:            encoded,
-                    for:             identifier,
-                    shardOperations: shardOps.isEmpty ? nil : shardOps,
-                    custodyManifest: manifest_,
-                    expectedShards:  expected
-                )
+                let encryptedData: Data?
+                do {
+                    encryptedData = try self.contactManager?.encryptBundle(
+                        data:            encoded,
+                        for:             identifier,
+                        shardOperations: shardOps.isEmpty ? nil : shardOps,
+                        custodyManifest: manifest_,
+                        expectedShards:  expected
+                    )
+                } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
+                    // Quantum material corrupted or missing — fall back to classical,
+                    // strip shard ops (they stay pending and will retry after re-exchange).
+                    encryptedData = try self.contactManager?.encryptBundle(
+                        data: encoded,
+                        for:  identifier
+                    )
+                } catch {
+                    debugPrint("Error: \(error)")
+                    encryptedData = nil
+                }
                 
                 guard
                     let encrypted = encryptedData, encrypted.isEmpty == false
@@ -495,6 +580,107 @@ struct ComposableMessage: View {
         self.showError = true
     }
 }
+
+// MARK: - Full-screen viewers
+
+private struct FullScreenImageViewer: View {
+    let url: URL?
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var scale: CGFloat = 1.0
+    @State private var offset: CGSize = .zero
+    @GestureState private var gestureScale: CGFloat = 1.0
+    @GestureState private var gestureOffset: CGSize = .zero
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            AsyncImage(url: self.url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .scaleEffect(max(1, self.scale * self.gestureScale))
+                        .offset(
+                            x: self.offset.width + self.gestureOffset.width,
+                            y: self.offset.height + self.gestureOffset.height
+                        )
+                        .gesture(
+                            MagnificationGesture()
+                                .updating(self.$gestureScale) { value, state, _ in state = value }
+                                .onEnded { value in
+                                    let newScale = max(1, self.scale * value)
+                                    self.scale = newScale
+                                    if newScale == 1 { self.offset = .zero }
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture()
+                                .updating(self.$gestureOffset) { value, state, _ in
+                                    guard self.scale > 1 else { return }
+                                    state = value.translation
+                                }
+                                .onEnded { value in
+                                    guard self.scale > 1 else { return }
+                                    self.offset.width  += value.translation.width
+                                    self.offset.height += value.translation.height
+                                }
+                        )
+                        .onTapGesture(count: 2) {
+                            withAnimation(.spring()) {
+                                self.scale  = 1
+                                self.offset = .zero
+                            }
+                        }
+                default:
+                    ProgressView().tint(.white)
+                }
+            }
+
+            Button { self.dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .background(Circle().fill(.black.opacity(0.5)))
+            }
+            .padding()
+        }
+    }
+}
+
+private struct FullScreenVideoViewer: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer
+
+    init(url: URL) {
+        self.url = url
+        self._player = State(initialValue: AVPlayer(url: url))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            VideoPlayer(player: self.player)
+                .ignoresSafeArea()
+            Button { self.dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(10)
+                    .background(Circle().fill(.black.opacity(0.5)))
+            }
+            .padding()
+        }
+        .onAppear    { self.player.play() }
+        .onDisappear { self.player.pause() }
+    }
+}
+
+// MARK: -
 
 struct FileExtensions {
     enum Video: String {

@@ -64,6 +64,21 @@ extension Contact {
         /// SwiftData handles the schema addition automatically — new column
         /// with a default value is a lightweight migration.
         var encryptionScheme: Int = EncryptionScheme.v1_identityDerived.rawValue
+
+        /// Non-nil means this contact has been soft-deleted. The field is encrypted;
+        /// only its nil/non-nil status is meaningful at the query layer. Content is
+        /// a fixed sentinel — no date or identity information is stored here.
+        /// Soft-deleted rows are never shown in any view. Cap: 50 rows; when full,
+        /// one existing soft-deleted row is hard-deleted before a new one is written.
+        /// Named `deletionToken` (not `isDeleted`) to avoid shadowing NSManagedObject.isDeleted.
+        var deletionToken: Data? = nil
+
+        /// Encrypted depth-visibility (encrypted JSON Int):
+        ///   nil  — always visible (default for all new contacts)
+        ///   0    — hidden at all duress depths
+        ///   N    — visible through duress depth N, hidden at N+1 and deeper
+        /// All non-nil values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+        var visibleThroughDepth: Data? = nil
         
         // MARK: - Full Designated Initializer
         
@@ -258,6 +273,17 @@ extension Contact.Profile {
         }
         
         var profile: Contact.Profile?
+    }
+}
+
+extension Contact.Profile {
+    /// Standard fetch descriptor for all UI list contexts.
+    /// Excludes soft-deleted rows. Use this with @Query wherever a full contact list is needed.
+    static var descriptor: FetchDescriptor<Contact.Profile> {
+        FetchDescriptor(
+            predicate: #Predicate { $0.deletionToken == nil },
+            sortBy: [SortDescriptor(\.familyName)]
+        )
     }
 }
 

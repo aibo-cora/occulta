@@ -25,3 +25,7 @@ struct ForwardSecrecy: Codable {
     /// that used one of her prekeys — proof of receipt.
     var pendingOutboundBatch: Data? = nil
 }
+
+enum ForwardSecrecyError: Error {
+    case encryptionFailed
+}

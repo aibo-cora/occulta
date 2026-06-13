@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Mode — Setup Flow</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+      background: #0a0a0a;
+      min-height: 100vh;
+      padding: 40px 32px 64px;
+    }
+
+    h1 {
+      color: #fff;
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      color: #636366;
+      font-size: 14px;
+      margin-bottom: 36px;
+    }
+
+    /* ── Flow row ── */
+    .flow {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      overflow-x: auto;
+      padding-bottom: 24px;
+    }
+
+    .step-wrap {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      flex-shrink: 0;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+
+    .step-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: #bf5af2;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+    }
+
+    .step-label {
+      font-size: 12px;
+      color: #636366;
+      text-align: center;
+      line-height: 1.5;
+      max-width: 200px;
+    }
+
+    .flow-arrow {
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      padding-top: 46px; /* align to mid-phone */
+      color: #3a3a3c;
+      font-size: 18px;
+      flex-shrink: 0;
+      align-self: flex-start;
+      margin-top: 230px;
+    }
+
+    /* ── Phone frame ── */
+    .phone {
+      width: 260px;
+      height: 565px;
+      background: #000;
+      border-radius: 36px;
+      overflow: hidden;
+      border: 1.5px solid #2c2c2e;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+      color: #fff;
+    }
+
+    /* ── Status bar ── */
+    .sb {
+      height: 36px;
+      background: #1c1c1e;
+      display: flex;
+      align-items: flex-end;
+      padding: 0 18px 7px;
+      font-size: 12px;
+      font-weight: 600;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    /* ── Nav bar ── */
+    .nb {
+      background: #1c1c1e;
+      padding: 6px 14px 9px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.08);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .nb-title { font-size: 14px; font-weight: 600; }
+    .nb-btn   { font-size: 14px; color: #bf5af2; min-width: 40px; }
+    .nb-btn.right { text-align: right; font-weight: 600; }
+
+    /* ── Scroll area ── */
+    .scroll {
+      flex: 1;
+      overflow-y: auto;
+      background: #000;
+    }
+
+    /* ── List card ── */
+    .list-section { margin: 12px 10px 0; }
+    .section-lbl {
+      font-size: 11px;
+      color: #8e8e93;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      padding: 0 6px 5px;
+    }
+    .list-card {
+      background: #1c1c1e;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .list-row {
+      display: flex;
+      align-items: center;
+      padding: 9px 12px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.07);
+      font-size: 13px;
+    }
+    .list-row:last-child { border-bottom: none; }
+    .list-row-lbl { flex: 1; }
+    .list-row-chev { color: #48484a; font-size: 12px; margin-left: 4px; }
+    .list-row-muted { color: #636366; }
+
+    .toggle {
+      width: 36px; height: 22px;
+      background: #30d158;
+      border-radius: 11px;
+      position: relative;
+      flex-shrink: 0;
+    }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 18px; height: 18px;
+      background: #fff;
+      border-radius: 50%;
+      top: 2px; right: 2px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    .toggle.off {
+      background: #48484a;
+    }
+    .toggle.off::after {
+      right: auto;
+      left: 2px;
+    }
+
+    /* ── Learn more card ── */
+    .learn-card {
+      margin: 12px 10px 0;
+      background: #1c1c1e;
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .learn-card p {
+      font-size: 13px;
+      color: #ebebf5;
+      line-height: 1.45;
+      margin-bottom: 8px;
+    }
+    .learn-link {
+      font-size: 14px;
+      color: #bf5af2;
+      font-weight: 600;
+    }
+    .learn-card.disabled {
+      opacity: 0.35;
+      pointer-events: none;
+      user-select: none;
+    }
+    .learn-card.disabled .learn-link {
+      color: #636366;
+    }
+
+    /* ── Step dots ── */
+    .dots {
+      display: flex;
+      justify-content: center;
+      gap: 5px;
+      padding: 10px 0 6px;
+    }
+    .dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.18);
+      transition: all 0.2s;
+    }
+    .dot.on { background: #bf5af2; width: 14px; border-radius: 3px; }
+
+    /* ── Education ── */
+    .edu-intro {
+      padding: 12px 14px 6px;
+    }
+    .edu-intro h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .edu-intro p  { font-size: 12px; color: #8e8e93; line-height: 1.45; }
+
+    .edu-items { padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; }
+    .edu-item  { display: flex; gap: 10px; align-items: flex-start; }
+    .edu-icon  {
+      width: 30px; height: 30px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .edu-item h3 { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+    .edu-item p  { font-size: 11px; color: #8e8e93; line-height: 1.4; }
+
+    /* ── PIN ── */
+    .pin-heading {
+      text-align: center;
+      padding: 12px 14px 4px;
+    }
+    .pin-heading h2 { font-size: 16px; font-weight: 600; margin-bottom: 3px; }
+    .pin-heading p  { font-size: 12px; color: #8e8e93; }
+
+    .pin-dots {
+      display: flex;
+      justify-content: center;
+      gap: 14px;
+      padding: 14px 0 12px;
+    }
+    .pdot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(255,255,255,0.25);
+    }
+    .pdot.filled { background: #fff; border-color: #fff; }
+
+    .numpad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      padding: 0 20px;
+    }
+    .nk {
+      height: 44px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 9px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      color: #fff;
+    }
+    .nk sub { font-size: 7px; color: rgba(255,255,255,0.45); letter-spacing: 0.8px; line-height: 1; margin-top: 1px; }
+    .nk.empty { background: transparent; }
+
+    .pin-hint {
+      text-align: center;
+      font-size: 11px;
+      color: #48484a;
+      padding: 8px 14px 0;
+    }
+
+    /* ── Contacts ── */
+    .cc-explainer {
+      font-size: 11px;
+      color: #8e8e93;
+      line-height: 1.45;
+      padding: 6px 14px;
+    }
+    .cc-section { margin: 8px 10px 0; }
+    .cc-section-lbl {
+      font-size: 11px;
+      color: #8e8e93;
+      font-weight: 500;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      padding: 0 4px 5px;
+    }
+    .cc-card {
+      background: #1c1c1e;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .cc-group-hdr {
+      font-size: 10px;
+      font-weight: 600;
+      color: #48484a;
+      letter-spacing: 0.7px;
+      text-transform: uppercase;
+      padding: 5px 12px 4px;
+      background: rgba(0,0,0,0.18);
+      border-bottom: 0.5px solid rgba(255,255,255,0.05);
+    }
+    .cc-row {
+      display: flex;
+      align-items: center;
+      padding: 7px 10px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.06);
+      position: relative;
+    }
+    .cc-row:last-child { border-bottom: none; }
+    .cc-row.unverified { opacity: 0.45; }
+    .cc-avatar {
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; color: #fff;
+      flex-shrink: 0;
+      margin-right: 8px;
+    }
+    .cc-name { flex: 1; font-size: 12px; }
+    .cc-name b { font-weight: 600; }
+    .cc-arr {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px;
+    }
+    .arr-down { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.3); }
+    .arr-up   { background: rgba(255,69,58,0.15); color: #ff453a; }
+    .sens-bar {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 2.5px;
+      background: #ff453a;
+      opacity: 0.7;
+    }
+
+    /* ── Summary ── */
+    .summary-intro {
+      padding: 12px 14px 6px;
+    }
+    .summary-intro h2 { font-size: 18px; font-weight: 700; margin-bottom: 3px; }
+    .summary-intro p  { font-size: 12px; color: #8e8e93; line-height: 1.4; }
+
+    .summary-card {
+      margin: 8px 10px 0;
+      background: #1c1c1e;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .sum-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.07);
+    }
+    .sum-row:last-child { border-bottom: none; }
+    .sum-check {
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: rgba(48,209,88,0.15);
+      display: flex; align-items: center; justify-content: center;
+      color: #30d158;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .sum-text h3 { font-size: 13px; font-weight: 600; }
+    .sum-text p  { font-size: 11px; color: #8e8e93; margin-top: 1px; }
+
+    .warn-card {
+      margin: 8px 10px 0;
+      background: rgba(255,159,10,0.07);
+      border: 0.5px solid rgba(255,159,10,0.2);
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-size: 11px;
+      color: #ff9f0a;
+      line-height: 1.45;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      display: block;
+      margin: 12px 10px 0;
+      padding: 13px;
+      border-radius: 12px;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .btn-accent  { background: #bf5af2; color: #fff; }
+    .btn-red     { background: rgba(255,69,58,0.12); color: #ff453a; border: 0.5px solid rgba(255,69,58,0.25); }
+  </style>
+</head>
+<body>
+
+<h1>Secure Mode — Activation Flow</h1>
+<p class="subtitle">Settings → Security through to activated state</p>
+
+<div class="flow">
+
+  <!-- ═══════════ STEP 0a: No PIN ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">No PIN</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">‹ Settings</span>
+          <span class="nb-title">Security</span>
+          <span style="width:60px"></span>
+        </div>
+        <div class="scroll">
+          <div class="list-section">
+            <div class="list-card">
+              <div class="list-row">
+                <span class="list-row-lbl">Enable PIN</span>
+                <div class="toggle off"></div>
+              </div>
+            </div>
+          </div>
+          <div class="learn-card disabled">
+            <p>Learn how you can protect your data.</p>
+            <span class="learn-link">Learn more</span>
+          </div>
+        </div>
+      </div>
+      <div class="step-label">Card visible but disabled.<br>Enable PIN to unlock.</div>
+    </div>
+    <div class="flow-arrow">→</div>
+  </div>
+
+  <!-- ═══════════ STEP 0b: PIN on ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">PIN enabled</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">‹ Settings</span>
+          <span class="nb-title">Security</span>
+          <span style="width:60px"></span>
+        </div>
+        <div class="scroll">
+          <div class="list-section">
+            <div class="list-card">
+              <div class="list-row">
+                <span class="list-row-lbl">Enable PIN</span>
+                <div class="toggle"></div>
+              </div>
+            </div>
+          </div>
+          <div class="learn-card">
+            <p>Learn how you can protect your data.</p>
+            <span class="learn-link">Learn more</span>
+          </div>
+        </div>
+      </div>
+      <div class="step-label">Card active.<br>No Activate button.</div>
+    </div>
+    <div class="flow-arrow">→</div>
+  </div>
+
+  <!-- ═══════════ STEP 1: Education ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">Sheet · Step 1 of 4</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">✕</span>
+          <span class="nb-title">Secure Mode</span>
+          <span style="width:40px"></span>
+        </div>
+        <div class="scroll">
+          <div class="dots">
+            <div class="dot on"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+          </div>
+          <div class="edu-intro">
+            <h2>Another layer of protection</h2>
+            <p>Set up a secondary PIN that opens a limited, alternate view of your data.</p>
+          </div>
+          <div class="edu-items">
+            <div class="edu-item">
+              <div class="edu-icon" style="background:rgba(191,90,242,0.15)">🔑</div>
+              <div>
+                <h3>Secondary PIN</h3>
+                <p>A separate PIN that opens an alternate, limited view of your contacts.</p>
+              </div>
+            </div>
+            <div class="edu-item">
+              <div class="edu-icon" style="background:rgba(255,69,58,0.12)">👤</div>
+              <div>
+                <h3>Hidden contacts</h3>
+                <p>Choose which contacts are visible. Others won't appear in the alternate view.</p>
+              </div>
+            </div>
+            <div class="edu-item">
+              <div class="edu-icon" style="background:rgba(255,159,10,0.12)">🗂</div>
+              <div>
+                <h3>Cleared vault</h3>
+                <p>Vault items will not be visible in alternate views.</p>
+              </div>
+            </div>
+          </div>
+          <div class="btn btn-accent">Continue</div>
+        </div>
+      </div>
+      <div class="step-label">Education. Abstract language,<br>no threat model named.</div>
+    </div>
+    <div class="flow-arrow">→</div>
+  </div>
+
+  <!-- ═══════════ STEP 2: PIN Setup ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">Sheet · Step 2 of 4</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">‹ Back</span>
+          <span class="nb-title">Secure Mode</span>
+          <span style="width:50px"></span>
+        </div>
+        <div class="scroll">
+          <div class="dots">
+            <div class="dot"></div>
+            <div class="dot on"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+          </div>
+          <div class="pin-heading">
+            <h2>Confirm your PIN</h2>
+            <p>Enter your current PIN to continue.</p>
+          </div>
+          <div class="pin-dots">
+            <div class="pdot filled"></div>
+            <div class="pdot filled"></div>
+            <div class="pdot filled"></div>
+            <div class="pdot filled"></div>
+            <div class="pdot filled"></div>
+            <div class="pdot filled"></div>
+          </div>
+          <div class="numpad">
+            <div class="nk">1<sub>   </sub></div>
+            <div class="nk">2<sub>ABC</sub></div>
+            <div class="nk">3<sub>DEF</sub></div>
+            <div class="nk">4<sub>GHI</sub></div>
+            <div class="nk">5<sub>JKL</sub></div>
+            <div class="nk">6<sub>MNO</sub></div>
+            <div class="nk">7<sub>PQRS</sub></div>
+            <div class="nk">8<sub>TUV</sub></div>
+            <div class="nk">9<sub>WXYZ</sub></div>
+            <div class="nk empty"></div>
+            <div class="nk">0</div>
+            <div class="nk" style="font-size:15px">⌫</div>
+          </div>
+          <p class="pin-hint">Next: set and confirm your secondary PIN</p>
+        </div>
+      </div>
+      <div class="step-label">3 sub-steps: confirm current PIN,<br>set secondary PIN, confirm it.</div>
+    </div>
+    <div class="flow-arrow">→</div>
+  </div>
+
+  <!-- ═══════════ STEP 3: Contact Classification ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">Sheet · Step 3 of 4</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">‹ Back</span>
+          <span class="nb-title">Classify Contacts</span>
+          <span style="width:50px"></span>
+        </div>
+        <div class="scroll">
+          <div class="dots">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot on"></div>
+            <div class="dot"></div>
+          </div>
+          <p class="cc-explainer">Sensitive contacts are hidden in the alternate view. Tap to move.</p>
+
+          <div class="cc-section">
+            <div class="cc-section-lbl">Visible</div>
+            <div class="cc-card">
+              <div class="cc-group-hdr">Verified</div>
+              <div class="cc-row">
+                <div class="cc-avatar" style="background:linear-gradient(135deg,#5e5ce6,#bf5af2)">AS</div>
+                <span class="cc-name">Alex <b>Smith</b></span>
+                <div class="cc-arr arr-down">↓</div>
+              </div>
+              <div class="cc-row">
+                <div class="cc-avatar" style="background:linear-gradient(135deg,#ff9f0a,#ff375f)">JD</div>
+                <span class="cc-name">Jamie <b>Davis</b></span>
+                <div class="cc-arr arr-down">↓</div>
+              </div>
+              <div class="cc-group-hdr">Unverified</div>
+              <div class="cc-row unverified">
+                <div class="cc-avatar" style="background:linear-gradient(135deg,#3a3a3c,#48484a)">SL</div>
+                <span class="cc-name">Sarah <b>Lee</b></span>
+                <div class="cc-arr arr-down">↓</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cc-section">
+            <div class="cc-section-lbl">Sensitive</div>
+            <div class="cc-card">
+              <div class="cc-row" style="padding-left:14px">
+                <div class="sens-bar"></div>
+                <div class="cc-avatar" style="background:linear-gradient(135deg,#ff453a,#ff9f0a);margin-left:4px">TC</div>
+                <span class="cc-name">Tom <b>Chen</b></span>
+                <div class="cc-arr arr-up">↑</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="btn btn-accent" style="margin-top:10px">Next</div>
+        </div>
+      </div>
+      <div class="step-label">Tap to move. Nothing saved<br>until Activate.</div>
+    </div>
+    <div class="flow-arrow">→</div>
+  </div>
+
+  <!-- ═══════════ STEP 4: Summary ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">Sheet · Step 4 of 4</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">‹ Back</span>
+          <span class="nb-title">Review</span>
+          <span style="width:50px"></span>
+        </div>
+        <div class="scroll">
+          <div class="dots">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot on"></div>
+          </div>
+          <div class="summary-intro">
+            <h2>Ready to activate</h2>
+            <p>Review what will change. This cannot be undone without your PIN.</p>
+          </div>
+          <div class="summary-card">
+            <div class="sum-row">
+              <div class="sum-check">✓</div>
+              <div class="sum-text">
+                <h3>Secondary PIN set</h3>
+                <p>Hidden for security</p>
+              </div>
+            </div>
+            <div class="sum-row">
+              <div class="sum-check">✓</div>
+              <div class="sum-text">
+                <h3>1 contact will be hidden</h3>
+                <p>Not visible in alternate view</p>
+              </div>
+            </div>
+            <div class="sum-row">
+              <div class="sum-check">✓</div>
+              <div class="sum-text">
+                <h3>Vault will be cleared</h3>
+                <p>Messages inaccessible from alternate view</p>
+              </div>
+            </div>
+          </div>
+          <div class="warn-card">
+            ⚠ Deleting the app while Secure Mode is active is unrecoverable.
+          </div>
+          <div class="btn btn-accent">Activate</div>
+        </div>
+      </div>
+      <div class="step-label">Count only — no contact names.<br>Warning before final commit.</div>
+    </div>
+    <div class="flow-arrow">→</div>
+  </div>
+
+  <!-- ═══════════ STEP 5: Post-activation ═══════════ -->
+  <div class="step-wrap">
+    <div class="step">
+      <div class="step-badge">After activation</div>
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span style="letter-spacing:2px">● ● ●</span></div>
+        <div class="nb">
+          <span class="nb-btn">‹ Settings</span>
+          <span class="nb-title">Security</span>
+          <span style="width:60px"></span>
+        </div>
+        <div class="scroll">
+          <div class="list-section">
+            <div class="list-card">
+              <div class="list-row">
+                <span class="list-row-lbl list-row-muted">Enable PIN</span>
+                <div class="toggle"></div>
+              </div>
+            </div>
+          </div>
+          <div class="btn btn-red">Deactivate</div>
+        </div>
+      </div>
+      <div class="step-label">Deactivate button only.<br>No Manage Visibility.</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

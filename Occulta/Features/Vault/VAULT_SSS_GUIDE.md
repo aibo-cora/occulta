@@ -175,7 +175,7 @@ Document this in user-facing recovery instructions.
 
 ## Trustee eligibility: ML-KEM required
 
-A contact can only be a trustee if they have ML-KEM key material
+A contact can only be a trustee if he has ML-KEM key material
 (`quantumKeyMaterialEncrypted != nil` on their key record). Contacts without it
 are excluded from trustee selection before the UI renders the picker — they
 never appear as an option.

@@ -471,14 +471,6 @@ private final class LegacyOnlyCrypto: CryptoProtocol {
         try self.inner.decrypt(message: message, using: material)
     }
 
-    func encrypt(contacts: Data, using passphrase: String) throws -> Data? {
-        try self.inner.encrypt(contacts: contacts, using: passphrase)
-    }
-
-    func decrypt(contacts: Data, using passphrase: String) throws -> Data? {
-        try self.inner.decrypt(contacts: contacts, using: passphrase)
-    }
-
     func sign(data: Data?) -> String {
         self.inner.sign(data: data)
     }

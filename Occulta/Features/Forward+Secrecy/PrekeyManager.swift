@@ -237,6 +237,13 @@ extension Manager {
             self.remainingCount(for: contactID) < Self.replenishThreshold
         }
 
+        /// Delete ALL prekey private keys from the SE, across all contacts.
+        func deleteAllKeys() {
+            for tag in self.findAllTags() {
+                self.deleteKey(tag: tag)
+            }
+        }
+
         // MARK: - Private helpers
 
         private func retrieveKey(tag: String) -> SecKey? {

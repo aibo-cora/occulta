@@ -16,14 +16,14 @@ import SwiftData
 struct VaultGlobalTrustees: View {
 
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Query(sort: \Contact.Profile.familyName) private var allContacts: [Contact.Profile]
+    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []
     @State private var saveError: String?
 
     private var mlkemContacts: [Contact.Profile] {
-        allContacts.filter { $0.contactPublicKeys?.last?.quantumKeyMaterialEncrypted != nil }
+        allContacts.filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     private var selected: [Contact.Profile] {

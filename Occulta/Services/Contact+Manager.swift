@@ -10,6 +10,7 @@ import SwiftData
 import Contacts
 import SwiftUI
 import Combine
+import CoreData
 import Foundation
 import CryptoKit
 
@@ -17,7 +18,9 @@ import CryptoKit
 class ContactManager {
     private let modelExecutor: any ModelExecutor
     private let modelContainer: ModelContainer
-    private var modelContext: ModelContext { self.modelExecutor.modelContext }
+    // Internal (not private) so Manager.Security can flush the context during key rotation.
+    // Swift `private` is file-scoped; extensions in other files cannot see it.
+    var modelContext: ModelContext { self.modelExecutor.modelContext }
     
     private let cryptoManager: CryptoProtocol = Manager.Crypto()
     
@@ -49,10 +52,27 @@ class ContactManager {
     /// key whose P-256 fingerprint differs from the previously active key.
     /// Subscribers (e.g. ShardCustodyManager) use this to schedule auto-returns.
     var contactKeyRotated: PassthroughSubject<String, Never> = .init()
-    
-    init(modelContainer: ModelContainer) {
+
+    @ObservationIgnored
+    let security: Manager.Security
+    @ObservationIgnored
+    private var cancellables = Set<AnyCancellable>()
+
+    init(modelContainer: ModelContainer, security: Manager.Security) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
+        self.security = security
+
+        NotificationCenter.default
+            .publisher(
+                for: NSManagedObjectContext.didSaveObjectsNotification,
+                object: self.modelExecutor.modelContext
+            )
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncShareIndex()
+            }
+            .store(in: &self.cancellables)
     }
     
     var dateFormatter: DateFormatter {
@@ -69,7 +89,8 @@ class ContactManager {
     ///
     /// All properties are encrypted before being stored in the local database.
     /// - Parameter cnContact: Apple's contact object.
-    func createContacts(from cnContacts: [CNContact]) throws {
+    /// - Parameter currentDepth: Secure Mode depth at creation time. 0 = true layer (default).
+    func createContacts(from cnContacts: [CNContact], currentDepth: Int = 0) throws {
         for contact in cnContacts {
             let encryptedIdentifier = try self.cryptoManager.encrypt(data: contact.identifier.data(using: .utf8))?.base64EncodedString() ?? ""
             let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
@@ -179,11 +200,15 @@ class ContactManager {
                 postalAddresses: encryptedPostalAddresses
             )
             
+            // visibleThroughDepth is always encrypted, never nil.
+            // Depth 0 imports are safe contacts → Int.max (visible everywhere).
+            // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
+            let depthValue = currentDepth == 0 ? Int.max : currentDepth
+            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             self.modelContext.insert(newContact)
         }
-        
+
         try self.modelContext.save()
-        self.syncShareIndex()
     }
 
     func save(contacts: [Contact.Draft]) throws {
@@ -194,93 +219,99 @@ class ContactManager {
     
     /// Save a new custom contact or update an existing contact.
     /// - Parameter contact: Custom contact. Thread safe.
-    ///
-    func save(contact: Contact.Draft) throws {
+    /// - Parameter currentDepth: Secure Mode depth at creation time. 0 = true layer (default).
+    func save(contact: Contact.Draft, currentDepth: Int = 0) throws {
+        try self.save(contact: contact, currentDepth: currentDepth, using: self.cryptoManager)
+    }
+
+    /// Overload used by Secure Mode activation to re-encrypt safe contacts under the staged key.
+    /// Identical to `save(contact:currentDepth:)` but uses `crypto` instead of `self.cryptoManager`.
+    func save(contact: Contact.Draft, currentDepth: Int = 0, using crypto: any CryptoProtocol) throws {
         let encryptedIdentifier = contact.identifier
-        let encryptedGivenName = try self.cryptoManager.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedFamilyName = try self.cryptoManager.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedMiddleName = try self.cryptoManager.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedNamePrefix = try self.cryptoManager.encrypt(data: contact.namePrefix.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedNameSuffix = try self.cryptoManager.encrypt(data: contact.nameSuffix.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedNickname = try self.cryptoManager.encrypt(data: contact.nickname.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedOrganizationName = try self.cryptoManager.encrypt(data: contact.organizationName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedDepartmentName = try self.cryptoManager.encrypt(data: contact.departmentName.data(using: .utf8))?.base64EncodedString() ?? ""
-        let encryptedJobTitle = try self.cryptoManager.encrypt(data: contact.jobTitle.data(using: .utf8))?.base64EncodedString() ?? ""
-        
-        let encryptedImageData = try self.cryptoManager.encrypt(data: contact.imageData)
-        let encryptedThumbnailImageData = try self.cryptoManager.encrypt(data: contact.thumbnailImageData)
-        
+        let encryptedGivenName = try crypto.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedFamilyName = try crypto.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedMiddleName = try crypto.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedNamePrefix = try crypto.encrypt(data: contact.namePrefix.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedNameSuffix = try crypto.encrypt(data: contact.nameSuffix.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedNickname = try crypto.encrypt(data: contact.nickname.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedOrganizationName = try crypto.encrypt(data: contact.organizationName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedDepartmentName = try crypto.encrypt(data: contact.departmentName.data(using: .utf8))?.base64EncodedString() ?? ""
+        let encryptedJobTitle = try crypto.encrypt(data: contact.jobTitle.data(using: .utf8))?.base64EncodedString() ?? ""
+
+        let encryptedImageData = try crypto.encrypt(data: contact.imageData)
+        let encryptedThumbnailImageData = try crypto.encrypt(data: contact.thumbnailImageData)
+
         var encryptedEmailAddresses: [CNLabeledValue<NSString>] = []
-        
+
         contact.emailAddresses.forEach { email in
             do {
-                let label = try self.cryptoManager.encrypt(data: email.label.data(using: .utf8))?.base64EncodedString() ?? ""
-                let value = try self.cryptoManager.encrypt(data: String(email.value).data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let label = try crypto.encrypt(data: email.label.data(using: .utf8))?.base64EncodedString() ?? ""
+                let value = try crypto.encrypt(data: String(email.value).data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedEmailAddresses.append(CNLabeledValue(label: label, value: value as NSString))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
+
         var encryptedPhoneNumbers: [CNLabeledValue<CNPhoneNumber>] = []
-        
+
         contact.phoneNumbers.forEach { phoneNumber in
             do {
-                let label = try self.cryptoManager.encrypt(data: phoneNumber.label.data(using: .utf8))?.base64EncodedString() ?? ""
-                let value = try self.cryptoManager.encrypt(data: phoneNumber.value.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let label = try crypto.encrypt(data: phoneNumber.label.data(using: .utf8))?.base64EncodedString() ?? ""
+                let value = try crypto.encrypt(data: phoneNumber.value.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedPhoneNumbers.append(CNLabeledValue(label: label, value: CNPhoneNumber(stringValue: value)))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
+
         var encryptedPostalAddresses: [Contact.Profile.PostalAddress] = []
-        
+
         contact.postalAddresses.forEach { postalAddress in
             do {
-                let encryptedStreet = try self.cryptoManager.encrypt(data: postalAddress.street.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedCity = try self.cryptoManager.encrypt(data: postalAddress.city.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedState = try self.cryptoManager.encrypt(data: postalAddress.state.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedPostalCode = try self.cryptoManager.encrypt(data: postalAddress.postalCode.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedCountry = try self.cryptoManager.encrypt(data: postalAddress.country.name.data(using: .utf8))?.base64EncodedString() ?? ""
-                let encryptedIsoCountryCode = try self.cryptoManager.encrypt(data: postalAddress.country.code.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let encryptedStreet = try crypto.encrypt(data: postalAddress.street.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedCity = try crypto.encrypt(data: postalAddress.city.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedState = try crypto.encrypt(data: postalAddress.state.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedPostalCode = try crypto.encrypt(data: postalAddress.postalCode.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedCountry = try crypto.encrypt(data: postalAddress.country.name.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedIsoCountryCode = try crypto.encrypt(data: postalAddress.country.code.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 let mutable = CNMutablePostalAddress()
-                
+
                 mutable.street = encryptedStreet
                 mutable.city = encryptedCity
                 mutable.state = encryptedState
                 mutable.postalCode = encryptedPostalCode
                 mutable.country = encryptedCountry
                 mutable.isoCountryCode = encryptedIsoCountryCode
-                
-                let encryptedLabel = try self.cryptoManager.encrypt(data: postalAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+
+                let encryptedLabel = try crypto.encrypt(data: postalAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedPostalAddresses.append(Contact.Profile.PostalAddress(from: CNLabeledValue<CNMutablePostalAddress>(label: encryptedLabel, value: mutable)))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
+
         var encryptedURLs: [Contact.Profile.URLAddress] = []
-        
+
         contact.urlAddresses.forEach { urlAddress in
             do {
-                let encryptedLabel = try self.cryptoManager.encrypt(data: urlAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
+                let encryptedLabel = try crypto.encrypt(data: urlAddress.label.data(using: .utf8))?.base64EncodedString() ?? ""
                 let url = urlAddress.value as String
-                let encryptedURL = try self.cryptoManager.encrypt(data: url.data(using: .utf8))?.base64EncodedString() ?? ""
-                
+                let encryptedURL = try crypto.encrypt(data: url.data(using: .utf8))?.base64EncodedString() ?? ""
+
                 encryptedURLs.append(Contact.Profile.URLAddress(label: encryptedLabel, value: encryptedURL))
             } catch {
                 debugPrint("Contact not saved: \(error)")
             }
         }
-        
-        let encryptedBirthday: String = try self.cryptoManager.encrypt(data: contact.birthday?.data(using: .utf8))?.base64EncodedString() ?? ""
-        
-        let encryptedNote = try self.cryptoManager.encrypt(data: contact.note.data(using: .utf8))?.base64EncodedString() ?? ""
+
+        let encryptedBirthday: String = try crypto.encrypt(data: contact.birthday?.data(using: .utf8))?.base64EncodedString() ?? ""
+
+        let encryptedNote = try crypto.encrypt(data: contact.note.data(using: .utf8))?.base64EncodedString() ?? ""
         
         /// Storing
         
@@ -294,8 +325,8 @@ class ContactManager {
             existing.departmentName = encryptedDepartmentName
             existing.jobTitle = encryptedJobTitle
             existing.birthday = encryptedBirthday
-            existing.imageData = encryptedImageData
-            existing.thumbnailImageData = encryptedThumbnailImageData
+            if let encryptedImageData          { existing.imageData          = encryptedImageData }
+            if let encryptedThumbnailImageData { existing.thumbnailImageData = encryptedThumbnailImageData }
             existing.phoneNumbers = encryptedPhoneNumbers.map { Contact.Profile.PhoneNumber(from: $0) }
             existing.emailAddresses = encryptedEmailAddresses.map { Contact.Profile.EmailAddress(from: $0) }
             existing.postalAddresses = encryptedPostalAddresses
@@ -329,25 +360,29 @@ class ContactManager {
                 encryptionScheme: EncryptionScheme.v2_hybridPQ.rawValue
             )
             
+            // visibleThroughDepth is always encrypted, never nil.
+            // Depth 0 contacts are safe by default → Int.max (visible everywhere).
+            // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
+            let depthValue = currentDepth == 0 ? Int.max : currentDepth
+            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             self.modelContext.insert(newContact)
-            
+
             for key in contact.contactPublicKeys {
                 try? self.update(key: key, for: newContact.identifier)
             }
-            
+
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
         }
 
         try self.modelContext.save()
-        self.syncShareIndex()
     }
 
     // MARK: - Read
     
     /// Fetches all contacts from the SwiftData context.
     func fetchAllContacts() throws -> [Contact.Profile] {
-        let descriptor = FetchDescriptor<Contact.Profile>(sortBy: [SortDescriptor(\.familyName)])
-        
+        let predicate = #Predicate<Contact.Profile> { $0.deletionToken == nil }
+        let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate, sortBy: [SortDescriptor(\.familyName)])
         return try self.modelContext.fetch(descriptor)
     }
     
@@ -377,33 +412,42 @@ class ContactManager {
     
     // MARK: - Delete
     
-    /// Deletes a contact by its identifier.
+    /// Soft-deletes a contact by marking it with an encrypted sentinel.
+    /// The row remains in SwiftData but is excluded from all public queries.
+    /// Enforces a cap of 50 soft-deleted rows: if the cap is reached, one
+    /// existing soft-deleted row is hard-deleted before the new marker is written.
     func deleteContact(identifier: String) throws {
-        debugPrint("Deleting contact with identifier: \(identifier)")
-        
-        guard
-            let contact = try self.fetchContact(by: identifier)
-        else {
+        guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
         }
-        
-        self.modelContext.delete(contact)
-        try modelContext.save()
-        self.syncShareIndex()
-    }
 
-    /// Deletes all contacts.
-    func deleteAllContacts() throws {
-        let contacts = try self.fetchAllContacts()
-
-        for contact in contacts {
-            debugPrint("Deleting contact with identifier: \(contact.identifier)")
-
-            self.modelContext.delete(contact)
+        let softDeleted = try self.fetchSoftDeletedContacts()
+        if softDeleted.count >= 50, let victim = softDeleted.first {
+            self.modelContext.delete(victim)
         }
 
+        contact.deletionToken = try Data([1]).encrypt()
         try self.modelContext.save()
-        self.syncShareIndex()
+    }
+
+    /// Hard-deletes a single Contact.Profile row from the store.
+    /// Only for use in Secure Mode activation — normal deletions use `deleteContact(:)`.
+    func hardDeleteContact(_ profile: Contact.Profile) throws {
+        self.modelContext.delete(profile)
+        try self.modelContext.save()
+    }
+
+    /// Hard-deletes all contacts, including soft-deleted rows. Used for panic wipe only.
+    func deleteAllContacts() throws {
+        try self.modelContext.delete(model: Contact.Profile.self)
+        try self.modelContext.save()
+    }
+
+    private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
+        let predicate = #Predicate<Contact.Profile> { $0.deletionToken != nil }
+        let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
+        
+        return try self.modelContext.fetch(descriptor)
     }
 }
 
@@ -438,6 +482,7 @@ extension ContactManager {
         
         // Detect fingerprint change before appending the new key.
         var keyRotated = false
+        
         if let newMaterial = key.material,
            let currentRecord = contact.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
            let storedMaterial = try? self.cryptoManager.decrypt(data: currentRecord.material) {
@@ -445,6 +490,10 @@ extension ContactManager {
         }
 
         contact.contactPublicKeys?.append(Contact.Profile.Key(material: encryptedMaterial, owner: encryptedOwner, date: encryptedCreationDate, quantumKeyMaterialEncrypted: encryptedQuantumKeyMaterial))
+        
+        #if DEBUG
+        debugPrint("Updated key, owner hash = \(key.owner)")
+        #endif
 
         try self.modelContext.save()
 
@@ -588,7 +637,8 @@ extension ContactManager {
             }
         }()
         
-        let manager = ContactManager(modelContainer: sharedModelContainer)
+        let security = Manager.Security(modelContainer: sharedModelContainer, enabled: false)
+        let manager = ContactManager(modelContainer: sharedModelContainer, security: security)
         
         do {
             let cryptoManager = manager.cryptoManager
@@ -634,20 +684,20 @@ extension ContactManager {
             else {
                 throw Errors.invalidBase64
             }
-            
+
             guard
                 !data.isEmpty
             else {
                 return ""
             }
-            
+
             guard
                 let decryptedData = try self.cryptoManager.decrypt(data: data),
                 let string = String(data: decryptedData, encoding: .utf8)
             else {
                 throw Errors.decryptionFailed
             }
-            
+
             return string
         }
         
@@ -746,12 +796,23 @@ extension ContactManager {
         }
         
         let encryptedPublicKeys = storedContact.contactPublicKeys
-        let plaintextPublicKeys = encryptedPublicKeys?.compactMap {
-            let material = try? self.cryptoManager.decrypt(data: $0.material)
-            let owner = (try? self.cryptoManager.decrypt(data: $0.owner)) ?? Data()
-            let date = String(data: (try? self.cryptoManager.decrypt(data: $0.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
-            
-            return Contact.Draft.Key(material: material, owner: owner, date: date)
+        let plaintextPublicKeys = encryptedPublicKeys?.compactMap { record -> Contact.Draft.Key? in
+            let material = try? self.cryptoManager.decrypt(data: record.material)
+            let ownerHash = (try? self.cryptoManager.decrypt(data: record.owner)) ?? Data()
+            let date = String(data: (try? self.cryptoManager.decrypt(data: record.acquiredAt)) ?? Data(), encoding: .utf8) ?? ""
+
+            let quantumMaterial: QuantumKeyMaterial? = {
+                guard let enc = record.quantumKeyMaterialEncrypted,
+                      let dec = try? self.cryptoManager.decrypt(data: enc)
+                else { return nil }
+                return try? JSONDecoder().decode(QuantumKeyMaterial.self, from: dec)
+            }()
+
+            // ownerHash is already SHA-256(identity_key) from the DB.
+            // Draft.Key.init would sha256 it again (double-hash) — override after construction.
+            var key = Contact.Draft.Key(material: material, owner: ownerHash, date: date, quantumKeyMaterial: quantumMaterial)
+            key?.owner = ownerHash
+            return key
         }
         
         // MARK: - Build final Draft
@@ -783,53 +844,7 @@ extension ContactManager {
     }
 }
 
-// MARK: Porting
-
 extension ContactManager {
-    /// Retrieves all of our contacts from the local database. Then, creates mutable copies of `Contact.Draft` decrypting all values. Encrypts these copies with a `SymmetricKey` which is derived from the passphrase.
-    /// - Parameter passphrase: Passphrase generated to derive a `SymmetricKey`.
-    /// - Returns: Encrypted `Contact.Export` object.
-    func prepareForExporting(using passphrase: String) throws -> Data {
-        let cryptoOps: CryptoProtocol = Manager.Crypto()
-        /// All of our contacts.
-        let storedContacts = try self.fetchAllContacts()
-        /// We need to decrypt them so we can encrypt it again with a new key that a new device would understand.
-        let decryptedMutableContacts = storedContacts.compactMap { try? self.convertToMutableCopy(using: $0.identifier) }
-        
-        let encodedContacts = try JSONEncoder().encode(decryptedMutableContacts)
-        
-        let fileContents = File(content: encodedContacts, format: .contacts)
-        let basket = Basket(files: [fileContents])
-        
-        let encodedBasketContents = try JSONEncoder().encode(basket)
-        
-        guard
-            let encryptedContacts = try cryptoOps.encrypt(contacts: encodedBasketContents, using: passphrase)
-        else {
-            throw Errors.encryptionFailed
-        }
-        
-        return encryptedContacts
-    }
-
-    func decrypt(data: Data?, using passphrase: String) throws -> Data {
-        let cryptoOps: CryptoProtocol = Manager.Crypto()
-        
-        guard
-            let data
-        else {
-            throw ContactManager.Errors.messageHasNoData
-        }
-        
-        guard
-            let encodedContacts = try cryptoOps.decrypt(contacts: data, using: passphrase)
-        else {
-            throw ContactManager.Errors.decryptionFailed
-        }
-        
-        return encodedContacts
-    }
-    
     /// Find the rightful owner of the message, the originator, and decrypt it using the right key.
     /// - Parameter text: Encrypted text.
     /// - Returns: Plaintext.
@@ -1005,34 +1020,51 @@ extension ContactManager {
 }
 
 // MARK: - v3fs bundle decryption
+
+extension ContactManager {
+    /// Resolves the sender's ML-KEM quantum key material for hybrid session key derivation.
+    ///
+    /// Only called for `.forwardSecret` and `.longTermFallback` modes — the two paths
+    /// that fold quantum material into the session key. NoPQ modes never call this.
+    ///
+    /// - Throws: `quantumKeyMaterialCorrupted` if the stored ciphertext exists but
+    ///   cannot be decoded. A missing field (`nil`) is not an error — it simply means
+    ///   no quantum material was exchanged and classical derivation should be used.
+    fileprivate func resolveQuantumMaterial(
+        for sender: Contact.Profile,
+        using cryptoOps: Manager.Crypto
+    ) throws -> QuantumKeyMaterial? {
+        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+        guard
+            let enc       = validKey?.quantumKeyMaterialEncrypted,
+            let decrypted = try? cryptoOps.decrypt(data: enc)
+        else { return nil }
+
+        do {
+            #if DEBUG
+            debugPrint("Opening bundle using quantum material to derive session key...")
+            #endif
+            return try JSONDecoder().decode(QuantumKeyMaterial.self, from: decrypted)
+        } catch {
+            throw Errors.quantumKeyMaterialCorrupted
+        }
+    }
+}
  
 extension ContactManager {
-    /// Decrypt a v3fs bundle and return the plaintext message bytes.
-    ///
-    /// Regular message path. For identity-challenge traffic the caller needs
-    /// the full `SealedPayload` so it can route on `identityChallenge` — use
-    /// ``decryptSealed(bundle:)`` instead.
-    func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
-        let (sealed, ownerID) = try self.decryptSealed(bundle: bundle)
-        return (sealed.message, ownerID)
-    }
-
-    /// Decrypt a v3fs bundle and return the full decoded ``SealedPayload``.
-    ///
-    /// Needed by the identity-challenge routing hook in `OccultaApp`, which
-    /// inspects `identityChallenge` to decide whether to hand the bundle to
-    /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
-    func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
+    private func verifyConsistency(for bundle: OccultaBundle) throws {
         guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
         // Defence-in-depth: never touch a bundle whose version or mode was
         // produced by a future build we don't understand. `Version`/`Mode` both
         // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
         guard bundle.secrecy.mode != .unsupported else { throw OccultaBundle.BundleError.unsupportedMode }
- 
+    }
+    
+    private func identifyOwner(for bundle: OccultaBundle) throws -> Contact.Profile {
+        try self.verifyConsistency(for: bundle)
+        
         let cryptoOps     = Manager.Crypto()
-        let prekeyManager = Manager.PrekeyManager()
- 
-        // ── 1. Identify sender by fingerprint ───────────────────────────
+        
         let contacts = try self.fetchAllContacts()
         var sender: Contact.Profile?
  
@@ -1049,94 +1081,145 @@ extension ContactManager {
             }
         }
         
-        try sender?.configureForwardSecrecy()
- 
         guard let sender else { throw Errors.noPublicKeyToEncryptWith }
+        
+        return sender
+    }
+    
+    func identifyOwner(of bundle: OccultaBundle) throws -> String? {
+        let sender = try self.identifyOwner(for: bundle)
+        
+        return sender.identifier
+    }
+    /// Decrypt a v3fs bundle and return the plaintext message bytes.
+    ///
+    /// Regular message path. For identity-challenge traffic the caller needs
+    /// the full `SealedPayload` so it can route on `identityChallenge` — use
+    /// ``decryptSealed(bundle:)`` instead.
+    func decrypt(bundle: OccultaBundle) throws -> (plaintext: Data, ownerID: String) {
+        let (sealed, ownerID) = try self.decryptSealed(bundle: bundle)
+        return (sealed.message, ownerID)
+    }
+
+    /// Decrypt a v3fs bundle and return the full decoded ``SealedPayload``.
+    ///
+    /// Needed by the identity-challenge routing hook in `OccultaApp`, which
+    /// inspects `identityChallenge` to decide whether to hand the bundle to
+    /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
+    func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
+        try self.verifyConsistency(for: bundle)
  
-        // ── 4. Key derivation + open ─────────────────────────────────────
+        let cryptoOps     = Manager.Crypto()
+        let prekeyManager = Manager.PrekeyManager()
+ 
+        // ── 1. Identify sender by fingerprint ───────────────────────────
+        let sender = try self.identifyOwner(for: bundle)
+        
+        try sender.configureForwardSecrecy()
+ 
+        // ── 2. Key derivation + open ─────────────────────────────────────
         //
         // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
+        //
+        // Quantum material is resolved only for the two hybrid modes. NoPQ modes
+        // never touch the sender's quantum material — deriving with nil is correct
+        // and `quantumKeyMaterialCorrupted` must not fire for those cases.
         let decryptedSealedPayload: Data?
-        
+
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
-        
-        let validKey = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
-        let decryptedQuantum = try? cryptoOps.decrypt(data: validKey?.quantumKeyMaterialEncrypted)
-        var quantumMaterial: QuantumKeyMaterial? = nil
-        
-        if let decryptedQuantum {
-            do {
-                quantumMaterial = try JSONDecoder().decode(QuantumKeyMaterial.self, from: decryptedQuantum)
-            } catch {
-                throw Errors.quantumKeyMaterialCorrupted
-            }
-            
-            #if DEBUG
-            debugPrint("Opening bundle using quantum material to derive session key...")
-            #endif
-        }
- 
+
         switch bundle.secrecy.mode {
         case .forwardSecret:
+            // Hybrid FS: ECDH(ephemeral, prekey) + ML-KEM.
+            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+
             let decrypted: Data? = try {
-                guard
-                    let prekeyID = bundle.secrecy.prekeyID
-                else {
-                    return nil
-                }
+                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
                 #if DEBUG
                 debugPrint("Using prekey, ID = \(prekeyID)")
                 #endif
-                /// Temp prekey just for the tag,
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
                 guard
-                    let privKey  = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey  = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial: bundle.secrecy.ephemeralPublicKey, quantumMaterial: quantumMaterial)
+                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
+                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
+                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
+                                                             quantumMaterial:     quantumMaterial)
                 else { return nil }
-                
                 return try cryptoOps.open(bundle, using: sessKey)
             }()
- 
+
             if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
-                /// Temp prekey just for the tag,
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
                 #if DEBUG
                 debugPrint("Opened bundle using prekey = \(temp), consuming key...")
                 #endif
-                
                 prekeyManager.consume(prekey: temp)
-                /// The message was opened successfully. FS was used, we don't need to send more batches - clearing.
                 try sender.clearPendingBatch()
-                
                 debugPrint("Message successfully opened in .forwardSecret mode. Pending batch cleared.")
             } else {
                 debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekeyID = \(String(describing: bundle.secrecy.prekeyID))")
             }
-            
+
             decryptedSealedPayload = decrypted
-        case .longTermFallback:
-            debugPrint("🔥 longTermFallback detected — forcing fresh pending batch for sender \(sender.identifier)")
-            
-            let validKey = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil })
-            
-            guard
-                let sendersEncryptedIdentityKey = validKey,
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: sendersEncryptedIdentityKey.material)
-            else {
-                debugPrint("Opening message, could not derive session key. Aborting open...")
-                
-                throw Errors.decryptionFailed
-            }
-            
-            guard
-                let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey, quantumMaterial: quantumMaterial)
-            else {
-                throw Manager.Crypto.EncryptionError.keyDerivationFailed
+
+        case .forwardSecretNoPQ:
+            // Classical FS: ECDH(ephemeral, prekey) only — no ML-KEM.
+            let decrypted: Data? = try {
+                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
+                #if DEBUG
+                debugPrint("Using prekey (NoPQ), ID = \(prekeyID)")
+                #endif
+                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                guard
+                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
+                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
+                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
+                                                             quantumMaterial:     nil)
+                else { return nil }
+                return try cryptoOps.open(bundle, using: sessKey)
+            }()
+
+            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
+                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                prekeyManager.consume(prekey: temp)
+                try sender.clearPendingBatch()
+                debugPrint("Message successfully opened in .forwardSecretNoPQ mode. Pending batch cleared.")
             }
 
+            decryptedSealedPayload = decrypted
+
+        case .longTermFallback:
+            // Hybrid long-term: ECDH(longTerm, longTerm) + ML-KEM.
+            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+
+            guard
+                let keyRecord          = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
+            else {
+                debugPrint("Opening message, could not derive session key. Aborting open...")
+                throw Errors.decryptionFailed
+            }
+            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
+                                                              quantumMaterial: quantumMaterial)
+            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
+
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+
+        case .longTermNoPQ:
+            // Classical long-term: ECDH(longTerm, longTerm) only — no ML-KEM.
+            guard
+                let keyRecord            = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
+            else {
+                debugPrint("Opening message (NoPQ), could not derive session key. Aborting open...")
+                throw Errors.decryptionFailed
+            }
+            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
+                                                              quantumMaterial: nil)
+            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
+
+            decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+
         case .unsupported:
             // Already rejected above — exhaustiveness only.
             throw OccultaBundle.BundleError.unsupportedMode
@@ -1144,13 +1227,14 @@ extension ContactManager {
  
         guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
  
-        // ── 6. Detect inbound fallback → schedule fresh batch ─────────────
+        // ── 3. Detect inbound fallback → schedule fresh batch ─────────────
         //
         // A .longTermFallback bundle means the sender is out of our prekeys.
         // Generate a new batch immediately so Alice's next outbound message
         // to Bob carries it.
-        if bundle.secrecy.mode == .longTermFallback && sender.hasPendingBatch == false {
-            debugPrint("🔥 longTermFallback detected — storing fresh pending batch for sender \(sender.identifier)")
+        if (bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ)
+            && sender.hasPendingBatch == false {
+            debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
             
             let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
             /// These prekeys do not contain any useful information for an attacker. They have been stripped of anything meaningful.
@@ -1165,7 +1249,7 @@ extension ContactManager {
         
         let decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
  
-        // ── 7. Store inbound prekey batch ────────────────────────────────
+        // ── 4. Store inbound prekey batch ────────────────────────────────
         if let inboundBatch = decodedPayload.prekeyBatch {
             debugPrint("Decrypting bundle containing inbound prekey sync batch...")
             
@@ -1192,7 +1276,7 @@ extension ContactManager {
             try sender.syncInboundPrekeys(blobs, date: inboundBatch.generatedAt)
         }
  
-        // ── 8. Persist ───────────────────────────────────────────────────
+        // ── 5. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
         
         debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")

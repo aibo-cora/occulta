@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Secure Mode — Class Architecture</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0d1117;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Canvas ── */
+#canvas-wrap {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+#canvas {
+  width: 1440px;
+  height: 790px;
+  position: relative;
+}
+
+#arrows {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* ── Cards ── */
+.card {
+  position: absolute;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 11px 13px;
+  cursor: default;
+  width: 188px;
+  transition: opacity 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+  user-select: none;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.card-name {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #e6edf3;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.card-layer-badge {
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255,255,255,0.28);
+  margin-bottom: 8px;
+}
+
+.card-divider {
+  height: 1px;
+  background: #21262d;
+  margin-bottom: 7px;
+}
+
+.prop-row {
+  font-size: 8.5px;
+  color: rgba(255,255,255,0.38);
+  padding: 2px 0;
+  line-height: 1.35;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prop-row:last-child { border-bottom: none; }
+.prop-row .pname { color: rgba(255,255,255,0.55); }
+
+/* ── Card states ── */
+.card.dimmed {
+  opacity: 0.1;
+  transform: scale(0.98);
+}
+
+.card.lit {
+  opacity: 1;
+  border-color: var(--c);
+  box-shadow: 0 0 0 1px var(--c), 0 4px 24px rgba(0,0,0,0.5);
+  transform: scale(1.01);
+  z-index: 5;
+}
+
+.card.hovered {
+  opacity: 1;
+  border-color: var(--c);
+  box-shadow: 0 0 0 1.5px var(--c), 0 0 30px color-mix(in srgb, var(--c) 30%, transparent);
+  transform: scale(1.03);
+  z-index: 10;
+}
+
+/* ── SVG arrows ── */
+.arr {
+  fill: none;
+  stroke: #30363d;
+  stroke-width: 1.5;
+  transition: stroke 0.2s, opacity 0.2s, stroke-width 0.2s;
+}
+.arr.dimmed  { opacity: 0.06; }
+.arr.lit     { stroke-width: 2; }
+
+/* ── Detail panel ── */
+#detail {
+  flex-shrink: 0;
+  height: 230px;
+  background: #0d1117;
+  border-top: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+#detail.open { transform: translateY(0); }
+
+#detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 20px 6px;
+  flex-shrink: 0;
+}
+
+#detail-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e6edf3;
+}
+
+#detail-badge {
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255,255,255,0.3);
+}
+
+#detail-desc {
+  font-size: 10px;
+  color: rgba(255,255,255,0.45);
+  line-height: 1.55;
+  padding: 0 20px 10px;
+  flex-shrink: 0;
+}
+
+#detail-props {
+  display: flex;
+  gap: 8px;
+  padding: 0 20px 14px;
+  overflow-x: auto;
+  flex: 1;
+  align-items: flex-start;
+}
+
+#detail-props::-webkit-scrollbar { height: 4px; }
+#detail-props::-webkit-scrollbar-track { background: transparent; }
+#detail-props::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+.dprop {
+  flex-shrink: 0;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 7px;
+  padding: 9px 12px;
+  max-width: 300px;
+  min-width: 200px;
+}
+.dprop-name {
+  font-size: 9.5px;
+  font-weight: 600;
+  margin-bottom: 5px;
+  line-height: 1.3;
+}
+.dprop-desc {
+  font-size: 9px;
+  color: rgba(255,255,255,0.42);
+  line-height: 1.55;
+}
+
+/* ── Legend ── */
+#legend {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.leg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: rgba(255,255,255,0.32);
+}
+.leg-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Hint ── */
+#hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255,255,255,0.18);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ── Title ── */
+#title {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.5);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+</style>
+</head>
+<body>
+
+<div id="canvas-wrap">
+  <div id="canvas">
+    <svg id="arrows"></svg>
+    <div id="title">Secure Mode</div>
+    <div id="hint">Hover a class to explore dependencies</div>
+    <div id="legend"></div>
+  </div>
+</div>
+
+<div id="detail">
+  <div id="detail-head">
+    <div id="detail-name"></div>
+    <div id="detail-badge"></div>
+  </div>
+  <div id="detail-desc"></div>
+  <div id="detail-props"></div>
+</div>
+
+<script>
+// ─── Data ────────────────────────────────────────────────────────────────────
+
+const LAYERS = {
+  model:    { label: 'Model',    color: '#58a6ff' },
+  protocol: { label: 'Protocol', color: '#f0883e' },
+  crypto:   { label: 'Crypto',   color: '#bc8cff' },
+  security: { label: 'Security', color: '#ff7b72' },
+  ui:       { label: 'UI',       color: '#3fb950' },
+  app:      { label: 'App',      color: '#79c0ff' },
+};
+
+const DATA = {
+
+  'AppLayerConfig': {
+    layer: 'model',
+    pos: { x: 370, y: 42 },
+    desc: 'Single SwiftData row storing all Secure Mode config. All sensitive fields are AES-GCM encrypted before storage. Optional properties avoid schema migrations on evolution — nil fields are safe defaults.',
+    props: [
+      { name: 'sealedNormalVerifier: Data?',  desc: 'AES-GCM(HKDF(seKey, normalLabel ∥ pin), sentinel). nil → .noPIN. Non-nil presence alone confirms a PIN exists without revealing its value.' },
+      { name: 'sealedDuressVerifier: Data?',  desc: 'Same construction with duressLabel. nil → .pinOnly. Non-nil → Secure Mode is active. Duress label ensures the two verifiers cannot be cross-checked.' },
+      { name: 'wipeThresholdEncrypted: Data?', desc: 'Encrypted Int. Consecutive wrong PINs before wipe trigger. Encrypted so the value "3" cannot be read from a raw SQLite dump — prevents threshold probing.' },
+      { name: 'persistedDepth: Data?',        desc: 'Encoded as signed Int: N≥0 → gate active at depth N. -(N+1) → gate down at depth N. Always non-nil after first write, so presence is never a forensic tell.' },
+    ],
+    deps: [],
+  },
+
+  'Contact.Profile': {
+    layer: 'model',
+    pos: { x: 910, y: 42 },
+    desc: 'SwiftData contact record. The visibleThroughDepth field implements per-contact depth-aware visibility, enabling the Secure Mode filter with no central safe-list on AppLayerConfig and no count-inference risk.',
+    props: [
+      { name: 'identifier: String',          desc: 'Stable UUID used as the membership key in all safe-contact lookups inside Manager.Security. Persisted, not derived.' },
+      { name: 'visibleThroughDepth: Data?',  desc: 'Encrypted Int?. nil = visible everywhere. 0 = sensitive (hidden from all duress depths). N = visible at depths 0..N. AES-GCM ciphertext is the same size for all values — no size-based count inference.' },
+    ],
+    deps: [],
+  },
+
+  'VaultEntry': {
+    layer: 'model',
+    pos: { x: 1150, y: 42 },
+    desc: 'SwiftData vault entry. Mirrors Contact.Profile\'s depth-visibility approach so vault items automatically respect the active depth without any special-casing in the vault UI.',
+    props: [
+      { name: 'visibleThroughDepth: Data?',  desc: 'Same signed encoding as Contact.Profile. Entries created at depth N receive encrypt(N) so they are hidden from all deeper layers. nil = legacy / visible everywhere.' },
+    ],
+    deps: [],
+  },
+
+  'KeyManagerProtocol': {
+    layer: 'protocol',
+    pos: { x: 36, y: 195 },
+    desc: 'Protocol abstracting all Secure Enclave key operations. Allows TestKeyManager (in-memory P-256, no SE) to be injected in unit tests without changing any business logic in Manager.Security or PINManager.',
+    props: [
+      { name: 'deriveSecureModeKey()',  desc: 'Returns the P-256 SE key used as root material for all PIN verifier construction and verification. Returns nil on simulator — callers guard and throw .keyDerivationFailed.' },
+    ],
+    deps: [],
+  },
+
+  'Manager.LayerStore': {
+    layer: 'crypto',
+    pos: { x: 240, y: 415 },
+    desc: 'Forensic deniability maintenance and cryptographic container for sensitive contacts during an active Secure Mode session. Writes a no-op encrypted file on first launch and rewrites it every 24 hours so a UUID-named .occbak file exists long before Secure Mode is configured — its creation timestamp cannot be correlated with activation. See LayerStore.md for the full 32-slot wire format design.',
+    props: [
+      { name: 'maintain()',          desc: 'Entry point called from OccultaApp.init() behind the secureMode feature flag. Creates the blobs/ directory if absent, skips if the existing file is fresh (< 24h), removes stale file and writes a new one. Fails silently — non-fatal, retried on next launch. Side effect: first call also creates the SE key, decoupling key-creation timestamp from activation.' },
+      { name: 'deriveKey(from:)',    desc: 'HKDF-SHA256(IKM: seKey, info: "layer-store-key", outputLen: 32). Domain-separated from all PIN verifier keys via the info string — compromise of the layer key does not expose PIN material.' },
+      { name: 'bucketSize(for:) -> Int', desc: 'Smallest power-of-2 ≥ contentLength, floor 256 bytes. Plaintext is padded before AES-GCM so the ciphertext size reveals only a tier (256–512, 512–1024, …), not the exact contact or vault count.' },
+      { name: 'maxAge: TimeInterval', desc: '86 400 s (24 h). File is stale after this interval and rewritten with a fresh random payload and a new UUID filename. Decouples Last-Modified from meaningful events — PIN entry, activation, and contact changes cannot be inferred from timestamp deltas.' },
+    ],
+    deps: ['KeyManagerProtocol'],
+  },
+
+  'Manager.Key': {
+    layer: 'crypto',
+    pos: { x: 36, y: 370 },
+    desc: 'Concrete KeyManagerProtocol implementation. All PIN crypto is hardware-bound via the SE key — off-device brute force is blocked regardless of the PIN space size or hash iterations.',
+    props: [
+      { name: 'deriveSecureModeKey()',  desc: 'Accesses SE key with an opaque UUID tag. Opaque tag prevents feature identification via Keychain enumeration. The master identity key uses the same pattern ("master.key.privacy.turtles.are.cute").' },
+    ],
+    deps: ['KeyManagerProtocol'],
+  },
+
+  'PINManager': {
+    layer: 'crypto',
+    pos: { x: 36, y: 535 },
+    desc: 'Stateless crypto primitive used exclusively by Manager.Security. Builds and verifies AES-GCM PIN verifiers. Every function is pure — no state, no side effects, fully testable.',
+    props: [
+      { name: 'buildVerifier(pin:label:seKey:)', desc: 'Derives 32-byte AES key via HKDF(seKey, info: label ∥ pin), then AES-GCM seals a fixed sentinel. Label separates the normal and duress key spaces so the same PIN can never accidentally open both.' },
+      { name: 'checkVerifier(pin:label:verifier:seKey:)', desc: 'Pure Bool check: re-derive key from pin, attempt AES-GCM open. No counters, no state. Used by all no-side-effect paths: checkNormalPIN, collision detection, Settings confirmations.' },
+      { name: 'wrongPINLimit: Int',             desc: 'Maximum consecutive wrong lock-screen PINs before .wipe is returned. Co-located here so wipe-threshold logic is in one place. Separate from the consecutiveDuress threshold in AppLayerConfig.' },
+    ],
+    deps: [],
+  },
+
+  'Manager.Security': {
+    layer: 'security',
+    pos: { x: 600, y: 300 },
+    desc: '@Observable hub for all Secure Mode logic. Owned by OccultaApp, injected via SwiftUI environment. Every security-relevant state transition — PIN setup, verification, depth change, gate control — goes through here.',
+    props: [
+      { name: 'state: State',                  desc: '.noPIN / .pinOnly / .active / .duress. Derived from AppLayerConfig on init — never a stored plaintext flag. All UI branching in Settings and elsewhere reads this.' },
+      { name: 'currentDepth: Int',             desc: 'In-memory only. 0 = real layer, 1+ = duress depth. Reset to 0 on app kill. Determines which contacts and vault entries the filter passes. Restored on launch from persistedDepth when gate is down.' },
+      { name: 'pinEnabled: Bool',              desc: 'Whether the PIN gate overlay is shown at the current depth. False when the gate was lowered via disablePIN(at:confirmingPIN:). Persisted per-depth in AppLayerConfig.pinEnabledPerDepth — survives app kill.' },
+      { name: 'requiresPIN: Bool',             desc: 'Computed: sealedNormalVerifier != nil. True whenever any verifier exists. Distinct from pinEnabled — verifiers can exist while the gate is intentionally down (coerced disable-PIN scenario).' },
+      { name: 'isRestricted: Bool',            desc: 'Computed: currentDepth > 0. Guards all write paths that must not execute from a duress layer: contact reclassification, share index rebuild with full contact list.' },
+      { name: 'lastUnlockDate: Date?',         desc: 'In-memory. Records last successful PINEntry verification. OccultaApp suppresses the PIN prompt within a 5-min grace period. Always nil in restricted mode — every return from background requires PIN.' },
+    ],
+    deps: ['AppLayerConfig', 'PINManager', 'KeyManagerProtocol', 'Contact.Profile', 'VaultEntry'],
+  },
+
+  'PINEntry': {
+    layer: 'ui',
+    pos: { x: 345, y: 590 },
+    desc: 'Reusable PIN entry view. Neutral black, no app branding — visually identical across the lock screen, activation flow, and Settings. Multiple modes isolate caller intent from internal routing logic.',
+    props: [
+      { name: 'mode: Mode',                    desc: '.verify (full state machine, counter mutation), .verifyNormal (checkNormalPIN, no counters — Settings confirmations), .setup (enter+confirm, no internal security call — caller handles logic in onNormal), .confirmThenSet (two-phase: confirm existing then set new PIN).' },
+      { name: 'onNormal: (String) -> Void',    desc: 'Called on successful normal-PIN outcome. Receives the raw PIN string so callers can forward it to Manager.Security without re-prompting. The string is memset-zeroed in PINEntry after routing.' },
+      { name: 'onDuress: () -> Void',          desc: 'Called when verify() returns .duress. Wired in OccultaApp to lower isLocked and set the duress share-index filter. Empty closure in all Settings sheets.' },
+      { name: 'onWipe: () -> Void',            desc: 'Called on .wipe result. Wired to Manager.App.eraseAllData() in OccultaApp. Currently a stub pending dry-test of the full wipe flow.' },
+      { name: 'digits: Data',                  desc: 'Zero-padded Data buffer instead of [Int]. memset-zeroed after submit() routes the result — removes PIN heap residue. A fixed 500ms gate (isVerifying) equalises timing across all outcomes.' },
+    ],
+    deps: ['Manager.Security'],
+  },
+
+  'SecureModeSetupFlow': {
+    layer: 'ui',
+    pos: { x: 600, y: 620 },
+    desc: '4-step activation sheet: Education → PIN setup (confirmThenSet) → Contact classification → Review & Activate. Collecting PINs in local state avoids passing them through environment or bindings where they could be observed.',
+    props: [
+      { name: 'collectedNormal: String',  desc: 'Holds the confirmed existing normal PIN from phase 1 of .confirmThenSet. Passed to activateSecureMode(confirmingEntryPIN:duressPIN:) on the final step, then immediately zeroed.' },
+      { name: 'collectedDuress: String',  desc: 'Holds the new duress PIN from phase 2 of .confirmThenSet. Same lifecycle — passed and zeroed together with collectedNormal in the Summary step\'s onActivate closure.' },
+      { name: 'path: NavigationPath',     desc: 'Drives the 4-step NavigationStack. Each step is appended only after its precondition is satisfied: .pinSetup only after education, .contacts after PINs are collected, .summary after contacts saved.' },
+    ],
+    deps: ['Manager.Security', 'PINEntry', 'ContactClassification'],
+  },
+
+  'ContactClassification': {
+    layer: 'ui',
+    pos: { x: 870, y: 490 },
+    desc: 'Lets the user move contacts between Visible and Sensitive groups. Used both in the activation flow (step 3) and as a standalone Settings entry. Guards all saves against writes from a restricted depth.',
+    props: [
+      { name: 'sensitiveIDs: Set<String>',  desc: 'Local session set — which contacts the user has moved to Sensitive this visit. Populated from Manager.Security.isSensitive() on appear. Not committed until Save/Next is tapped.' },
+      { name: 'confirmLabel: String',       desc: '"Next" in the activation flow, "Save" from Settings. Decouples the button label so the same component serves both contexts without duplication.' },
+      { name: 'onConfirm: (() -> Void)?',   desc: 'nil when standalone (just dismiss). Non-nil in the activation flow — called after save() to push the Summary step. The guard !isRestricted in save() ensures a coercer cannot reclassify from the duress view.' },
+    ],
+    deps: ['Manager.Security', 'Contact.Profile'],
+  },
+
+  'Settings.SecuritySettings': {
+    layer: 'ui',
+    pos: { x: 1155, y: 300 },
+    desc: 'Private nested struct inside Settings. 4-state security panel. All branching is driven by Manager.Security.state and pinEnabled — zero local security state. One of three sheet triggers.',
+    props: [
+      { name: 'pinEnabledBinding: Binding<Bool>',  desc: 'get: security.pinEnabled (not requiresPIN). Reflects the true user-visible toggle state — OFF when the gate is down even though verifiers still exist. set: always opens the PIN sheet.' },
+      { name: 'showingPINSheet: Bool',             desc: 'Presents a context-sensitive PINEntry sheet. Branch: !pinEnabled → .setup for re-enable. state==.pinOnly → .verifyNormal + deactivatePIN. state==.active/.duress → .setup + disablePIN(at:confirmingPIN:).' },
+      { name: 'showingSetupFlow: Bool',            desc: 'Presents SecureModeSetupFlow. Shown when state ∈ {.pinOnly, .duress} — both states can go deeper. Dimmed (disabled) in .noPIN since a PIN must exist before Secure Mode can be activated.' },
+      { name: 'showingDeactivateSheet: Bool',      desc: 'Presents PINEntry(.verifyNormal) → deactivateSecureMode(). Visible only in .active state. Hidden in .duress — showing "Deactivate Protection" in the duress view directly reveals Secure Mode is on.' },
+    ],
+    deps: ['Manager.Security', 'PINEntry', 'SecureModeSetupFlow'],
+  },
+
+  'OccultaApp': {
+    layer: 'app',
+    pos: { x: 1155, y: 555 },
+    desc: '@main app entry. Owns Manager.Security and drives the PIN gate overlay. Applies .completeFileProtection on every SwiftData save notification. Filters the share index at every scene activation.',
+    props: [
+      { name: 'security: Manager.Security',  desc: 'Owned here as @State and injected into the entire view hierarchy via .environment(). Single owner — never duplicated in child views.' },
+      { name: 'storeURL: URL',               desc: 'Retained from ModelConfiguration at init. Used by reapplyFileProtection() to re-stamp .completeFileProtection on store + -wal + -shm after every NSManagedObjectContextDidSaveNotification.' },
+      { name: 'security.maintainLayerStore()', desc: 'Called in init() after applySecureDeletePragma, gated on FeatureFlags.isEnabled(.secureMode). Runs before any manager is constructed so the SE key creation and layer store file timestamp both predate Secure Mode configuration.' },
+    ],
+    deps: ['Manager.Security', 'PINEntry', 'Manager.LayerStore'],
+  },
+
+};
+
+// ─── Render legend ───────────────────────────────────────────────────────────
+
+const legendEl = document.getElementById('legend');
+Object.entries(LAYERS).forEach(([key, layer]) => {
+  legendEl.innerHTML += `<div class="leg"><div class="leg-dot" style="background:${layer.color}"></div>${layer.label}</div>`;
+});
+
+// ─── Render cards ────────────────────────────────────────────────────────────
+
+const canvas  = document.getElementById('canvas');
+const cardMap = {};
+
+Object.entries(DATA).forEach(([id, cls]) => {
+  const color = LAYERS[cls.layer].color;
+  const div   = document.createElement('div');
+  div.className = `card`;
+  div.id        = `card-${id}`;
+  div.style.cssText = `left:${cls.pos.x}px; top:${cls.pos.y}px; --c:${color}`;
+
+  const propRows = cls.props.map(p => {
+    const name = p.name.split(':')[0];
+    const type = p.name.includes(':') ? p.name.slice(p.name.indexOf(':')) : '';
+    return `<div class="prop-row"><span class="pname">${name}</span><span style="opacity:.6">${type}</span></div>`;
+  }).join('');
+
+  div.innerHTML = `
+    <div class="card-header">
+      <div class="card-dot" style="background:${color}"></div>
+      <div class="card-name">${id}</div>
+    </div>
+    <div class="card-layer-badge">${LAYERS[cls.layer].label}</div>
+    <div class="card-divider"></div>
+    <div class="card-props">${propRows}</div>
+  `;
+
+  canvas.appendChild(div);
+  cardMap[id] = div;
+});
+
+// ─── Draw arrows ─────────────────────────────────────────────────────────────
+
+const svg    = document.getElementById('arrows');
+const arrMap = {};
+
+function cardRect(id) {
+  const el = cardMap[id];
+  return {
+    x: parseFloat(el.style.left),
+    y: parseFloat(el.style.top),
+    w: el.offsetWidth,
+    h: el.offsetHeight,
+  };
+}
+
+function edgePoint(fromId, toId) {
+  const r  = cardRect(fromId);
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const t  = cardRect(toId);
+  const tx = t.x + t.w / 2;
+  const ty = t.y + t.h / 2;
+
+  const dx = tx - cx, dy = ty - cy;
+  const sx = Math.abs(dx) > 1e-6 ? (r.w / 2 + 4) / Math.abs(dx) : 1e9;
+  const sy = Math.abs(dy) > 1e-6 ? (r.h / 2 + 4) / Math.abs(dy) : 1e9;
+  const s  = Math.min(sx, sy);
+  return { x: cx + dx * s, y: cy + dy * s };
+}
+
+function buildArrows() {
+  // Clear old paths but keep defs
+  [...svg.querySelectorAll('path')].forEach(p => p.remove());
+
+  const defs = svg.querySelector('defs') || (() => {
+    const d = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    svg.prepend(d);
+    return d;
+  })();
+
+  defs.innerHTML = `
+    <marker id="ah"   markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#30363d"/>
+    </marker>
+    <marker id="ah-lit" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="rgba(255,255,255,0.7)"/>
+    </marker>
+  `;
+
+  Object.entries(DATA).forEach(([fromId, cls]) => {
+    cls.deps.forEach(toId => {
+      if (!DATA[toId]) return;
+      const key = `${fromId}||${toId}`;
+      const f   = edgePoint(fromId, toId);
+      const t   = edgePoint(toId, fromId);
+
+      // Slight perpendicular bulge for readability
+      const mx  = (f.x + t.x) / 2 + (t.y - f.y) * 0.10;
+      const my  = (f.y + t.y) / 2 - (t.x - f.x) * 0.10;
+
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M${f.x.toFixed(1)},${f.y.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${t.x.toFixed(1)},${t.y.toFixed(1)}`);
+      path.setAttribute('class', 'arr');
+      path.setAttribute('marker-end', 'url(#ah)');
+      path.dataset.from = fromId;
+      path.dataset.to   = toId;
+      svg.appendChild(path);
+      arrMap[key] = path;
+    });
+  });
+}
+
+// ─── Interaction ─────────────────────────────────────────────────────────────
+
+function neighbours(id) {
+  const set = new Set([id]);
+  (DATA[id]?.deps || []).forEach(d => set.add(d));
+  Object.entries(DATA).forEach(([oid, cls]) => { if (cls.deps.includes(id)) set.add(oid); });
+  return set;
+}
+
+function applyHover(id) {
+  const nb = neighbours(id);
+
+  Object.keys(DATA).forEach(cid => {
+    const el = cardMap[cid];
+    el.classList.remove('dimmed', 'lit', 'hovered');
+    if (cid === id)       el.classList.add('hovered');
+    else if (nb.has(cid)) el.classList.add('lit');
+    else                  el.classList.add('dimmed');
+  });
+
+  Object.entries(arrMap).forEach(([key, path]) => {
+    const [f, t] = key.split('||');
+    path.classList.remove('dimmed', 'lit');
+    if ((f === id || t === id)) {
+      path.classList.add('lit');
+      path.setAttribute('stroke', LAYERS[DATA[id].layer].color);
+      path.setAttribute('marker-end', 'url(#ah-lit)');
+    } else {
+      path.classList.add('dimmed');
+      path.setAttribute('stroke', '#30363d');
+      path.setAttribute('marker-end', 'url(#ah)');
+    }
+  });
+
+  showDetail(id);
+}
+
+function clearHover() {
+  Object.keys(DATA).forEach(cid => {
+    cardMap[cid].classList.remove('dimmed', 'lit', 'hovered');
+  });
+  Object.entries(arrMap).forEach(([, path]) => {
+    path.classList.remove('dimmed', 'lit');
+    path.setAttribute('stroke', '#30363d');
+    path.setAttribute('marker-end', 'url(#ah)');
+  });
+  hideDetail();
+}
+
+// ─── Detail panel ────────────────────────────────────────────────────────────
+
+function showDetail(id) {
+  const cls   = DATA[id];
+  const color = LAYERS[cls.layer].color;
+  const panel = document.getElementById('detail');
+
+  document.getElementById('detail-name').textContent  = id;
+  document.getElementById('detail-name').style.color  = color;
+  document.getElementById('detail-badge').textContent = LAYERS[cls.layer].label;
+  document.getElementById('detail-desc').textContent  = cls.desc;
+
+  const deps = cls.deps.length
+    ? ` · depends on: ${cls.deps.join(', ')}`
+    : '';
+  document.getElementById('detail-badge').textContent = LAYERS[cls.layer].label + deps;
+
+  document.getElementById('detail-props').innerHTML = cls.props.map(p => `
+    <div class="dprop">
+      <div class="dprop-name" style="color:${color}">${p.name}</div>
+      <div class="dprop-desc">${p.desc}</div>
+    </div>
+  `).join('');
+
+  panel.classList.add('open');
+}
+
+function hideDetail() {
+  document.getElementById('detail').classList.remove('open');
+}
+
+// ─── Bind events ─────────────────────────────────────────────────────────────
+
+Object.keys(DATA).forEach(id => {
+  const el = cardMap[id];
+  el.addEventListener('mouseenter', () => applyHover(id));
+  el.addEventListener('mouseleave', clearHover);
+});
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+
+window.addEventListener('load', () => {
+  // Wait one frame for layout to settle
+  requestAnimationFrame(() => requestAnimationFrame(buildArrows));
+});
+
+</script>
+</body>
+</html>

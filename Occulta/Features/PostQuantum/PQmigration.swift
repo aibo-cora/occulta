@@ -37,22 +37,27 @@ struct DatabaseMigration {
     ///   - legacyCrypto: Crypto manager configured with the v1 key path.
     ///   - newCrypto: Crypto manager configured with the v2 hybrid key path.
     static func migrateToV2(modelContext: ModelContext, legacyCrypto: CryptoProtocol, newCrypto: CryptoProtocol) throws {
-        let descriptor = FetchDescriptor<Contact.Profile>()
-        let allContacts = try modelContext.fetch(descriptor)
+        let v1 = EncryptionScheme.v1_identityDerived.rawValue
+        let descriptor = FetchDescriptor<Contact.Profile>(
+            predicate: #Predicate { $0.encryptionScheme == v1 }
+        )
+        let contacts = try modelContext.fetch(descriptor)
 
-        for contact in allContacts {
-            // Skip already-migrated records (crash recovery path).
-            guard contact.encryptionScheme == EncryptionScheme.v1_identityDerived.rawValue else {
-                continue
+        for contact in contacts {
+            if contact.deletionToken == nil {
+                #if DEBUG
+                let debugName = contact.givenName.decrypt()
+                #endif
+
+                try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+
+                #if DEBUG
+                debugPrint("Migrated contact to v2 encryption scheme, contact - \(debugName)")
+                #endif
             }
-            
-            try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
-            
-            debugPrint("Migrated contact to v2 encryption scheme, contact - \(contact.givenName.decrypt())")
-
+            // Soft-deleted rows: skip re-encryption but advance the scheme marker
+            // so they are never fetched again on subsequent launches.
             contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
-
-            // Save after each record for crash safety.
             try modelContext.save()
         }
     }
