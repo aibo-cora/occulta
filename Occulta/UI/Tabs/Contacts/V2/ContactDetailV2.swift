@@ -55,7 +55,7 @@ extension Contact {
                     if self.needsExchange {
                         ExchangeHeroV2(identifier: self.identifier)
                     } else {
-                        ComposeHeroV2(identifier: self.identifier, firstName: self.givenName)
+                        ComposeHeroV2(identifier: self.identifier)
 
                         Text(self.profile?.encryptionSchemeLabel ?? "")
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
@@ -171,12 +171,20 @@ private struct StatusChipV2: View {
 
 private struct ComposeHeroV2: View {
     let identifier: String
-    let firstName: String
 
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(VaultManager.self) private var vaultManager: VaultManager?
-    
+
+    @Query private var contacts: [Contact.Profile]
+
+    init(identifier: String) {
+        self.identifier = identifier
+        self._contacts = Query(filter: #Predicate { $0.identifier == identifier })
+    }
+
+    private var firstName: String { self.contacts.first?.givenName.decrypt() ?? "" }
+
     @State private var messageText = ""
     @State private var attachments: [Occulta.File] = []
     @State private var selectedMediaItems: [PhotosPickerItem] = []
@@ -186,9 +194,25 @@ private struct ComposeHeroV2: View {
     @State private var isShowingError = false
     @State private var errorMessage = ""
 
-    private var ciphertextEstimate: Int {
-        max(256, self.messageText.count * 4 + 256 + self.attachments.count * 1024)
+    private var isV4: Bool { self.contacts.first?.maxBundleVersion != nil }
+
+    private var estimatedBundleSize: Int {
+        let textBytes = self.messageText.utf8.count
+        let fileBytes = self.attachments.reduce(0) { acc, file in
+            guard let url = file.url,
+                  let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            else { return acc }
+            return acc + size
+        }
+        // 195 = 167-byte binary header + 28-byte AES-GCM overhead; 80 bytes per-file metadata JSON
+        let raw = max(195, textBytes + fileBytes + 195 + self.attachments.count * 80)
+        return self.isV4 ? raw : Int(Double(raw) * 2.37)
     }
+
+    private var estimatedBundleSizeLabel: String {
+        ByteCountFormatter.string(fromByteCount: Int64(self.estimatedBundleSize), countStyle: .file)
+    }
+
     private var canEncrypt: Bool {
         !self.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         || !self.attachments.isEmpty
@@ -254,10 +278,12 @@ private struct ComposeHeroV2: View {
 
                     HStack(spacing: 6) {
                         Circle().fill(Color.occultaVerified).frame(width: 6, height: 6)
-                        
-                        Text("ciphertext · \(self.ciphertextEstimate) bytes")
+
+                        Text("~\(self.estimatedBundleSizeLabel)")
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
+                            .contentTransition(.numericText())
+                            .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
                 }
                 Spacer()

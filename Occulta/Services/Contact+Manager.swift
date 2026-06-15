@@ -1073,7 +1073,7 @@ extension ContactManager {
         guard
             let enc  = contact.maxBundleVersion,
             let raw  = try? crypto.decrypt(data: enc),
-            let byte = raw?.first
+            let byte = raw.first
         else { return .v3fs }
         return WireHandle.byteToVersion(byte) ?? .v3fs
     }
