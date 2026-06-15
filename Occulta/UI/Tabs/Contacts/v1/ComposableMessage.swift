@@ -518,8 +518,7 @@ struct ComposableMessage: View {
                 // Encode & Encrypt
                 
                 let basket = Basket(files: processed)
-                let encoded = try JSONEncoder().encode(basket)
-                
+
                 let contactPub = try? self.contactManager?.currentPublicKey(forIdentifier: self.identifier)
                 let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
                 let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
@@ -533,7 +532,7 @@ struct ComposableMessage: View {
                 let encryptedData: Data?
                 do {
                     encryptedData = try self.contactManager?.encryptBundle(
-                        data:            encoded,
+                        basket:          basket,
                         for:             identifier,
                         shardOperations: shardOps.isEmpty ? nil : shardOps,
                         custodyManifest: manifest_,
@@ -543,8 +542,8 @@ struct ComposableMessage: View {
                     // Quantum material corrupted or missing — fall back to classical,
                     // strip shard ops (they stay pending and will retry after re-exchange).
                     encryptedData = try self.contactManager?.encryptBundle(
-                        data: encoded,
-                        for:  identifier
+                        basket: basket,
+                        for:    identifier
                     )
                 } catch {
                     debugPrint("Error: \(error)")

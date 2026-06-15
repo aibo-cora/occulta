@@ -495,9 +495,10 @@ private struct RootView: View {
             debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
 
             let decrypted: (plaintext: Data, ownerID: String)
+            var decodedBundleVersion: OccultaBundle.Version = .v3fs
 
             switch bundle?.version {
-            case .v3fs:
+            case .v3fs, .v4:
                 guard let bundle else {
                     throw ContactManager.Errors.messageHasNoData
                 }
@@ -544,6 +545,7 @@ private struct RootView: View {
                     )
                 }
 
+                decodedBundleVersion = bundle.version
                 decrypted = (sealed.message, ownerID)
             case .unsupported:
                 throw OccultaBundle.BundleError.unsupportedVersion
@@ -555,7 +557,12 @@ private struct RootView: View {
                 try self.passSecurityControl(identifier: decrypted.ownerID)
             }
 
-            let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+            let basket: Basket
+            if decodedBundleVersion == .v4 {
+                basket = try WireHandle.decode(basket: decrypted.plaintext)
+            } else {
+                basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+            }
 
             // ── Write file attachments, photos, videos to temp directory ─────────────────
 
@@ -659,28 +666,20 @@ private struct RootView: View {
             }
 
             // 3. Encrypt via the full FS path — same as in-app messages
-            let basket = Basket(files: files, date: Date())
-            var basketData = try JSONEncoder().encode(basket)
-
-            let contactID  = manifest.contactIdentifier
+            let basket    = Basket(files: files, date: Date())
+            let contactID = manifest.contactIdentifier
             let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
             let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
             let manifest_  = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
             let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
 
             let occData = try self.contactManager.encryptBundle(
-                data:            basketData,
+                basket:          basket,
                 for:             contactID,
                 shardOperations: shardOps.isEmpty ? nil : shardOps,
                 custodyManifest: manifest_,
                 expectedShards:  expected
             )
-
-            // Zero all plaintext buffers before deallocation.
-            // Swift Data uses COW — if Basket copied the buffers, the originals
-            // may not be the same allocation. Best-effort; Swift doesn't guarantee zeroing.
-            _ = basketData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            basketData = Data()
             for i in files.indices {
                 _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
             }

@@ -26,7 +26,7 @@ extension Manager.Crypto {
     /// ## SE ordering
     /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
     /// (generateBatch) are done by the caller (ContactManager) before this call.
-    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil) throws -> OccultaBundle {
+    func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil, version: OccultaBundle.Version = OccultaBundle.currentVersion) throws -> OccultaBundle {
         guard
             recipientMaterial.count == 65
         else {
@@ -73,22 +73,22 @@ extension Manager.Crypto {
             let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: ephemeralPublicKeyData, prekeyID: contactPrekey.id)
 
             /// Adding `version` and `secrecy` to authenticate against tampering.
-            let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
+            let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
 
             guard
                 let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
             else { throw EncryptionError.sealFailed }
 
             debugPrint("Sealing message, using forward secrecy prekey...")
-            
-            return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
+
+            return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
         }
-        
+
         debugPrint("Sealing message, using long-term identity key...")
 
         // ── Long-term fallback path (contactPrekey nil) ──────────────────
         // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(message: message, recipientMaterial: recipientMaterial, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, quantumMaterial: quantumMaterial)
+        return try self.fallback(message: message, recipientMaterial: recipientMaterial, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, quantumMaterial: quantumMaterial, version: version)
     }
 }
 
@@ -133,7 +133,7 @@ extension Manager.Crypto {
 // MARK: - Private helpers
 
 extension Manager.Crypto {
-    private func fallback(message: Data, recipientMaterial: Data, fingerprintNonce: Data, senderFingerprint: Data, quantumMaterial: QuantumKeyMaterial?) throws -> OccultaBundle {
+    private func fallback(message: Data, recipientMaterial: Data, fingerprintNonce: Data, senderFingerprint: Data, quantumMaterial: QuantumKeyMaterial?, version: OccultaBundle.Version) throws -> OccultaBundle {
         guard
             let sessionKey = self.deriveSessionKey(using: recipientMaterial, quantumMaterial: quantumMaterial)
         else {
@@ -144,7 +144,7 @@ extension Manager.Crypto {
         let mode    = quantumMaterial != nil ? OccultaBundle.Mode.longTermFallback : .longTermNoPQ
         let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: Data(), prekeyID: nil)
         /// Adding `version` and `secrecy` to authenticate against tampering.
-        let aad = try OccultaBundle.computeAdditionalAuthentication(version: OccultaBundle.currentVersion, secrecy: secrecy)
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
 
         guard
             let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
@@ -152,7 +152,7 @@ extension Manager.Crypto {
             throw EncryptionError.keyDerivationFailed
         }
 
-        return OccultaBundle(version: OccultaBundle.currentVersion, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce:  fingerprintNonce, senderFingerprint: senderFingerprint)
+        return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
     }
 }
 

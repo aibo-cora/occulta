@@ -353,13 +353,12 @@ private struct ComposeHeroV2: View {
                 }
 
                 let basket  = Basket(files: files)
-                let encoded = try JSONEncoder().encode(basket)
-                
+
                 let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: self.identifier)
                 let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
                 let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
                 let expected   = try? self.shardCustodyManager.flatMap { try $0.buildExpectedShards(for: self.identifier, vaultManager: self.vaultManager!) }
-                
+
                 #if DEBUG
                 debugPrint("Manifest: \(manifest_?.description ?? "nil")")
                 debugPrint("Expected: \(expected?.description ?? "nil")")
@@ -369,7 +368,7 @@ private struct ComposeHeroV2: View {
                 let encrypted: Data
                 do {
                     encrypted = try self.contactManager.encryptBundle(
-                        data:            encoded,
+                        basket:          basket,
                         for:             identifier,
                         shardOperations: shardOps.isEmpty ? nil : shardOps,
                         custodyManifest: manifest_,
@@ -379,8 +378,8 @@ private struct ComposeHeroV2: View {
                     // Quantum material corrupted or missing — fall back to classical,
                     // strip shard ops (they stay pending and will retry after re-exchange).
                     encrypted = try self.contactManager.encryptBundle(
-                        data: encoded,
-                        for:  identifier
+                        basket: basket,
+                        for:    identifier
                     )
                 } catch {
                     encrypted = Data()
