@@ -7,7 +7,7 @@
 //  ⚠️ NEVER persist this to disk. If the app is terminated, outstanding
 //  challenges are lost — that is correct behaviour. Persistence would add
 //  an encrypted-at-rest attack surface for a record whose maximum lifetime
-//  is `IdentityChallenge.timestampWindow` (5 minutes).
+//  is `IdentityChallenge.timestampWindow`.
 //
 
 import Foundation

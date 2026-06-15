@@ -291,7 +291,6 @@ private struct RootView: View {
         case .covered:
             // UIKit cover is on top; render nothing visible beneath it.
             Color.clear.ignoresSafeArea()
-
         case .pinRequired:
             PINEntry(
                 onAuthenticated: { _ in
@@ -308,7 +307,6 @@ private struct RootView: View {
             // pinViewAppeared() is called here (not inside PINEntry) so the UIKit
             // cover is removed as soon as PINEntry is on screen.
             .onAppear { self.appScreen.pinViewAppeared() }
-
         case .unlocked:
             if !self.hasCompleted {
                 OnboardingView()

@@ -162,19 +162,29 @@ private struct EducationView: View {
                     title: "Cleared vault",
                     description: "Vault items will not be visible in alternate views."
                 )
+                FeatureRow(
+                    icon: "eye.slash.fill",
+                    color: Color(.systemIndigo),
+                    title: "Privacy screen",
+                    description: "A blank screen covers the app whenever it's inactive, keeping your content out of the system app switcher."
+                )
             }
 
-            Section {
-                Button(action: self.onContinue) {
-                    Text("Continue")
-                        .frame(maxWidth: .infinity)
-                        .fontWeight(.semibold)
-                }
-                .prominentButtonStyle()
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            Button(action: self.onContinue) {
+                Text("Continue")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.occultaAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: Color.occultaAccent.opacity(0.27), radius: 10, y: 4)
             }
+            .listRowInsets(EdgeInsets())
+            .buttonStyle(.plain)
+            .padding()
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
     }
 }
 

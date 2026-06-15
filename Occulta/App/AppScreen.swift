@@ -66,6 +66,7 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     /// the guard inside installCover() prevents double-installation.
     func sceneWillEnterForeground(_ scene: UIScene) {
         guard let ws = scene as? UIWindowScene else { return }
+        guard self.secureModeActive else { return }
         self.installCover(for: ws)
     }
 
@@ -73,7 +74,15 @@ final class AppScreen: NSObject, UIWindowSceneDelegate, ObservableObject {
     /// so iOS captures the cover (not live content) in the app-switcher snapshot.
     func sceneWillResignActive(_ scene: UIScene) {
         guard let ws = scene as? UIWindowScene else { return }
+        guard self.secureModeActive else { return }
         self.installCover(for: ws)
+    }
+
+    /// True when Secure Mode is active (duress verifier exists at any depth).
+    /// Returns true when security isn't wired yet (cold launch) as a safe default.
+    private var secureModeActive: Bool {
+        guard let security = self.security else { return true }
+        return security.isSecureModeActive
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

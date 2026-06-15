@@ -7,223 +7,235 @@
 
 import SwiftData
 import SwiftUI
-import Combine
+import CryptoKit
 
 struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = true
-    
+    @State private var confirmingPayload: ExchangeManager.ExchangePhase.Payload?
+
     @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
-    
+
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     @Environment(\.dismiss) private var dismiss
-    
+
     init(identifier: String) {
         let predicate = #Predicate<Contact.Profile> {
             $0.identifier == identifier
         }
-        
         self._contacts = Query(filter: predicate)
     }
-    
-    /// First name of the contact
+
     var name: String {
         self.contacts.first?.givenName.decrypt() ?? "Anonymous"
     }
-    
+
     var identifier: String {
         self.contacts.first?.identifier ?? ""
     }
-    
-    @State private var receivedIdentityKey: Contact.Draft.Key?
-    @State private var failureAlert: Bool = false
 
     var body: some View {
         Group {
-            if self.exchangeManager.inProgress {
-                VStack {
-                    StartingSession(withContact: self.identifier)
-                    
-                    Button {
-                        self.exchangeManager.finish()
-                    } label: {
-                        Text("Cancel")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .onReceive(self.exchangeManager.receivedIdentity) { received in
-                    if let contactsIdentity = received, let myIdentity = try? Manager.Key().retrieveIdentity() {
-                        /// I am the owner of this key.
-                        ///
-                        print("Received identity: \(contactsIdentity), displaying result...")
-                        
-                        let date = String(Date.now.timeIntervalSince1970)
-                        
-                        self.receivedIdentityKey = Contact.Draft.Key(material: contactsIdentity, owner: myIdentity, date: date)
-                    }
-                }
-                .onReceive(self.exchangeManager.completedExchange, perform: { quantumExchange in
-                    let myIdentity = try? Manager.Key().retrieveIdentity()
-                    
-                    #if DEBUG
-                    debugPrint("Received quantum exchange: \(String(describing: quantumExchange)), my identity = \(String(describing: myIdentity)), setting key.,.")
-                    #endif
-                    if let quantumExchange = quantumExchange, let myIdentity = myIdentity {
-                        /// I am the owner of this key.
-                        ///
-                        print("Received identity: \(quantumExchange.peerP256PublicKey), with quantum material, displaying result...")
-                        
-                        let date = String(Date.now.timeIntervalSince1970)
-                        let quantum = QuantumKeyMaterial(encapsulatedSecret: quantumExchange.mlkemSecret1, decapsulatedSecret: quantumExchange.mlkemSecret2, ourCiphertext: quantumExchange.ourCiphertext, peerCiphertext: quantumExchange.peerCiphertext)
-                        
-                        self.receivedIdentityKey = Contact.Draft.Key(material: quantumExchange.peerP256PublicKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum)
-                    }
-                })
-                .onReceive(self.contactManager?.contactKeyUpdated ?? PassthroughSubject<String, Never>(), perform: { identifier in
-                    if identifier == self.identifier {
-                        self.dismiss()
-                    }
-                })
-                .onReceive(self.exchangeManager.exchangeFailed) { reason in
-                    if reason == .uwbUnavailable {
-                        self.failureAlert = true
-                    }
-                }
-                .sheet(item: self.$receivedIdentityKey, onDismiss: {
-                    self.exchangeManager.finish()
-                }) { key in
-                    let (isDuplicate, owner) = self.checkDuplicate(key: key)
-                    
-                    if isDuplicate == false {
-                        ExchangeResult(identifier: self.identifier, receivedKey: key, exchangeResult: self.exchangeManager.completedExchange.value)
-                            .environment(self.exchangeManager)
-                    } else {
-                        DuplicateKey(identifier: owner)
-                    }
-                }
+            if let payload = self.confirmingPayload {
+                ConfirmationView(payload: payload, identifier: self.identifier, manager: self.exchangeManager)
+            } else if self.exchangeManager.phase != .resting {
+                KeyExchangeLiveView(manager: self.exchangeManager)
             } else {
                 if self.exchangeManager.isExchangePossible {
-                    VStack {
+                    VStack(spacing: 24) {
                         if self.displayingInfo {
-                            VStack {
-                                Text("To begin communicating with **\(self.name)**, first, we need to exchange **public** keys.")
-                                    
+                            VStack(alignment: .leading, spacing: 16) {
+                                Text("Exchange keys with **\(self.name)**")
+                                    .font(.title3.weight(.semibold))
+
                                 Divider()
-                                
-                                VStack(alignment: .leading, spacing: 20) {
-                                    HStack {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .foregroundStyle(.yellow)
-                                        Text("Allow **Nearby Interaction** if prompted.")
-                                    }
-                                    
-                                    HStack {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .foregroundStyle(.yellow)
-                                        Text("Allow **Finding and Connecting** to devices on local network if prompted.")
-                                    }
+
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Label("Allow **Nearby Interaction** if prompted.", systemImage: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.primary)
+                                        .symbolRenderingMode(.hierarchical)
+                                        .tint(.occultaWarn)
+
+                                    Label("Allow **Finding and Connecting** to nearby devices if prompted.", systemImage: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.primary)
+                                        .symbolRenderingMode(.hierarchical)
+                                        .tint(.occultaWarn)
                                 }
-                                
+
                                 Divider()
-                                
-                                Text("Press **Exchange Keys** to start a secure session.")
+
+                                Text("Bring both devices within 25 cm to begin.")
+                                    .foregroundStyle(.secondary)
+                                    .font(.subheadline)
                             }
                             .padding()
                         }
-                        
-                        HStack {
+
+                        HStack(spacing: 16) {
                             Button {
                                 self.exchangeManager.start()
                             } label: {
-                                HStack {
-                                    Text("Exchange Keys")
-                                    Image(systemName: "key.horizontal")
-                                }
+                                Label("Exchange Keys", systemImage: "key.horizontal")
+                                    .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
-                            
+                            .tint(.occultaAccent)
+
                             Button {
                                 self.displayingInfo.toggle()
                             } label: {
-                                Image(systemName: "info.bubble")
+                                Image(systemName: self.displayingInfo ? "info.bubble.fill" : "info.bubble")
                             }
-                            .padding(.leading, 20)
+                            .tint(.occultaAccent)
                         }
+                        .padding(.horizontal)
                     }
                 } else {
-                    Text("Key exchange is not supported by your device's hardware capabilities. Device must have UWB chip.")
+                    Text("Key exchange requires a UWB chip (iPhone 11 or later).")
                         .padding()
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.occultaDanger)
                 }
             }
         }
-        .alert("Exchange couldn't complete", isPresented: self.$failureAlert) {
-            Button("OK") { }
-        } message: {
-            Text("We couldn't measure the distance to your contact. This could mean Ultra Wideband isn't available right now.\n\nOn both devices, try:\n\n1. Settings → Privacy & Security → Location Services → System Services → toggle 'Networking & Wireless' off, then on\n2. Restart both devices\n3. Try the exchange again")
+        .toolbar(.hidden, for: .tabBar)
+        .onChange(of: self.exchangeManager.phase) { _, newPhase in
+            if case .confirming(let payload) = newPhase {
+                self.confirmingPayload = payload
+            }
+            if newPhase == .timedOut || newPhase == .failed {
+                self.confirmingPayload = nil
+                self.exchangeManager.finish()
+                self.dismiss()
+            }
         }
     }
-    
-    private struct DuplicateKey: View {
-        let owner: String
-        
-        @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
-        
+
+    // MARK: - Confirmation screen
+
+    private struct ConfirmationView: View {
+        let payload: ExchangeManager.ExchangePhase.Payload
+        let identifier: String
+        let manager: ExchangeManager
+
+        private let keyManager = Manager.Key()
+        private let passphraseGenerator = Manager.PassphraseGenerator()
+
         @Environment(ContactManager.self) private var contactManager: ContactManager?
+        @Environment(\.dismiss) private var dismiss
         
-        init(identifier: String?) {
-            let contactID = identifier ?? ""
+        var identity: Data {
+            let identity = try? Manager.Key().retrieveIdentity()
+            let compareWith = identity ?? Data()
             
-            let predicate = #Predicate<Contact.Profile> {
-                $0.identifier == contactID
-            }
-            
-            self.owner = contactID
-            self._contacts = Query(filter: predicate)
+            return compareWith
         }
-        
+
         var body: some View {
-            VStack(spacing: 20) {
-                Text("A contact with this public key already exists. Only one key per contact is supported.")
-                
-                VStack(spacing: 20) {
-                    Text("Contact with a matching key")
+            ScrollView {
+                VStack(alignment: .center, spacing: 20) {
+                    self.keyRow(label: "MY IDENTITY KEY · P-256 SHA256", hex: self.identity.sha256.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " "), color: Color(red: 58/255, green: 92/255, blue: 191/255))
                     
-                    Contact.Info(identifier: self.owner)
-                }
-            }
-            .padding(.horizontal)
-        }
-    }
-    
-    /// Check the last active key of each contact against the key that we just go through exchange to make sure that we don't already have it to avoid confusion.
-    ///
-    /// Confusion can happen if multilpe contacts are added with the same public key.
-    /// - Parameter key: Key from the exchange session.
-    /// - Returns: Do we already have it?
-    private func checkDuplicate(key: Contact.Draft.Key) -> (Bool, String?) {
-        let cryptoOps = Manager.Crypto()
-        let contacts = (try? self.contactManager?.fetchAllContacts()) ?? []
-        
-        for contact in contacts {
-            if let publicKey = contact.contactPublicKeys?.last {
-                /// We have a key.
-                debugPrint("We found a contact with a key, contact = \(contact.givenName.decrypt())")
-                
-                if contact.contactPublicKeys?.last?.expiredOn == nil {
-                    /// the key is active.
-                    debugPrint("The last key is not expired")
-                    
-                    if let decrypted = try? cryptoOps.decrypt(data: publicKey.material), decrypted == key.material {
-                        return (true, contact.identifier)
+                    self.keyRow(label: "PEER IDENTITY KEY · P-256 SHA256", hex: self.payload.classicalKey.sha256.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " "), color: Color(red: 58/255, green: 92/255, blue: 191/255))
+
+                    Divider()
+
+                    Text("Confirm these words match your contact's screen — in the same order.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    VStack(spacing: 12) {
+                        ForEach(Array(self.words.enumerated()), id: \.offset) { idx, word in
+                            HStack {
+                                Text("\(idx + 1)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 20, alignment: .trailing)
+                                Text(word)
+                                    .font(.system(size: 20, design: .monospaced).weight(.semibold))
+                            }
+                        }
                     }
+
+                    if self.payload.hybridResult != nil {
+                        Label("Quantum-resistant exchange", systemImage: "shield.checkered")
+                            .font(.caption2)
+                            .foregroundStyle(Color.occultaVerified)
+                    }
+
+                    Button("Confirm") {
+                        self.save()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.occultaAccent)
+                    .frame(maxWidth: .infinity)
+                    
+                    Button("Cancel") {
+                        self.manager.finish()
+                        self.dismiss()
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
                 }
+                .padding()
             }
+            .navigationBarBackButtonHidden(true)
         }
-        
-        debugPrint("No duplicates found...")
-        
-        return (false, nil)
+
+        private var words: [String] {
+            let sharedKey: Data?
+            
+            if let result = self.payload.hybridResult {
+                let material = QuantumKeyMaterial(from: result)
+                sharedKey = self.keyManager.createDicewareKey(
+                    peerP256Material: result.peerP256PublicKey,
+                    quantumMaterial: material,
+                    ourNonce: result.ourNonce,
+                    peerNonce: result.peerNonce
+                )?.withUnsafeBytes { Data($0) }
+            } else {
+                sharedKey = self.keyManager.createSharedSecret(using: self.payload.classicalKey)?.withUnsafeBytes { Data($0) }
+            }
+            return self.passphraseGenerator.generate(separator: "-", sharedKey: sharedKey)
+                .components(separatedBy: "-")
+        }
+
+        private func keyRow(label: String, hex: String, color: Color) -> some View {
+            VStack(alignment: .center, spacing: 6) {
+                Text(label)
+                    .font(.system(size: 9, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(color)
+                    .kerning(0.5)
+                Text(hex)
+                    .font(.system(size: 11, design: .monospaced).weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(nil)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(color.opacity(0.07))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.25), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+
+        private func save() {
+            let myIdentity = (try? self.keyManager.retrieveIdentity()) ?? Data()
+            let date = String(Date.now.timeIntervalSince1970)
+            let quantum = self.payload.hybridResult.map {
+                QuantumKeyMaterial(
+                    encapsulatedSecret: $0.mlkemSecret1,
+                    decapsulatedSecret: $0.mlkemSecret2,
+                    ourCiphertext: $0.ourCiphertext,
+                    peerCiphertext: $0.peerCiphertext
+                )
+            }
+            if let key = Contact.Draft.Key(material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum) {
+                try? self.contactManager?.update(key: key, for: self.identifier)
+            }
+            self.manager.finish()
+            self.dismiss()
+        }
     }
 }
 
