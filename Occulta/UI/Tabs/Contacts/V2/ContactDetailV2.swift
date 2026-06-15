@@ -313,7 +313,16 @@ private struct ComposeHeroV2: View {
                       allowsMultipleSelection: false) { result in
             self.handleFile(result)
         }
-        .sheet(item: self.$encryptedURL) { url in ActivityView(activityItems: [url]) }
+        .sheet(item: self.$encryptedURL) { url in
+            ActivityView(activityItems: [url], onComplete: { completed in
+                try? FileManager.default.removeItem(at: url)
+                if completed {
+                    self.messageText = ""
+                    self.attachments = []
+                    self.selectedMediaItems = []
+                }
+            })
+        }
         .alert("Error", isPresented: self.$isShowingError) {
             Button("OK") { }
         } message: {
@@ -421,9 +430,6 @@ private struct ComposeHeroV2: View {
                 try encrypted.write(to: url)
 
                 await MainActor.run {
-                    self.messageText = ""
-                    self.attachments = []
-                    self.selectedMediaItems = []
                     self.encryptedURL = url
                 }
             } catch {

@@ -105,9 +105,15 @@ struct ComposableMessage: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                 }
                 .padding()
-                .sheet(item: self.$encryptedResultURL, content: { url in
-                    ActivityView(activityItems: [url])
-                })
+                .sheet(item: self.$encryptedResultURL) { url in
+                    ActivityView(activityItems: [url], onComplete: { completed in
+                        try? FileManager.default.removeItem(at: url)
+                        if completed {
+                            self.messages = []
+                            self.selectedMediaItems = []
+                        }
+                    })
+                }
             }
         }
         .background(Color(.systemGroupedBackground))
