@@ -222,7 +222,7 @@ private func parties(
         }
     }
 
-    // MARK: Timing — strict 5-minute window on phase 3
+    // MARK: Timing — strict `IdentityChallenge.timestampWindow` on phase 3
 
     @Test func verify_staleByMoreThanWindow_returnsFalse() throws {
         let epoch = Party.defaultEpoch
@@ -241,7 +241,7 @@ private func parties(
         )
         let response = try r.mgr.respond(to: pending)
 
-        // Advance past the 5-minute window before the challenger verifies.
+        // Advance past `IdentityChallenge.timestampWindow` before the challenger verifies.
         nowTicks = epoch + UInt64(IdentityChallenge.timestampWindow) + 1
 
         let (ok, _) = try c.mgr.verifyResponse(

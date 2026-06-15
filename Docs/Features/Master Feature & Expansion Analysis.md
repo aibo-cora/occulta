@@ -1,11 +1,12 @@
 # Occulta — Master Feature & Expansion Analysis
 **Date:** May 10, 2026
-**Revised:** May 13, 2026
+**Revised:** June 12, 2026
 **Sources:**
 - Feature Discovery Report, Apr 30, 2026
 - Feature Discovery Report, May 9, 2026
 - Expansion Opportunity Analysis, May 2026
 - Critical review session, May 13, 2026
+- Authentication pain-point research pass, June 12, 2026 (features 15–17; web-sourced demand evidence verified against the codebase)
 
 **Scope:** Unified ranking of consumer app features and platform expansion opportunities, sorted by potential audience reach and community demand.
 
@@ -231,15 +232,61 @@ On-device scan of vault items flagging weak, reused, or stale secrets. All three
 
 ---
 
+### 15. Presence Verification (Anti-Deepfake Live Check)
+**Added June 12, 2026 (authentication research pass)**
+**Community demand:** Very high and accelerating — FBI IC3 2025 report (22,000+ AI-fraud complaints, $893M losses), Arup deepfake CFO incident ($25M wired after a video call where every participant was synthetic), Singapore deepfake Zoom fraud ($499K, Mar 2025), CNN/CBS/BBB/McAfee "family safe word" coverage (2025–2026), Scattered Spider helpdesk-impersonation attacks (MGM playbook, ongoing through 2026)
+**Audience:** Broad — every Occulta user with a verified contact; families targeted by voice-clone scams; finance/executive teams targeted by deepfake calls; IT helpdesks targeted by MFA-reset social engineering
+
+When a call, video call, or message claims to be a contact, the user issues a one-time challenge; the contact approves on their device with biometrics and their Secure Enclave signs a timestamped attestation bound to the challenge. A deepfake can clone a face and voice but cannot sign with the P-256 key that was established at ≤25 cm. The universally recommended defense today is a verbal "safe word" — static, leakable, forgettable, and socially engineerable. This is the safe word that cannot leak.
+
+Market validation: Google shipped Fake Call Detection on June 2, 2026 — an RCS cryptographic handshake confirming a call from a saved contact originates from that contact's device. It is Android-only, Google-mediated, and RCS-bound. iOS has no equivalent, and no platform-free (serverless) implementation exists anywhere.
+
+This is the rare feature where the closed-loop critique that removed SE-Attested vCard (#12) and Document Signing (D) does not apply: the verification circle *is* the contact book. Both parties by definition have Occulta and a prior UWB exchange. The loop fully closes.
+
+**Codebase reality:** The cryptographic core already shipped — the Identity Challenge protocol (v1.8.x, `Features/IdentityChallenge/`) implements the full challenge → biometric-gated SE signature → verification lifecycle over encrypted `.occ` bundles, with backward-compatible fallback messages, nonce one-shot replay protection, and rate limiting. What it cannot yet claim is *presence*: the verification window is 1 hour (suitable for "this contact still controls their key," not "this person is in this conversation right now"), the transport is four share-sheet hops (unusable mid-call), and the responder's approval sheet does not state what is being attested. The feature is therefore a focused extension, not a new build: a presence mode with a ~2-minute freshness window, a distinct signing domain, intent-explicit approval UX, and a QR-over-video transport for the desktop-video-call (Arup) scenario.
+
+**iOS constraint:** All primitives exist (SE ECDSA, encrypted bundles, QR generation/scanning from the key-exchange flows). Known residual risk: a relay attack (attacker challenges the victim while simultaneously pretexting the real contact into approving). Mitigated — not eliminated — by the tight window and by the approval sheet naming the challenger explicitly; same residual class as number-matching MFA. Single-device video calls (call and Occulta on the same phone) fall back to the messaging transport.
+
+> **Ruling (June 2026):** Strongest addition since the duress cluster. The pain is documented at mainstream scale, the timing is exact (Google legitimized the category this month, on Android only), the architecture is uniquely suited (the physically-verified contact graph is precisely the right trust anchor), and the hard half already shipped. Carries a built-in enterprise story (helpdesk MFA-reset verification, wire-transfer callback) that gives Expansion A its missing wedge — see Section 2 addendum. Low lift, high ceiling. **Priority 1 (parallel track to the duress cluster — independent of the key-hierarchy rework that gates Panic Wipe).** Spec: `Docs/Features/Presence Verification/SPEC.md`.
+
+---
+
+### 16. Serverless Social Recovery (Shamir Trustee Custody)
+**Added June 12, 2026 (authentication research pass)**
+**Community demand:** High — account-recovery lockout is the documented weak link of the passwordless transition (Gmail lockout coverage, Microsoft account-recovery threads); Google validated the social-recovery model by shipping Recovery Contacts in October 2025 (cloud-mediated)
+**Audience:** All Occulta users — answers the single most existential objection to the architecture: "SE-bound keys never leave the device, so a lost phone means losing everything"
+
+**Codebase reality: this is already built.** The Vault SSS custody system (`Features/Vault/`, flag `enableShamirShardSharing`) distributes vault-key shards to trustee contacts over encrypted bundles, tracks custody via manifests, detects owner device loss via key-fingerprint mismatch, and implements the full owner-recovery flow (shard protocol Case 9) including trustee handback and threshold reconstruction. Nineteen protocol cases are documented in `SHARD_PROTOCOL_CASES.md`.
+
+> **Ruling (June 2026):** Not a feature to build — a feature to *finish and front*. Three gaps between what exists and what the market validation supports: (1) it is invisible — buried as a vault capability rather than positioned as the answer to "what if I lose my phone?", which is the first question every privacy-app user asks; (2) recovery scope is the vault PEK only — the SE identity key is unrecoverable by design, so recovery UX must honestly present "your data survives; your identity re-bootstraps via new UWB exchanges" as the story; (3) the demand evidence (Google Recovery Contacts, passkey-lockout coverage) belongs in marketing copy — "Google needs their cloud for this; Occulta does it with the people you've physically met." No new protocol work warranted. **Priority: positioning/UX pass, not engineering.**
+
+---
+
+### 17. Duress-Aware 2FA Codes (SE-Bound TOTP Vault)
+**Added June 12, 2026 (authentication research pass)**
+**Community demand:** High — Google Authenticator's cloud sync is not end-to-end encrypted (Google holds the keys); the Retool breach traced a $15M crypto theft to exactly that sync path; "stop using Google Authenticator" is a recurring 2025–2026 security-press genre; r/privacy recurring complaints about TOTP seed loss and migration
+**Audience:** Medium-broad — every Occulta user has 2FA accounts; high-threat users currently leak their entire account map to anyone who unlocks their authenticator app
+
+TOTP (RFC 6238) seed storage as a vault item class: seeds SE-wrapped at rest, codes computed on demand, never synced anywhere. The market is crowded (2FAS, Aegis, Raivo's collapse) — the differentiator is duress-cluster integration, which no authenticator on any platform offers: Travel Mode (#2) makes designated 2FA entries cryptographically nonexistent at a border crossing; Panic Wipe (#3) destroys them in milliseconds; deniable partitions (#6) put the sensitive accounts' 2FA in the hidden partition. A border agent who unlocks today's authenticator apps sees the user's complete account map — metadata Travel Mode cannot currently protect because it lives in a different app. Social recovery (#16) covers seed loss — attacking the exact fear that drives users to Google's insecure cloud sync.
+
+**iOS constraint:** TOTP is trivial (HMAC-SHA1/SHA256 over CryptoKit, 30-second windows). Seed import via otpauth:// URI QR scan is the established convention. No background execution, no network, no new attack surface. The only design obligation is that seeds enter the existing vault key hierarchy so the duress features apply automatically rather than via parallel plumbing.
+
+> **Ruling (June 2026):** Holds up as a duress-cluster amplifier rather than a standalone authenticator play. Do not market it as "another 2FA app" — ship it as a vault item type that inherits Protected Mode behavior, where it is unique on any platform. Depends on the key-hierarchy rework already scoped for Panic Wipe; sequence it after Travel Mode and Panic Wipe land so the integration story is real at launch. **Priority: Phase 2.**
+
+---
+
 ## Section 1 Summary Table
 
 | Rank | Feature | Status | Audience | Phase |
 |------|---------|--------|----------|-------|
 | 2 | Offline Travel Mode | **Keep** | Broad | Phase 1 |
 | 3 | Cryptographic Panic Wipe | **Keep** | Medium-broad | Phase 1 |
+| 15 | Presence Verification | **Keep** | Broad | Phase 1 (parallel track) |
 | 6 | Deniable Vault Partitions | **Keep** | Narrow-medium | Phase 2 |
 | 8 | Shamir Dead Man's Switch | **Keep** | Narrow-medium | Phase 2 |
 | 10 | NFC Key Exchange | **Keep** | Medium | Phase 2 (lower) |
+| 17 | Duress-Aware 2FA Codes | **Keep** | Medium-broad | Phase 2 (after duress cluster) |
+| 16 | Serverless Social Recovery | **Built** (flagged) | Broad | Positioning/UX pass only |
 | 1 | Wi-Fi Aware Basket Delivery | Removed | — | — |
 | 4 | YubiKey NFC Second Factor | Deferred | — | — |
 | 5 | Contact Compromise Detection | Removed | — | — |
@@ -310,6 +357,8 @@ This eliminates the entire class of "stolen credential" and "phished account" at
 > **The realistic market:** Three narrow segments, not the general enterprise market. (1) High-security government-adjacent organisations already requiring physical onboarding that want a phone-native alternative to card readers — requires FIPS certification to enter. (2) Small high-trust organisations (intelligence-adjacent, legal partnerships, investigative journalism) where chain-of-custody on credential issuance has operational value — tiny market globally. (3) A premium complement to existing FIDO2/passkey deployments for the highest-privilege roles (executives, system admins, root access), adding a physical bootstrap layer on top of infrastructure that stays in place. This last one is the most realistic near-term enterprise story — it positions Occulta as an add-on, not a replacement.
 >
 > The physical proximity requirement removes Occulta from competition with Okta and Microsoft Entra for the mainstream enterprise market entirely. Pursue only if willing to invest in government security certification or accept the narrow high-trust niche.
+
+> **Addendum (June 2026):** Consumer Feature #15 (Presence Verification) supplies the concrete wedge this expansion was missing. The two hottest enterprise identity attack patterns of 2025–2026 — helpdesk MFA-reset social engineering (Scattered Spider/MGM playbook) and deepfake executive fraud (Arup, $25M) — are both "verify the human, not the credential" problems. Incumbent fixes (Nametag, HYPR Affirm) are cloud services running government-ID + selfie biometric pipelines. Occulta's version: the helpdesk demands a signed presence check against the key HR exchanged on Day 1; finance policy requires one before any wire transfer. No ID upload, no biometrics vendor, no cloud. This is bottom-up adoptable (a family anti-scam feature that scales into an enterprise control), consistent with the "premium complement, not replacement" positioning above, and requires no certification to pilot in a small high-trust org.
 
 ---
 
@@ -467,6 +516,15 @@ The personal privacy use case (journalist in a dangerous environment) and the es
 **Consumer Feature #1, #7, #9 (Transport cluster) — all removed**
 Wi-Fi Aware Delivery, Proximity Outbox, and Mesh Relay were grouped as a transport cluster. All three were removed: the share extension covers proximity delivery adequately, and the async/relay use cases require iOS background behaviour that is too constrained to be reliable.
 
+**Consumer Feature #15 ↔ Expansion A (Presence Verification as the enterprise wedge)**
+The same challenge–response primitive serves the family anti-scam scenario and the enterprise helpdesk/wire-transfer verification scenario. One implementation, two stories — and the consumer story is the bottom-up adoption path Section 2 identifies as the only realistic route into enterprise.
+
+**Consumer Feature #16 ↔ Consumer Feature #8 (shared Shamir custody rails)**
+The trustee shard-custody system that already ships (social recovery) is the same distribution/manifest/reconstruction machinery the Dead Man's Switch needs; #8 adds a trigger (missed check-in) to rails that exist.
+
+**Consumer Feature #17 ↔ Duress Cluster**
+2FA seeds as vault items inherit Travel Mode, Panic Wipe, and deniable-partition behavior automatically — the differentiator over every standalone authenticator app is the cluster, not the TOTP math.
+
 ## The Duress Cluster
 
 Travel Mode (#2), Panic Wipe (#3), and Deniable Vault Partitions (#6) form a natural "duress protection" product narrative. All three address the same threat actor (a person with physical access to the device under coercion) at different points in the encounter:
@@ -487,14 +545,22 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 |----------|------|-----------|
 | 1 | Offline Travel Mode | Broadest new audience; documents a real gap vs. 1Password; fully offline; no external dependencies |
 | 2 | Cryptographic Panic Wipe | Requires key hierarchy rework as prerequisite; wipe itself is then trivial; post-Graphite urgency |
+| 1 (parallel) | Presence Verification | Identity Challenge protocol already shipped; remaining work is presence mode + transport + positioning; independent of the key-hierarchy rework, so it runs as a parallel track |
 
 ### Phase 2 — Duress Cluster Completion + Coverage
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
 | 3 | Deniable Vault Partitions | Completes the duress cluster; no iOS equivalent |
-| 4 | Shamir Dead Man's Switch | Only serverless iOS implementation; SSS already built |
+| 4 | Shamir Dead Man's Switch | Only serverless iOS implementation; SSS custody rails already shipped (see #16) |
 | 5 | NFC Key Exchange (fallback) | Removes hard UWB-device requirement; no security tradeoff |
+| 6 | Duress-Aware 2FA Codes | Unique only once the duress cluster exists; sequence after Travel Mode + Panic Wipe |
+
+### Ongoing — Positioning (no engineering)
+
+| Item | Rationale |
+|------|-----------|
+| Serverless Social Recovery (#16) | Already built behind `enableShamirShardSharing`; surface it as the answer to "what if I lose my phone?" — the validation (Google Recovery Contacts, passkey-lockout coverage) is marketing material |
 
 ### Future — Enterprise (prerequisite: consumer product first)
 

@@ -327,7 +327,9 @@ struct OccultaBundle: Codable {
  
         /// Sender's ephemeral public key in x963 format (65 bytes).
         /// `.forwardSecret`: throwaway key for this message only.
-        /// `.longTermFallback`: sender's long-term identity public key.
+        /// `.longTermFallback`: empty `Data()` — never the sender's long-term key;
+        /// the recipient already has it, and putting it in cleartext AAD would
+        /// leak the sender's identity to any passive observer.
         let ephemeralPublicKey: Data
  
         /// UUID of the recipient's prekey used to derive the session key.

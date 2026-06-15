@@ -81,7 +81,7 @@ extension IdentityChallenge {
         ///   - store:  The outstanding-challenge store. Shared across the app
         ///     so phase 3 can find the phase 1 entry.
         ///   - now:    Injectable clock. Tests pass a fixed clock to exercise
-        ///     the 5-minute window boundary; production passes `Date.init`.
+        ///     the `IdentityChallenge.timestampWindow` boundary; production passes `Date.init`.
         init(
             crypto: Occulta.Manager.Crypto,
             store:  OutstandingChallengeStore,
@@ -332,7 +332,7 @@ extension IdentityChallenge {
                 return (false, entry.contextNote)
             }
 
-            // Hard 5-minute window — stricter than the staleness soft check.
+            // Hard verification window — `IdentityChallenge.timestampWindow`.
             let nowSec = UInt64(self.now().timeIntervalSince1970)
             // Handle both directions: responder's clock ahead of us is fine
             // up to the same window.
