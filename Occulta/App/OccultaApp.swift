@@ -86,6 +86,7 @@ struct OccultaApp: App {
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
 
         self.migrate()
+        FileManager.default.clearTemporaryDirectory()
     }
 
     /// Run migration before any UI accesses contacts.
