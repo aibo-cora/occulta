@@ -19,31 +19,37 @@ struct ComposableMessage: View {
     
     @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
-    init(identifier: String) {
-        self.identifier = identifier
-        
-        let predicate = #Predicate<Contact.Profile> {
-            $0.identifier == identifier
-        }
-        
-        self._contacts = Query(filter: predicate)
-    }
-    
-    @State private var messages: [Occulta.File] = []
-    @State private var messageText: String = ""
-    @State private var sessionKey = SymmetricKey(size: .bits256)
-    @State private var thumbnails: [UUID: Data] = [:]
+    @Binding var messages: [Occulta.File]
+    @Binding var messageText: String
+    let sessionKey: SymmetricKey
+    @Binding var thumbnails: [UUID: Data]
+    @Binding var selectedMediaItems: [PhotosPickerItem]
 
-    // Picker states
+    // Local UI state
     @State private var showMediaPicker = false
     @State private var showFileImporter = false
-    @State private var selectedMediaItems: [PhotosPickerItem] = []
-    /// Encrypted conversation
     @State private var encryptedResultURL: URL?
-
-    // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
+
+    init(
+        identifier: String,
+        sessionKey: SymmetricKey,
+        messages: Binding<[Occulta.File]>,
+        messageText: Binding<String>,
+        thumbnails: Binding<[UUID: Data]>,
+        selectedMediaItems: Binding<[PhotosPickerItem]>
+    ) {
+        self.identifier = identifier
+        self.sessionKey = sessionKey
+        self._messages = messages
+        self._messageText = messageText
+        self._thumbnails = thumbnails
+        self._selectedMediaItems = selectedMediaItems
+
+        let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
+        self._contacts = Query(filter: predicate)
+    }
     
     var body: some View {
         VStack {
@@ -703,10 +709,26 @@ struct FileExtensions {
 // MARK: - Preview
 
 #Preview {
-    NavigationStack {
-        ComposableMessage(identifier: UUID().uuidString)
-            .environment(ContactManager.preview)
+    struct Preview: View {
+        @State var messages: [Occulta.File] = []
+        @State var text = ""
+        @State var thumbs: [UUID: Data] = [:]
+        @State var selected: [PhotosPickerItem] = []
+        var body: some View {
+            NavigationStack {
+                ComposableMessage(
+                    identifier: UUID().uuidString,
+                    sessionKey: SymmetricKey(size: .bits256),
+                    messages: self.$messages,
+                    messageText: self.$text,
+                    thumbnails: self.$thumbs,
+                    selectedMediaItems: self.$selected
+                )
+                .environment(ContactManager.preview)
+            }
+        }
     }
+    return Preview()
 }
 
 #Preview {

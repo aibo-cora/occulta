@@ -22,6 +22,13 @@ extension Contact {
         @State private var displayingVerificationInfo = false
         @State private var useThreadCompose = false
 
+        // Thread compose state — persists while this contact detail is on the stack
+        @State private var threadMessages: [Occulta.File] = []
+        @State private var threadMessageText = ""
+        @State private var threadThumbnails: [UUID: Data] = [:]
+        @State private var threadSessionKey = SymmetricKey(size: .bits256)
+        @State private var threadSelectedMedia: [PhotosPickerItem] = []
+
         init(identifier: String) {
             self.identifier = identifier
             self._contacts = Query(filter: #Predicate { $0.identifier == identifier })
@@ -60,7 +67,14 @@ extension Contact {
                         ComposeStyleToggle(useThread: self.$useThreadCompose)
 
                         if self.useThreadCompose {
-                            NavigationLink(destination: ComposableMessage(identifier: self.identifier)) {
+                            NavigationLink(destination: ComposableMessage(
+                                identifier: self.identifier,
+                                sessionKey: self.threadSessionKey,
+                                messages: self.$threadMessages,
+                                messageText: self.$threadMessageText,
+                                thumbnails: self.$threadThumbnails,
+                                selectedMediaItems: self.$threadSelectedMedia
+                            )) {
                                 HStack {
                                     Text("Open thread")
                                         .font(.system(size: 14, weight: .semibold))
