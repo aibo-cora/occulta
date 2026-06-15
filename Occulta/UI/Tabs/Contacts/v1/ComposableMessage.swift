@@ -521,8 +521,13 @@ struct ComposableMessage: View {
                     }
                 }
                 
+                // Staging files have been read into `processed` — delete them now
+                for file in self.messages {
+                    if let url = file.url { try? FileManager.default.removeItem(at: url) }
+                }
+
                 // Encode & Encrypt
-                
+
                 let basket = Basket(files: processed)
 
                 let contactPub = try? self.contactManager?.currentPublicKey(forIdentifier: self.identifier)

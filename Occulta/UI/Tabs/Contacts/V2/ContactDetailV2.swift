@@ -387,6 +387,11 @@ private struct ComposeHeroV2: View {
                     }
                 }
 
+                // Staging files have been read into `files` — delete them now
+                for attachment in self.attachments {
+                    if let url = attachment.url { try? FileManager.default.removeItem(at: url) }
+                }
+
                 let basket  = Basket(files: files)
 
                 let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: self.identifier)

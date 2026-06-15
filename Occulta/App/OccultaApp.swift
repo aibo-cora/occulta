@@ -195,6 +195,11 @@ private struct RootView: View {
                 /// Dismiss
             } content: { data in
                 ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
+                    .onDisappear {
+                        data.basket.files.forEach { file in
+                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
+                        }
+                    }
             }
             .sheet(item: self.$shareResult) { result in
                 ShareActivityView(url: result.url)
