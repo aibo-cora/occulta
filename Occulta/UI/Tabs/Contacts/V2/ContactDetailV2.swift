@@ -19,6 +19,7 @@ extension Contact {
         @State private var editing = false
         @State private var keyDetailsExpanded = false
         @State private var displayingVerificationInfo = false
+        @State private var useThreadCompose = false
 
         init(identifier: String) {
             self.identifier = identifier
@@ -55,7 +56,23 @@ extension Contact {
                     if self.needsExchange {
                         ExchangeHeroV2(identifier: self.identifier)
                     } else {
-                        ComposeHeroV2(identifier: self.identifier)
+                        ComposeStyleToggle(useThread: self.$useThreadCompose)
+
+                        if self.useThreadCompose {
+                            NavigationLink(destination: ComposableMessage(identifier: self.identifier)) {
+                                HStack {
+                                    Text("Open thread")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.occultaAccent)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
+                        } else {
+                            ComposeHeroV2(identifier: self.identifier)
+                        }
 
                         Text(self.profile?.encryptionSchemeLabel ?? "")
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
@@ -90,6 +107,49 @@ extension Contact {
             .fullScreenCover(isPresented: self.$editing) {
                 Contact.FormV2(mode: .edit(identifier: self.identifier)) { self.dismiss() }
             }
+        }
+    }
+}
+
+// MARK: - Compose Style Toggle
+
+private struct ComposeStyleToggle: View {
+    @Binding var useThread: Bool
+
+    var body: some View {
+        HStack {
+            Text("compose style")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { self.useThread.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    if self.useThread {
+                        Circle()
+                            .fill(Color.occultaAccent)
+                            .frame(width: 8, height: 8)
+                        Text("Thread")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.occultaAccent)
+                    } else {
+                        Circle()
+                            .strokeBorder(Color(.separator), lineWidth: 1.5)
+                            .frame(width: 8, height: 8)
+                        Text("Quick")
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color(.tertiarySystemFill))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
         }
     }
 }
