@@ -3,6 +3,7 @@ import SwiftData
 import UniformTypeIdentifiers
 import PhotosUI
 import AVKit
+import CryptoKit
 
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
@@ -29,16 +30,17 @@ struct ComposableMessage: View {
     }
     
     @State private var messages: [Occulta.File] = []
-    
     @State private var messageText: String = ""
-    
+    @State private var sessionKey = SymmetricKey(size: .bits256)
+    @State private var thumbnails: [UUID: Data] = [:]
+
     // Picker states
     @State private var showMediaPicker = false
     @State private var showFileImporter = false
     @State private var selectedMediaItems: [PhotosPickerItem] = []
     /// Encrypted conversation
     @State private var encryptedResultURL: URL?
-    
+
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
@@ -53,7 +55,7 @@ struct ComposableMessage: View {
                         .multilineTextAlignment(.center)
                 }
             } else {
-                Conversation(mode: .write, messages: self.$messages)
+                Conversation(mode: .write, messages: self.$messages, thumbnails: self.thumbnails)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -109,8 +111,12 @@ struct ComposableMessage: View {
                     ActivityView(activityItems: [url], onComplete: { completed in
                         try? FileManager.default.removeItem(at: url)
                         if completed {
+                            for file in self.messages {
+                                if let stagingURL = file.url { try? FileManager.default.removeItem(at: stagingURL) }
+                            }
                             self.messages = []
                             self.selectedMediaItems = []
+                            self.thumbnails = [:]
                         }
                     })
                 }
@@ -138,9 +144,9 @@ struct ComposableMessage: View {
     
     struct Conversation: View {
         let mode: Modes
-        
         @Binding var messages: [Occulta.File]
-        
+        var thumbnails: [UUID: Data] = [:]
+
         enum Modes {
             case read(messageOwner: String), write
         }
@@ -166,7 +172,7 @@ struct ComposableMessage: View {
                                         DateHeader(date: file.date ?? Date())
                                     }
                                     
-                                    MessageBubble(file: file, mode: self.mode)
+                                    MessageBubble(file: file, mode: self.mode, thumbnail: self.thumbnails[file.id])
                                 }
                                 .id(file.id)
                             }
@@ -217,6 +223,7 @@ struct ComposableMessage: View {
         struct MessageBubble: View {
             let file: Occulta.File
             let mode: Conversation.Modes
+            var thumbnail: Data? = nil
 
             @State private var showingFullScreen = false
             @Environment(\.colorScheme) private var colorScheme
@@ -285,34 +292,34 @@ struct ComposableMessage: View {
                     let name = metadata.name ?? "file"
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
                         VStack(spacing: 6) {
-                            AsyncImage(url: self.file.url) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
+                            Group {
+                                if case .write = self.mode, let thumbData = self.thumbnail, let img = UIImage(data: thumbData) {
+                                    Image(uiImage: img)
                                         .resizable()
                                         .scaledToFill()
-                                case .failure(let error):
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "exclamationmark.triangle")
-                                            .foregroundStyle(.secondary)
-                                        Text(error.localizedDescription)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .multilineTextAlignment(.center)
+                                        .frame(maxWidth: 260, maxHeight: 320)
+                                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                                } else {
+                                    AsyncImage(url: self.file.url) { phase in
+                                        switch phase {
+                                        case .success(let image):
+                                            image.resizable().scaledToFill()
+                                        case .failure(let error):
+                                            VStack(spacing: 4) {
+                                                Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                                                Text(error.localizedDescription).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                            }
+                                        case .empty: ProgressView()
+                                        @unknown default: ProgressView()
+                                        }
                                     }
-                                case .empty:
-                                    ProgressView()
-                                @unknown default:
-                                    ProgressView()
-                                }
-                            }
-                            .frame(maxWidth: 260, maxHeight: 320)
-                            .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .onTapGesture { self.showingFullScreen = true }
-                            .contextMenu {
-                                if case .read = self.mode, let url = self.file.url {
-                                    ShareLink(item: url) {
-                                        Label("Share", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: 260, maxHeight: 320)
+                                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                                    .onTapGesture { self.showingFullScreen = true }
+                                    .contextMenu {
+                                        if case .read = self.mode, let url = self.file.url {
+                                            ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+                                        }
                                     }
                                 }
                             }
@@ -341,7 +348,9 @@ struct ComposableMessage: View {
                             }
                             .frame(width: 260, height: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .onTapGesture { self.showingFullScreen = true }
+                            .onTapGesture {
+                                if case .read = self.mode { self.showingFullScreen = true }
+                            }
                             .contextMenu {
                                 if case .read = self.mode {
                                     ShareLink(item: url) {
@@ -451,28 +460,30 @@ struct ComposableMessage: View {
     
     private func handleMedia(_ item: PhotosPickerItem) async {
         do {
-            guard
-                let data = try await item.loadTransferable(type: Data.self)
-            else { return }
-            
+            guard let data = try await item.loadTransferable(type: Data.self) else { return }
             let contentType = item.supportedContentTypes.first ?? .data
-            let ext = contentType.preferredFilenameExtension ?? "bin"
+            let ext      = contentType.preferredFilenameExtension ?? "bin"
             let filename = "media_\(UUID().uuidString.prefix(8))"
-            
-            let tempDir = FileManager.default.temporaryDirectory
-            let fileURL = tempDir.appendingPathComponent(filename + ".\(ext)")
-            /// We are creating a temp file so that the file data does not stay in memory
-            try data.write(to: fileURL)
-            
-            let metadata = Occulta.File.Metadata(name: filename, extension: ext)
-            let newFile = Occulta.File(url: fileURL, format: .file(metadata), date: Date())
-            
-            self.messages.append(newFile)
+
+            var thumb: Data? = nil
+            if let _ = FileExtensions.Image(rawValue: ext), let img = UIImage(data: data) {
+                thumb = img.preparingThumbnail(of: CGSize(width: 520, height: 640))?.jpegData(compressionQuality: 0.7)
+            }
+
+            let encrypted = try AES.GCM.seal(data, using: self.sessionKey).combined!
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try encrypted.write(to: url)
+
+            let file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
+            await MainActor.run {
+                if let thumb { self.thumbnails[file.id] = thumb }
+                self.messages.append(file)
+            }
         } catch {
             self.showErrorAlert(error.localizedDescription)
         }
     }
-    
+
     private func handleFile(_ result: Result<[URL], Error>) {
         Task {
             do {
@@ -480,22 +491,15 @@ struct ComposableMessage: View {
                     let url = try result.get().first,
                     url.startAccessingSecurityScopedResource()
                 else { return }
-                
                 defer { url.stopAccessingSecurityScopedResource() }
-                /// Extract data from file.
-                let data = try await URLSession.shared.data(from: url).0
-                /// Create a temp file.
-                let filename = url.lastPathComponent.components(separatedBy: ".").first ?? ""
-                let ext = url.lastPathComponent.components(separatedBy: ".").last ?? ""
-                let tempDir = FileManager.default.temporaryDirectory
-                let tempFileURL = tempDir.appendingPathComponent(filename + ".\(ext)")
-                /// Write to temp file because the original URL is going to have its scope changed back to private.
-                try data.write(to: tempFileURL)
-                
-                let metadata = Occulta.File.Metadata(name: filename, extension: ext)
-                let newFile = Occulta.File(url: tempFileURL, format: .file(metadata), date: Date())
-                
-                self.messages.append(newFile)
+                let data      = try await URLSession.shared.data(from: url).0
+                let filename  = url.deletingPathExtension().lastPathComponent
+                let ext       = url.pathExtension
+                let encrypted = try AES.GCM.seal(data, using: self.sessionKey).combined!
+                let tmp       = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try encrypted.write(to: tmp)
+                let file = Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
+                await MainActor.run { self.messages.append(file) }
             } catch {
                 self.showErrorAlert(error.localizedDescription)
             }
@@ -511,19 +515,13 @@ struct ComposableMessage: View {
                 
                 for file in self.messages {
                     if let url = file.url {
-                        /// Messages that only have URLs to the content user imported: photos, videos or other files
-                        /// Using `URLSession` instead of `resourceBytes` because we might need it for brackground processing.
-                        let (data, _) = try await URLSession.shared.data(from: url)
-                        let newFile = Occulta.File(content: data, format: file.format, date: file.date)
-                        processed.append(newFile)
+                        let encrypted = try Data(contentsOf: url)
+                        let sealedBox = try AES.GCM.SealedBox(combined: encrypted)
+                        let data      = try AES.GCM.open(sealedBox, using: self.sessionKey)
+                        processed.append(Occulta.File(content: data, format: file.format, date: file.date))
                     } else {
                         processed.append(file)
                     }
-                }
-                
-                // Staging files have been read into `processed` — delete them now
-                for file in self.messages {
-                    if let url = file.url { try? FileManager.default.removeItem(at: url) }
                 }
 
                 // Encode & Encrypt
