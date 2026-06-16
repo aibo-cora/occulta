@@ -221,7 +221,7 @@ struct ComposableMessage: View {
             var onDelete: (() -> Void)? = nil
 
             @State private var showingFullScreen = false
-            @State private var videoThumbnail: UIImage? = nil
+            @State private var videoPlayer: AVPlayer? = nil
             @Environment(\.colorScheme) private var colorScheme
 
             var body: some View {
@@ -250,23 +250,12 @@ struct ComposableMessage: View {
                 return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
             }
 
-            private func loadVideoThumbnail(from url: URL) async {
-                let asset = AVURLAsset(url: url)
-                let generator = AVAssetImageGenerator(asset: asset)
-                generator.appliesPreferredTrackTransform = true
-                generator.maximumSize = CGSize(width: 520, height: 400)
-                guard let cgImage = try? await generator.image(at: .zero).image else { return }
-                await MainActor.run { self.videoThumbnail = UIImage(cgImage: cgImage) }
-            }
-
-            @ViewBuilder
+@ViewBuilder
             private var fullScreenContent: some View {
                 switch self.file.format {
                 case .file(let metadata):
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
                         FullScreenImageViewer(url: self.file.url)
-                    } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
-                        FullScreenVideoViewer(url: url)
                     }
                 default:
                     EmptyView()
@@ -345,23 +334,17 @@ struct ComposableMessage: View {
                         }
                     } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
                         VStack(spacing: 6) {
-                            ZStack {
-                                if let thumbnail = self.videoThumbnail {
-                                    Image(uiImage: thumbnail)
-                                        .resizable()
-                                        .scaledToFill()
+                            Group {
+                                if let player = self.videoPlayer {
+                                    VideoPlayer(player: player)
                                 } else {
                                     Color.black
                                 }
-                                Image(systemName: "play.circle.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundStyle(.white)
-                                    .shadow(radius: 4)
                             }
                             .frame(width: 260, height: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .onTapGesture { self.showingFullScreen = true }
-                            .task { await self.loadVideoThumbnail(from: url) }
+                            .onAppear { self.videoPlayer = AVPlayer(url: url) }
+                            .onDisappear { self.videoPlayer = nil }
                             .contextMenu {
                                 if case .read = self.mode {
                                     ShareLink(item: url) {
@@ -668,35 +651,6 @@ private struct FullScreenImageViewer: View {
             }
             .padding()
         }
-    }
-}
-
-private struct FullScreenVideoViewer: View {
-    let url: URL
-    @Environment(\.dismiss) private var dismiss
-    @State private var player: AVPlayer
-
-    init(url: URL) {
-        self.url = url
-        self._player = State(initialValue: AVPlayer(url: url))
-    }
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
-            VideoPlayer(player: self.player)
-                .ignoresSafeArea()
-            Button { self.dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(10)
-                    .background(Circle().fill(.black.opacity(0.5)))
-            }
-            .padding()
-        }
-        .onAppear    { self.player.play() }
-        .onDisappear { self.player.pause() }
     }
 }
 
