@@ -14,6 +14,7 @@ struct PendingImport: Identifiable {
     let ext:      String
     var thumbnail: UIImage? = nil
     var progress:  Double   = 0
+    var isLoading: Bool     = true
 }
 
 struct ComposableMessage: View {
@@ -260,9 +261,11 @@ struct ComposableMessage: View {
                             }
                             VStack(spacing: 6) {
                                 ProgressView().tint(.white)
-                                Text(self.pending.progress > 0
-                                     ? "\(Int(self.pending.progress * 100))%"
-                                     : "Encrypting…")
+                                Text(self.pending.isLoading
+                                     ? "Loading…"
+                                     : self.pending.progress > 0
+                                       ? "\(Int(self.pending.progress * 100))%"
+                                       : "Encrypting…")
                                     .font(.caption2)
                                     .foregroundStyle(.white)
                             }
@@ -282,7 +285,7 @@ struct ComposableMessage: View {
                             Text("·")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("Encrypting…")
+                            Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -571,24 +574,38 @@ struct ComposableMessage: View {
     }
     
     private func handleMedia(_ item: PhotosPickerItem) async {
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self) else { return }
+        let contentType = item.supportedContentTypes.first ?? .data
+        let ext      = contentType.preferredFilenameExtension ?? "bin"
+        let filename = "media_\(UUID().uuidString.prefix(8))"
+        let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
+        let isVideo  = FileExtensions.Video(rawValue: ext) != nil
 
-            let contentType = item.supportedContentTypes.first ?? .data
-            let ext      = contentType.preferredFilenameExtension ?? "bin"
-            let filename = "media_\(UUID().uuidString.prefix(8))"
-            let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-
-            guard let manager = self.attachmentManager else {
+        guard let manager = self.attachmentManager else {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else { return }
                 try data.writeProtected(to: url)
                 self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
+            } catch { self.showErrorAlert(error.localizedDescription) }
+            return
+        }
+
+        var pendingID: UUID? = nil
+        if isVideo {
+            let pending = PendingImport(filename: filename, ext: ext)
+            pendingID = pending.id
+            self.pendingImports.append(pending)
+        }
+
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                if let id = pendingID { self.pendingImports.removeAll { $0.id == id } }
                 return
             }
 
-            if FileExtensions.Video(rawValue: ext) != nil {
-                let pending = PendingImport(filename: filename, ext: ext)
-                self.pendingImports.append(pending)
-                let id = pending.id
+            if isVideo, let id = pendingID {
+                if let idx = self.pendingImports.firstIndex(where: { $0.id == id }) {
+                    self.pendingImports[idx].isLoading = false
+                }
 
                 Task {
                     if let thumb = await AttachmentManager.videoThumbnail(from: data, fileExtension: ext),
@@ -611,6 +628,7 @@ struct ComposableMessage: View {
 
             self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
         } catch {
+            if let id = pendingID { self.pendingImports.removeAll { $0.id == id } }
             self.showErrorAlert(error.localizedDescription)
         }
     }
