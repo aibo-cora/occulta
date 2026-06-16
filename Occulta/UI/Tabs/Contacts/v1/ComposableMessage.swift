@@ -28,6 +28,7 @@ struct ComposableMessage: View {
     @State private var encryptedResultURL: URL?
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var attachmentManager: AttachmentManager? = nil
 
     init(
         identifier: String,
@@ -54,7 +55,7 @@ struct ComposableMessage: View {
                         .multilineTextAlignment(.center)
                 }
             } else {
-                Conversation(mode: .write, messages: self.$messages, onDelete: self.deleteMessage)
+                Conversation(mode: .write, messages: self.$messages, attachmentManager: self.attachmentManager, onDelete: self.deleteMessage)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -135,11 +136,16 @@ struct ComposableMessage: View {
         } message: {
             Text(self.errorMessage)
         }
+        .task {
+            guard let key = try? self.contactManager?.fileEncryptionKey(for: self.identifier) else { return }
+            self.attachmentManager = AttachmentManager(contactKey: key)
+        }
     }
     
     struct Conversation: View {
         let mode: Modes
         @Binding var messages: [Occulta.File]
+        var attachmentManager: AttachmentManager? = nil
         var onDelete: ((Occulta.File) -> Void)? = nil
 
         enum Modes {
@@ -167,7 +173,7 @@ struct ComposableMessage: View {
                                         DateHeader(date: file.date ?? Date())
                                     }
 
-                                    MessageBubble(file: file, mode: self.mode, onDelete: self.onDelete.map { cb in { cb(file) } })
+                                    MessageBubble(file: file, mode: self.mode, attachmentManager: self.attachmentManager, onDelete: self.onDelete.map { cb in { cb(file) } })
                                 }
                                 .id(file.id)
                             }
@@ -218,10 +224,13 @@ struct ComposableMessage: View {
         struct MessageBubble: View {
             let file: Occulta.File
             let mode: Conversation.Modes
+            var attachmentManager: AttachmentManager? = nil
             var onDelete: (() -> Void)? = nil
 
             @State private var showingFullScreen = false
             @State private var videoPlayer: AVPlayer? = nil
+            @State private var decryptedImage: UIImage? = nil
+            @State private var showingShare = false
             @Environment(\.colorScheme) private var colorScheme
 
             var body: some View {
@@ -291,30 +300,37 @@ struct ComposableMessage: View {
                     let name = metadata.name ?? "file"
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
                         VStack(spacing: 6) {
-                            AsyncImage(url: self.file.url) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().scaledToFill()
-                                case .failure(let error):
-                                    VStack(spacing: 4) {
-                                        Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
-                                        Text(error.localizedDescription).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                                    }
-                                case .empty: ProgressView()
-                                @unknown default: ProgressView()
+                            Group {
+                                if let img = self.decryptedImage {
+                                    Image(uiImage: img).resizable().scaledToFill()
+                                } else {
+                                    ProgressView()
                                 }
                             }
                             .frame(maxWidth: 260, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                             .onTapGesture { self.showingFullScreen = true }
+                            .task(id: self.file.url) {
+                                guard let manager = self.attachmentManager, let url = self.file.url else { return }
+                                self.decryptedImage = try? await manager.image(at: url)
+                            }
                             .contextMenu {
-                                if case .read = self.mode, let url = self.file.url {
-                                    ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+                                if case .read = self.mode {
+                                    Button { self.showingShare = true } label: {
+                                        Label("Share", systemImage: "square.and.arrow.up")
+                                    }
                                 }
                                 if let onDelete = self.onDelete {
                                     Button(role: .destructive, action: onDelete) {
                                         Label("Delete", systemImage: "trash")
                                     }
+                                }
+                            }
+                            .sheet(isPresented: self.$showingShare) {
+                                if let manager = self.attachmentManager, let url = self.file.url {
+                                    let ext  = metadata.extension ?? "jpg"
+                                    let type = UTType(filenameExtension: ext) ?? .image
+                                    ActivityView(activityItems: [manager.shareProvider(at: url, filename: metadata.name ?? "image", contentType: type)])
                                 }
                             }
 
@@ -343,11 +359,13 @@ struct ComposableMessage: View {
                             }
                             .frame(width: 260, height: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .onAppear { self.videoPlayer = AVPlayer(url: url) }
+                            .onAppear {
+                                self.videoPlayer = self.attachmentManager?.player(for: url) ?? AVPlayer(url: url)
+                            }
                             .onDisappear { self.videoPlayer = nil }
                             .contextMenu {
                                 if case .read = self.mode {
-                                    ShareLink(item: url) {
+                                    Button { self.showingShare = true } label: {
                                         Label("Share", systemImage: "square.and.arrow.up")
                                     }
                                 }
@@ -355,6 +373,13 @@ struct ComposableMessage: View {
                                     Button(role: .destructive, action: onDelete) {
                                         Label("Delete", systemImage: "trash")
                                     }
+                                }
+                            }
+                            .sheet(isPresented: self.$showingShare) {
+                                if let manager = self.attachmentManager {
+                                    let ext  = metadata.extension ?? "mov"
+                                    let type = UTType(filenameExtension: ext) ?? .movie
+                                    ActivityView(activityItems: [manager.shareProvider(at: url, filename: name, contentType: type)])
                                 }
                             }
 
@@ -390,8 +415,8 @@ struct ComposableMessage: View {
                         .foregroundStyle(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 18))
                         .contextMenu {
-                            if case .read = self.mode, let url = self.file.url {
-                                ShareLink(item: url) {
+                            if case .read = self.mode, self.file.url != nil {
+                                Button { self.showingShare = true } label: {
                                     Label("Share", systemImage: "square.and.arrow.up")
                                 }
                             }
@@ -399,6 +424,13 @@ struct ComposableMessage: View {
                                 Button(role: .destructive, action: onDelete) {
                                     Label("Delete", systemImage: "trash")
                                 }
+                            }
+                        }
+                        .sheet(isPresented: self.$showingShare) {
+                            if let manager = self.attachmentManager, let url = self.file.url {
+                                let ext  = metadata.extension ?? "bin"
+                                let type = UTType(filenameExtension: ext) ?? .data
+                                ActivityView(activityItems: [manager.shareProvider(at: url, filename: name, contentType: type)])
                             }
                         }
                     }
@@ -474,7 +506,11 @@ struct ComposableMessage: View {
             let ext      = contentType.preferredFilenameExtension ?? "bin"
             let filename = "media_\(UUID().uuidString.prefix(8))"
             let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-            try data.writeProtected(to: url)
+            if let manager = self.attachmentManager {
+                try manager.encrypt(data, to: url)
+            } else {
+                try data.writeProtected(to: url)
+            }
             let file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
             await MainActor.run { self.messages.append(file) }
         } catch {
@@ -494,7 +530,11 @@ struct ComposableMessage: View {
                 let filename = url.deletingPathExtension().lastPathComponent
                 let ext      = url.pathExtension
                 let tmp      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-                try data.writeProtected(to: tmp)
+                if let manager = self.attachmentManager {
+                    try manager.encrypt(data, to: tmp)
+                } else {
+                    try data.writeProtected(to: tmp)
+                }
                 let file = Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
                 await MainActor.run { self.messages.append(file) }
             } catch {

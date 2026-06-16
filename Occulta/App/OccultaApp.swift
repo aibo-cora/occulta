@@ -195,7 +195,9 @@ private struct RootView: View {
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
             } content: { data in
-                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
+                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
+                    .map { AttachmentManager(contactKey: $0) }
+                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
                     .onDisappear {
                         data.basket.files.forEach { file in
                             if let url = file.url { try? FileManager.default.removeItem(at: url) }
@@ -573,19 +575,24 @@ private struct RootView: View {
             // ── Write file attachments, photos, videos to temp directory ─────────────────
 
             var processed: [Occulta.File] = []
-            let tempDir = FileManager.default.temporaryDirectory
+            let tempDir         = FileManager.default.temporaryDirectory
+            let attachmentManager = (try? self.contactManager.fileEncryptionKey(for: decrypted.ownerID))
+                .map { AttachmentManager(contactKey: $0) }
 
             for file in basket.files {
                 switch file.format {
                 case .file(let metadata):
-                    /// Store photos, videos and documents in temp folder if the file's content is a file
                     let fileURL = tempDir
                         .appendingPathComponent(metadata.name ?? UUID().uuidString)
                         .appendingPathExtension(metadata.extension ?? "bin")
                     let content = file.content ?? Data()
 
                     group.addTask {
-                        try content.writeProtected(to: fileURL)
+                        if let manager = attachmentManager {
+                            try manager.encrypt(content, to: fileURL)
+                        } else {
+                            try content.writeProtected(to: fileURL)
+                        }
                         return Occulta.File(url: fileURL, format: file.format, date: file.date)
                     }
 

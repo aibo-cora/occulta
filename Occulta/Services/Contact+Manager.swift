@@ -566,6 +566,21 @@ extension ContactManager {
         return encryptedData
     }
     
+    /// Derives the stable per-contact base key used to encrypt file attachments at rest.
+    /// Callers pass this into `AttachmentManager(contactKey:)`.
+    func fileEncryptionKey(for identifier: String) throws -> SymmetricKey {
+        guard let contact = try self.fetchContact(by: identifier) else {
+            throw ContactManager.Errors.contactNotFound
+        }
+        guard let encrypted = contact.contactPublicKeys?.last?.material,
+              let material   = try? self.cryptoManager.decrypt(data: encrypted)
+        else { throw ContactManager.Errors.contactHasNoKeys }
+        guard let key = Manager.Key().createSharedSecret(using: material) else {
+            throw ContactManager.Errors.contactHasNoKeys
+        }
+        return key
+    }
+
     private func encrypt(data: Data, using material: Data) throws -> Data? {
         try self.cryptoManager.encrypt(message: data, using: material)
     }
