@@ -337,14 +337,14 @@ struct ComposableMessage: View {
                             HStack(spacing: 4) {
                                 Text(name)
                                     .font(.caption)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.primary)
                                 if let size = self.fileSize {
                                     Text("·")
                                         .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.5))
+                                        .foregroundStyle(.secondary)
                                     Text(size)
                                         .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.5))
+                                        .foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -386,14 +386,14 @@ struct ComposableMessage: View {
                             HStack(spacing: 4) {
                                 Text(name)
                                     .font(.caption)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.primary)
                                 if let size = self.fileSize {
                                     Text("·")
                                         .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.5))
+                                        .foregroundStyle(.secondary)
                                     Text(size)
                                         .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.5))
+                                        .foregroundStyle(.secondary)
                                 }
                             }
                         }
