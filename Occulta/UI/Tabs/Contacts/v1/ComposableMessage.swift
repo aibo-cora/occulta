@@ -54,7 +54,7 @@ struct ComposableMessage: View {
                         .multilineTextAlignment(.center)
                 }
             } else {
-                Conversation(mode: .write, messages: self.$messages)
+                Conversation(mode: .write, messages: self.$messages, onDelete: self.deleteMessage)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -140,6 +140,7 @@ struct ComposableMessage: View {
     struct Conversation: View {
         let mode: Modes
         @Binding var messages: [Occulta.File]
+        var onDelete: ((Occulta.File) -> Void)? = nil
 
         enum Modes {
             case read(messageOwner: String), write
@@ -165,8 +166,8 @@ struct ComposableMessage: View {
                                     if index == 0 || self.shouldShowDateSeparator(before: self.messages[index - 1], current: file) {
                                         DateHeader(date: file.date ?? Date())
                                     }
-                                    
-                                    MessageBubble(file: file, mode: self.mode)
+
+                                    MessageBubble(file: file, mode: self.mode, onDelete: self.onDelete.map { cb in { cb(file) } })
                                 }
                                 .id(file.id)
                             }
@@ -217,6 +218,7 @@ struct ComposableMessage: View {
         struct MessageBubble: View {
             let file: Occulta.File
             let mode: Conversation.Modes
+            var onDelete: (() -> Void)? = nil
 
             @State private var showingFullScreen = false
             @Environment(\.colorScheme) private var colorScheme
@@ -279,6 +281,11 @@ struct ComposableMessage: View {
                                 } label: {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
+                                if let onDelete = self.onDelete {
+                                    Button(role: .destructive, action: onDelete) {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
                             }
                     }
                 case .file(let metadata):
@@ -304,6 +311,11 @@ struct ComposableMessage: View {
                             .contextMenu {
                                 if case .read = self.mode, let url = self.file.url {
                                     ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+                                }
+                                if let onDelete = self.onDelete {
+                                    Button(role: .destructive, action: onDelete) {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
                             }
 
@@ -336,6 +348,11 @@ struct ComposableMessage: View {
                                 if case .read = self.mode {
                                     ShareLink(item: url) {
                                         Label("Share", systemImage: "square.and.arrow.up")
+                                    }
+                                }
+                                if let onDelete = self.onDelete {
+                                    Button(role: .destructive, action: onDelete) {
+                                        Label("Delete", systemImage: "trash")
                                     }
                                 }
                             }
@@ -375,6 +392,11 @@ struct ComposableMessage: View {
                             if case .read = self.mode, let url = self.file.url {
                                 ShareLink(item: url) {
                                     Label("Share", systemImage: "square.and.arrow.up")
+                                }
+                            }
+                            if let onDelete = self.onDelete {
+                                Button(role: .destructive, action: onDelete) {
+                                    Label("Delete", systemImage: "trash")
                                 }
                             }
                         }
@@ -428,6 +450,11 @@ struct ComposableMessage: View {
         }
     }
     
+    private func deleteMessage(_ file: Occulta.File) {
+        if let url = file.url { try? FileManager.default.removeItem(at: url) }
+        self.messages.removeAll { $0.id == file.id }
+    }
+
     private func addTextMessage() {
         let trimmed = self.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         
