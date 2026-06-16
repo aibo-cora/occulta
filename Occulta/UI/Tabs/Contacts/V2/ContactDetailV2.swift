@@ -7,7 +7,6 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 import UniformTypeIdentifiers
-import CryptoKit
 
 extension Contact {
     struct DetailsV2: View {
@@ -25,8 +24,6 @@ extension Contact {
         // Thread compose state — persists while this contact detail is on the stack
         @State private var threadMessages: [Occulta.File] = []
         @State private var threadMessageText = ""
-        @State private var threadThumbnails: [UUID: Data] = [:]
-        @State private var threadSessionKey = SymmetricKey(size: .bits256)
         @State private var threadSelectedMedia: [PhotosPickerItem] = []
 
         init(identifier: String) {
@@ -69,10 +66,8 @@ extension Contact {
                         if self.useThreadCompose {
                             NavigationLink(destination: ComposableMessage(
                                 identifier: self.identifier,
-                                sessionKey: self.threadSessionKey,
                                 messages: self.$threadMessages,
                                 messageText: self.$threadMessageText,
-                                thumbnails: self.$threadThumbnails,
                                 selectedMediaItems: self.$threadSelectedMedia
                             )) {
                                 HStack {
@@ -268,7 +263,6 @@ private struct ComposeHeroV2: View {
     @State private var encryptedURL: URL?
     @State private var isShowingError = false
     @State private var errorMessage = ""
-    @State private var sessionKey = SymmetricKey(size: .bits256)
 
     private var isV4: Bool { self.contacts.first?.maxBundleVersion != nil }
 
@@ -415,11 +409,10 @@ private struct ComposeHeroV2: View {
     private func handleMedia(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
-            let ext       = item.supportedContentTypes.first?.preferredFilenameExtension ?? "bin"
-            let name      = "media_\(UUID().uuidString.prefix(8))"
-            let encrypted = try AES.GCM.seal(data, using: self.sessionKey).combined!
-            let url       = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            try encrypted.write(to: url)
+            let ext  = item.supportedContentTypes.first?.preferredFilenameExtension ?? "bin"
+            let name = "media_\(UUID().uuidString.prefix(8))"
+            let url  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
+            try data.write(to: url)
             let file = Occulta.File(url: url, format: .file(.init(name: name, extension: ext)), date: Date())
             await MainActor.run { self.attachments.append(file) }
         } catch {
@@ -433,12 +426,11 @@ private struct ComposeHeroV2: View {
                 guard let url = try result.get().first,
                       url.startAccessingSecurityScopedResource() else { return }
                 defer { url.stopAccessingSecurityScopedResource() }
-                let data      = try await URLSession.shared.data(from: url).0
-                let name      = url.deletingPathExtension().lastPathComponent
-                let ext       = url.pathExtension
-                let encrypted = try AES.GCM.seal(data, using: self.sessionKey).combined!
-                let tmp       = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                try encrypted.write(to: tmp)
+                let data = try await URLSession.shared.data(from: url).0
+                let name = url.deletingPathExtension().lastPathComponent
+                let ext  = url.pathExtension
+                let tmp  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
+                try data.write(to: tmp)
                 let file = Occulta.File(url: tmp, format: .file(.init(name: name, extension: ext)), date: Date())
                 await MainActor.run { self.attachments.append(file) }
             } catch {
@@ -458,12 +450,10 @@ private struct ComposeHeroV2: View {
                     files.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
                 }
 
-                // Decrypt staging files and load into basket
+                // Resolve URL-based attachments to inline data
                 for attachment in self.attachments {
                     if let url = attachment.url {
-                        let encrypted = try Data(contentsOf: url)
-                        let sealedBox = try AES.GCM.SealedBox(combined: encrypted)
-                        let data      = try AES.GCM.open(sealedBox, using: self.sessionKey)
+                        let (data, _) = try await URLSession.shared.data(from: url)
                         files.append(Occulta.File(content: data, format: attachment.format, date: attachment.date))
                     } else {
                         files.append(attachment)
