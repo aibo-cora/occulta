@@ -257,11 +257,20 @@ private final class ResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         _ resourceLoader: AVAssetResourceLoader,
         shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest
     ) -> Bool {
-        if let info = request.contentInformationRequest,
-           let h    = try? Decryptor.header(at: self.fileURL, contactKey: self.contactKey) {
-            info.contentType                = UTType.movie.identifier
+        if let info = request.contentInformationRequest {
+            guard let h = try? Decryptor.header(at: self.fileURL, contactKey: self.contactKey) else {
+                request.finishLoading(with: AttachmentError.invalidHeader)
+                return true
+            }
+            let uti = UTType(filenameExtension: self.fileURL.pathExtension)?.identifier
+                   ?? UTType.movie.identifier
+            info.contentType                = uti
             info.contentLength              = Int64(h.plaintextSize)
             info.isByteRangeAccessSupported = true
+            if request.dataRequest == nil {
+                request.finishLoading()
+                return true
+            }
         }
         if let data = request.dataRequest {
             let offset = Int(data.requestedOffset)
