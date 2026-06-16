@@ -221,6 +221,7 @@ struct ComposableMessage: View {
             var onDelete: (() -> Void)? = nil
 
             @State private var showingFullScreen = false
+            @State private var videoThumbnail: UIImage? = nil
             @Environment(\.colorScheme) private var colorScheme
 
             var body: some View {
@@ -247,6 +248,15 @@ struct ComposableMessage: View {
                       size > 0
                 else { return nil }
                 return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+            }
+
+            private func loadVideoThumbnail(from url: URL) async {
+                let asset = AVURLAsset(url: url)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 520, height: 400)
+                guard let cgImage = try? await generator.image(at: .zero).image else { return }
+                await MainActor.run { self.videoThumbnail = UIImage(cgImage: cgImage) }
             }
 
             @ViewBuilder
@@ -336,14 +346,22 @@ struct ComposableMessage: View {
                     } else if let _ = FileExtensions.Video(rawValue: metadata.extension ?? ""), let url = self.file.url {
                         VStack(spacing: 6) {
                             ZStack {
-                                Color.black
+                                if let thumbnail = self.videoThumbnail {
+                                    Image(uiImage: thumbnail)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    Color.black
+                                }
                                 Image(systemName: "play.circle.fill")
                                     .font(.system(size: 44))
                                     .foregroundStyle(.white)
+                                    .shadow(radius: 4)
                             }
                             .frame(width: 260, height: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                             .onTapGesture { self.showingFullScreen = true }
+                            .task { await self.loadVideoThumbnail(from: url) }
                             .contextMenu {
                                 if case .read = self.mode {
                                     ShareLink(item: url) {
