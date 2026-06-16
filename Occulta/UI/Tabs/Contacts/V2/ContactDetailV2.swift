@@ -402,7 +402,9 @@ private struct ComposeHeroV2: View {
             Text(self.errorMessage)
         }
         .onDisappear {
-            FileManager.default.clearTemporaryDirectory()
+            for attachment in self.attachments {
+                if let url = attachment.url { try? FileManager.default.removeItem(at: url) }
+            }
         }
     }
 

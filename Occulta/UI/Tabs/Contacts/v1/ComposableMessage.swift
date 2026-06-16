@@ -135,9 +135,6 @@ struct ComposableMessage: View {
         } message: {
             Text(self.errorMessage)
         }
-        .onDisappear {
-            FileManager.default.clearTemporaryDirectory()
-        }
     }
     
     struct Conversation: View {
