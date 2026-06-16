@@ -414,7 +414,7 @@ private struct ComposeHeroV2: View {
             let ext  = item.supportedContentTypes.first?.preferredFilenameExtension ?? "bin"
             let name = "media_\(UUID().uuidString.prefix(8))"
             let url  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
-            try data.write(to: url, options: .completeFileProtection)
+            try data.writeProtected(to: url)
             let file = Occulta.File(url: url, format: .file(.init(name: name, extension: ext)), date: Date())
             await MainActor.run { self.attachments.append(file) }
         } catch {
@@ -432,7 +432,7 @@ private struct ComposeHeroV2: View {
                 let name = url.deletingPathExtension().lastPathComponent
                 let ext  = url.pathExtension
                 let tmp  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
-                try data.write(to: tmp, options: .completeFileProtection)
+                try data.writeProtected(to: tmp)
                 let file = Occulta.File(url: tmp, format: .file(.init(name: name, extension: ext)), date: Date())
                 await MainActor.run { self.attachments.append(file) }
             } catch {
@@ -502,7 +502,7 @@ private struct ComposeHeroV2: View {
 
                 let name = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
                 let url  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
-                try encrypted.write(to: url, options: .completeFileProtection)
+                try encrypted.writeProtected(to: url)
 
                 await MainActor.run {
                     self.encryptedURL = url

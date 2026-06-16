@@ -585,7 +585,7 @@ private struct RootView: View {
                     let content = file.content ?? Data()
 
                     group.addTask {
-                        try content.write(to: fileURL)
+                        try content.writeProtected(to: fileURL)
                         return Occulta.File(url: fileURL, format: file.format, date: file.date)
                     }
 
@@ -695,7 +695,7 @@ private struct RootView: View {
             let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
             let occURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(occID).occ")
-            try occData.write(to: occURL)
+            try occData.writeProtected(to: occURL)
 
             // 5. Delete session directory — plaintext no longer needed
             try FileManager.default.removeItem(at: sessionDir)

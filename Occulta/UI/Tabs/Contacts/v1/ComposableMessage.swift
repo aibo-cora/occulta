@@ -446,7 +446,7 @@ struct ComposableMessage: View {
             let ext      = contentType.preferredFilenameExtension ?? "bin"
             let filename = "media_\(UUID().uuidString.prefix(8))"
             let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-            try data.write(to: url, options: .completeFileProtection)
+            try data.writeProtected(to: url)
             let file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
             await MainActor.run { self.messages.append(file) }
         } catch {
@@ -466,7 +466,7 @@ struct ComposableMessage: View {
                 let filename = url.deletingPathExtension().lastPathComponent
                 let ext      = url.pathExtension
                 let tmp      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-                try data.write(to: tmp, options: .completeFileProtection)
+                try data.writeProtected(to: tmp)
                 let file = Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
                 await MainActor.run { self.messages.append(file) }
             } catch {
@@ -538,7 +538,7 @@ struct ComposableMessage: View {
                 let tempURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent("\(id).occ")
                 
-                try encrypted.write(to: tempURL, options: .completeFileProtection)
+                try encrypted.writeProtected(to: tempURL)
                 
                 await MainActor.run {
                     self.encryptedResultURL = tempURL

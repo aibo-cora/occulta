@@ -12,4 +12,8 @@ extension Data {
     var sha256: Data {
         Data(self.withUnsafeBytes { Data(CryptoKit.SHA256.hash(data: $0)) })
     }
+
+    func writeProtected(to url: URL) throws {
+        try self.write(to: url, options: .completeFileProtection)
+    }
 }
