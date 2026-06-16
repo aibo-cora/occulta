@@ -652,7 +652,10 @@ private struct RootView: View {
 
             for entry in manifest.files {
                 let fileURL = sessionDir.appendingPathComponent(entry.filename)
-                var content = try Data(contentsOf: fileURL)
+                var ciphertext = try Data(contentsOf: fileURL)
+                var content = try keyManager.decrypt(data: ciphertext)
+                _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                ciphertext = Data()
 
                 // Strip EXIF/GPS/camera metadata from images before encryption.
                 // If stripping fails (e.g. unsupported format), the original data is used —
