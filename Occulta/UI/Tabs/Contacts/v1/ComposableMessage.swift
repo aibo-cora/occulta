@@ -8,6 +8,14 @@ extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
 }
 
+struct PendingImport: Identifiable {
+    let id       = UUID()
+    let filename: String
+    let ext:      String
+    var thumbnail: UIImage? = nil
+    var progress:  Double   = 0
+}
+
 struct ComposableMessage: View {
     @Environment(ContactManager.self) private var contactManager: ContactManager?
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
@@ -29,6 +37,7 @@ struct ComposableMessage: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var attachmentManager: AttachmentManager? = nil
+    @State private var pendingImports: [PendingImport] = []
 
     init(
         identifier: String,
@@ -47,7 +56,7 @@ struct ComposableMessage: View {
     
     var body: some View {
         VStack {
-            if self.messages.isEmpty {
+            if self.messages.isEmpty && self.pendingImports.isEmpty {
                 ContentUnavailableView {
                     Label("Add content", systemImage: "plus.circle")
                 } description: {
@@ -55,7 +64,7 @@ struct ComposableMessage: View {
                         .multilineTextAlignment(.center)
                 }
             } else {
-                Conversation(mode: .write, messages: self.$messages, attachmentManager: self.attachmentManager, onDelete: self.deleteMessage)
+                Conversation(mode: .write, messages: self.$messages, pendingImports: self.pendingImports, attachmentManager: self.attachmentManager, onDelete: self.deleteMessage)
             }
             
             HStack(alignment: .center, spacing: 10) {
@@ -145,6 +154,7 @@ struct ComposableMessage: View {
     struct Conversation: View {
         let mode: Modes
         @Binding var messages: [Occulta.File]
+        var pendingImports: [PendingImport] = []
         var attachmentManager: AttachmentManager? = nil
         var onDelete: ((Occulta.File) -> Void)? = nil
 
@@ -177,6 +187,10 @@ struct ComposableMessage: View {
                                 }
                                 .id(file.id)
                             }
+                            ForEach(self.pendingImports) { pending in
+                                PendingImportBubble(pending: pending)
+                                    .id("pending-\(pending.id.uuidString)")
+                            }
                         }
                         .padding(.horizontal, 16)
                         .padding(.bottom, 20)
@@ -187,6 +201,13 @@ struct ComposableMessage: View {
                         withAnimation(.easeOut(duration: 0.3)) {
                             if let last = latest.last {
                                 proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onChange(of: self.pendingImports.count) { _, _ in
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            if let last = self.pendingImports.last {
+                                proxy.scrollTo("pending-\(last.id.uuidString)", anchor: .bottom)
                             }
                         }
                     }
@@ -221,6 +242,56 @@ struct ComposableMessage: View {
             }
         }
         
+        private struct PendingImportBubble: View {
+            let pending: PendingImport
+
+            var body: some View {
+                HStack(alignment: .center) {
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 6) {
+                        ZStack {
+                            if let thumb = self.pending.thumbnail {
+                                Image(uiImage: thumb)
+                                    .resizable()
+                                    .scaledToFill()
+                                Color.black.opacity(0.4)
+                            } else {
+                                Color.black
+                            }
+                            VStack(spacing: 6) {
+                                ProgressView().tint(.white)
+                                Text(self.pending.progress > 0
+                                     ? "\(Int(self.pending.progress * 100))%"
+                                     : "Encrypting…")
+                                    .font(.caption2)
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        .frame(width: 260, height: 200)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+
+                        ProgressView(value: self.pending.progress)
+                            .tint(.blue)
+                            .frame(width: 260)
+                            .animation(.linear(duration: 0.1), value: self.pending.progress)
+
+                        HStack(spacing: 4) {
+                            Text(self.pending.filename)
+                                .font(.caption)
+                                .foregroundStyle(.primary)
+                            Text("·")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Encrypting…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+
         struct MessageBubble: View {
             let file: Occulta.File
             let mode: Conversation.Modes
@@ -502,17 +573,43 @@ struct ComposableMessage: View {
     private func handleMedia(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
+
             let contentType = item.supportedContentTypes.first ?? .data
             let ext      = contentType.preferredFilenameExtension ?? "bin"
             let filename = "media_\(UUID().uuidString.prefix(8))"
             let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-            if let manager = self.attachmentManager {
-                try manager.encrypt(data, to: url)
-            } else {
+
+            guard let manager = self.attachmentManager else {
                 try data.writeProtected(to: url)
+                self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
+                return
             }
-            let file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
-            await MainActor.run { self.messages.append(file) }
+
+            if FileExtensions.Video(rawValue: ext) != nil {
+                let pending = PendingImport(filename: filename, ext: ext)
+                self.pendingImports.append(pending)
+                let id = pending.id
+
+                Task {
+                    if let thumb = await AttachmentManager.videoThumbnail(from: data, fileExtension: ext),
+                       let idx = self.pendingImports.firstIndex(where: { $0.id == id }) {
+                        self.pendingImports[idx].thumbnail = thumb
+                    }
+                }
+
+                for try await p in manager.encryptWithProgress(data, to: url) {
+                    if let idx = self.pendingImports.firstIndex(where: { $0.id == id }) {
+                        self.pendingImports[idx].progress = p
+                    }
+                    await Task.yield()
+                }
+
+                self.pendingImports.removeAll { $0.id == id }
+            } else {
+                try manager.encrypt(data, to: url)
+            }
+
+            self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
         } catch {
             self.showErrorAlert(error.localizedDescription)
         }

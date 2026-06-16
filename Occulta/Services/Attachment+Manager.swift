@@ -30,6 +30,56 @@ final class AttachmentManager: Sendable {
         try Encryptor.write(data, contactKey: self.contactKey, to: url)
     }
 
+    nonisolated func encryptWithProgress(_ data: Data, to url: URL) -> AsyncThrowingStream<Double, Error> {
+        let key = self.contactKey
+        
+        return AsyncThrowingStream { continuation in
+            Task.detached(priority: .userInitiated) {
+                do {
+                    try Encryptor.write(data, contactKey: key, to: url) { @Sendable p in
+                        continuation.yield(p)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    // Extracts a thumbnail from raw (plaintext) video data. Writes to a protected
+    // temp file, grabs frame 0, then immediately deletes the temp file.
+    static func videoThumbnail(from data: Data, fileExtension ext: String) async -> UIImage? {
+        try? await withCheckedThrowingContinuation { continuation in
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(ext)
+            
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            
+            guard (try? data.writeProtected(to: tmp)) != nil else {
+                continuation.resume(throwing: AttachmentError.invalidImageData)
+                
+                return
+            }
+            
+            let asset = AVURLAsset(url: tmp)
+            let gen   = AVAssetImageGenerator(asset: asset)
+            
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize                    = CGSize(width: 600, height: 600)
+            gen.generateCGImageAsynchronously(for: .zero) { cgImage, _, error in
+                if let cgImage {
+                    continuation.resume(returning: UIImage(cgImage: cgImage))
+                } else if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(throwing: AttachmentError.invalidImageData)
+                }
+            }
+        }
+    }
+
     // MARK: Image
 
     func image(at url: URL) async throws -> UIImage {
@@ -47,6 +97,7 @@ final class AttachmentManager: Sendable {
             guard let source,
                   let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
             else { throw AttachmentError.invalidImageData }
+            
             return UIImage(cgImage: cgImage)
         }.value
     }
@@ -110,7 +161,12 @@ private struct Header {
 private enum Encryptor {
     nonisolated static let chunkSize = 262_144 // 256 KB
 
-    nonisolated static func write(_ plaintext: Data, contactKey: SymmetricKey, to url: URL) throws {
+    nonisolated static func write(
+        _ plaintext: Data,
+        contactKey: SymmetricKey,
+        to url: URL,
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) throws {
         let baseNonce = AES.GCM.Nonce()
         let keySalt   = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         let fileKey   = derivedFileKey(contactKey: contactKey, salt: keySalt)
@@ -138,6 +194,7 @@ private enum Encryptor {
             )
             output.append(contentsOf: box.ciphertext)
             output.append(contentsOf: box.tag)
+            onProgress?(Double(i + 1) / Double(chunks))
         }
 
         try output.writeProtected(to: url)
