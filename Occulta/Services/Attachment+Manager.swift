@@ -6,6 +6,7 @@
 import Foundation
 import CryptoKit
 import AVFoundation
+import ImageIO
 import UniformTypeIdentifiers
 import UIKit
 
@@ -25,7 +26,7 @@ final class AttachmentManager: Sendable {
 
     // MARK: Write
 
-    func encrypt(_ data: Data, to url: URL) throws {
+    nonisolated func encrypt(_ data: Data, to url: URL) throws {
         try Encryptor.write(data, contactKey: self.contactKey, to: url)
     }
 
@@ -33,10 +34,20 @@ final class AttachmentManager: Sendable {
 
     func image(at url: URL) async throws -> UIImage {
         let key = self.contactKey
+
         return try await Task.detached(priority: .userInitiated) {
-            let data = try Decryptor.all(at: url, contactKey: key)
-            guard let image = UIImage(data: data) else { throw AttachmentError.invalidImageData }
-            return image
+            let data   = try Decryptor.all(at: url, contactKey: key)
+            let source = CGImageSourceCreateWithData(data as CFData, nil)
+
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize:          960,
+                kCGImageSourceCreateThumbnailWithTransform:   true
+            ]
+            guard let source,
+                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            else { throw AttachmentError.invalidImageData }
+            return UIImage(cgImage: cgImage)
         }.value
     }
 
@@ -83,9 +94,9 @@ final class AttachmentManager: Sendable {
 //  69      32    header_mac (HMAC-SHA256 of bytes 0..<69)
 
 private struct Header {
-    static let magic:     [UInt8] = Array("OATT".utf8)
-    static let version:   UInt8   = 0x01
-    static let byteCount: Int     = 101
+    nonisolated static let magic:     [UInt8] = Array("OATT".utf8)
+    nonisolated static let version:   UInt8   = 0x01
+    nonisolated static let byteCount: Int     = 101
 
     let chunkSize:     Int
     let chunkCount:    Int
@@ -97,9 +108,9 @@ private struct Header {
 // MARK: - Encryptor
 
 private enum Encryptor {
-    static let chunkSize = 262_144 // 256 KB
+    nonisolated static let chunkSize = 262_144 // 256 KB
 
-    static func write(_ plaintext: Data, contactKey: SymmetricKey, to url: URL) throws {
+    nonisolated static func write(_ plaintext: Data, contactKey: SymmetricKey, to url: URL) throws {
         let baseNonce = AES.GCM.Nonce()
         let keySalt   = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         let fileKey   = derivedFileKey(contactKey: contactKey, salt: keySalt)
@@ -136,13 +147,13 @@ private enum Encryptor {
 // MARK: - Decryptor
 
 private enum Decryptor {
-    static func all(at url: URL, contactKey: SymmetricKey) throws -> Data {
+    nonisolated static func all(at url: URL, contactKey: SymmetricKey) throws -> Data {
         let h = try header(at: url, contactKey: contactKey)
         guard h.plaintextSize > 0 else { return Data() }
         return try range(at: url, offset: 0, length: h.plaintextSize, contactKey: contactKey)
     }
 
-    static func range(at url: URL, offset: Int, length: Int, contactKey: SymmetricKey) throws -> Data {
+    nonisolated static func range(at url: URL, offset: Int, length: Int, contactKey: SymmetricKey) throws -> Data {
         guard length > 0 else { return Data() }
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -151,8 +162,8 @@ private enum Decryptor {
               headerBytes.count == Header.byteCount
         else { throw AttachmentError.invalidHeader }
 
-        let h       = try parseHeader(headerBytes, contactKey: contactKey)
-        let fileKey = derivedFileKey(contactKey: contactKey, salt: h.keySalt)
+        let h             = try parseHeader(headerBytes, contactKey: contactKey)
+        let fileKey       = derivedFileKey(contactKey: contactKey, salt: h.keySalt)
         let clampedLength = min(length, h.plaintextSize - offset)
 
         let first = offset / h.chunkSize
@@ -179,7 +190,7 @@ private enum Decryptor {
         return Data(plaintext[trimStart..<(trimStart + clampedLength)])
     }
 
-    static func header(at url: URL, contactKey: SymmetricKey) throws -> Header {
+    nonisolated static func header(at url: URL, contactKey: SymmetricKey) throws -> Header {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         guard let bytes = try handle.read(upToCount: Header.byteCount),
@@ -188,7 +199,7 @@ private enum Decryptor {
         return try parseHeader(bytes, contactKey: contactKey)
     }
 
-    private static func parseHeader(_ bytes: Data, contactKey: SymmetricKey) throws -> Header {
+    private nonisolated static func parseHeader(_ bytes: Data, contactKey: SymmetricKey) throws -> Header {
         guard bytes.prefix(4).elementsEqual(Header.magic) else { throw AttachmentError.invalidHeader }
         guard bytes[4] == Header.version                  else { throw AttachmentError.unsupportedVersion }
 
@@ -215,7 +226,7 @@ private enum Decryptor {
 
 // MARK: - Helpers
 
-private func derivedFileKey(contactKey: SymmetricKey, salt: some DataProtocol) -> SymmetricKey {
+nonisolated private func derivedFileKey(contactKey: SymmetricKey, salt: some DataProtocol) -> SymmetricKey {
     HKDF<SHA256>.deriveKey(
         inputKeyMaterial: contactKey,
         salt:             salt,
@@ -224,7 +235,7 @@ private func derivedFileKey(contactKey: SymmetricKey, salt: some DataProtocol) -
     )
 }
 
-private func derivedNonce(base: AES.GCM.Nonce, index: Int) throws -> AES.GCM.Nonce {
+nonisolated private func derivedNonce(base: AES.GCM.Nonce, index: Int) throws -> AES.GCM.Nonce {
     var bytes = base.withUnsafeBytes { Array($0) }
     let idx   = withUnsafeBytes(of: UInt64(index).bigEndian) { Array($0) }
     for j in 0..<8 { bytes[4 + j] ^= idx[j] }
@@ -269,13 +280,15 @@ private final class ResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
 
 // MARK: - Share Provider
 
-private final class ShareProvider: UIActivityItemProvider {
-    private let fileURL:     URL
-    private let filename:    String
-    private let contentType: UTType
-    private let contactKey:  SymmetricKey
+// UIActivityItemProvider is @MainActor in UIKit. Stored properties are nonisolated
+// so that item and activityViewController can run on UIKit's background thread.
+private final class ShareProvider: UIActivityItemProvider, @unchecked Sendable {
+    nonisolated let fileURL:     URL
+    nonisolated let filename:    String
+    nonisolated let contentType: UTType
+    nonisolated let contactKey:  SymmetricKey
 
-    init(fileURL: URL, filename: String, contentType: UTType, contactKey: SymmetricKey) {
+    nonisolated init(fileURL: URL, filename: String, contentType: UTType, contactKey: SymmetricKey) {
         self.fileURL     = fileURL
         self.filename    = filename
         self.contentType = contentType
@@ -283,17 +296,25 @@ private final class ShareProvider: UIActivityItemProvider {
         super.init(placeholderItem: Data())
     }
 
+    nonisolated override init(placeholderItem item: Any) {
+        self.fileURL     = URL(fileURLWithPath: "")
+        self.filename    = ""
+        self.contentType = .data
+        self.contactKey  = SymmetricKey(size: .bits256)
+        super.init(placeholderItem: item)
+    }
+
     // Called on a background thread by UIActivityViewController.
-    override var item: Any {
+    nonisolated override var item: Any {
         (try? Decryptor.all(at: self.fileURL, contactKey: self.contactKey)) ?? Data()
     }
 
-    override func activityViewController(
+    nonisolated override func activityViewController(
         _ ac: UIActivityViewController,
         subjectForActivityType type: UIActivity.ActivityType?
     ) -> String { self.filename }
 
-    override func activityViewController(
+    nonisolated override func activityViewController(
         _ ac: UIActivityViewController,
         dataTypeIdentifierForActivityType type: UIActivity.ActivityType?
     ) -> String { self.contentType.identifier }
@@ -318,8 +339,8 @@ private enum AssociatedKeys {
 // MARK: - Encoding helpers
 
 private extension UInt32 {
-    var bigEndianData: Data { withUnsafeBytes(of: self.bigEndian) { Data($0) } }
-    init(bigEndianBytes bytes: some DataProtocol) {
+    nonisolated var bigEndianData: Data { withUnsafeBytes(of: self.bigEndian) { Data($0) } }
+    nonisolated init(bigEndianBytes bytes: some DataProtocol) {
         var v: UInt32 = 0
         _ = withUnsafeMutableBytes(of: &v) { ptr in bytes.copyBytes(to: ptr) }
         self = UInt32(bigEndian: v)
@@ -327,8 +348,8 @@ private extension UInt32 {
 }
 
 private extension UInt64 {
-    var bigEndianData: Data { withUnsafeBytes(of: self.bigEndian) { Data($0) } }
-    init(bigEndianBytes bytes: some DataProtocol) {
+    nonisolated var bigEndianData: Data { withUnsafeBytes(of: self.bigEndian) { Data($0) } }
+    nonisolated init(bigEndianBytes bytes: some DataProtocol) {
         var v: UInt64 = 0
         _ = withUnsafeMutableBytes(of: &v) { ptr in bytes.copyBytes(to: ptr) }
         self = UInt64(bigEndian: v)
@@ -336,5 +357,5 @@ private extension UInt64 {
 }
 
 private extension AES.GCM.Nonce {
-    var dataRepresentation: Data { self.withUnsafeBytes { Data($0) } }
+    nonisolated var dataRepresentation: Data { self.withUnsafeBytes { Data($0) } }
 }

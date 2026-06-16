@@ -47,7 +47,7 @@ struct SaltInfo {
     /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
     /// blob and a reconstruct blob are never decryptable with the same key.
     static let kRecoveryBufferKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
-    static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
+    nonisolated static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
 }
 
 // MARK: - SE Key Inventory

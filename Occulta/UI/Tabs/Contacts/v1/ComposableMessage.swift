@@ -577,7 +577,7 @@ struct ComposableMessage: View {
                 do {
                     encryptedData = try self.contactManager?.encryptBundle(
                         basket:          basket,
-                        for:             identifier,
+                        for:             self.identifier,
                         shardOperations: shardOps.isEmpty ? nil : shardOps,
                         custodyManifest: manifest_,
                         expectedShards:  expected
@@ -587,7 +587,7 @@ struct ComposableMessage: View {
                     // strip shard ops (they stay pending and will retry after re-exchange).
                     encryptedData = try self.contactManager?.encryptBundle(
                         basket: basket,
-                        for:    identifier
+                        for:    self.identifier
                     )
                 } catch {
                     debugPrint("Error: \(error)")
