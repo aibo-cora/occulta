@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 extension Contact {
     struct Info: View {
@@ -102,15 +103,23 @@ extension Contact {
         }
         
         @State private var editing: Bool = false
-        @State private var displayingVerificationInfo : Bool = false
-        
+        @State private var displayingVerificationInfo: Bool = false
+        @State private var composeMessages: [Occulta.File] = []
+        @State private var composeMessageText = ""
+        @State private var composeSelectedMedia: [PhotosPickerItem] = []
+
         var body: some View {
             VStack {
                 VStack(spacing: 20) {
                     if self.needsExchange {
                         KeyExchange(identifier: self.identifier)
                     } else {
-                        ComposableMessage(identifier: self.identifier)
+                        ComposableMessage(
+                            identifier: self.identifier,
+                            messages: self.$composeMessages,
+                            messageText: self.$composeMessageText,
+                            selectedMediaItems: self.$composeSelectedMedia
+                        )
                     }
                 }
                 .toolbar {
