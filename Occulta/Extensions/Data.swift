@@ -13,7 +13,14 @@ extension Data {
         Data(self.withUnsafeBytes { Data(CryptoKit.SHA256.hash(data: $0)) })
     }
 
-    func writeProtected(to url: URL) throws {
+    nonisolated func writeProtected(to url: URL) throws {
+        var url = url
+        
         try self.write(to: url, options: .completeFileProtection)
+        
+        var resourceValues = URLResourceValues()
+        
+        resourceValues.isExcludedFromBackup = true
+        try? url.setResourceValues(resourceValues)
     }
 }
