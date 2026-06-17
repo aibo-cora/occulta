@@ -357,30 +357,24 @@ final class ComposeViewModel {
         }
 
         let encryptor = try manager.streamingEncryptor(to: url)
-        let pageSize  = Int(getpagesize())
 
+        // Read directly from the system-provided URL inside the callback — no plaintext copy written.
+        // The callback runs on a background thread so blocking I/O is fine.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, providerError in
+            provider.loadFileRepresentation(forTypeIdentifier: typeID) { fileURL, error in
                 do {
-                    if let err = providerError { throw err }
-                    guard let data else { throw ImportError.noVideoResource }
-                    var encryptError: Error? = nil
-                    data.withUnsafeBytes { rawPtr in
-                        guard let base = rawPtr.baseAddress else { return }
-                        var offset = 0
-                        while offset < data.count, encryptError == nil {
-                            let take = min(65_536, data.count - offset)
-                            autoreleasepool {
-                                do { try encryptor.append(Data(bytes: base.advanced(by: offset), count: take)) }
-                                catch { encryptError = error }
-                            }
-                            let adviseLen = ((take + pageSize - 1) / pageSize) * pageSize
-                            madvise(UnsafeMutableRawPointer(mutating: base.advanced(by: offset)), adviseLen, MADV_DONTNEED)
-                            offset += take
-                        }
+                    if let err = error { throw err }
+                    guard let fileURL else { throw ImportError.noVideoResource }
+                    
+                    let source = try FileHandle(forReadingFrom: fileURL)
+                    
+                    defer { try? source.close() }
+                    
+                    while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
+                        try encryptor.append(chunk)
                     }
-                    if let err = encryptError { throw err }
                     try encryptor.finalize()
+                    
                     cont.resume()
                 } catch {
                     cont.resume(throwing: error)
