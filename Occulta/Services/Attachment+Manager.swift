@@ -337,12 +337,17 @@ final class StreamingEncryptor: @unchecked Sendable {
     func append(_ incoming: Data) throws {
         self.totalBytes += incoming.count
         var offset = 0
+        
         while offset < incoming.count {
             let take = min(self.chunkSize - self.buffer.count, incoming.count - offset)
+            
             self.buffer.append(contentsOf: incoming[offset..<(offset + take)])
+            
             offset += take
+            
             if self.buffer.count == self.chunkSize {
                 try self.flush(self.buffer)
+                
                 self.buffer.removeAll(keepingCapacity: true)
             }
         }
@@ -440,9 +445,12 @@ private final class ResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
                 // that request — avoids a file open/close per 256KB chunk.
                 let handle = try FileHandle(forReadingFrom: self.fileURL)
                 defer { try? handle.close() }
+                _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
                 while cursor < end {
                     let length = min(self.header.chunkSize, end - cursor)
-                    let chunk  = try self.decryptChunk(at: cursor, length: length, using: handle)
+                    let chunk  = try autoreleasepool {
+                        try self.decryptChunk(at: cursor, length: length, using: handle)
+                    }
                     dataReq.respond(with: chunk)
                     cursor += chunk.count
                     if chunk.count < length { break }

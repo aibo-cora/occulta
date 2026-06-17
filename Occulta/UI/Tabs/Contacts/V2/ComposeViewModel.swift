@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import PhotosUI
+import Photos
+import AVFoundation
 import UniformTypeIdentifiers
 
 // MARK: - PendingImport
@@ -83,7 +85,8 @@ final class ComposeViewModel {
             }
 
             do {
-                try await self.streamVideo(provider: provider, typeID: typeID,
+                try await self.streamVideo(assetID: result.assetIdentifier,
+                                           provider: provider, typeID: typeID,
                                            pendingID: pending.id, ext: ext,
                                            filename: filename, url: url, manager: manager)
             } catch {
@@ -248,6 +251,102 @@ final class ComposeViewModel {
     // MARK: Private
 
     private func streamVideo(
+        assetID:   String?,
+        provider:  NSItemProvider,
+        typeID:    String,
+        pendingID: UUID,
+        ext:       String,
+        filename:  String,
+        url:       URL,
+        manager:   AttachmentManager
+    ) async throws {
+        if let assetID {
+            try await self.streamVideoPOSIX(assetID: assetID, pendingID: pendingID,
+                                            ext: ext, filename: filename, url: url, manager: manager)
+        } else {
+            try await self.streamVideoProvider(provider: provider, typeID: typeID,
+                                               pendingID: pendingID, ext: ext,
+                                               filename: filename, url: url, manager: manager)
+        }
+    }
+
+    // POSIX path: F_NOCACHE + F_RDAHEAD=0 on the source fd keeps the kernel buffer
+    // cache from accumulating pages behind the read cursor, bounding RSS to one chunk.
+    private func streamVideoPOSIX(
+        assetID:   String,
+        pendingID: UUID,
+        ext:       String,
+        filename:  String,
+        url:       URL,
+        manager:   AttachmentManager
+    ) async throws {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        guard status == .authorized || status == .limited else {
+            throw ImportError.photosAccessDenied
+        }
+
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+        guard let asset = fetchResult.firstObject else { throw ImportError.assetNotFound }
+
+        let opts = PHVideoRequestOptions()
+        opts.isNetworkAccessAllowed = true
+        opts.deliveryMode = .automatic
+
+        let videoURL: URL = try await withCheckedThrowingContinuation { cont in
+            var resumed = false
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { avAsset, _, info in
+                guard !resumed else { return }
+                resumed = true
+                if let err = info?[PHImageErrorKey] as? Error { cont.resume(throwing: err) }
+                else if let ua = avAsset as? AVURLAsset       { cont.resume(returning: ua.url) }
+                else                                           { cont.resume(throwing: ImportError.noVideoResource) }
+            }
+        }
+
+        await MainActor.run {
+            if let idx = self.pendingImports.firstIndex(where: { $0.id == pendingID }) {
+                self.pendingImports[idx].isLoading = false
+            }
+        }
+
+        let encryptor = try manager.streamingEncryptor(to: url)
+
+        // Blocking I/O — run on a detached task, not the cooperative pool.
+        try await Task.detached(priority: .userInitiated) {
+            let fd = open(videoURL.path(percentEncoded: false), O_RDONLY)
+            guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            defer { close(fd) }
+
+            fcntl(fd, F_NOCACHE, 1)  // bypass unified buffer cache
+            fcntl(fd, F_RDAHEAD, 0)  // disable kernel readahead (int 0, not a pointer)
+
+            let chunkSize = 65_536
+            var rawBuf: UnsafeMutableRawPointer? = nil
+            guard posix_memalign(&rawBuf, Int(sysconf(_SC_PAGESIZE)), chunkSize) == 0,
+                  let buf = rawBuf else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            defer { free(buf) }
+
+            while true {
+                let n = read(fd, buf, chunkSize)
+                if n == 0 { break }
+                if n < 0  { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                // bytesNoCopy with .none deallocator: buf is reused each iteration;
+                // append() copies into its internal buffer before returning.
+                try encryptor.append(Data(bytesNoCopy: buf, count: n, deallocator: .none))
+            }
+            try encryptor.finalize()
+        }.value
+
+        await MainActor.run {
+            self.pendingImports.removeAll { $0.id == pendingID }
+            self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
+        }
+    }
+
+    // NSItemProvider fallback — no Photos authorization needed, picker grant is sufficient.
+    private func streamVideoProvider(
         provider:  NSItemProvider,
         typeID:    String,
         pendingID: UUID,
@@ -314,13 +413,15 @@ struct FileExtensions {
 }
 
 enum ImportError: LocalizedError {
+    case photosAccessDenied
     case assetNotFound
     case noVideoResource
 
     var errorDescription: String? {
         switch self {
-        case .assetNotFound:   return "Could not find the selected video."
-        case .noVideoResource: return "The selected item has no video resource."
+        case .photosAccessDenied: return "Photos access is required to import videos."
+        case .assetNotFound:      return "Could not find the selected video."
+        case .noVideoResource:    return "The selected item has no video resource."
         }
     }
 }

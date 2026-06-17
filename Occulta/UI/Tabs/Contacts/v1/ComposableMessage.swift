@@ -357,13 +357,22 @@ extension ComposableMessage {
 
         @ViewBuilder private func videoBubble(name: String, url: URL, metadata: Occulta.File.Metadata) -> some View {
             VStack(spacing: 6) {
-                Group {
-                    if let player = self.videoPlayer { VideoPlayer(player: player) }
-                    else { Color.black }
+                ZStack {
+                    if let player = self.videoPlayer {
+                        VideoPlayer(player: player)
+                    } else {
+                        Color.black
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
                 }
                 .frame(width: 260, height: 200)
                 .clipShape(RoundedRectangle(cornerRadius: 18))
-                .onAppear { self.videoPlayer = self.attachmentManager?.player(for: url) ?? AVPlayer(url: url) }
+                .onTapGesture {
+                    guard self.videoPlayer == nil else { return }
+                    self.videoPlayer = self.attachmentManager?.player(for: url) ?? AVPlayer(url: url)
+                }
                 .onDisappear { self.videoPlayer = nil }
                 .contextMenu {
                     if case .read = self.mode {
