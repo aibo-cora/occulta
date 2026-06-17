@@ -91,20 +91,16 @@ extension Contact {
             return ourIdentityHash == decryptedOwnerHash
         }
         
-        init(identifier: String) {
-            self.identifier = identifier
-            
-            let predicate = #Predicate<Contact.Profile> {
-                $0.identifier == identifier
-            }
-            
-            self._contacts = Query(filter: predicate)
-        }
-        
         @State private var editing: Bool = false
         @State private var displayingVerificationInfo: Bool = false
-        @State private var composeMessages: [Occulta.File] = []
-        @State private var composeMessageText = ""
+        @State private var composeVM: ComposeViewModel
+
+        init(identifier: String) {
+            self.identifier = identifier
+            let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
+            self._contacts = Query(filter: predicate)
+            self._composeVM = State(initialValue: ComposeViewModel(identifier: identifier))
+        }
 
         var body: some View {
             VStack {
@@ -112,11 +108,7 @@ extension Contact {
                     if self.needsExchange {
                         KeyExchange(identifier: self.identifier)
                     } else {
-                        ComposableMessage(
-                            identifier: self.identifier,
-                            messages: self.$composeMessages,
-                            messageText: self.$composeMessageText
-                        )
+                        ComposableMessage(vm: self.composeVM)
                     }
                 }
                 .toolbar {

@@ -20,14 +20,12 @@ extension Contact {
         @State private var keyDetailsExpanded = false
         @State private var displayingVerificationInfo = false
         @State private var useThreadCompose = false
-
-        // Thread compose state — persists while this contact detail is on the stack
-        @State private var threadMessages: [Occulta.File] = []
-        @State private var threadMessageText = ""
+        @State private var composeVM: ComposeViewModel
 
         init(identifier: String) {
             self.identifier = identifier
             self._contacts = Query(filter: #Predicate { $0.identifier == identifier })
+            self._composeVM = State(initialValue: ComposeViewModel(identifier: identifier))
         }
 
         private var profile: Contact.Profile? { self.contacts.first }
@@ -63,15 +61,19 @@ extension Contact {
                         ComposeStyleToggle(useThread: self.$useThreadCompose)
 
                         if self.useThreadCompose {
-                            NavigationLink(destination: ComposableMessage(
-                                identifier: self.identifier,
-                                messages: self.$threadMessages,
-                                messageText: self.$threadMessageText
-                            )) {
+                            NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
                                 HStack {
                                     Text("Open thread")
                                         .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(.white)
+                                    if !self.composeVM.messages.isEmpty {
+                                        Text("\(self.composeVM.messages.count)")
+                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Capsule().fill(.white.opacity(0.3)))
+                                    }
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)
@@ -79,7 +81,7 @@ extension Contact {
                                 .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
                         } else {
-                            ComposeHeroV2(identifier: self.identifier)
+                            ComposeHeroV2(vm: self.composeVM, identifier: self.identifier)
                         }
 
                         Text(self.profile?.encryptionSchemeLabel ?? "")
@@ -112,8 +114,22 @@ extension Contact {
                     }
                 }
             }
+            .task { self.composeVM.setup(contactManager: self.contactManager) }
+            .onChange(of: self.useThreadCompose) { _, _ in self.composeVM.clearAfterEncrypt() }
+            .onDisappear { self.composeVM.cleanup() }
             .fullScreenCover(isPresented: self.$editing) {
                 Contact.FormV2(mode: .edit(identifier: self.identifier)) { self.dismiss() }
+            }
+            .sheet(item: self.$composeVM.encryptedURL) { url in
+                ActivityView(activityItems: [url], onComplete: { completed in
+                    try? FileManager.default.removeItem(at: url)
+                    if completed { self.composeVM.clearAfterEncrypt() }
+                })
+            }
+            .alert("Error", isPresented: self.$composeVM.isShowingError) {
+                Button("OK") { }
+            } message: {
+                Text(self.composeVM.errorMessage)
             }
         }
     }
@@ -238,6 +254,7 @@ private struct StatusChipV2: View {
 // MARK: - Compose Hero
 
 private struct ComposeHeroV2: View {
+    @Bindable var vm: ComposeViewModel
     let identifier: String
 
     @Environment(ContactManager.self) private var contactManager
@@ -246,33 +263,29 @@ private struct ComposeHeroV2: View {
 
     @Query private var contacts: [Contact.Profile]
 
-    init(identifier: String) {
+    @State private var showMediaPicker = false
+    @State private var showFilePicker  = false
+
+    init(vm: ComposeViewModel, identifier: String) {
+        self.vm = vm
         self.identifier = identifier
-        self._contacts = Query(filter: #Predicate { $0.identifier == identifier })
+        let id = identifier
+        self._contacts = Query(filter: #Predicate { $0.identifier == id })
     }
 
     private var firstName: String { self.contacts.first?.givenName.decrypt() ?? "" }
 
-    @State private var messageText = ""
-    @State private var attachments: [Occulta.File] = []
-    @State private var showMediaPicker = false
-    @State private var showFilePicker = false
-    @State private var encryptedURL: URL?
-    @State private var isShowingError = false
-    @State private var errorMessage = ""
-
     private var isV4: Bool { self.contacts.first?.maxBundleVersion != nil }
 
     private var estimatedBundleSize: Int {
-        let textBytes = self.messageText.utf8.count
-        let fileBytes = self.attachments.reduce(0) { acc, file in
-            guard let url = file.url,
+        let textBytes = self.vm.draftText.utf8.count
+        let fileBytes = self.vm.messages.reduce(0) { acc, file in
+            guard let url  = file.url,
                   let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
             else { return acc }
             return acc + size
         }
-        // 195 = 167-byte binary header + 28-byte AES-GCM overhead; 80 bytes per-file metadata JSON
-        let raw = max(195, textBytes + fileBytes + 195 + self.attachments.count * 80)
+        let raw = max(195, textBytes + fileBytes + 195 + self.vm.messages.count * 80)
         return self.isV4 ? raw : Int(Double(raw) * 2.37)
     }
 
@@ -281,8 +294,8 @@ private struct ComposeHeroV2: View {
     }
 
     private var canEncrypt: Bool {
-        !self.messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        || !self.attachments.isEmpty
+        !self.vm.draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !self.vm.messages.isEmpty
     }
 
     var body: some View {
@@ -296,18 +309,20 @@ private struct ComposeHeroV2: View {
             }
             .padding(.bottom, 10)
 
-            TextField("", text: self.$messageText, axis: .vertical)
+            TextField("", text: self.$vm.draftText, axis: .vertical)
                 .lineLimit(4...)
-                .frame(minHeight: self.attachments.isEmpty ? 100 : 60, alignment: .topLeading)
+                .frame(minHeight: self.vm.messages.isEmpty ? 100 : 60, alignment: .topLeading)
                 .tint(.occultaAccent)
 
-            // Attachment chips
-            if !self.attachments.isEmpty {
+            let fileItems = self.vm.messages
+                .filter { if case .file = $0.format { return true }; return false }
+                .sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+            if !fileItems.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(self.attachments) { file in
+                        ForEach(fileItems) { file in
                             AttachmentChipV2(file: file) {
-                                self.attachments.removeAll { $0.id == file.id }
+                                self.vm.deleteMessage(file)
                             }
                         }
                     }
@@ -315,19 +330,15 @@ private struct ComposeHeroV2: View {
                 }
             }
 
-            Divider().padding(.top, self.attachments.isEmpty ? 10 : 2)
+            Divider().padding(.top, self.vm.messages.isEmpty ? 10 : 2)
 
             HStack {
                 HStack(spacing: 10) {
                     Menu {
-                        Button {
-                            self.showMediaPicker = true
-                        } label: {
+                        Button { self.showMediaPicker = true } label: {
                             Label("Photos & Videos", systemImage: "photo")
                         }
-                        Button {
-                            self.showFilePicker = true
-                        } label: {
+                        Button { self.showFilePicker = true } label: {
                             Label("Browse Files", systemImage: "folder")
                         }
                     } label: {
@@ -345,7 +356,6 @@ private struct ComposeHeroV2: View {
 
                     HStack(spacing: 6) {
                         Circle().fill(Color.occultaVerified).frame(width: 6, height: 6)
-
                         Text("~\(self.estimatedBundleSizeLabel)")
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -354,7 +364,7 @@ private struct ComposeHeroV2: View {
                     }
                 }
                 Spacer()
-                Button(action: self.encrypt) {
+                Button(action: self.encryptAction) {
                     Text("Encrypt")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(self.canEncrypt ? .white : .secondary)
@@ -372,154 +382,23 @@ private struct ComposeHeroV2: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .sheet(isPresented: self.$showMediaPicker) {
             PHPickerRepresentable(isPresented: self.$showMediaPicker) { results in
-                results.forEach { result in Task { await self.handleMedia(result) } }
+                results.forEach { result in Task { await self.vm.handleMedia(result) } }
             }
         }
-        .fileImporter(isPresented: self.$showFilePicker,
-                      allowedContentTypes: [.data],
-                      allowsMultipleSelection: false) { result in
-            self.handleFile(result)
-        }
-        .sheet(item: self.$encryptedURL) { url in
-            ActivityView(activityItems: [url], onComplete: { completed in
-                try? FileManager.default.removeItem(at: url)
-                if completed {
-                    for attachment in self.attachments {
-                        if let stagingURL = attachment.url { try? FileManager.default.removeItem(at: stagingURL) }
-                    }
-                    self.messageText = ""
-                    self.attachments = []
-                }
-            })
-        }
-        .alert("Error", isPresented: self.$isShowingError) {
-            Button("OK") { }
-        } message: {
-            Text(self.errorMessage)
-        }
-        .onDisappear {
-            for attachment in self.attachments {
-                if let url = attachment.url { try? FileManager.default.removeItem(at: url) }
-            }
+        .fileImporter(
+            isPresented: self.$showFilePicker,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            self.vm.handleFile(result)
         }
     }
 
-    private func handleMedia(_ result: PHPickerResult) async {
-        do {
-            let provider = result.itemProvider
-            let typeID   = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
-            let ext      = UTType(typeID)?.preferredFilenameExtension ?? "bin"
-            let name     = "media_\(UUID().uuidString.prefix(8))"
-            let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
-            let data: Data = try await withCheckedThrowingContinuation { cont in
-                provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, error in
-                    if let data { cont.resume(returning: data) }
-                    else { cont.resume(throwing: error ?? NSError(domain: "MediaImport", code: 0)) }
-                }
-            }
-            try data.writeProtected(to: url)
-            let file = Occulta.File(url: url, format: .file(.init(name: name, extension: ext)), date: Date())
-            await MainActor.run { self.attachments.append(file) }
-        } catch {
-            self.showError(error.localizedDescription)
-        }
-    }
-
-    private func handleFile(_ result: Result<[URL], Error>) {
-        Task {
-            do {
-                guard let url = try result.get().first,
-                      url.startAccessingSecurityScopedResource() else { return }
-                defer { url.stopAccessingSecurityScopedResource() }
-                let data = try await URLSession.shared.data(from: url).0
-                let name = url.deletingPathExtension().lastPathComponent
-                let ext  = url.pathExtension
-                let tmp  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
-                try data.writeProtected(to: tmp)
-                let file = Occulta.File(url: tmp, format: .file(.init(name: name, extension: ext)), date: Date())
-                await MainActor.run { self.attachments.append(file) }
-            } catch {
-                self.showError(error.localizedDescription)
-            }
-        }
-    }
-
-    private func encrypt() {
-        Task {
-            do {
-                var files: [Occulta.File] = []
-
-                // Text message (optional when attachments present)
-                let text = self.messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    files.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
-                }
-
-                // Resolve URL-based attachments to inline data
-                for attachment in self.attachments {
-                    if let url = attachment.url {
-                        let (data, _) = try await URLSession.shared.data(from: url)
-                        files.append(Occulta.File(content: data, format: attachment.format, date: attachment.date))
-                    } else {
-                        files.append(attachment)
-                    }
-                }
-
-                let basket  = Basket(files: files)
-
-                let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: self.identifier)
-                let shardOps   = try self.shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
-                let manifest_  = try? self.shardCustodyManager?.buildCustodyManifest(for: self.identifier)
-                let expected   = try? self.shardCustodyManager.flatMap { try $0.buildExpectedShards(for: self.identifier, vaultManager: self.vaultManager!) }
-
-                #if DEBUG
-                debugPrint("Manifest: \(manifest_?.description ?? "nil")")
-                debugPrint("Expected: \(expected?.description ?? "nil")")
-                debugPrint("Shard ops: \(shardOps.isEmpty ? "none" : shardOps.map(\.kind.rawValue).joined(separator: "\n"))")
-                #endif
-
-                let encrypted: Data
-                do {
-                    encrypted = try self.contactManager.encryptBundle(
-                        basket:          basket,
-                        for:             identifier,
-                        shardOperations: shardOps.isEmpty ? nil : shardOps,
-                        custodyManifest: manifest_,
-                        expectedShards:  expected
-                    )
-                } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
-                    // Quantum material corrupted or missing — fall back to classical,
-                    // strip shard ops (they stay pending and will retry after re-exchange).
-                    encrypted = try self.contactManager.encryptBundle(
-                        basket: basket,
-                        for:    identifier
-                    )
-                } catch {
-                    encrypted = Data()
-                }
-
-                guard !encrypted.isEmpty else {
-                    self.showError("Encryption failed. Try again.")
-                    return
-                }
-
-                let name = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
-                let url  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
-                try encrypted.writeProtected(to: url)
-
-                await MainActor.run {
-                    self.encryptedURL = url
-                }
-            } catch {
-                self.showError(error.localizedDescription)
-            }
-        }
-    }
-
-    @MainActor
-    private func showError(_ message: String) {
-        self.errorMessage = message
-        self.isShowingError = true
+    private func encryptAction() {
+        let cm  = self.contactManager
+        let scm = self.shardCustodyManager
+        let vlt = self.vaultManager
+        Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
     }
 }
 
@@ -529,12 +408,26 @@ private struct AttachmentChipV2: View {
     let file: Occulta.File
     let onRemove: () -> Void
 
-    private var name: String {
-        guard case .file(let meta) = self.file.format else { return "file" }
-        return [meta.name, meta.extension].compactMap { $0 }.joined(separator: ".")
+    private var isText: Bool {
+        if case .text = self.file.format { return true }
+        return false
+    }
+
+    private var label: String {
+        switch self.file.format {
+        case .text:
+            guard let data = self.file.content, let str = String(data: data, encoding: .utf8) else { return "text" }
+            let truncated = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            return truncated.count > 28 ? String(truncated.prefix(28)) + "…" : truncated
+        case .file(let meta):
+            return [meta.name, meta.extension].compactMap { $0 }.joined(separator: ".")
+        default:
+            return "file"
+        }
     }
 
     private var sfSymbol: String {
+        if self.isText { return "paragraph" }
         guard case .file(let meta) = self.file.format else { return "doc" }
         switch meta.extension?.lowercased() {
         case "jpg", "jpeg", "png", "heic": return "photo"
@@ -544,7 +437,8 @@ private struct AttachmentChipV2: View {
     }
 
     private var sizeLabel: String? {
-        guard let url = self.file.url,
+        guard !self.isText,
+              let url  = self.file.url,
               let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
         else { return nil }
         return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
@@ -560,7 +454,7 @@ private struct AttachmentChipV2: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white)
             }
-            Text(self.name)
+            Text(self.label)
                 .font(.system(size: 11, weight: .regular, design: .monospaced))
                 .lineLimit(1)
             if let size = self.sizeLabel {
