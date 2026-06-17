@@ -134,14 +134,15 @@ final class ComposeViewModel {
                 try await Task.detached(priority: .userInitiated) {
                     if let manager {
                         let source    = try FileHandle(forReadingFrom: srcURL)
-                        let encryptor = try manager.streamingEncryptor(to: tmp)
+                        let encryptor = try await manager.streamingEncryptor(to: tmp)
                         
                         defer { try? source.close() }
                         
                         while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
-                            try encryptor.append(chunk)
+                            try await encryptor.append(chunk)
                         }
-                        try encryptor.finalize()
+                        
+                        try await encryptor.finalize()
                     } else {
                         let data = try Data(contentsOf: srcURL, options: .mappedIfSafe)
                         try data.writeProtected(to: tmp)
@@ -321,6 +322,7 @@ final class ComposeViewModel {
 
             let chunkSize = 65_536
             var rawBuf: UnsafeMutableRawPointer? = nil
+            
             guard posix_memalign(&rawBuf, Int(sysconf(_SC_PAGESIZE)), chunkSize) == 0,
                   let buf = rawBuf else {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
@@ -333,9 +335,9 @@ final class ComposeViewModel {
                 if n < 0  { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
                 // bytesNoCopy with .none deallocator: buf is reused each iteration;
                 // append() copies into its internal buffer before returning.
-                try encryptor.append(Data(bytesNoCopy: buf, count: n, deallocator: .none))
+                try await encryptor.append(Data(bytesNoCopy: buf, count: n, deallocator: .none))
             }
-            try encryptor.finalize()
+            try await encryptor.finalize()
         }.value
     }
 
