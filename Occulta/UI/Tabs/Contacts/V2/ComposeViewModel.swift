@@ -133,10 +133,11 @@ final class ComposeViewModel {
 
                 try await Task.detached(priority: .userInitiated) {
                     if let manager {
-                        let source    = try FileHandle(forReadingFrom: srcURL)
-                        let encryptor = try await manager.streamingEncryptor(to: tmp)
+                        let source = try FileHandle(forReadingFrom: srcURL)
                         
                         defer { try? source.close() }
+                        let encryptor = try await manager.streamingEncryptor(to: tmp)
+                        
                         
                         while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
                             try await encryptor.append(chunk)

@@ -59,20 +59,18 @@ final class AttachmentManager: Sendable {
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension(ext)
             
-            defer { try? FileManager.default.removeItem(at: tmp) }
-            
             guard (try? data.writeProtected(to: tmp)) != nil else {
                 continuation.resume(throwing: AttachmentError.invalidImageData)
-                
                 return
             }
-            
+
             let asset = AVURLAsset(url: tmp)
             let gen   = AVAssetImageGenerator(asset: asset)
-            
+
             gen.appliesPreferredTrackTransform = true
             gen.maximumSize                    = CGSize(width: 600, height: 600)
             gen.generateCGImageAsynchronously(for: .zero) { cgImage, _, error in
+                defer { try? FileManager.default.removeItem(at: tmp) }
                 if let cgImage {
                     continuation.resume(returning: UIImage(cgImage: cgImage))
                 } else if let error {
