@@ -57,6 +57,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Used to attach photos and videos to encrypted messages.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_peer-data-ex._tcp</string>

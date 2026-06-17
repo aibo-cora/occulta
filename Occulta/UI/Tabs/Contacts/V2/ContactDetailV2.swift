@@ -24,7 +24,6 @@ extension Contact {
         // Thread compose state — persists while this contact detail is on the stack
         @State private var threadMessages: [Occulta.File] = []
         @State private var threadMessageText = ""
-        @State private var threadSelectedMedia: [PhotosPickerItem] = []
 
         init(identifier: String) {
             self.identifier = identifier
@@ -67,8 +66,7 @@ extension Contact {
                             NavigationLink(destination: ComposableMessage(
                                 identifier: self.identifier,
                                 messages: self.$threadMessages,
-                                messageText: self.$threadMessageText,
-                                selectedMediaItems: self.$threadSelectedMedia
+                                messageText: self.$threadMessageText
                             )) {
                                 HStack {
                                     Text("Open thread")
@@ -257,7 +255,6 @@ private struct ComposeHeroV2: View {
 
     @State private var messageText = ""
     @State private var attachments: [Occulta.File] = []
-    @State private var selectedMediaItems: [PhotosPickerItem] = []
     @State private var showMediaPicker = false
     @State private var showFilePicker = false
     @State private var encryptedURL: URL?
@@ -373,10 +370,10 @@ private struct ComposeHeroV2: View {
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
-        .photosPicker(isPresented: self.$showMediaPicker, selection: self.$selectedMediaItems,
-                      matching: .any(of: [.images, .videos]))
-        .onChange(of: self.selectedMediaItems) { _, newItems in
-            newItems.forEach { item in Task { await self.handleMedia(item) } }
+        .sheet(isPresented: self.$showMediaPicker) {
+            PHPickerRepresentable(isPresented: self.$showMediaPicker) { results in
+                results.forEach { result in Task { await self.handleMedia(result) } }
+            }
         }
         .fileImporter(isPresented: self.$showFilePicker,
                       allowedContentTypes: [.data],
@@ -392,7 +389,6 @@ private struct ComposeHeroV2: View {
                     }
                     self.messageText = ""
                     self.attachments = []
-                    self.selectedMediaItems = []
                 }
             })
         }
@@ -408,12 +404,19 @@ private struct ComposeHeroV2: View {
         }
     }
 
-    private func handleMedia(_ item: PhotosPickerItem) async {
+    private func handleMedia(_ result: PHPickerResult) async {
         do {
-            guard let data = try await item.loadTransferable(type: Data.self) else { return }
-            let ext  = item.supportedContentTypes.first?.preferredFilenameExtension ?? "bin"
-            let name = "media_\(UUID().uuidString.prefix(8))"
-            let url  = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
+            let provider = result.itemProvider
+            let typeID   = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
+            let ext      = UTType(typeID)?.preferredFilenameExtension ?? "bin"
+            let name     = "media_\(UUID().uuidString.prefix(8))"
+            let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).\(ext)")
+            let data: Data = try await withCheckedThrowingContinuation { cont in
+                provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, error in
+                    if let data { cont.resume(returning: data) }
+                    else { cont.resume(throwing: error ?? NSError(domain: "MediaImport", code: 0)) }
+                }
+            }
             try data.writeProtected(to: url)
             let file = Occulta.File(url: url, format: .file(.init(name: name, extension: ext)), date: Date())
             await MainActor.run { self.attachments.append(file) }

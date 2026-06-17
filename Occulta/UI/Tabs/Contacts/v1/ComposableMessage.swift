@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import PhotosUI
+import Photos
 import AVKit
 
 extension URL: @retroactive Identifiable {
@@ -29,7 +30,6 @@ struct ComposableMessage: View {
 
     @Binding var messages: [Occulta.File]
     @Binding var messageText: String
-    @Binding var selectedMediaItems: [PhotosPickerItem]
 
     // Local UI state
     @State private var showMediaPicker = false
@@ -43,13 +43,11 @@ struct ComposableMessage: View {
     init(
         identifier: String,
         messages: Binding<[Occulta.File]>,
-        messageText: Binding<String>,
-        selectedMediaItems: Binding<[PhotosPickerItem]>
+        messageText: Binding<String>
     ) {
         self.identifier = identifier
         self._messages = messages
         self._messageText = messageText
-        self._selectedMediaItems = selectedMediaItems
 
         let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
         self._contacts = Query(filter: predicate)
@@ -125,17 +123,15 @@ struct ComposableMessage: View {
                                 if let stagingURL = file.url { try? FileManager.default.removeItem(at: stagingURL) }
                             }
                             self.messages = []
-                            self.selectedMediaItems = []
                         }
                     })
                 }
             }
         }
         .background(Color(.systemGroupedBackground))
-        .photosPicker(isPresented: self.$showMediaPicker, selection: self.$selectedMediaItems, matching: .any(of: [.images, .videos]))
-        .onChange(of: self.selectedMediaItems) { _, newValue in
-            newValue.forEach { item in
-                Task { await self.handleMedia(item) }
+        .sheet(isPresented: self.$showMediaPicker) {
+            PHPickerRepresentable(isPresented: self.$showMediaPicker) { results in
+                results.forEach { result in Task { await self.handleMedia(result) } }
             }
         }
         .fileImporter(isPresented: self.$showFileImporter, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
@@ -261,11 +257,8 @@ struct ComposableMessage: View {
                             }
                             VStack(spacing: 6) {
                                 ProgressView().tint(.white)
-                                Text(self.pending.isLoading
-                                     ? "Loading…"
-                                     : self.pending.progress > 0
-                                       ? "\(Int(self.pending.progress * 100))%"
-                                       : "Encrypting…")
+                                
+                                Text("Loading…")
                                     .font(.caption2)
                                     .foregroundStyle(.white)
                             }
@@ -333,7 +326,7 @@ struct ComposableMessage: View {
                 return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
             }
 
-@ViewBuilder
+            @ViewBuilder
             private var fullScreenContent: some View {
                 switch self.file.format {
                 case .file(let metadata):
@@ -573,63 +566,135 @@ struct ComposableMessage: View {
         self.messageText = ""
     }
     
-    private func handleMedia(_ item: PhotosPickerItem) async {
-        let contentType = item.supportedContentTypes.first ?? .data
-        let ext      = contentType.preferredFilenameExtension ?? "bin"
-        let filename = "media_\(UUID().uuidString.prefix(8))"
-        let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
-        let isVideo  = FileExtensions.Video(rawValue: ext) != nil
+    private func handleMedia(_ result: PHPickerResult) async {
+        let provider    = result.itemProvider
+        let typeID      = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
+        let contentType = UTType(typeID) ?? .data
+        let ext         = contentType.preferredFilenameExtension ?? "bin"
+        let filename    = "media_\(UUID().uuidString.prefix(8))"
+        let url         = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
+        let isVideo     = FileExtensions.Video(rawValue: ext) != nil
+
+        #if DEBUG
+        print("[handleMedia] registeredTypeIdentifiers: \(provider.registeredTypeIdentifiers)")
+        print("[handleMedia] typeID=\(typeID) ext=\(ext) isVideo=\(isVideo) assetID=\(result.assetIdentifier ?? "nil")")
+        #endif
 
         guard let manager = self.attachmentManager else {
+            #if DEBUG
+            print("[handleMedia] no attachmentManager — unencrypted fallback")
+            #endif
             do {
-                guard let data = try await item.loadTransferable(type: Data.self) else { return }
+                let data = try await loadItemData(from: provider, typeID: typeID)
                 try data.writeProtected(to: url)
                 self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
             } catch { self.showErrorAlert(error.localizedDescription) }
             return
         }
 
-        var pendingID: UUID? = nil
         if isVideo {
+            #if DEBUG
+            print("[handleMedia] → streaming path")
+            #endif
             let pending = PendingImport(filename: filename, ext: ext)
-            pendingID = pending.id
+            let thumbTypeID = "com.apple.private.photos.thumbnail.standard"
+            
             self.pendingImports.append(pending)
+            
+            if provider.hasItemConformingToTypeIdentifier(thumbTypeID) {
+                Task { @MainActor in
+                    if let data = try? await loadItemData(from: provider, typeID: thumbTypeID),
+                       let image = UIImage(data: data),
+                       let idx = self.pendingImports.firstIndex(where: { $0.id == pending.id }) {
+                        self.pendingImports[idx].thumbnail = image
+                    }
+                }
+            }
+            do {
+                try await self.streamVideo(provider: provider, typeID: typeID, pendingID: pending.id, ext: ext, filename: filename, url: url, manager: manager)
+            } catch {
+                self.pendingImports.removeAll { $0.id == pending.id }
+                self.showErrorAlert(error.localizedDescription)
+            }
+        } else {
+            #if DEBUG
+            print("[handleMedia] → loadTransferable fallback (isVideo=\(isVideo) assetID=\(result.assetIdentifier ?? "nil"))")
+            #endif
+            do {
+                let data = try await loadItemData(from: provider, typeID: typeID)
+                #if DEBUG
+                print("[handleMedia] loaded \(data.count) bytes via itemProvider")
+                #endif
+                try manager.encrypt(data, to: url)
+                self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
+            } catch { self.showErrorAlert(error.localizedDescription) }
+        }
+    }
+
+    private func streamVideo(
+        provider: NSItemProvider,
+        typeID: String,
+        pendingID: UUID,
+        ext: String,
+        filename: String,
+        url: URL,
+        manager: AttachmentManager
+    ) async throws {
+        if let idx = self.pendingImports.firstIndex(where: { $0.id == pendingID }) {
+            self.pendingImports[idx].isLoading = false
         }
 
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                if let id = pendingID { self.pendingImports.removeAll { $0.id == id } }
-                return
-            }
+        let encryptor = try manager.streamingEncryptor(to: url)
+        let pageSize  = Int(getpagesize())
 
-            if isVideo, let id = pendingID {
-                if let idx = self.pendingImports.firstIndex(where: { $0.id == id }) {
-                    self.pendingImports[idx].isLoading = false
-                }
-
-                Task {
-                    if let thumb = await AttachmentManager.videoThumbnail(from: data, fileExtension: ext),
-                       let idx = self.pendingImports.firstIndex(where: { $0.id == id }) {
-                        self.pendingImports[idx].thumbnail = thumb
+        // NSItemProvider — no Photos authorization needed; picker grant is sufficient.
+        // For large files the delivered Data is mmap-backed: iterating in 64 KB slices and
+        // calling MADV_DONTNEED after each lets the kernel reclaim pages as we go,
+        // keeping resident memory bounded to one slice regardless of file size.
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, providerError in
+                do {
+                    if let err = providerError { throw err }
+                    guard let data else { throw ImportError.noVideoResource }
+                    var encryptError: Error? = nil
+                    data.withUnsafeBytes { rawPtr in
+                        guard let base = rawPtr.baseAddress else { return }
+                        var offset = 0
+                        while offset < data.count, encryptError == nil {
+                            let take = min(65_536, data.count - offset)
+                            autoreleasepool {
+                                do { try encryptor.append(Data(bytes: base.advanced(by: offset), count: take)) }
+                                catch { encryptError = error }
+                            }
+                            let adviseLen = ((take + pageSize - 1) / pageSize) * pageSize
+                            madvise(UnsafeMutableRawPointer(mutating: base.advanced(by: offset)), adviseLen, MADV_DONTNEED)
+                            offset += take
+                        }
                     }
+                    if let err = encryptError { throw err }
+                    try encryptor.finalize()
+                    cont.resume()
+                } catch {
+                    cont.resume(throwing: error)
                 }
-
-                for try await p in manager.encryptWithProgress(data, to: url) {
-                    if let idx = self.pendingImports.firstIndex(where: { $0.id == id }) {
-                        self.pendingImports[idx].progress = p
-                    }
-                    await Task.yield()
-                }
-
-                self.pendingImports.removeAll { $0.id == id }
-            } else {
-                try manager.encrypt(data, to: url)
             }
+        }
 
-            self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
-        } catch {
-            if let id = pendingID { self.pendingImports.removeAll { $0.id == id } }
-            self.showErrorAlert(error.localizedDescription)
+        self.pendingImports.removeAll { $0.id == pendingID }
+        self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
+    }
+
+    private func phThumbnail(for asset: PHAsset) async -> UIImage? {
+        await withCheckedContinuation { cont in
+            let opts = PHImageRequestOptions()
+            opts.deliveryMode = .fastFormat
+            opts.isNetworkAccessAllowed = true
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: CGSize(width: 600, height: 600),
+                contentMode: .aspectFit,
+                options: opts
+            ) { image, _ in cont.resume(returning: image) }
         }
     }
 
@@ -641,15 +706,29 @@ struct ComposableMessage: View {
                     url.startAccessingSecurityScopedResource()
                 else { return }
                 defer { url.stopAccessingSecurityScopedResource() }
-                let data     = try await URLSession.shared.data(from: url).0
+
                 let filename = url.deletingPathExtension().lastPathComponent
                 let ext      = url.pathExtension
                 let tmp      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
+
                 if let manager = self.attachmentManager {
-                    try manager.encrypt(data, to: tmp)
+                    let source    = try FileHandle(forReadingFrom: url)
+                    let encryptor = try manager.streamingEncryptor(to: tmp)
+                    defer { try? source.close() }
+                    do {
+                        while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
+                            try encryptor.append(chunk)
+                        }
+                        try encryptor.finalize()
+                    } catch {
+                        try? FileManager.default.removeItem(at: tmp)
+                        throw error
+                    }
                 } else {
+                    let data = try Data(contentsOf: url, options: .mappedIfSafe)
                     try data.writeProtected(to: tmp)
                 }
+
                 let file = Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
                 await MainActor.run { self.messages.append(file) }
             } catch {
@@ -811,6 +890,18 @@ private struct FullScreenImageViewer: View {
 
 // MARK: -
 
+enum ImportError: LocalizedError {
+    case assetNotFound
+    case noVideoResource
+
+    var errorDescription: String? {
+        switch self {
+        case .assetNotFound:      return "Could not find the selected video."
+        case .noVideoResource:    return "The selected item has no video resource."
+        }
+    }
+}
+
 struct FileExtensions {
     enum Video: String {
         case mov, mp4, m4v
@@ -821,20 +912,57 @@ struct FileExtensions {
     }
 }
 
+// MARK: - PHPickerRepresentable
+
+struct PHPickerRepresentable: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    let onPick: ([PHPickerResult]) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config            = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter         = .any(of: [.images, .videos])
+        config.selectionLimit = 0
+        let picker            = PHPickerViewController(configuration: config)
+        picker.delegate       = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        var parent: PHPickerRepresentable
+        init(parent: PHPickerRepresentable) { self.parent = parent }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            self.parent.isPresented = false
+            self.parent.onPick(results)
+        }
+    }
+}
+
+private func loadItemData(from provider: NSItemProvider, typeID: String) async throws -> Data {
+    try await withCheckedThrowingContinuation { cont in
+        provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, error in
+            if let data { cont.resume(returning: data) }
+            else { cont.resume(throwing: error ?? ImportError.assetNotFound) }
+        }
+    }
+}
+
 // MARK: - Preview
 
 #Preview {
     struct Preview: View {
         @State var messages: [Occulta.File] = []
         @State var text = ""
-        @State var selected: [PhotosPickerItem] = []
         var body: some View {
             NavigationStack {
                 ComposableMessage(
                     identifier: UUID().uuidString,
                     messages: self.$messages,
-                    messageText: self.$text,
-                    selectedMediaItems: self.$selected
+                    messageText: self.$text
                 )
                 .environment(ContactManager.preview)
             }

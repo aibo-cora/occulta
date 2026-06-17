@@ -30,6 +30,10 @@ final class AttachmentManager: Sendable {
         try Encryptor.write(data, contactKey: self.contactKey, to: url)
     }
 
+    func streamingEncryptor(to url: URL) throws -> StreamingEncryptor {
+        try StreamingEncryptor(url: url, contactKey: self.contactKey)
+    }
+
     nonisolated func encryptWithProgress(_ data: Data, to url: URL) -> AsyncThrowingStream<Double, Error> {
         let key = self.contactKey
         
@@ -108,10 +112,16 @@ final class AttachmentManager: Sendable {
     /// The player decrypts only the chunks AVFoundation requests — no plaintext
     /// file is ever written.
     func player(for url: URL) -> AVPlayer {
-        let loader = ResourceLoader(fileURL: url, contactKey: self.contactKey)
+        guard let loader = ResourceLoader(fileURL: url, contactKey: self.contactKey) else {
+            return AVPlayer()
+        }
         let asset  = AVURLAsset(url: Self.occattURL(for: url))
         asset.resourceLoader.setDelegate(loader, queue: .global(qos: .userInitiated))
-        let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        let item = AVPlayerItem(asset: asset)
+        // Limit pre-buffering — content is local so stalling is not a concern.
+        item.preferredForwardBufferDuration = 2
+        let player = AVPlayer(playerItem: item)
+        player.automaticallyWaitsToMinimizeStalling = false
         // AVFoundation holds a weak reference to the delegate — retain it on the player.
         objc_setAssociatedObject(player, &AssociatedKeys.loader, loader, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         return player
@@ -281,6 +291,88 @@ private enum Decryptor {
     }
 }
 
+// MARK: - StreamingEncryptor
+
+final class StreamingEncryptor: @unchecked Sendable {
+    private let handle:    FileHandle
+    private let fileKey:   SymmetricKey
+    private let baseNonce: AES.GCM.Nonce
+    private let keySalt:   Data
+    private let chunkSize: Int
+    private var index:     Int  = 0
+    private var buffer:    Data = Data()
+
+    private(set) var totalBytes: Int = 0
+
+    init(url: URL, contactKey: SymmetricKey) throws {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        
+        self.handle    = try FileHandle(forWritingTo: url)
+        // Bypass the page cache for all writes — prevents 2GB of dirty pages
+        // accumulating in RAM during large video encryption.
+        let result = fcntl(self.handle.fileDescriptor, F_NOCACHE, 1)
+        
+        #if DEBUG
+        debugPrint("No cache setting result was \(result)")
+        #endif
+        
+        self.chunkSize = Encryptor.chunkSize
+        self.keySalt   = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        self.baseNonce = AES.GCM.Nonce()
+        self.fileKey   = derivedFileKey(contactKey: contactKey, salt: self.keySalt)
+        // Reserve space for header — finalize() overwrites it
+        try self.handle.write(contentsOf: Data(count: Header.byteCount))
+    }
+
+    func append(_ incoming: Data) throws {
+        self.totalBytes += incoming.count
+        var offset = 0
+        while offset < incoming.count {
+            let take = min(self.chunkSize - self.buffer.count, incoming.count - offset)
+            self.buffer.append(contentsOf: incoming[offset..<(offset + take)])
+            offset += take
+            if self.buffer.count == self.chunkSize {
+                try self.flush(self.buffer)
+                self.buffer.removeAll(keepingCapacity: true)
+            }
+        }
+    }
+
+    func finalize() throws {
+        // Only flush remaining bytes; skip if input was an exact multiple of chunkSize
+        if !self.buffer.isEmpty || self.index == 0 {
+            try self.flush(self.buffer)
+        }
+        self.buffer.removeAll()
+        try self.handle.synchronize()
+
+        var hdr = Data()
+        hdr.append(contentsOf: Header.magic)
+        hdr.append(Header.version)
+        hdr.append(contentsOf: UInt32(self.chunkSize).bigEndianData)
+        hdr.append(contentsOf: UInt64(self.index).bigEndianData)
+        hdr.append(contentsOf: UInt64(self.totalBytes).bigEndianData)
+        hdr.append(contentsOf: self.baseNonce.dataRepresentation)
+        hdr.append(contentsOf: self.keySalt)
+        hdr.append(contentsOf: HMAC<SHA256>.authenticationCode(for: hdr, using: self.fileKey))
+
+        try self.handle.seek(toOffset: 0)
+        try self.handle.write(contentsOf: hdr)
+        try self.handle.close()
+    }
+
+    private func flush(_ plaintext: Data) throws {
+        let box = try AES.GCM.seal(
+            plaintext,
+            using: self.fileKey,
+            nonce: derivedNonce(base: self.baseNonce, index: self.index)
+        )
+        try self.handle.write(contentsOf: box.ciphertext)
+        try self.handle.write(contentsOf: box.tag)
+        self.index += 1
+    }
+}
+
 // MARK: - Helpers
 
 nonisolated private func derivedFileKey(contactKey: SymmetricKey, salt: some DataProtocol) -> SymmetricKey {
@@ -302,12 +394,17 @@ nonisolated private func derivedNonce(base: AES.GCM.Nonce, index: Int) throws ->
 // MARK: - Resource Loader (in-app video playback)
 
 private final class ResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
-    private let fileURL:    URL
-    private let contactKey: SymmetricKey
+    private let fileURL: URL
+    private let header:  Header
+    private let fileKey: SymmetricKey
 
-    init(fileURL: URL, contactKey: SymmetricKey) {
-        self.fileURL    = fileURL
-        self.contactKey = contactKey
+    // Parses and HMAC-validates the header once at init. Returns nil if the
+    // file is unreadable or the key is wrong — AVFoundation will show a blank player.
+    init?(fileURL: URL, contactKey: SymmetricKey) {
+        guard let h = try? Decryptor.header(at: fileURL, contactKey: contactKey) else { return nil }
+        self.fileURL = fileURL
+        self.header  = h
+        self.fileKey = derivedFileKey(contactKey: contactKey, salt: h.keySalt)
     }
 
     func resourceLoader(
@@ -315,32 +412,65 @@ private final class ResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
         shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest
     ) -> Bool {
         if let info = request.contentInformationRequest {
-            guard let h = try? Decryptor.header(at: self.fileURL, contactKey: self.contactKey) else {
-                request.finishLoading(with: AttachmentError.invalidHeader)
-                return true
-            }
             let uti = UTType(filenameExtension: self.fileURL.pathExtension)?.identifier
                    ?? UTType.movie.identifier
             info.contentType                = uti
-            info.contentLength              = Int64(h.plaintextSize)
+            info.contentLength              = Int64(self.header.plaintextSize)
             info.isByteRangeAccessSupported = true
             if request.dataRequest == nil {
                 request.finishLoading()
                 return true
             }
         }
-        if let data = request.dataRequest {
-            let offset = Int(data.requestedOffset)
-            let length = data.requestedLength
+        if let dataReq = request.dataRequest {
+            var cursor = Int(dataReq.currentOffset)
+            let end    = Int(dataReq.requestedOffset) + dataReq.requestedLength
             do {
-                let plain = try Decryptor.range(at: self.fileURL, offset: offset, length: length, contactKey: self.contactKey)
-                data.respond(with: plain)
+                // One FileHandle per AVFoundation request, shared across all chunks in
+                // that request — avoids a file open/close per 256KB chunk.
+                let handle = try FileHandle(forReadingFrom: self.fileURL)
+                defer { try? handle.close() }
+                while cursor < end {
+                    let length = min(self.header.chunkSize, end - cursor)
+                    let chunk  = try self.decryptChunk(at: cursor, length: length, using: handle)
+                    dataReq.respond(with: chunk)
+                    cursor += chunk.count
+                    if chunk.count < length { break }
+                }
                 request.finishLoading()
             } catch {
                 request.finishLoading(with: error)
             }
         }
         return true
+    }
+
+    private func decryptChunk(at offset: Int, length: Int, using handle: FileHandle) throws -> Data {
+        let h             = self.header
+        let clampedLength = min(length, h.plaintextSize - offset)
+        guard clampedLength > 0 else { return Data() }
+
+        let first = offset / h.chunkSize
+        let last  = min((offset + clampedLength - 1) / h.chunkSize, h.chunkCount - 1)
+
+        var plaintext = Data()
+        for i in first...last {
+            let isLast         = i == h.chunkCount - 1
+            let ciphertextSize = isLast ? h.plaintextSize - i * h.chunkSize : h.chunkSize
+            try handle.seek(toOffset: UInt64(Header.byteCount + i * (h.chunkSize + 16)))
+            guard let raw = try handle.read(upToCount: ciphertextSize + 16),
+                  raw.count == ciphertextSize + 16
+            else { throw AttachmentError.truncated }
+            let box = try AES.GCM.SealedBox(
+                nonce:      derivedNonce(base: h.baseNonce, index: i),
+                ciphertext: raw.prefix(ciphertextSize),
+                tag:        raw.suffix(16)
+            )
+            plaintext.append(contentsOf: try AES.GCM.open(box, using: self.fileKey))
+        }
+
+        let trimStart = offset - first * h.chunkSize
+        return Data(plaintext[trimStart..<(trimStart + clampedLength)])
     }
 }
 
