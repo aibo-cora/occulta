@@ -84,6 +84,16 @@ final class AttachmentManager: Sendable {
         }
     }
 
+    // MARK: Read
+
+    func data(at url: URL) async throws -> Data {
+        let key = self.contactKey
+        
+        return try await Task.detached(priority: .userInitiated) {
+            try Decryptor.all(at: url, contactKey: key)
+        }.value
+    }
+
     // MARK: Image
 
     func image(at url: URL) async throws -> UIImage {

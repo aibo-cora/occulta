@@ -303,8 +303,10 @@ struct ComposableMessage: View {
             var body: some View {
                 HStack(alignment: .center) {
                     Spacer()
+                    
                     VStack(alignment: .trailing, spacing: 6) {
                         self.contentPreview
+                        
                         if let date = self.file.date {
                             Text(date, format: .dateTime.hour().minute())
                                 .font(.caption2)
@@ -365,6 +367,7 @@ struct ComposableMessage: View {
                     }
                 case .file(let metadata):
                     let name = metadata.name ?? "file"
+                    
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
                         VStack(spacing: 6) {
                             Group {
@@ -742,15 +745,31 @@ struct ComposableMessage: View {
             do {
                 // Process files to convert the ones that contain only urls to files to files with actual content
                 
-                var processed: [Occulta.File] = []
-                
-                for file in self.messages {
-                    if let url = file.url {
-                        let (data, _) = try await URLSession.shared.data(from: url)
-                        processed.append(Occulta.File(content: data, format: file.format, date: file.date))
-                    } else {
-                        processed.append(file)
+                let processed: [Occulta.File] = try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+                    for file in self.messages {
+                        if let url = file.url {
+                            let manager = self.attachmentManager
+                            
+                            group.addTask {
+                                let data: Data
+                                
+                                if let manager {
+                                    data = try await manager.data(at: url)
+                                } else {
+                                    let (d, _) = try await URLSession.shared.data(from: url)
+                                    data = d
+                                }
+                                return Occulta.File(content: data, format: file.format, date: file.date)
+                            }
+                        } else {
+                            let captured = file
+                            group.addTask { captured }
+                        }
                     }
+                    var results: [Occulta.File] = []
+                    for try await file in group { results.append(file) }
+                    
+                    return results.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
                 }
 
                 // Encode & Encrypt
