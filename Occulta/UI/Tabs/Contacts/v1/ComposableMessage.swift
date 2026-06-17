@@ -333,7 +333,7 @@ struct ComposableMessage: View {
                 switch self.file.format {
                 case .file(let metadata):
                     if let _ = FileExtensions.Image(rawValue: metadata.extension ?? "") {
-                        FullScreenImageViewer(url: self.file.url)
+                        FullScreenImageViewer(image: self.decryptedImage)
                     }
                 default:
                     EmptyView()
@@ -379,7 +379,7 @@ struct ComposableMessage: View {
                             }
                             .frame(maxWidth: 260, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
-                            .onTapGesture { self.showingFullScreen = true }
+                            .onTapGesture { guard self.decryptedImage != nil else { return }; self.showingFullScreen = true }
                             .task(id: self.file.url) {
                                 guard let manager = self.attachmentManager, let url = self.file.url else { return }
                                 self.decryptedImage = try? await manager.image(at: url)
@@ -840,7 +840,7 @@ struct ComposableMessage: View {
 // MARK: - Full-screen viewers
 
 private struct FullScreenImageViewer: View {
-    let url: URL?
+    let image: UIImage?
     @Environment(\.dismiss) private var dismiss
 
     @State private var scale: CGFloat = 1.0
@@ -852,47 +852,44 @@ private struct FullScreenImageViewer: View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
 
-            AsyncImage(url: self.url) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .scaleEffect(max(1, self.scale * self.gestureScale))
-                        .offset(
-                            x: self.offset.width + self.gestureOffset.width,
-                            y: self.offset.height + self.gestureOffset.height
-                        )
-                        .gesture(
-                            MagnificationGesture()
-                                .updating(self.$gestureScale) { value, state, _ in state = value }
-                                .onEnded { value in
-                                    let newScale = max(1, self.scale * value)
-                                    self.scale = newScale
-                                    if newScale == 1 { self.offset = .zero }
-                                }
-                        )
-                        .simultaneousGesture(
-                            DragGesture()
-                                .updating(self.$gestureOffset) { value, state, _ in
-                                    guard self.scale > 1 else { return }
-                                    state = value.translation
-                                }
-                                .onEnded { value in
-                                    guard self.scale > 1 else { return }
-                                    self.offset.width  += value.translation.width
-                                    self.offset.height += value.translation.height
-                                }
-                        )
-                        .onTapGesture(count: 2) {
-                            withAnimation(.spring()) {
-                                self.scale  = 1
-                                self.offset = .zero
+            if let image = self.image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(max(1, self.scale * self.gestureScale))
+                    .offset(
+                        x: self.offset.width + self.gestureOffset.width,
+                        y: self.offset.height + self.gestureOffset.height
+                    )
+                    .gesture(
+                        MagnificationGesture()
+                            .updating(self.$gestureScale) { value, state, _ in state = value }
+                            .onEnded { value in
+                                let newScale = max(1, self.scale * value)
+                                self.scale = newScale
+                                if newScale == 1 { self.offset = .zero }
                             }
+                    )
+                    .simultaneousGesture(
+                        DragGesture()
+                            .updating(self.$gestureOffset) { value, state, _ in
+                                guard self.scale > 1 else { return }
+                                state = value.translation
+                            }
+                            .onEnded { value in
+                                guard self.scale > 1 else { return }
+                                self.offset.width  += value.translation.width
+                                self.offset.height += value.translation.height
+                            }
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.spring()) {
+                            self.scale  = 1
+                            self.offset = .zero
                         }
-                default:
-                    ProgressView().tint(.white)
-                }
+                    }
+            } else {
+                ProgressView().tint(.white)
             }
 
             Button { self.dismiss() } label: {
