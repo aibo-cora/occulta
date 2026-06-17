@@ -380,7 +380,7 @@ struct ComposableMessage: View {
                             .frame(maxWidth: 260, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 18))
                             .onTapGesture { guard self.decryptedImage != nil else { return }; self.showingFullScreen = true }
-                            .task(id: self.file.url) {
+                            .task(id: "\(self.file.url?.path ?? "")|\(self.attachmentManager != nil)") {
                                 guard let manager = self.attachmentManager, let url = self.file.url else { return }
                                 self.decryptedImage = try? await manager.image(at: url)
                             }
