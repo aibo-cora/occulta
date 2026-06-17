@@ -462,21 +462,16 @@ class ShareViewController: UIViewController {
             : (provider.registeredTypeIdentifiers.first ?? UTType.data.identifier)
 
         do {
-            // Prefer file representation — bytes flow through the kernel,
-            // not app memory. Falls back to data representation for
-            // providers that don't support it.
-            let copied = try await self.copyFileRepresentation(
-                from: provider, uti: uti, to: destURL
-            )
-            if !copied {
-                try await self.copyDataRepresentation(
-                    from: provider, uti: uti, to: destURL
-                )
+            // The .occ is already encrypted by the sender — just land it on disk
+            // with NSFileProtection.complete. No share-key encryption needed.
+            let data: Data = try await withCheckedThrowingContinuation { cont in
+                provider.loadDataRepresentation(forTypeIdentifier: uti) { data, error in
+                    if let error { cont.resume(throwing: error); return }
+                    guard let data else { cont.resume(throwing: ShareError.noData); return }
+                    cont.resume(returning: data)
+                }
             }
-            try (destURL as NSURL).setResourceValue(
-                URLFileProtection.complete,
-                forKey: .fileProtectionKey
-            )
+            try data.write(to: destURL, options: .completeFileProtection)
         } catch {
             try? fm.removeItem(at: destURL)
             self.extensionContext?.cancelRequest(withError: ShareError.noData)
