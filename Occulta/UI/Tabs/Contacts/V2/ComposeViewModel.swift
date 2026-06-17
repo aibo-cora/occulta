@@ -11,9 +11,8 @@ struct PendingImport: Identifiable {
     let id       = UUID()
     let filename: String
     let ext:      String
-    var thumbnail: UIImage? = nil
-    var progress:  Double   = 0
-    var isLoading: Bool     = true
+    var progress:  Double = 0
+    var isLoading: Bool   = true
 }
 
 // MARK: - ComposeViewModel
@@ -25,6 +24,7 @@ final class ComposeViewModel {
     var messages:       [Occulta.File]  = []
     var draftText:      String          = ""
     var pendingImports: [PendingImport] = []
+    var thumbnails:     [URL: UIImage]  = [:]
     var encryptedURL:   URL?            = nil
     var isShowingError  = false
     var errorMessage    = ""
@@ -71,28 +71,33 @@ final class ComposeViewModel {
             await MainActor.run { self.pendingImports.append(pending) }
 
             let thumbTypeID = "com.apple.private.photos.thumbnail.standard"
-            if provider.hasItemConformingToTypeIdentifier(thumbTypeID) {
-                Task {
-                    if let data = try? await loadItemData(from: provider, typeID: thumbTypeID),
-                       let img  = UIImage(data: data) {
-                        await MainActor.run {
-                            if let idx = self.pendingImports.firstIndex(where: { $0.id == pending.id }) {
-                                self.pendingImports[idx].thumbnail = img
-                            }
-                        }
-                    }
-                }
+            let thumbTask = Task<UIImage?, Never> {
+                guard provider.hasItemConformingToTypeIdentifier(thumbTypeID),
+                      let data = try? await loadItemData(from: provider, typeID: thumbTypeID) else { return nil }
+                return UIImage(data: data)
             }
 
             do {
                 try await self.streamVideo(assetID: result.assetIdentifier,
                                            provider: provider, typeID: typeID,
-                                           pendingID: pending.id, ext: ext,
-                                           filename: filename, url: url, manager: manager)
+                                           pendingID: pending.id, url: url, manager: manager)
             } catch {
+                thumbTask.cancel()
                 await MainActor.run {
                     self.pendingImports.removeAll { $0.id == pending.id }
                     self.showError(error.localizedDescription)
+                }
+                return
+            }
+
+            let thumb = await thumbTask.value
+            await MainActor.run {
+                withTransaction(Transaction(animation: nil)) {
+                    self.pendingImports.removeAll { $0.id == pending.id }
+                    if let img = thumb { self.thumbnails[url] = img }
+                    var file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
+                    file.id = pending.id
+                    self.messages.append(file)
                 }
             }
         } else {
@@ -255,18 +260,14 @@ final class ComposeViewModel {
         provider:  NSItemProvider,
         typeID:    String,
         pendingID: UUID,
-        ext:       String,
-        filename:  String,
         url:       URL,
         manager:   AttachmentManager
     ) async throws {
         if let assetID {
-            try await self.streamVideoPOSIX(assetID: assetID, pendingID: pendingID,
-                                            ext: ext, filename: filename, url: url, manager: manager)
+            try await self.streamVideoPOSIX(assetID: assetID, pendingID: pendingID, url: url, manager: manager)
         } else {
             try await self.streamVideoProvider(provider: provider, typeID: typeID,
-                                               pendingID: pendingID, ext: ext,
-                                               filename: filename, url: url, manager: manager)
+                                               pendingID: pendingID, url: url, manager: manager)
         }
     }
 
@@ -275,8 +276,6 @@ final class ComposeViewModel {
     private func streamVideoPOSIX(
         assetID:   String,
         pendingID: UUID,
-        ext:       String,
-        filename:  String,
         url:       URL,
         manager:   AttachmentManager
     ) async throws {
@@ -317,8 +316,8 @@ final class ComposeViewModel {
             guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
             defer { close(fd) }
 
-            fcntl(fd, F_NOCACHE, 1)  // bypass unified buffer cache
-            fcntl(fd, F_RDAHEAD, 0)  // disable kernel readahead (int 0, not a pointer)
+            _ = fcntl(fd, F_NOCACHE, 1)  // bypass unified buffer cache
+            _ = fcntl(fd, F_RDAHEAD, 0)  // disable kernel readahead (int 0, not a pointer)
 
             let chunkSize = 65_536
             var rawBuf: UnsafeMutableRawPointer? = nil
@@ -338,11 +337,6 @@ final class ComposeViewModel {
             }
             try encryptor.finalize()
         }.value
-
-        await MainActor.run {
-            self.pendingImports.removeAll { $0.id == pendingID }
-            self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
-        }
     }
 
     // NSItemProvider fallback — no Photos authorization needed, picker grant is sufficient.
@@ -350,8 +344,6 @@ final class ComposeViewModel {
         provider:  NSItemProvider,
         typeID:    String,
         pendingID: UUID,
-        ext:       String,
-        filename:  String,
         url:       URL,
         manager:   AttachmentManager
     ) async throws {
@@ -391,11 +383,6 @@ final class ComposeViewModel {
                     cont.resume(throwing: error)
                 }
             }
-        }
-
-        await MainActor.run {
-            self.pendingImports.removeAll { $0.id == pendingID }
-            self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
         }
     }
 

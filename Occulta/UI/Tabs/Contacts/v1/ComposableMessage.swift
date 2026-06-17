@@ -51,6 +51,7 @@ struct ComposableMessage: View {
                     messages: self.$vm.messages,
                     pendingImports: self.vm.pendingImports,
                     attachmentManager: self.vm.attachmentManager,
+                    thumbnails: self.vm.thumbnails,
                     onDelete: { self.vm.deleteMessage($0) }
                 )
             }
@@ -154,12 +155,38 @@ extension ComposableMessage {
     struct Conversation: View {
         let mode: Modes
         @Binding var messages: [Occulta.File]
-        var pendingImports:    [PendingImport]       = []
-        var attachmentManager: AttachmentManager?    = nil
+        var pendingImports:    [PendingImport]    = []
+        var attachmentManager: AttachmentManager? = nil
+        var thumbnails:        [URL: UIImage]     = [:]
         var onDelete:          ((Occulta.File) -> Void)? = nil
 
         enum Modes {
             case read(messageOwner: String), write
+        }
+
+        private enum Item: Identifiable {
+            case message(Occulta.File, showHeader: Bool)
+            case pending(PendingImport, showHeader: Bool)
+
+            var id: UUID {
+                switch self {
+                case .message(let f, _): return f.id
+                case .pending(let p, _): return p.id
+                }
+            }
+        }
+
+        private var items: [Item] {
+            var result: [Item] = []
+            for (i, file) in self.messages.enumerated() {
+                let show = i == 0 || self.shouldShowDateSeparator(before: self.messages[i - 1], current: file)
+                result.append(.message(file, showHeader: show))
+            }
+            let hasToday = self.messages.last?.date.map { Calendar.current.isDateInToday($0) } ?? false
+            for (i, pending) in self.pendingImports.enumerated() {
+                result.append(.pending(pending, showHeader: !hasToday && i == 0))
+            }
+            return result
         }
 
         var body: some View {
@@ -171,25 +198,8 @@ extension ComposableMessage {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .trailing, spacing: 24) {
-                            ForEach(Array(self.messages.enumerated()), id: \.element.id) { index, file in
-                                VStack(spacing: 6) {
-                                    if index == 0 || self.shouldShowDateSeparator(
-                                        before: self.messages[index - 1], current: file
-                                    ) {
-                                        DateHeader(date: file.date ?? Date())
-                                    }
-                                    MessageBubble(
-                                        file: file,
-                                        mode: self.mode,
-                                        attachmentManager: self.attachmentManager,
-                                        onDelete: self.onDelete.map { cb in { cb(file) } }
-                                    )
-                                }
-                                .id(file.id)
-                            }
-                            ForEach(self.pendingImports) { pending in
-                                PendingImportBubble(pending: pending)
-                                    .id("pending-\(pending.id.uuidString)")
+                            ForEach(self.items) { item in
+                                self.itemView(item).id(item.id)
                             }
                         }
                         .padding(.horizontal, 16)
@@ -205,10 +215,31 @@ extension ComposableMessage {
                     .onChange(of: self.pendingImports.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.3)) {
                             if let last = self.pendingImports.last {
-                                proxy.scrollTo("pending-\(last.id.uuidString)", anchor: .bottom)
+                                proxy.scrollTo(last.id, anchor: .bottom)
                             }
                         }
                     }
+                }
+            }
+        }
+
+        @ViewBuilder private func itemView(_ item: Item) -> some View {
+            switch item {
+            case .message(let file, let showHeader):
+                VStack(spacing: 6) {
+                    if showHeader { DateHeader(date: file.date ?? Date()) }
+                    MessageBubble(
+                        file: file,
+                        mode: self.mode,
+                        attachmentManager: self.attachmentManager,
+                        thumbnails: self.thumbnails,
+                        onDelete: self.onDelete.map { cb in { cb(file) } }
+                    )
+                }
+            case .pending(let pending, let showHeader):
+                VStack(spacing: 6) {
+                    if showHeader { DateHeader(date: Date()) }
+                    PendingImportBubble(pending: pending)
                 }
             }
         }
@@ -227,10 +258,12 @@ extension ComposableMessage {
         let file:              Occulta.File
         let mode:              Conversation.Modes
         var attachmentManager: AttachmentManager? = nil
+        var thumbnails:        [URL: UIImage]      = [:]
         var onDelete:          (() -> Void)?      = nil
 
         @State private var showingFullScreen = false
         @State private var videoPlayer:    AVPlayer? = nil
+        @State private var isPlaying:      Bool      = false
         @State private var decryptedImage: UIImage?  = nil
         @State private var showingShare = false
         @Environment(\.colorScheme) private var colorScheme
@@ -247,7 +280,6 @@ extension ComposableMessage {
                     }
                 }
             }
-            .padding(.horizontal, 16)
             .fullScreenCover(isPresented: self.$showingFullScreen) {
                 self.fullScreenContent
             }
@@ -357,23 +389,34 @@ extension ComposableMessage {
 
         @ViewBuilder private func videoBubble(name: String, url: URL, metadata: Occulta.File.Metadata) -> some View {
             VStack(spacing: 6) {
-                ZStack {
+                Group {
                     if let player = self.videoPlayer {
-                        VideoPlayer(player: player)
+                        VideoPlayerView(player: player)
                     } else {
-                        Color.black
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 44))
-                            .foregroundStyle(.white.opacity(0.85))
+                        if let thumb = self.thumbnails[url] {
+                            Image(uiImage: thumb).resizable().scaledToFill()
+                        } else {
+                            Color.black
+                        }
                     }
                 }
                 .frame(width: 260, height: 200)
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .onTapGesture {
-                    guard self.videoPlayer == nil else { return }
-                    self.videoPlayer = self.attachmentManager?.player(for: url) ?? AVPlayer(url: url)
+                    if let player = self.videoPlayer {
+                        if self.isPlaying { player.pause() } else { player.play() }
+                        
+                        self.isPlaying.toggle()
+                    } else {
+                        let player = self.attachmentManager?.player(for: url) ?? AVPlayer(url: url)
+                        self.videoPlayer = player
+                        
+                        player.play()
+                        
+                        self.isPlaying = true
+                    }
                 }
-                .onDisappear { self.videoPlayer = nil }
+                .onDisappear { self.videoPlayer = nil; self.isPlaying = false }
                 .contextMenu {
                     if case .read = self.mode {
                         Button { self.showingShare = true } label: {
@@ -390,6 +433,7 @@ extension ComposableMessage {
                     if let manager = self.attachmentManager {
                         let ext  = metadata.extension ?? "mov"
                         let type = UTType(filenameExtension: ext) ?? .movie
+                        
                         ActivityView(activityItems: [manager.shareProvider(at: url, filename: name, contentType: type)])
                     }
                 }
@@ -436,9 +480,13 @@ extension ComposableMessage {
         @ViewBuilder private func fileCaptionRow(name: String) -> some View {
             HStack(spacing: 4) {
                 Text(name).font(.caption).foregroundStyle(.primary)
+                
                 if let size = self.fileSize {
                     Text("·").font(.caption).foregroundStyle(.secondary)
                     Text(size).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("")
+                    Text("")
                 }
             }
         }
@@ -481,35 +529,29 @@ private struct PendingImportBubble: View {
         HStack(alignment: .center) {
             Spacer()
             VStack(alignment: .trailing, spacing: 6) {
-                ZStack {
-                    if let thumb = self.pending.thumbnail {
-                        Image(uiImage: thumb).resizable().scaledToFill()
-                        Color.black.opacity(0.4)
-                    } else {
+                VStack(spacing: 6) {
+                    ZStack {
                         Color.black
+                        VStack(spacing: 6) {
+                            ProgressView().tint(.white)
+                            Text("Loading…").font(.caption2).foregroundStyle(.white)
+                        }
                     }
-                    VStack(spacing: 6) {
-                        ProgressView().tint(.white)
-                        Text("Loading…").font(.caption2).foregroundStyle(.white)
+                    .frame(width: 260, height: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+
+                    HStack(spacing: 4) {
+                        Text(self.pending.filename).font(.caption).foregroundStyle(.primary)
+                        Text("·").font(.caption).foregroundStyle(.secondary)
+                        Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                .frame(width: 260, height: 200)
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-
-                ProgressView(value: self.pending.progress)
-                    .tint(.occultaAccent)
-                    .frame(width: 260)
-                    .animation(.linear(duration: 0.1), value: self.pending.progress)
-
-                HStack(spacing: 4) {
-                    Text(self.pending.filename).font(.caption).foregroundStyle(.primary)
-                    Text("·").font(.caption).foregroundStyle(.secondary)
-                    Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                Text(Date(), format: .dateTime.hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 16)
     }
 }
 
@@ -525,7 +567,7 @@ private struct FullScreenImageViewer: View {
     @GestureState private var gestureOffset: CGSize   = .zero
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             Color.black.ignoresSafeArea()
 
             if let image = self.image {
@@ -564,7 +606,8 @@ private struct FullScreenImageViewer: View {
             } else {
                 ProgressView().tint(.white)
             }
-
+        }
+        .overlay(alignment: .topTrailing) {
             Button { self.dismiss() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .semibold))
@@ -574,6 +617,28 @@ private struct FullScreenImageViewer: View {
             }
             .padding()
         }
+    }
+}
+
+// MARK: - VideoPlayerView
+
+private struct VideoPlayerView: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> PlayerUIView {
+        let view = PlayerUIView()
+        view.playerLayer.player = self.player
+        view.playerLayer.videoGravity = .resizeAspectFill
+        return view
+    }
+
+    func updateUIView(_ view: PlayerUIView, context: Context) {
+        view.playerLayer.player = self.player
+    }
+
+    final class PlayerUIView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { self.layer as! AVPlayerLayer }
     }
 }
 
