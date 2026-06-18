@@ -79,7 +79,12 @@ extension Contact {
         ///   N    — visible through duress depth N, hidden at N+1 and deeper
         /// All non-nil values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
         var visibleThroughDepth: Data? = nil
-        
+
+        /// Encrypted UInt8 — maximum bundle version this contact's app can decode.
+        /// nil = unknown, treat as v3fs on send. Derived from `appVersion` in received bundles.
+        /// SwiftData lightweight migration: new optional column, no plan required.
+        var maxBundleVersion: Data? = nil
+
         // MARK: - Full Designated Initializer
         
         init(

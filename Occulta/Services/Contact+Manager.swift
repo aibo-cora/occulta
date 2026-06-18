@@ -566,6 +566,21 @@ extension ContactManager {
         return encryptedData
     }
     
+    /// Derives the stable per-contact base key used to encrypt file attachments at rest.
+    /// Callers pass this into `AttachmentManager(contactKey:)`.
+    func fileEncryptionKey(for identifier: String) throws -> SymmetricKey {
+        guard let contact = try self.fetchContact(by: identifier) else {
+            throw ContactManager.Errors.contactNotFound
+        }
+        guard let encrypted = contact.contactPublicKeys?.last?.material,
+              let material   = try? self.cryptoManager.decrypt(data: encrypted)
+        else { throw ContactManager.Errors.contactHasNoKeys }
+        guard let key = Manager.Key().createSharedSecret(using: material) else {
+            throw ContactManager.Errors.contactHasNoKeys
+        }
+        return key
+    }
+
     private func encrypt(data: Data, using material: Data) throws -> Data? {
         try self.cryptoManager.encrypt(message: data, using: material)
     }
@@ -898,15 +913,13 @@ extension ContactManager {
     /// sends back a `.forwardSecret` bundle using one of our prekeys — cryptographic
     /// proof they stored the batch. Only then is the batch cleared.
     func encryptBundle(
-        data: Data? = nil,
+        basket: Basket? = nil,
         for identifier: String,
         shardOperations: [OccultaBundle.ShardOperation]? = nil,
         custodyManifest: [UUID]? = nil,
         expectedShards: [UUID]? = nil
     ) throws -> Data {
-        guard data != nil || shardOperations != nil || custodyManifest != nil || expectedShards != nil else { throw Errors.messageHasNoData }
-        
-        if let data, data.isEmpty { throw Errors.messageHasNoData }
+        guard basket != nil || shardOperations != nil || custodyManifest != nil || expectedShards != nil else { throw Errors.messageHasNoData }
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
@@ -943,25 +956,41 @@ extension ContactManager {
             outboundBatch = try contact.loadPendingBatch()
         }
 
-        // ── 3. Build and seal payload ─────────────────────────────────────
-        let messageData   = data ?? Data("Occulta vault operation. Please update your app.".utf8)
+        // ── 3. Resolve target wire format for this contact ────────────────
+        let cryptoOps     = Manager.Crypto()
+        let targetVersion = Self.resolveTargetVersion(for: contact, using: cryptoOps)
+
+        // ── 4. Build and seal payload ─────────────────────────────────────
+        let messageData: Data
+        if let basket {
+            messageData = targetVersion == .v4
+                ? try WireHandle.encode(basket: basket)
+                : try JSONEncoder().encode(basket)
+        } else {
+            messageData = Data("Occulta vault operation. Please update your app.".utf8)
+        }
+
         let sealedPayload = OccultaBundle.SealedPayload(
             message:         messageData,
             prekeyBatch:     outboundBatch,
             shardOperations: shardOperations,
             custodyManifest: custodyManifest,
-            expectedShards:  expectedShards
+            expectedShards:  expectedShards,
+            appVersion:      Bundle.main.appVersion
         )
-        let encoded = try JSONEncoder().encode(sealedPayload)
+        let encoded = targetVersion == .v4
+            ? try WireHandle.encode(payload: sealedPayload)
+            : try JSONEncoder().encode(sealedPayload)
 
         // contactPrekey == nil in shard mode → Manager.Crypto.seal uses longTermFallback.
         let bundle = try Manager.Crypto().seal(
             message:           encoded,
             contactPrekey:     contactPrekey,
             recipientMaterial: recipientMaterial,
-            quantumMaterial:   quantumMaterial
+            quantumMaterial:   quantumMaterial,
+            version:           targetVersion
         )
-        let encodedBundle = try bundle.encoded()
+        let encodedBundle = try bundle.encoded(version: targetVersion)
         
         if contactPrekey != nil {
             // Persist prekey state only when it was mutated (message mode).
@@ -1052,8 +1081,20 @@ extension ContactManager {
 }
  
 extension ContactManager {
+
+    /// Resolve the wire format version to use when sending to a contact.
+    /// Reads the encrypted `maxBundleVersion` byte and maps it back to a `Version`.
+    static func resolveTargetVersion(for contact: Contact.Profile, using crypto: Manager.Crypto) -> OccultaBundle.Version {
+        guard
+            let enc  = contact.maxBundleVersion,
+            let raw  = try? crypto.decrypt(data: enc),
+            let byte = raw.first
+        else { return .v3fs }
+        return WireHandle.byteToVersion(byte) ?? .v3fs
+    }
+
     private func verifyConsistency(for bundle: OccultaBundle) throws {
-        guard bundle.version == .v3fs else { throw Errors.unsupportedBundleVersion }
+        guard bundle.version == .v3fs || bundle.version == .v4 else { throw Errors.unsupportedBundleVersion }
         // Defence-in-depth: never touch a bundle whose version or mode was
         // produced by a future build we don't understand. `Version`/`Mode` both
         // decode unknown raw values to `.unsupported` — see OccultaBundle.swift.
@@ -1247,9 +1288,22 @@ extension ContactManager {
             debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
         }
         
-        let decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
- 
-        // ── 4. Store inbound prekey batch ────────────────────────────────
+        let decodedPayload: OccultaBundle.SealedPayload
+        if bundle.version == .v4 {
+            decodedPayload = try WireHandle.decode(payload: decryptedSealedPayload)
+        } else {
+            decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
+        }
+
+        // ── 4. Update contact's capability from sender's app version ──────
+        if let appVersion = decodedPayload.appVersion {
+            let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
+            if let byte = maxVersion.wireByte {
+                sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
+            }
+        }
+
+        // ── 6. Store inbound prekey batch ────────────────────────────────
         if let inboundBatch = decodedPayload.prekeyBatch {
             debugPrint("Decrypting bundle containing inbound prekey sync batch...")
             
@@ -1276,7 +1330,7 @@ extension ContactManager {
             try sender.syncInboundPrekeys(blobs, date: inboundBatch.generatedAt)
         }
  
-        // ── 5. Persist ───────────────────────────────────────────────────
+        // ── 7. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
         
         debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")

@@ -86,6 +86,7 @@ struct OccultaApp: App {
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
 
         self.migrate()
+        FileManager.default.clearTemporaryDirectory()
     }
 
     /// Run migration before any UI accesses contacts.
@@ -194,7 +195,14 @@ private struct RootView: View {
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
             } content: { data in
-                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files))
+                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
+                    .map { AttachmentManager(contactKey: $0) }
+                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
+                    .onDisappear {
+                        data.basket.files.forEach { file in
+                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
+                        }
+                    }
             }
             .sheet(item: self.$shareResult) { result in
                 ShareActivityView(url: result.url)
@@ -495,9 +503,10 @@ private struct RootView: View {
             debugPrint("Building basket for version: \(bundle?.version.rawValue ?? "none (legacy)")")
 
             let decrypted: (plaintext: Data, ownerID: String)
+            var decodedBundleVersion: OccultaBundle.Version = .v3fs
 
             switch bundle?.version {
-            case .v3fs:
+            case .v3fs, .v4:
                 guard let bundle else {
                     throw ContactManager.Errors.messageHasNoData
                 }
@@ -544,6 +553,7 @@ private struct RootView: View {
                     )
                 }
 
+                decodedBundleVersion = bundle.version
                 decrypted = (sealed.message, ownerID)
             case .unsupported:
                 throw OccultaBundle.BundleError.unsupportedVersion
@@ -555,24 +565,34 @@ private struct RootView: View {
                 try self.passSecurityControl(identifier: decrypted.ownerID)
             }
 
-            let basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+            let basket: Basket
+            if decodedBundleVersion == .v4 {
+                basket = try WireHandle.decode(basket: decrypted.plaintext)
+            } else {
+                basket = try JSONDecoder().decode(Basket.self, from: decrypted.plaintext)
+            }
 
             // ── Write file attachments, photos, videos to temp directory ─────────────────
 
             var processed: [Occulta.File] = []
-            let tempDir = FileManager.default.temporaryDirectory
+            let tempDir         = FileManager.default.temporaryDirectory
+            let attachmentManager = (try? self.contactManager.fileEncryptionKey(for: decrypted.ownerID))
+                .map { AttachmentManager(contactKey: $0) }
 
             for file in basket.files {
                 switch file.format {
                 case .file(let metadata):
-                    /// Store photos, videos and documents in temp folder if the file's content is a file
                     let fileURL = tempDir
                         .appendingPathComponent(metadata.name ?? UUID().uuidString)
                         .appendingPathExtension(metadata.extension ?? "bin")
                     let content = file.content ?? Data()
 
                     group.addTask {
-                        try content.write(to: fileURL)
+                        if let manager = attachmentManager {
+                            try manager.encrypt(content, to: fileURL)
+                        } else {
+                            try content.writeProtected(to: fileURL)
+                        }
                         return Occulta.File(url: fileURL, format: file.format, date: file.date)
                     }
 
@@ -639,7 +659,10 @@ private struct RootView: View {
 
             for entry in manifest.files {
                 let fileURL = sessionDir.appendingPathComponent(entry.filename)
-                var content = try Data(contentsOf: fileURL)
+                var ciphertext = try Data(contentsOf: fileURL)
+                var content = try keyManager.decrypt(data: ciphertext)
+                _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                ciphertext = Data()
 
                 // Strip EXIF/GPS/camera metadata from images before encryption.
                 // If stripping fails (e.g. unsupported format), the original data is used —
@@ -659,28 +682,20 @@ private struct RootView: View {
             }
 
             // 3. Encrypt via the full FS path — same as in-app messages
-            let basket = Basket(files: files, date: Date())
-            var basketData = try JSONEncoder().encode(basket)
-
-            let contactID  = manifest.contactIdentifier
+            let basket    = Basket(files: files, date: Date())
+            let contactID = manifest.contactIdentifier
             let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
             let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
             let manifest_  = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
             let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
 
             let occData = try self.contactManager.encryptBundle(
-                data:            basketData,
+                basket:          basket,
                 for:             contactID,
                 shardOperations: shardOps.isEmpty ? nil : shardOps,
                 custodyManifest: manifest_,
                 expectedShards:  expected
             )
-
-            // Zero all plaintext buffers before deallocation.
-            // Swift Data uses COW — if Basket copied the buffers, the originals
-            // may not be the same allocation. Best-effort; Swift doesn't guarantee zeroing.
-            _ = basketData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            basketData = Data()
             for i in files.indices {
                 _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
             }
@@ -690,7 +705,7 @@ private struct RootView: View {
             let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
             let occURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(occID).occ")
-            try occData.write(to: occURL)
+            try occData.writeProtected(to: occURL)
 
             // 5. Delete session directory — plaintext no longer needed
             try FileManager.default.removeItem(at: sessionDir)
