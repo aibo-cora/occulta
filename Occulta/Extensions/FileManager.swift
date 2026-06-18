@@ -12,11 +12,9 @@ extension FileManager {
     func clearTemporaryDirectory() {
         Task.detached {
             let tempURL = self.temporaryDirectory
-            
-            let contents = try self.contentsOfDirectory(at: tempURL, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
-            
+            guard let contents = try? self.contentsOfDirectory(at: tempURL, includingPropertiesForKeys: nil, options: .skipsHiddenFiles) else { return }
             for file in contents {
-                try self.removeItem(at: file)
+                try? self.removeItem(at: file)
             }
         }
     }

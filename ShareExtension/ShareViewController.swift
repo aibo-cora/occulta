@@ -227,15 +227,6 @@ class ShareViewController: UIViewController {
                     )
                 }
 
-                // CRITICAL: copyItem preserves the SOURCE file's protection class, not the
-                // destination directory's. The source is the extension's tmp/ directory, which
-                // uses .completeUntilFirstUserAuthentication or weaker. Without this explicit
-                // call, plaintext files are readable when the device is locked.
-                try (destURL as NSURL).setResourceValue(
-                    URLFileProtection.complete,
-                    forKey: .fileProtectionKey
-                )
-
                 fileEntries.append(ShareManifest.FileEntry(
                     filename: filename, uti: uti, fileExtension: fileExt
                 ))
@@ -280,8 +271,12 @@ class ShareViewController: UIViewController {
         }
     }
 
-    /// Copy via `loadFileRepresentation` — bytes flow through the kernel, not app memory.
+    /// Copy via `loadFileRepresentation`, encrypt with the share key, write ciphertext.
     /// Returns false if this provider doesn't support file representation for the given UTI.
+    ///
+    /// Note: reading the source into Data for encryption reintroduces memory pressure for
+    /// large files. This is an accepted tradeoff — the alternative (streaming AES-GCM) would
+    /// require custom framing not available in CryptoKit.
     private func copyFileRepresentation(
         from provider: NSItemProvider, uti: String, to destination: URL
     ) async throws -> Bool {
@@ -300,8 +295,11 @@ class ShareViewController: UIViewController {
                     return
                 }
                 do {
-                    // sourceURL is valid only inside this closure — copy immediately.
-                    try FileManager.default.copyItem(at: sourceURL, to: destination)
+                    var plaintext = try Data(contentsOf: sourceURL)
+                    let ciphertext = try self.shareKeyManager.encrypt(data: plaintext)
+                    _ = plaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                    plaintext = Data()
+                    try ciphertext.write(to: destination, options: .completeFileProtection)
                     continuation.resume(returning: true)
                 } catch {
                     continuation.resume(throwing: error)
@@ -310,12 +308,11 @@ class ShareViewController: UIViewController {
         }
     }
 
-    /// Fallback: load into memory with a 10 MB size guard.
-    /// Uses `.completeFileProtection` in the write options.
+    /// Fallback: load into memory with a 10 MB size guard, encrypt before writing.
     private func copyDataRepresentation(
         from provider: NSItemProvider, uti: String, to destination: URL
     ) async throws {
-        let data: Data = try await withCheckedThrowingContinuation { continuation in
+        var data: Data = try await withCheckedThrowingContinuation { continuation in
             provider.loadDataRepresentation(forTypeIdentifier: uti) { data, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -333,7 +330,10 @@ class ShareViewController: UIViewController {
             throw ShareError.fileTooLarge
         }
 
-        try data.write(to: destination, options: .completeFileProtection)
+        let ciphertext = try self.shareKeyManager.encrypt(data: data)
+        _ = data.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+        data = Data()
+        try ciphertext.write(to: destination, options: .completeFileProtection)
     }
 
     // MARK: - Phase 3: Handoff
@@ -462,21 +462,16 @@ class ShareViewController: UIViewController {
             : (provider.registeredTypeIdentifiers.first ?? UTType.data.identifier)
 
         do {
-            // Prefer file representation — bytes flow through the kernel,
-            // not app memory. Falls back to data representation for
-            // providers that don't support it.
-            let copied = try await self.copyFileRepresentation(
-                from: provider, uti: uti, to: destURL
-            )
-            if !copied {
-                try await self.copyDataRepresentation(
-                    from: provider, uti: uti, to: destURL
-                )
+            // The .occ is already encrypted by the sender — just land it on disk
+            // with NSFileProtection.complete. No share-key encryption needed.
+            let data: Data = try await withCheckedThrowingContinuation { cont in
+                provider.loadDataRepresentation(forTypeIdentifier: uti) { data, error in
+                    if let error { cont.resume(throwing: error); return }
+                    guard let data else { cont.resume(throwing: ShareError.noData); return }
+                    cont.resume(returning: data)
+                }
             }
-            try (destURL as NSURL).setResourceValue(
-                URLFileProtection.complete,
-                forKey: .fileProtectionKey
-            )
+            try data.write(to: destURL, options: .completeFileProtection)
         } catch {
             try? fm.removeItem(at: destURL)
             self.extensionContext?.cancelRequest(withError: ShareError.noData)

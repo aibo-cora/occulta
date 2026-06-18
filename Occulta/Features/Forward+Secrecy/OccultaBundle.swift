@@ -94,12 +94,45 @@ struct OccultaBundle: Codable {
         case v2
         /// Per-contact consumed prekey batches. `SecrecyContext` + version authenticated as AAD.
         case v3fs
+        /// Binary wire format — eliminates base64 inflation at all three serialisation layers.
+        /// First shipped in app version 1.8.2. See Docs/Features/Bundle/SPEC.md.
+        case v4
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
         /// before AAD computation; AAD would fail anyway since the original
         /// version string is lost.
         case unsupported
+
+        /// The minimum app version that can read this wire format.
+        /// `nil` means the case is not a real wire format (legacy, unsupported).
+        var minimumAppVersion: String? {
+            switch self {
+            case .v3fs: return "0.0.0"
+            case .v4:   return "1.8.2"
+            default:    return nil
+            }
+        }
+
+        /// The binary wire byte for this version. Used by WireHandle for encoding/decoding.
+        /// `nil` for cases that are JSON-only or not real wire formats.
+        var wireByte: UInt8? {
+            switch self {
+            case .v4: return 0x04
+            default:  return nil
+            }
+        }
+
+        /// All real wire versions in descending capability order.
+        private static let known: [Version] = [.v4, .v3fs]
+
+        /// The highest wire format version a contact running `appVersion` can decode.
+        static func max(forAppVersion appVersion: String) -> Version {
+            Self.known.first {
+                guard let min = $0.minimumAppVersion else { return false }
+                return appVersion.compare(min, options: .numeric) != .orderedAscending
+            } ?? .v3fs
+        }
 
         init(from decoder: Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)
@@ -288,13 +321,19 @@ struct OccultaBundle: Codable {
         /// Owner → trustee direction only. Added in v1.7.0.
         let expectedShards: [UUID]?
 
+        /// Sender's app version string (e.g. `"1.8.2"`). Receivers derive the contact's
+        /// `maxBundleVersion` from this and store it encrypted on the contact record.
+        /// `nil` means the sender is on a build older than 1.8.2. Added in v1.8.2.
+        let appVersion: String?
+
         init(
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
             identityChallenge: IdentityChallengeEnvelope? = nil,
             shardOperations: [ShardOperation]? = nil,
             custodyManifest: [UUID]? = nil,
-            expectedShards: [UUID]? = nil
+            expectedShards: [UUID]? = nil,
+            appVersion: String? = nil
         ) {
             self.message           = message
             self.prekeyBatch       = prekeyBatch
@@ -302,6 +341,7 @@ struct OccultaBundle: Codable {
             self.shardOperations   = shardOperations
             self.custodyManifest   = custodyManifest
             self.expectedShards    = expectedShards
+            self.appVersion        = appVersion
         }
 
         /// A versioned batch of the sender's prekey public keys.
@@ -394,12 +434,21 @@ struct OccultaBundle: Codable {
 
     // MARK: - Serialisation
 
-    func encoded() throws -> Data {
-        try JSONEncoder().encode(self)
+    func encoded(version: Version = .v3fs) throws -> Data {
+        switch version {
+        case .v4:
+            return try WireHandle.encode(self)
+        default:
+            return try JSONEncoder().encode(self)
+        }
     }
 
     static func decoded(from data: Data) throws -> OccultaBundle {
-        try JSONDecoder().decode(OccultaBundle.self, from: data)
+        if data.prefix(WireHandle.magic.count).elementsEqual(WireHandle.magic) {
+            let parsed = try WireHandle.parse(data)
+            return try OccultaBundle(wireBundle: parsed)
+        }
+        return try JSONDecoder().decode(OccultaBundle.self, from: data)
     }
 
     // MARK: - AAD
@@ -442,5 +491,33 @@ struct OccultaBundle: Codable {
         case .longTermNoPQ:        return "Standard Encryption"
         case .unsupported:         return "Unsupported"
         }
+    }
+}
+
+// MARK: - WireHandle bridge
+
+extension OccultaBundle {
+    /// Reconstruct an `OccultaBundle` from a parsed binary outer envelope.
+    init(wireBundle b: WireHandle.Bundle) throws {
+        guard let version = WireHandle.byteToVersion(b.version) else {
+            throw BundleError.unsupportedVersion
+        }
+        guard let mode = WireHandle.byteToMode(b.mode) else {
+            throw BundleError.unsupportedMode
+        }
+        let prekeyID: String?
+        if let pid = b.prekeyID {
+            guard let s = String(data: pid, encoding: .utf8) else {
+                throw BundleError.unsupportedVersion
+            }
+            prekeyID = s
+        } else {
+            prekeyID = nil
+        }
+        self.version           = version
+        self.secrecy           = SecrecyContext(mode: mode, ephemeralPublicKey: b.ephemeralKey, prekeyID: prekeyID)
+        self.ciphertext        = b.ciphertext
+        self.fingerprintNonce  = b.fingerprintNonce
+        self.senderFingerprint = b.senderFingerprint
     }
 }

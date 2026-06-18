@@ -39,6 +39,10 @@ Run through every item before tagging a release. Each item is binary — check i
 - [ ] Shared container files (`group.com.occulta.shared/inbound/*.occ`) use `.completeFileProtection`
 - [ ] Inbound `.occ` file is deleted from shared container after `processInboundSession` completes (success *and* failure paths)
 - [ ] No sensitive material written to `UserDefaults`, `NSCache`, or temp files without protection class
+- [ ] All writes to `FileManager.temporaryDirectory` use `Data.writeProtected(to:)` (`.completeFileProtection`) — no bare `write(to:)` calls
+- [ ] `FileManager.clearTemporaryDirectory()` is called on every app launch — verify it runs before any UI is shown
+- [ ] Compose staging files (media/attachments added but not yet encrypted) are removed on view disappear, encrypt-and-share completion, and individual message delete
+- [ ] Outbound `.occ` files in `temporaryDirectory` are deleted by `ActivityView.onComplete` regardless of whether the user completed the share
 
 ## 5. Share Extension
 
@@ -46,6 +50,10 @@ Run through every item before tagging a release. Each item is binary — check i
 - [ ] Extension writes only to its designated shared-container subdirectory, never to app-group root
 - [ ] `occulta://inbound?session=<uuid>` URL contains only the UUID — no key material or plaintext in the URL
 - [ ] Extension does not cache or log the ciphertext bytes
+- [ ] Session files in `pending/<sessionID>/` are AES-GCM encrypted with `ShareIndexKeyManager` before being written to disk — no plaintext attachment ever lands in the shared container
+- [ ] Main app decrypts session files via `ShareIndexKeyManager` before EXIF stripping and bundle encryption, and zeroes the ciphertext buffer after decryption
+- [ ] Session directory (`pending/<sessionID>/`) is deleted immediately after `processShareSession` completes — on both success and failure paths
+- [ ] On app launch, any `pending/` directories surviving from a previous crash are swept and deleted before processing any new session
 
 ## 6. Build Configuration
 

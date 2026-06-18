@@ -91,26 +91,24 @@ extension Contact {
             return ourIdentityHash == decryptedOwnerHash
         }
         
+        @State private var editing: Bool = false
+        @State private var displayingVerificationInfo: Bool = false
+        @State private var composeVM: ComposeViewModel
+
         init(identifier: String) {
             self.identifier = identifier
-            
-            let predicate = #Predicate<Contact.Profile> {
-                $0.identifier == identifier
-            }
-            
+            let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
             self._contacts = Query(filter: predicate)
+            self._composeVM = State(initialValue: ComposeViewModel(identifier: identifier))
         }
-        
-        @State private var editing: Bool = false
-        @State private var displayingVerificationInfo : Bool = false
-        
+
         var body: some View {
             VStack {
                 VStack(spacing: 20) {
                     if self.needsExchange {
                         KeyExchange(identifier: self.identifier)
                     } else {
-                        ComposableMessage(identifier: self.identifier)
+                        ComposableMessage(vm: self.composeVM)
                     }
                 }
                 .toolbar {
