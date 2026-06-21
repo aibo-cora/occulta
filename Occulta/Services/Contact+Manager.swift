@@ -1180,21 +1180,23 @@ extension ContactManager {
                 debugPrint("Using prekey, ID = \(prekeyID)")
                 #endif
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                
                 guard
                     let privKey = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
-                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
-                                                             quantumMaterial:     quantumMaterial)
+                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial:   bundle.secrecy.ephemeralPublicKey, quantumMaterial:     quantumMaterial)
                 else { return nil }
+                
                 return try cryptoOps.open(bundle, using: sessKey)
             }()
 
             if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
                 let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
+                
                 #if DEBUG
                 debugPrint("Opened bundle using prekey = \(temp), consuming key...")
                 #endif
                 prekeyManager.consume(prekey: temp)
+                
                 try sender.clearPendingBatch()
                 debugPrint("Message successfully opened in .forwardSecret mode. Pending batch cleared.")
             } else {
