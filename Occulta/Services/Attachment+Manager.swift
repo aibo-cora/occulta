@@ -202,9 +202,10 @@ private enum Encryptor {
         header.append(contentsOf: HMAC<SHA256>.authenticationCode(for: header, using: fileKey))
 
         var output = header
+        let base = plaintext.startIndex
         for i in 0..<chunks {
-            let start = i * chunkSize
-            let end   = min(start + chunkSize, total)
+            let start = base + i * chunkSize
+            let end   = min(start + chunkSize, base + total)
             let box   = try AES.GCM.seal(
                 total > 0 ? plaintext[start..<end] : Data(),
                 using: fileKey,
