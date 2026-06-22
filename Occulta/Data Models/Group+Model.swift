@@ -26,11 +26,11 @@ final class Group {
     /// Real-layer member slots. Always exactly 32 entries.
     /// Real slots: AES-GCM(contactIdentifier UTF-8) = 64 bytes.
     /// Unused slots: 64 cryptographically random bytes, size-identical to real entries.
-    var realMemberSlots: [Data]
+    private(set) var realMemberSlots: [Data]
 
     /// Duress-layer member slots. Same invariants as realMemberSlots.
     /// A coercer at depth > 0 sees only this array — no cross-array probe vector.
-    var duressMemberSlots: [Data]
+    private(set) var duressMemberSlots: [Data]
 
     /// Encrypted second-precision TimeInterval. Milliseconds truncated to prevent
     /// correlation with other observable events at sub-second resolution.
