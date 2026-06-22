@@ -30,10 +30,10 @@ final class GroupManager {
     /// Profiles that have been hard-deleted since the member was added return no entry.
     func resolveMembers(
         of group: Group,
-        at depth: Int,
-        in context: ModelContext
+        in layer: RoutingDepth,
+        context: ModelContext
     ) throws -> [Contact.Profile] {
-        let identifiers = Set(group.members(at: depth))
+        let identifiers = Set(group.members(in: layer))
         guard !identifiers.isEmpty else { return [] }
         let all = try context.fetch(FetchDescriptor<Contact.Profile>())
         return all.filter { identifiers.contains($0.identifier) }

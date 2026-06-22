@@ -83,8 +83,8 @@ struct GroupStructuralTests {
         ctx.insert(group)
 
         let id = UUID().uuidString
-        try group.addMember(id, at: 0)
-        #expect(group.members(at: 0).contains(id))
+        try group.addMember(id, in: .normal)
+        #expect(group.members(in: .normal).contains(id))
     }
 
     @Test func addMember_doesNotAppearInOtherLayer() throws {
@@ -93,8 +93,8 @@ struct GroupStructuralTests {
         let group = try Group(name: "Friends")
         ctx.insert(group)
 
-        try group.addMember(UUID().uuidString, at: 0)
-        #expect(group.members(at: 1).isEmpty, "Real member must not leak into duress layer")
+        try group.addMember(UUID().uuidString, in: .normal)
+        #expect(group.members(in: .duress).isEmpty, "Real member must not leak into duress layer")
     }
 
     @Test func addMember_allSlotsRemain64bytes() throws {
@@ -103,7 +103,7 @@ struct GroupStructuralTests {
         let group = try Group(name: "Family")
         ctx.insert(group)
 
-        try group.addMember(UUID().uuidString, at: 0)
+        try group.addMember(UUID().uuidString, in: .normal)
 
         #expect(group.realMemberSlots.count == Group.slotCount)
         for slot in group.realMemberSlots {
@@ -118,7 +118,7 @@ struct GroupStructuralTests {
         ctx.insert(group)
 
         let before = group.realMemberSlots
-        try group.addMember(UUID().uuidString, at: 0)
+        try group.addMember(UUID().uuidString, in: .normal)
         #expect(before != group.realMemberSlots,
                 "Full recompute must change every slot (fresh nonces + new filler)")
     }
@@ -130,9 +130,9 @@ struct GroupStructuralTests {
         ctx.insert(group)
 
         let id = UUID().uuidString
-        try group.addMember(id, at: 0)
-        try group.removeMember(id, at: 0)
-        #expect(group.members(at: 0).isEmpty)
+        try group.addMember(id, in: .normal)
+        try group.removeMember(id, in: .normal)
+        #expect(group.members(in: .normal).isEmpty)
     }
 
     @Test func addMember_duplicate_isIdempotent() throws {
@@ -142,9 +142,9 @@ struct GroupStructuralTests {
         ctx.insert(group)
 
         let id = UUID().uuidString
-        try group.addMember(id, at: 0)
-        try group.addMember(id, at: 0)
-        #expect(group.members(at: 0).count == 1)
+        try group.addMember(id, in: .normal)
+        try group.addMember(id, in: .normal)
+        #expect(group.members(in: .normal).count == 1)
     }
 
     @Test func addMember_exceeds32_throwsCapacityExceeded() throws {
@@ -154,10 +154,10 @@ struct GroupStructuralTests {
         ctx.insert(group)
 
         for _ in 0..<Group.slotCount {
-            try group.addMember(UUID().uuidString, at: 0)
+            try group.addMember(UUID().uuidString, in: .normal)
         }
         #expect(throws: GroupError.capacityExceeded) {
-            try group.addMember(UUID().uuidString, at: 0)
+            try group.addMember(UUID().uuidString, in: .normal)
         }
     }
 
@@ -169,11 +169,11 @@ struct GroupStructuralTests {
 
         let realID   = UUID().uuidString
         let duressID = UUID().uuidString
-        try group.addMember(realID,   at: 0)
-        try group.addMember(duressID, at: 1)
+        try group.addMember(realID,   in: .normal)
+        try group.addMember(duressID, in: .duress)
 
-        #expect(group.members(at: 0) == [realID])
-        #expect(group.members(at: 1) == [duressID])
+        #expect(group.members(in: .normal) == [realID])
+        #expect(group.members(in: .duress) == [duressID])
     }
 
     @Test func readName_roundTrip() throws {
@@ -258,10 +258,10 @@ struct GroupStructuralTests {
         ctx.insert(contact)
 
         let group = try self.gm.create(name: "Test", in: ctx)
-        try group.addMember(contact.identifier, at: 0)
+        try group.addMember(contact.identifier, in: .normal)
         try ctx.save()
 
-        let resolved = try self.gm.resolveMembers(of: group, at: 0, in: ctx)
+        let resolved = try self.gm.resolveMembers(of: group, in: .normal, context: ctx)
         #expect(resolved.count == 1)
         #expect(resolved[0].identifier == contact.identifier)
     }
@@ -271,7 +271,7 @@ struct GroupStructuralTests {
         let ctx = ModelContext(try makeContainer())
         let group = try self.gm.create(name: "Empty", in: ctx)
 
-        let resolved = try self.gm.resolveMembers(of: group, at: 0, in: ctx)
+        let resolved = try self.gm.resolveMembers(of: group, in: .normal, context: ctx)
         #expect(resolved.isEmpty)
     }
 }

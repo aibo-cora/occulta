@@ -101,8 +101,8 @@ final class Group {
 
     /// Returns the contact identifiers stored in the active layer.
     /// Slots that fail to decrypt (filler) are silently skipped.
-    func members(at depth: Int) -> [String] {
-        let slots = depth == 0 ? self.realMemberSlots : self.duressMemberSlots
+    func members(in layer: RoutingDepth) -> [String] {
+        let slots = layer == .normal ? self.realMemberSlots : self.duressMemberSlots
         return slots.compactMap { slot -> String? in
             guard let decrypted = slot.decrypt(),
                   let str       = String(data: decrypted, encoding: .utf8),
@@ -112,18 +112,18 @@ final class Group {
         }
     }
 
-    func addMember(_ identifier: String, at depth: Int) throws {
-        var current = self.members(at: depth)
+    func addMember(_ identifier: String, in layer: RoutingDepth) throws {
+        var current = self.members(in: layer)
         guard !current.contains(identifier) else { return }
         guard current.count < Self.slotCount else { throw GroupError.capacityExceeded }
         current.append(identifier)
-        try self.setMembers(current, at: depth)
+        try self.setMembers(current, in: layer)
     }
 
-    func removeMember(_ identifier: String, at depth: Int) throws {
-        var current = self.members(at: depth)
+    func removeMember(_ identifier: String, in layer: RoutingDepth) throws {
+        var current = self.members(in: layer)
         current.removeAll { $0 == identifier }
-        try self.setMembers(current, at: depth)
+        try self.setMembers(current, in: layer)
     }
 
     // MARK: - Filler helpers
@@ -137,7 +137,7 @@ final class Group {
     /// Full recompute: encrypt each real identifier with a fresh nonce, pad to 32 slots
     /// with fresh random filler, then shuffle. Any database diff shows all 64 entries
     /// changed — no slot position or modified entry is identifiable.
-    private func setMembers(_ identifiers: [String], at depth: Int) throws {
+    private func setMembers(_ identifiers: [String], in layer: RoutingDepth) throws {
         var slots: [Data] = try identifiers.map { id in
             guard let encrypted = try Data(id.utf8).encrypt() else {
                 throw GroupError.encryptionFailed
@@ -148,7 +148,7 @@ final class Group {
             slots.append(Self.randomFiller())
         }
         slots.shuffle()
-        if depth == 0 {
+        if layer == .normal {
             self.realMemberSlots = slots
         } else {
             self.duressMemberSlots = slots
