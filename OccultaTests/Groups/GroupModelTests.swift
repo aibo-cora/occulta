@@ -111,16 +111,19 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func addMember_fullRecompute_allSlotsChange() throws {
+    @Test func addMember_fullRecompute_bothArraysChange() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Team")
         ctx.insert(group)
 
-        let before = group.realMemberSlots
+        let beforeReal   = group.realMemberSlots
+        let beforeDuress = group.duressMemberSlots
         try group.addMember(UUID().uuidString, in: .normal)
-        #expect(before != group.realMemberSlots,
-                "Full recompute must change every slot (fresh nonces + new filler)")
+        // Both arrays must change — if only the target changed, a DB diff would
+        // reveal which layer was written.
+        #expect(beforeReal   != group.realMemberSlots)
+        #expect(beforeDuress != group.duressMemberSlots)
     }
 
     @Test func removeMember_noLongerReadable() throws {

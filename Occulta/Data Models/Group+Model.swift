@@ -138,21 +138,27 @@ final class Group {
     /// with fresh random filler, then shuffle. Any database diff shows all 64 entries
     /// changed — no slot position or modified entry is identifiable.
     private func setMembers(_ identifiers: [String], in layer: RoutingDepth) throws {
+        // Both arrays are always recomputed together. A DB diff that shows only one
+        // array changed would reveal which layer was written — defeating the point
+        // of having two indistinguishable arrays.
+        let realIdentifiers   = layer == .normal ? identifiers : self.members(in: .normal)
+        let duressIdentifiers = layer == .duress ? identifiers : self.members(in: .duress)
+        self.realMemberSlots   = try Self.encryptedSlots(for: realIdentifiers)
+        self.duressMemberSlots = try Self.encryptedSlots(for: duressIdentifiers)
+    }
+
+    private static func encryptedSlots(for identifiers: [String]) throws -> [Data] {
         var slots: [Data] = try identifiers.map { id in
             guard let encrypted = try Data(id.utf8).encrypt() else {
                 throw GroupError.encryptionFailed
             }
             return encrypted
         }
-        while slots.count < Self.slotCount {
-            slots.append(Self.randomFiller())
+        while slots.count < slotCount {
+            slots.append(randomFiller())
         }
         slots.shuffle()
-        if layer == .normal {
-            self.realMemberSlots = slots
-        } else {
-            self.duressMemberSlots = slots
-        }
+        return slots
     }
 
     private static func randomFiller() -> Data {
