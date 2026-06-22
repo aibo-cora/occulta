@@ -134,17 +134,15 @@ Binds both the session key and the prekey batch to this group and this specific 
 
 ## Version Gating
 
-A contact can be added to a group only if their known app version is ≥ `1.9.0`.
+A contact can be added to a group only if their `maxBundleVersion` reflects an app version ≥ 1.9.0.
 
-**Implementation:** Add `encryptedAppVersion: Data?` to `Contact.Profile` (SwiftData lightweight migration — new optional column, no migration plan required). When a bundle is received, store the raw `appVersion` string from `SealedPayload` encrypted under the local DB key alongside the existing `maxBundleVersion`. Group eligibility evaluates:
+**Implementation:** Add a new `Version` case (e.g. `.groupCapable`) with `minimumAppVersion = "1.9.0"`. No new field on `Contact.Profile` — `maxBundleVersion` already stores the encrypted capability byte and is updated on every received bundle via `Version.max(forAppVersion:)`. Group eligibility evaluates:
 
 ```swift
-storedAppVersion.compare("1.9.0", options: .numeric) != .orderedAscending
+resolveTargetVersion(for: contact) >= .groupCapable
 ```
 
-This decouples feature capability gating from wire format version tracking. `maxBundleVersion` continues to serve wire format selection only.
-
-> A contact who has never sent a bundle has no stored app version and cannot be added to a group. The version is proven by receipt, not self-reported at add time. Ineligible contacts in the member picker are labeled **"Send them a message first"** — not silently grayed out.
+> A contact who has never sent a bundle has `maxBundleVersion == nil` and cannot be added. Version is proven by receipt, not self-reported. No `Contact.Profile` schema change; no SwiftData migration required.
 
 **Runtime gate:** old builds receiving a group bundle decode `mode` as `.unsupported` → `BundleError.unsupportedMode` → "requires a newer version of Occulta."
 

@@ -97,6 +97,12 @@ struct OccultaBundle: Codable {
         /// Binary wire format — eliminates base64 inflation at all three serialisation layers.
         /// First shipped in app version 1.8.2. See Docs/Features/Bundle/SPEC.md.
         case v4
+        /// Capability watermark: contact is running app version ≥ 1.9.0 and can process
+        /// group bundles (`Mode.group`). Never written to the bundle `version` field on the
+        /// wire — stored only in `Contact.Profile.maxBundleVersion` as byte 0x05.
+        /// Group bundles are JSON-encoded with `version: .v4`; this case exists solely so
+        /// `resolveTargetVersion` can signal group eligibility to the caller.
+        case groupCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -108,9 +114,10 @@ struct OccultaBundle: Codable {
         /// `nil` means the case is not a real wire format (legacy, unsupported).
         var minimumAppVersion: String? {
             switch self {
-            case .v3fs: return "0.0.0"
-            case .v4:   return "1.8.2"
-            default:    return nil
+            case .v3fs:        return "0.0.0"
+            case .v4:          return "1.8.2"
+            case .groupCapable: return "1.9.0"
+            default:           return nil
             }
         }
 
@@ -118,15 +125,19 @@ struct OccultaBundle: Codable {
         /// `nil` for cases that are JSON-only or not real wire formats.
         var wireByte: UInt8? {
             switch self {
-            case .v4: return 0x04
-            default:  return nil
+            case .v4:           return 0x04
+            case .groupCapable: return 0x05
+            default:            return nil
             }
         }
 
-        /// All real wire versions in descending capability order.
-        private static let known: [Version] = [.v4, .v3fs]
+        /// True when this contact's app version supports group bundles.
+        var supportsGroups: Bool { self == .groupCapable }
 
-        /// The highest wire format version a contact running `appVersion` can decode.
+        /// All real capability levels in descending order.
+        private static let known: [Version] = [.groupCapable, .v4, .v3fs]
+
+        /// The highest capability level a contact running `appVersion` can handle.
         static func max(forAppVersion appVersion: String) -> Version {
             Self.known.first {
                 guard let min = $0.minimumAppVersion else { return false }
@@ -172,6 +183,13 @@ struct OccultaBundle: Codable {
         /// Used when the recipient's ML-KEM material is absent or corrupt.
         /// Old builds decode this as `.unsupported`.
         case longTermNoPQ
+
+        /// Group message. One shared ciphertext encrypted with a random session key;
+        /// session key wrapped once per recipient in `GroupEnvelope.recipients`.
+        /// Each `Recipient.secrecyContext.mode` signals the per-recipient key path
+        /// (`.forwardSecret` or `.longTermFallback`).
+        /// Old builds decode this as `.unsupported` → `BundleError.unsupportedMode`.
+        case group
 
         /// Mode this build does not understand. Same semantics as `Version.unsupported`.
         case unsupported
@@ -412,31 +430,89 @@ struct OccultaBundle: Codable {
         }
     }
 
+    // MARK: - GroupEnvelope
+
+    /// Outer group envelope — present only when `secrecy.mode == .group`.
+    /// `id` is cleartext and included in the outer ciphertext AAD and each
+    /// per-recipient `wrappedPayload` AAD to prevent cross-group replay.
+    nonisolated
+    struct GroupEnvelope: Codable {
+        let id: UUID
+        let recipients: [Recipient]
+    }
+
+    /// One entry per group member in the active depth layer at send time.
+    nonisolated
+    struct Recipient: Codable {
+        /// SHA-256(recipientLongTermPubKey || fingerprintNonce). Used to locate
+        /// this slot during decryption without leaking the public key in cleartext.
+        let fingerprint: Data
+        /// 16 random bytes — fresh per bundle per recipient.
+        let fingerprintNonce: Data
+        /// Per-recipient key exchange fields. `mode` is `.forwardSecret` or
+        /// `.longTermFallback`; never `.group` or `.unsupported`.
+        let secrecyContext: SecrecyContext
+        /// AES-GCM(JSON(RecipientPayload), wrappingKey, AAD: groupID || fingerprint).
+        let wrappedPayload: Data
+    }
+
+    /// Plaintext sealed inside each `Recipient.wrappedPayload`.
+    /// Only the intended recipient can derive `wrappingKey` to open it.
+    nonisolated
+    struct RecipientPayload: Codable {
+        /// 32-byte random session key that decrypts the shared outer ciphertext.
+        let sessionKey: Data
+        /// Sender's fresh prekeys for this recipient, or nil when stock is healthy
+        /// and the forward-secret path was used. Mirrors the single-recipient
+        /// replenishment logic — same threshold, same `PrekeySyncBatch` type.
+        let prekeyBatch: SealedPayload.PrekeySyncBatch?
+    }
+
     // MARK: - Fields
-     
+
     /// Protocol version. Included in AAD — tampering causes `open` to throw.
     let version: Version
- 
+
     /// Minimal key-exchange fields. Authenticated as AAD — not encrypted.
     /// An observer can read `mode`, `ephemeralPublicKey`, and `prekeyID` only.
+    /// For group bundles: `mode = .group`, `ephemeralPublicKey = Data()`, `prekeyID = nil`.
     let secrecy: SecrecyContext
- 
+
     /// AES-GCM combined payload: nonce(12B) || JSON(SealedPayload) || tag(16B).
-    /// The GCM tag covers both this ciphertext and `computeAdditionalAuthentication()`.
-    /// `SealedPayload` contains the message AND any `PrekeySyncBatch`.
+    /// For group bundles the session key is in each `Recipient.wrappedPayload`;
+    /// `SealedPayload.prekeyBatch` is always nil (replenishment is per-recipient).
     let ciphertext: Data
- 
+
     /// 16 random bytes, unique per bundle. Pre-decryption routing — not in AAD.
     let fingerprintNonce: Data
- 
+
     /// SHA-256(senderLongTermPublicKey || fingerprintNonce). Routing — not in AAD.
     let senderFingerprint: Data
+
+    /// Group envelope — non-nil iff `secrecy.mode == .group`.
+    let group: GroupEnvelope?
+
+    init(
+        version: Version,
+        secrecy: SecrecyContext,
+        ciphertext: Data,
+        fingerprintNonce: Data,
+        senderFingerprint: Data,
+        group: GroupEnvelope? = nil
+    ) {
+        self.version           = version
+        self.secrecy           = secrecy
+        self.ciphertext        = ciphertext
+        self.fingerprintNonce  = fingerprintNonce
+        self.senderFingerprint = senderFingerprint
+        self.group             = group
+    }
 
     // MARK: - Serialisation
 
     func encoded(version: Version = .v3fs) throws -> Data {
         switch version {
-        case .v4:
+        case .v4, .groupCapable:
             return try WireHandle.encode(self)
         default:
             return try JSONEncoder().encode(self)
@@ -485,11 +561,12 @@ struct OccultaBundle: Codable {
 
     var securityLabel: String {
         switch secrecy.mode {
-        case .forwardSecret:       return "Forward Secret"
-        case .forwardSecretNoPQ:   return "Forward Secret"
-        case .longTermFallback:    return "Standard Encryption"
-        case .longTermNoPQ:        return "Standard Encryption"
-        case .unsupported:         return "Unsupported"
+        case .forwardSecret:     return "Forward Secret"
+        case .forwardSecretNoPQ: return "Forward Secret"
+        case .longTermFallback:  return "Standard Encryption"
+        case .longTermNoPQ:      return "Standard Encryption"
+        case .group:             return "Group Encrypted"
+        case .unsupported:       return "Unsupported"
         }
     }
 }
@@ -519,5 +596,6 @@ extension OccultaBundle {
         self.ciphertext        = b.ciphertext
         self.fingerprintNonce  = b.fingerprintNonce
         self.senderFingerprint = b.senderFingerprint
+        self.group             = nil
     }
 }

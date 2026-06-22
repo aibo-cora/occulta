@@ -1263,6 +1263,9 @@ extension ContactManager {
 
             decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
 
+        case .group:
+            // Group bundles are decrypted via GroupManager, not this path.
+            throw OccultaBundle.BundleError.unsupportedMode
         case .unsupported:
             // Already rejected above — exhaustiveness only.
             throw OccultaBundle.BundleError.unsupportedMode

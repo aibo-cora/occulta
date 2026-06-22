@@ -258,20 +258,30 @@ struct WireHandle {
     static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
     static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
-    private static let _versionToByte: [OccultaBundle.Version: UInt8] = [.v4: 0x04]
-    private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [0x04: .v4]
+    // groupCapable encodes to 0x04 on the wire (same binary layout as v4);
+    // 0x05 is only written into Contact.Profile.maxBundleVersion as a capability marker.
+    private static let _versionToByte: [OccultaBundle.Version: UInt8] = [
+        .v4:           0x04,
+        .groupCapable: 0x04,
+    ]
+    private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
+        0x04: .v4,
+        0x05: .groupCapable,
+    ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [
         .forwardSecret:     0x01,
         .forwardSecretNoPQ: 0x02,
         .longTermFallback:  0x03,
         .longTermNoPQ:      0x04,
+        .group:             0x05,
     ]
     private static let _byteToMode: [UInt8: OccultaBundle.Mode] = [
         0x01: .forwardSecret,
         0x02: .forwardSecretNoPQ,
         0x03: .longTermFallback,
         0x04: .longTermNoPQ,
+        0x05: .group,
     ]
 
     private static let sortedEncoder: JSONEncoder = {

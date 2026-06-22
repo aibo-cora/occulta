@@ -43,7 +43,7 @@ The outer `bundle.secrecy.mode = .group` is unchanged. The receiver reads each `
 
 The spec states `maxBundleVersion >= groupCapable` without defining what byte value `groupCapable` maps to. `maxBundleVersion` is a `UInt8` derived from `Version.max(forAppVersion:)`, which requires a `Version` case and a wire byte. Adding a version case solely for group capability is inconsistent with the existing guidance ("do not add version cases for features").
 
-**Resolution:** Add a new encrypted field `encryptedAppVersion: Data?` to `Contact.Profile`. When a bundle is received, store the raw `appVersion` string from `SealedPayload` encrypted alongside the existing `maxBundleVersion`. Group eligibility checks `encryptedAppVersion.compare("1.9.0", options: .numeric) >= .orderedSame`. This decouples wire format versioning from feature capability gating. Requires a SwiftData lightweight migration (new optional column, no migration plan needed).
+**Resolution:** Use the existing `maxBundleVersion: Data?` on `Contact.Profile`. Add a new `Version` case `.groupCapable` with `minimumAppVersion = "1.9.0"`. Group eligibility checks `resolveTargetVersion(for: contact) >= .groupCapable`. No new field, no SwiftData migration.
 
 ---
 
