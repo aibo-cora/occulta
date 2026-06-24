@@ -6,7 +6,32 @@
 import Foundation
 import SwiftData
 
+enum IneligibilityReason {
+    /// `maxBundleVersion == nil` — contact has never sent a bundle; version is unproven.
+    /// UI copy: "Ask them to send you a message"
+    case versionUnknown
+    /// Version is known but below 1.9.0.
+    /// UI copy: "Ask them to update Occulta"
+    case versionTooOld
+}
+
 final class GroupManager {
+
+    // MARK: - Version gating
+
+    /// True when the contact's app can process group bundles (≥ 1.9.0).
+    func isEligible(_ contact: Contact.Profile, crypto: Manager.Crypto = Manager.Crypto()) -> Bool {
+        ContactManager.resolveTargetVersion(for: contact, using: crypto).supportsGroups
+    }
+
+    /// Why a contact cannot be added to a group. Nil when the contact is eligible.
+    func ineligibilityReason(
+        for contact: Contact.Profile,
+        crypto: Manager.Crypto = Manager.Crypto()
+    ) -> IneligibilityReason? {
+        guard !self.isEligible(contact, crypto: crypto) else { return nil }
+        return contact.maxBundleVersion == nil ? .versionUnknown : .versionTooOld
+    }
 
     // MARK: - CRUD
 

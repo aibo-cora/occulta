@@ -278,3 +278,66 @@ struct GroupStructuralTests {
         #expect(resolved.isEmpty)
     }
 }
+
+// MARK: - Version gating (simulator safe — injects TestKeyManager)
+
+@Suite("GroupManager — version gating")
+@MainActor struct GroupEligibilityTests {
+
+    let gm = GroupManager()
+
+    /// Encrypts a maxBundleVersion byte using the provided crypto so the contact
+    /// looks like it was received from an actual bundle.
+    private func contact(withVersionByte byte: UInt8?, crypto: Manager.Crypto) throws -> Contact.Profile {
+        let c = Contact.Profile(
+            identifier: UUID().uuidString, givenName: "Test", familyName: "U",
+            middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        if let byte {
+            c.maxBundleVersion = try crypto.encrypt(data: Data([byte]))
+        }
+        return c
+    }
+
+    @Test func eligible_groupCapableByte_returnsTrue() throws {
+        let km     = TestKeyManager()
+        let crypto = Manager.Crypto(keyManager: km)
+        let c      = try contact(withVersionByte: 0x05, crypto: crypto)
+        #expect(self.gm.isEligible(c, crypto: crypto))
+    }
+
+    @Test func ineligible_v4Byte_returnsFalse() throws {
+        let km     = TestKeyManager()
+        let crypto = Manager.Crypto(keyManager: km)
+        let c      = try contact(withVersionByte: 0x04, crypto: crypto)
+        #expect(!self.gm.isEligible(c, crypto: crypto))
+    }
+
+    @Test func ineligible_noVersionByte_returnsFalse() throws {
+        let km     = TestKeyManager()
+        let crypto = Manager.Crypto(keyManager: km)
+        let c      = try contact(withVersionByte: nil, crypto: crypto)
+        #expect(!self.gm.isEligible(c, crypto: crypto))
+    }
+
+    @Test func ineligibilityReason_noVersionByte_isUnknown() throws {
+        let km     = TestKeyManager()
+        let crypto = Manager.Crypto(keyManager: km)
+        let c      = try contact(withVersionByte: nil, crypto: crypto)
+        #expect(self.gm.ineligibilityReason(for: c, crypto: crypto) == .versionUnknown)
+    }
+
+    @Test func ineligibilityReason_v4Byte_isTooOld() throws {
+        let km     = TestKeyManager()
+        let crypto = Manager.Crypto(keyManager: km)
+        let c      = try contact(withVersionByte: 0x04, crypto: crypto)
+        #expect(self.gm.ineligibilityReason(for: c, crypto: crypto) == .versionTooOld)
+    }
+
+    @Test func ineligibilityReason_eligible_isNil() throws {
+        let km     = TestKeyManager()
+        let crypto = Manager.Crypto(keyManager: km)
+        let c      = try contact(withVersionByte: 0x05, crypto: crypto)
+        #expect(self.gm.ineligibilityReason(for: c, crypto: crypto) == nil)
+    }
+}
