@@ -959,11 +959,16 @@ extension ContactManager {
         // ── 3. Resolve target wire format for this contact ────────────────
         let cryptoOps     = Manager.Crypto()
         let targetVersion = Self.resolveTargetVersion(for: contact, using: cryptoOps)
+        // .groupCapable is a capability signal, not a real wire format — the wire byte
+        // for both .v4 and .groupCapable is 0x04, and the receiver always decodes it
+        // back as .v4. Passing .groupCapable to seal() would embed "groupCapable" in
+        // the AAD while the receiver reconstructs "v4" → authentication failure.
+        let wireVersion   = targetVersion == .groupCapable ? OccultaBundle.Version.v4 : targetVersion
 
         // ── 4. Build and seal payload ─────────────────────────────────────
         let messageData: Data
         if let basket {
-            messageData = targetVersion == .v4
+            messageData = wireVersion == .v4
                 ? try WireHandle.encode(basket: basket)
                 : try JSONEncoder().encode(basket)
         } else {
@@ -978,7 +983,7 @@ extension ContactManager {
             expectedShards:  expectedShards,
             appVersion:      Bundle.main.appVersion
         )
-        let encoded = targetVersion == .v4
+        let encoded = wireVersion == .v4
             ? try WireHandle.encode(payload: sealedPayload)
             : try JSONEncoder().encode(sealedPayload)
 
@@ -988,9 +993,9 @@ extension ContactManager {
             contactPrekey:     contactPrekey,
             recipientMaterial: recipientMaterial,
             quantumMaterial:   quantumMaterial,
-            version:           targetVersion
+            version:           wireVersion
         )
-        let encodedBundle = try bundle.encoded(version: targetVersion)
+        let encodedBundle = try bundle.encoded(version: wireVersion)
         
         if contactPrekey != nil {
             // Persist prekey state only when it was mutated (message mode).

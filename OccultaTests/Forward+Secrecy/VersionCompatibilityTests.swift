@@ -337,3 +337,70 @@ struct GroupEnvelopeTests {
     }
 
 }
+
+// MARK: - groupCapable wire mapping
+
+@Suite("Version — groupCapable wire mapping")
+@MainActor struct GroupCapableWireMappingTests {
+
+    // Regression tests for the ContactManager fix: wireVersion = targetVersion == .groupCapable ? .v4 : targetVersion.
+    // Before the fix, ContactManager passed .groupCapable to seal(), embedding "groupCapable" in the AAD.
+    // The receiver always decodes wire byte 0x04 as .v4 and reconstructs "v4" AAD → authentication failure.
+
+    @Test func sealedAsGroupCapable_failsRoundTrip() throws {
+        // Demonstrates the pre-fix bug: sealing with .groupCapable then wire-encoding writes 0x04.
+        // The receiver decodes 0x04 → .v4, computes AAD with "v4", but the sender used "groupCapable" → mismatch.
+        let km      = TestKeyManager()
+        let crypto  = Manager.Crypto(keyManager: km)
+        let recipPub = try km.retrieveIdentity()
+
+        let bundle  = try crypto.seal(
+            message: Data("test".utf8), contactPrekey: nil, recipientMaterial: recipPub, version: .groupCapable
+        )
+        let wire    = try bundle.encoded(version: .groupCapable)
+        let decoded = try OccultaBundle.decoded(from: wire)
+        #expect(decoded.version == .v4, "byteToVersion(0x04) always resolves to .v4, not .groupCapable")
+
+        let sessionKey = crypto.deriveSessionKey(using: recipPub)!
+        #expect(throws: (any Error).self) {
+            try crypto.open(decoded, using: sessionKey)
+        }
+    }
+
+    @Test func sealedAsV4_forGroupCapableContact_roundTrips() throws {
+        // Fixed behavior: ContactManager uses wireVersion = .v4 for groupCapable contacts.
+        let km      = TestKeyManager()
+        let crypto  = Manager.Crypto(keyManager: km)
+        let recipPub = try km.retrieveIdentity()
+        let message = Data("hello from 1.9.0".utf8)
+
+        let bundle  = try crypto.seal(
+            message: message, contactPrekey: nil, recipientMaterial: recipPub, version: .v4
+        )
+        let wire    = try bundle.encoded(version: .v4)
+        let decoded = try OccultaBundle.decoded(from: wire)
+        #expect(decoded.version == .v4)
+
+        let sessionKey = crypto.deriveSessionKey(using: recipPub)!
+        let plaintext  = try crypto.open(decoded, using: sessionKey)
+        #expect(plaintext == message)
+    }
+
+    @Test func wireVersionMapping_groupCapable_mapsToV4() {
+        let target: OccultaBundle.Version = .groupCapable
+        let wire = target == .groupCapable ? OccultaBundle.Version.v4 : target
+        #expect(wire == .v4)
+    }
+
+    @Test func wireVersionMapping_v4_passesThrough() {
+        let target: OccultaBundle.Version = .v4
+        let wire = target == .groupCapable ? OccultaBundle.Version.v4 : target
+        #expect(wire == .v4)
+    }
+
+    @Test func wireVersionMapping_v3fs_passesThrough() {
+        let target: OccultaBundle.Version = .v3fs
+        let wire = target == .groupCapable ? OccultaBundle.Version.v4 : target
+        #expect(wire == .v3fs)
+    }
+}
