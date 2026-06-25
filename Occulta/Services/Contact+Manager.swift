@@ -629,6 +629,8 @@ extension ContactManager {
         case invalidBundleFormat
         case quantumKeyMaterialCorrupted
         case trusteeLacksQuantumMaterial
+        case groupIDMissing
+        case groupHasNoMembers
     }
 }
 
@@ -1005,7 +1007,62 @@ extension ContactManager {
         return encodedBundle
     }
 }
- 
+
+// MARK: - Group bundle encryption
+
+extension ContactManager {
+
+    /// Encrypt a basket for all members of a group in the given layer.
+    ///
+    /// Each member gets an independent wrapping key (FS or fallback) and a
+    /// per-recipient prekey sync batch if their stock for this sender is below
+    /// the replenishment threshold. The shared ciphertext is sealed once with a
+    /// random session key bound to the group UUID.
+    func encryptGroupBundle(basket: Basket, group: Group, layer: RoutingDepth) throws -> Data {
+        guard let groupID = group.readID() else { throw Errors.groupIDMissing }
+
+        let members = try GroupManager().resolveMembers(of: group, in: layer, context: self.modelContext)
+        guard !members.isEmpty else { throw Errors.groupHasNoMembers }
+
+        var prekeyConsumed = false
+        let recipients: [GroupRecipient] = try members.map { contact in
+            let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
+            try contact.configureForwardSecrecy()
+            var contactPrekey: Prekey? = nil
+            if let blob = try contact.popOldestPrekeyData() {
+                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+                prekeyConsumed = true
+            }
+            let pendingBatch = try contact.loadPendingBatch()
+            return GroupRecipient(
+                publicKey:       recipientMaterial,
+                quantumMaterial: quantumMaterial,
+                contactPrekey:   contactPrekey,
+                pendingBatch:    pendingBatch
+            )
+        }
+
+        let sealedPayload = OccultaBundle.SealedPayload(
+            message:    try WireHandle.encode(basket: basket),
+            appVersion: Bundle.main.appVersion
+        )
+        let payloadData = try WireHandle.encode(payload: sealedPayload)
+
+        let bundle = try Manager.Crypto().sealGroup(
+            message:    payloadData,
+            groupID:    groupID,
+            recipients: recipients
+        )
+        let encodedBundle = try bundle.encoded(version: .v4)
+
+        if prekeyConsumed {
+            try self.modelContext.save()
+        }
+
+        return encodedBundle
+    }
+}
+
 // MARK: - Shard bundle helpers
 
 extension ContactManager {
