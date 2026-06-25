@@ -167,5 +167,7 @@ extension Manager.Crypto {
         case invalidRecipientMaterial
         /// `contactPrekey.publicKey` from an inbound batch is not a valid 65-byte key.
         case invalidPrekeyMaterial
+        /// `sealGroup` was called with an empty recipients array.
+        case noRecipients
     }
 }
