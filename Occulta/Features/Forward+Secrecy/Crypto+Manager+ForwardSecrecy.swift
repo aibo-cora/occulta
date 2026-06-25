@@ -38,57 +38,20 @@ extension Manager.Crypto {
         let fingerprintNonce  = try OccultaBundle.SecrecyContext.generateNonce()
         let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
         
-        if let contactPrekey {
-            // ── Forward secret path
-            
-            // Validate the prekey's public key before ECDH.
-            // contactPrekey.publicKey comes from a received PrekeySyncBatch —
-            // attacker-influenced data. Reject invalid material explicitly
-            // rather than letting it fail silently two layers down.
-            guard
-                contactPrekey.publicKey.count == 65
-            else {
-                throw EncryptionError.invalidPrekeyMaterial
-            }
+        let (sessionKey, secrecy) = try self.deriveOutboundKey(
+            contactPrekey: contactPrekey,
+            recipientPublicKey: recipientMaterial,
+            quantumMaterial: quantumMaterial
+        )
 
-            // Ephemeral key generation failure with a valid prekey is unexpected —
-            // throw instead of silently degrading to the long-term path.
-            guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
-            else {
-                throw EncryptionError.ephemeralKeyGenerationFailed
-            }
-
-            // ECDH failure with a valid 65-byte prekey public key is unexpected —
-            // throw instead of silently degrading to the long-term path.
-            guard
-                let sessionKey = self.deriveSessionKey(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey, quantumMaterial: quantumMaterial)
-            else {
-                throw EncryptionError.keyDerivationFailed
-            }
-
-            // ephemeralPrivateKey goes out of scope here — never persisted.
-
-            let mode    = quantumMaterial != nil ? OccultaBundle.Mode.forwardSecret : .forwardSecretNoPQ
-            let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: ephemeralPublicKeyData, prekeyID: contactPrekey.id)
-
-            /// Adding `version` and `secrecy` to authenticate against tampering.
-            let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
-
-            guard
-                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-            else { throw EncryptionError.sealFailed }
-
-            debugPrint("Sealing message, using forward secrecy prekey...")
-
-            return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
+        guard let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined else {
+            throw EncryptionError.sealFailed
         }
 
-        debugPrint("Sealing message, using long-term identity key...")
+        debugPrint("Sealing message, using mode: \(secrecy.mode)")
 
-        // ── Long-term fallback path (contactPrekey nil) ──────────────────
-        // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(message: message, recipientMaterial: recipientMaterial, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, quantumMaterial: quantumMaterial, version: version)
+        return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
     }
 }
 
@@ -127,32 +90,6 @@ extension Manager.Crypto {
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
         
         return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
-    }
-}
-
-// MARK: - Private helpers
-
-extension Manager.Crypto {
-    private func fallback(message: Data, recipientMaterial: Data, fingerprintNonce: Data, senderFingerprint: Data, quantumMaterial: QuantumKeyMaterial?, version: OccultaBundle.Version) throws -> OccultaBundle {
-        guard
-            let sessionKey = self.deriveSessionKey(using: recipientMaterial, quantumMaterial: quantumMaterial)
-        else {
-            throw EncryptionError.keyDerivationFailed
-        }
-        /// We are passing an empty `Data` object because the recipient already has our public key.
-        /// There is no reason to expose it.
-        let mode    = quantumMaterial != nil ? OccultaBundle.Mode.longTermFallback : .longTermNoPQ
-        let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: Data(), prekeyID: nil)
-        /// Adding `version` and `secrecy` to authenticate against tampering.
-        let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
-
-        guard
-            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-        else {
-            throw EncryptionError.keyDerivationFailed
-        }
-
-        return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
     }
 }
 

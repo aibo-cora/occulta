@@ -28,30 +28,17 @@ private struct Pair {
     }
 
     /// Open `entry.wrappedPayload` from the recipient's side (fallback path).
-    /// Returns the decoded RecipientPayload.
     func openFallback(entry: OccultaBundle.Recipient, groupID: UUID) throws -> OccultaBundle.RecipientPayload {
         let senderPub = try self.senderKM.retrieveIdentity()
         let wrappingKey = self.recipientKM.createSharedSecret(using: senderPub)!
-
-        var aad = Data(groupID.uuidString.utf8)
-        aad.append(entry.fingerprint)
-
-        let box = try AES.GCM.SealedBox(combined: entry.wrappedPayload)
-        let plain = try AES.GCM.open(box, using: wrappingKey, authenticating: aad)
-        return try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+        return try Manager.Crypto(keyManager: self.recipientKM).openWrappedPayload(entry, groupID: groupID, using: wrappingKey)
     }
 
     /// Open `bundle.ciphertext` given a raw 32-byte session key Data.
     func openCiphertext(bundle: OccultaBundle, sessionKeyData: Data) throws -> OccultaBundle.SealedPayload {
-        let sessionKey = SymmetricKey(data: sessionKeyData)
-        var outerAAD = try OccultaBundle.computeAdditionalAuthentication(
-            version: bundle.version, secrecy: bundle.secrecy
-        )
-        outerAAD.append(Data(bundle.group!.id.uuidString.utf8))
-
-        let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
-        let plaintext = try AES.GCM.open(box, using: sessionKey, authenticating: outerAAD)
-        return try WireHandle.decode(payload: plaintext)
+        let sessionKey  = SymmetricKey(data: sessionKeyData)
+        let payloadData = try Manager.Crypto(keyManager: self.senderKM).openGroupCiphertext(bundle, using: sessionKey)
+        return try WireHandle.decode(payload: payloadData)
     }
 }
 
@@ -224,13 +211,7 @@ private struct Pair {
         let wrappingKey = pair.recipientKM.createSharedSecret(
             ephemeralPrivateKey: prekeyPriv, recipientMaterial: senderEphemeralPub
         )!
-
-        var aad = Data(groupID.uuidString.utf8)
-        aad.append(entry.fingerprint)
-
-        let box = try AES.GCM.SealedBox(combined: entry.wrappedPayload)
-        let plain = try AES.GCM.open(box, using: wrappingKey, authenticating: aad)
-        let recipientPayload = try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
+        let recipientPayload = try Manager.Crypto(keyManager: pair.recipientKM).openWrappedPayload(entry, groupID: groupID, using: wrappingKey)
 
         #expect(recipientPayload.sessionKey.count == 32)
 

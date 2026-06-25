@@ -68,7 +68,7 @@ struct Import: View {
                 let contact: Contact.Draft
                 
                 var body: some View {
-                    Group {
+                    SwiftUI.Group {
                         if let imageData = self.contact.imageData, let uiImage = UIImage(data: imageData) {
                             Image(uiImage: uiImage)
                                 .resizable()
@@ -137,7 +137,7 @@ struct Import: View {
                                 
                                 Spacer()
                                 
-                                Group {
+                                SwiftUI.Group {
                                     if self.sharedContacts.count == self.selectedContacts.count {
                                         Button {
                                             self.selectedContacts.removeAll()
@@ -291,7 +291,7 @@ struct Import: View {
                     let filesContainingMessages = self.imported.basket.files.filter { $0.format == .text }
                     let filesContainingDocuments = self.imported.basket.files.filter { Set(filesContainingContacts + filesContainingMessages).contains($0) == false }
                     
-                    Group {
+                    SwiftUI.Group {
                         let date = self.dateFormatter.string(from: self.imported.basket.date ?? .now)
                         
                         Text("This basket was created on:")
@@ -300,7 +300,7 @@ struct Import: View {
                         Divider()
                     }
                     
-                    Group {
+                    SwiftUI.Group {
                         if filesContainingContacts.isEmpty == false {
                             DisclosureGroup("Contacts", isExpanded: self.$isContactListExpanded) {
                                 DisplayImportedContactList(files: filesContainingContacts)

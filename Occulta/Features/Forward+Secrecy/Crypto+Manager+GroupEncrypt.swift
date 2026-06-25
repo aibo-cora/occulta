@@ -97,34 +97,11 @@ extension Manager.Crypto {
         var aad = Data(groupID.uuidString.utf8)
         aad.append(fingerprint)
 
-        let wrappingKey: SymmetricKey
-        let secrecyContext: OccultaBundle.SecrecyContext
-
-        if let prekey = r.contactPrekey {
-            guard prekey.publicKey.count == 65 else { throw EncryptionError.invalidPrekeyMaterial }
-            guard let (ephemeralPriv, ephemeralPub) = self.keyManager.generateEphemeralKeyPair() else {
-                throw EncryptionError.ephemeralKeyGenerationFailed
-            }
-            guard let key = self.deriveSessionKey(
-                ephemeralPrivateKey: ephemeralPriv,
-                recipientMaterial: prekey.publicKey,
-                quantumMaterial: r.quantumMaterial
-            ) else { throw EncryptionError.keyDerivationFailed }
-            wrappingKey = key
-            let mode: OccultaBundle.Mode = r.quantumMaterial != nil ? .forwardSecret : .forwardSecretNoPQ
-            secrecyContext = OccultaBundle.SecrecyContext(
-                mode: mode, ephemeralPublicKey: ephemeralPub, prekeyID: prekey.id
-            )
-        } else {
-            guard let key = self.deriveSessionKey(using: r.publicKey, quantumMaterial: r.quantumMaterial) else {
-                throw EncryptionError.keyDerivationFailed
-            }
-            wrappingKey = key
-            let mode: OccultaBundle.Mode = r.quantumMaterial != nil ? .longTermFallback : .longTermNoPQ
-            secrecyContext = OccultaBundle.SecrecyContext(
-                mode: mode, ephemeralPublicKey: Data(), prekeyID: nil
-            )
-        }
+        let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
+            contactPrekey: r.contactPrekey,
+            recipientPublicKey: r.publicKey,
+            quantumMaterial: r.quantumMaterial
+        )
 
         let payload = OccultaBundle.RecipientPayload(sessionKey: sessionKeyData, prekeyBatch: r.pendingBatch)
         let encodedPayload = try JSONEncoder().encode(payload)

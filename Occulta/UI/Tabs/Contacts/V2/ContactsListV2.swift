@@ -163,7 +163,7 @@ struct ContactRowV2: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Group {
+            SwiftUI.Group {
                 if let data = self.thumbnail, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {

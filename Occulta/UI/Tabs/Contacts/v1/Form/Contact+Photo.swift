@@ -17,7 +17,7 @@ extension Contact {
         var body: some View {
             PhotosPicker(selection: self.$selectedPhotoItem, matching: .images) {
                 VStack {
-                    Group {
+                    SwiftUI.Group {
                         if let imageData = self.contact.thumbnailImageData,
                            let uiImage = UIImage(data: imageData) {
                             Image(uiImage: uiImage)

@@ -1154,197 +1154,180 @@ extension ContactManager {
     /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
     func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
         try self.verifyConsistency(for: bundle)
- 
+        guard bundle.secrecy.mode != .group else { throw OccultaBundle.BundleError.unsupportedMode }
+
         let cryptoOps     = Manager.Crypto()
         let prekeyManager = Manager.PrekeyManager()
- 
+
         // ── 1. Identify sender by fingerprint ───────────────────────────
         let sender = try self.identifyOwner(for: bundle)
-        
         try sender.configureForwardSecrecy()
- 
-        // ── 2. Key derivation + open ─────────────────────────────────────
-        //
-        // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
-        //
-        // Quantum material is resolved only for the two hybrid modes. NoPQ modes
-        // never touch the sender's quantum material — deriving with nil is correct
-        // and `quantumKeyMaterialCorrupted` must not fire for those cases.
-        let decryptedSealedPayload: Data?
 
+        // ── 2. Key derivation + open ─────────────────────────────────────
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
 
-        switch bundle.secrecy.mode {
-        case .forwardSecret:
-            // Hybrid FS: ECDH(ephemeral, prekey) + ML-KEM.
-            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+        let quantumMaterial = try self.resolveQuantumMaterialIfNeeded(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
+        let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
 
-            let decrypted: Data? = try {
-                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
-                #if DEBUG
-                debugPrint("Using prekey, ID = \(prekeyID)")
-                #endif
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
-                guard
-                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial:   bundle.secrecy.ephemeralPublicKey, quantumMaterial:     quantumMaterial)
-                else { return nil }
-                
-                return try cryptoOps.open(bundle, using: sessKey)
-            }()
+        let (sessionKey, consumable) = try cryptoOps.deriveInboundKey(
+            secrecy: bundle.secrecy,
+            senderContactID: sender.identifier,
+            senderPublicKey: senderPublicKey,
+            quantumMaterial: quantumMaterial,
+            prekeyManager: prekeyManager
+        )
+        let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
-            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
-                #if DEBUG
-                debugPrint("Opened bundle using prekey = \(temp), consuming key...")
-                #endif
-                prekeyManager.consume(prekey: temp)
-                
-                try sender.clearPendingBatch()
-                debugPrint("Message successfully opened in .forwardSecret mode. Pending batch cleared.")
-            } else {
-                debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekeyID = \(String(describing: bundle.secrecy.prekeyID))")
-            }
-
-            decryptedSealedPayload = decrypted
-
-        case .forwardSecretNoPQ:
-            // Classical FS: ECDH(ephemeral, prekey) only — no ML-KEM.
-            let decrypted: Data? = try {
-                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
-                #if DEBUG
-                debugPrint("Using prekey (NoPQ), ID = \(prekeyID)")
-                #endif
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                guard
-                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
-                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
-                                                             quantumMaterial:     nil)
-                else { return nil }
-                return try cryptoOps.open(bundle, using: sessKey)
-            }()
-
-            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                prekeyManager.consume(prekey: temp)
-                try sender.clearPendingBatch()
-                debugPrint("Message successfully opened in .forwardSecretNoPQ mode. Pending batch cleared.")
-            }
-
-            decryptedSealedPayload = decrypted
-
-        case .longTermFallback:
-            // Hybrid long-term: ECDH(longTerm, longTerm) + ML-KEM.
-            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
-
-            guard
-                let keyRecord          = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
-            else {
-                debugPrint("Opening message, could not derive session key. Aborting open...")
-                throw Errors.decryptionFailed
-            }
-            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
-                                                              quantumMaterial: quantumMaterial)
-            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
-
-            decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
-
-        case .longTermNoPQ:
-            // Classical long-term: ECDH(longTerm, longTerm) only — no ML-KEM.
-            guard
-                let keyRecord            = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
-            else {
-                debugPrint("Opening message (NoPQ), could not derive session key. Aborting open...")
-                throw Errors.decryptionFailed
-            }
-            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
-                                                              quantumMaterial: nil)
-            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
-
-            decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
-
-        case .group:
-            // Group bundles are decrypted via GroupManager, not this path.
-            throw OccultaBundle.BundleError.unsupportedMode
-        case .unsupported:
-            // Already rejected above — exhaustiveness only.
-            throw OccultaBundle.BundleError.unsupportedMode
-        }
- 
-        guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
- 
-        // ── 3. Detect inbound fallback → schedule fresh batch ─────────────
-        //
-        // A .longTermFallback bundle means the sender is out of our prekeys.
-        // Generate a new batch immediately so Alice's next outbound message
-        // to Bob carries it.
-        if (bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ)
-            && sender.hasPendingBatch == false {
-            debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
-            
-            let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
-            /// These prekeys do not contain any useful information for an attacker. They have been stripped of anything meaningful.
-            let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-            let timestamp = Date()
-            let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: timestamp, prekeys: prekeysSuitableForTransport)
-            /// Store the newly generated batch with wired prekeys so it can be sent with the next message.
-            try sender.store(batch: batch)
-            
-            debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
-        }
-        
-        let decodedPayload: OccultaBundle.SealedPayload
-        if bundle.version == .v4 {
-            decodedPayload = try WireHandle.decode(payload: decryptedSealedPayload)
-        } else {
-            decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
+        // ── 3. Prekey management ─────────────────────────────────────────
+        if let consumable {
+            #if DEBUG
+            debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
+            #endif
+            prekeyManager.consume(prekey: consumable)
+            try sender.clearPendingBatch()
+            debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
+        } else if !sender.hasPendingBatch {
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
         }
 
-        // ── 4. Update contact's capability from sender's app version ──────
-        if let appVersion = decodedPayload.appVersion {
-            let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
-            if let byte = maxVersion.wireByte {
-                sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
-            }
-        }
+        // ── 4. Decode, update capability, store inbound batch ────────────
+        let decodedPayload = try self.decodePayload(payloadData, version: bundle.version)
+        try self.updateMaxVersion(from: decodedPayload.appVersion, for: sender, using: cryptoOps)
+        try self.storeInboundBatch(decodedPayload.prekeyBatch, for: sender)
 
-        // ── 6. Store inbound prekey batch ────────────────────────────────
-        if let inboundBatch = decodedPayload.prekeyBatch {
-            debugPrint("Decrypting bundle containing inbound prekey sync batch...")
-            
-            guard inboundBatch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
-                throw Errors.invalidPrekeySyncBatch
-            }
-            guard inboundBatch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
-                throw Errors.invalidBundleFormat
-            }
- 
-            let blobs: [Data] = inboundBatch.prekeys.compactMap { wired in
-                /// Converted back to `PreKey` so we can look up a key by contact ID during decryption.
-                let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
-                
-                guard
-                    let encoded = try? JSONEncoder().encode(prekey)
-                else { return nil }
-                
-                return encoded
-            }
-            
-            debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
-            
-            try sender.syncInboundPrekeys(blobs, date: inboundBatch.generatedAt)
-        }
- 
-        // ── 7. Persist ───────────────────────────────────────────────────
+        // ── 5. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
-        
+
         debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
- 
+
         return (decodedPayload, sender.identifier)
+    }
+}
+
+// MARK: - Decrypt helpers (private)
+
+extension ContactManager {
+
+    private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
+        guard
+            let keyRecord = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+            let decrypted = try cryptoOps.decrypt(data: keyRecord.material)
+        else { throw Errors.decryptionFailed }
+        return decrypted
+    }
+
+    private func resolveQuantumMaterialIfNeeded(
+        mode: OccultaBundle.Mode,
+        for sender: Contact.Profile,
+        using cryptoOps: Manager.Crypto
+    ) throws -> QuantumKeyMaterial? {
+        switch mode {
+        case .forwardSecret, .longTermFallback:
+            return try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+        default:
+            return nil
+        }
+    }
+
+    private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeyManager: Manager.PrekeyManager) throws {
+        debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
+        let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
+        let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
+        let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeysSuitableForTransport)
+        try sender.store(batch: batch)
+        debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
+    }
+
+    private func decodePayload(_ data: Data, version: OccultaBundle.Version) throws -> OccultaBundle.SealedPayload {
+        if version == .v4 {
+            return try WireHandle.decode(payload: data)
+        } else {
+            return try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: data)
+        }
+    }
+
+    private func updateMaxVersion(from appVersion: String?, for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws {
+        guard let appVersion else { return }
+        let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
+        guard let byte = maxVersion.wireByte else { return }
+        sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
+    }
+
+    private func storeInboundBatch(_ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, for sender: Contact.Profile) throws {
+        guard let batch else { return }
+        debugPrint("Decrypting bundle containing inbound prekey sync batch...")
+        guard batch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
+            throw Errors.invalidPrekeySyncBatch
+        }
+        guard batch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
+            throw Errors.invalidBundleFormat
+        }
+        let blobs: [Data] = batch.prekeys.compactMap { wired in
+            let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
+            return try? JSONEncoder().encode(prekey)
+        }
+        debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
+        try sender.syncInboundPrekeys(blobs, date: batch.generatedAt)
+    }
+}
+
+// MARK: - Group bundle decryption
+
+extension ContactManager {
+
+    /// Decrypt a group bundle and return the payload, sender ID, and group ID.
+    ///
+    /// The caller resolves the local Group record from `groupID` by matching against
+    /// each group's decrypted `encryptedID`.
+    func openGroup(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String, groupID: UUID) {
+        guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
+            throw OccultaBundle.BundleError.unsupportedMode
+        }
+
+        let cryptoOps     = Manager.Crypto()
+        let prekeyManager = Manager.PrekeyManager()
+
+        // ── 1. Identify sender ──────────────────────────────────────────
+        let sender = try self.identifyOwner(for: bundle)
+        try sender.configureForwardSecrecy()
+
+        // ── 2. Find our recipient slot ──────────────────────────────────
+        let entry = try cryptoOps.findRecipientSlot(in: bundle)
+
+        // ── 3. Resolve key material for this slot ───────────────────────
+        let quantumMaterial = try self.resolveQuantumMaterialIfNeeded(
+            mode: entry.secrecyContext.mode, for: sender, using: cryptoOps
+        )
+        let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
+
+        // ── 4. Derive wrapping key, open our slot ───────────────────────
+        let (wrappingKey, consumable) = try cryptoOps.deriveInboundKey(
+            secrecy: entry.secrecyContext,
+            senderContactID: sender.identifier,
+            senderPublicKey: senderPublicKey,
+            quantumMaterial: quantumMaterial,
+            prekeyManager: prekeyManager
+        )
+        let recipientPayload = try cryptoOps.openWrappedPayload(entry, groupID: envelope.id, using: wrappingKey)
+
+        // ── 5. Prekey management ─────────────────────────────────────────
+        if let consumable {
+            prekeyManager.consume(prekey: consumable)
+            try sender.clearPendingBatch()
+        } else if !sender.hasPendingBatch {
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+        }
+
+        // ── 6. Open shared ciphertext ────────────────────────────────────
+        let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
+        let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
+        let decoded     = try WireHandle.decode(payload: payloadData)
+
+        // ── 7. Post-processing ────────────────────────────────────────────
+        try self.updateMaxVersion(from: decoded.appVersion, for: sender, using: cryptoOps)
+        try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
+        try self.modelContext.save()
+
+        return (decoded, sender.identifier, envelope.id)
     }
 }

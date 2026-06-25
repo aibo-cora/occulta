@@ -99,7 +99,7 @@ struct VaultTab: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            SwiftUI.Group {
                 if self.vault.isUnlocked {
                     self.list
                 } else {
