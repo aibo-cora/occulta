@@ -194,7 +194,7 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 
 ## UI Notes
 
-- **Compose style:** Quick mode only in v1.9.0. Thread mode is excluded from group detail — no `ComposeStyleToggle` shown.
+- **Compose style:** Both Quick and Thread modes are supported. `ComposeToggleV3` is shown in group detail, identical to the contact detail compose experience.
 - **Member picker — two sections:**
   - **Can receive group messages** — contacts with `encryptedAppVersion >= "1.9.0"`, tappable to add.
   - **Cannot receive group messages** — all others, non-interactive. Section header copy:
@@ -231,7 +231,6 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 ## Out of Scope (v1.9.0)
 
 - Message persistence / conversation threading
-- Thread mode in group compose
 - Group admin roles
 - Member notifications ("you were added to a group")
 - Key ratcheting on member removal — not needed; each bundle uses a fresh random session key

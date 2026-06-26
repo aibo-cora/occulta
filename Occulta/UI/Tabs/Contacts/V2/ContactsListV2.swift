@@ -152,40 +152,40 @@ struct ContactsV2: View {
                     .background(Color(.systemGroupedBackground))
                 }
                 .onChange(of: self.showGroups) { _, _ in self.searchText = "" }
-                .navigationTitle("Contacts")
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            if self.showGroups { self.creatingNewGroup   = true }
-                            else               { self.creatingNewContact = true }
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                    }
-                }
-                .sheet(isPresented: self.$creatingNewContact) {
-                    Contact.FormV2()
-                }
-                .sheet(isPresented: self.$creatingNewGroup) {
-                    Group.FormV3()
-                }
-                .navigationDestination(for: String.self) { identifier in
-                    Contact.DetailsV2(identifier: identifier)
-                }
-                .navigationDestination(for: UUID.self) { groupID in
-                    GroupDetailV3(groupID: groupID)
-                }
                 
                 if #available(iOS 18.0, *), !self.showGroups {
                     ContactAccessButton(queryString: self.searchText) { identifiers in
                         self.fetchContacts(with: identifiers)
                     }
+                    
                     .contactAccessButtonCaption(.phone)
                     .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                     .padding()
                 }
             }
             .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: self.showGroups ? "Find a group…" : "Find a contact…")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        if self.showGroups { self.creatingNewGroup   = true }
+                        else               { self.creatingNewContact = true }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: self.$creatingNewContact) {
+                Contact.FormV2()
+            }
+            .sheet(isPresented: self.$creatingNewGroup) {
+                Group.FormV3()
+            }
+            .navigationDestination(for: String.self) { identifier in
+                Contact.DetailsV2(identifier: identifier)
+            }
+            .navigationDestination(for: UUID.self) { groupID in
+                GroupDetailV3(groupID: groupID)
+            }
         }
     }
 
