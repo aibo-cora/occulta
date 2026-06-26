@@ -20,6 +20,8 @@ extension Group {
 
         @State private var name                = ""
         @State private var selectedIdentifiers = Set<String>()
+        @State private var eligible:   [Contact.Profile] = []
+        @State private var ineligible: [Contact.Profile] = []
 
         @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
         @Query private var groups: [Group]
@@ -50,22 +52,6 @@ extension Group {
             RoutingDepth(rawValue: self.security.currentDepth) ?? .normal
         }
 
-        private var displayable: [Contact.Profile] {
-            self.contacts.filter { self.security.isDisplayable($0) }
-        }
-
-        private var eligible: [Contact.Profile] {
-            self.displayable.filter {
-                ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups
-            }
-        }
-
-        private var ineligible: [Contact.Profile] {
-            self.displayable.filter {
-                !ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups
-            }
-        }
-
         private var ineligibleHeader: String {
             let hasUnknown = self.ineligible.contains { $0.maxBundleVersion == nil }
             let hasOld     = self.ineligible.contains { $0.maxBundleVersion != nil }
@@ -84,7 +70,6 @@ extension Group {
 
         private var canSave: Bool {
             !self.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !self.selectedIdentifiers.isEmpty
         }
 
         // MARK: - Body
@@ -124,10 +109,12 @@ extension Group {
                 .navigationTitle(self.isEditing ? "Edit Group" : "New Group")
                 .navigationBarTitleDisplayMode(.large)
                 .onAppear {
+                    self.computeEligibility()
                     guard let grp = self.existingGroup else { return }
                     self.name                = grp.readName() ?? ""
                     self.selectedIdentifiers = Set(grp.members(in: self.layer))
                 }
+                .onChange(of: self.contacts) { _, _ in self.computeEligibility() }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Cancel", role: .cancel) { self.dismiss() }
@@ -215,6 +202,12 @@ extension Group {
         }
 
         // MARK: - Actions
+
+        private func computeEligibility() {
+            let displayable = self.contacts.filter { self.security.isDisplayable($0) }
+            self.eligible   = displayable.filter {  ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups }
+            self.ineligible = displayable.filter { !ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups }
+        }
 
         private func saveGroup() {
             let trimmed = self.name.trimmingCharacters(in: .whitespacesAndNewlines)
