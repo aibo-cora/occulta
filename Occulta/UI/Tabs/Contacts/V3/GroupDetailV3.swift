@@ -32,7 +32,7 @@ struct GroupDetailV3: View {
         
         let layer       = RoutingDepth(rawValue: self.security.currentDepth) ?? .normal
         let identifiers = Set(grp.members(in: layer))
-        
+
         return self.contacts.filter { identifiers.contains($0.identifier) && self.security.isDisplayable($0) }
     }
 
@@ -109,7 +109,7 @@ struct GroupDetailV3: View {
         .onChange(of: self.useThreadCompose) { _, _ in self.composeVM.clearAfterEncrypt() }
         .onDisappear { self.composeVM.cleanup() }
         .fullScreenCover(isPresented: self.$editing) {
-            Group.FormV3(mode: .edit(groupID: self.groupID))
+            Group.FormV3(mode: .edit(groupID: self.groupID), onDelete: { self.dismiss() })
         }
         .sheet(item: self.$composeVM.encryptedURL) { url in
             ActivityView(activityItems: [url], onComplete: { completed in

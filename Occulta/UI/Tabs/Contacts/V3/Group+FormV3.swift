@@ -15,6 +15,7 @@ extension Group {
         }
 
         let formMode: FormMode
+        let onDelete: (() -> Void)?
         private let crypto = Manager.Crypto()
 
         @State private var name                = ""
@@ -24,11 +25,13 @@ extension Group {
         @Query private var groups: [Group]
 
         @Environment(\.dismiss)             private var dismiss
+        @Environment(\.modelContext)        private var modelContext
         @Environment(ContactManager.self)   private var contactManager
         @Environment(Manager.Security.self) private var security
 
-        init(mode: FormMode = .create) {
+        init(mode: FormMode = .create, onDelete: (() -> Void)? = nil) {
             self.formMode = mode
+            self.onDelete = onDelete
         }
 
         // MARK: - Derived
@@ -217,31 +220,38 @@ extension Group {
             let trimmed = self.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
 
-            if let group = self.existingGroup {
-                try? group.writeName(trimmed)
-                guard let id = group.readID() else { self.dismiss(); return }
-                let current = Set(group.members(in: self.layer))
-                self.selectedIdentifiers.subtracting(current).forEach {
-                    try? self.contactManager.addGroupMember($0, toGroupID: id, in: self.layer)
-                }
-                current.subtracting(self.selectedIdentifiers).forEach {
-                    try? self.contactManager.removeGroupMember($0, fromGroupID: id, in: self.layer)
-                }
-            } else {
-                if let group = try? self.contactManager.createGroup(name: trimmed),
-                   let id    = group.readID() {
-                    self.selectedIdentifiers.forEach {
-                        try? self.contactManager.addGroupMember($0, toGroupID: id, in: self.layer)
+            do {
+                if let group = self.existingGroup {
+                    try group.writeName(trimmed)
+                    let current = Set(group.members(in: self.layer))
+                    for identifier in self.selectedIdentifiers.subtracting(current) {
+                        try group.addMember(identifier, in: self.layer)
                     }
+                    for identifier in current.subtracting(self.selectedIdentifiers) {
+                        try group.removeMember(identifier, in: self.layer)
+                    }
+                    try self.modelContext.save()
+                } else {
+                    let group = try Group(name: trimmed)
+                    self.modelContext.insert(group)
+                    for identifier in self.selectedIdentifiers {
+                        try group.addMember(identifier, in: self.layer)
+                    }
+                    try self.modelContext.save()
                 }
+            } catch {
+                print("❌ saveGroup failed: \(error)")
             }
+
             self.dismiss()
         }
 
         private func deleteGroup() {
-            guard case .edit(let id) = self.formMode else { return }
-            try? self.contactManager.deleteGroup(id: id)
+            guard let group = self.existingGroup else { return }
+            self.modelContext.delete(group)
+            try? self.modelContext.save()
             self.dismiss()
+            self.onDelete?()
         }
     }
 }

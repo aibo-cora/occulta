@@ -1044,14 +1044,8 @@ extension ContactManager {
             )
         }
 
-        let sealedPayload = OccultaBundle.SealedPayload(
-            message:    try WireHandle.encode(basket: basket),
-            appVersion: Bundle.main.appVersion
-        )
-        let payloadData = try WireHandle.encode(payload: sealedPayload)
-
         let bundle = try Manager.Crypto().sealGroup(
-            message:    payloadData,
+            message:    try WireHandle.encode(basket: basket),
             groupID:    groupID,
             recipients: recipients
         )

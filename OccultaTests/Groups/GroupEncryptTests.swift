@@ -231,3 +231,40 @@ private struct Pair {
         #expect(ephemeralPub.count == 65)
     }
 }
+
+// MARK: - Basket round-trip
+
+// Validates the calling contract between encryptGroupBundle and sealGroup:
+// sealGroup receives basket bytes → outer ciphertext → decoded SealedPayload → basket.
+// Would fail if encryptGroupBundle passed pre-encoded SealedPayload bytes (double-wrap).
+@Suite("sealGroup — basket round-trip")
+@MainActor struct GroupBasketRoundTripTests {
+
+    @Test func basket_survivesGroupRoundTrip() throws {
+        let pair    = try Pair()
+        let groupID = UUID()
+        let content = Data("group round-trip test".utf8)
+
+        let basketData = try WireHandle.encode(basket: Basket(files: [
+            Occulta.File(content: content, format: .text, date: Date())
+        ]))
+
+        let r      = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.sealGroup(message: basketData, groupID: groupID, recipients: [r])
+
+        let senderPub        = try pair.senderKM.retrieveIdentity()
+        let wrappingKey      = pair.recipientKM.createSharedSecret(using: senderPub)!
+        let entry            = bundle.group!.recipients[0]
+        let recipientPayload = try Manager.Crypto(keyManager: pair.recipientKM)
+                                         .openWrappedPayload(entry, groupID: groupID, using: wrappingKey)
+
+        let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
+        let payloadData = try Manager.Crypto(keyManager: pair.recipientKM)
+                                     .openGroupCiphertext(bundle, using: sessionKey)
+        let sealed      = try WireHandle.decode(payload: payloadData)
+
+        let recovered = try WireHandle.decode(basket: sealed.message)
+        #expect(recovered.files.count == 1)
+        #expect(recovered.files[0].content == content)
+    }
+}

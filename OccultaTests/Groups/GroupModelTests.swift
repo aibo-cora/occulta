@@ -43,8 +43,8 @@ struct GroupStructuralTests {
         #expect(Group.slotCount == 32)
     }
 
-    @Test func constants_slotSize_is64() {
-        #expect(Group.slotSize == 64)
+    @Test func constants_slotSize_is156() {
+        #expect(Group.slotSize == 156)
     }
 
     @Test func freshFillerArray_count_is32() {
@@ -97,7 +97,7 @@ struct GroupStructuralTests {
         #expect(group.members(in: .duress).isEmpty, "Real member must not leak into duress layer")
     }
 
-    @Test func addMember_allSlotsRemain64bytes() throws {
+    @Test func addMember_allSlotsRemain156bytes() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let ctx = ModelContext(try makeContainer())
         let group = try Group(name: "Family")
@@ -108,6 +108,22 @@ struct GroupStructuralTests {
         #expect(group.realMemberSlots.count == Group.slotCount)
         for slot in group.realMemberSlots {
             #expect(slot.count == Group.slotSize)
+        }
+    }
+
+    @Test func addMember_longIdentifier_readsBack() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx = ModelContext(try makeContainer())
+        let group = try Group(name: "Test")
+        ctx.insert(group)
+
+        // CNContact identifiers can exceed 36 chars (observed 88 bytes on device).
+        // This test guards against the previous str.count == 36 regression.
+        let longID = UUID().uuidString + ":ABPerson:extra-suffix-padding-bytes-here"
+        try group.addMember(longID, in: .normal)
+        #expect(group.members(in: .normal) == [longID])
+        for slot in group.realMemberSlots {
+            #expect(slot.count == Group.slotSize, "All slots must be identical size after add")
         }
     }
 

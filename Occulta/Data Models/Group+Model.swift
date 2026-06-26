@@ -39,9 +39,15 @@ final class Group {
     /// Fixed capacity per layer, matching AppLayerConfig.maxVerifierCount.
     static let slotCount = 32
 
-    /// AES-GCM(36-byte UUID string) = 12 (nonce) + 36 (data) + 16 (tag) = 64 bytes.
-    /// Filler slots are also 64 bytes — indistinguishable by size.
-    static let slotSize = 64
+    /// Padded plaintext size for member identifiers.
+    /// CNContact identifiers are variable-length (observed up to 88 bytes on device);
+    /// padding to a fixed size makes all slots — real and filler — produce identical
+    /// ciphertext lengths, preventing size-based slot identification.
+    static let maxIdentifierBytes = 128
+
+    /// AES-GCM(128-byte padded identifier) = 12 (nonce) + 128 (data) + 16 (tag) = 156 bytes.
+    /// Filler slots are also 156 bytes — indistinguishable by size.
+    static let slotSize = 156
 
     // MARK: - Init
 
@@ -106,9 +112,11 @@ final class Group {
         let slots = layer == .normal ? self.realMemberSlots : self.duressMemberSlots
         
         return slots.compactMap { slot -> String? in
-            guard let decrypted = slot.decrypt(),
-                  let str       = String(data: decrypted, encoding: .utf8),
-                  str.count == 36
+            guard let decrypted = slot.decrypt() else { return nil }
+            // Strip null-byte padding introduced by encryptedSlots(for:).
+            let trimmed = decrypted.prefix(while: { $0 != 0 })
+            guard !trimmed.isEmpty,
+                  let str = String(data: trimmed, encoding: .utf8)
             else { return nil }
             return str
         }
@@ -157,9 +165,12 @@ final class Group {
 
     private static func encryptedSlots(for identifiers: [String]) throws -> [Data] {
         var slots: [Data] = try identifiers.map { id in
-            guard let encrypted = try Data(id.utf8).encrypt() else {
-                throw GroupError.encryptionFailed
-            }
+            let raw = Data(id.utf8)
+            guard raw.count <= Self.maxIdentifierBytes else { throw GroupError.identifierTooLong }
+            // Pad to maxIdentifierBytes so all real slots produce the same ciphertext
+            // length as filler. Null bytes are safe — identifiers never contain them.
+            let padded = raw + Data(repeating: 0, count: Self.maxIdentifierBytes - raw.count)
+            guard let encrypted = try padded.encrypt() else { throw GroupError.encryptionFailed }
             return encrypted
         }
         while slots.count < slotCount {
@@ -183,4 +194,5 @@ final class Group {
 enum GroupError: Error {
     case capacityExceeded
     case encryptionFailed
+    case identifierTooLong
 }

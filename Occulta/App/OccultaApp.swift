@@ -68,6 +68,7 @@ struct OccultaApp: App {
 
         self.storeURL = url
         Self.applySecureDeletePragma(at: url)
+        Self.walCheckpoint(at: url)
 
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
@@ -147,6 +148,13 @@ struct OccultaApp: App {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
         sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
+    }
+
+    private static func walCheckpoint(at url: URL) {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
+        defer { sqlite3_close(db) }
+        sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
     }
 }
 
