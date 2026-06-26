@@ -9,7 +9,7 @@ import CryptoKit
 // MARK: - GroupRecipient
 
 /// Value type carrying exactly what sealGroup needs per recipient.
-/// Caller (GroupManager) builds this from Contact.Profile before crossing into crypto,
+/// Caller (ContactManager) builds this from Contact.Profile before crossing into crypto,
 /// keeping SwiftData entirely out of the crypto layer.
 struct GroupRecipient {
     /// Long-term P-256 identity public key (65-byte x963).

@@ -94,6 +94,7 @@ final class Group {
         guard let decrypted = self.encryptedCreatedAt?.decrypt(),
               let ts        = try? JSONDecoder().decode(TimeInterval.self, from: decrypted)
         else { return nil }
+        
         return Date(timeIntervalSince1970: ts)
     }
 
@@ -103,6 +104,7 @@ final class Group {
     /// Slots that fail to decrypt (filler) are silently skipped.
     func members(in layer: RoutingDepth) -> [String] {
         let slots = layer == .normal ? self.realMemberSlots : self.duressMemberSlots
+        
         return slots.compactMap { slot -> String? in
             guard let decrypted = slot.decrypt(),
                   let str       = String(data: decrypted, encoding: .utf8),
@@ -114,15 +116,20 @@ final class Group {
 
     func addMember(_ identifier: String, in layer: RoutingDepth) throws {
         var current = self.members(in: layer)
+        
         guard !current.contains(identifier) else { return }
         guard current.count < Self.slotCount else { throw GroupError.capacityExceeded }
+        
         current.append(identifier)
+        
         try self.setMembers(current, in: layer)
     }
 
     func removeMember(_ identifier: String, in layer: RoutingDepth) throws {
         var current = self.members(in: layer)
+        
         current.removeAll { $0 == identifier }
+        
         try self.setMembers(current, in: layer)
     }
 
@@ -143,6 +150,7 @@ final class Group {
         // of having two indistinguishable arrays.
         let realIdentifiers   = layer == .normal ? identifiers : self.members(in: .normal)
         let duressIdentifiers = layer == .duress ? identifiers : self.members(in: .duress)
+        
         self.realMemberSlots   = try Self.encryptedSlots(for: realIdentifiers)
         self.duressMemberSlots = try Self.encryptedSlots(for: duressIdentifiers)
     }

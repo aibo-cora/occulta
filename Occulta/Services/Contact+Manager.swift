@@ -1018,10 +1018,12 @@ extension ContactManager {
     /// per-recipient prekey sync batch if their stock for this sender is below
     /// the replenishment threshold. The shared ciphertext is sealed once with a
     /// random session key bound to the group UUID.
-    func encryptGroupBundle(basket: Basket, group: Group, layer: RoutingDepth) throws -> Data {
-        guard let groupID = group.readID() else { throw Errors.groupIDMissing }
-
-        let members = try GroupManager().resolveMembers(of: group, in: layer, context: self.modelContext)
+    func encryptGroupBundle(basket: Basket, groupID: UUID, recipients identifierList: [String]) throws -> Data {
+        guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
+        let predicate = #Predicate<Contact.Profile> {
+            identifierList.contains($0.identifier) && $0.deletionToken == nil
+        }
+        let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 
         var prekeyConsumed = false

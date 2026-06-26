@@ -249,7 +249,7 @@ struct ModeDecodingTests {
         )
         #expect(bundle.secrecy.mode == .group)
 
-        // The receive path rejects .group — it must be handled by GroupManager.
+        // The receive path rejects .group — it must be handled by ContactManager.
         let key = SymmetricKey(size: .bits256)
         #expect(throws: (any Error).self) {
             try Manager.Crypto(keyManager: TestKeyManager()).open(bundle, using: key)

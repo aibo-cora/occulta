@@ -220,75 +220,51 @@ struct GroupStructuralTests {
     }
 }
 
-// MARK: - GroupManager
+// MARK: - ContactManager — Group CRUD
 
-@Suite("GroupManager — CRUD")
+@Suite("ContactManager — Group CRUD")
 @MainActor struct GroupManagerTests {
 
-    let gm = GroupManager()
+    private func makeContactManager() throws -> ContactManager {
+        let container = try makeContainer()
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        return ContactManager(modelContainer: container, security: security)
+    }
 
-    @Test func create_insertsIntoContext() throws {
+    @Test func create_insertsGroup() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
-        let ctx = ModelContext(try makeContainer())
-        _ = try self.gm.create(name: "Ops", in: ctx)
-        try ctx.save()
-
-        let all = try self.gm.allGroups(in: ctx)
+        let cm  = try self.makeContactManager()
+        _       = try cm.createGroup(name: "Ops")
+        let all = try cm.allGroups()
         #expect(all.count == 1)
         #expect(all[0].readName() == "Ops")
     }
 
-    @Test func delete_removesFromContext() throws {
+    @Test func delete_removesGroup() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
-        let ctx = ModelContext(try makeContainer())
-        let group = try self.gm.create(name: "Temp", in: ctx)
-        try ctx.save()
-
-        self.gm.delete(group, from: ctx)
-        try ctx.save()
-
-        #expect(try self.gm.allGroups(in: ctx).isEmpty)
+        let cm    = try self.makeContactManager()
+        let group = try cm.createGroup(name: "Temp")
+        guard let id = group.readID() else { Issue.record("readID() returned nil"); return }
+        try cm.deleteGroup(id: id)
+        #expect(try cm.allGroups().isEmpty)
     }
 
-    @Test func resolveMembers_returnsMatchingProfiles() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
-        let ctx = ModelContext(try makeContainer())
-
-        let contact = Contact.Profile(
-            identifier: UUID().uuidString, givenName: "Alice", familyName: "A",
-            middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        ctx.insert(contact)
-
-        let group = try self.gm.create(name: "Test", in: ctx)
-        try group.addMember(contact.identifier, in: .normal)
-        try ctx.save()
-
-        let resolved = try self.gm.resolveMembers(of: group, in: .normal, context: ctx)
-        #expect(resolved.count == 1)
-        #expect(resolved[0].identifier == contact.identifier)
-    }
-
-    @Test func resolveMembers_emptyGroup_returnsEmpty() throws {
-        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
-        let ctx = ModelContext(try makeContainer())
-        let group = try self.gm.create(name: "Empty", in: ctx)
-
-        let resolved = try self.gm.resolveMembers(of: group, in: .normal, context: ctx)
-        #expect(resolved.isEmpty)
-    }
 }
 
-// MARK: - Version gating (simulator safe — injects TestKeyManager)
+// MARK: - ContactManager — Group eligibility
+// Simulator safe — uses TestKeyManager for maxBundleVersion encryption/decryption;
+// no Secure Enclave required. Contacts are inserted into an in-memory store.
 
-@Suite("GroupManager — version gating")
+@Suite("ContactManager — Group eligibility")
 @MainActor struct GroupEligibilityTests {
 
-    let gm = GroupManager()
+    private func makeContactManager(crypto: Manager.Crypto) throws -> ContactManager {
+        let container = try makeContainer()
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        return ContactManager(modelContainer: container, security: security)
+    }
 
-    /// Encrypts a maxBundleVersion byte using the provided crypto so the contact
-    /// looks like it was received from an actual bundle.
-    private func contact(withVersionByte byte: UInt8?, crypto: Manager.Crypto) throws -> Contact.Profile {
+    private func insertedContact(withVersionByte byte: UInt8?, crypto: Manager.Crypto, in cm: ContactManager) throws -> Contact.Profile {
         let c = Contact.Profile(
             identifier: UUID().uuidString, givenName: "Test", familyName: "U",
             middleName: "", nickname: "", organizationName: "", departmentName: "", jobTitle: ""
@@ -296,48 +272,55 @@ struct GroupStructuralTests {
         if let byte {
             c.maxBundleVersion = try crypto.encrypt(data: Data([byte]))
         }
+        try cm.insertProfile(c)
         return c
     }
 
     @Test func eligible_groupCapableByte_returnsTrue() throws {
         let km     = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
-        let c      = try contact(withVersionByte: 0x05, crypto: crypto)
-        #expect(self.gm.isEligible(c, crypto: crypto))
+        let cm     = try self.makeContactManager(crypto: crypto)
+        let c      = try self.insertedContact(withVersionByte: 0x05, crypto: crypto, in: cm)
+        #expect(try cm.isGroupEligible(identifier: c.identifier, crypto: crypto))
     }
 
     @Test func ineligible_v4Byte_returnsFalse() throws {
         let km     = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
-        let c      = try contact(withVersionByte: 0x04, crypto: crypto)
-        #expect(!self.gm.isEligible(c, crypto: crypto))
+        let cm     = try self.makeContactManager(crypto: crypto)
+        let c      = try self.insertedContact(withVersionByte: 0x04, crypto: crypto, in: cm)
+        #expect(try !cm.isGroupEligible(identifier: c.identifier, crypto: crypto))
     }
 
     @Test func ineligible_noVersionByte_returnsFalse() throws {
         let km     = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
-        let c      = try contact(withVersionByte: nil, crypto: crypto)
-        #expect(!self.gm.isEligible(c, crypto: crypto))
+        let cm     = try self.makeContactManager(crypto: crypto)
+        let c      = try self.insertedContact(withVersionByte: nil, crypto: crypto, in: cm)
+        #expect(try !cm.isGroupEligible(identifier: c.identifier, crypto: crypto))
     }
 
     @Test func ineligibilityReason_noVersionByte_isUnknown() throws {
         let km     = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
-        let c      = try contact(withVersionByte: nil, crypto: crypto)
-        #expect(self.gm.ineligibilityReason(for: c, crypto: crypto) == .versionUnknown)
+        let cm     = try self.makeContactManager(crypto: crypto)
+        let c      = try self.insertedContact(withVersionByte: nil, crypto: crypto, in: cm)
+        #expect(try cm.groupIneligibilityReason(for: c.identifier, crypto: crypto) == .versionUnknown)
     }
 
     @Test func ineligibilityReason_v4Byte_isTooOld() throws {
         let km     = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
-        let c      = try contact(withVersionByte: 0x04, crypto: crypto)
-        #expect(self.gm.ineligibilityReason(for: c, crypto: crypto) == .versionTooOld)
+        let cm     = try self.makeContactManager(crypto: crypto)
+        let c      = try self.insertedContact(withVersionByte: 0x04, crypto: crypto, in: cm)
+        #expect(try cm.groupIneligibilityReason(for: c.identifier, crypto: crypto) == .versionTooOld)
     }
 
     @Test func ineligibilityReason_eligible_isNil() throws {
         let km     = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)
-        let c      = try contact(withVersionByte: 0x05, crypto: crypto)
-        #expect(self.gm.ineligibilityReason(for: c, crypto: crypto) == nil)
+        let cm     = try self.makeContactManager(crypto: crypto)
+        let c      = try self.insertedContact(withVersionByte: 0x05, crypto: crypto, in: cm)
+        #expect(try cm.groupIneligibilityReason(for: c.identifier, crypto: crypto) == nil)
     }
 }
