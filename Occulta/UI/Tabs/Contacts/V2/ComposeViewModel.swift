@@ -216,7 +216,8 @@ final class ComposeViewModel {
                     custodyManifest: manifest,
                     expectedShards:  expected
                 )
-            } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
+            } catch ContactManager.Errors.trusteeLacksQuantumMaterial,
+                    ContactManager.Errors.shardRequiresPrekey {
                 encrypted = try contactManager.encryptBundle(basket: basket, for: self.identifier)
             }
 

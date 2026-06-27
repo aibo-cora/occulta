@@ -631,6 +631,8 @@ extension ContactManager {
         case trusteeLacksQuantumMaterial
         case groupIDMissing
         case groupHasNoMembers
+        /// Shard operations must be sent on the forward-secret path; no prekey is available for this contact.
+        case shardRequiresPrekey
     }
 }
 
@@ -925,38 +927,26 @@ extension ContactManager {
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
-        /// We are forcing long term key to be used in the event when a bundle carries shard data.
-        /// This is a precaution because when we have prekey public material, which travels on the wire, there is a higher threat from QC calculating the private part.
+        // Shard ops carry private key material — ML-KEM is always required so a
+        // quantum adversary cannot retroactively break the wrapping key.
         let isCarryingShard = shardOperations?.contains(where: { $0.attribute != nil }) == true
 
         // ── 1. Resolve recipient key material ─────────────────────────────
         let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact, requireQuantum: isCarryingShard)
 
         #if DEBUG
-        let modeTag = isCarryingShard ? "shard (longTermFallback + ML-KEM)" : "message"
+        let modeTag = isCarryingShard ? "shard (ML-KEM required)" : "message"
         debugPrint("Sealing \(modeTag) bundle, quantum: \(quantumMaterial != nil)")
         #endif
 
         // ── 2. Prekey handling ────────────────────────────────────────────
-        // Shard mode: never consume prekeys; never carry a prekey sync batch.
         // Message mode: pop prekey (→ .forwardSecret or .longTermFallback);
         //               attach pending batch if one exists.
+        // Shard mode (group path): pop prekey — FS is mandatory for shards,
+        //               throw shardRequiresPrekey if none is available.
+        // Shard mode (old path, <1.9.0): skip prekey — keep longTermFallback.
         var contactPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
-
-        if !isCarryingShard {
-            try contact.configureForwardSecrecy()
-            
-            #if DEBUG
-            debugPrint("Encrypting message for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
-            #endif
-            
-            if let blob = try contact.popOldestPrekeyData() {
-                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
-            }
-            
-            outboundBatch = try contact.loadPendingBatch()
-        }
 
         // ── 3. Resolve target wire format for this contact ────────────────
         let cryptoOps     = Manager.Crypto()
@@ -966,6 +956,25 @@ extension ContactManager {
         // back as .v4. Passing .groupCapable to seal() would embed "groupCapable" in
         // the AAD while the receiver reconstructs "v4" → authentication failure.
         let wireVersion   = targetVersion == .groupCapable ? OccultaBundle.Version.v4 : targetVersion
+
+        // Pop a prekey for forward secrecy.
+        // Message sends always attempt FS; shard sends on the group path require it.
+        // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
+        let needsPrekey = !isCarryingShard || targetVersion == .groupCapable
+        if needsPrekey {
+            try contact.configureForwardSecrecy()
+
+            #if DEBUG
+            debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
+            #endif
+
+            if let blob = try contact.popOldestPrekeyData() {
+                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            }
+            if !isCarryingShard {
+                outboundBatch = try contact.loadPendingBatch()
+            }
+        }
 
         // ── 4. Build and seal payload ─────────────────────────────────────
         let messageData: Data
@@ -977,13 +986,19 @@ extension ContactManager {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
         }
 
-        // 1.9.0+ contacts: route regular message sends through the group bundle
-        // format with an ephemeral single-recipient envelope. Shard/custody ops
-        // remain on the single-recipient path (they are targeted to one contact
-        // by design and do not benefit from the group crypto path).
-        if targetVersion == .groupCapable, basket != nil, shardOperations == nil, custodyManifest == nil, expectedShards == nil {
+        // 1.9.0+ contacts: all sends use the group bundle format with an ephemeral
+        // single-recipient envelope. Shard ops require forward secrecy — the FS
+        // wrapping key is consumed after one use, so a harvested bundle cannot be
+        // decrypted later even if the shard itself is later obtained.
+        if targetVersion == .groupCapable {
+            if isCarryingShard {
+                guard contactPrekey != nil else { throw Errors.shardRequiresPrekey }
+            }
+            // Shard-only bundles (basket == nil) use Data() as a sentinel so the
+            // receiver can detect "no basket" without trying to parse the payload.
+            let groupMessage = basket != nil ? messageData : Data()
             let bundle = try Manager.Crypto().sealGroup(
-                message:    messageData,
+                message:    groupMessage,
                 groupID:    UUID(),
                 recipients: [GroupRecipient(
                     publicKey:       recipientMaterial,

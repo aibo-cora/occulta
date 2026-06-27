@@ -525,11 +525,36 @@ private struct RootView: View {
                 }
 
                 if bundle.group != nil {
-                    // Group bundle — all 1.9.0+ single-recipient sends and named-group
-                    // sends use this path. Identity challenges and shard/custody ops
-                    // still travel on the single-recipient path.
+                    // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
+                    // use this path. Shard-only bundles signal "no basket" via an
+                    // empty message field.
                     let (sealed, ownerID, _) = try self.contactManager.openGroup(bundle: bundle)
                     decodedBundleVersion = bundle.version
+
+                    // Identity-challenge traffic inside a group bundle.
+                    if let identityEnvelope = sealed.identityChallenge {
+                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                            _ = self.identityChallenge.handleInboundChallenge(
+                                bundle:   bundle,
+                                envelope: identityEnvelope,
+                                sender:   sender
+                            )
+                        }
+                        return nil
+                    }
+
+                    // Shard/custody ops.
+                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                        _ = self.shardCustodyManager.handleInbound(
+                            sealed:           sealed,
+                            senderPublicKey:  senderPublicKey,
+                            senderIdentifier: ownerID,
+                            vaultManager:     self.vaultManager
+                        )
+                    }
+
+                    // Shard-only bundle (empty message) — ops handled above, no basket.
+                    guard !sealed.message.isEmpty else { return nil }
                     decrypted = (sealed.message, ownerID)
                 } else {
                     // ContactManager owns sender identification, prekey resolution,

@@ -230,13 +230,15 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 
 ## Unified Bundle Format — Implemented (v1.9.0)
 
-For contacts running app version ≥ 1.9.0, `encryptBundle` (single-recipient sends) routes regular basket messages through `sealGroup` with a single-entry `GroupEnvelope`. The `groupID` is ephemeral (generated per bundle via `UUID()`, not stored in the `Group` SwiftData entity).
+For contacts running app version ≥ 1.9.0, `encryptBundle` routes all sends — basket messages, shard operations, custody manifests, and expected-shard notifications — through `sealGroup` with a single-entry `GroupEnvelope`. The `groupID` is ephemeral (generated per bundle via `UUID()`, not stored in the `Group` SwiftData entity).
 
-Shard and custody operations remain on the single-recipient (`seal`) path — they are targeted to one contact by design.
+**Shard forward-secrecy mandate:** shard operations require a prekey to be available for the recipient. If no prekey is on file, `encryptBundle` throws `shardRequiresPrekey` and the caller retries the send without shard ops (basket still delivered). This ensures the FS wrapping key is consumed on use — even if a bundle is later harvested, a recovered shard cannot be used to decrypt it. ML-KEM remains required for shard ops regardless of path.
 
-**Receive path:** `buildOwnedBasket` already routes `bundle.group != nil` to `openGroup`. No routing change required.
+**Shard-only sends (basket == nil):** `SealedPayload.message` is set to `Data()` (empty) as a sentinel. The receiver detects the empty message and returns nil after handling the shard ops, rather than attempting basket decode.
 
-**Backward compat:** `decryptSealed` is retained for bundles from contacts on < 1.9.0 and for shard/custody bundles regardless of version.
+**Receive path:** `buildOwnedBasket` group branch handles identity challenges, shard/custody ops, and the empty-message sentinel. `openGroup` is the single decrypt entry point for all 1.9.0+ inbound bundles.
+
+**Backward compat:** `decryptSealed` is retained for bundles from contacts on < 1.9.0 (including shard/custody bundles from old senders and all identity challenge bundles, which deliberately use v3fs). Identity challenge sends use v3fs/longTermFallback regardless of recipient version — the protocol requires the key path never to fail from prekey exhaustion.
 
 ### What this unlocks (future work)
 
