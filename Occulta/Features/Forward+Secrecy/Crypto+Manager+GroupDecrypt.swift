@@ -11,6 +11,10 @@ import CryptoKit
 enum GroupDecryptError: Error {
     case noGroupEnvelope
     case recipientSlotNotFound
+    /// The `senderProof` inside the decrypted payload does not match
+    /// HMAC(sessionKey, senderPublicKey). The cleartext sender routing fields
+    /// were tampered with after the bundle was sealed.
+    case senderProofMismatch
 }
 
 // MARK: - Group-decrypt crypto helpers
@@ -32,13 +36,15 @@ extension Manager.Crypto {
 
     /// Open a per-recipient wrappedPayload and decode the RecipientPayload.
     ///
-    /// AAD = groupID.uuidString ‖ entry.fingerprint — mirrors wrapRecipient.
+    /// AAD = blind ‖ entry.fingerprint — mirrors wrapRecipient.
+    /// `blind` is read directly from the cleartext GroupEnvelope; the receiver
+    /// does not need to know the group identity before calling this.
     func openWrappedPayload(
         _ entry: OccultaBundle.Recipient,
-        groupID: UUID,
+        blind: Data,
         using wrappingKey: SymmetricKey
     ) throws -> OccultaBundle.RecipientPayload {
-        var aad = Data(groupID.uuidString.utf8)
+        var aad = blind
         aad.append(entry.fingerprint)
         let box = try AES.GCM.SealedBox(combined: entry.wrappedPayload)
         let plain = try AES.GCM.open(box, using: wrappingKey, authenticating: aad)
@@ -47,11 +53,11 @@ extension Manager.Crypto {
 
     /// Open the shared outer ciphertext of a group bundle with the extracted session key.
     ///
-    /// AAD = computeAdditionalAuthentication(version: .v4, outerSecrecy) ‖ groupID.uuidString
+    /// AAD = computeAdditionalAuthentication(version: .v4, outerSecrecy) ‖ group.blind
     func openGroupCiphertext(_ bundle: OccultaBundle, using sessionKey: SymmetricKey) throws -> Data {
         guard let group = bundle.group else { throw GroupDecryptError.noGroupEnvelope }
         var aad = try OccultaBundle.computeAdditionalAuthentication(version: bundle.version, secrecy: bundle.secrecy)
-        aad.append(Data(group.id.uuidString.utf8))
+        aad.append(group.blind)
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
         return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
     }

@@ -52,8 +52,8 @@ final class Group {
     // MARK: - Init
 
     init(name: String) throws {
-        self.realMemberSlots    = Self.freshFillerArray()
-        self.duressMemberSlots  = Self.freshFillerArray()
+        self.realMemberSlots    = try Self.freshFillerArray()
+        self.duressMemberSlots  = try Self.freshFillerArray()
 
         guard
             let encID   = try Data(UUID().uuidString.utf8).encrypt(),
@@ -143,8 +143,8 @@ final class Group {
 
     // MARK: - Filler helpers
 
-    static func freshFillerArray() -> [Data] {
-        (0..<slotCount).map { _ in Self.randomFiller() }
+    static func freshFillerArray() throws -> [Data] {
+        try (0..<slotCount).map { _ in try Self.randomFiller() }
     }
 
     // MARK: - Private
@@ -174,18 +174,18 @@ final class Group {
             return encrypted
         }
         while slots.count < slotCount {
-            slots.append(randomFiller())
+            slots.append(try randomFiller())
         }
         slots.shuffle()
         return slots
     }
 
-    private static func randomFiller() -> Data {
-        var data = Data(count: slotSize)
-        _ = data.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, slotSize, $0.baseAddress!)
+    private static func randomFiller() throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: slotSize)
+        guard SecRandomCopyBytes(kSecRandomDefault, slotSize, &bytes) == errSecSuccess else {
+            throw GroupError.entropyUnavailable
         }
-        return data
+        return Data(bytes)
     }
 }
 
@@ -195,4 +195,5 @@ enum GroupError: Error {
     case capacityExceeded
     case encryptionFailed
     case identifierTooLong
+    case entropyUnavailable
 }

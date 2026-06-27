@@ -170,13 +170,21 @@ The spec notes there is no UX obligation to populate duress groups, but provides
 ### F-16 · `longTermFallback` group bundles are indefinitely replayable
 
 **File:** `Crypto+Manager+KeyDerivation.swift:39–48`, `Contact+Manager.swift:1366–1384`, `OccultaBundle.swift:462–469`  
+**Status:** Accepted — documented limitation  
 **Confidence:** 9/10
 
-For the `longTermFallback` path (`contactPrekey == nil`), the per-recipient wrapping key is `HKDF(ECDH(senderLongTermPriv, recipientLongTermPub))` — fully determined by the two parties' stable identity keys, with no per-bundle randomness. `RecipientPayload` contains only `sessionKey: Data` and `prekeyBatch: PrekeySyncBatch?` — no timestamp, nonce, sequence number, or bundle identifier. After `openGroup` succeeds on this path, step 5 (`Contact+Manager.swift:1366`) finds `consumable == nil` and skips prekey consumption. No bundle ID or seen-nonce is recorded anywhere.
+For the `longTermFallback` path (`contactPrekey == nil`), the per-recipient wrapping key is `HKDF(ECDH(senderLongTermPriv, recipientLongTermPub))` — fully determined by the two parties' stable identity keys, with no per-bundle randomness. `RecipientPayload` contains only `sessionKey: Data` and `prekeyBatch: PrekeySyncBatch?` — no timestamp, nonce, sequence number, or bundle identifier. After `openGroup` succeeds on this path, `consumable == nil` and no bundle ID or seen-nonce is recorded.
 
-**Attack:** An attacker who captures a single `longTermFallback` group bundle can re-deliver the identical bytes to any recipient device indefinitely. Each delivery decrypts successfully, delivers a duplicate message, and triggers the same side effects as the original. No key material is required. The `forwardSecretNoPQ` / `forwardSecret` paths are immune because prekey consumption deletes the SE private key — second delivery throws `recipientSlotNotFound`. The fallback path has no equivalent defense.
+**Actual exposure (narrower than originally stated):** Shard bytes — the sensitive vault content — are already protected. `encryptBundle` enforces `shardRequiresPrekey` for any bundle where `shardOperations` contains a non-nil `attribute` (i.e., actual shard payload). Those bundles throw rather than fall back to `longTermFallback`. The FS paths are immune independently: prekey consumption deletes the SE private key, so second delivery throws `recipientSlotNotFound`.
 
-**Fix:** Include a unique per-bundle nonce (e.g. the outer ciphertext's AES-GCM nonce, already random) inside `RecipientPayload` covered by the inner GCM tag, and maintain a short-lived seen-nonce set with a time-bound expiry window.
+What remains replayable on the fallback path is:
+
+- **Regular messages (basket-only):** re-delivery produces a duplicate in the UI. No state mutation, no confidentiality impact.
+- **`custodyManifest` / `expectedShards` metadata:** these piggyback on regular message bundles and cannot be separated without breaking the send. Requiring FS for bundles that carry them would be equivalent to requiring FS for all messages, eliminating the fallback path entirely. Replaying a `custodyManifest` makes an owner believe a trustee still holds shards they have since deleted; replaying `expectedShards` keeps a trustee holding shards the owner has since revoked. Impact is vault state staleness — liveness and correctness, not confidentiality.
+
+**Why a seen-nonce store was not adopted:** The cost (persistent store with expiry policy, restart-safe, cleanup surface area) is disproportionate to the residual risk. No secret material is exposed by replay. The practical replay window is also bounded: an attacker must intercept the bundle on its chosen out-of-band transport (SMS, WhatsApp, Signal, email) and re-deliver it to the recipient — this is not a passive read-only capability.
+
+**Accepted limitation:** Fallback-path bundle replay can produce duplicate messages and transiently stale vault custody state. It cannot expose shard content or forge sender identity (F-15 fix). Future mitigation: a persistent nonce cache with a rolling 30-day expiry window, if vault metadata staleness proves operationally significant.
 
 ---
 
@@ -196,20 +204,22 @@ In Occulta's coercion threat model, a UI bug (wrong layer variable, race on dept
 ### F-18 · Cleartext group UUID in TLV section defeats `encryptedID` protection
 
 **File:** `WireHandle.swift:70–75`, `Crypto+Manager+GroupEncrypt.swift:105–109`, `Group+Model.swift`  
-**Confidence:** 9/10
+**Confidence:** 9/10  
+**Status:** Fixed
 
 `Group+Model.swift` stores the group UUID as `encryptedID` (AES-GCM encrypted at rest) with the documented rationale: *"Stored encrypted so a forensic examiner cannot correlate the DB record with a cleartext GroupEnvelope.id seen in an intercepted bundle."* The TLV encode/decode implemented in this branch puts the same UUID in cleartext in TLV section `0x01` of every `.occ` file.
 
 **Result:** A forensic examiner who obtains the device (and its DB key for contact names) AND has previously intercepted `.occ` files can read the groupID from each bundle's TLV section and directly correlate which SQLite `Group` record corresponds to which intercepted traffic — the specific protection `encryptedID` was designed to prevent. The cleartext UUID also lets a passive observer without the device determine which `.occ` files belong to the same group.
 
-**Fix:** Replace the stable UUID with a per-bundle blind: `HMAC-SHA256(groupID, bundleNonce)` where `bundleNonce` is a fresh random value included in the bundle but not derivable from the group record alone. Alternatively, omit the group ID from the cleartext TLV entirely — the per-recipient `wrappedPayload` AAD already commits to the group ID, so recipients recover it after decryption.
+**Fix applied:** `GroupEnvelope.id: UUID` replaced with `blind: Data` + `blindNonce: Data`. `blind = HMAC-SHA256(key: groupID.rawBytes[16], msg: blindNonce)` where `blindNonce` is 16 fresh random bytes per bundle. Both the outer AAD and each per-recipient wrappedPayload AAD use `blind` in place of `groupID.uuidString`. The stable `groupID` is stored inside the AES-GCM-encrypted `SealedPayload.groupID` field only. The receiver reads `groupID` from the decrypted payload — no cleartext exposure, no group scan required. Cross-group replay resistance is preserved because `blind` is derived from `groupID`; a different group produces a different blind under the same nonce.
 
 ---
 
 ### F-19 · Silent entropy failure in `randomFiller()` produces zero-byte slots
 
 **File:** `Group+Model.swift:183`  
-**Confidence:** 9/10
+**Confidence:** 9/10  
+**Status:** Fixed
 
 `randomFiller()` discards the return value of `SecRandomCopyBytes`:
 
@@ -294,3 +304,32 @@ if sectionType == 0x01 { groupEnvelope = sectionBytes }
 A bundle with two `0x01` sections silently uses the second one. If a serialization bug ever produces duplicate sections, the wrong envelope is used with no diagnostic. A valid second section with the same `groupID` but an empty `recipients` array would cause all recipients to see `recipientSlotNotFound`.
 
 **Fix:** Throw on a duplicate `0x01` section rather than silently overwriting.
+
+---
+
+### F-23 · Silent entropy failure in `AppLayerConfig.randomFiller()` produces zero-byte filler slots
+
+**File:** `AppLayerConfig+Model.swift:274`, `AppLayerConfig+Model.swift:282`, `AppLayerConfig+Model.swift:290`  
+**Confidence:** 9/10  
+**Status:** Deferred — fix in a dedicated branch
+
+Identical pattern to F-19 (`Group+Model.swift`), but in `AppLayerConfig`. Both `randomFiller()` and `verifierFiller()` discard the return value of `SecRandomCopyBytes`:
+
+```swift
+private static func randomFiller() -> Data {
+    var data = Data(count: fillerSize)
+    _ = data.withUnsafeMutableBytes {
+        SecRandomCopyBytes(kSecRandomDefault, fillerSize, $0.baseAddress!)
+    }
+    return data
+}
+```
+
+If `SecRandomCopyBytes` fails, both methods return zero-initialized `Data`. The affected arrays:
+
+- `sealedBlobSlots` (filler: 30 zero bytes) — a forensic examiner can distinguish live blob slots from filler without the SE key, revealing which layers are active.
+- `layerSequenceNumbers` (filler: 30 zero bytes) — same, reveals which sequence number slots are populated.
+- `sealedNormalVerifiers` / `sealedDuressVerifiers` (filler: 53 zero bytes) — reveals which verifier positions are real vs filler, indicating the number of active PIN layers.
+- `pinEnabledPerDepth` (fallback in `ensurePadded` and `pinEnabledFillerArray`) — 30 zero bytes, distinguishable from encrypted `UInt8` values.
+
+**Fix:** Make `randomFiller()` and `verifierFiller()` throw on non-`errSecSuccess`. Propagate `throws` through `randomFillerArray()`, `verifierFillerArray()`, `pinEnabledFillerArray()`, `clearBlobSlot(at:)`, `clearSequenceNumber(at:)`, `clearAllBlobMetadata()`, and `ensurePadded()`. Use `try!` in `init()` and in `Manager.Security.init()` migration path (both non-throwing contexts where entropy failure is non-recoverable). Add `AppLayerConfigError.entropyUnavailable`. Update `Manager+Security.swift` deactivation call sites to propagate `throws`.

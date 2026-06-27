@@ -8,72 +8,125 @@ import CryptoKit
 
 // MARK: - GroupRecipient
 
-/// Value type carrying exactly what sealGroup needs per recipient.
-/// Caller (ContactManager) builds this from Contact.Profile before crossing into crypto,
-/// keeping SwiftData entirely out of the crypto layer.
+/// Value type carrying per-recipient key material for `seal(message:groupID:recipients:)`.
+///
+/// Built by `ContactManager` from `Contact.Profile` before crossing into the crypto
+/// layer — SwiftData is never touched inside the crypto functions.
 struct GroupRecipient {
     /// Long-term P-256 identity public key (65-byte x963).
-    /// Used for fingerprinting and ECDH on the fallback path.
+    /// Used for fingerprinting and ECDH on the longTermFallback path.
     let publicKey: Data
     let quantumMaterial: QuantumKeyMaterial?
     /// Contact's oldest stored inbound prekey, popped by the caller before this call.
-    /// Non-nil → FS path; nil → fallback path.
+    /// Non-nil → forward-secret path; nil → longTermFallback.
     let contactPrekey: Prekey?
-    /// Outbound prekey batch to include in this recipient's RecipientPayload, or nil.
+    /// Outbound prekey batch to include in this recipient's `RecipientPayload`, or nil.
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
 }
 
-// MARK: - Group encryption
+// MARK: - Group seal
 
 extension Manager.Crypto {
 
-    /// Encrypt a group message for all recipients.
+    /// Convenience overload — builds a minimal `SealedPayload` (message + appVersion only).
     ///
-    /// One shared ciphertext sealed with a random session key; the session key is
-    /// wrapped individually for each recipient inside `GroupEnvelope.recipients`.
+    /// Use `seal(sealedPayload:groupID:recipients:)` directly when the payload also needs
+    /// shard operations, a custody manifest, or expected-shard fields.
+    func seal(
+        message: Data,
+        groupID: UUID,
+        recipients: [GroupRecipient]
+    ) throws -> OccultaBundle {
+        let payload = OccultaBundle.SealedPayload(message: message, appVersion: Bundle.main.appVersion)
+        return try self.seal(sealedPayload: payload, groupID: groupID, recipients: recipients)
+    }
+
+    /// Seal a pre-built `SealedPayload` for one or more recipients using the group bundle format.
+    ///
+    /// This is the canonical seal path for all 1.9.0+ sends, including 1:1 messages
+    /// (where `recipients` has a single entry and `groupID` is an ephemeral UUID
+    /// discarded after the call). Named-group sends pass a stable stored UUID and
+    /// the active layer's full member list.
+    ///
+    /// ## Why one shared ciphertext
+    /// The payload is sealed once under a random 256-bit session key. The session key is
+    /// then wrapped individually for each recipient, so each recipient pays one ECDH
+    /// round-trip while the bulk ciphertext is never duplicated.
     ///
     /// ## Outer AAD
     /// `computeAdditionalAuthentication(version: .v4, secrecy: outerSecrecy)` ‖ `groupID.uuidString`
     ///
+    /// Binding the outer AAD to the group UUID prevents cross-group replay: an adversary
+    /// cannot present a valid ciphertext from one group as belonging to another.
+    ///
     /// ## Per-recipient AAD
     /// `groupID.uuidString` ‖ `recipientFingerprint`
+    ///
+    /// Binds the wrapped session key (and any prekey batch) to this specific group and
+    /// recipient. A compromised wrapping key cannot be used to substitute a chosen session
+    /// key for a different recipient or group.
     ///
     /// ## Per-recipient key path
     /// `contactPrekey != nil` → FS: ECDH(senderEphemeral, contactPrekey.publicKey) [+ ML-KEM]
     /// `contactPrekey == nil` → fallback: ECDH(senderLongTerm, r.publicKey) [+ ML-KEM]
-    func sealGroup(
-        message: Data,
+    ///
+    /// The caller is responsible for enforcing FS when required (e.g. shard ops).
+    func seal(
+        sealedPayload: OccultaBundle.SealedPayload,
         groupID: UUID,
         recipients: [GroupRecipient]
     ) throws -> OccultaBundle {
         guard !recipients.isEmpty else { throw EncryptionError.noRecipients }
 
-        let sessionKey = SymmetricKey(size: .bits256)
+        let sessionKey     = SymmetricKey(size: .bits256)
         let sessionKeyData = sessionKey.withUnsafeBytes { Data($0) }
+
+        let senderPub = try self.keyManager.retrieveIdentity()
+        let senderProof = Data(HMAC<SHA256>.authenticationCode(for: senderPub, using: sessionKey))
+
+        // Per-bundle group blind: HMAC(key: groupID.rawBytes, msg: blindNonce).
+        // A fresh nonce per bundle produces a different blind each time, so a passive
+        // observer cannot cluster bundles by group identity from the cleartext TLV.
+        // The stable groupID is stored inside the encrypted SealedPayload only.
+        let blindNonce   = try OccultaBundle.SecrecyContext.generateNonce()
+        let groupIDBytes = withUnsafeBytes(of: groupID.uuid) { Data($0) }
+        let blind        = Data(HMAC<SHA256>.authenticationCode(
+            for: blindNonce, using: SymmetricKey(data: groupIDBytes)
+        ))
+
+        let authenticatedPayload = OccultaBundle.SealedPayload(
+            message:           sealedPayload.message,
+            prekeyBatch:       sealedPayload.prekeyBatch,
+            identityChallenge: sealedPayload.identityChallenge,
+            shardOperations:   sealedPayload.shardOperations,
+            custodyManifest:   sealedPayload.custodyManifest,
+            expectedShards:    sealedPayload.expectedShards,
+            appVersion:        sealedPayload.appVersion,
+            senderProof:       senderProof,
+            groupID:           groupID
+        )
 
         let outerSecrecy = OccultaBundle.SecrecyContext(
             mode: .group, ephemeralPublicKey: Data(), prekeyID: nil
         )
 
         var outerAAD = try OccultaBundle.computeAdditionalAuthentication(version: .v4, secrecy: outerSecrecy)
-        outerAAD.append(Data(groupID.uuidString.utf8))
+        outerAAD.append(blind)
 
-        let sealedPayload = OccultaBundle.SealedPayload(message: message, appVersion: Bundle.main.appVersion)
-        let payloadData = try WireHandle.encode(payload: sealedPayload)
+        let payloadData = try WireHandle.encode(payload: authenticatedPayload)
 
         guard let ciphertext = try AES.GCM.seal(
             payloadData, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: outerAAD
         ).combined else { throw EncryptionError.sealFailed }
 
-        let senderPub = try self.keyManager.retrieveIdentity()
         let outerNonce = try OccultaBundle.SecrecyContext.generateNonce()
         let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: senderPub, nonce: outerNonce)
 
         let recipientEntries = try recipients.map { r in
-            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, groupID: groupID)
+            try self.wrapRecipient(r, sessionKeyData: sessionKeyData, blind: blind)
         }
 
-        let envelope = OccultaBundle.GroupEnvelope(id: groupID, recipients: recipientEntries)
+        let envelope = OccultaBundle.GroupEnvelope(blind: blind, blindNonce: blindNonce, recipients: recipientEntries)
         return OccultaBundle(
             version: .v4,
             secrecy: outerSecrecy,
@@ -87,14 +140,14 @@ extension Manager.Crypto {
     private func wrapRecipient(
         _ r: GroupRecipient,
         sessionKeyData: Data,
-        groupID: UUID
+        blind: Data
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
 
         let nonce = try OccultaBundle.SecrecyContext.generateNonce()
         let fingerprint = OccultaBundle.SecrecyContext.fingerprint(for: r.publicKey, nonce: nonce)
 
-        var aad = Data(groupID.uuidString.utf8)
+        var aad = blind
         aad.append(fingerprint)
 
         let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(

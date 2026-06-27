@@ -230,7 +230,7 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 
 ## Unified Bundle Format — Implemented (v1.9.0)
 
-For contacts running app version ≥ 1.9.0, `encryptBundle` routes all sends — basket messages, shard operations, custody manifests, and expected-shard notifications — through `sealGroup` with a single-entry `GroupEnvelope`. The `groupID` is ephemeral (generated per bundle via `UUID()`, not stored in the `Group` SwiftData entity).
+For contacts running app version ≥ 1.9.0, `encryptBundle` routes all sends — basket messages, shard operations, custody manifests, and expected-shard notifications — through `seal(message:groupID:recipients:)` with a single-entry `GroupEnvelope`. The `groupID` is ephemeral (generated per bundle via `UUID()`, not stored in the `Group` SwiftData entity).
 
 **Shard forward-secrecy mandate:** shard operations require a prekey to be available for the recipient. If no prekey is on file, `encryptBundle` throws `shardRequiresPrekey` and the caller retries the send without shard ops (basket still delivered). This ensures the FS wrapping key is consumed on use — even if a bundle is later harvested, a recovered shard cannot be used to decrypt it. ML-KEM remains required for shard ops regardless of path.
 

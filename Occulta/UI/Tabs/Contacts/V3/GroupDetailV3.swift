@@ -27,12 +27,17 @@ struct GroupDetailV3: View {
         self.groups.first { $0.readID() == self.groupID }
     }
 
-    private var resolvedMembers: [Contact.Profile] {
-        guard let grp = self.group else { return [] }
-        
-        let layer       = RoutingDepth(rawValue: self.security.currentDepth) ?? .normal
-        let identifiers = Set(grp.members(in: layer))
+    private var resolvedLayer: RoutingDepth? {
+        switch self.security.currentDepth {
+        case 0:          return .normal
+        case let d where d > 0: return .duress
+        default:         return nil
+        }
+    }
 
+    private var resolvedMembers: [Contact.Profile] {
+        guard let grp = self.group, let layer = self.resolvedLayer else { return [] }
+        let identifiers = Set(grp.members(in: layer))
         return self.contacts.filter { identifiers.contains($0.identifier) && self.security.isDisplayable($0) }
     }
 
@@ -50,7 +55,13 @@ struct GroupDetailV3: View {
                     thumbnail: nil
                 )
 
-                if count > 0 {
+                if self.resolvedLayer == nil {
+                    Text("Security layer unavailable. Restart the app.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 8)
+                } else if count > 0 {
                     ComposeToggleV3(useThread: self.$useThreadCompose)
 
                     if self.useThreadCompose {
@@ -76,12 +87,11 @@ struct GroupDetailV3: View {
                     } else {
                         let cm  = self.contactManager
                         let gID = self.groupID
-                        let ids = members.map { $0.identifier }
                         ComposeHeroV3(
                             vm:           self.composeVM,
                             headerRight:  "→ \(count) RECIPIENT\(count == 1 ? "" : "S")",
                             encryptLabel: "Encrypt for \(count)",
-                            onEncrypt:    { await self.composeVM.encrypt(groupID: gID, recipients: ids, contactManager: cm) }
+                            onEncrypt:    { await self.composeVM.encrypt(groupID: gID, contactManager: cm) }
                         )
                     }
 

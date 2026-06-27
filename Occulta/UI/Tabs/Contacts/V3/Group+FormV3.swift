@@ -50,8 +50,12 @@ extension Group {
             return false
         }
 
-        private var layer: RoutingDepth {
-            RoutingDepth(rawValue: self.security.currentDepth) ?? .normal
+        private var layer: RoutingDepth? {
+            switch self.security.currentDepth {
+            case 0:          return .normal
+            case let d where d > 0: return .duress
+            default:         return nil
+            }
         }
 
         private var ineligibleHeader: String {
@@ -112,9 +116,9 @@ extension Group {
                 .navigationBarTitleDisplayMode(.large)
                 .onAppear {
                     self.computeEligibility()
-                    guard let grp = self.existingGroup else { return }
+                    guard let grp = self.existingGroup, let layer = self.layer else { return }
                     self.name                = grp.readName() ?? ""
-                    self.selectedIdentifiers = Set(grp.members(in: self.layer))
+                    self.selectedIdentifiers = Set(grp.members(in: layer))
                 }
                 .onChange(of: self.contacts) { _, _ in self.computeEligibility() }
                 .toolbar {
@@ -221,21 +225,22 @@ extension Group {
             guard !trimmed.isEmpty else { return }
 
             do {
+                guard let layer = self.layer else { throw ContactManager.Errors.invalidRoutingDepth }
                 if let group = self.existingGroup {
                     try group.writeName(trimmed)
-                    let current = Set(group.members(in: self.layer))
+                    let current = Set(group.members(in: layer))
                     for identifier in current.subtracting(self.selectedIdentifiers) {
-                        try group.removeMember(identifier, in: self.layer)
+                        try group.removeMember(identifier, in: layer)
                     }
                     for identifier in self.selectedIdentifiers.subtracting(current) {
-                        try group.addMember(identifier, in: self.layer)
+                        try group.addMember(identifier, in: layer)
                     }
                     try self.modelContext.save()
                 } else {
                     let group = try Group(name: trimmed)
                     self.modelContext.insert(group)
                     for identifier in self.selectedIdentifiers {
-                        try group.addMember(identifier, in: self.layer)
+                        try group.addMember(identifier, in: layer)
                     }
                     try self.modelContext.save()
                 }

@@ -346,6 +346,22 @@ struct OccultaBundle: Codable {
         /// `nil` means the sender is on a build older than 1.8.2. Added in v1.8.2.
         let appVersion: String?
 
+        /// HMAC-SHA256(sessionKey, senderLongTermPublicKey). Authenticates sender identity
+        /// inside the GCM-protected ciphertext, preventing any party (including other group
+        /// members) from re-attributing an intercepted bundle to a different sender by
+        /// replacing the cleartext `senderFingerprint` / `fingerprintNonce` fields.
+        ///
+        /// The session key is the sole keying material — only the actual sender can produce
+        /// this value, and only authenticated recipients can verify it. `nil` on bundles
+        /// from builds older than 1.9.0. Added in v1.9.0.
+        let senderProof: Data?
+
+        /// The stable group UUID this bundle was sealed for. Stored inside the encrypted
+        /// payload so the receiver can match the bundle to a local `Group` record without
+        /// the group identity being visible in the cleartext `GroupEnvelope`.
+        /// `nil` on non-group bundles and builds older than 1.9.0. Added in v1.9.0.
+        let groupID: UUID?
+
         init(
             message: Data,
             prekeyBatch: PrekeySyncBatch? = nil,
@@ -353,7 +369,9 @@ struct OccultaBundle: Codable {
             shardOperations: [ShardOperation]? = nil,
             custodyManifest: [UUID]? = nil,
             expectedShards: [UUID]? = nil,
-            appVersion: String? = nil
+            appVersion: String? = nil,
+            senderProof: Data? = nil,
+            groupID: UUID? = nil
         ) {
             self.message           = message
             self.prekeyBatch       = prekeyBatch
@@ -362,6 +380,8 @@ struct OccultaBundle: Codable {
             self.custodyManifest   = custodyManifest
             self.expectedShards    = expectedShards
             self.appVersion        = appVersion
+            self.senderProof       = senderProof
+            self.groupID           = groupID
         }
 
         /// A versioned batch of the sender's prekey public keys.
@@ -435,11 +455,18 @@ struct OccultaBundle: Codable {
     // MARK: - GroupEnvelope
 
     /// Outer group envelope — present only when `secrecy.mode == .group`.
-    /// `id` is cleartext and included in the outer ciphertext AAD and each
-    /// per-recipient `wrappedPayload` AAD to prevent cross-group replay.
+    ///
+    /// `blind` replaces the stable group UUID in the cleartext TLV section.
+    /// It is included in both the outer ciphertext AAD and each per-recipient
+    /// `wrappedPayload` AAD to preserve cross-group replay resistance, while
+    /// preventing passive observers from clustering bundles by group identity.
+    /// The stable `groupID` is stored inside the encrypted `SealedPayload` only.
     nonisolated
     struct GroupEnvelope: Codable {
-        let id: UUID
+        /// HMAC-SHA256(key: groupID.rawBytes, msg: blindNonce). Fresh per bundle.
+        let blind:      Data
+        /// 16 random bytes. Combined with a stored group's UUID to verify `blind`.
+        let blindNonce: Data
         let recipients: [Recipient]
     }
 

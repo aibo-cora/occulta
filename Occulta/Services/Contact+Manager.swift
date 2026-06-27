@@ -633,6 +633,9 @@ extension ContactManager {
         case groupHasNoMembers
         /// Shard operations must be sent on the forward-secret path; no prekey is available for this contact.
         case shardRequiresPrekey
+        /// `security.currentDepth` decoded to a value outside the valid RoutingDepth range.
+        /// Should never occur in practice; signals a bug in the security layer.
+        case invalidRoutingDepth
     }
 }
 
@@ -890,32 +893,35 @@ extension ContactManager {
     }
 }
  
-// MARK: - v3fs bundle encryption
- 
+// MARK: - Bundle encryption
+
 extension ContactManager {
-    /// Encrypt a bundle for a contact using the v3fs path.
+    /// Encrypt a bundle for a single contact.
     ///
-    /// **Mode selection is automatic**, driven by whether any shard operation
-    /// carries shard data (`.distribute`, `.handback` — i.e. `op.attribute != nil`):
+    /// ## Path routing
     ///
-    /// - **Shard mode** (any `attribute`-carrying op present, or `data == nil`):
-    ///   Forces `longTermFallback + ML-KEM`. Prekeys are not consumed; no prekey
-    ///   sync batch is attached. `data` defaults to a human-readable fallback for
-    ///   old builds. Throws `trusteeLacksQuantumMaterial` if ML-KEM is absent.
+    /// The send path is determined by `resolveTargetVersion(for:)`:
     ///
-    /// - **Message mode** (no `attribute`-carrying ops, `data` non-nil):
-    ///   Standard v3fs path — pops a prekey (→ `.forwardSecret` when available,
-    ///   `.longTermFallback` when exhausted), attaches a pending prekey sync
-    ///   batch, and saves prekey state. `data` must be non-empty.
+    /// **≥ 1.9.0 (`groupCapable`) → group bundle format**
+    ///   - Calls `seal(message:groupID:recipients:)` with a single-entry ephemeral group.
+    ///   - `groupID` is a fresh `UUID()` per bundle — not stored in the Group entity.
+    ///   - Shard ops (`isCarryingShard == true`) require a prekey. If none is available,
+    ///     throws `shardRequiresPrekey` so the caller can retry basket-only. This enforces
+    ///     forward secrecy for shard material: even if the bundle is harvested later, it
+    ///     cannot be decrypted without the consumed prekey private key.
+    ///   - Shard-only sends (`basket == nil`) use `Data()` as the message sentinel. The
+    ///     receiver detects the empty message and skips basket decode.
+    ///   - Message sends pop a prekey (FS when available, longTermFallback when exhausted)
+    ///     and attach a pending prekey sync batch.
     ///
-    /// This means `.distribute` and `.handback` always travel on `longTermFallback +
-    /// ML-KEM` regardless of call site — the HNDL constraint is enforced once,
-    /// here, and cannot be bypassed by a careless caller.
+    /// **< 1.9.0 → single-recipient legacy format (`seal(message:contactPrekey:...)`)**
+    ///   - Shard ops on this path skip prekey pop and use longTermFallback (no FS mandate).
+    ///   - Identity challenge sends are always on this path regardless of version.
     ///
-    /// ## Pending batch delivery guarantee (message mode only)
-    /// A `pendingOutboundBatch` is attached to every message until the contact
-    /// sends back a `.forwardSecret` bundle using one of our prekeys — cryptographic
-    /// proof they stored the batch. Only then is the batch cleared.
+    /// ## Pending batch delivery guarantee (message mode)
+    /// A `pendingOutboundBatch` is attached to every message until the contact sends back
+    /// a `.forwardSecret` bundle using one of our prekeys — cryptographic proof they stored
+    /// it. Only then is the batch cleared.
     func encryptBundle(
         basket: Basket? = nil,
         for identifier: String,
@@ -997,10 +1003,17 @@ extension ContactManager {
             // Shard-only bundles (basket == nil) use Data() as a sentinel so the
             // receiver can detect "no basket" without trying to parse the payload.
             let groupMessage = basket != nil ? messageData : Data()
-            let bundle = try Manager.Crypto().sealGroup(
-                message:    groupMessage,
-                groupID:    UUID(),
-                recipients: [GroupRecipient(
+            let sealedPayload = OccultaBundle.SealedPayload(
+                message:         groupMessage,
+                shardOperations: shardOperations,
+                custodyManifest: custodyManifest,
+                expectedShards:  expectedShards,
+                appVersion:      Bundle.main.appVersion
+            )
+            let bundle = try Manager.Crypto().seal(
+                sealedPayload: sealedPayload,
+                groupID:       UUID(),
+                recipients:    [GroupRecipient(
                     publicKey:       recipientMaterial,
                     quantumMaterial: quantumMaterial,
                     contactPrekey:   contactPrekey,
@@ -1053,7 +1066,16 @@ extension ContactManager {
     /// per-recipient prekey sync batch if their stock for this sender is below
     /// the replenishment threshold. The shared ciphertext is sealed once with a
     /// random session key bound to the group UUID.
-    func encryptGroupBundle(basket: Basket, groupID: UUID, recipients identifierList: [String]) throws -> Data {
+    func encryptGroupBundle(basket: Basket, groupID: UUID) throws -> Data {
+        let layer: RoutingDepth
+        switch self.security.currentDepth {
+        case 0:          layer = .normal
+        case let d where d > 0: layer = .duress
+        default:         throw Errors.invalidRoutingDepth
+        }
+
+        guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
+        let identifierList = grp.members(in: layer)
         guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
         let predicate = #Predicate<Contact.Profile> {
             identifierList.contains($0.identifier) && $0.deletionToken == nil
@@ -1079,7 +1101,7 @@ extension ContactManager {
             )
         }
 
-        let bundle = try Manager.Crypto().sealGroup(
+        let bundle = try Manager.Crypto().seal(
             message:    try WireHandle.encode(basket: basket),
             groupID:    groupID,
             recipients: recipients
@@ -1363,10 +1385,16 @@ extension ContactManager {
 
 extension ContactManager {
 
-    /// Decrypt a group bundle and return the payload, sender ID, and group ID.
+    /// The single decrypt entry point for all inbound bundles with `secrecy.mode == .group`.
     ///
-    /// The caller resolves the local Group record from `groupID` by matching against
-    /// each group's decrypted `encryptedID`.
+    /// This handles every bundle type sent by ≥ 1.9.0 contacts: basket messages, shard
+    /// operations, custody manifests, and identity challenge envelopes. The caller
+    /// (`buildOwnedBasket`) dispatches to this function whenever `bundle.group != nil`,
+    /// then inspects `sealed` to route identity challenges, shard/custody ops, and the
+    /// empty-message sentinel before returning a basket to the UI.
+    ///
+    /// `groupID` in the return value comes from the decrypted `SealedPayload.groupID`,
+    /// not the cleartext `GroupEnvelope`. Callers use it to locate the matching Group record.
     func openGroup(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String, groupID: UUID) {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
@@ -1396,7 +1424,7 @@ extension ContactManager {
             quantumMaterial: quantumMaterial,
             prekeyManager: prekeyManager
         )
-        let recipientPayload = try cryptoOps.openWrappedPayload(entry, groupID: envelope.id, using: wrappingKey)
+        let recipientPayload = try cryptoOps.openWrappedPayload(entry, blind: envelope.blind, using: wrappingKey)
 
         // ── 5. Prekey management ─────────────────────────────────────────
         if let consumable {
@@ -1411,11 +1439,20 @@ extension ContactManager {
         let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
         let decoded     = try WireHandle.decode(payload: payloadData)
 
+        // ── 6.5. Verify sender proof ─────────────────────────────────────
+        // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
+        // were not replaced after sealing. A mismatch means a group member tampered
+        // with the bundle to frame a different sender.
+        let expectedProof = Data(HMAC<SHA256>.authenticationCode(for: senderPublicKey, using: sessionKey))
+        guard decoded.senderProof == expectedProof else {
+            throw GroupDecryptError.senderProofMismatch
+        }
+
         // ── 7. Post-processing ────────────────────────────────────────────
         try self.updateMaxVersion(from: decoded.appVersion, for: sender, using: cryptoOps)
         try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
         try self.modelContext.save()
 
-        return (decoded, sender.identifier, envelope.id)
+        return (decoded, sender.identifier, decoded.groupID ?? UUID())
     }
 }

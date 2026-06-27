@@ -11,21 +11,31 @@ import CryptoKit
 // MARK: - Forward-secret encryption
 
 extension Manager.Crypto {
-    /// Encrypt a message for a single recipient.
+    /// Seal a message for a single recipient using the legacy single-recipient format.
     ///
-    /// ## Invariant: no silent security degradation
+    /// ## When to use this path vs `seal(message:groupID:recipients:)`
+    /// This function is retained for two cases:
+    ///
+    /// 1. **< 1.9.0 contacts** — contacts whose `maxBundleVersion` predates the group
+    ///    bundle format must be reached with the single-recipient wire format.
+    ///
+    /// 2. **Identity challenges** — `sealIdentityBundle` deliberately uses
+    ///    `longTermFallback` (no prekey) so that identity verification never fails due
+    ///    to prekey exhaustion. The receiver re-derives the session key via long-term
+    ///    ECDH, which only works with this path — the group format uses a randomly-
+    ///    generated session key that cannot be re-derived from ECDH alone.
+    ///
+    /// For all ≥ 1.9.0 sends (messages, shard ops, custody manifests),
+    /// `ContactManager.encryptBundle` routes through `seal(message:groupID:recipients:)`
+    /// with a single-entry ephemeral group.
+    ///
+    /// ## No silent security degradation
     /// If `contactPrekey` is non-nil, the caller explicitly requested the FS path.
-    /// Any failure in that path (ephemeral key generation, ECDH with the prekey)
-    /// throws `EncryptionError` rather than silently falling back to the long-term
-    /// key path. Silent fallback would mean the caller believes they sent FS when
-    /// they actually sent with the long-term key.
+    /// Any failure throws `EncryptionError` rather than silently falling back to the
+    /// long-term key path — the caller must know which path was actually used.
     ///
-    /// The fallback path is entered ONLY when `contactPrekey` is nil — meaning the
-    /// caller explicitly chose the fallback (exhausted prekeys).
-    ///
-    /// ## SE ordering
-    /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
-    /// (generateBatch) are done by the caller (ContactManager) before this call.
+    /// The fallback path is entered ONLY when `contactPrekey` is nil (prekeys exhausted
+    /// or deliberately omitted, as for identity challenges).
     func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil, version: OccultaBundle.Version = OccultaBundle.currentVersion) throws -> OccultaBundle {
         guard
             recipientMaterial.count == 65
@@ -104,7 +114,7 @@ extension Manager.Crypto {
         case invalidRecipientMaterial
         /// `contactPrekey.publicKey` from an inbound batch is not a valid 65-byte key.
         case invalidPrekeyMaterial
-        /// `sealGroup` was called with an empty recipients array.
+        /// `seal(message:groupID:recipients:)` was called with an empty recipients array.
         case noRecipients
     }
 }

@@ -92,7 +92,7 @@ extension ContactManager {
 
     // MARK: Private
 
-    private func group(withID id: UUID) throws -> Group? {
+    func group(withID id: UUID) throws -> Group? {
         try self.modelContext.fetch(FetchDescriptor<Group>()).first { $0.readID() == id }
     }
 }

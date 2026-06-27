@@ -235,7 +235,7 @@ final class ComposeViewModel {
         }
     }
 
-    func encrypt(groupID: UUID, recipients: [String], contactManager: ContactManager) async {
+    func encrypt(groupID: UUID, contactManager: ContactManager) async {
         do {
             var allFiles = self.messages
             let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -261,7 +261,7 @@ final class ComposeViewModel {
             }
 
             let basket    = Basket(files: processed)
-            let encrypted = try contactManager.encryptGroupBundle(basket: basket, groupID: groupID, recipients: recipients)
+            let encrypted = try contactManager.encryptGroupBundle(basket: basket, groupID: groupID)
             
             guard !encrypted.isEmpty else {
                 await MainActor.run { self.showError("Encryption failed. Try again.") }

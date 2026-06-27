@@ -47,26 +47,26 @@ struct GroupStructuralTests {
         #expect(Group.slotSize == 156)
     }
 
-    @Test func freshFillerArray_count_is32() {
-        #expect(Group.freshFillerArray().count == Group.slotCount)
+    @Test func freshFillerArray_count_is32() throws {
+        #expect(try Group.freshFillerArray().count == Group.slotCount)
     }
 
-    @Test func freshFillerArray_allSlots_are64bytes() {
-        for slot in Group.freshFillerArray() {
+    @Test func freshFillerArray_allSlots_are156bytes() throws {
+        for slot in try Group.freshFillerArray() {
             #expect(slot.count == Group.slotSize)
         }
     }
 
-    @Test func freshFillerArray_isRandom_twoCallsDiffer() {
-        let a = Group.freshFillerArray()
-        let b = Group.freshFillerArray()
+    @Test func freshFillerArray_isRandom_twoCallsDiffer() throws {
+        let a = try Group.freshFillerArray()
+        let b = try Group.freshFillerArray()
         #expect(a != b, "Two fresh filler arrays must differ — each slot is cryptographically random")
     }
 
-    @Test func twoFreshFillerArrays_areIndependent() {
+    @Test func twoFreshFillerArrays_areIndependent() throws {
         // Real and duress arrays initialised from independent freshFillerArray() calls must differ.
-        let real   = Group.freshFillerArray()
-        let duress = Group.freshFillerArray()
+        let real   = try Group.freshFillerArray()
+        let duress = try Group.freshFillerArray()
         #expect(real != duress)
     }
 }

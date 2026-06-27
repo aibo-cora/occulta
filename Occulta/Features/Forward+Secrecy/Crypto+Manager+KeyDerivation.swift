@@ -6,7 +6,7 @@
 import Foundation
 import CryptoKit
 
-// MARK: - Outbound key derivation (shared by seal and sealGroup)
+// MARK: - Outbound key derivation (shared by both seal overloads)
 
 extension Manager.Crypto {
 
@@ -15,7 +15,8 @@ extension Manager.Crypto {
     /// `contactPrekey != nil` → FS path: ephemeral ECDH [+ ML-KEM]
     /// `contactPrekey == nil` → fallback: long-term ECDH [+ ML-KEM]
     ///
-    /// Called by `seal()` (single-recipient) and `wrapRecipient` inside `sealGroup`.
+    /// Called by `seal(message:contactPrekey:...)` (single-recipient) and
+    /// `wrapRecipient` inside `seal(message:groupID:recipients:)`.
     func deriveOutboundKey(
         contactPrekey: Prekey?,
         recipientPublicKey: Data,
