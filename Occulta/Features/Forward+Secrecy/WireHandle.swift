@@ -32,6 +32,7 @@ struct WireHandle {
         let fingerprintNonce: Data   // 16 bytes
         let senderFingerprint: Data  // 32 bytes
         let ciphertext: Data         // AES-GCM combined: nonce(12) || ct || tag(16)
+        let groupEnvelope: Data?     // TLV section 0x01 — JSON(GroupEnvelope), nil for non-group bundles
     }
 
     // MARK: - Outer envelope: parse
@@ -65,6 +66,15 @@ struct WireHandle {
         // A real P-256 key always begins with 0x04 — all-zero is not a valid key.
         let ephemeralKey = ephemeralKeyRaw.allSatisfy({ $0 == 0 }) ? Data() : ephemeralKeyRaw
 
+        // TLV extension sections (§4.4). Unknown types are skipped.
+        var groupEnvelope: Data? = nil
+        while r.remaining >= 5 {
+            let sectionType   = try r.uint8()
+            let sectionLength = Int(try r.uint32BE())
+            let sectionBytes  = try r.read(sectionLength)
+            if sectionType == 0x01 { groupEnvelope = sectionBytes }
+        }
+
         return Bundle(
             version:           version,
             minReaderVersion:  minReaderVersion,
@@ -74,7 +84,8 @@ struct WireHandle {
             ephemeralKey:      ephemeralKey,
             fingerprintNonce:  fingerprintNonce,
             senderFingerprint: senderFP,
-            ciphertext:        ciphertext
+            ciphertext:        ciphertext,
+            groupEnvelope:     groupEnvelope
         )
     }
 
@@ -145,6 +156,14 @@ struct WireHandle {
         w.data(bundle.senderFingerprint)
         w.uint64BE(UInt64(bundle.ciphertext.count))
         w.data(bundle.ciphertext)
+
+        // TLV section 0x01 — group envelope (§4.4). Written only for group bundles.
+        if let group = bundle.group {
+            let groupJSON = try JSONEncoder().encode(group)
+            w.uint8(0x01)
+            w.uint32BE(UInt32(groupJSON.count))
+            w.data(groupJSON)
+        }
 
         return w.result
     }
@@ -357,6 +376,8 @@ private struct Reader {
         self.data   = data
         self.offset = data.startIndex
     }
+
+    var remaining: Int { data.endIndex - offset }
 
     mutating func read(_ count: Int) throws -> Data {
         let end = offset + count

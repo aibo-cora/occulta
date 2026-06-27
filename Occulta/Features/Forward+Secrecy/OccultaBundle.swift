@@ -596,6 +596,6 @@ extension OccultaBundle {
         self.ciphertext        = b.ciphertext
         self.fingerprintNonce  = b.fingerprintNonce
         self.senderFingerprint = b.senderFingerprint
-        self.group             = nil
+        self.group             = try b.groupEnvelope.map { try JSONDecoder().decode(GroupEnvelope.self, from: $0) }
     }
 }

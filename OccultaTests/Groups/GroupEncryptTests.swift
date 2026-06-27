@@ -232,6 +232,39 @@ private struct Pair {
     }
 }
 
+// MARK: - Wire encode/decode round-trip
+
+// Regression: WireHandle.encode previously dropped the group envelope (bundle.group was
+// silently nil on decode), causing decryptSealed to throw BundleError.unsupportedMode
+// and show "Your contact is using a newer version of Occulta."
+@Suite("sealGroup — wire encode/decode round-trip")
+@MainActor struct GroupWireRoundTripTests {
+
+    @Test func groupEnvelope_survivesWireEncodeDecode() throws {
+        let pair    = try Pair()
+        let groupID = UUID()
+        let r       = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle  = try pair.senderCrypto.sealGroup(message: Data("test".utf8), groupID: groupID, recipients: [r])
+
+        let encoded = try bundle.encoded(version: .v4)
+        let decoded = try OccultaBundle.decoded(from: encoded)
+
+        #expect(decoded.group != nil)
+        #expect(decoded.group?.id == groupID)
+        #expect(decoded.group?.recipients.count == 1)
+        #expect(decoded.secrecy.mode == .group)
+    }
+
+    @Test func groupBundle_decodesViaWirePath() throws {
+        let pair   = try Pair()
+        let r      = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.sealGroup(message: Data("x".utf8), groupID: UUID(), recipients: [r])
+        let data   = try bundle.encoded(version: .v4)
+
+        #expect(data.prefix(WireHandle.magic.count).elementsEqual(WireHandle.magic))
+    }
+}
+
 // MARK: - Basket round-trip
 
 // Validates the calling contract between encryptGroupBundle and sealGroup:
