@@ -72,7 +72,10 @@ struct WireHandle {
             let sectionType   = try r.uint8()
             let sectionLength = Int(try r.uint32BE())
             let sectionBytes  = try r.read(sectionLength)
-            if sectionType == 0x01 { groupEnvelope = sectionBytes }
+            if sectionType == 0x01 {
+                guard groupEnvelope == nil else { throw OccultaBundle.BundleError.malformedBundle }
+                groupEnvelope = sectionBytes
+            }
         }
 
         return Bundle(

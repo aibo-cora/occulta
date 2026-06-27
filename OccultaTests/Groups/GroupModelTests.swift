@@ -180,6 +180,48 @@ struct GroupStructuralTests {
         }
     }
 
+    @Test func removeFirst_then_add_atCapacity_succeeds() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx = ModelContext(try makeContainer())
+        let group = try Group(name: "Full")
+        ctx.insert(group)
+
+        var ids = (0..<Group.slotCount).map { _ in UUID().uuidString }
+        for id in ids { try group.addMember(id, in: .normal) }
+
+        // Remove one then add one — the correct order used by saveGroup after F-21 fix.
+        let removed = ids.removeFirst()
+        let added   = UUID().uuidString
+        try group.removeMember(removed, in: .normal)
+        try group.addMember(added, in: .normal)
+
+        let members = Set(group.members(in: .normal))
+        #expect(!members.contains(removed))
+        #expect(members.contains(added))
+        #expect(members.count == Group.slotCount)
+    }
+
+    @Test func addFirst_atCapacity_throwsBeforeRemove() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx = ModelContext(try makeContainer())
+        let group = try Group(name: "Full")
+        ctx.insert(group)
+
+        var ids = (0..<Group.slotCount).map { _ in UUID().uuidString }
+        for id in ids { try group.addMember(id, in: .normal) }
+
+        // Adding before removing at capacity must throw — this is the failure mode
+        // that the old saveGroup order would hit, leaving the group unchanged.
+        let toRemove = ids[0]
+        let toAdd    = UUID().uuidString
+        #expect(throws: GroupError.capacityExceeded) {
+            try group.addMember(toAdd, in: .normal)
+        }
+        // Group is unchanged after the failed add.
+        #expect(group.members(in: .normal).contains(toRemove))
+        #expect(!group.members(in: .normal).contains(toAdd))
+    }
+
     @Test func duressLayer_independentFromRealLayer() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let ctx = ModelContext(try makeContainer())

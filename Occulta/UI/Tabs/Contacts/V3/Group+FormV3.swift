@@ -22,6 +22,8 @@ extension Group {
         @State private var selectedIdentifiers = Set<String>()
         @State private var eligible:   [Contact.Profile] = []
         @State private var ineligible: [Contact.Profile] = []
+        @State private var showSaveError  = false
+        @State private var saveErrorText  = ""
 
         @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
         @Query private var groups: [Group]
@@ -126,6 +128,11 @@ extension Group {
                             .disabled(!self.canSave)
                     }
                 }
+                .alert("Couldn't save group", isPresented: self.$showSaveError) {
+                    Button("OK") {}
+                } message: {
+                    Text(self.saveErrorText)
+                }
             }
         }
 
@@ -217,11 +224,11 @@ extension Group {
                 if let group = self.existingGroup {
                     try group.writeName(trimmed)
                     let current = Set(group.members(in: self.layer))
-                    for identifier in self.selectedIdentifiers.subtracting(current) {
-                        try group.addMember(identifier, in: self.layer)
-                    }
                     for identifier in current.subtracting(self.selectedIdentifiers) {
                         try group.removeMember(identifier, in: self.layer)
+                    }
+                    for identifier in self.selectedIdentifiers.subtracting(current) {
+                        try group.addMember(identifier, in: self.layer)
                     }
                     try self.modelContext.save()
                 } else {
@@ -233,7 +240,9 @@ extension Group {
                     try self.modelContext.save()
                 }
             } catch {
-                print("❌ saveGroup failed: \(error)")
+                self.saveErrorText  = error.localizedDescription
+                self.showSaveError  = true
+                return
             }
 
             self.dismiss()

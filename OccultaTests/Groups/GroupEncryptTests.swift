@@ -263,6 +263,44 @@ private struct Pair {
 
         #expect(data.prefix(WireHandle.magic.count).elementsEqual(WireHandle.magic))
     }
+
+    // Regression: duplicate TLV section 0x01 previously silently used the last one
+    // instead of rejecting the bundle. A malformed or maliciously crafted bundle with
+    // two 0x01 sections must throw BundleError.malformedBundle.
+    @Test func duplicateTLVSection_throws() throws {
+        let pair   = try Pair()
+        let r      = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.sealGroup(message: Data("dup".utf8), groupID: UUID(), recipients: [r])
+        var wire   = try bundle.encoded(version: .v4)
+
+        // Append a second TLV section 0x01 with 4 arbitrary payload bytes.
+        let payload = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        wire.append(0x01)                               // type
+        wire.append(contentsOf: [0x00, 0x00, 0x00, 0x04]) // length = 4, big-endian
+        wire.append(contentsOf: payload)
+
+        #expect(throws: OccultaBundle.BundleError.malformedBundle) {
+            try WireHandle.parse(wire)
+        }
+    }
+
+    @Test func unknownTLVSection_isSkipped() throws {
+        let pair    = try Pair()
+        let groupID = UUID()
+        let r       = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle  = try pair.senderCrypto.sealGroup(message: Data("skip".utf8), groupID: groupID, recipients: [r])
+        var wire    = try bundle.encoded(version: .v4)
+
+        // Append an unknown TLV section (type 0xFF) — must be silently skipped per §4.4.
+        let payload = Data([0x01, 0x02, 0x03])
+        wire.append(0xFF)
+        wire.append(contentsOf: [0x00, 0x00, 0x00, 0x03])
+        wire.append(contentsOf: payload)
+
+        // Parse must succeed and group envelope must still be present.
+        let parsed  = try WireHandle.parse(wire)
+        #expect(parsed.groupEnvelope != nil)
+    }
 }
 
 // MARK: - Basket round-trip

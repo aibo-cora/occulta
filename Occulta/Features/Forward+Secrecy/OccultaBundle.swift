@@ -72,6 +72,8 @@ struct OccultaBundle: Codable {
         /// Bundle carries a `Mode` string this build does not recognise.
         /// Surfaced to the UI as "requires a newer version of Occulta."
         case unsupportedMode
+        /// Wire data contains a structural violation (e.g. duplicate TLV section).
+        case malformedBundle
     }
 
     // MARK: - Version
