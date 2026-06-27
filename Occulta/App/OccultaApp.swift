@@ -525,8 +525,9 @@ private struct RootView: View {
                 }
 
                 if bundle.group != nil {
-                    // Group bundle — session key is wrapped per-recipient; no identity
-                    // challenges or shard operations ride on group messages.
+                    // Group bundle — all 1.9.0+ single-recipient sends and named-group
+                    // sends use this path. Identity challenges and shard/custody ops
+                    // still travel on the single-recipient path.
                     let (sealed, ownerID, _) = try self.contactManager.openGroup(bundle: bundle)
                     decodedBundleVersion = bundle.version
                     decrypted = (sealed.message, ownerID)

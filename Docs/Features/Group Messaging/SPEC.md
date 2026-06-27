@@ -228,6 +228,31 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 
 ---
 
+## Unified Bundle Format — Implemented (v1.9.0)
+
+For contacts running app version ≥ 1.9.0, `encryptBundle` (single-recipient sends) routes regular basket messages through `sealGroup` with a single-entry `GroupEnvelope`. The `groupID` is ephemeral (generated per bundle via `UUID()`, not stored in the `Group` SwiftData entity).
+
+Shard and custody operations remain on the single-recipient (`seal`) path — they are targeted to one contact by design.
+
+**Receive path:** `buildOwnedBasket` already routes `bundle.group != nil` to `openGroup`. No routing change required.
+
+**Backward compat:** `decryptSealed` is retained for bundles from contacts on < 1.9.0 and for shard/custody bundles regardless of version.
+
+### What this unlocks (future work)
+
+**Group identity challenges.** Possible once `openGroup` absorbs `SealedPayload.identityChallenge` handling currently in `decryptSealed`.
+
+**Per-recipient shard distribution.** Possible once `RecipientPayload` is extended with `shardPayload: Data?` and `openGroup` handles shard routing.
+
+```
+RecipientPayload
+├── sessionKey: Data
+├── prekeyBatch: PrekeySyncBatch?
+└── shardPayload: Data?              // FUTURE — per-recipient shard bytes
+```
+
+---
+
 ## Out of Scope (v1.9.0)
 
 - Message persistence / conversation threading
@@ -236,3 +261,5 @@ The duress layer starts as pure filler. Having zero members in the duress layer 
 - Key ratcheting on member removal — not needed; each bundle uses a fresh random session key
 - Proactive prekey replenishment warnings
 - Duress group setup guidance
+- Group identity challenges (requires `openGroup` to absorb identity-challenge routing from `decryptSealed`)
+- Per-recipient shard distribution via `RecipientPayload.shardPayload`

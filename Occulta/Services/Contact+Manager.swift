@@ -977,6 +977,26 @@ extension ContactManager {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
         }
 
+        // 1.9.0+ contacts: route regular message sends through the group bundle
+        // format with an ephemeral single-recipient envelope. Shard/custody ops
+        // remain on the single-recipient path (they are targeted to one contact
+        // by design and do not benefit from the group crypto path).
+        if targetVersion == .groupCapable, basket != nil, shardOperations == nil, custodyManifest == nil, expectedShards == nil {
+            let bundle = try Manager.Crypto().sealGroup(
+                message:    messageData,
+                groupID:    UUID(),
+                recipients: [GroupRecipient(
+                    publicKey:       recipientMaterial,
+                    quantumMaterial: quantumMaterial,
+                    contactPrekey:   contactPrekey,
+                    pendingBatch:    outboundBatch
+                )]
+            )
+            let encodedBundle = try bundle.encoded(version: .v4)
+            if contactPrekey != nil { try self.modelContext.save() }
+            return encodedBundle
+        }
+
         let sealedPayload = OccultaBundle.SealedPayload(
             message:         messageData,
             prekeyBatch:     outboundBatch,
