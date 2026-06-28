@@ -175,7 +175,7 @@ The spec notes there is no UX obligation to populate duress groups, but provides
 
 For the `longTermFallback` path (`contactPrekey == nil`), the per-recipient wrapping key is `HKDF(ECDH(senderLongTermPriv, recipientLongTermPub))` — fully determined by the two parties' stable identity keys, with no per-bundle randomness. `RecipientPayload` contains only `sessionKey: Data` and `prekeyBatch: PrekeySyncBatch?` — no timestamp, nonce, sequence number, or bundle identifier. After `openGroup` succeeds on this path, `consumable == nil` and no bundle ID or seen-nonce is recorded.
 
-**Actual exposure (narrower than originally stated):** Shard bytes — the sensitive vault content — are already protected. `encryptBundle` enforces `shardRequiresPrekey` for any bundle where `shardOperations` contains a non-nil `attribute` (i.e., actual shard payload). Those bundles throw rather than fall back to `longTermFallback`. The FS paths are immune independently: prekey consumption deletes the SE private key, so second delivery throws `recipientSlotNotFound`.
+**Actual exposure (narrower than originally stated):** Shard bytes — the sensitive vault content — are already protected. When no prekey is available, `encryptBundle` drops shard operations from the bundle entirely and sends only the basket on `longTermFallback` — no shard content travels without FS. The FS paths are immune independently: prekey consumption deletes the SE private key, so second delivery throws `recipientSlotNotFound`.
 
 What remains replayable on the fallback path is:
 
@@ -255,16 +255,13 @@ Propagate `throws` through `freshFillerArray()` and `encryptedSlots(for:)`. Add 
 
 ### F-20 · Recipient fingerprints enable passive group membership confirmation
 
-**File:** `Crypto+Manager+GroupEncrypt.swift:88–101`, `WireHandle.swift:70–75`  
-**Confidence:** 8/10
+**File:** `Crypto+Manager+GroupEncrypt.swift`, `Crypto+Manager+GroupDecrypt.swift`  
+**Confidence:** 8/10  
+**Status:** Fixed
 
-Each `OccultaBundle.Recipient` in the cleartext TLV section carries `fingerprint = SHA256(recipientLongTermPubKey || fingerprintNonce)` and `fingerprintNonce` (16 bytes), both unauthenticated and unencrypted. Any party who holds a target contact's long-term public key (obtained through a prior key exchange) can iterate the recipient list of any intercepted bundle, compute `SHA256(targetPubKey || entry.fingerprintNonce)` for each entry, and confirm whether the target is a group member — with no decryption, no key derivation, and no server interaction.
+Each `OccultaBundle.Recipient` in the cleartext TLV section carried `fingerprint = SHA256(recipientLongTermPubKey || fingerprintNonce)` and `fingerprintNonce` (16 bytes), both unauthenticated and unencrypted. Any party who holds a target contact's long-term public key (obtained through a prior key exchange) could iterate the recipient list of any intercepted bundle, compute `SHA256(targetPubKey || entry.fingerprintNonce)` for each entry, and confirm whether the target is a group member — with no decryption, no key derivation, and no server interaction.
 
-In the single-recipient path only the sender's fingerprint is exposed. In the group path, the entire recipient social graph is exposed to anyone with any one member's public key.
-
-**Known tradeoff:** Public keys are only known to contacts who have completed a physical-proximity key exchange. The leak is bounded to the contact trust boundary. This may be acceptable as a documented limitation, but the decision should be explicit.
-
-**Fix (if not accepted):** Use `HMAC-SHA256(recipientPubKey, bundleEphemeralSecret)` as the fingerprint, where `bundleEphemeralSecret` is a sender-only value not included in the bundle — recipients find their slot by trial-decryption of `wrappedPayload` rather than fingerprint matching.
+**Fix applied:** `fingerprint` and `fingerprintNonce` removed from `Recipient`. The receiver finds their slot by trial-decryption: for each slot, derive the inbound wrapping key from the slot's `secrecyContext` and attempt `AES.GCM.open(wrappedPayload, authenticating: blind)`. The first slot that opens is theirs. Per-recipient AAD simplified from `blind || fingerprint` to `blind`. `GroupEnvelope.version: UInt8 = 1` added as a forward-compatibility field for future format changes without a new TLV section type.
 
 ---
 

@@ -631,8 +631,6 @@ extension ContactManager {
         case trusteeLacksQuantumMaterial
         case groupIDMissing
         case groupHasNoMembers
-        /// Shard operations must be sent on the forward-secret path; no prekey is available for this contact.
-        case shardRequiresPrekey
         /// `security.currentDepth` decoded to a value outside the valid RoutingDepth range.
         /// Should never occur in practice; signals a bug in the security layer.
         case invalidRoutingDepth
@@ -906,9 +904,9 @@ extension ContactManager {
     ///   - Calls `seal(message:groupID:recipients:)` with a single-entry ephemeral group.
     ///   - `groupID` is a fresh `UUID()` per bundle — not stored in the Group entity.
     ///   - Shard ops (`isCarryingShard == true`) require a prekey. If none is available,
-    ///     throws `shardRequiresPrekey` so the caller can retry basket-only. This enforces
-    ///     forward secrecy for shard material: even if the bundle is harvested later, it
-    ///     cannot be decrypted without the consumed prekey private key.
+    ///     shard operations are silently dropped and the basket is sent on `longTermFallback`.
+    ///     This ensures message delivery is never blocked by prekey exhaustion — shard content
+    ///     simply defers to the next bundle that has a prekey available.
     ///   - Shard-only sends (`basket == nil`) use `Data()` as the message sentinel. The
     ///     receiver detects the empty message and skips basket decode.
     ///   - Message sends pop a prekey (FS when available, longTermFallback when exhausted)
@@ -948,8 +946,8 @@ extension ContactManager {
         // ── 2. Prekey handling ────────────────────────────────────────────
         // Message mode: pop prekey (→ .forwardSecret or .longTermFallback);
         //               attach pending batch if one exists.
-        // Shard mode (group path): pop prekey — FS is mandatory for shards,
-        //               throw shardRequiresPrekey if none is available.
+        // Shard mode (group path): pop prekey — FS preferred for shards;
+        //               shard ops dropped silently if no prekey available.
         // Shard mode (old path, <1.9.0): skip prekey — keep longTermFallback.
         var contactPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
@@ -997,15 +995,15 @@ extension ContactManager {
         // wrapping key is consumed after one use, so a harvested bundle cannot be
         // decrypted later even if the shard itself is later obtained.
         if targetVersion == .groupCapable {
-            if isCarryingShard {
-                guard contactPrekey != nil else { throw Errors.shardRequiresPrekey }
-            }
+            // Drop shard ops if no prekey is available — FS is required for shard
+            // content, but message delivery must not be blocked by prekey exhaustion.
+            let effectiveShardOps = (isCarryingShard && contactPrekey == nil) ? nil : shardOperations
             // Shard-only bundles (basket == nil) use Data() as a sentinel so the
             // receiver can detect "no basket" without trying to parse the payload.
             let groupMessage = basket != nil ? messageData : Data()
             let sealedPayload = OccultaBundle.SealedPayload(
                 message:         groupMessage,
-                shardOperations: shardOperations,
+                shardOperations: effectiveShardOps,
                 custodyManifest: custodyManifest,
                 expectedShards:  expectedShards,
                 appVersion:      Bundle.main.appVersion
@@ -1276,7 +1274,7 @@ extension ContactManager {
         // ── 2. Key derivation + open ─────────────────────────────────────
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
 
-        let quantumMaterial = try self.resolveQuantumMaterialIfNeeded(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
+        let quantumMaterial = try self.resolveQuantumMaterial(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
         let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
 
         let (sessionKey, consumable) = try cryptoOps.deriveInboundKey(
@@ -1326,7 +1324,7 @@ extension ContactManager {
         return decrypted
     }
 
-    private func resolveQuantumMaterialIfNeeded(
+    private func resolveQuantumMaterial(
         mode: OccultaBundle.Mode,
         for sender: Contact.Profile,
         using cryptoOps: Manager.Crypto
@@ -1407,26 +1405,21 @@ extension ContactManager {
         let sender = try self.identifyOwner(for: bundle)
         try sender.configureForwardSecrecy()
 
-        // ── 2. Find our recipient slot ──────────────────────────────────
-        let entry = try cryptoOps.findRecipientSlot(in: bundle)
-
-        // ── 3. Resolve key material for this slot ───────────────────────
-        let quantumMaterial = try self.resolveQuantumMaterialIfNeeded(
-            mode: entry.secrecyContext.mode, for: sender, using: cryptoOps
-        )
+        // ── 2. Resolve sender key material ─────────────────────────────
         let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
+        let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
 
-        // ── 4. Derive wrapping key, open our slot ───────────────────────
-        let (wrappingKey, consumable) = try cryptoOps.deriveInboundKey(
-            secrecy: entry.secrecyContext,
+        // ── 3. Trial-decrypt: find our slot and open it ─────────────────
+        let (recipientPayload, consumable) = try cryptoOps.findAndOpenRecipientSlot(
+            in: bundle,
+            blind: envelope.blind,
             senderContactID: sender.identifier,
             senderPublicKey: senderPublicKey,
             quantumMaterial: quantumMaterial,
             prekeyManager: prekeyManager
         )
-        let recipientPayload = try cryptoOps.openWrappedPayload(entry, blind: envelope.blind, using: wrappingKey)
 
-        // ── 5. Prekey management ─────────────────────────────────────────
+        // ── 4. Prekey management ─────────────────────────────────────────
         if let consumable {
             prekeyManager.consume(prekey: consumable)
             try sender.clearPendingBatch()
@@ -1434,12 +1427,12 @@ extension ContactManager {
             try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
         }
 
-        // ── 6. Open shared ciphertext ────────────────────────────────────
+        // ── 5. Open shared ciphertext ────────────────────────────────────
         let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
         let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
         let decoded     = try WireHandle.decode(payload: payloadData)
 
-        // ── 6.5. Verify sender proof ─────────────────────────────────────
+        // ── 5.5. Verify sender proof ─────────────────────────────────────
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
@@ -1448,7 +1441,7 @@ extension ContactManager {
             throw GroupDecryptError.senderProofMismatch
         }
 
-        // ── 7. Post-processing ────────────────────────────────────────────
+        // ── 6. Post-processing ────────────────────────────────────────────
         try self.updateMaxVersion(from: decoded.appVersion, for: sender, using: cryptoOps)
         try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
         try self.modelContext.save()

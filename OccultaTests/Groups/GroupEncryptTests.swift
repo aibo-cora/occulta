@@ -115,20 +115,6 @@ private struct Pair {
         #expect(bundle.version == .v4)
     }
 
-    @Test func recipientFingerprint_is32Bytes() throws {
-        let pair = try Pair()
-        let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
-        let bundle = try pair.senderCrypto.seal(message: Data("test".utf8), groupID: UUID(), recipients: [r])
-        #expect(bundle.group!.recipients[0].fingerprint.count == 32)
-    }
-
-    @Test func recipientFingerprintNonce_is16Bytes() throws {
-        let pair = try Pair()
-        let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
-        let bundle = try pair.senderCrypto.seal(message: Data("test".utf8), groupID: UUID(), recipients: [r])
-        #expect(bundle.group!.recipients[0].fingerprintNonce.count == 16)
-    }
-
     @Test func invalidRecipientPublicKey_throws() throws {
         let km = TestKeyManager()
         let crypto = Manager.Crypto(keyManager: km)

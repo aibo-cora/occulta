@@ -36,16 +36,24 @@ private struct DecryptPair {
     }
 }
 
-// MARK: - findRecipientSlot tests
+// MARK: - findAndOpenRecipientSlot tests
 
-@Suite("findRecipientSlot")
-@MainActor struct FindRecipientSlotTests {
+@Suite("findAndOpenRecipientSlot")
+@MainActor struct FindAndOpenRecipientSlotTests {
 
-    @Test func findsOurSlot() throws {
+    @Test func findsOurSlot_returnsSessionKey() throws {
         let pair = try DecryptPair()
         let (bundle, _) = try pair.sealBundle()
-        let entry = try pair.recipientCrypto.findRecipientSlot(in: bundle)
-        #expect(entry.fingerprint == bundle.group!.recipients[0].fingerprint)
+        let senderPub = try pair.senderKM.retrieveIdentity()
+        let (payload, _) = try pair.recipientCrypto.findAndOpenRecipientSlot(
+            in: bundle,
+            blind: bundle.group!.blind,
+            senderContactID: "sender",
+            senderPublicKey: senderPub,
+            quantumMaterial: nil,
+            prekeyManager: Manager.PrekeyManager()
+        )
+        #expect(payload.sessionKey.count == 32)
     }
 
     @Test func missingGroupEnvelope_throws() throws {
@@ -57,38 +65,56 @@ private struct DecryptPair {
             recipientMaterial: try TestKeyManager().retrieveIdentity()
         )
         #expect(throws: GroupDecryptError.noGroupEnvelope) {
-            try crypto.findRecipientSlot(in: bundle)
+            try crypto.findAndOpenRecipientSlot(
+                in: bundle, blind: Data(count: 32),
+                senderContactID: "sender", senderPublicKey: Data(count: 65),
+                quantumMaterial: nil, prekeyManager: Manager.PrekeyManager()
+            )
         }
     }
 
-    @Test func noMatchingSlot_throws() throws {
+    @Test func notARecipient_throws() throws {
         let pair = try DecryptPair()
         let (bundle, _) = try pair.sealBundle()
-        // A third party has no matching slot
+        let senderPub = try pair.senderKM.retrieveIdentity()
         let thirdParty = Manager.Crypto(keyManager: TestKeyManager())
         #expect(throws: GroupDecryptError.recipientSlotNotFound) {
-            try thirdParty.findRecipientSlot(in: bundle)
+            try thirdParty.findAndOpenRecipientSlot(
+                in: bundle,
+                blind: bundle.group!.blind,
+                senderContactID: "sender",
+                senderPublicKey: senderPub,
+                quantumMaterial: nil,
+                prekeyManager: Manager.PrekeyManager()
+            )
         }
     }
 
     @Test func multipleRecipients_findsCorrectSlot() throws {
-        let senderKM   = TestKeyManager()
-        let crypto     = Manager.Crypto(keyManager: senderKM)
-        let target     = TestKeyManager()
-        let targetPub  = try target.retrieveIdentity()
-        let decoy      = TestKeyManager()
-        let decoyPub   = try decoy.retrieveIdentity()
+        let senderKM  = TestKeyManager()
+        let crypto    = Manager.Crypto(keyManager: senderKM)
+        let senderPub = try senderKM.retrieveIdentity()
+        let target    = TestKeyManager()
+        let targetPub = try target.retrieveIdentity()
+        let decoyPub  = try TestKeyManager().retrieveIdentity()
 
-        let recipients = [
-            GroupRecipient(publicKey: decoyPub,  quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
-            GroupRecipient(publicKey: targetPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
-        ]
-        let bundle = try crypto.seal(message: Data("test".utf8), groupID: UUID(), recipients: recipients)
-
-        let targetCrypto = Manager.Crypto(keyManager: target)
-        let entry = try targetCrypto.findRecipientSlot(in: bundle)
-        // Should match the second recipient's fingerprint
-        #expect(entry.fingerprint == bundle.group!.recipients[1].fingerprint)
+        let bundle = try crypto.seal(
+            message: Data("test".utf8),
+            groupID: UUID(),
+            recipients: [
+                GroupRecipient(publicKey: decoyPub,  quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
+                GroupRecipient(publicKey: targetPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
+            ]
+        )
+        let (payload, _) = try Manager.Crypto(keyManager: target).findAndOpenRecipientSlot(
+            in: bundle,
+            blind: bundle.group!.blind,
+            senderContactID: "sender",
+            senderPublicKey: senderPub,
+            quantumMaterial: nil,
+            prekeyManager: Manager.PrekeyManager()
+        )
+        #expect(payload.sessionKey.count == 32)
     }
 }
 

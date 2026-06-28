@@ -54,17 +54,17 @@ extension Manager.Crypto {
     /// round-trip while the bulk ciphertext is never duplicated.
     ///
     /// ## Outer AAD
-    /// `computeAdditionalAuthentication(version: .v4, secrecy: outerSecrecy)` ‖ `groupID.uuidString`
+    /// `computeAdditionalAuthentication(version: .v4, secrecy: outerSecrecy)` ‖ `blind`
     ///
-    /// Binding the outer AAD to the group UUID prevents cross-group replay: an adversary
-    /// cannot present a valid ciphertext from one group as belonging to another.
+    /// `blind` is derived from the group UUID, so cross-group replay is prevented without
+    /// exposing the stable group identity in any cleartext field.
     ///
     /// ## Per-recipient AAD
-    /// `groupID.uuidString` ‖ `recipientFingerprint`
+    /// `blind`
     ///
-    /// Binds the wrapped session key (and any prekey batch) to this specific group and
-    /// recipient. A compromised wrapping key cannot be used to substitute a chosen session
-    /// key for a different recipient or group.
+    /// Binds the wrapped session key to this specific bundle. No cleartext recipient
+    /// identity is included — receivers find their slot by trial-decryption, preventing
+    /// passive observers from confirming membership without the wrapping key.
     ///
     /// ## Per-recipient key path
     /// `contactPrekey != nil` → FS: ECDH(senderEphemeral, contactPrekey.publicKey) [+ ML-KEM]
@@ -144,12 +144,6 @@ extension Manager.Crypto {
     ) throws -> OccultaBundle.Recipient {
         guard r.publicKey.count == 65 else { throw EncryptionError.invalidRecipientMaterial }
 
-        let nonce = try OccultaBundle.SecrecyContext.generateNonce()
-        let fingerprint = OccultaBundle.SecrecyContext.fingerprint(for: r.publicKey, nonce: nonce)
-
-        var aad = blind
-        aad.append(fingerprint)
-
         let (wrappingKey, secrecyContext) = try self.deriveOutboundKey(
             contactPrekey: r.contactPrekey,
             recipientPublicKey: r.publicKey,
@@ -160,14 +154,9 @@ extension Manager.Crypto {
         let encodedPayload = try JSONEncoder().encode(payload)
 
         guard let wrappedPayload = try AES.GCM.seal(
-            encodedPayload, using: wrappingKey, nonce: AES.GCM.Nonce(), authenticating: aad
+            encodedPayload, using: wrappingKey, nonce: AES.GCM.Nonce(), authenticating: blind
         ).combined else { throw EncryptionError.sealFailed }
 
-        return OccultaBundle.Recipient(
-            fingerprint: fingerprint,
-            fingerprintNonce: nonce,
-            secrecyContext: secrecyContext,
-            wrappedPayload: wrappedPayload
-        )
+        return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload)
     }
 }

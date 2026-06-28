@@ -291,14 +291,10 @@ struct ModeDecodingTests {
 struct GroupEnvelopeTests {
 
     @Test func groupEnvelope_encodesAndDecodes() throws {
-        let blind     = Data(repeating: 0xAA, count: 32)
+        let blind      = Data(repeating: 0xAA, count: 32)
         let blindNonce = Data(repeating: 0xBB, count: 16)
-        let nonce     = Data(repeating: 0x01, count: 16)
-        let fp        = Data(repeating: 0x02, count: 32)
-        let secrecy   = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil)
-        let recipient = OccultaBundle.Recipient(
-            fingerprint:    fp,
-            fingerprintNonce: nonce,
+        let secrecy    = OccultaBundle.SecrecyContext(mode: .longTermFallback, ephemeralPublicKey: Data(), prekeyID: nil)
+        let recipient  = OccultaBundle.Recipient(
             secrecyContext: secrecy,
             wrappedPayload: Data(repeating: 0x03, count: 44)
         )
@@ -307,10 +303,10 @@ struct GroupEnvelopeTests {
         let encoded = try JSONEncoder().encode(envelope)
         let decoded = try JSONDecoder().decode(OccultaBundle.GroupEnvelope.self, from: encoded)
 
+        #expect(decoded.version == 1)
         #expect(decoded.blind == blind)
         #expect(decoded.blindNonce == blindNonce)
         #expect(decoded.recipients.count == 1)
-        #expect(decoded.recipients[0].fingerprint == fp)
         #expect(decoded.recipients[0].wrappedPayload == Data(repeating: 0x03, count: 44))
     }
 

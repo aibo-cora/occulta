@@ -463,25 +463,32 @@ struct OccultaBundle: Codable {
     /// The stable `groupID` is stored inside the encrypted `SealedPayload` only.
     nonisolated
     struct GroupEnvelope: Codable {
+        /// Format version. `1` = trial-decryption slot-finding (no cleartext fingerprints).
+        /// Receivers that encounter an unknown version must reject the bundle.
+        let version:    UInt8
         /// HMAC-SHA256(key: groupID.rawBytes, msg: blindNonce). Fresh per bundle.
         let blind:      Data
         /// 16 random bytes. Combined with a stored group's UUID to verify `blind`.
         let blindNonce: Data
         let recipients: [Recipient]
+
+        init(version: UInt8 = 1, blind: Data, blindNonce: Data, recipients: [Recipient]) {
+            self.version    = version
+            self.blind      = blind
+            self.blindNonce = blindNonce
+            self.recipients = recipients
+        }
     }
 
     /// One entry per group member in the active depth layer at send time.
     nonisolated
     struct Recipient: Codable {
-        /// SHA-256(recipientLongTermPubKey || fingerprintNonce). Used to locate
-        /// this slot during decryption without leaking the public key in cleartext.
-        let fingerprint: Data
-        /// 16 random bytes — fresh per bundle per recipient.
-        let fingerprintNonce: Data
         /// Per-recipient key exchange fields. `mode` is `.forwardSecret` or
         /// `.longTermFallback`; never `.group` or `.unsupported`.
         let secrecyContext: SecrecyContext
-        /// AES-GCM(JSON(RecipientPayload), wrappingKey, AAD: groupID || fingerprint).
+        /// AES-GCM(JSON(RecipientPayload), wrappingKey, AAD: blind).
+        /// The receiver finds their slot by trial-decryption — no cleartext
+        /// identity hint is included, so an observer cannot confirm membership.
         let wrappedPayload: Data
     }
 
