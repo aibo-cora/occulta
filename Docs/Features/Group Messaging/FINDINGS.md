@@ -308,7 +308,7 @@ A bundle with two `0x01` sections silently uses the second one. If a serializati
 
 **File:** `AppLayerConfig+Model.swift:274`, `AppLayerConfig+Model.swift:282`, `AppLayerConfig+Model.swift:290`  
 **Confidence:** 9/10  
-**Status:** Deferred — fix in a dedicated branch
+**Status:** Fixed
 
 Identical pattern to F-19 (`Group+Model.swift`), but in `AppLayerConfig`. Both `randomFiller()` and `verifierFiller()` discard the return value of `SecRandomCopyBytes`:
 
@@ -329,4 +329,4 @@ If `SecRandomCopyBytes` fails, both methods return zero-initialized `Data`. The 
 - `sealedNormalVerifiers` / `sealedDuressVerifiers` (filler: 53 zero bytes) — reveals which verifier positions are real vs filler, indicating the number of active PIN layers.
 - `pinEnabledPerDepth` (fallback in `ensurePadded` and `pinEnabledFillerArray`) — 30 zero bytes, distinguishable from encrypted `UInt8` values.
 
-**Fix:** Make `randomFiller()` and `verifierFiller()` throw on non-`errSecSuccess`. Propagate `throws` through `randomFillerArray()`, `verifierFillerArray()`, `pinEnabledFillerArray()`, `clearBlobSlot(at:)`, `clearSequenceNumber(at:)`, `clearAllBlobMetadata()`, and `ensurePadded()`. Use `try!` in `init()` and in `Manager.Security.init()` migration path (both non-throwing contexts where entropy failure is non-recoverable). Add `AppLayerConfigError.entropyUnavailable`. Update `Manager+Security.swift` deactivation call sites to propagate `throws`.
+**Fix:** Replace `SecRandomCopyBytes` in `randomFiller()` and `verifierFiller()` with Swift's `SystemRandomNumberGenerator`, which is non-failable by API contract — on Darwin it uses `arc4random_buf`, which blocks until entropy is available rather than returning an error. No `throws` propagation needed; no call site changes. `import Security` removed from `AppLayerConfig+Model.swift`.
