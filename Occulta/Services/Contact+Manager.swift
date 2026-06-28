@@ -1318,7 +1318,7 @@ extension ContactManager {
 
     private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
         guard
-            let keyRecord = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
+            let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
             let decrypted = try cryptoOps.decrypt(data: keyRecord.material)
         else { throw Errors.decryptionFailed }
         return decrypted
@@ -1398,6 +1398,13 @@ extension ContactManager {
             throw OccultaBundle.BundleError.unsupportedMode
         }
 
+        switch envelope.version {
+        case 1:
+            break
+        default:
+            throw GroupDecryptError.unknownEnvelopeVersion
+        }
+
         let cryptoOps     = Manager.Crypto()
         let prekeyManager = Manager.PrekeyManager()
 
@@ -1436,8 +1443,8 @@ extension ContactManager {
         // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
         // were not replaced after sealing. A mismatch means a group member tampered
         // with the bundle to frame a different sender.
-        let expectedProof = Data(HMAC<SHA256>.authenticationCode(for: senderPublicKey, using: sessionKey))
-        guard decoded.senderProof == expectedProof else {
+        guard let proof = decoded.senderProof,
+              HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
             throw GroupDecryptError.senderProofMismatch
         }
 

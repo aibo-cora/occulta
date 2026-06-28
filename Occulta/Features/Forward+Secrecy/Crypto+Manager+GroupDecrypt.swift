@@ -15,6 +15,8 @@ enum GroupDecryptError: Error {
     /// HMAC(sessionKey, senderPublicKey). The cleartext sender routing fields
     /// were tampered with after the bundle was sealed.
     case senderProofMismatch
+    /// GroupEnvelope.version is not recognised by this build.
+    case unknownEnvelopeVersion
 }
 
 // MARK: - Group-decrypt crypto helpers
