@@ -17,6 +17,8 @@ enum GroupDecryptError: Error {
     case senderProofMismatch
     /// GroupEnvelope.version is not recognised by this build.
     case unknownEnvelopeVersion
+    /// SealedPayload.groupID is nil — required for group message routing.
+    case missingGroupID
 }
 
 // MARK: - Group-decrypt crypto helpers

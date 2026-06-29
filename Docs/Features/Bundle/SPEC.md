@@ -181,7 +181,13 @@ Offset  Size  Field
 5       N     section_bytes
 ```
 
-No section types are defined for v4. Reserved for future use.
+#### Defined section types
+
+| `section_type` | Meaning | Format |
+|---|---|---|
+| `0x01` | GroupEnvelope | JSON-encoded `GroupEnvelope` (see `Docs/Features/Group Messaging/SPEC.md`) |
+
+Duplicate sections of the same type are a protocol error — parsers must throw `BundleError.malformedBundle` on the second occurrence. Unknown types are silently skipped.
 
 ---
 
@@ -246,13 +252,14 @@ if let appVersion = decodedPayload.appVersion {
 
 The version derivation table:
 
-| App version | `maxBundleVersion` byte |
-|---|---|
-| < `"1.8.2"` | `0x03` (v3fs) |
-| ≥ `"1.8.2"` | `0x04` (v4 binary) |
-| unknown / nil | `0x03` (safe default) |
+| App version | `maxBundleVersion` byte | `Version` case |
+|---|---|---|
+| < `"1.8.2"` | `0x03` | `.v3fs` |
+| ≥ `"1.8.2"` | `0x04` | `.v4` |
+| ≥ `"1.9.0"` | `0x05` | `.groupCapable` |
+| unknown / nil | `0x03` (safe default) | `.v3fs` |
 
-v4 ships in app version `1.8.2`.
+v4 ships in app version `1.8.2`. `.groupCapable` (`0x05`) signals that the contact can receive group bundles and all sends should use `sealGroup`. It is a capability signal only — it is never written as the wire `version` byte. The sender maps `.groupCapable` → `.v4` at encode time so both sides compute identical AAD.
 
 ### 6.4 Convergence
 

@@ -1393,7 +1393,10 @@ extension ContactManager {
     ///
     /// `groupID` in the return value comes from the decrypted `SealedPayload.groupID`,
     /// not the cleartext `GroupEnvelope`. Callers use it to locate the matching Group record.
-    func openGroup(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String, groupID: UUID) {
+    ///
+    /// `ownerID`: pass the identifier already returned by `identifyOwner(of:)` to skip
+    /// the O(contacts) fingerprint re-scan inside this method.
+    func openGroup(bundle: OccultaBundle, ownerID: String? = nil) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String, groupID: UUID) {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
         }
@@ -1409,7 +1412,14 @@ extension ContactManager {
         let prekeyManager = Manager.PrekeyManager()
 
         // ── 1. Identify sender ──────────────────────────────────────────
-        let sender = try self.identifyOwner(for: bundle)
+        // Skip the fingerprint scan when the caller already identified the sender.
+        let sender: Contact.Profile
+        if let ownerID {
+            guard let found = try self.fetchContact(by: ownerID) else { throw Errors.contactNotFound }
+            sender = found
+        } else {
+            sender = try self.identifyOwner(for: bundle)
+        }
         try sender.configureForwardSecrecy()
 
         // ── 2. Resolve sender key material ─────────────────────────────
@@ -1453,6 +1463,7 @@ extension ContactManager {
         try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
         try self.modelContext.save()
 
-        return (decoded, sender.identifier, decoded.groupID ?? UUID())
+        guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
+        return (decoded, sender.identifier, groupID)
     }
 }

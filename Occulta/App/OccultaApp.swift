@@ -520,15 +520,16 @@ private struct RootView: View {
                     throw ContactManager.Errors.messageHasNoData
                 }
                 /// To avoid popping a prekey prematurely, in case this ownerID belongs to a sensitive contact, we are going to run the id through the checkpoint and throw if it is on the list.
-                if let ownerID = try self.contactManager.identifyOwner(of: bundle) {
-                    try self.passSecurityControl(identifier: ownerID)
+                let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
+                if let knownOwnerID {
+                    try self.passSecurityControl(identifier: knownOwnerID)
                 }
 
                 if bundle.group != nil {
                     // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
                     // use this path. Shard-only bundles signal "no basket" via an
                     // empty message field.
-                    let (sealed, ownerID, _) = try self.contactManager.openGroup(bundle: bundle)
+                    let (sealed, ownerID, _) = try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
 
                     // Identity-challenge traffic inside a group bundle.

@@ -285,6 +285,175 @@ struct ModeDecodingTests {
     }
 }
 
+// MARK: - Cross-version two-way round-trips
+
+/// Crypto-layer tests for the two routing paths that `buildOwnedBasket` takes
+/// based on `bundle.group`:
+///
+///   `bundle.group != nil` → `openGroup`   (1.9.0+ senders)
+///   `bundle.group == nil` → `decryptSealed` (older senders, v4 non-group bundles)
+///
+/// No SwiftData — uses TestKeyManager and Manager.Crypto directly.
+@Suite("Cross-version two-way round-trips")
+@MainActor struct CrossVersionRoundTripTests {
+
+    let pm = Manager.PrekeyManager()
+
+    // MARK: Routing discriminator
+
+    @Test func routingDiscriminator_groupBundle_hasNonNilGroup() throws {
+        let km  = TestKeyManager()
+        let pub = try km.retrieveIdentity()
+        let r   = GroupRecipient(publicKey: pub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle = try Manager.Crypto(keyManager: km).seal(
+            message: Data("hi".utf8), groupID: UUID(), recipients: [r]
+        )
+        let wire    = try bundle.encoded(version: .v4)
+        let decoded = try OccultaBundle.decoded(from: wire)
+        // buildOwnedBasket routing: bundle.group != nil → openGroup
+        #expect(decoded.group != nil)
+        #expect(decoded.secrecy.mode == .group)
+    }
+
+    @Test func routingDiscriminator_nonGroupBundle_hasNilGroup() throws {
+        let km  = TestKeyManager()
+        let pub = try km.retrieveIdentity()
+        let bundle = try Manager.Crypto(keyManager: km).seal(
+            message: Data("hi".utf8), contactPrekey: nil, recipientMaterial: pub
+        )
+        let wire    = try bundle.encoded(version: .v4)
+        let decoded = try OccultaBundle.decoded(from: wire)
+        // buildOwnedBasket routing: bundle.group == nil → decryptSealed
+        #expect(decoded.group == nil)
+        #expect(decoded.secrecy.mode != .group)
+    }
+
+    // MARK: 1.9.0 ↔ 1.9.0 (group format, both directions)
+
+    @Test func twoWay_1_9_0_groupFormat_bothDirections() throws {
+        let aKM  = TestKeyManager()
+        let bKM  = TestKeyManager()
+        let aPub = try aKM.retrieveIdentity()
+        let bPub = try bKM.retrieveIdentity()
+        let aCrypto = Manager.Crypto(keyManager: aKM)
+        let bCrypto = Manager.Crypto(keyManager: bKM)
+
+        let messageAtoB = Data("hello from A".utf8)
+        let messageBtoA = Data("hello from B".utf8)
+
+        // A → B
+        let rB      = GroupRecipient(publicKey: bPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundleAB = try aCrypto.seal(message: messageAtoB, groupID: UUID(), recipients: [rB])
+        let wireAB   = try bundleAB.encoded(version: .v4)
+        let decodedAB = try OccultaBundle.decoded(from: wireAB)
+        #expect(decodedAB.group != nil)
+
+        let (recipPayloadB, _) = try bCrypto.findAndOpenRecipientSlot(
+            in: decodedAB, blind: decodedAB.group!.blind,
+            senderContactID: "A", senderPublicKey: aPub,
+            quantumMaterial: nil, prekeyManager: self.pm
+        )
+        let sessionKeyB   = SymmetricKey(data: recipPayloadB.sessionKey)
+        let payloadBytesB = try bCrypto.openGroupCiphertext(decodedAB, using: sessionKeyB)
+        let sealedB       = try WireHandle.decode(payload: payloadBytesB)
+
+        let proofB = Data(HMAC<SHA256>.authenticationCode(for: aPub, using: sessionKeyB))
+        #expect(sealedB.senderProof == proofB, "sender proof must match A's identity key")
+        #expect(sealedB.message == messageAtoB)
+
+        // B → A
+        let rA      = GroupRecipient(publicKey: aPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundleBA = try bCrypto.seal(message: messageBtoA, groupID: UUID(), recipients: [rA])
+        let wireBA   = try bundleBA.encoded(version: .v4)
+        let decodedBA = try OccultaBundle.decoded(from: wireBA)
+        #expect(decodedBA.group != nil)
+
+        let (recipPayloadA, _) = try aCrypto.findAndOpenRecipientSlot(
+            in: decodedBA, blind: decodedBA.group!.blind,
+            senderContactID: "B", senderPublicKey: bPub,
+            quantumMaterial: nil, prekeyManager: self.pm
+        )
+        let sessionKeyA   = SymmetricKey(data: recipPayloadA.sessionKey)
+        let payloadBytesA = try aCrypto.openGroupCiphertext(decodedBA, using: sessionKeyA)
+        let sealedA       = try WireHandle.decode(payload: payloadBytesA)
+
+        let proofA = Data(HMAC<SHA256>.authenticationCode(for: bPub, using: sessionKeyA))
+        #expect(sealedA.senderProof == proofA, "sender proof must match B's identity key")
+        #expect(sealedA.message == messageBtoA)
+    }
+
+    // MARK: 1.8.x → 1.9.0 (old non-group format received by 1.9.0 device)
+
+    @Test func crossVersion_olderSender_nonGroupBundle_opensOn_1_9_0() throws {
+        let senderKM    = TestKeyManager()
+        let recipientKM = TestKeyManager()
+        let senderPub   = try senderKM.retrieveIdentity()
+        let recipientPub = try recipientKM.retrieveIdentity()
+
+        let contactID = "crossver.\(UUID().uuidString)"
+        defer { self.pm.deleteAllKeys(for: contactID) }
+
+        let prekeys = try self.pm.generateBatch(contactID: contactID, count: 1)
+        let prekey  = prekeys[0]
+
+        // 1.8.x sender: forward-secret, non-group bundle
+        let bundle = try Manager.Crypto(keyManager: senderKM).seal(
+            message: Data("from old version".utf8),
+            contactPrekey: prekey,
+            recipientMaterial: recipientPub
+        )
+        #expect(bundle.group == nil)
+        #expect(bundle.secrecy.mode == .forwardSecret || bundle.secrecy.mode == .forwardSecretNoPQ)
+
+        let wire    = try bundle.encoded(version: .v4)
+        let decoded = try OccultaBundle.decoded(from: wire)
+        #expect(decoded.group == nil, "1.8.x bundle must decode with group == nil → routes to decryptSealed on 1.9.0")
+
+        // 1.9.0 device opens via single-recipient path (decryptSealed equivalent)
+        let privKey = self.pm.retrievePrivateKey(for: prekey)
+        let sessKey = privKey.flatMap {
+            Manager.Crypto(keyManager: recipientKM).deriveSessionKey(
+                ephemeralPrivateKey: $0,
+                recipientMaterial:   decoded.secrecy.ephemeralPublicKey
+            )
+        }
+        #expect(sessKey != nil)
+        let rawPayload  = try Manager.Crypto(keyManager: recipientKM).open(decoded, using: sessKey!)
+        let sealedPayload = try WireHandle.decode(payload: rawPayload)
+        #expect(sealedPayload.message == Data("from old version".utf8))
+    }
+
+    // MARK: 1.9.0 → 1.8.x (1.9.0 sender falls back to non-group format for old contacts)
+
+    @Test func crossVersion_groupCapableSender_nonGroupBundle_for_olderRecipient() throws {
+        // A 1.9.0 sender whose resolveTargetVersion returns .v4 for the contact
+        // must use the single-recipient seal path, not sealGroup.
+        // The bundle has group == nil and can be decoded by a 1.8.x build.
+        let senderKM     = TestKeyManager()
+        let recipientKM  = TestKeyManager()
+        let recipientPub = try recipientKM.retrieveIdentity()
+
+        // Non-group seal (what ContactManager does when targetVersion == .v4)
+        let bundle = try Manager.Crypto(keyManager: senderKM).seal(
+            message: Data("downgrade path".utf8),
+            contactPrekey: nil,
+            recipientMaterial: recipientPub
+        )
+        let wire    = try bundle.encoded(version: .v4)
+        let decoded = try OccultaBundle.decoded(from: wire)
+
+        #expect(decoded.group == nil, "bundle for <1.9.0 contact must have group == nil")
+        #expect(decoded.version == .v4)
+
+        // 1.8.x recipient can open with long-term ECDH
+        let senderPub = try senderKM.retrieveIdentity()
+        let sessKey   = Manager.Crypto(keyManager: recipientKM).deriveSessionKey(using: senderPub)!
+        let rawPayload = try Manager.Crypto(keyManager: recipientKM).open(decoded, using: sessKey)
+        let sealedPayload = try WireHandle.decode(payload: rawPayload)
+        #expect(sealedPayload.message == Data("downgrade path".utf8))
+    }
+}
+
 // MARK: - GroupEnvelope / RecipientPayload struct integrity
 
 @Suite("GroupEnvelope — struct integrity")
