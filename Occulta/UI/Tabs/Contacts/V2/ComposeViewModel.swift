@@ -234,6 +234,50 @@ final class ComposeViewModel {
         }
     }
 
+    func encrypt(groupID: UUID, contactManager: ContactManager) async {
+        do {
+            var allFiles = self.messages
+            let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                allFiles.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
+            }
+
+            let processed: [Occulta.File] = try await withThrowingTaskGroup(of: Occulta.File.self) { group in
+                for file in allFiles {
+                    if let fileURL = file.url {
+                        group.addTask {
+                            let (data, _) = try await URLSession.shared.data(from: fileURL)
+                            return Occulta.File(content: data, format: file.format, date: file.date)
+                        }
+                    } else {
+                        let captured = file
+                        group.addTask { captured }
+                    }
+                }
+                var results: [Occulta.File] = []
+                for try await file in group { results.append(file) }
+                return results.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+            }
+
+            let basket    = Basket(files: processed)
+            let encrypted = try contactManager.encryptGroupBundle(basket: basket, groupID: groupID)
+            
+            guard !encrypted.isEmpty else {
+                await MainActor.run { self.showError("Encryption failed. Try again.") }
+                return
+            }
+            
+            let name   = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
+            let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
+            
+            try encrypted.writeProtected(to: outURL)
+            
+            await MainActor.run { self.encryptedURL = outURL }
+        } catch {
+            await MainActor.run { self.showError(error.localizedDescription) }
+        }
+    }
+
     // MARK: Lifecycle
 
     func deleteMessage(_ file: Occulta.File) {

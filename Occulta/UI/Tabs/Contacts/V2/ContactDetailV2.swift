@@ -189,7 +189,7 @@ private struct IdentityStripV2: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Group {
+            SwiftUI.Group {
                 if let data = self.thumbnail, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
@@ -238,7 +238,7 @@ private struct StatusChipV2: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
             .background(
-                Group {
+                SwiftUI.Group {
                     if self.status == .pending {
                         RoundedRectangle(cornerRadius: 4)
                             .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 2]))

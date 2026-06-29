@@ -349,7 +349,7 @@ extension ComposableMessage {
 
         @ViewBuilder private func imageBubble(name: String, metadata: Occulta.File.Metadata) -> some View {
             VStack(spacing: 6) {
-                Group {
+                SwiftUI.Group {
                     if let img = self.decryptedImage {
                         Image(uiImage: img).resizable().scaledToFill()
                     } else {
@@ -389,7 +389,7 @@ extension ComposableMessage {
 
         @ViewBuilder private func videoBubble(name: String, url: URL, metadata: Occulta.File.Metadata) -> some View {
             VStack(spacing: 6) {
-                Group {
+                SwiftUI.Group {
                     if let player = self.videoPlayer {
                         VideoPlayerView(player: player)
                     } else {

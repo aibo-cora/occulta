@@ -49,6 +49,7 @@ struct OccultaApp: App {
             GlobalShardConfig.self,
             BackupEncryptionKey.self,
             AppLayerConfig.self,
+            Group.self,
         ])
 
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
@@ -67,6 +68,7 @@ struct OccultaApp: App {
 
         self.storeURL = url
         Self.applySecureDeletePragma(at: url)
+        Self.walCheckpoint(at: url)
 
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
@@ -146,6 +148,13 @@ struct OccultaApp: App {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
         sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
+    }
+
+    private static func walCheckpoint(at url: URL) {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else { return }
+        defer { sqlite3_close(db) }
+        sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
     }
 }
 
@@ -511,50 +520,85 @@ private struct RootView: View {
                     throw ContactManager.Errors.messageHasNoData
                 }
                 /// To avoid popping a prekey prematurely, in case this ownerID belongs to a sensitive contact, we are going to run the id through the checkpoint and throw if it is on the list.
-                if let ownerID = try self.contactManager.identifyOwner(of: bundle) {
-                    try self.passSecurityControl(identifier: ownerID)
+                let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
+                if let knownOwnerID {
+                    try self.passSecurityControl(identifier: knownOwnerID)
                 }
 
-                // ContactManager owns sender identification, prekey resolution,
-                // consumed-key cleanup, inbound batch sync, and model persistence.
-                //
-                // We decrypt into the full SealedPayload (not just the message
-                // bytes) so we can peek at the identity-challenge envelope and
-                // route that traffic out of the basket pipeline entirely.
-                let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
+                if bundle.group != nil {
+                    // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
+                    // use this path. Shard-only bundles signal "no basket" via an
+                    // empty message field.
+                    let (sealed, ownerID, _) = try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
+                    decodedBundleVersion = bundle.version
 
-                // Identity-challenge traffic rides on .v3fs/.longTermFallback
-                // but is NOT a basket — hand it to the coordinator and bail.
-                if let identityEnvelope = sealed.identityChallenge {
-                    if let sender = try? self.contactManager.fetchContact(by: ownerID) {
-                        _ = self.identityChallenge.handleInboundChallenge(
-                            bundle:   bundle,
-                            envelope: identityEnvelope,
-                            sender:   sender
+                    // Identity-challenge traffic inside a group bundle.
+                    if let identityEnvelope = sealed.identityChallenge {
+                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                            _ = self.identityChallenge.handleInboundChallenge(
+                                bundle:   bundle,
+                                envelope: identityEnvelope,
+                                sender:   sender
+                            )
+                        }
+                        return nil
+                    }
+
+                    // Shard/custody ops.
+                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                        _ = self.shardCustodyManager.handleInbound(
+                            sealed:           sealed,
+                            senderPublicKey:  senderPublicKey,
+                            senderIdentifier: ownerID,
+                            vaultManager:     self.vaultManager
                         )
                     }
 
-                    return nil
+                    // Shard-only bundle (empty message) — ops handled above, no basket.
+                    guard !sealed.message.isEmpty else { return nil }
+                    decrypted = (sealed.message, ownerID)
+                } else {
+                    // ContactManager owns sender identification, prekey resolution,
+                    // consumed-key cleanup, inbound batch sync, and model persistence.
+                    //
+                    // We decrypt into the full SealedPayload (not just the message
+                    // bytes) so we can peek at the identity-challenge envelope and
+                    // route that traffic out of the basket pipeline entirely.
+                    let (sealed, ownerID) = try self.contactManager.decryptSealed(bundle: bundle)
+
+                    // Identity-challenge traffic rides on .v3fs/.longTermFallback
+                    // but is NOT a basket — hand it to the coordinator and bail.
+                    if let identityEnvelope = sealed.identityChallenge {
+                        if let sender = try? self.contactManager.fetchContact(by: ownerID) {
+                            _ = self.identityChallenge.handleInboundChallenge(
+                                bundle:   bundle,
+                                envelope: identityEnvelope,
+                                sender:   sender
+                            )
+                        }
+
+                        return nil
+                    }
+
+                    #if DEBUG
+                    debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
+                    debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
+                    #endif
+
+                    // Handle shard operations and manifest reconciliation.
+
+                    if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
+                        _ = self.shardCustodyManager.handleInbound(
+                            sealed:           sealed,
+                            senderPublicKey:  senderPublicKey,
+                            senderIdentifier: ownerID,
+                            vaultManager:     self.vaultManager
+                        )
+                    }
+
+                    decodedBundleVersion = bundle.version
+                    decrypted = (sealed.message, ownerID)
                 }
-
-                #if DEBUG
-                debugPrint("Manifest: \(sealed.custodyManifest?.description ?? "nil")")
-                debugPrint("Expected: \(sealed.expectedShards?.description ?? "nil")")
-                #endif
-
-                // Handle shard operations and manifest reconciliation.
-
-                if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
-                    _ = self.shardCustodyManager.handleInbound(
-                        sealed:           sealed,
-                        senderPublicKey:  senderPublicKey,
-                        senderIdentifier: ownerID,
-                        vaultManager:     self.vaultManager
-                    )
-                }
-
-                decodedBundleVersion = bundle.version
-                decrypted = (sealed.message, ownerID)
             case .unsupported:
                 throw OccultaBundle.BundleError.unsupportedVersion
             default:

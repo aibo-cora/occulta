@@ -217,20 +217,15 @@ struct SecureModeBlobLifecycleTests {
 @Suite("Secure Mode — Contact classification in blob", .serialized)
 struct SecureModeClassificationTests {
 
-    /// A contact whose `visibleThroughDepth` is non-nil but not valid AES-GCM
-    /// ciphertext will fail `data.decrypt()` → `isVisible` returns false →
-    /// classified as SENSITIVE and goes into the blob.
-    /// This trick avoids SE dependency: no Manager.Crypto call needed.
-    private static let sensitiveDepthMarker = Data([0xDE, 0xAD, 0xBE, 0xEF])
-
     @Test func sensitiveContact_appearsInBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
         let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        // Non-AES garbage → decrypt fails → classified sensitive
+        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
+        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
         try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: Self.sensitiveDepthMarker)
+                          visibleThroughDepth: sensitiveDepthValue)
 
         try await c.security.activateSecureMode(
             confirmingEntryPIN: "111111", duressPIN: "999999",
@@ -249,11 +244,12 @@ struct SecureModeClassificationTests {
 
         let safeID      = "contact-safe-\(UUID().uuidString)"
         let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        // nil → classified safe (default visible)
+        // nil → classified safe (default visible, Int.max)
         try insertContact(identifier: safeID, in: c.container, visibleThroughDepth: nil)
-        // Non-AES garbage → classified sensitive
+        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
+        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
         try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: Self.sensitiveDepthMarker)
+                          visibleThroughDepth: sensitiveDepthValue)
 
         try await c.security.activateSecureMode(
             confirmingEntryPIN: "111111", duressPIN: "999999",
@@ -276,8 +272,9 @@ struct SecureModeClassificationTests {
         try c.security.configurePIN("111111")
 
         let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
+        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
         try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: Self.sensitiveDepthMarker)
+                          visibleThroughDepth: sensitiveDepthValue)
 
         try await c.security.activateSecureMode(
             confirmingEntryPIN: "111111", duressPIN: "999999",

@@ -457,7 +457,7 @@ struct VaultShardSetup: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
                 Button(action: self.markForDistribution) {
-                    Group {
+                    SwiftUI.Group {
                         if self.marking {
                             ProgressView().tint(.white)
                         } else {

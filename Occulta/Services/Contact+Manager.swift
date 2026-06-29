@@ -629,6 +629,11 @@ extension ContactManager {
         case invalidBundleFormat
         case quantumKeyMaterialCorrupted
         case trusteeLacksQuantumMaterial
+        case groupIDMissing
+        case groupHasNoMembers
+        /// `security.currentDepth` decoded to a value outside the valid RoutingDepth range.
+        /// Should never occur in practice; signals a bug in the security layer.
+        case invalidRoutingDepth
     }
 }
 
@@ -886,32 +891,35 @@ extension ContactManager {
     }
 }
  
-// MARK: - v3fs bundle encryption
- 
+// MARK: - Bundle encryption
+
 extension ContactManager {
-    /// Encrypt a bundle for a contact using the v3fs path.
+    /// Encrypt a bundle for a single contact.
     ///
-    /// **Mode selection is automatic**, driven by whether any shard operation
-    /// carries shard data (`.distribute`, `.handback` — i.e. `op.attribute != nil`):
+    /// ## Path routing
     ///
-    /// - **Shard mode** (any `attribute`-carrying op present, or `data == nil`):
-    ///   Forces `longTermFallback + ML-KEM`. Prekeys are not consumed; no prekey
-    ///   sync batch is attached. `data` defaults to a human-readable fallback for
-    ///   old builds. Throws `trusteeLacksQuantumMaterial` if ML-KEM is absent.
+    /// The send path is determined by `resolveTargetVersion(for:)`:
     ///
-    /// - **Message mode** (no `attribute`-carrying ops, `data` non-nil):
-    ///   Standard v3fs path — pops a prekey (→ `.forwardSecret` when available,
-    ///   `.longTermFallback` when exhausted), attaches a pending prekey sync
-    ///   batch, and saves prekey state. `data` must be non-empty.
+    /// **≥ 1.9.0 (`groupCapable`) → group bundle format**
+    ///   - Calls `seal(message:groupID:recipients:)` with a single-entry ephemeral group.
+    ///   - `groupID` is a fresh `UUID()` per bundle — not stored in the Group entity.
+    ///   - Shard ops (`isCarryingShard == true`) require a prekey. If none is available,
+    ///     shard operations are silently dropped and the basket is sent on `longTermFallback`.
+    ///     This ensures message delivery is never blocked by prekey exhaustion — shard content
+    ///     simply defers to the next bundle that has a prekey available.
+    ///   - Shard-only sends (`basket == nil`) use `Data()` as the message sentinel. The
+    ///     receiver detects the empty message and skips basket decode.
+    ///   - Message sends pop a prekey (FS when available, longTermFallback when exhausted)
+    ///     and attach a pending prekey sync batch.
     ///
-    /// This means `.distribute` and `.handback` always travel on `longTermFallback +
-    /// ML-KEM` regardless of call site — the HNDL constraint is enforced once,
-    /// here, and cannot be bypassed by a careless caller.
+    /// **< 1.9.0 → single-recipient legacy format (`seal(message:contactPrekey:...)`)**
+    ///   - Shard ops on this path skip prekey pop and use longTermFallback (no FS mandate).
+    ///   - Identity challenge sends are always on this path regardless of version.
     ///
-    /// ## Pending batch delivery guarantee (message mode only)
-    /// A `pendingOutboundBatch` is attached to every message until the contact
-    /// sends back a `.forwardSecret` bundle using one of our prekeys — cryptographic
-    /// proof they stored the batch. Only then is the batch cleared.
+    /// ## Pending batch delivery guarantee (message mode)
+    /// A `pendingOutboundBatch` is attached to every message until the contact sends back
+    /// a `.forwardSecret` bundle using one of our prekeys — cryptographic proof they stored
+    /// it. Only then is the batch cleared.
     func encryptBundle(
         basket: Basket? = nil,
         for identifier: String,
@@ -923,51 +931,96 @@ extension ContactManager {
         
         guard let contact = try self.fetchContact(by: identifier) else { throw Errors.contactNotFound }
 
-        /// We are forcing long term key to be used in the event when a bundle carries shard data.
-        /// This is a precaution because when we have prekey public material, which travels on the wire, there is a higher threat from QC calculating the private part.
+        // Shard ops carry private key material — ML-KEM is always required so a
+        // quantum adversary cannot retroactively break the wrapping key.
         let isCarryingShard = shardOperations?.contains(where: { $0.attribute != nil }) == true
 
         // ── 1. Resolve recipient key material ─────────────────────────────
         let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact, requireQuantum: isCarryingShard)
 
         #if DEBUG
-        let modeTag = isCarryingShard ? "shard (longTermFallback + ML-KEM)" : "message"
+        let modeTag = isCarryingShard ? "shard (ML-KEM required)" : "message"
         debugPrint("Sealing \(modeTag) bundle, quantum: \(quantumMaterial != nil)")
         #endif
 
         // ── 2. Prekey handling ────────────────────────────────────────────
-        // Shard mode: never consume prekeys; never carry a prekey sync batch.
         // Message mode: pop prekey (→ .forwardSecret or .longTermFallback);
         //               attach pending batch if one exists.
+        // Shard mode (group path): pop prekey — FS preferred for shards;
+        //               shard ops dropped silently if no prekey available.
+        // Shard mode (old path, <1.9.0): skip prekey — keep longTermFallback.
         var contactPrekey: Prekey? = nil
         var outboundBatch: OccultaBundle.SealedPayload.PrekeySyncBatch? = nil
-
-        if !isCarryingShard {
-            try contact.configureForwardSecrecy()
-            
-            #if DEBUG
-            debugPrint("Encrypting message for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
-            #endif
-            
-            if let blob = try contact.popOldestPrekeyData() {
-                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
-            }
-            
-            outboundBatch = try contact.loadPendingBatch()
-        }
 
         // ── 3. Resolve target wire format for this contact ────────────────
         let cryptoOps     = Manager.Crypto()
         let targetVersion = Self.resolveTargetVersion(for: contact, using: cryptoOps)
+        // .groupCapable is a capability signal, not a real wire format — the wire byte
+        // for both .v4 and .groupCapable is 0x04, and the receiver always decodes it
+        // back as .v4. Passing .groupCapable to seal() would embed "groupCapable" in
+        // the AAD while the receiver reconstructs "v4" → authentication failure.
+        let wireVersion   = targetVersion == .groupCapable ? OccultaBundle.Version.v4 : targetVersion
+
+        // Pop a prekey for forward secrecy.
+        // Message sends always attempt FS; shard sends on the group path require it.
+        // Old-path (<1.9.0) shard sends skip this and use longTermFallback.
+        let needsPrekey = !isCarryingShard || targetVersion == .groupCapable
+        if needsPrekey {
+            try contact.configureForwardSecrecy()
+
+            #if DEBUG
+            debugPrint("Encrypting \(isCarryingShard ? "shard" : "message") bundle for contact. Inbound prekeys: \(contact.availableInboundPrekeyCount), pending batch: \(contact.hasPendingBatch)")
+            #endif
+
+            if let blob = try contact.popOldestPrekeyData() {
+                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+            }
+            if !isCarryingShard {
+                outboundBatch = try contact.loadPendingBatch()
+            }
+        }
 
         // ── 4. Build and seal payload ─────────────────────────────────────
         let messageData: Data
         if let basket {
-            messageData = targetVersion == .v4
+            messageData = wireVersion == .v4
                 ? try WireHandle.encode(basket: basket)
                 : try JSONEncoder().encode(basket)
         } else {
             messageData = Data("Occulta vault operation. Please update your app.".utf8)
+        }
+
+        // 1.9.0+ contacts: all sends use the group bundle format with an ephemeral
+        // single-recipient envelope. Shard ops require forward secrecy — the FS
+        // wrapping key is consumed after one use, so a harvested bundle cannot be
+        // decrypted later even if the shard itself is later obtained.
+        if targetVersion == .groupCapable {
+            // Drop shard ops if no prekey is available — FS is required for shard
+            // content, but message delivery must not be blocked by prekey exhaustion.
+            let effectiveShardOps = (isCarryingShard && contactPrekey == nil) ? nil : shardOperations
+            // Shard-only bundles (basket == nil) use Data() as a sentinel so the
+            // receiver can detect "no basket" without trying to parse the payload.
+            let groupMessage = basket != nil ? messageData : Data()
+            let sealedPayload = OccultaBundle.SealedPayload(
+                message:         groupMessage,
+                shardOperations: effectiveShardOps,
+                custodyManifest: custodyManifest,
+                expectedShards:  expectedShards,
+                appVersion:      Bundle.main.appVersion
+            )
+            let bundle = try Manager.Crypto().seal(
+                sealedPayload: sealedPayload,
+                groupID:       UUID(),
+                recipients:    [GroupRecipient(
+                    publicKey:       recipientMaterial,
+                    quantumMaterial: quantumMaterial,
+                    contactPrekey:   contactPrekey,
+                    pendingBatch:    outboundBatch
+                )]
+            )
+            let encodedBundle = try bundle.encoded(version: .v4)
+            if contactPrekey != nil { try self.modelContext.save() }
+            return encodedBundle
         }
 
         let sealedPayload = OccultaBundle.SealedPayload(
@@ -978,7 +1031,7 @@ extension ContactManager {
             expectedShards:  expectedShards,
             appVersion:      Bundle.main.appVersion
         )
-        let encoded = targetVersion == .v4
+        let encoded = wireVersion == .v4
             ? try WireHandle.encode(payload: sealedPayload)
             : try JSONEncoder().encode(sealedPayload)
 
@@ -988,9 +1041,9 @@ extension ContactManager {
             contactPrekey:     contactPrekey,
             recipientMaterial: recipientMaterial,
             quantumMaterial:   quantumMaterial,
-            version:           targetVersion
+            version:           wireVersion
         )
-        let encodedBundle = try bundle.encoded(version: targetVersion)
+        let encodedBundle = try bundle.encoded(version: wireVersion)
         
         if contactPrekey != nil {
             // Persist prekey state only when it was mutated (message mode).
@@ -1000,7 +1053,67 @@ extension ContactManager {
         return encodedBundle
     }
 }
- 
+
+// MARK: - Group bundle encryption
+
+extension ContactManager {
+
+    /// Encrypt a basket for all members of a group in the given layer.
+    ///
+    /// Each member gets an independent wrapping key (FS or fallback) and a
+    /// per-recipient prekey sync batch if their stock for this sender is below
+    /// the replenishment threshold. The shared ciphertext is sealed once with a
+    /// random session key bound to the group UUID.
+    func encryptGroupBundle(basket: Basket, groupID: UUID) throws -> Data {
+        let layer: RoutingDepth
+        switch self.security.currentDepth {
+        case 0:          layer = .normal
+        case let d where d > 0: layer = .duress
+        default:         throw Errors.invalidRoutingDepth
+        }
+
+        guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
+        let identifierList = grp.members(in: layer)
+        guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
+        let predicate = #Predicate<Contact.Profile> {
+            identifierList.contains($0.identifier) && $0.deletionToken == nil
+        }
+        let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
+        guard !members.isEmpty else { throw Errors.groupHasNoMembers }
+
+        var prekeyConsumed = false
+        let recipients: [GroupRecipient] = try members.map { contact in
+            let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
+            try contact.configureForwardSecrecy()
+            var contactPrekey: Prekey? = nil
+            if let blob = try contact.popOldestPrekeyData() {
+                contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
+                prekeyConsumed = true
+            }
+            let pendingBatch = try contact.loadPendingBatch()
+            return GroupRecipient(
+                publicKey:       recipientMaterial,
+                quantumMaterial: quantumMaterial,
+                contactPrekey:   contactPrekey,
+                pendingBatch:    pendingBatch
+            )
+        }
+
+        let bundle = try Manager.Crypto().seal(
+            message:    try WireHandle.encode(basket: basket),
+            groupID:    groupID,
+            recipients: recipients
+        )
+        let encodedBundle = try bundle.encoded(version: .v4)
+
+        if prekeyConsumed {
+            try self.modelContext.save()
+        }
+
+        return encodedBundle
+    }
+}
+
 // MARK: - Shard bundle helpers
 
 extension ContactManager {
@@ -1149,194 +1262,208 @@ extension ContactManager {
     /// the basket pipeline or to the `IdentityChallenge.Coordinator`.
     func decryptSealed(bundle: OccultaBundle) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String) {
         try self.verifyConsistency(for: bundle)
- 
+        guard bundle.secrecy.mode != .group else { throw OccultaBundle.BundleError.unsupportedMode }
+
         let cryptoOps     = Manager.Crypto()
         let prekeyManager = Manager.PrekeyManager()
- 
+
         // ── 1. Identify sender by fingerprint ───────────────────────────
         let sender = try self.identifyOwner(for: bundle)
-        
         try sender.configureForwardSecrecy()
- 
-        // ── 2. Key derivation + open ─────────────────────────────────────
-        //
-        // ⚠️  CRASH PROTECTION — SecKey released inside closure before consume().
-        //
-        // Quantum material is resolved only for the two hybrid modes. NoPQ modes
-        // never touch the sender's quantum material — deriving with nil is correct
-        // and `quantumKeyMaterialCorrupted` must not fire for those cases.
-        let decryptedSealedPayload: Data?
 
+        // ── 2. Key derivation + open ─────────────────────────────────────
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
 
-        switch bundle.secrecy.mode {
-        case .forwardSecret:
-            // Hybrid FS: ECDH(ephemeral, prekey) + ML-KEM.
-            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+        let quantumMaterial = try self.resolveQuantumMaterial(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
+        let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
 
-            let decrypted: Data? = try {
-                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
-                #if DEBUG
-                debugPrint("Using prekey, ID = \(prekeyID)")
-                #endif
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
-                guard
-                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey, recipientMaterial:   bundle.secrecy.ephemeralPublicKey, quantumMaterial:     quantumMaterial)
-                else { return nil }
-                
-                return try cryptoOps.open(bundle, using: sessKey)
-            }()
+        let (sessionKey, consumable) = try cryptoOps.deriveInboundKey(
+            secrecy: bundle.secrecy,
+            senderContactID: sender.identifier,
+            senderPublicKey: senderPublicKey,
+            quantumMaterial: quantumMaterial,
+            prekeyManager: prekeyManager
+        )
+        let payloadData = try cryptoOps.open(bundle, using: sessionKey)
 
-            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                
-                #if DEBUG
-                debugPrint("Opened bundle using prekey = \(temp), consuming key...")
-                #endif
-                prekeyManager.consume(prekey: temp)
-                
-                try sender.clearPendingBatch()
-                debugPrint("Message successfully opened in .forwardSecret mode. Pending batch cleared.")
-            } else {
-                debugPrint("Attempted open, but something went wrong. Plaintext = \(String(describing: decrypted)), prekeyID = \(String(describing: bundle.secrecy.prekeyID))")
-            }
+        // ── 3. Prekey management ─────────────────────────────────────────
+        if let consumable {
+            #if DEBUG
+            debugPrint("Opened bundle using prekey = \(consumable), consuming key...")
+            #endif
+            prekeyManager.consume(prekey: consumable)
+            try sender.clearPendingBatch()
+            debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
+        } else if !sender.hasPendingBatch {
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
+        }
 
-            decryptedSealedPayload = decrypted
+        // ── 4. Decode, update capability, store inbound batch ────────────
+        let decodedPayload = try self.decodePayload(payloadData, version: bundle.version)
+        try self.updateMaxVersion(from: decodedPayload.appVersion, for: sender, using: cryptoOps)
+        try self.storeInboundBatch(decodedPayload.prekeyBatch, for: sender)
 
-        case .forwardSecretNoPQ:
-            // Classical FS: ECDH(ephemeral, prekey) only — no ML-KEM.
-            let decrypted: Data? = try {
-                guard let prekeyID = bundle.secrecy.prekeyID else { return nil }
-                #if DEBUG
-                debugPrint("Using prekey (NoPQ), ID = \(prekeyID)")
-                #endif
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                guard
-                    let privKey = prekeyManager.retrievePrivateKey(for: temp),
-                    let sessKey = cryptoOps.deriveSessionKey(ephemeralPrivateKey: privKey,
-                                                             recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
-                                                             quantumMaterial:     nil)
-                else { return nil }
-                return try cryptoOps.open(bundle, using: sessKey)
-            }()
+        // ── 5. Persist ───────────────────────────────────────────────────
+        try self.modelContext.save()
 
-            if decrypted != nil, let prekeyID = bundle.secrecy.prekeyID {
-                let temp = Prekey(id: prekeyID, contactID: sender.identifier, publicKey: Data())
-                prekeyManager.consume(prekey: temp)
-                try sender.clearPendingBatch()
-                debugPrint("Message successfully opened in .forwardSecretNoPQ mode. Pending batch cleared.")
-            }
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
 
-            decryptedSealedPayload = decrypted
+        return (decodedPayload, sender.identifier)
+    }
+}
 
-        case .longTermFallback:
-            // Hybrid long-term: ECDH(longTerm, longTerm) + ML-KEM.
-            let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+// MARK: - Decrypt helpers (private)
 
-            guard
-                let keyRecord          = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
-            else {
-                debugPrint("Opening message, could not derive session key. Aborting open...")
-                throw Errors.decryptionFailed
-            }
-            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
-                                                              quantumMaterial: quantumMaterial)
-            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
+extension ContactManager {
 
-            decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+    private func resolveSenderPublicKey(for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws -> Data {
+        guard
+            let keyRecord = sender.contactPublicKeys?.last(where: { $0.expiredOn == nil }),
+            let decrypted = try cryptoOps.decrypt(data: keyRecord.material)
+        else { throw Errors.decryptionFailed }
+        return decrypted
+    }
 
-        case .longTermNoPQ:
-            // Classical long-term: ECDH(longTerm, longTerm) only — no ML-KEM.
-            guard
-                let keyRecord            = sender.contactPublicKeys?.first(where: { $0.expiredOn == nil }),
-                let decryptedIdentityKey = try cryptoOps.decrypt(data: keyRecord.material)
-            else {
-                debugPrint("Opening message (NoPQ), could not derive session key. Aborting open...")
-                throw Errors.decryptionFailed
-            }
-            guard let sessionKey = cryptoOps.deriveSessionKey(using: decryptedIdentityKey,
-                                                              quantumMaterial: nil)
-            else { throw Manager.Crypto.EncryptionError.keyDerivationFailed }
+    private func resolveQuantumMaterial(
+        mode: OccultaBundle.Mode,
+        for sender: Contact.Profile,
+        using cryptoOps: Manager.Crypto
+    ) throws -> QuantumKeyMaterial? {
+        switch mode {
+        case .forwardSecret, .longTermFallback:
+            return try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+        default:
+            return nil
+        }
+    }
 
-            decryptedSealedPayload = try cryptoOps.open(bundle, using: sessionKey)
+    private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeyManager: Manager.PrekeyManager) throws {
+        debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
+        let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
+        let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
+        let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeysSuitableForTransport)
+        try sender.store(batch: batch)
+        debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
+    }
 
-        case .unsupported:
-            // Already rejected above — exhaustiveness only.
+    private func decodePayload(_ data: Data, version: OccultaBundle.Version) throws -> OccultaBundle.SealedPayload {
+        if version == .v4 {
+            return try WireHandle.decode(payload: data)
+        } else {
+            return try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: data)
+        }
+    }
+
+    private func updateMaxVersion(from appVersion: String?, for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws {
+        guard let appVersion else { return }
+        let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
+        guard let byte = maxVersion.wireByte else { return }
+        sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
+    }
+
+    private func storeInboundBatch(_ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, for sender: Contact.Profile) throws {
+        guard let batch else { return }
+        debugPrint("Decrypting bundle containing inbound prekey sync batch...")
+        guard batch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
+            throw Errors.invalidPrekeySyncBatch
+        }
+        guard batch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
+            throw Errors.invalidBundleFormat
+        }
+        let blobs: [Data] = batch.prekeys.compactMap { wired in
+            let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
+            return try? JSONEncoder().encode(prekey)
+        }
+        debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
+        try sender.syncInboundPrekeys(blobs, date: batch.generatedAt)
+    }
+}
+
+// MARK: - Group bundle decryption
+
+extension ContactManager {
+
+    /// The single decrypt entry point for all inbound bundles with `secrecy.mode == .group`.
+    ///
+    /// This handles every bundle type sent by ≥ 1.9.0 contacts: basket messages, shard
+    /// operations, custody manifests, and identity challenge envelopes. The caller
+    /// (`buildOwnedBasket`) dispatches to this function whenever `bundle.group != nil`,
+    /// then inspects `sealed` to route identity challenges, shard/custody ops, and the
+    /// empty-message sentinel before returning a basket to the UI.
+    ///
+    /// `groupID` in the return value comes from the decrypted `SealedPayload.groupID`,
+    /// not the cleartext `GroupEnvelope`. Callers use it to locate the matching Group record.
+    ///
+    /// `ownerID`: pass the identifier already returned by `identifyOwner(of:)` to skip
+    /// the O(contacts) fingerprint re-scan inside this method.
+    func openGroup(bundle: OccultaBundle, ownerID: String? = nil) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String, groupID: UUID) {
+        guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
         }
- 
-        guard let decryptedSealedPayload else { throw Errors.decryptionFailed }
- 
-        // ── 3. Detect inbound fallback → schedule fresh batch ─────────────
-        //
-        // A .longTermFallback bundle means the sender is out of our prekeys.
-        // Generate a new batch immediately so Alice's next outbound message
-        // to Bob carries it.
-        if (bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ)
-            && sender.hasPendingBatch == false {
-            debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
-            
-            let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
-            /// These prekeys do not contain any useful information for an attacker. They have been stripped of anything meaningful.
-            let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
-            let timestamp = Date()
-            let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: timestamp, prekeys: prekeysSuitableForTransport)
-            /// Store the newly generated batch with wired prekeys so it can be sent with the next message.
-            try sender.store(batch: batch)
-            
-            debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
+
+        switch envelope.version {
+        case 1:
+            break
+        default:
+            throw GroupDecryptError.unknownEnvelopeVersion
         }
-        
-        let decodedPayload: OccultaBundle.SealedPayload
-        if bundle.version == .v4 {
-            decodedPayload = try WireHandle.decode(payload: decryptedSealedPayload)
+
+        let cryptoOps     = Manager.Crypto()
+        let prekeyManager = Manager.PrekeyManager()
+
+        // ── 1. Identify sender ──────────────────────────────────────────
+        // Skip the fingerprint scan when the caller already identified the sender.
+        let sender: Contact.Profile
+        if let ownerID {
+            guard let found = try self.fetchContact(by: ownerID) else { throw Errors.contactNotFound }
+            sender = found
         } else {
-            decodedPayload = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: decryptedSealedPayload)
+            sender = try self.identifyOwner(for: bundle)
+        }
+        try sender.configureForwardSecrecy()
+
+        // ── 2. Resolve sender key material ─────────────────────────────
+        let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
+        let quantumMaterial = try self.resolveQuantumMaterial(for: sender, using: cryptoOps)
+
+        // ── 3. Trial-decrypt: find our slot and open it ─────────────────
+        let (recipientPayload, consumable) = try cryptoOps.findAndOpenRecipientSlot(
+            in: bundle,
+            blind: envelope.blind,
+            senderContactID: sender.identifier,
+            senderPublicKey: senderPublicKey,
+            quantumMaterial: quantumMaterial,
+            prekeyManager: prekeyManager
+        )
+
+        // ── 4. Prekey management ─────────────────────────────────────────
+        if let consumable {
+            prekeyManager.consume(prekey: consumable)
+            try sender.clearPendingBatch()
+        } else if !sender.hasPendingBatch {
+            try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
         }
 
-        // ── 4. Update contact's capability from sender's app version ──────
-        if let appVersion = decodedPayload.appVersion {
-            let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
-            if let byte = maxVersion.wireByte {
-                sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
-            }
+        // ── 5. Open shared ciphertext ────────────────────────────────────
+        let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
+        let payloadData = try cryptoOps.openGroupCiphertext(bundle, using: sessionKey)
+        let decoded     = try WireHandle.decode(payload: payloadData)
+
+        // ── 5.5. Verify sender proof ─────────────────────────────────────
+        // Confirms the cleartext senderFingerprint / fingerprintNonce routing fields
+        // were not replaced after sealing. A mismatch means a group member tampered
+        // with the bundle to frame a different sender.
+        guard let proof = decoded.senderProof,
+              HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: senderPublicKey, using: sessionKey) else {
+            throw GroupDecryptError.senderProofMismatch
         }
 
-        // ── 6. Store inbound prekey batch ────────────────────────────────
-        if let inboundBatch = decodedPayload.prekeyBatch {
-            debugPrint("Decrypting bundle containing inbound prekey sync batch...")
-            
-            guard inboundBatch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
-                throw Errors.invalidPrekeySyncBatch
-            }
-            guard inboundBatch.prekeys.allSatisfy({ $0.publicKey.count == 65 }) else {
-                throw Errors.invalidBundleFormat
-            }
- 
-            let blobs: [Data] = inboundBatch.prekeys.compactMap { wired in
-                /// Converted back to `PreKey` so we can look up a key by contact ID during decryption.
-                let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
-                
-                guard
-                    let encoded = try? JSONEncoder().encode(prekey)
-                else { return nil }
-                
-                return encoded
-            }
-            
-            debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
-            
-            try sender.syncInboundPrekeys(blobs, date: inboundBatch.generatedAt)
-        }
- 
-        // ── 7. Persist ───────────────────────────────────────────────────
+        // ── 6. Post-processing ────────────────────────────────────────────
+        try self.updateMaxVersion(from: decoded.appVersion, for: sender, using: cryptoOps)
+        try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
         try self.modelContext.save()
-        
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
- 
-        return (decodedPayload, sender.identifier)
+
+        guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
+        return (decoded, sender.identifier, groupID)
     }
 }
