@@ -24,8 +24,8 @@ final class Group {
     var encryptedName: Data?
 
     /// Real-layer member slots. Always exactly 32 entries.
-    /// Real slots: AES-GCM(contactIdentifier UTF-8) = 64 bytes.
-    /// Unused slots: 64 cryptographically random bytes, size-identical to real entries.
+    /// Real slots: AES-GCM(128-byte padded identifier) = 156 bytes (12 nonce + 128 data + 16 tag).
+    /// Unused slots: 156 cryptographically random bytes, size-identical to real entries.
     private(set) var realMemberSlots: [Data]
 
     /// Duress-layer member slots. Same invariants as realMemberSlots.

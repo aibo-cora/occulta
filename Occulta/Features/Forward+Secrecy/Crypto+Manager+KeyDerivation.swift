@@ -60,7 +60,9 @@ extension Manager.Crypto {
     /// FS modes: look up the prekey private key, ECDH, return the Prekey for post-open consumption.
     /// Fallback modes: long-term ECDH, no prekey to consume (returns nil).
     ///
-    /// `quantumMaterial` must already be resolved by the caller (nil for NoPQ modes).
+    /// NoPQ mode variants always use nil quantum material regardless of what the caller passes —
+    /// the mode name is authoritative. This lets `openGroup` pass the same quantum material to
+    /// all trial-decryption slots without mismatching NoPQ slots that the sender sealed without ML-KEM.
     ///
     /// Called by `decryptSealed` (single-recipient) and `openGroup` (group path).
     func deriveInboundKey(
@@ -77,18 +79,22 @@ extension Manager.Crypto {
             debugPrint("Using prekey, ID = \(prekeyID)")
             #endif
             let temp = Prekey(id: prekeyID, contactID: senderContactID, publicKey: Data())
+            // NoPQ: sender did not use ML-KEM — ignore any quantum material on file.
+            let effectiveQM: QuantumKeyMaterial? = secrecy.mode == .forwardSecretNoPQ ? nil : quantumMaterial
             guard
                 let privKey = prekeyManager.retrievePrivateKey(for: temp),
                 let key = self.deriveSessionKey(
                     ephemeralPrivateKey: privKey,
                     recipientMaterial: secrecy.ephemeralPublicKey,
-                    quantumMaterial: quantumMaterial
+                    quantumMaterial: effectiveQM
                 )
             else { throw EncryptionError.keyDerivationFailed }
             return (key, temp)
 
         case .longTermFallback, .longTermNoPQ:
-            guard let key = self.deriveSessionKey(using: senderPublicKey, quantumMaterial: quantumMaterial) else {
+            // NoPQ: sender did not use ML-KEM — ignore any quantum material on file.
+            let effectiveQM: QuantumKeyMaterial? = secrecy.mode == .longTermNoPQ ? nil : quantumMaterial
+            guard let key = self.deriveSessionKey(using: senderPublicKey, quantumMaterial: effectiveQM) else {
                 throw EncryptionError.keyDerivationFailed
             }
             return (key, nil)
