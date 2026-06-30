@@ -33,6 +33,7 @@ jobs:
           xcrun simctl bootstatus "iPhone 17" -b
 
       - name: Run unit tests
+        timeout-minutes: 20
         run: |
           set -o pipefail
           xcodebuild test \
@@ -40,6 +41,7 @@ jobs:
             -scheme OccultaTests \
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO \
+            -parallel-testing-enabled NO \
             2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml
 
       - name: Upload test results
