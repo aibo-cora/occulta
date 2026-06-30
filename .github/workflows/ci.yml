@@ -22,13 +22,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_26.0.1.app
+
       - name: Run unit tests
         run: |
           set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=26.0' \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output test-results.xml
 
