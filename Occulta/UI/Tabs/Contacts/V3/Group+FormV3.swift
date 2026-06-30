@@ -68,10 +68,14 @@ extension Group {
             return "Version unknown — ask them to send you a message."
         }
 
+        private var atCapacity: Bool {
+            self.selectedIdentifiers.count >= Group.slotCount
+        }
+
         private var membersHeader: String {
             self.selectedIdentifiers.isEmpty
                 ? "Members"
-                : "Members · \(self.selectedIdentifiers.count) selected"
+                : "Members · \(self.selectedIdentifiers.count) / \(Group.slotCount)"
         }
 
         private var canSave: Bool {
@@ -89,10 +93,13 @@ extension Group {
                     }
 
                     if !self.eligible.isEmpty {
-                        Section(self.membersHeader) {
+                        Section {
                             ForEach(self.eligible) { contact in
                                 self.eligibleRow(contact)
                             }
+                        } header: {
+                            Text(self.membersHeader)
+                                .foregroundStyle(self.atCapacity ? Color.orange : Color.secondary)
                         }
                     }
 
@@ -150,6 +157,7 @@ extension Group {
             let fullName   = [givenName, familyName].filter { !$0.isEmpty }.joined(separator: " ")
             let isSelected = self.selectedIdentifiers.contains(id)
 
+            let blocked = !isSelected && self.atCapacity
             Button {
                 if isSelected { self.selectedIdentifiers.remove(id) }
                 else          { self.selectedIdentifiers.insert(id) }
@@ -178,6 +186,8 @@ extension Group {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(blocked)
+            .opacity(blocked ? 0.35 : 1)
         }
 
         @ViewBuilder
