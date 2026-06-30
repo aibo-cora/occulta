@@ -35,8 +35,8 @@ final class KeychainMigrationSETests: XCTestCase {
 
     // MARK: - Lifecycle
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         #if targetEnvironment(simulator)
         throw XCTSkip("Secure Enclave is not available in the simulator")
         #endif
