@@ -40,14 +40,16 @@ jobs:
             -scheme OccultaTests \
             -destination "id=$SIM_UDID" \
             CODE_SIGNING_ALLOWED=NO \
-            | xcpretty --report junit --output test-results.xml
+            2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results
-          path: test-results.xml
+          path: |
+            test-results.xml
+            xcodebuild.log
 
       - name: Publish test report
         uses: dorny/test-reporter@v1
