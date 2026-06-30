@@ -24,6 +24,9 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode_26.2.app
 
+      - name: List simulators
+        run: xcrun simctl list devices available
+
       - name: Run unit tests
         run: |
           set -o pipefail
