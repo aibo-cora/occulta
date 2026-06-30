@@ -27,13 +27,18 @@ jobs:
       - name: List simulators
         run: xcrun simctl list devices available
 
+      - name: Boot simulator
+        run: |
+          xcrun simctl boot "iPhone 17" || true
+          xcrun simctl bootstatus "iPhone 17" -b
+
       - name: Run unit tests
         run: |
           set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
-            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml
 
