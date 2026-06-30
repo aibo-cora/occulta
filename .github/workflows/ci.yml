@@ -21,13 +21,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_26.2.app
+
+      - name: Setup simulator
+        run: |
+          xcrun simctl delete "OccultaCI" 2>/dev/null || true
+          UDID=$(xcrun simctl create "OccultaCI" "iPhone 16" "com.apple.CoreSimulator.SimRuntime.iOS-26-2")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "SIM_UDID=$UDID" >> $GITHUB_ENV
+
       - name: Run unit tests
         run: |
           set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
-            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -destination "id=$SIM_UDID" \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output test-results.xml
 
