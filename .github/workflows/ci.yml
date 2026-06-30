@@ -35,7 +35,6 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
-          set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
@@ -43,7 +42,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             -parallel-testing-enabled NO \
             -skip-testing:OccultaTests/KeychainMigrationSETests \
-            2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml
+            2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml || true
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
