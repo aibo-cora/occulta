@@ -11,7 +11,7 @@ on:
 jobs:
   test:
     name: Unit Tests
-    runs-on: macos-15
+    runs-on: macos-latest
 
     permissions:
       checks: write
@@ -21,16 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -switch /Applications/Xcode_26.2.app
-
       - name: Run unit tests
         run: |
           set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.6' \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output test-results.xml
 
