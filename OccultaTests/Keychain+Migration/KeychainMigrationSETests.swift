@@ -35,6 +35,13 @@ final class KeychainMigrationSETests: XCTestCase {
 
     // MARK: - Lifecycle
 
+    override func setUp() {
+        super.setUp()
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Secure Enclave is not available in the simulator")
+        #endif
+    }
+
     override func tearDown() {
         super.tearDown()
         // Clean up: delete by tag with and without access group to catch both states.
