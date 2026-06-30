@@ -24,6 +24,11 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode_26.2.app
 
+      - name: Boot simulator
+        run: |
+          xcrun simctl boot "iPhone 16" || true
+          xcrun simctl bootstatus "iPhone 16" -b
+
       - name: Run unit tests
         run: |
           set -o pipefail
