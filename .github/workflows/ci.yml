@@ -31,7 +31,7 @@ jobs:
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=26.0' \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty --report junit --output test-results.xml
 
