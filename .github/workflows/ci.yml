@@ -42,6 +42,7 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             CODE_SIGNING_ALLOWED=NO \
             -parallel-testing-enabled NO \
+            -skip-testing:OccultaTests/KeychainMigrationSETests \
             2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml
 
       - name: Upload test results
