@@ -638,7 +638,7 @@ extension ContactManager {
 }
 
 extension ContactManager {
-    static var preview: ContactManager {
+    @MainActor static var preview: ContactManager {
         let sharedModelContainer: ModelContainer = {
             let schema = Schema([
                 Contact.Profile.self,

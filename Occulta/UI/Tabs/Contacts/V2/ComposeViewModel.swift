@@ -198,16 +198,19 @@ final class ComposeViewModel {
 
             let basket     = Basket(files: processed)
             let contactPub = try? contactManager.currentPublicKey(forIdentifier: self.identifier)
-            let shardOps   = try shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
-            let manifest   = try? shardCustodyManager?.buildCustodyManifest(for: self.identifier)
+            
+            let shardOps   = try await shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
+            let manifest   = try? await shardCustodyManager?.buildCustodyManifest(for: self.identifier)
             let expected: [UUID]?
+            
             if let custody = shardCustodyManager, let vm = vaultManager {
-                expected = try? custody.buildExpectedShards(for: self.identifier, vaultManager: vm)
+                expected = try? await custody.buildExpectedShards(for: self.identifier, vaultManager: vm)
             } else {
                 expected = nil
             }
 
             let encrypted: Data
+            
             do {
                 encrypted = try contactManager.encryptBundle(
                     basket:          basket,
