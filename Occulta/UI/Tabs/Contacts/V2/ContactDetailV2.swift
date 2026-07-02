@@ -58,6 +58,11 @@ extension Contact {
                     if self.needsExchange {
                         ExchangeHeroV2(identifier: self.identifier)
                     } else {
+                        if self.status == .verified, let p = self.profile {
+                            IdentityChallenge.VerifyIdentityButton(contact: p)
+                                .padding(.horizontal, 16)
+                        }
+
                         ComposeStyleToggle(useThread: self.$useThreadCompose)
 
                         if self.useThreadCompose {

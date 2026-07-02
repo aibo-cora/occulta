@@ -158,10 +158,6 @@ extension Contact {
 
         @ViewBuilder
         private var editOnlyActions: some View {
-            if let profile = self.profiles.first {
-                IdentityChallenge.VerifyIdentityButton(contact: profile)
-            }
-
             Button(role: .destructive) {
                 self.displayingRevokeKeyWarning = true
             } label: {
