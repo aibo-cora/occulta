@@ -641,9 +641,6 @@ extension ContactManager {
         case trusteeLacksQuantumMaterial
         case groupIDMissing
         case groupHasNoMembers
-        /// `security.currentDepth` decoded to a value outside the valid RoutingDepth range.
-        /// Should never occur in practice; signals a bug in the security layer.
-        case invalidRoutingDepth
     }
 }
 
@@ -1075,20 +1072,20 @@ extension ContactManager {
     /// the replenishment threshold. The shared ciphertext is sealed once with a
     /// random session key bound to the group UUID.
     func encryptGroupBundle(basket: Basket, groupID: UUID) throws -> Data {
-        let layer: RoutingDepth
-        switch self.security.currentDepth {
-        case 0:          layer = .normal
-        case let d where d > 0: layer = .duress
-        default:         throw Errors.invalidRoutingDepth
-        }
-
         guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
-        let identifierList = grp.members(in: layer)
+        let identifierList = grp.members(atDepth: self.security.currentDepth)
         guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
         let predicate = #Predicate<Contact.Profile> {
             identifierList.contains($0.identifier) && $0.deletionToken == nil
         }
+        // A group's stored membership is independent of each contact's own
+        // visibleThroughDepth — a member classified as sensitive after being added to
+        // this group's list at the current depth must still be excluded here, exactly
+        // as GroupDetailV3 and Group+FormV3 already filter for display. Without this,
+        // a message could be encrypted for a contact the UI shows as absent from the
+        // group at the current security depth.
         let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
+            .filter { self.security.isDisplayable($0) }
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 
         var prekeyConsumed = false

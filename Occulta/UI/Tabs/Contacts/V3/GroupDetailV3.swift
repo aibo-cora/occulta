@@ -27,17 +27,9 @@ struct GroupDetailV3: View {
         self.groups.first { $0.readID() == self.groupID }
     }
 
-    private var resolvedLayer: RoutingDepth? {
-        switch self.security.currentDepth {
-        case 0:          return .normal
-        case let d where d > 0: return .duress
-        default:         return nil
-        }
-    }
-
     private var resolvedMembers: [Contact.Profile] {
-        guard let grp = self.group, let layer = self.resolvedLayer else { return [] }
-        let identifiers = Set(grp.members(in: layer))
+        guard let grp = self.group else { return [] }
+        let identifiers = Set(grp.members(atDepth: self.security.currentDepth))
         return self.contacts.filter { identifiers.contains($0.identifier) && self.security.isDisplayable($0) }
     }
 
@@ -55,13 +47,7 @@ struct GroupDetailV3: View {
                     thumbnail: nil
                 )
 
-                if self.resolvedLayer == nil {
-                    Text("Security layer unavailable. Restart the app.")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 8)
-                } else if count > 0 {
+                if count > 0 {
                     ComposeToggleV3(useThread: self.$useThreadCompose)
 
                     if self.useThreadCompose {

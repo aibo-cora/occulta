@@ -90,6 +90,37 @@ private struct DecryptPair {
         }
     }
 
+    // Regression: an envelope claiming more recipients than Group.slotCount allows must
+    // be rejected before any trial-decryption work runs. No legitimately-created group
+    // can exceed this cap, so a larger count means a malformed or maliciously crafted
+    // bundle designed to force expensive per-entry ECDH work on the receiving device.
+    @Test func tooManyRecipients_throwsBeforeTrialDecrypting() throws {
+        let senderKM  = TestKeyManager()
+        let crypto    = Manager.Crypto(keyManager: senderKM)
+        let senderPub = try senderKM.retrieveIdentity()
+
+        let recipients = try (0...Group.slotCount).map { _ -> GroupRecipient in
+            GroupRecipient(
+                publicKey: try TestKeyManager().retrieveIdentity(),
+                quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil
+            )
+        }
+        #expect(recipients.count == Group.slotCount + 1)
+
+        let bundle = try crypto.seal(message: Data("flood".utf8), groupID: UUID(), recipients: recipients)
+
+        #expect(throws: GroupDecryptError.tooManyRecipients) {
+            try Manager.Crypto(keyManager: TestKeyManager()).findAndOpenRecipientSlot(
+                in: bundle,
+                blind: bundle.group!.blind,
+                senderContactID: "sender",
+                senderPublicKey: senderPub,
+                quantumMaterial: nil,
+                prekeyManager: Manager.PrekeyManager()
+            )
+        }
+    }
+
     @Test func multipleRecipients_findsCorrectSlot() throws {
         let senderKM  = TestKeyManager()
         let crypto    = Manager.Crypto(keyManager: senderKM)

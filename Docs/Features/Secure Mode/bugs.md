@@ -2344,4 +2344,73 @@ func randomSlot(excluding excluded: Set<Int> = []) -> Int {
 }
 ```
 
+---
+
+## Bug 73 — Group duress membership shared across all duress depths, breaking multi-layer decoys
+
+**Status:** Closed (Fixed) — implemented and verified on `release/v1.9.1` (34/34 Group tests passing, including new regression coverage for depth-1/2/3 independence). Not yet committed/pushed.
+
+**Target:** v1.9.1
+
+### Severity: Medium
+
+`USER_GUIDE.md` documents multi-layer duress as a deliberate, user-facing feature: each duress
+depth is meant to hold "a completely different set of fake contacts designed to convince someone
+who knows what [the shallower layer] looks like." Individual contacts support this correctly —
+`visibleThroughDepth` is a numeric depth, so a contact can be configured to appear at depth 0–1
+and vanish at depth 2+.
+
+Groups do not. `Group+Model.swift` stores membership in exactly two arrays, `realMemberSlots` and
+`duressMemberSlots`, keyed by the two-case `RoutingDepth` enum (`.normal` / `.duress`). Both
+`GroupDetailV3.swift` and `Group+FormV3.swift` resolve the active layer with:
+
+```swift
+switch self.security.currentDepth {
+case 0:          return .normal
+case let d where d > 0: return .duress
+default:         return nil
+}
+```
+
+Every duress depth — 1, 2, 3, however many the user has created — reads and writes the same
+`duressMemberSlots` array. There is no per-depth storage for group membership the way there is
+for contacts via `visibleThroughDepth`.
+
+### Impact
+
+A user who builds a Depth‑1 decoy group with members [A, B], is later coerced into Depth 2 (per
+the guide's own multi-layer scenario), and edits that group's membership to the "completely
+different" decoy set the guide instructs them to create — say [C, D] — does not create a second,
+independent list. They overwrite the group's only duress array. The Depth‑1 decoy, previously
+built to fool a first interrogator, now silently shows [C, D] the next time that depth is
+entered. There is no warning anywhere in the UI that editing group membership at one duress depth
+affects every other duress depth.
+
+This is not a hypothetical: it directly breaks the multi-layer guarantee the app documents and
+markets to users ("Depth 2 is a completely different set of fake contacts... designed to convince
+someone who knows what Depth 1 looks like").
+
+### Scope note
+
+Out of scope for this fix: the `Group` model's dual real/duress array design (padding, shuffling,
+per-slot AES-GCM sealing) does not itself need to change — it already mirrors the forensic
+indistinguishability properties used elsewhere in Secure Mode. The fix is to key membership
+storage by depth (N padded slots of member-lists, mirroring the pattern `AppLayerConfig` already
+uses for `sealedDuressVerifiers` / `sealedBlobSlots`) instead of the binary `RoutingDepth` split,
+and to update the two `switch self.security.currentDepth` call sites above to resolve the actual
+depth rather than collapsing every depth > 0 into `.duress`.
+
+Multi-device contacts (`Docs/Features/Multi-Device Contacts/FINDINGS.md`) is a separate,
+unrelated piece of work targeting a later release — not a prerequisite or blocker for this fix.
+
+### Root Cause
+
+`RoutingDepth` (`AppLayerConfig+Model.swift:13`) was defined with only two cases before multi-layer
+duress (arbitrary depth N) existed as a user-facing feature. `Group+Model.swift`'s member-storage
+API was built against that two-case enum and never revisited when `AppLayerConfig` itself moved to
+N-depth-aware storage (`sealedDuressVerifiers[N]`, `coercerBaseDepth`, per-contact
+`visibleThroughDepth: Int`) for the coercer re-enable design (Bugs 37, 47, 48). The Secure Mode
+72-bug audit predates the group real/duress split entirely — `scenarios.md` and `bugs.md` have no
+prior mention of groups — so this interaction was never analyzed.
+
 Given the negligible magnitude, this is low priority and can be deferred.
