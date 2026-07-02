@@ -339,9 +339,13 @@ extension Manager {
                 
                 if delStatus == errSecSuccess {
                     deletedCount += 1
+                    #if DEBUG
                     print("✅ Deleted key with tag: \(tagString)")
+                    #endif
                 } else {
+                    #if DEBUG
                     print("⚠️ Failed to delete key '\(tagString)': \(delStatus)")
+                    #endif
                 }
             }
             

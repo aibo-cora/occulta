@@ -99,7 +99,7 @@ struct PINEntry: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                Group {
+                SwiftUI.Group {
                     if self.isLockedOut {
                         Text(self.lockoutRemaining)
                     } else {

@@ -41,6 +41,7 @@ extension IdentityChallenge {
         @State private var showNoteInput   = false
         @State private var noteDraft       = ""
         @State private var errorMessage: String?
+        @State private var showInfo        = false
 
         /// A running tick so the "N minutes ago" caption updates without a
         /// full view rebuild. 30-second cadence is plenty for minute resolution.
@@ -61,15 +62,41 @@ extension IdentityChallenge {
 
         var body: some View {
             VStack(spacing: 8) {
-                Button {
-                    self.showEducational = true
-                } label: {
-                    Label("Verify Identity", systemImage: "checkmark.shield")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                HStack(spacing: 8) {
+                    Button {
+                        self.showEducational = true
+                    } label: {
+                        Label("Challenge", systemImage: "checkmark.shield")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(self.hasOutstanding || self.hasValidIdentity)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { self.showInfo.toggle() }
+                    } label: {
+                        Image(systemName: self.showInfo ? "info.bubble.fill" : "info.bubble")
+                            .font(.system(size: 18))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("What is this for?")
                 }
-                .buttonStyle(.bordered)
-                .disabled(self.hasOutstanding || self.hasValidIdentity)
+
+                if self.showInfo {
+                    VStack(alignment: .leading, spacing: 10) {
+                        self.infoStep(1, "Someone — claiming to be \(self.displayName) or anyone else — asks you for money, a transfer, or personal details by phone, text, or another app. Ask here before you act on it.")
+                        self.infoStep(2, "\(self.displayName) has to open the request and approve it with Face ID or Touch ID. Wait for signed response. We will verify their signature.")
+
+                        Text("No message content is shared — just a yes or no.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(Color.occultaVerified.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
 
                 if self.hasOutstanding {
                     Text("Verification in progress. Send the shared file to \(self.displayName), then open their response.")
@@ -119,6 +146,20 @@ extension IdentityChallenge {
         private var displayName: String {
             let name = self.contact.givenName.decrypt()
             return name.isEmpty ? "this contact" : name
+        }
+
+        @ViewBuilder
+        private func infoStep(_ number: Int, _ text: String) -> some View {
+            HStack(alignment: .top, spacing: 10) {
+                Text("\(number)")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(width: 16, height: 16)
+                    .background(Circle().fill(Color.occultaVerified))
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
 
         private func createChallenge() {
@@ -216,7 +257,7 @@ extension IdentityChallenge {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .navigationTitle("Verify Identity")
+                .navigationTitle("Challenge")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {

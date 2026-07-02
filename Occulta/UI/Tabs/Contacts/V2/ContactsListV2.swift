@@ -8,10 +8,12 @@ import SwiftData
 import ContactsUI
 
 struct ContactsV2: View {
-    @State private var searchText = ""
+    @State private var searchText        = ""
+    @State private var showGroups         = false
     @State private var creatingNewContact = false
+    @State private var creatingNewGroup   = false
 
-    @AppStorage("showFingerprints")  private var showFingerprints  = true
+    @AppStorage("showFingerprints")  private var showFingerprints  = false
     @AppStorage("showTrustSummary")  private var showTrustSummary  = true
 
     @Environment(\.modelContext)          private var modelContext
@@ -19,6 +21,14 @@ struct ContactsV2: View {
     @Environment(Manager.Security.self)   private var security
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
+    @Query private var groups: [Group]
+
+    private var sortedGroups: [Group] {
+        let source = self.searchText.isEmpty ? self.groups : self.groups.filter {
+            ($0.readName() ?? "").localizedStandardContains(self.searchText)
+        }
+        return source.sorted { ($0.readName() ?? "") < ($1.readName() ?? "") }
+    }
 
     private var visibleContacts: [Contact.Profile] {
         self.contacts.filter { self.security.isDisplayable($0) }
@@ -44,85 +54,138 @@ struct ContactsV2: View {
         NavigationStack {
             VStack {
                 List {
-                    let sorted = self.sortedContacts
-                    let verified = sorted.filter { $0.verificationStatus == .verified }
-                    let unverified = sorted.filter { $0.verificationStatus == .unverified }
-                    let pending = sorted.filter { $0.verificationStatus == .pending }
-                    
-                    if self.showTrustSummary && !self.contacts.isEmpty {
-                        Section {
-                            TrustSummaryCard(verified: verified.count, unverified: unverified.count, pending: pending.count)
-                            .listRowInsets(EdgeInsets())
-                        }
-                        .listRowBackground(Color.clear)
-                    }
-
-                    if self.searchText.isEmpty {
-                        if !verified.isEmpty {
-                            Section { self.rows(verified) } header: { SectionHeaderV2(status: .verified) }
-                        }
-                        if !unverified.isEmpty {
-                            Section { self.rows(unverified) } header: { SectionHeaderV2(status: .unverified) }
-                        }
-                        if !pending.isEmpty {
-                            Section { self.rows(pending) } header: { SectionHeaderV2(status: .pending) }
-                        }
-                    }
-
-                    if self.contacts.isEmpty {
-                        Section {
-                            VStack(alignment: .leading, spacing: 10) {
-                                if #available(iOS 18.0, *) {
-                                    Text("Use the search field to import a contact from your device.")
-                                }
-                                Text("Tap **+** to create a new contact.")
+                    if self.showGroups {
+                        let sorted = self.sortedGroups
+                        
+                        if sorted.isEmpty {
+                            Section {
+                                Text(self.searchText.isEmpty
+                                     ? "Tap **+** to create your first group."
+                                     : "No groups match your search.")
+                                    .font(.body)
+                                    .padding(.vertical, 4)
                             }
-                            .font(.body)
-                            .padding(.vertical, 4)
+                            .listRowBackground(Color.clear)
+                        } else {
+                            Section {
+                                ForEach(sorted) { group in
+                                    if let groupID = group.readID() {
+                                        NavigationLink(value: groupID) {
+                                            GroupRowV2(group: group)
+                                        }
+                                    }
+                                }
+                            }
+                            if self.searchText.isEmpty {
+                                Section {
+                                    Text("\(sorted.count) group\(sorted.count == 1 ? "" : "s") · encrypted at rest")
+                                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .center)
+                                        .padding(.vertical, 2)
+                                }
+                                .listRowBackground(Color.clear)
+                            }
                         }
-                        .listRowBackground(Color.clear)
-                    }
+                    } else {
+                        let sorted = self.sortedContacts
+                        let verified = sorted.filter { $0.verificationStatus == .verified }
+                        let unverified = sorted.filter { $0.verificationStatus == .unverified }
+                        let pending = sorted.filter { $0.verificationStatus == .pending }
 
-                    if self.searchText.isEmpty {
-                        Section {
-                            Text("\(self.visibleContacts.count) contacts · encrypted at rest")
-                                .font(.system(size: 10, weight: .regular, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.vertical, 2)
+                        if self.showTrustSummary && !self.contacts.isEmpty {
+                            Section {
+                                TrustSummaryCard(verified: verified.count, unverified: unverified.count, pending: pending.count)
+                                .listRowInsets(EdgeInsets())
+                            }
+                            .listRowBackground(Color.clear)
                         }
-                        .listRowBackground(Color.clear)
+
+                        if self.searchText.isEmpty {
+                            if !verified.isEmpty {
+                                Section { self.rows(verified) } header: { SectionHeaderV2(status: .verified) }
+                            }
+                            if !unverified.isEmpty {
+                                Section { self.rows(unverified) } header: { SectionHeaderV2(status: .unverified) }
+                            }
+                            if !pending.isEmpty {
+                                Section { self.rows(pending) } header: { SectionHeaderV2(status: .pending) }
+                            }
+                        }
+
+                        if self.contacts.isEmpty {
+                            Section {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    if #available(iOS 18.0, *) {
+                                        Text("Use the search field to import a contact from your device.")
+                                    }
+                                    Text("Tap **+** to create a new contact.")
+                                }
+                                .font(.body)
+                                .padding(.vertical, 4)
+                            }
+                            .listRowBackground(Color.clear)
+                        }
+
+                        if self.searchText.isEmpty {
+                            Section {
+                                Text("\(self.visibleContacts.count) contacts · encrypted at rest")
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .padding(.vertical, 2)
+                            }
+                            .listRowBackground(Color.clear)
+                        }
                     }
                 }
                 .scrollIndicators(.hidden)
                 .listStyle(.insetGrouped)
-                .navigationTitle("Contacts")
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            self.creatingNewContact = true
-                        } label: {
-                            Image(systemName: "plus")
-                        }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Picker("", selection: self.$showGroups) {
+                        Text("Contacts").tag(false)
+                        Text("Groups").tag(true)
                     }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemGroupedBackground))
                 }
-                .sheet(isPresented: self.$creatingNewContact) {
-                    Contact.FormV2()
-                }
-                .navigationDestination(for: String.self) { identifier in
-                    Contact.DetailsV2(identifier: identifier)
-                }
+                .onChange(of: self.showGroups) { _, _ in self.searchText = "" }
                 
-                if #available(iOS 18.0, *) {
+                if #available(iOS 18.0, *), !self.showGroups {
                     ContactAccessButton(queryString: self.searchText) { identifiers in
                         self.fetchContacts(with: identifiers)
                     }
+                    
                     .contactAccessButtonCaption(.phone)
                     .contactAccessButtonStyle(ContactAccessButton.Style(imageWidth: 30))
                     .padding()
                 }
             }
-            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always),prompt: "Find a contact…")
+            .searchable(text: self.$searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: self.showGroups ? "Find a group…" : "Find a contact…")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        if self.showGroups { self.creatingNewGroup   = true }
+                        else               { self.creatingNewContact = true }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: self.$creatingNewContact) {
+                Contact.FormV2()
+            }
+            .sheet(isPresented: self.$creatingNewGroup) {
+                Group.FormV3()
+            }
+            .navigationDestination(for: String.self) { identifier in
+                Contact.DetailsV2(identifier: identifier)
+            }
+            .navigationDestination(for: UUID.self) { groupID in
+                GroupDetailV3(groupID: groupID)
+            }
         }
     }
 
@@ -143,7 +206,9 @@ struct ContactsV2: View {
             try CNContactStore().enumerateContacts(with: request) { contact, _ in batch.append(contact) }
             try self.contactManager.createContacts(from: batch, currentDepth: self.security.currentDepth)
         } catch {
+            #if DEBUG
             debugPrint("fetchContacts error: \(error.localizedDescription)")
+            #endif
         }
     }
 }
@@ -163,13 +228,13 @@ struct ContactRowV2: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Group {
+            SwiftUI.Group {
                 if let data = self.thumbnail, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
                     ZStack {
                         avatarGradientV2(for: self.contact.identifier)
-                        
+
                         Text([self.givenName, self.familyName].filter { !$0.isEmpty }
                                 .joined(separator: " ").initials)
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -203,10 +268,6 @@ struct ContactRowV2: View {
             }
 
             Spacer()
-
-            Text(self.contact.freshnessLabel)
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 3)
     }
@@ -280,6 +341,34 @@ private struct SectionHeaderV2: View {
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .tracking(1.6)
         }
+    }
+}
+
+// MARK: - Group Row
+
+private struct GroupRowV2: View {
+    let group: Group
+
+    private var name: String { self.group.readName() ?? "Unnamed Group" }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                avatarGradientV2(for: self.group.readID()?.uuidString ?? self.name)
+                Text(self.name.initials)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(Circle())
+
+            Text(self.name)
+                .font(.body.weight(.semibold))
+                .lineLimit(1)
+
+            Spacer()
+        }
+        .padding(.vertical, 3)
     }
 }
 

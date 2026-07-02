@@ -32,6 +32,7 @@ struct WireHandle {
         let fingerprintNonce: Data   // 16 bytes
         let senderFingerprint: Data  // 32 bytes
         let ciphertext: Data         // AES-GCM combined: nonce(12) || ct || tag(16)
+        let groupEnvelope: Data?     // TLV section 0x01 — JSON(GroupEnvelope), nil for non-group bundles
     }
 
     // MARK: - Outer envelope: parse
@@ -65,6 +66,18 @@ struct WireHandle {
         // A real P-256 key always begins with 0x04 — all-zero is not a valid key.
         let ephemeralKey = ephemeralKeyRaw.allSatisfy({ $0 == 0 }) ? Data() : ephemeralKeyRaw
 
+        // TLV extension sections (§4.4). Unknown types are skipped.
+        var groupEnvelope: Data? = nil
+        while r.remaining >= 5 {
+            let sectionType   = try r.uint8()
+            let sectionLength = Int(try r.uint32BE())
+            let sectionBytes  = try r.read(sectionLength)
+            if sectionType == 0x01 {
+                guard groupEnvelope == nil else { throw OccultaBundle.BundleError.malformedBundle }
+                groupEnvelope = sectionBytes
+            }
+        }
+
         return Bundle(
             version:           version,
             minReaderVersion:  minReaderVersion,
@@ -74,7 +87,8 @@ struct WireHandle {
             ephemeralKey:      ephemeralKey,
             fingerprintNonce:  fingerprintNonce,
             senderFingerprint: senderFP,
-            ciphertext:        ciphertext
+            ciphertext:        ciphertext,
+            groupEnvelope:     groupEnvelope
         )
     }
 
@@ -146,6 +160,14 @@ struct WireHandle {
         w.uint64BE(UInt64(bundle.ciphertext.count))
         w.data(bundle.ciphertext)
 
+        // TLV section 0x01 — group envelope (§4.4). Written only for group bundles.
+        if let group = bundle.group {
+            let groupJSON = try JSONEncoder().encode(group)
+            w.uint8(0x01)
+            w.uint32BE(UInt32(groupJSON.count))
+            w.data(groupJSON)
+        }
+
         return w.result
     }
 
@@ -161,7 +183,9 @@ struct WireHandle {
             identityChallenge: payload.identityChallenge,
             shardOperations:   payload.shardOperations,
             custodyManifest:   payload.custodyManifest,
-            expectedShards:    payload.expectedShards
+            expectedShards:    payload.expectedShards,
+            senderProof:       payload.senderProof,
+            groupID:           payload.groupID
         )
         let metaJSON = try Self.sortedEncoder.encode(meta)
 
@@ -193,7 +217,9 @@ struct WireHandle {
             shardOperations:   meta.shardOperations,
             custodyManifest:   meta.custodyManifest,
             expectedShards:    meta.expectedShards,
-            appVersion:        meta.appVersion
+            appVersion:        meta.appVersion,
+            senderProof:       meta.senderProof,
+            groupID:           meta.groupID
         )
     }
 
@@ -258,20 +284,30 @@ struct WireHandle {
     static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
     static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
-    private static let _versionToByte: [OccultaBundle.Version: UInt8] = [.v4: 0x04]
-    private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [0x04: .v4]
+    // groupCapable encodes to 0x04 on the wire (same binary layout as v4);
+    // 0x05 is only written into Contact.Profile.maxBundleVersion as a capability marker.
+    private static let _versionToByte: [OccultaBundle.Version: UInt8] = [
+        .v4:           0x04,
+        .groupCapable: 0x04,
+    ]
+    private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
+        0x04: .v4,
+        0x05: .groupCapable,
+    ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [
         .forwardSecret:     0x01,
         .forwardSecretNoPQ: 0x02,
         .longTermFallback:  0x03,
         .longTermNoPQ:      0x04,
+        .group:             0x05,
     ]
     private static let _byteToMode: [UInt8: OccultaBundle.Mode] = [
         0x01: .forwardSecret,
         0x02: .forwardSecretNoPQ,
         0x03: .longTermFallback,
         0x04: .longTermNoPQ,
+        0x05: .group,
     ]
 
     private static let sortedEncoder: JSONEncoder = {
@@ -291,6 +327,8 @@ private struct PayloadMeta: Codable {
     var shardOperations: [OccultaBundle.ShardOperation]?
     var custodyManifest: [UUID]?
     var expectedShards: [UUID]?
+    var senderProof: Data?
+    var groupID: UUID?
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -300,10 +338,12 @@ private struct PayloadMeta: Codable {
         try c.encodeIfPresent(self.shardOperations,   forKey: .shardOperations)
         try c.encodeIfPresent(self.custodyManifest,   forKey: .custodyManifest)
         try c.encodeIfPresent(self.expectedShards,    forKey: .expectedShards)
+        try c.encodeIfPresent(self.senderProof,       forKey: .senderProof)
+        try c.encodeIfPresent(self.groupID,           forKey: .groupID)
     }
 
     enum CodingKeys: String, CodingKey {
-        case appVersion, prekeyBatch, identityChallenge, shardOperations, custodyManifest, expectedShards
+        case appVersion, prekeyBatch, identityChallenge, shardOperations, custodyManifest, expectedShards, senderProof, groupID
     }
 }
 
@@ -347,6 +387,8 @@ private struct Reader {
         self.data   = data
         self.offset = data.startIndex
     }
+
+    var remaining: Int { data.endIndex - offset }
 
     mutating func read(_ count: Int) throws -> Data {
         let end = offset + count

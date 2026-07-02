@@ -75,7 +75,7 @@ struct VaultShardHealth: View {
                 Button {
                     self.unlockVault()
                 } label: {
-                    Group {
+                    SwiftUI.Group {
                         if self.unlocking {
                             ProgressView().tint(.white)
                         } else {

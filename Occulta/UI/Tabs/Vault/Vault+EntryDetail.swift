@@ -118,17 +118,20 @@ struct VaultEntryDetail: View {
     }
 
     // MARK: - Content (hold-to-reveal)
+    
+    private var text: String? {
+        guard
+            let entry = self.entry,
+            let data = try? self.vault.decryptContent(for: entry)
+        else { return nil }
+        
+        return String(data: data, encoding: .utf8)
+    }
 
     private func contentCard(entry: VaultEntry) -> some View {
-        let text: String? = {
-            guard let data = try? self.vault.decryptContent(for: entry) else { return nil }
-            
-            return String(data: data, encoding: .utf8)
-        }()
-
-        return ZStack(alignment: .center) {
-            Group {
-                if let text {
+        ZStack(alignment: .center) {
+            SwiftUI.Group {
+                if let text = self.text {
                     Text(text)
                         .font(.system(size: 13, design: .monospaced))
                         .lineSpacing(4)
