@@ -169,6 +169,18 @@ These are architectural gaps and logical extensions identified from the trajecto
 
 ---
 
+### 7. Multi-Device Contacts
+
+**Problem:** A contact is modeled as exactly one active key at a time (`contactPublicKeys` is a rotation history, not a device roster). If someone owns two devices and both are paired via UWB, there's no way to send one message that either device can open — today the second pairing would just rotate/overwrite the first device's key.
+
+**Solution:** Reuse the group-messaging envelope (`GroupEnvelope`/`Recipient`, per-recipient wrapped session key, trial-decryption slot-finding) to wrap the same message once per device key belonging to one contact — the wire format already treats a "recipient" as a key, not a contact, so no bundle-format change is required. The real work is in the data model: `Contact.Profile` needs to support several concurrently-active keys (one per paired device) instead of "one active, rest expired," plus a way to revoke a single device's key without invalidating the others.
+
+**Why it matters:** Users increasingly pair from more than one device (phone + backup phone, personal + work). Without this, every additional device fragments the relationship into a separate contact identity.
+
+**Prerequisite:** Group messaging (v1.9.0) for the envelope format. Needs its own design pass on key-rotation semantics (concurrent active keys) and per-device revocation before implementation — raised 2026-07-01, not yet scoped. Design findings so far: [Multi-Device Contacts/FINDINGS.md](Multi-Device%20Contacts/FINDINGS.md).
+
+---
+
 ## The Bigger Pattern
 
 Occulta is executing a depth-first strategy: build one thing with absolute correctness, then extend it precisely. Every feature traces back to the same primitive — physically-verified identity bound to a Secure Enclave key. The roadmap hasn't chased growth; it's chased the hardest problems of the original use case.
