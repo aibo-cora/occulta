@@ -217,7 +217,8 @@ struct SecurityVerifyActiveTests {
     @Test func active_duressPIN_routesToDepth1() async throws {
         // With routing aliases, entering the duress PIN hits sealedNormalVerifiers[1]
         // in step 1 of verify() and returns .normal(depth: 1) — not .duress.
-        // The decoy view is reached at depth 1 in .normal state.
+        // The decoy view is reached at depth 1 in .duress state (not .normal — the
+        // computed state property reflects that depth 1 is a decoy layer, not home).
         let (s, _, cm, vm) = try makeSecurityAndManagers()
         try s.configurePIN("123456")
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
@@ -226,7 +227,7 @@ struct SecurityVerifyActiveTests {
         s.applyVerifyState(for: result)
         #expect(result == .normal(depth: 1))
         #expect(s.currentDepth == 1)
-        #expect(s.state == .normal)
+        #expect(s.state == .duress)
         #expect(s.isRestricted)  // depth > 0 → decoy filter active
     }
 
@@ -247,6 +248,7 @@ struct SecurityVerifyActiveTests {
         try await s.activateSecureMode(confirmingEntryPIN: "123456", duressPIN: "999999",
                                         contactManager: cm, vaultManager: vm)
         s.applyVerifyState(for: try s.verify("999999"))   // → depth 1
+        s.applyVerifyState(for: try s.verify("123456"))   // → depth 0
         #expect(try s.verify("123456") == .normal(depth: 0))
         #expect(s.isSecureModeActive && s.state == .normal)
     }

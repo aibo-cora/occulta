@@ -35,7 +35,7 @@ struct KeyExchange: View {
     }
 
     var body: some View {
-        Group {
+        SwiftUI.Group {
             if let payload = self.confirmingPayload {
                 ConfirmationView(payload: payload, identifier: self.identifier, manager: self.exchangeManager)
             } else if self.exchangeManager.phase != .resting {

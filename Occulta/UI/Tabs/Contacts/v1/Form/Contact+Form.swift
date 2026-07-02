@@ -198,14 +198,18 @@ extension Contact {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             do {
+                                #if DEBUG
                                 debugPrint("Contact being saved...")
-                                
+                                #endif
+
                                 try self.contactManager.save(contact: self.contact)
-                                
+
                                 self.dismiss()
                             } catch {
                                 // TODO: Display a warning that a contact could not be saved
+                                #if DEBUG
                                 debugPrint("Countact is not saved, error: \(error)")
+                                #endif
                             }
                         } label: {
                             Text("Save")
@@ -222,10 +226,14 @@ extension Contact {
                     do {
                         self.contact = try self.contactManager.convertToMutableCopy(using: identifier)
                     } catch {
+                        #if DEBUG
                         debugPrint("Error converting to mutable copy, error = \(error)")
+                        #endif
                     }
-                    
+
+                    #if DEBUG
                     debugPrint("Editing contact, id = \(identifier)")
+                    #endif
                 }
             }
         }

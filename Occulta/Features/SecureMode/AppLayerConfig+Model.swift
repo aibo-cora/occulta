@@ -5,7 +5,6 @@
 
 import Foundation
 import SwiftData
-import Security
 
 /// Routing depth — which contact layer the app is currently showing.
 ///
@@ -272,19 +271,16 @@ final class AppLayerConfig {
     }
 
     private static func randomFiller() -> Data {
-        var data = Data(count: fillerSize)
-        _ = data.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, fillerSize, $0.baseAddress!)
-        }
-        return data
+        // SystemRandomNumberGenerator uses arc4random_buf under the hood, seeded by the
+        // kernel at boot — always available on any running iOS device. Unlike SecRandomCopyBytes
+        // it has no error return, so no throws cascade into non-throwing call sites.
+        var rng = SystemRandomNumberGenerator()
+        return Data((0..<fillerSize).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
 
     static func verifierFiller() -> Data {
-        var data = Data(count: verifierFillerSize)
-        _ = data.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, verifierFillerSize, $0.baseAddress!)
-        }
-        return data
+        var rng = SystemRandomNumberGenerator()
+        return Data((0..<verifierFillerSize).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
 
     static func randomFillerArray() -> [Data] {

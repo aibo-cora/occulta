@@ -11,21 +11,31 @@ import CryptoKit
 // MARK: - Forward-secret encryption
 
 extension Manager.Crypto {
-    /// Encrypt a message for a single recipient.
+    /// Seal a message for a single recipient using the legacy single-recipient format.
     ///
-    /// ## Invariant: no silent security degradation
+    /// ## When to use this path vs `seal(message:groupID:recipients:)`
+    /// This function is retained for two cases:
+    ///
+    /// 1. **< 1.9.0 contacts** — contacts whose `maxBundleVersion` predates the group
+    ///    bundle format must be reached with the single-recipient wire format.
+    ///
+    /// 2. **Identity challenges** — `sealIdentityBundle` deliberately uses
+    ///    `longTermFallback` (no prekey) so that identity verification never fails due
+    ///    to prekey exhaustion. The receiver re-derives the session key via long-term
+    ///    ECDH, which only works with this path — the group format uses a randomly-
+    ///    generated session key that cannot be re-derived from ECDH alone.
+    ///
+    /// For all ≥ 1.9.0 sends (messages, shard ops, custody manifests),
+    /// `ContactManager.encryptBundle` routes through `seal(message:groupID:recipients:)`
+    /// with a single-entry ephemeral group.
+    ///
+    /// ## No silent security degradation
     /// If `contactPrekey` is non-nil, the caller explicitly requested the FS path.
-    /// Any failure in that path (ephemeral key generation, ECDH with the prekey)
-    /// throws `EncryptionError` rather than silently falling back to the long-term
-    /// key path. Silent fallback would mean the caller believes they sent FS when
-    /// they actually sent with the long-term key.
+    /// Any failure throws `EncryptionError` rather than silently falling back to the
+    /// long-term key path — the caller must know which path was actually used.
     ///
-    /// The fallback path is entered ONLY when `contactPrekey` is nil — meaning the
-    /// caller explicitly chose the fallback (exhausted prekeys).
-    ///
-    /// ## SE ordering
-    /// `keyManager.retrieveIdentity()` is the only SE read here. All SE writes
-    /// (generateBatch) are done by the caller (ContactManager) before this call.
+    /// The fallback path is entered ONLY when `contactPrekey` is nil (prekeys exhausted
+    /// or deliberately omitted, as for identity challenges).
     func seal(message: Data, contactPrekey: Prekey?, recipientMaterial: Data, quantumMaterial: QuantumKeyMaterial? = nil, version: OccultaBundle.Version = OccultaBundle.currentVersion) throws -> OccultaBundle {
         guard
             recipientMaterial.count == 65
@@ -38,57 +48,22 @@ extension Manager.Crypto {
         let fingerprintNonce  = try OccultaBundle.SecrecyContext.generateNonce()
         let senderFingerprint = OccultaBundle.SecrecyContext.fingerprint(for: ourPublicKey, nonce: fingerprintNonce)
         
-        if let contactPrekey {
-            // ── Forward secret path
-            
-            // Validate the prekey's public key before ECDH.
-            // contactPrekey.publicKey comes from a received PrekeySyncBatch —
-            // attacker-influenced data. Reject invalid material explicitly
-            // rather than letting it fail silently two layers down.
-            guard
-                contactPrekey.publicKey.count == 65
-            else {
-                throw EncryptionError.invalidPrekeyMaterial
-            }
+        let (sessionKey, secrecy) = try self.deriveOutboundKey(
+            contactPrekey: contactPrekey,
+            recipientPublicKey: recipientMaterial,
+            quantumMaterial: quantumMaterial
+        )
 
-            // Ephemeral key generation failure with a valid prekey is unexpected —
-            // throw instead of silently degrading to the long-term path.
-            guard
-                let (ephemeralPrivateKey, ephemeralPublicKeyData) = self.keyManager.generateEphemeralKeyPair()
-            else {
-                throw EncryptionError.ephemeralKeyGenerationFailed
-            }
-
-            // ECDH failure with a valid 65-byte prekey public key is unexpected —
-            // throw instead of silently degrading to the long-term path.
-            guard
-                let sessionKey = self.deriveSessionKey(ephemeralPrivateKey: ephemeralPrivateKey, recipientMaterial: contactPrekey.publicKey, quantumMaterial: quantumMaterial)
-            else {
-                throw EncryptionError.keyDerivationFailed
-            }
-
-            // ephemeralPrivateKey goes out of scope here — never persisted.
-
-            let mode    = quantumMaterial != nil ? OccultaBundle.Mode.forwardSecret : .forwardSecretNoPQ
-            let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: ephemeralPublicKeyData, prekeyID: contactPrekey.id)
-
-            /// Adding `version` and `secrecy` to authenticate against tampering.
-            let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
-
-            guard
-                let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-            else { throw EncryptionError.sealFailed }
-
-            debugPrint("Sealing message, using forward secrecy prekey...")
-
-            return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
+        let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
+        guard let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined else {
+            throw EncryptionError.sealFailed
         }
 
-        debugPrint("Sealing message, using long-term identity key...")
+        #if DEBUG
+        debugPrint("Sealing message, using mode: \(secrecy.mode)")
+        #endif
 
-        // ── Long-term fallback path (contactPrekey nil) ──────────────────
-        // Caller explicitly chose this path because prekeys are exhausted.
-        return try self.fallback(message: message, recipientMaterial: recipientMaterial, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint, quantumMaterial: quantumMaterial, version: version)
+        return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
     }
 }
 
@@ -130,32 +105,6 @@ extension Manager.Crypto {
     }
 }
 
-// MARK: - Private helpers
-
-extension Manager.Crypto {
-    private func fallback(message: Data, recipientMaterial: Data, fingerprintNonce: Data, senderFingerprint: Data, quantumMaterial: QuantumKeyMaterial?, version: OccultaBundle.Version) throws -> OccultaBundle {
-        guard
-            let sessionKey = self.deriveSessionKey(using: recipientMaterial, quantumMaterial: quantumMaterial)
-        else {
-            throw EncryptionError.keyDerivationFailed
-        }
-        /// We are passing an empty `Data` object because the recipient already has our public key.
-        /// There is no reason to expose it.
-        let mode    = quantumMaterial != nil ? OccultaBundle.Mode.longTermFallback : .longTermNoPQ
-        let secrecy = OccultaBundle.SecrecyContext(mode: mode, ephemeralPublicKey: Data(), prekeyID: nil)
-        /// Adding `version` and `secrecy` to authenticate against tampering.
-        let aad = try OccultaBundle.computeAdditionalAuthentication(version: version, secrecy: secrecy)
-
-        guard
-            let ciphertext = try AES.GCM.seal(message, using: sessionKey, nonce: AES.GCM.Nonce(), authenticating: aad).combined
-        else {
-            throw EncryptionError.keyDerivationFailed
-        }
-
-        return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
-    }
-}
-
 // MARK: - Errors
 
 extension Manager.Crypto {
@@ -167,5 +116,7 @@ extension Manager.Crypto {
         case invalidRecipientMaterial
         /// `contactPrekey.publicKey` from an inbound batch is not a valid 65-byte key.
         case invalidPrekeyMaterial
+        /// `seal(message:groupID:recipients:)` was called with an empty recipients array.
+        case noRecipients
     }
 }
