@@ -94,7 +94,7 @@ struct Settings: View {
     }
     
     private struct ContactListSettings: View {
-        @AppStorage("showFingerprints") private var showFingerprints = true
+        @AppStorage("showFingerprints") private var showFingerprints = false
         @AppStorage("showTrustSummary") private var showTrustSummary = true
 
         var body: some View {
