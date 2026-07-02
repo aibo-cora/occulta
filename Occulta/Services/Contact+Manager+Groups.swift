@@ -48,18 +48,18 @@ extension ContactManager {
 
     // MARK: Members
 
-    func addGroupMember(_ memberIdentifier: String, toGroupID groupID: UUID, in layer: RoutingDepth) throws {
+    func addGroupMember(_ memberIdentifier: String, toGroupID groupID: UUID, atDepth depth: Int) throws {
         guard let group = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
-        
-        try group.addMember(memberIdentifier, in: layer)
+
+        try group.addMember(memberIdentifier, atDepth: depth)
         try self.modelContext.save()
     }
 
-    func removeGroupMember(_ memberIdentifier: String, fromGroupID groupID: UUID, in layer: RoutingDepth) throws {
+    func removeGroupMember(_ memberIdentifier: String, fromGroupID groupID: UUID, atDepth depth: Int) throws {
         guard let group = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
-        
-        try group.removeMember(memberIdentifier, in: layer)
-        
+
+        try group.removeMember(memberIdentifier, atDepth: depth)
+
         try self.modelContext.save()
     }
 

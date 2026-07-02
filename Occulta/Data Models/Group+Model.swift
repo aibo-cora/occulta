@@ -23,14 +23,31 @@ final class Group {
     /// across layers, consistent with how contact names behave.
     var encryptedName: Data?
 
-    /// Real-layer member slots. Always exactly 32 entries.
+    /// Depth-0 (real layer) member slots. Always exactly 32 entries.
     /// Real slots: AES-GCM(128-byte padded identifier) = 156 bytes (12 nonce + 128 data + 16 tag).
     /// Unused slots: 156 cryptographically random bytes, size-identical to real entries.
     private(set) var realMemberSlots: [Data]
 
-    /// Duress-layer member slots. Same invariants as realMemberSlots.
-    /// A coercer at depth > 0 sees only this array — no cross-array probe vector.
+    /// Depth-1 (first duress layer) member slots. Same invariants as realMemberSlots.
+    /// Named for schema continuity with pre-1.9.1 rows, where this was the single shared
+    /// bucket for every duress depth. As of 1.9.1 it backs depth 1 specifically; depths
+    /// 2+ use `deeperMemberSlots`. See Bug 73.
     private(set) var duressMemberSlots: [Data]
+
+    /// Member slots for duress depths 2 and beyond. `deeperMemberSlots[0]` = depth 2,
+    /// `deeperMemberSlots[1]` = depth 3, ... up to depth `depthCount - 1`.
+    ///
+    /// Before 1.9.1, every duress depth beyond the first shared `duressMemberSlots` — a
+    /// group's decoy membership was identical at every coercion depth, breaking the
+    /// documented multi-layer promise that each depth shows a different decoy set
+    /// (Bug 73). This field gives depths 2+ their own independent, indistinguishable
+    /// slot arrays, matching the granularity Secure Mode already gives contacts via
+    /// `visibleThroughDepth`.
+    ///
+    /// Absent (empty) on groups created before 1.9.1 until their first membership edit
+    /// post-upgrade, at which point `setMembers` pads it to full size — the same
+    /// lazy-padding pattern `AppLayerConfig.ensurePadded()` uses.
+    private(set) var deeperMemberSlots: [[Data]] = []
 
     /// Encrypted second-precision TimeInterval. Milliseconds truncated to prevent
     /// correlation with other observable events at sub-second resolution.
@@ -49,11 +66,19 @@ final class Group {
     /// Filler slots are also 156 bytes — indistinguishable by size.
     static let slotSize = 156
 
+    /// Total depths supported: depth 0 (real) plus depths 1...31 (duress). Matches
+    /// `AppLayerConfig.maxVerifierCount`, the system-wide cap on total layers — group
+    /// membership storage must cover exactly as many depths as the rest of Secure Mode
+    /// can create, no more and no less. Coincidentally equal to `slotCount` (member
+    /// slots per depth) but a distinct concept.
+    static let depthCount = 32
+
     // MARK: - Init
 
     init(name: String) throws {
         self.realMemberSlots    = try Self.freshFillerArray()
         self.duressMemberSlots  = try Self.freshFillerArray()
+        self.deeperMemberSlots  = try (0..<(Self.depthCount - 2)).map { _ in try Self.freshFillerArray() }
 
         guard
             let encID   = try Data(UUID().uuidString.utf8).encrypt(),
@@ -106,12 +131,11 @@ final class Group {
 
     // MARK: - Members
 
-    /// Returns the contact identifiers stored in the active layer.
+    /// Returns the contact identifiers stored at `depth`. Depth 0 is the real layer;
+    /// 1...31 are duress depths, each with its own independent membership.
     /// Slots that fail to decrypt (filler) are silently skipped.
-    func members(in layer: RoutingDepth) -> [String] {
-        let slots = layer == .normal ? self.realMemberSlots : self.duressMemberSlots
-        
-        return slots.compactMap { slot -> String? in
+    func members(atDepth depth: Int) -> [String] {
+        self.slots(atDepth: depth).compactMap { slot -> String? in
             guard let decrypted = slot.decrypt() else { return nil }
             // Strip null-byte padding introduced by encryptedSlots(for:).
             let trimmed = decrypted.prefix(while: { $0 != 0 })
@@ -122,23 +146,23 @@ final class Group {
         }
     }
 
-    func addMember(_ identifier: String, in layer: RoutingDepth) throws {
-        var current = self.members(in: layer)
-        
+    func addMember(_ identifier: String, atDepth depth: Int) throws {
+        var current = self.members(atDepth: depth)
+
         guard !current.contains(identifier) else { return }
         guard current.count < Self.slotCount else { throw GroupError.capacityExceeded }
-        
+
         current.append(identifier)
-        
-        try self.setMembers(current, in: layer)
+
+        try self.setMembers(current, atDepth: depth)
     }
 
-    func removeMember(_ identifier: String, in layer: RoutingDepth) throws {
-        var current = self.members(in: layer)
-        
+    func removeMember(_ identifier: String, atDepth depth: Int) throws {
+        var current = self.members(atDepth: depth)
+
         current.removeAll { $0 == identifier }
-        
-        try self.setMembers(current, in: layer)
+
+        try self.setMembers(current, atDepth: depth)
     }
 
     // MARK: - Filler helpers
@@ -149,18 +173,45 @@ final class Group {
 
     // MARK: - Private
 
-    /// Full recompute: encrypt each real identifier with a fresh nonce, pad to 32 slots
-    /// with fresh random filler, then shuffle. Any database diff shows all 64 entries
-    /// changed — no slot position or modified entry is identifiable.
-    private func setMembers(_ identifiers: [String], in layer: RoutingDepth) throws {
-        // Both arrays are always recomputed together. A DB diff that shows only one
-        // array changed would reveal which layer was written — defeating the point
-        // of having two indistinguishable arrays.
-        let realIdentifiers   = layer == .normal ? identifiers : self.members(in: .normal)
-        let duressIdentifiers = layer == .duress ? identifiers : self.members(in: .duress)
-        
-        self.realMemberSlots   = try Self.encryptedSlots(for: realIdentifiers)
-        self.duressMemberSlots = try Self.encryptedSlots(for: duressIdentifiers)
+    /// Returns the raw slot array backing `depth`, or an empty array for an
+    /// out-of-range or not-yet-padded deeper depth.
+    private func slots(atDepth depth: Int) -> [Data] {
+        switch depth {
+        case 0:  return self.realMemberSlots
+        case 1:  return self.duressMemberSlots
+        default:
+            let index = depth - 2
+            guard index >= 0, index < self.deeperMemberSlots.count else { return [] }
+            return self.deeperMemberSlots[index]
+        }
+    }
+
+    /// Full recompute across every depth: encrypt each depth's identifiers with fresh
+    /// nonces, pad to 32 slots with fresh random filler, then shuffle. Any database diff
+    /// shows every depth's slots changed — no slot position, depth, or modified entry is
+    /// identifiable. Recomputing only the touched depth would let an examiner correlate
+    /// a diff with the depth that was just edited, which is exactly what Bug 73 fixes.
+    private func setMembers(_ identifiers: [String], atDepth depth: Int) throws {
+        guard depth >= 0, depth < Self.depthCount else { throw GroupError.invalidDepth }
+        try self.ensureDeeperSlotsPadded()
+
+        var perDepth = (0..<Self.depthCount).map { self.members(atDepth: $0) }
+        perDepth[depth] = identifiers
+
+        self.realMemberSlots   = try Self.encryptedSlots(for: perDepth[0])
+        self.duressMemberSlots = try Self.encryptedSlots(for: perDepth[1])
+        self.deeperMemberSlots = try perDepth[2...].map { try Self.encryptedSlots(for: $0) }
+    }
+
+    /// Pads `deeperMemberSlots` to full size (depths 2...depthCount-1) with fresh filler.
+    /// No-op for groups created at or after 1.9.1, which are already fully padded at
+    /// init. Groups created before 1.9.1 have an empty array here; this brings them up
+    /// to size the first time any membership edit touches them, mirroring
+    /// `AppLayerConfig.ensurePadded()`.
+    private func ensureDeeperSlotsPadded() throws {
+        while self.deeperMemberSlots.count < Self.depthCount - 2 {
+            self.deeperMemberSlots.append(try Self.freshFillerArray())
+        }
     }
 
     private static func encryptedSlots(for identifiers: [String]) throws -> [Data] {
@@ -196,4 +247,6 @@ enum GroupError: Error {
     case encryptionFailed
     case identifierTooLong
     case entropyUnavailable
+    /// `depth` passed to a member-storage method was outside 0..<Group.depthCount.
+    case invalidDepth
 }
