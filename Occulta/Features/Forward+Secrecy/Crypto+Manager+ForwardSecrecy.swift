@@ -59,7 +59,9 @@ extension Manager.Crypto {
             throw EncryptionError.sealFailed
         }
 
+        #if DEBUG
         debugPrint("Sealing message, using mode: \(secrecy.mode)")
+        #endif
 
         return OccultaBundle(version: version, secrecy: secrecy, ciphertext: ciphertext, fingerprintNonce: fingerprintNonce, senderFingerprint: senderFingerprint)
     }

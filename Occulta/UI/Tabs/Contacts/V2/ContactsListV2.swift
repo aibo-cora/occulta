@@ -13,7 +13,7 @@ struct ContactsV2: View {
     @State private var creatingNewContact = false
     @State private var creatingNewGroup   = false
 
-    @AppStorage("showFingerprints")  private var showFingerprints  = true
+    @AppStorage("showFingerprints")  private var showFingerprints  = false
     @AppStorage("showTrustSummary")  private var showTrustSummary  = true
 
     @Environment(\.modelContext)          private var modelContext
@@ -206,7 +206,9 @@ struct ContactsV2: View {
             try CNContactStore().enumerateContacts(with: request) { contact, _ in batch.append(contact) }
             try self.contactManager.createContacts(from: batch, currentDepth: self.security.currentDepth)
         } catch {
+            #if DEBUG
             debugPrint("fetchContacts error: \(error.localizedDescription)")
+            #endif
         }
     }
 }
@@ -232,7 +234,7 @@ struct ContactRowV2: View {
                 } else {
                     ZStack {
                         avatarGradientV2(for: self.contact.identifier)
-                        
+
                         Text([self.givenName, self.familyName].filter { !$0.isEmpty }
                                 .joined(separator: " ").initials)
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -266,10 +268,6 @@ struct ContactRowV2: View {
             }
 
             Spacer()
-
-            Text(self.contact.freshnessLabel)
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 3)
     }

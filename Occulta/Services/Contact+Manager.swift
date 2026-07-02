@@ -250,7 +250,9 @@ class ContactManager {
 
                 encryptedEmailAddresses.append(CNLabeledValue(label: label, value: value as NSString))
             } catch {
+                #if DEBUG
                 debugPrint("Contact not saved: \(error)")
+                #endif
             }
         }
 
@@ -263,7 +265,9 @@ class ContactManager {
 
                 encryptedPhoneNumbers.append(CNLabeledValue(label: label, value: CNPhoneNumber(stringValue: value)))
             } catch {
+                #if DEBUG
                 debugPrint("Contact not saved: \(error)")
+                #endif
             }
         }
 
@@ -291,7 +295,9 @@ class ContactManager {
 
                 encryptedPostalAddresses.append(Contact.Profile.PostalAddress(from: CNLabeledValue<CNMutablePostalAddress>(label: encryptedLabel, value: mutable)))
             } catch {
+                #if DEBUG
                 debugPrint("Contact not saved: \(error)")
+                #endif
             }
         }
 
@@ -305,7 +311,9 @@ class ContactManager {
 
                 encryptedURLs.append(Contact.Profile.URLAddress(label: encryptedLabel, value: encryptedURL))
             } catch {
+                #if DEBUG
                 debugPrint("Contact not saved: \(error)")
+                #endif
             }
         }
 
@@ -371,7 +379,9 @@ class ContactManager {
                 try? self.update(key: key, for: newContact.identifier)
             }
 
+            #if DEBUG
             debugPrint("Inserted new contact, id = \(encryptedIdentifier), name - \(String(describing: encryptedGivenName)) \(String(describing: encryptedFamilyName))")
+            #endif
         }
 
         try self.modelContext.save()
@@ -1272,7 +1282,9 @@ extension ContactManager {
         try sender.configureForwardSecrecy()
 
         // ── 2. Key derivation + open ─────────────────────────────────────
+        #if DEBUG
         debugPrint("Opening message, using mode: \(bundle.secrecy.mode)")
+        #endif
 
         let quantumMaterial = try self.resolveQuantumMaterial(mode: bundle.secrecy.mode, for: sender, using: cryptoOps)
         let senderPublicKey = try self.resolveSenderPublicKey(for: sender, using: cryptoOps)
@@ -1293,7 +1305,9 @@ extension ContactManager {
             #endif
             prekeyManager.consume(prekey: consumable)
             try sender.clearPendingBatch()
+            #if DEBUG
             debugPrint("Message successfully opened in \(bundle.secrecy.mode) mode. Pending batch cleared.")
+            #endif
         } else if !sender.hasPendingBatch {
             try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
         }
@@ -1306,7 +1320,9 @@ extension ContactManager {
         // ── 5. Persist ───────────────────────────────────────────────────
         try self.modelContext.save()
 
+        #if DEBUG
         debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        #endif
 
         return (decodedPayload, sender.identifier)
     }
@@ -1338,12 +1354,16 @@ extension ContactManager {
     }
 
     private func generateAndStoreFreshBatch(for sender: Contact.Profile, using prekeyManager: Manager.PrekeyManager) throws {
+        #if DEBUG
         debugPrint("🔥 longTerm(fallback|NoPQ) detected — storing fresh pending batch for sender \(sender.identifier)")
+        #endif
         let prekeys = try prekeyManager.generateBatch(contactID: sender.identifier)
         let prekeysSuitableForTransport = prekeys.map { OccultaBundle.WirePrekey(id: $0.id, publicKey: $0.publicKey) }
         let batch = OccultaBundle.SealedPayload.PrekeySyncBatch(generatedAt: Date(), prekeys: prekeysSuitableForTransport)
         try sender.store(batch: batch)
+        #if DEBUG
         debugPrint("Storage complete. Ready to send new prekey batch in the next message.")
+        #endif
     }
 
     private func decodePayload(_ data: Data, version: OccultaBundle.Version) throws -> OccultaBundle.SealedPayload {
@@ -1363,7 +1383,9 @@ extension ContactManager {
 
     private func storeInboundBatch(_ batch: OccultaBundle.SealedPayload.PrekeySyncBatch?, for sender: Contact.Profile) throws {
         guard let batch else { return }
+        #if DEBUG
         debugPrint("Decrypting bundle containing inbound prekey sync batch...")
+        #endif
         guard batch.prekeys.count <= Manager.PrekeyManager.defaultBatchSize * 2 else {
             throw Errors.invalidPrekeySyncBatch
         }
@@ -1374,7 +1396,9 @@ extension ContactManager {
             let prekey = Prekey(id: wired.id, contactID: sender.identifier, publicKey: wired.publicKey)
             return try? JSONEncoder().encode(prekey)
         }
+        #if DEBUG
         debugPrint("Sender's prekeys in our storage before syncInboundPrekeys: \(sender.availableInboundPrekeyCount)")
+        #endif
         try sender.syncInboundPrekeys(blobs, date: batch.generatedAt)
     }
 }

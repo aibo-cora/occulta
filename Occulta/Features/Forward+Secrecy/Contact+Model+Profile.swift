@@ -62,17 +62,21 @@ extension Contact.Profile {
             var secrecy = try self.plainTextForwardSecrecy,
             var current = secrecy.encodedPrekeys, !current.isEmpty
         else {
+            #if DEBUG
             debugPrint("popping error: no prekeys available")
-            
+            #endif
+
             return nil
         }
-        
+
         let oldest = current.removeFirst()
-        
+
         secrecy.encodedPrekeys = current.isEmpty ? nil : current
-        
+
+        #if DEBUG
         debugPrint("popping success: popped one, remaining: \(current.count)")
-        
+        #endif
+
         try self.update(secrecy: secrecy)
         
         return oldest
@@ -94,14 +98,18 @@ extension Contact.Profile {
         else {
             return
         }
+        #if DEBUG
         debugPrint("Synching incoming prekeys...")
         debugPrint("Current prekeys count: \(secrecy.encodedPrekeys?.count ?? 0)")
-        
+        #endif
+
         guard
             date > (secrecy.latestPrekeysGeneratedAt ?? .distantPast)
         else {
+            #if DEBUG
             debugPrint("Received an older batch of prekeys, exiting sync...")
-            
+            #endif
+
             return
         }
 
@@ -131,7 +139,9 @@ extension Contact.Profile {
         
         try self.update(secrecy: secrecy)
         
+        #if DEBUG
         debugPrint("Stored new batch of prekeys: \(batch.prekeys.count), date: \(String(describing: batch.generatedAt))")
+        #endif
     }
 
     /// Return the pending outbound batch, or nil if none is waiting.

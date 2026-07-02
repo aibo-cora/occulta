@@ -185,7 +185,9 @@ struct Import: View {
                             do {
                                 try self.contactManager.save(contacts: self.selectedContacts)
                             } catch {
+                                #if DEBUG
                                 debugPrint("Could not import contacts: \(error)")
+                                #endif
                             }
                             self.dismiss()
                         } label: {

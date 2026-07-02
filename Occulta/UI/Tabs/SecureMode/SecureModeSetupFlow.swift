@@ -316,7 +316,9 @@ private struct SummaryView: View {
                             self.isActivating = false
                             self.onDone()
                         } catch {
+                            #if DEBUG
                             debugPrint("Error activating [\(type(of: error))]: \(error)")
+                            #endif
                             self.isActivating     = false
                             self.activationFailed = true
                         }

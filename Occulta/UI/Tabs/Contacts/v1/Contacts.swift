@@ -150,7 +150,9 @@ struct Contacts: View {
             // Load is completed, so add the new contacts to our existing list
             try self.contactManager.createContacts(from: newContacts)
         } catch {
+            #if DEBUG
             debugPrint("Could not store contacts: \(error.localizedDescription)", separator: "")
+            #endif
         }
     }
 }
