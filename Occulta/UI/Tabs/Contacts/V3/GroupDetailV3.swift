@@ -51,7 +51,7 @@ struct GroupDetailV3: View {
                     ComposeToggleV3(useThread: self.$useThreadCompose)
 
                     if self.useThreadCompose {
-                        NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
+                        NavigationLink(destination: ComposableMessage(vm: self.composeVM, groupID: self.groupID)) {
                             HStack {
                                 Text("Open thread")
                                     .font(.system(size: 14, weight: .semibold))
