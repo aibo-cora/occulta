@@ -426,6 +426,12 @@ class ContactManager {
     /// The row remains in SwiftData but is excluded from all public queries.
     /// Enforces a cap of 50 soft-deleted rows: if the cap is reached, one
     /// existing soft-deleted row is hard-deleted before the new marker is written.
+    ///
+    /// A deleted contact is purged from every group's membership at every depth — see
+    /// `Group.purgeMember(_:)`. Unlike classification's duress-only wipe, this is safe to
+    /// run regardless of depth: it only ever touches the one identifier being removed
+    /// and leaves every other member untouched, so it can't destroy decoy content
+    /// prepared for a different depth.
     func deleteContact(identifier: String) throws {
         guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
@@ -438,6 +444,8 @@ class ContactManager {
 
         contact.deletionToken = try Data([1]).encrypt()
         try self.modelContext.save()
+
+        try self.forEachGroup { try $0.purgeMember(identifier) }
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.

@@ -95,4 +95,14 @@ extension ContactManager {
     func group(withID id: UUID) throws -> Group? {
         try self.modelContext.fetch(FetchDescriptor<Group>()).first { $0.readID() == id }
     }
+
+    /// Applies `operation` to every stored group, then saves once. Used by classification
+    /// and deletion cleanup, which must touch every group uniformly — see
+    /// `Group.wipeDuressMembers()`, `Group.refreshCiphertext()`, and `Group.purgeMember(_:)`.
+    func forEachGroup(_ operation: (Group) throws -> Void) throws {
+        for group in try self.modelContext.fetch(FetchDescriptor<Group>()) {
+            try operation(group)
+        }
+        try self.modelContext.save()
+    }
 }

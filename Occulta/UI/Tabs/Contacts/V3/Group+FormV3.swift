@@ -61,14 +61,26 @@ extension Group {
             return "Version unknown — ask them to send you a message."
         }
 
+        // selectedIdentifiers includes hidden/sensitive members' identifiers (seeded from
+        // the group's raw per-depth member list), so this true total is what must gate
+        // capacity — a hidden member still occupies a real slot.
         private var atCapacity: Bool {
             self.selectedIdentifiers.count >= Group.slotCount
         }
 
+        // Displayed count intentionally excludes hidden members, matching GroupDetailV3's
+        // member count for the same group. Using the raw selectedIdentifiers.count here
+        // would print e.g. "30 / 32" while only 25 rows are visible/checkable — a countable
+        // mismatch, and one that would disagree with the detail screen's "25 members" for
+        // the identical group and depth. Both are concrete, calculable forensic tells.
+        private var visibleSelectedCount: Int {
+            self.eligible.filter { self.selectedIdentifiers.contains($0.identifier) }.count
+        }
+
         private var membersHeader: String {
-            self.selectedIdentifiers.isEmpty
+            self.visibleSelectedCount == 0
                 ? "Members"
-                : "Members · \(self.selectedIdentifiers.count) / \(Group.slotCount)"
+                : "Members · \(self.visibleSelectedCount) / \(Group.slotCount)"
         }
 
         private var canSave: Bool {

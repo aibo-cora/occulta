@@ -546,3 +546,331 @@ struct GroupStructuralTests {
         }
     }
 }
+
+// MARK: - Group — wipeDuressMembers
+
+@Suite("Group — wipeDuressMembers")
+@MainActor struct GroupWipeDuressMembersTests {
+
+    @Test func clearsDepth1AndDeeper_keepsRealLayer() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Wipe")
+        ctx.insert(group)
+
+        let realID = UUID().uuidString
+        try group.addMember(realID, atDepth: 0)
+        try group.addMember(UUID().uuidString, atDepth: 1)
+        try group.addMember(UUID().uuidString, atDepth: 5)
+
+        try group.wipeDuressMembers()
+
+        #expect(group.members(atDepth: 0) == [realID])
+        #expect(group.members(atDepth: 1).isEmpty)
+        #expect(group.members(atDepth: 5).isEmpty)
+    }
+
+    // Regression guard: a diff that shows only depth 1+ changing (real layer untouched)
+    // would itself reveal that a duress-only wipe just happened.
+    @Test func reencryptsRealLayerSlots_evenThoughMembershipUnchanged() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Wipe")
+        ctx.insert(group)
+
+        try group.addMember(UUID().uuidString, atDepth: 0)
+        let beforeReal = group.realMemberSlots
+
+        try group.wipeDuressMembers()
+
+        #expect(beforeReal != group.realMemberSlots)
+        #expect(group.members(atDepth: 0).count == 1)
+    }
+
+    @Test func onGroupWithNoDuressMembers_isNoOpAndSucceeds() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Empty")
+        ctx.insert(group)
+
+        try group.wipeDuressMembers()
+
+        #expect(group.members(atDepth: 0).isEmpty)
+        #expect(group.members(atDepth: 1).isEmpty)
+    }
+}
+
+// MARK: - ContactManager — classification wipes group duress membership
+
+@Suite("ContactManager — classification wipes group duress membership")
+@MainActor struct ClassificationWipesGroupDuressTests {
+
+    private func makeContactManager() throws -> ContactManager {
+        let container = try makeContainer()
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        return ContactManager(modelContainer: container, security: security)
+    }
+
+    private func insertPlainProfile(identifier: String, in cm: ContactManager) throws {
+        let profile = Contact.Profile(
+            identifier: identifier, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        try cm.insertProfile(profile)
+    }
+
+    // Regression for the stale-duress-membership gap: reclassifying a contact as
+    // sensitive from the real layer (depth 0) — the one depth guaranteed not to be
+    // under coercion — must wipe every group's duress-depth membership.
+    @Test func setVisibility_sensitiveAtDepth0_wipesGroupDuressMembership() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let identifier = UUID().uuidString
+        try self.insertPlainProfile(identifier: identifier, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        try group.addMember(UUID().uuidString, atDepth: 1)
+        #expect(!group.members(atDepth: 1).isEmpty)
+
+        try cm.setVisibility(for: identifier, isSensitive: true)
+
+        #expect(group.members(atDepth: 1).isEmpty)
+    }
+
+    // Marking a contact safe hides no one — must not destroy unrelated duress membership.
+    @Test func setVisibility_safeAtDepth0_doesNotWipe_butStillRefreshesCiphertext() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let identifier = UUID().uuidString
+        try self.insertPlainProfile(identifier: identifier, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        let duressMemberID = UUID().uuidString
+        try group.addMember(duressMemberID, atDepth: 1)
+        let beforeDuress = group.duressMemberSlots
+
+        try cm.setVisibility(for: identifier, isSensitive: false)
+
+        #expect(group.members(atDepth: 1) == [duressMemberID])
+        // Camouflage: ciphertext must still change even though nothing was wiped —
+        // otherwise "did the wipe run" would be a keyless, forensically-visible signal.
+        #expect(beforeDuress != group.duressMemberSlots)
+    }
+
+    // Reclassification from a duress depth can't be guaranteed non-coerced the way
+    // depth 0 can — must not trigger the wipe. Ciphertext must still refresh.
+    @Test func setVisibility_sensitiveFromDuressDepth_doesNotWipe_butStillRefreshesCiphertext() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let identifier = UUID().uuidString
+        try self.insertPlainProfile(identifier: identifier, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        let duressMemberID = UUID().uuidString
+        try group.addMember(duressMemberID, atDepth: 2)
+        let beforeDeeper = group.deeperMemberSlots
+
+        cm.security.applyVerifyState(for: .duress)
+        #expect(cm.security.currentDepth == 1)
+
+        try cm.setVisibility(for: identifier, isSensitive: true)
+
+        #expect(group.members(atDepth: 2) == [duressMemberID])
+        #expect(beforeDeeper != group.deeperMemberSlots)
+    }
+
+    @Test func saveClassification_hidingSomeone_atDepth0_wipesGroupDuressMembership() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let safeID      = UUID().uuidString
+        let sensitiveID = UUID().uuidString
+        try self.insertPlainProfile(identifier: safeID, in: cm)
+        try self.insertPlainProfile(identifier: sensitiveID, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        try group.addMember(UUID().uuidString, atDepth: 3)
+
+        try cm.saveClassification(safeIDs: [safeID])
+
+        #expect(group.members(atDepth: 3).isEmpty)
+    }
+
+    @Test func saveClassification_allSafe_doesNotWipe_butStillRefreshesCiphertext() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let safeID = UUID().uuidString
+        try self.insertPlainProfile(identifier: safeID, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        let duressMemberID = UUID().uuidString
+        try group.addMember(duressMemberID, atDepth: 1)
+        let beforeDuress = group.duressMemberSlots
+
+        try cm.saveClassification(safeIDs: [safeID])
+
+        #expect(group.members(atDepth: 1) == [duressMemberID])
+        #expect(beforeDuress != group.duressMemberSlots)
+    }
+}
+
+// MARK: - Group — refreshCiphertext / purgeMember
+
+@Suite("Group — refreshCiphertext and purgeMember")
+@MainActor struct GroupCiphertextHygieneTests {
+
+    @Test func refreshCiphertext_changesEveryDepth_keepsAllMembership() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Refresh")
+        ctx.insert(group)
+
+        let realID   = UUID().uuidString
+        let duressID = UUID().uuidString
+        let deeperID = UUID().uuidString
+        try group.addMember(realID,   atDepth: 0)
+        try group.addMember(duressID, atDepth: 1)
+        try group.addMember(deeperID, atDepth: 4)
+
+        let beforeReal   = group.realMemberSlots
+        let beforeDuress = group.duressMemberSlots
+        let beforeDeeper = group.deeperMemberSlots
+
+        try group.refreshCiphertext()
+
+        #expect(beforeReal   != group.realMemberSlots)
+        #expect(beforeDuress != group.duressMemberSlots)
+        #expect(beforeDeeper != group.deeperMemberSlots)
+
+        #expect(group.members(atDepth: 0) == [realID])
+        #expect(group.members(atDepth: 1) == [duressID])
+        #expect(group.members(atDepth: 4) == [deeperID])
+    }
+
+    @Test func purgeMember_removesFromEveryDepth_includingRealLayer() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Purge")
+        ctx.insert(group)
+
+        let target = UUID().uuidString
+        try group.addMember(target, atDepth: 0)
+        try group.addMember(target, atDepth: 1)
+        try group.addMember(target, atDepth: 3)
+
+        try group.purgeMember(target)
+
+        #expect(group.members(atDepth: 0).isEmpty)
+        #expect(group.members(atDepth: 1).isEmpty)
+        #expect(group.members(atDepth: 3).isEmpty)
+    }
+
+    @Test func purgeMember_leavesOtherMembersUntouched() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Purge")
+        ctx.insert(group)
+
+        let target   = UUID().uuidString
+        let bystander = UUID().uuidString
+        try group.addMember(target, atDepth: 1)
+        try group.addMember(bystander, atDepth: 1)
+
+        try group.purgeMember(target)
+
+        #expect(group.members(atDepth: 1) == [bystander])
+    }
+
+    // Regression guard: touching only the depths where the identifier was actually
+    // found would reveal which depths held this contact. Every depth must re-encrypt
+    // regardless of whether a removal happened there.
+    @Test func purgeMember_reencryptsEveryDepth_evenWhereNotPresent() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Purge")
+        ctx.insert(group)
+
+        try group.addMember(UUID().uuidString, atDepth: 0)
+        let beforeReal   = group.realMemberSlots
+        let beforeDuress = group.duressMemberSlots
+        let beforeDeeper = group.deeperMemberSlots
+
+        // Not a member of this group at any depth.
+        try group.purgeMember(UUID().uuidString)
+
+        #expect(beforeReal   != group.realMemberSlots)
+        #expect(beforeDuress != group.duressMemberSlots)
+        #expect(beforeDeeper != group.deeperMemberSlots)
+    }
+}
+
+// MARK: - ContactManager — deleteContact purges group membership
+
+@Suite("ContactManager — deleteContact purges group membership")
+@MainActor struct DeleteContactPurgesGroupsTests {
+
+    private func makeContactManager() throws -> ContactManager {
+        let container = try makeContainer()
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        return ContactManager(modelContainer: container, security: security)
+    }
+
+    private func insertPlainProfile(identifier: String, in cm: ContactManager) throws {
+        let profile = Contact.Profile(
+            identifier: identifier, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        try cm.insertProfile(profile)
+    }
+
+    @Test func deleteContact_purgesMemberFromEveryDepth() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let identifier = UUID().uuidString
+        try self.insertPlainProfile(identifier: identifier, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        try group.addMember(identifier, atDepth: 0)
+        try group.addMember(identifier, atDepth: 2)
+
+        try cm.deleteContact(identifier: identifier)
+
+        #expect(group.members(atDepth: 0).isEmpty)
+        #expect(group.members(atDepth: 2).isEmpty)
+    }
+
+    // Deletion is unambiguous everywhere — unlike classification, purging is safe at
+    // any depth, since it only ever touches the one deleted identifier.
+    @Test func deleteContact_fromDuressDepth_stillPurgesMember() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let identifier = UUID().uuidString
+        try self.insertPlainProfile(identifier: identifier, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        try group.addMember(identifier, atDepth: 1)
+
+        cm.security.applyVerifyState(for: .duress)
+        #expect(cm.security.currentDepth == 1)
+
+        try cm.deleteContact(identifier: identifier)
+
+        #expect(group.members(atDepth: 1).isEmpty)
+    }
+
+    @Test func deleteContact_leavesOtherGroupMembersIntact() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let target    = UUID().uuidString
+        let bystander = UUID().uuidString
+        try self.insertPlainProfile(identifier: target, in: cm)
+        try self.insertPlainProfile(identifier: bystander, in: cm)
+
+        let group = try cm.createGroup(name: "G")
+        try group.addMember(target, atDepth: 0)
+        try group.addMember(bystander, atDepth: 0)
+
+        try cm.deleteContact(identifier: target)
+
+        #expect(group.members(atDepth: 0) == [bystander])
+    }
+}
