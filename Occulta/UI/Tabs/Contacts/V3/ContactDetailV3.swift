@@ -25,7 +25,7 @@ struct ContactDetailV3: View {
     init(identifier: String) {
         self.identifier = identifier
         self._contacts  = Query(filter: #Predicate { $0.identifier == identifier })
-        self._composeVM = State(initialValue: ComposeViewModel(identifier: identifier))
+        self._composeVM = State(initialValue: ComposeViewModel(recipient: .contact(identifier)))
     }
 
     private var profile:    Contact.Profile? { self.contacts.first }

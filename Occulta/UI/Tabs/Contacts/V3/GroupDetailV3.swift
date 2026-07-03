@@ -21,7 +21,12 @@ struct GroupDetailV3: View {
     @State private var editing          = false
     @State private var useThreadCompose = false
     @State private var membersExpanded  = false
-    @State private var composeVM        = ComposeViewModel(identifier: "")
+    @State private var composeVM: ComposeViewModel
+
+    init(groupID: UUID) {
+        self.groupID = groupID
+        self._composeVM = State(initialValue: ComposeViewModel(recipient: .group(groupID)))
+    }
 
     private var group: Group? {
         self.groups.first { $0.readID() == self.groupID }
@@ -51,7 +56,7 @@ struct GroupDetailV3: View {
                     ComposeToggleV3(useThread: self.$useThreadCompose)
 
                     if self.useThreadCompose {
-                        NavigationLink(destination: ComposableMessage(vm: self.composeVM, groupID: self.groupID)) {
+                        NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
                             HStack {
                                 Text("Open thread")
                                     .font(.system(size: 14, weight: .semibold))
@@ -71,13 +76,12 @@ struct GroupDetailV3: View {
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                         }
                     } else {
-                        let cm  = self.contactManager
-                        let gID = self.groupID
+                        let cm = self.contactManager
                         ComposeHeroV3(
                             vm:           self.composeVM,
                             headerRight:  "→ \(count) RECIPIENT\(count == 1 ? "" : "S")",
                             encryptLabel: "Encrypt for \(count)",
-                            onEncrypt:    { await self.composeVM.encrypt(groupID: gID, contactManager: cm) }
+                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm) }
                         )
                     }
 

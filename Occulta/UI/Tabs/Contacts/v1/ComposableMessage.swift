@@ -12,7 +12,6 @@ extension URL: @retroactive Identifiable {
 
 struct ComposableMessage: View {
     @Bindable var vm: ComposeViewModel
-    let groupID: UUID?
 
     @Query private var contacts: [Contact.Profile]
     @Query private var groups:   [Group]
@@ -23,18 +22,23 @@ struct ComposableMessage: View {
     @State private var showMediaPicker  = false
     @State private var showFileImporter = false
 
-    init(vm: ComposeViewModel, groupID: UUID? = nil) {
+    init(vm: ComposeViewModel) {
         self.vm = vm
-        self.groupID = groupID
-        let id = vm.identifier
-        self._contacts = Query(filter: #Predicate { $0.identifier == id })
+        switch vm.recipient {
+        case .contact(let id):
+            self._contacts = Query(filter: #Predicate { $0.identifier == id })
+        case .group:
+            self._contacts = Query(filter: #Predicate { _ in false })
+        }
     }
 
     private var recipient: String {
-        if let groupID {
+        switch self.vm.recipient {
+        case .contact:
+            return self.contacts.first?.givenName.decrypt() ?? ""
+        case .group(let groupID):
             return self.groups.first { $0.readID() == groupID }?.readName() ?? ""
         }
-        return self.contacts.first?.givenName.decrypt() ?? ""
     }
 
     private var canEncrypt: Bool {
@@ -148,14 +152,10 @@ struct ComposableMessage: View {
     }
 
     private func encryptAction() {
-        let cm = self.contactManager
-        if let groupID {
-            Task { await self.vm.encrypt(groupID: groupID, contactManager: cm) }
-        } else {
-            let scm = self.shardCustodyManager
-            let vlt = self.vaultManager
-            Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
-        }
+        let cm  = self.contactManager
+        let scm = self.shardCustodyManager
+        let vlt = self.vaultManager
+        Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
     }
 }
 
@@ -685,7 +685,7 @@ struct PHPickerRepresentable: UIViewControllerRepresentable {
 
 #Preview {
     NavigationStack {
-        ComposableMessage(vm: ComposeViewModel(identifier: UUID().uuidString))
+        ComposableMessage(vm: ComposeViewModel(recipient: .contact(UUID().uuidString)))
             .environment(ContactManager.preview)
     }
 }
