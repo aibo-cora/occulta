@@ -27,7 +27,7 @@ struct ComposableMessage: View {
         self._contacts = Query(filter: #Predicate { $0.identifier == id })
     }
 
-    private var firstName: String {
+    private var recipient: String {
         self.contacts.first?.givenName.decrypt() ?? ""
     }
 
@@ -104,7 +104,7 @@ struct ComposableMessage: View {
             .background(Color(.systemBackground))
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle(self.firstName)
+        .navigationTitle(self.recipient)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
