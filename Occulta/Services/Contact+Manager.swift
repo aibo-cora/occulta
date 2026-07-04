@@ -1071,6 +1071,19 @@ extension ContactManager {
 
 // MARK: - Group bundle encryption
 
+/// Per-member intermediate between pass 1 (resolve key material + real shard
+/// content) and pass 2 (pad to the shared tiers computed across all members)
+/// in `ContactManager.encryptGroupBundle`.
+private struct PendingGroupRecipient {
+    let publicKey: Data
+    let quantumMaterial: QuantumKeyMaterial?
+    let contactPrekey: Prekey?
+    let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
+    let realShardOperations: [OccultaBundle.ShardOperation]
+    let realCustodyManifest: [UUID]
+    let realExpectedShards: [UUID]
+}
+
 extension ContactManager {
 
     /// Encrypt a basket for all members of a group in the given layer.
@@ -1079,13 +1092,27 @@ extension ContactManager {
     /// per-recipient prekey sync batch if their stock for this sender is below
     /// the replenishment threshold. The shared ciphertext is sealed once with a
     /// random session key bound to the group UUID.
-    func encryptGroupBundle(basket: Basket, groupID: UUID) throws -> Data {
+    ///
+    /// Shard distribution (`shardCustodyManager`/`vaultManager`) is per-member:
+    /// a member only receives real shard ops/custody manifest/expected-shards if
+    /// their build is `.groupShardCapable`, they have ML-KEM material, and a
+    /// prekey was available for this send (forward secrecy required — shard
+    /// content must never travel on the fallback path). Every member's shard
+    /// arrays — real or not — are padded to the same per-field tier computed
+    /// across this send's whole membership, so a recipient's ciphertext length
+    /// never reveals whether they carry real shard content (see `ShardPadding`).
+    func encryptGroupBundle(
+        basket: Basket,
+        groupID: UUID,
+        shardCustodyManager: ShardCustodyManager? = nil,
+        vaultManager: VaultManager? = nil
+    ) throws -> Data {
         guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
-        
+
         let identifierList = grp.members(atDepth: self.security.currentDepth)
-        
+
         guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
-        
+
         let predicate = #Predicate<Contact.Profile> {
             identifierList.contains($0.identifier) && $0.deletionToken == nil
         }
@@ -1097,30 +1124,71 @@ extension ContactManager {
         // group at the current security depth.
         let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
             .filter { self.security.isDisplayable($0) }
-        
+
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 
         var prekeyConsumed = false
-        
-        let recipients: [GroupRecipient] = try members.map { contact in
+        let cryptoOps = Manager.Crypto()
+
+        // ── Pass 1: resolve per-member key material + real (unpadded) shard content ──
+        let pending: [PendingGroupRecipient] = try members.map { contact in
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
-            
+
             try contact.configureForwardSecrecy()
-            
+
             var contactPrekey: Prekey? = nil
-            
+
             if let blob = try contact.popOldestPrekeyData() {
                 contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
                 prekeyConsumed = true
             }
-            
+
             let pendingBatch = try contact.loadPendingBatch()
-            
+
+            let memberIsShardCapable = Self.resolveTargetVersion(for: contact, using: cryptoOps) == .groupShardCapable
+            let canReceiveShardContent = memberIsShardCapable && quantumMaterial != nil && contactPrekey != nil
+
+            var realOps: [OccultaBundle.ShardOperation] = []
+            var realManifest: [UUID] = []
+            var realExpected: [UUID] = []
+            if canReceiveShardContent, let shardCustodyManager {
+                realOps = try shardCustodyManager.buildShardOperations(for: contact.identifier, currentContactPublicKey: recipientMaterial)
+                realManifest = (try? shardCustodyManager.buildCustodyManifest(for: contact.identifier)) ?? []
+                if let vaultManager {
+                    realExpected = (try? shardCustodyManager.buildExpectedShards(for: contact.identifier, vaultManager: vaultManager)) ?? []
+                }
+            }
+
+            return PendingGroupRecipient(
+                publicKey:           recipientMaterial,
+                quantumMaterial:     quantumMaterial,
+                contactPrekey:       contactPrekey,
+                pendingBatch:        pendingBatch,
+                realShardOperations: realOps,
+                realCustodyManifest: realManifest,
+                realExpectedShards:  realExpected
+            )
+        }
+
+        // ── Shared per-field tiers across every member in this send ──
+        let opsTier      = ShardPadding.tier(for: pending.map { $0.realShardOperations.count }.max() ?? 0)
+        let manifestTier = ShardPadding.tier(for: pending.map { $0.realCustodyManifest.count }.max() ?? 0)
+        let expectedTier = ShardPadding.tier(for: pending.map { $0.realExpectedShards.count }.max() ?? 0)
+
+        // ── Pass 2: pad every member — including fully-ineligible ones — to those tiers ──
+        let recipients: [GroupRecipient] = pending.map { p in
+            let (paddedManifest, manifestCount) = Self.paddedUUIDs(p.realCustodyManifest, to: manifestTier)
+            let (paddedExpected, expectedCount) = Self.paddedUUIDs(p.realExpectedShards, to: expectedTier)
             return GroupRecipient(
-                publicKey:       recipientMaterial,
-                quantumMaterial: quantumMaterial,
-                contactPrekey:   contactPrekey,
-                pendingBatch:    pendingBatch
+                publicKey:            p.publicKey,
+                quantumMaterial:      p.quantumMaterial,
+                contactPrekey:        p.contactPrekey,
+                pendingBatch:         p.pendingBatch,
+                shardOperations:      Self.paddedShardOperations(p.realShardOperations, to: opsTier),
+                custodyManifest:      paddedManifest,
+                custodyManifestCount: manifestCount,
+                expectedShards:       paddedExpected,
+                expectedShardsCount:  expectedCount
             )
         }
 
@@ -1136,6 +1204,41 @@ extension ContactManager {
         }
 
         return encodedBundle
+    }
+
+    /// Pad `real` with random filler UUIDs up to `tier` entries. Filler is
+    /// indistinguishable from real entries to anyone without this recipient's
+    /// wrapping key; the legitimate recipient uses the returned count to know
+    /// how many leading entries are real.
+    private static func paddedUUIDs(_ real: [UUID], to tier: Int) -> (padded: [UUID], count: Int) {
+        var padded = real
+        while padded.count < tier { padded.append(UUID()) }
+        return (padded, real.count)
+    }
+
+    /// Pad `real` with filler `ShardOperation`s (`kind: .unsupported`, already
+    /// silently ignored by `ShardCustodyManager.handleInbound`'s dispatch) up to
+    /// `tier` entries. Filler carries a plausibly-sized `SignedAttribute` — real
+    /// `.shard` attributes are already near-constant size (fixed label, fixed-length
+    /// share, near-constant signature) — so filler and real entries aren't
+    /// distinguishable by size within the array.
+    private static func paddedShardOperations(
+        _ real: [OccultaBundle.ShardOperation],
+        to tier: Int
+    ) -> [OccultaBundle.ShardOperation] {
+        var padded = real
+        while padded.count < tier { padded.append(Self.fillerShardOperation()) }
+        return padded
+    }
+
+    private static func fillerShardOperation() -> OccultaBundle.ShardOperation {
+        let filler = SignedAttribute(
+            label:     "vault-shard",
+            value:     Data((0..<33).map { _ in UInt8.random(in: .min ... .max) }),
+            category:  .shard,
+            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) })
+        )
+        return OccultaBundle.ShardOperation(kind: .unsupported, attribute: filler)
     }
 }
 
