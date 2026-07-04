@@ -165,49 +165,62 @@ final class Group {
         try self.setMembers(current, atDepth: depth)
     }
 
-    /// Clears membership at every duress depth (1...depthCount-1), leaving the real
-    /// layer (depth 0) untouched.
+    /// Removes each identifier in `identifiers` from every duress depth's membership
+    /// (1...depthCount-1), leaving the real layer (depth 0) — and every *other* member
+    /// at every duress depth — untouched.
     ///
     /// A contact hidden by a real-layer reclassification may already be a stale,
     /// invisible member of this group's duress-depth array — added back when they were
-    /// still visible there. Rather than hunting down which depths hold their identifier,
-    /// every duress depth is reset and the user rebuilds membership as needed. Called
-    /// only from `ContactManager` when a reclassification happens at depth 0 — the one
-    /// depth guaranteed not to be under coercion, since duress PINs never route there.
+    /// still visible there. This removes exactly that stale entry, and nothing else — a
+    /// user may have put real effort into building distinct multi-layer decoy
+    /// membership, and hiding one unrelated contact must not destroy someone else's
+    /// carefully-prepared decoy set. (This replaces an earlier version of this method
+    /// that cleared *all* duress-depth membership on any depth-0 hide, which had exactly
+    /// that destructive side effect.)
+    ///
+    /// Every depth is still re-encrypted regardless of whether any of `identifiers` were
+    /// actually present there, for the same reason as `purgeMember(_:)`: touching only
+    /// the depths where a removal occurred would reveal which depths held which contact.
+    /// Called only from `ContactManager` when a reclassification happens at depth 0 —
+    /// the one depth guaranteed not to be under coercion, since duress PINs never route
+    /// there.
     ///
     /// Always pair a call to this with `refreshCiphertext()` on every *other* group in
     /// the store (see `ContactManager`'s classification cleanup) — otherwise "which
     /// groups had their ciphertext touched" becomes a keyless signal for "did this
     /// classification happen at depth 0."
-    func wipeDuressMembers() throws {
-        try self.reencryptAllDepths { depth in depth == 0 ? self.members(atDepth: 0) : [] }
+    func purgeMembersFromDuressDepths(_ identifiers: Set<String>) throws {
+        try self.reencryptAllDepths { depth in
+            depth == 0 ? self.members(atDepth: 0) : self.members(atDepth: depth).filter { !identifiers.contains($0) }
+        }
     }
 
     /// Re-encrypts every depth's slots with fresh nonces without changing any plaintext
     /// membership. Pure camouflage: called whenever a classification change does *not*
-    /// call `wipeDuressMembers()`, so that a classification save produces the identical
-    /// observable footprint — every group's ciphertext changes — regardless of whether
-    /// real content was actually cleared or which depth the save happened at.
+    /// call `purgeMembersFromDuressDepths(_:)`, so that a classification save produces
+    /// the identical observable footprint — every group's ciphertext changes —
+    /// regardless of whether real content was actually removed or which depth the save
+    /// happened at.
     func refreshCiphertext() throws {
         try self.reencryptAllDepths { self.members(atDepth: $0) }
     }
 
     /// Removes `identifier` from every depth's membership (0...depthCount-1), including
-    /// the real layer — unlike `wipeDuressMembers()`, a deleted contact is invalid
-    /// everywhere, not just hidden going forward. Every depth is still re-encrypted
-    /// regardless of whether the identifier was actually present there; touching only
-    /// the depths where a removal occurred would reveal which depths held this contact.
-    /// Safe to call at any depth: this only ever touches the one identifier being
-    /// removed and leaves every other member untouched, so — unlike the classification
-    /// wipe — it can't destroy separately-prepared decoy content.
+    /// the real layer — unlike `purgeMembersFromDuressDepths(_:)`, a deleted contact is
+    /// invalid everywhere, not just hidden going forward. Every depth is still
+    /// re-encrypted regardless of whether the identifier was actually present there;
+    /// touching only the depths where a removal occurred would reveal which depths held
+    /// this contact. Safe to call at any depth: this only ever touches the one
+    /// identifier being removed and leaves every other member untouched, so it can't
+    /// destroy separately-prepared decoy content.
     func purgeMember(_ identifier: String) throws {
         try self.reencryptAllDepths { depth in
             self.members(atDepth: depth).filter { $0 != identifier }
         }
     }
 
-    /// Shared engine behind `wipeDuressMembers()`, `refreshCiphertext()`, and
-    /// `purgeMember(_:)`: re-encrypts every depth with fresh nonces, sourcing each
+    /// Shared engine behind `purgeMembersFromDuressDepths(_:)`, `refreshCiphertext()`,
+    /// and `purgeMember(_:)`: re-encrypts every depth with fresh nonces, sourcing each
     /// depth's plaintext from `content`. A database diff always shows every depth's
     /// slots change, regardless of which of the three callers ran or what it changed.
     private func reencryptAllDepths(content: (Int) -> [String]) throws {
@@ -261,6 +274,17 @@ final class Group {
     /// init. Groups created before 1.9.1 have an empty array here; this brings them up
     /// to size the first time any membership edit touches them, mirroring
     /// `AppLayerConfig.ensurePadded()`.
+    ///
+    /// Kept `private` and only ever called from `reencryptAllDepths` (never on its
+    /// own) — padding `deeperMemberSlots` in isolation would itself be a new forensic
+    /// tell: a diff showing only that array change, while `realMemberSlots`/
+    /// `duressMemberSlots` stay identical, would reveal "this group was just backfilled
+    /// by a migration, not edited by the user." Always going through
+    /// `reencryptAllDepths` (via `refreshCiphertext()`, `purgeMembersFromDuressDepths(_:)`,
+    /// or `setMembers`) keeps every depth's ciphertext changing together, so a padding-only
+    /// touch is indistinguishable from a real edit. See `OccultaApp.migrateGroupDeeperSlots()`
+    /// for the eager, launch-time counterpart to this lazy path — it calls
+    /// `refreshCiphertext()` on every group, not this method directly.
     private func ensureDeeperSlotsPadded() throws {
         while self.deeperMemberSlots.count < Self.depthCount - 2 {
             self.deeperMemberSlots.append(try Self.freshFillerArray())

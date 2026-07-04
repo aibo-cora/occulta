@@ -362,7 +362,7 @@ struct ModeDecodingTests {
         let decodedAB = try OccultaBundle.decoded(from: wireAB)
         #expect(decodedAB.group != nil)
 
-        let (recipPayloadB, _) = try bCrypto.findAndOpenRecipientSlot(
+        let (recipPayloadB, _, _) = try bCrypto.findAndOpenRecipientSlot(
             in: decodedAB, blind: decodedAB.group!.blind,
             senderContactID: "A", senderPublicKey: aPub,
             quantumMaterial: nil, prekeyManager: self.pm
@@ -382,7 +382,7 @@ struct ModeDecodingTests {
         let decodedBA = try OccultaBundle.decoded(from: wireBA)
         #expect(decodedBA.group != nil)
 
-        let (recipPayloadA, _) = try aCrypto.findAndOpenRecipientSlot(
+        let (recipPayloadA, _, _) = try aCrypto.findAndOpenRecipientSlot(
             in: decodedBA, blind: decodedBA.group!.blind,
             senderContactID: "B", senderPublicKey: bPub,
             quantumMaterial: nil, prekeyManager: self.pm

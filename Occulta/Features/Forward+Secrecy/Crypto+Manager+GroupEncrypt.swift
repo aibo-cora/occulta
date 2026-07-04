@@ -32,6 +32,13 @@ struct GroupRecipient {
     let custodyManifestCount: Int
     let expectedShards: [UUID]
     let expectedShardsCount: Int
+    /// Whether the caller actually attempted to build `custodyManifest`/
+    /// `expectedShards` for this recipient (always both together — see
+    /// `RecipientPayload.shardMetadataAttempted` for why this can't be inferred
+    /// from the two count fields alone). Defaults to `false` so existing callers
+    /// that never mention shard content keep compiling unchanged and correctly
+    /// report "not attempted".
+    let shardMetadataAttempted: Bool
 
     init(
         publicKey: Data,
@@ -42,17 +49,19 @@ struct GroupRecipient {
         custodyManifest: [UUID] = [],
         custodyManifestCount: Int = 0,
         expectedShards: [UUID] = [],
-        expectedShardsCount: Int = 0
+        expectedShardsCount: Int = 0,
+        shardMetadataAttempted: Bool = false
     ) {
-        self.publicKey            = publicKey
-        self.quantumMaterial       = quantumMaterial
-        self.contactPrekey         = contactPrekey
-        self.pendingBatch          = pendingBatch
-        self.shardOperations       = shardOperations
-        self.custodyManifest       = custodyManifest
-        self.custodyManifestCount  = custodyManifestCount
-        self.expectedShards        = expectedShards
-        self.expectedShardsCount   = expectedShardsCount
+        self.publicKey              = publicKey
+        self.quantumMaterial         = quantumMaterial
+        self.contactPrekey           = contactPrekey
+        self.pendingBatch            = pendingBatch
+        self.shardOperations         = shardOperations
+        self.custodyManifest         = custodyManifest
+        self.custodyManifestCount    = custodyManifestCount
+        self.expectedShards          = expectedShards
+        self.expectedShardsCount     = expectedShardsCount
+        self.shardMetadataAttempted  = shardMetadataAttempted
     }
 }
 
@@ -183,13 +192,14 @@ extension Manager.Crypto {
         )
 
         let payload = OccultaBundle.RecipientPayload(
-            sessionKey:           sessionKeyData,
-            prekeyBatch:          r.pendingBatch,
-            shardOperations:      r.shardOperations,
-            custodyManifest:      r.custodyManifest,
-            custodyManifestCount: r.custodyManifestCount,
-            expectedShards:       r.expectedShards,
-            expectedShardsCount:  r.expectedShardsCount
+            sessionKey:             sessionKeyData,
+            prekeyBatch:            r.pendingBatch,
+            shardOperations:        r.shardOperations,
+            custodyManifest:        r.custodyManifest,
+            custodyManifestCount:   r.custodyManifestCount,
+            expectedShards:         r.expectedShards,
+            expectedShardsCount:    r.expectedShardsCount,
+            shardMetadataAttempted: r.shardMetadataAttempted
         )
         let encodedPayload = try JSONEncoder().encode(payload)
 

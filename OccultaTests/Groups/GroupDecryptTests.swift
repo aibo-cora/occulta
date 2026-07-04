@@ -45,7 +45,7 @@ private struct DecryptPair {
         let pair = try DecryptPair()
         let (bundle, _) = try pair.sealBundle()
         let senderPub = try pair.senderKM.retrieveIdentity()
-        let (payload, _) = try pair.recipientCrypto.findAndOpenRecipientSlot(
+        let (payload, _, _) = try pair.recipientCrypto.findAndOpenRecipientSlot(
             in: bundle,
             blind: bundle.group!.blind,
             senderContactID: "sender",
@@ -137,7 +137,7 @@ private struct DecryptPair {
                 GroupRecipient(publicKey: targetPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
             ]
         )
-        let (payload, _) = try Manager.Crypto(keyManager: target).findAndOpenRecipientSlot(
+        let (payload, _, _) = try Manager.Crypto(keyManager: target).findAndOpenRecipientSlot(
             in: bundle,
             blind: bundle.group!.blind,
             senderContactID: "sender",

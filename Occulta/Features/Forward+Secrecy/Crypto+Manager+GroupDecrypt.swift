@@ -42,7 +42,7 @@ extension Manager.Crypto {
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
         prekeyManager: Manager.PrekeyManager
-    ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?) {
+    ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
         }
@@ -65,7 +65,7 @@ extension Manager.Crypto {
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),
                   let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
             else { continue }
-            return (payload, consumable)
+            return (payload, consumable, entry.secrecyContext.mode)
         }
         throw GroupDecryptError.recipientSlotNotFound
     }

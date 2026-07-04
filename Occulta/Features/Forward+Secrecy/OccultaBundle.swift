@@ -541,6 +541,24 @@ struct OccultaBundle: Codable {
         /// `expectedShardsCount` entries are real shard IDs.
         let expectedShards: [UUID]
         let expectedShardsCount: Int
+        /// Whether the sender actually attempted to build `custodyManifest` and
+        /// `expectedShards` for this recipient — always both together, never one
+        /// without the other (see `ContactManager.encryptGroupBundle`).
+        ///
+        /// Needed because `custodyManifestCount`/`expectedShardsCount == 0` is
+        /// genuinely ambiguous on its own: it means either "sender attempted this
+        /// and found nothing" (a real, meaningful signal — e.g. "I hold zero of
+        /// your shards", or an intentional revoke-all) or "sender never attempted
+        /// this at all" (ineligible member, or a locked vault at send time — no
+        /// signal was intended). Those two cases must be told apart: a real empty
+        /// list has to reach `ShardCustodyManager.processInboundManifest`/
+        /// `processExpectedShards` (the receive side reads a `nil` array as "skip
+        /// verification" and a real, possibly-empty array as "process it" — see
+        /// `ContactManager.openGroup`), while a not-attempted list must not.
+        /// Without this flag both cases decode to the same `count == 0`, so the
+        /// receiver would silently skip real revoke-all/loss-detection signals
+        /// exactly as often as it correctly skips irrelevant ones.
+        let shardMetadataAttempted: Bool
 
         init(
             sessionKey: Data,
@@ -549,34 +567,39 @@ struct OccultaBundle: Codable {
             custodyManifest: [UUID] = [],
             custodyManifestCount: Int = 0,
             expectedShards: [UUID] = [],
-            expectedShardsCount: Int = 0
+            expectedShardsCount: Int = 0,
+            shardMetadataAttempted: Bool = false
         ) {
-            self.sessionKey           = sessionKey
-            self.prekeyBatch          = prekeyBatch
-            self.shardOperations      = shardOperations
-            self.custodyManifest      = custodyManifest
-            self.custodyManifestCount = custodyManifestCount
-            self.expectedShards       = expectedShards
-            self.expectedShardsCount  = expectedShardsCount
+            self.sessionKey             = sessionKey
+            self.prekeyBatch            = prekeyBatch
+            self.shardOperations        = shardOperations
+            self.custodyManifest        = custodyManifest
+            self.custodyManifestCount   = custodyManifestCount
+            self.expectedShards         = expectedShards
+            self.expectedShardsCount    = expectedShardsCount
+            self.shardMetadataAttempted = shardMetadataAttempted
         }
 
         // Custom decoding: a payload from a pre-groupShardCapable sender simply
         // won't have these keys at all. decodeIfPresent + defaults (rather than
         // synthesized Decodable, which would treat a non-Optional array as
         // required and throw) keeps decoding old-format payloads working.
+        // shardMetadataAttempted defaults to false for the same reason — a sender
+        // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount, shardMetadataAttempted
         }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            self.sessionKey           = try c.decode(Data.self, forKey: .sessionKey)
-            self.prekeyBatch          = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
-            self.shardOperations      = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
-            self.custodyManifest      = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
-            self.custodyManifestCount = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
-            self.expectedShards       = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
-            self.expectedShardsCount  = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
+            self.sessionKey             = try c.decode(Data.self, forKey: .sessionKey)
+            self.prekeyBatch            = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
+            self.shardOperations        = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
+            self.custodyManifest        = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
+            self.custodyManifestCount   = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
+            self.expectedShards         = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
+            self.expectedShardsCount    = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
+            self.shardMetadataAttempted = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
         }
     }
 

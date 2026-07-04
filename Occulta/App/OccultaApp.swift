@@ -88,6 +88,7 @@ struct OccultaApp: App {
         self.shardCustodyManager = ShardCustodyManager(modelContainer: sharedModelContainer, keyManager: Manager.Key())
 
         self.migrate()
+        self.migrateGroupDeeperSlots()
         FileManager.default.clearTemporaryDirectory()
     }
 
@@ -107,6 +108,39 @@ struct OccultaApp: App {
             // records will be retried on next launch.
             #if DEBUG
             debugPrint("Migration error: \(error)")
+            #endif
+        }
+    }
+
+    /// Eagerly pads every stored group's `deeperMemberSlots` (duress depths 2+,
+    /// added by Bug 73's fix) up to full size, instead of relying solely on the
+    /// lazy padding that only happens on a group's first post-upgrade membership
+    /// edit (`Group.ensureDeeperSlotsPadded()`).
+    ///
+    /// Without this, a group nobody has edited since upgrading to 1.9.1 keeps an
+    /// empty `deeperMemberSlots` array — a distinctly different, much smaller row
+    /// shape than every fully-padded group, readable from raw DB access with no
+    /// decryption key. That shape alone would tell an examiner "this group hasn't
+    /// been touched since the 1.9.1 upgrade," for as long as the user never edits
+    /// its membership. Running this once per launch closes that window
+    /// immediately instead of leaving it open indefinitely for inactive groups.
+    ///
+    /// Calls `Group.refreshCiphertext()` (not `ensureDeeperSlotsPadded()` directly)
+    /// so every depth's ciphertext is re-encrypted together, including groups that
+    /// were already fully padded — otherwise the migration itself would introduce
+    /// a new tell (only previously-unpadded groups changing shape at this exact
+    /// launch), which is the same class of bug this fixes in the first place.
+    /// Idempotent and cheap for already-padded groups, so it's safe to run on
+    /// every launch rather than gating it behind a one-time marker.
+    private func migrateGroupDeeperSlots() {
+        do {
+            try self.contactManager.forEachGroup { try $0.refreshCiphertext() }
+        } catch {
+            // Non-fatal: any group missed here is still covered by the lazy path
+            // on its next edit, and this migration retries automatically on the
+            // next launch.
+            #if DEBUG
+            debugPrint("Group deeper-slot migration error: \(error)")
             #endif
         }
     }
