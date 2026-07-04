@@ -183,7 +183,12 @@ final class ComposeViewModel {
                 vaultManager:        vaultManager
             )
         case .group(let groupID):
-            await self.encrypt(groupID: groupID, contactManager: contactManager)
+            await self.encrypt(
+                groupID:             groupID,
+                contactManager:      contactManager,
+                shardCustodyManager: shardCustodyManager,
+                vaultManager:        vaultManager
+            )
         }
     }
 
@@ -264,7 +269,12 @@ final class ComposeViewModel {
         }
     }
 
-    private func encrypt(groupID: UUID, contactManager: ContactManager) async {
+    private func encrypt(
+        groupID: UUID,
+        contactManager: ContactManager,
+        shardCustodyManager: ShardCustodyManager? = nil,
+        vaultManager: VaultManager? = nil
+    ) async {
         do {
             var allFiles = self.messages
             
@@ -291,7 +301,10 @@ final class ComposeViewModel {
             }
 
             let basket    = Basket(files: processed)
-            let encrypted = try contactManager.encryptGroupBundle(basket: basket, groupID: groupID)
+            let encrypted = try contactManager.encryptGroupBundle(
+                basket: basket, groupID: groupID,
+                shardCustodyManager: shardCustodyManager, vaultManager: vaultManager
+            )
             
             guard !encrypted.isEmpty else {
                 await MainActor.run { self.showError("Encryption failed. Try again.") }

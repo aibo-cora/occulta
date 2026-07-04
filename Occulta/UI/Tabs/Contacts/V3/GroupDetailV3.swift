@@ -14,9 +14,11 @@ struct GroupDetailV3: View {
     @Query private var contacts: [Contact.Profile]
     @Query private var groups:   [Group]
 
-    @Environment(ContactManager.self)   private var contactManager
-    @Environment(Manager.Security.self) private var security
-    @Environment(\.dismiss)             private var dismiss
+    @Environment(ContactManager.self)      private var contactManager
+    @Environment(Manager.Security.self)    private var security
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(VaultManager.self)        private var vaultManager: VaultManager?
+    @Environment(\.dismiss)                private var dismiss
 
     @State private var editing          = false
     @State private var useThreadCompose = false
@@ -76,12 +78,14 @@ struct GroupDetailV3: View {
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                         }
                     } else {
-                        let cm = self.contactManager
+                        let cm  = self.contactManager
+                        let scm = self.shardCustodyManager
+                        let vlt = self.vaultManager
                         ComposeHeroV3(
                             vm:           self.composeVM,
                             headerRight:  "→ \(count) RECIPIENT\(count == 1 ? "" : "S")",
                             encryptLabel: "Encrypt for \(count)",
-                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm) }
+                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
                         )
                     }
 
