@@ -105,6 +105,14 @@ struct OccultaBundle: Codable {
         /// Group bundles are JSON-encoded with `version: .v4`; this case exists solely so
         /// `resolveTargetVersion` can signal group eligibility to the caller.
         case groupCapable
+        /// Capability watermark: contact's build understands the per-recipient shard
+        /// distribution fields on `RecipientPayload` (shardOperations / custodyManifest /
+        /// expectedShards). Never written to the wire `version` field — stored only in
+        /// `Contact.Profile.maxBundleVersion` as byte 0x06. Group bundles carrying
+        /// per-recipient shard content still wire-encode with `version: .v4`; this case
+        /// exists solely so `resolveTargetVersion` can signal shard-distribution
+        /// eligibility to the caller.
+        case groupShardCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -116,10 +124,11 @@ struct OccultaBundle: Codable {
         /// `nil` means the case is not a real wire format (legacy, unsupported).
         var minimumAppVersion: String? {
             switch self {
-            case .v3fs:        return "0.0.0"
-            case .v4:          return "1.8.2"
-            case .groupCapable: return "1.9.0"
-            default:           return nil
+            case .v3fs:             return "0.0.0"
+            case .v4:               return "1.8.2"
+            case .groupCapable:     return "1.9.0"
+            case .groupShardCapable: return "1.10.0"
+            default:                return nil
             }
         }
 
@@ -127,17 +136,18 @@ struct OccultaBundle: Codable {
         /// `nil` for cases that are JSON-only or not real wire formats.
         var wireByte: UInt8? {
             switch self {
-            case .v4:           return 0x04
-            case .groupCapable: return 0x05
-            default:            return nil
+            case .v4:                return 0x04
+            case .groupCapable:      return 0x05
+            case .groupShardCapable: return 0x06
+            default:                 return nil
             }
         }
 
         /// True when this contact's app version supports group bundles.
-        var supportsGroups: Bool { self == .groupCapable }
+        var supportsGroups: Bool { self == .groupCapable || self == .groupShardCapable }
 
         /// All real capability levels in descending order.
-        private static let known: [Version] = [.groupCapable, .v4, .v3fs]
+        private static let known: [Version] = [.groupShardCapable, .groupCapable, .v4, .v3fs]
 
         /// The highest capability level a contact running `appVersion` can handle.
         static func max(forAppVersion appVersion: String) -> Version {
@@ -548,7 +558,7 @@ struct OccultaBundle: Codable {
 
     func encoded(version: Version = .v3fs) throws -> Data {
         switch version {
-        case .v4, .groupCapable:
+        case .v4, .groupCapable, .groupShardCapable:
             return try WireHandle.encode(self)
         default:
             return try JSONEncoder().encode(self)
