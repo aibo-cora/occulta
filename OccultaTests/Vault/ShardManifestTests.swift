@@ -264,12 +264,25 @@ private func distribute(
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        // Confirm first, then Bob reinstalls (empty manifest, no distribute row).
-        try aliceCustody.queueDistribute(attribute: attrs[0], for: "bob")
-        try aliceCustody.processInboundManifest([attrs[0].id], from: "bob", vaultManager: vault)
+        // Tracking calls (queueDistribute/processInboundManifest) must use the same
+        // identifier prepareShards baked into attrs[0]'s ShardRecord.contactIdentifier
+        // (recipients[0].identifier) -- shardRecordsForTrustee (used below, via
+        // drainPotentiallyLostShards) filters by this exact string. An arbitrary
+        // placeholder like "bob" would silently never match any ShardRecord.
+        let trustee = recipients[0].identifier
 
-        // Now Bob sends empty manifest — shard is gone, no distribute row → lost.
-        try aliceCustody.processInboundManifest([], from: "bob", vaultManager: vault)
+        // Confirm first, then the trustee reinstalls (empty manifest, no distribute row).
+        try aliceCustody.queueDistribute(attribute: attrs[0], for: trustee)
+        try aliceCustody.processInboundManifest([attrs[0].id], from: trustee, vaultManager: vault)
+
+        // Now the trustee sends an empty manifest — shard is gone, no distribute row.
+        // This only marks the shard's PotentiallyLostShard row isAbsent; the actual
+        // .lost transition is deferred to the next vault unlock
+        // (drainPotentiallyLostShards, called from VaultManager.unlock(context:)) by
+        // design, so losses discovered while locked are reconciled deterministically
+        // in one place rather than applied immediately mid-manifest-processing.
+        try aliceCustody.processInboundManifest([], from: trustee, vaultManager: vault)
+        vault.unlock(context: LAContext())
 
         let meta = try vault.shardDistributionMetadata(for: entry.id)!
         #expect(meta.shards[0].status == .lost)
@@ -376,7 +389,7 @@ private func distribute(
 
     @Test(".handback inserts ReconstructShard row even while vault is locked")
     func handbackBufferedWhenLocked() throws {
-        let (vault, _, km, container) = try makeAlice()
+        let (vault, aliceCustody, km, container) = try makeAlice()
         vault.unlock(context: LAContext())
         let entry      = try vault.addEntry(label: "s", content: Data("hi".utf8), type: .note)
         let recipients = try makeProfiles(count: 2)
@@ -386,9 +399,11 @@ private func distribute(
         vault.lock()
         #expect(!vault.isUnlocked)
 
-        // Bob sends .handback with the shard.
-        let (bobCustody, _, _) = try makeBob()
-        _ = bobCustody.handleInbound(
+        // Bob sends .handback with the shard. Alice's own custody manager (sharing her
+        // km identity, the one prepareShards signed attrs[0] with) must receive it --
+        // handleHandback verifies the shard's signature against the receiver's own
+        // identity, expecting it to match the original signer (the owner, Alice).
+        _ = aliceCustody.handleInbound(
             shardOperations:  [.init(kind: .handback, attribute: attrs[0])],
             custodyManifest:  nil,
             expectedShards:   nil,
