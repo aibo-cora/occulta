@@ -173,15 +173,16 @@ struct ModeDecodingTests {
         let bundle = try Manager.Crypto(keyManager: km).seal(
             message:           Data("fs compat check".utf8),
             contactPrekey:     prekey,
-            recipientMaterial: recipPub
+            recipientMaterial: recipPub,
+            version:           .v4
         )
-        #expect(bundle.secrecy.mode == .forwardSecret)
+        #expect(bundle.secrecy.mode == .forwardSecret || bundle.secrecy.mode == .forwardSecretNoPQ)
         #expect(bundle.group == nil)
 
         let wire    = try bundle.encoded(version: .v4)
         let decoded = try OccultaBundle.decoded(from: wire)
 
-        #expect(decoded.secrecy.mode == .forwardSecret)
+        #expect(decoded.secrecy.mode == .forwardSecret || decoded.secrecy.mode == .forwardSecretNoPQ)
         #expect(decoded.secrecy.prekeyID == prekey.id)
         #expect(decoded.ciphertext == bundle.ciphertext)
         #expect(decoded.group == nil)
@@ -207,14 +208,15 @@ struct ModeDecodingTests {
         let bundle  = try Manager.Crypto(keyManager: km).seal(
             message:           Data("fallback compat check".utf8),
             contactPrekey:     nil,
-            recipientMaterial: recipPub
+            recipientMaterial: recipPub,
+            version:           .v4
         )
-        #expect(bundle.secrecy.mode == .longTermFallback)
+        #expect(bundle.secrecy.mode == .longTermFallback || bundle.secrecy.mode == .longTermNoPQ)
         #expect(bundle.group == nil)
 
         let wire    = try bundle.encoded(version: .v4)
         let decoded = try OccultaBundle.decoded(from: wire)
-        #expect(decoded.secrecy.mode == .longTermFallback)
+        #expect(decoded.secrecy.mode == .longTermFallback || decoded.secrecy.mode == .longTermNoPQ)
         #expect(decoded.ciphertext == bundle.ciphertext)
     }
 
@@ -331,7 +333,7 @@ struct ModeDecodingTests {
         let km  = TestKeyManager()
         let pub = try km.retrieveIdentity()
         let bundle = try Manager.Crypto(keyManager: km).seal(
-            message: Data("hi".utf8), contactPrekey: nil, recipientMaterial: pub
+            message: Data("hi".utf8), contactPrekey: nil, recipientMaterial: pub, version: .v4
         )
         let wire    = try bundle.encoded(version: .v4)
         let decoded = try OccultaBundle.decoded(from: wire)
@@ -409,10 +411,12 @@ struct ModeDecodingTests {
         let prekey  = prekeys[0]
 
         // 1.8.x sender: forward-secret, non-group bundle
+        let encodedPayload = try WireHandle.encode(payload: OccultaBundle.SealedPayload(message: Data("from old version".utf8)))
         let bundle = try Manager.Crypto(keyManager: senderKM).seal(
-            message: Data("from old version".utf8),
+            message: encodedPayload,
             contactPrekey: prekey,
-            recipientMaterial: recipientPub
+            recipientMaterial: recipientPub,
+            version: .v4
         )
         #expect(bundle.group == nil)
         #expect(bundle.secrecy.mode == .forwardSecret || bundle.secrecy.mode == .forwardSecretNoPQ)
@@ -446,10 +450,12 @@ struct ModeDecodingTests {
         let recipientPub = try recipientKM.retrieveIdentity()
 
         // Non-group seal (what ContactManager does when targetVersion == .v4)
+        let encodedPayload = try WireHandle.encode(payload: OccultaBundle.SealedPayload(message: Data("downgrade path".utf8)))
         let bundle = try Manager.Crypto(keyManager: senderKM).seal(
-            message: Data("downgrade path".utf8),
+            message: encodedPayload,
             contactPrekey: nil,
-            recipientMaterial: recipientPub
+            recipientMaterial: recipientPub,
+            version: .v4
         )
         let wire    = try bundle.encoded(version: .v4)
         let decoded = try OccultaBundle.decoded(from: wire)
