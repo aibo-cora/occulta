@@ -85,25 +85,6 @@ private func makeAttr(
     )
 }
 
-/// Wrap a single ShardOperation in a SealedPayload.
-@MainActor
-private func sealed(_ op: OccultaBundle.ShardOperation) -> OccultaBundle.SealedPayload {
-    OccultaBundle.SealedPayload(message: Data(), shardOperations: [op])
-}
-
-/// Wrap manifest fields into a SealedPayload (no ops).
-@MainActor
-private func sealedManifest(
-    custodyManifest: [UUID]? = nil,
-    expectedShards:  [UUID]? = nil
-) -> OccultaBundle.SealedPayload {
-    OccultaBundle.SealedPayload(
-        message:         Data(),
-        custodyManifest: custodyManifest,
-        expectedShards:  expectedShards
-    )
-}
-
 @MainActor
 private func custodyCount(in container: ModelContainer) throws -> Int {
     try ModelContext(container).fetch(FetchDescriptor<CustodyShard>()).count
@@ -125,7 +106,9 @@ private func distribute(
     let attr     = try makeAttr(signer: aliceKM, entryID: entryID)
     let alicePub = try aliceKM.retrieveIdentity()
     _ = bobCustody.handleInbound(
-        sealed:           sealed(.init(kind: .distribute, attribute: attr)),
+        shardOperations:  [.init(kind: .distribute, attribute: attr)],
+        custodyManifest:  nil,
+        expectedShards:   nil,
         senderPublicKey:  alicePub,
         senderIdentifier: "alice",
         vaultManager:     vaultManager
@@ -195,7 +178,9 @@ private func distribute(
         let alicePub = try km.retrieveIdentity()
 
         _ = bobCustody.handleInbound(
-            sealed:           sealed(.init(kind: .distribute, attribute: oldAttr)),
+            shardOperations:  [.init(kind: .distribute, attribute: oldAttr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -204,7 +189,9 @@ private func distribute(
 
         let newAttr = try makeAttr(signer: km, entryID: entryID, shardBytes: Data([0x02]))
         _ = bobCustody.handleInbound(
-            sealed:           sealed(.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)),
+            shardOperations:  [.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -234,7 +221,9 @@ private func distribute(
 
         // Alice sends expectedShards: [] — shard absent → implicit revoke.
         _ = bobCustody.handleInbound(
-            sealed:           sealedManifest(expectedShards: []),
+            shardOperations:  nil,
+            custodyManifest:  nil,
+            expectedShards:   [],
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -366,7 +355,9 @@ private func distribute(
 
         // Old build: no custodyManifest field.
         _ = aliceCustody.handleInbound(
-            sealed:           OccultaBundle.SealedPayload(message: Data()),
+            shardOperations:  nil,
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "bob",
             vaultManager:     vault
@@ -398,7 +389,9 @@ private func distribute(
         // Bob sends .handback with the shard.
         let (bobCustody, _, _) = try makeBob()
         _ = bobCustody.handleInbound(
-            sealed:           sealed(.init(kind: .handback, attribute: attrs[0])),
+            shardOperations:  [.init(kind: .handback, attribute: attrs[0])],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "bob",
             vaultManager:     vault
@@ -425,9 +418,9 @@ private func distribute(
         let alicePub = try km.retrieveIdentity()
         let op       = OccultaBundle.ShardOperation(kind: .distribute, attribute: attr)
 
-        _ = bobCustody.handleInbound(sealed: sealed(op), senderPublicKey: alicePub,
+        _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, expectedShards: nil, senderPublicKey: alicePub,
                                      senderIdentifier: "alice", vaultManager: vault)
-        _ = bobCustody.handleInbound(sealed: sealed(op), senderPublicKey: alicePub,
+        _ = bobCustody.handleInbound(shardOperations: [op], custodyManifest: nil, expectedShards: nil, senderPublicKey: alicePub,
                                      senderIdentifier: "alice", vaultManager: vault)
 
         #expect(try custodyCount(in: bobCont) == 1, "duplicate must not insert a second row")
@@ -451,7 +444,9 @@ private func distribute(
         let imposterPub = try imposter.retrieveIdentity()
 
         _ = bobCustody.handleInbound(
-            sealed:           sealed(.init(kind: .distribute, attribute: attr)),
+            shardOperations:  [.init(kind: .distribute, attribute: attr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  imposterPub,
             senderIdentifier: "imposter",
             vaultManager:     vault
@@ -694,7 +689,9 @@ private func distribute(
         vault.unlock(context: LAContext())
 
         let result = bobCustody.handleInbound(
-            sealed:           OccultaBundle.SealedPayload(message: Data("plain".utf8)),
+            shardOperations:  nil,
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -709,7 +706,9 @@ private func distribute(
         vault.unlock(context: LAContext())
 
         let result = bobCustody.handleInbound(
-            sealed:           sealedManifest(custodyManifest: []),
+            shardOperations:  nil,
+            custodyManifest:  [],
+            expectedShards:   nil,
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
             vaultManager:     vault
@@ -724,7 +723,9 @@ private func distribute(
         vault.unlock(context: LAContext())
 
         let result = bobCustody.handleInbound(
-            sealed:           sealedManifest(expectedShards: []),
+            shardOperations:  nil,
+            custodyManifest:  nil,
+            expectedShards:   [],
             senderPublicKey:  try km.retrieveIdentity(),
             senderIdentifier: "alice",
             vaultManager:     vault

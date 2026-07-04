@@ -545,9 +545,13 @@ private struct RootView: View {
                     }
 
                     // Shard/custody ops.
+                    // TODO(next step): source these from openGroup's per-recipient
+                    // (de-padded) return values instead of the shared sealed payload.
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            sealed:           sealed,
+                            shardOperations:  sealed.shardOperations,
+                            custodyManifest:  sealed.custodyManifest,
+                            expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager
@@ -589,7 +593,9 @@ private struct RootView: View {
 
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            sealed:           sealed,
+                            shardOperations:  sealed.shardOperations,
+                            custodyManifest:  sealed.custodyManifest,
+                            expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager
