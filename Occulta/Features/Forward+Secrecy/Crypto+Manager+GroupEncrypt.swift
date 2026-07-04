@@ -22,6 +22,38 @@ struct GroupRecipient {
     let contactPrekey: Prekey?
     /// Outbound prekey batch to include in this recipient's `RecipientPayload`, or nil.
     let pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?
+
+    /// Already tier-padded by the caller (`ContactManager.encryptGroupBundle`) — this
+    /// type performs no eligibility or padding logic itself, it just carries whatever
+    /// it's given straight into `RecipientPayload`. Defaulted to empty/0 so existing
+    /// callers that never mention shard content keep compiling unchanged.
+    let shardOperations: [OccultaBundle.ShardOperation]
+    let custodyManifest: [UUID]
+    let custodyManifestCount: Int
+    let expectedShards: [UUID]
+    let expectedShardsCount: Int
+
+    init(
+        publicKey: Data,
+        quantumMaterial: QuantumKeyMaterial?,
+        contactPrekey: Prekey?,
+        pendingBatch: OccultaBundle.SealedPayload.PrekeySyncBatch?,
+        shardOperations: [OccultaBundle.ShardOperation] = [],
+        custodyManifest: [UUID] = [],
+        custodyManifestCount: Int = 0,
+        expectedShards: [UUID] = [],
+        expectedShardsCount: Int = 0
+    ) {
+        self.publicKey            = publicKey
+        self.quantumMaterial       = quantumMaterial
+        self.contactPrekey         = contactPrekey
+        self.pendingBatch          = pendingBatch
+        self.shardOperations       = shardOperations
+        self.custodyManifest       = custodyManifest
+        self.custodyManifestCount  = custodyManifestCount
+        self.expectedShards        = expectedShards
+        self.expectedShardsCount   = expectedShardsCount
+    }
 }
 
 // MARK: - Group seal
@@ -150,7 +182,15 @@ extension Manager.Crypto {
             quantumMaterial: r.quantumMaterial
         )
 
-        let payload = OccultaBundle.RecipientPayload(sessionKey: sessionKeyData, prekeyBatch: r.pendingBatch)
+        let payload = OccultaBundle.RecipientPayload(
+            sessionKey:           sessionKeyData,
+            prekeyBatch:          r.pendingBatch,
+            shardOperations:      r.shardOperations,
+            custodyManifest:      r.custodyManifest,
+            custodyManifestCount: r.custodyManifestCount,
+            expectedShards:       r.expectedShards,
+            expectedShardsCount:  r.expectedShardsCount
+        )
         let encodedPayload = try JSONEncoder().encode(payload)
 
         guard let wrappedPayload = try AES.GCM.seal(

@@ -504,6 +504,16 @@ struct OccultaBundle: Codable {
 
     /// Plaintext sealed inside each `Recipient.wrappedPayload`.
     /// Only the intended recipient can derive `wrappingKey` to open it.
+    ///
+    /// The five shard-related fields are always populated by a `.groupShardCapable`
+    /// sender, padded to a fixed per-bundle tier (`ShardPadding.tier(for:)`) so every
+    /// recipient's encoded payload is the same length regardless of whether they
+    /// carry real shard content — otherwise ciphertext length alone would reveal
+    /// which group member is an SSS trustee (`GroupEnvelope`/`wrappedPayload` travel
+    /// as a cleartext JSON TLV block; see `WireHandle.encode(_:)`). Filler
+    /// `shardOperations` entries carry `kind == .unsupported` (already ignored by
+    /// `ShardCustodyManager.handleInbound`'s dispatch); filler `custodyManifest`/
+    /// `expectedShards` entries are random UUIDs beyond the real count fields.
     nonisolated
     struct RecipientPayload: Codable {
         /// 32-byte random session key that decrypts the shared outer ciphertext.
@@ -512,6 +522,54 @@ struct OccultaBundle: Codable {
         /// and the forward-secret path was used. Mirrors the single-recipient
         /// replenishment logic — same threshold, same `PrekeySyncBatch` type.
         let prekeyBatch: SealedPayload.PrekeySyncBatch?
+        /// Fixed-size (tier-padded), always present. Real ops first; entries beyond
+        /// the real count carry `kind == .unsupported` filler.
+        let shardOperations: [ShardOperation]
+        /// Fixed-size (tier-padded), always present. Only the first
+        /// `custodyManifestCount` entries are real shard IDs.
+        let custodyManifest: [UUID]
+        let custodyManifestCount: Int
+        /// Fixed-size (tier-padded), always present. Only the first
+        /// `expectedShardsCount` entries are real shard IDs.
+        let expectedShards: [UUID]
+        let expectedShardsCount: Int
+
+        init(
+            sessionKey: Data,
+            prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
+            shardOperations: [ShardOperation] = [],
+            custodyManifest: [UUID] = [],
+            custodyManifestCount: Int = 0,
+            expectedShards: [UUID] = [],
+            expectedShardsCount: Int = 0
+        ) {
+            self.sessionKey           = sessionKey
+            self.prekeyBatch          = prekeyBatch
+            self.shardOperations      = shardOperations
+            self.custodyManifest      = custodyManifest
+            self.custodyManifestCount = custodyManifestCount
+            self.expectedShards       = expectedShards
+            self.expectedShardsCount  = expectedShardsCount
+        }
+
+        // Custom decoding: a payload from a pre-groupShardCapable sender simply
+        // won't have these keys at all. decodeIfPresent + defaults (rather than
+        // synthesized Decodable, which would treat a non-Optional array as
+        // required and throw) keeps decoding old-format payloads working.
+        enum CodingKeys: String, CodingKey {
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.sessionKey           = try c.decode(Data.self, forKey: .sessionKey)
+            self.prekeyBatch          = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
+            self.shardOperations      = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
+            self.custodyManifest      = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
+            self.custodyManifestCount = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
+            self.expectedShards       = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
+            self.expectedShardsCount  = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
+        }
     }
 
     // MARK: - Fields
