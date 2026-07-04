@@ -675,6 +675,31 @@ struct OccultaBundle: Codable {
     }
 }
 
+// MARK: - ShardPadding
+
+/// Fixed-size tiering for `RecipientPayload`'s shard-related arrays.
+///
+/// A group recipient's ciphertext length must not reveal whether they carry real
+/// shard content, since `GroupEnvelope`/`Recipient.wrappedPayload` travel as a
+/// cleartext JSON TLV block (see `WireHandle.encode(_:)`) — anyone holding the
+/// bundle can measure per-recipient byte lengths without decrypting anything.
+/// `ContactManager.encryptGroupBundle` pads every recipient's shard arrays up to
+/// the same tier for a given send, computed from the real maximum across all
+/// recipients in that send.
+enum ShardPadding {
+    /// Smallest doubling tier (2, 4, 8, 16, ...) that fits `count`. No upper bound —
+    /// tiers grow to fit whatever the real maximum is for this specific send, so
+    /// there is no reject/truncate path. Tradeoff: bundle size correlates with real
+    /// content amount at tier granularity (coarser than exact size, far coarser than
+    /// per-recipient distinguishability) across bundles observed over time — an
+    /// accepted residual, not the leak this scheme closes.
+    static func tier(for count: Int) -> Int {
+        var t = 2
+        while t < count { t *= 2 }
+        return t
+    }
+}
+
 // MARK: - WireHandle bridge
 
 extension OccultaBundle {

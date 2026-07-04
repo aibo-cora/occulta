@@ -171,6 +171,30 @@ struct WirePrekeyTests {
     }
 }
 
+// MARK: - ShardPadding
+
+@Suite("ShardPadding — tier(for:)")
+struct ShardPaddingTests {
+
+    @Test func tier_zero_isMinimumTier() {
+        #expect(ShardPadding.tier(for: 0) == 2)
+    }
+
+    @Test func tier_atTierBoundary_staysAtTier() {
+        #expect(ShardPadding.tier(for: 2) == 2)
+        #expect(ShardPadding.tier(for: 16) == 16)
+    }
+
+    @Test func tier_justOverBoundary_doublesUp() {
+        #expect(ShardPadding.tier(for: 3) == 4)
+        #expect(ShardPadding.tier(for: 17) == 32)
+    }
+
+    @Test func tier_hasNoUpperBound() {
+        #expect(ShardPadding.tier(for: 1_000) == 1_024)
+    }
+}
+
 // MARK: - SealedPayload Codable
 
 @Suite("OccultaBundle — SealedPayload")
