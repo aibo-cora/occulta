@@ -529,7 +529,8 @@ private struct RootView: View {
                     // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
                     // use this path. Shard-only bundles signal "no basket" via an
                     // empty message field.
-                    let (sealed, ownerID, _) = try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
+                    let (sealed, ownerID, _, recipShardOps, recipManifest, recipExpected) =
+                        try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
 
                     // Identity-challenge traffic inside a group bundle.
@@ -544,14 +545,15 @@ private struct RootView: View {
                         return nil
                     }
 
-                    // Shard/custody ops.
-                    // TODO(next step): source these from openGroup's per-recipient
-                    // (de-padded) return values instead of the shared sealed payload.
+                    // Shard/custody ops. Per-recipient fields take priority; falling back
+                    // to the shared sealed payload's own fields keeps the already-shipped
+                    // 1:1-via-group-envelope shard path (single-recipient encryptBundle,
+                    // which has no per-recipient content to pad) working unchanged.
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  sealed.shardOperations,
-                            custodyManifest:  sealed.custodyManifest,
-                            expectedShards:   sealed.expectedShards,
+                            shardOperations:  recipShardOps ?? sealed.shardOperations,
+                            custodyManifest:  recipManifest ?? sealed.custodyManifest,
+                            expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
                             vaultManager:     self.vaultManager

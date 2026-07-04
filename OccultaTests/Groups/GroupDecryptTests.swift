@@ -318,6 +318,61 @@ private struct DecryptPair {
     }
 }
 
+// MARK: - Per-recipient shard field de-padding
+//
+// ContactManager.openGroup strips tier padding off the caller's own
+// RecipientPayload right after opening it (filter kind != .unsupported for
+// shardOperations; truncate custodyManifest/expectedShards to their real-count
+// fields) before returning per-recipient shard fields to buildOwnedBasket. This
+// exercises that exact transformation directly against a RecipientPayload value
+// -- ContactManager.openGroup itself has no existing test harness (it requires a
+// full SwiftData + ContactManager fixture with a resolvable sender contact), so
+// the end-to-end path is verified manually alongside the UI wiring step instead.
+
+@Suite("RecipientPayload — shard field de-padding")
+@MainActor struct ShardDePaddingTests {
+
+    private func dePad(_ payload: OccultaBundle.RecipientPayload) -> (
+        ops: [OccultaBundle.ShardOperation]?, manifest: [UUID]?, expected: [UUID]?
+    ) {
+        let ops      = payload.shardOperations.filter { $0.kind != .unsupported }
+        let manifest = Array(payload.custodyManifest.prefix(payload.custodyManifestCount))
+        let expected = Array(payload.expectedShards.prefix(payload.expectedShardsCount))
+        return (ops.isEmpty ? nil : ops, manifest.isEmpty ? nil : manifest, expected.isEmpty ? nil : expected)
+    }
+
+    @Test func noRealContent_dePadsToNil() throws {
+        let payload = OccultaBundle.RecipientPayload(
+            sessionKey: Data(count: 32),
+            shardOperations: [.init(kind: .unsupported), .init(kind: .unsupported)],
+            custodyManifest: [UUID(), UUID()], custodyManifestCount: 0,
+            expectedShards:  [UUID(), UUID()], expectedShardsCount: 0
+        )
+        let (ops, manifest, expected) = self.dePad(payload)
+        #expect(ops == nil)
+        #expect(manifest == nil)
+        #expect(expected == nil)
+    }
+
+    @Test func realContentAmongFiller_dePadsToRealOnly() throws {
+        let realOp = OccultaBundle.ShardOperation(kind: .distribute)
+        let realManifestID = UUID()
+        let realExpectedID = UUID()
+
+        let payload = OccultaBundle.RecipientPayload(
+            sessionKey: Data(count: 32),
+            shardOperations: [realOp, .init(kind: .unsupported), .init(kind: .unsupported)],
+            custodyManifest: [realManifestID, UUID(), UUID()], custodyManifestCount: 1,
+            expectedShards:  [realExpectedID, UUID(), UUID()], expectedShardsCount: 1
+        )
+        let (ops, manifest, expected) = self.dePad(payload)
+        #expect(ops?.count == 1)
+        #expect(ops?.first?.kind == .distribute)
+        #expect(manifest == [realManifestID])
+        #expect(expected == [realExpectedID])
+    }
+}
+
 // MARK: - deriveInboundKey tests
 
 @Suite("deriveInboundKey")

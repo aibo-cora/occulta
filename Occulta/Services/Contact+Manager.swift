@@ -1081,8 +1081,11 @@ extension ContactManager {
     /// random session key bound to the group UUID.
     func encryptGroupBundle(basket: Basket, groupID: UUID) throws -> Data {
         guard let grp = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
+        
         let identifierList = grp.members(atDepth: self.security.currentDepth)
+        
         guard !identifierList.isEmpty else { throw Errors.groupHasNoMembers }
+        
         let predicate = #Predicate<Contact.Profile> {
             identifierList.contains($0.identifier) && $0.deletionToken == nil
         }
@@ -1094,18 +1097,25 @@ extension ContactManager {
         // group at the current security depth.
         let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
             .filter { self.security.isDisplayable($0) }
+        
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 
         var prekeyConsumed = false
+        
         let recipients: [GroupRecipient] = try members.map { contact in
             let (recipientMaterial, quantumMaterial) = try self.resolveKeyMaterial(for: contact)
+            
             try contact.configureForwardSecrecy()
+            
             var contactPrekey: Prekey? = nil
+            
             if let blob = try contact.popOldestPrekeyData() {
                 contactPrekey = try JSONDecoder().decode(Prekey.self, from: blob)
                 prekeyConsumed = true
             }
+            
             let pendingBatch = try contact.loadPendingBatch()
+            
             return GroupRecipient(
                 publicKey:       recipientMaterial,
                 quantumMaterial: quantumMaterial,
@@ -1425,7 +1435,21 @@ extension ContactManager {
     ///
     /// `ownerID`: pass the identifier already returned by `identifyOwner(of:)` to skip
     /// the O(contacts) fingerprint re-scan inside this method.
-    func openGroup(bundle: OccultaBundle, ownerID: String? = nil) throws -> (sealed: OccultaBundle.SealedPayload, ownerID: String, groupID: UUID) {
+    ///
+    /// The three `recipient*` return fields are this recipient's own shard-related
+    /// content, already stripped of the fixed-size tier padding `encryptGroupBundle`
+    /// applies to every recipient (real ops filtered by `kind != .unsupported`;
+    /// manifest/expected-shards truncated to their real-count fields) — same
+    /// nil-or-populated shape as `SealedPayload`'s own shard fields, so callers can
+    /// feed either into `ShardCustodyManager.handleInbound` interchangeably.
+    func openGroup(bundle: OccultaBundle, ownerID: String? = nil) throws -> (
+        sealed:                   OccultaBundle.SealedPayload,
+        ownerID:                  String,
+        groupID:                  UUID,
+        recipientShardOperations: [OccultaBundle.ShardOperation]?,
+        recipientCustodyManifest: [UUID]?,
+        recipientExpectedShards:  [UUID]?
+    ) {
         guard bundle.secrecy.mode == .group, let envelope = bundle.group else {
             throw OccultaBundle.BundleError.unsupportedMode
         }
@@ -1493,6 +1517,19 @@ extension ContactManager {
         try self.modelContext.save()
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
-        return (decoded, sender.identifier, groupID)
+
+        // ── 7. De-pad this recipient's shard content ──────────────────────
+        let recipOps      = recipientPayload.shardOperations.filter { $0.kind != .unsupported }
+        let recipManifest = Array(recipientPayload.custodyManifest.prefix(recipientPayload.custodyManifestCount))
+        let recipExpected = Array(recipientPayload.expectedShards.prefix(recipientPayload.expectedShardsCount))
+
+        return (
+            decoded,
+            sender.identifier,
+            groupID,
+            recipOps.isEmpty ? nil : recipOps,
+            recipManifest.isEmpty ? nil : recipManifest,
+            recipExpected.isEmpty ? nil : recipExpected
+        )
     }
 }
