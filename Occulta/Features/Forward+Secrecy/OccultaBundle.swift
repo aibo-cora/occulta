@@ -127,7 +127,7 @@ struct OccultaBundle: Codable {
             case .v3fs:             return "0.0.0"
             case .v4:               return "1.8.2"
             case .groupCapable:     return "1.9.0"
-            case .groupShardCapable: return "1.10.0"
+            case .groupShardCapable: return "1.9.1"
             default:                return nil
             }
         }
@@ -146,8 +146,16 @@ struct OccultaBundle: Codable {
         /// True when this contact's app version supports group bundles.
         var supportsGroups: Bool { self == .groupCapable || self == .groupShardCapable }
 
-        /// All real capability levels in descending order.
-        private static let known: [Version] = [.groupShardCapable, .groupCapable, .v4, .v3fs]
+        /// All real capability levels, descending — `max(forAppVersion:)` returns the
+        /// first entry whose `minimumAppVersion` the given app version satisfies, so
+        /// order matters: the highest tier a contact could possibly qualify for must
+        /// be checked first.
+        private static let known: [Version] = [
+            .groupShardCapable, // 1.9.1+  — per-recipient shard fields on RecipientPayload
+            .groupCapable,      // 1.9.0+  — can process group bundles (Mode.group)
+            .v4,                // 1.8.2+  — binary wire format (no base64 inflation)
+            .v3fs,              // 0.0.0+  — per-contact prekeys, floor/fallback tier
+        ]
 
         /// The highest capability level a contact running `appVersion` can handle.
         static func max(forAppVersion appVersion: String) -> Version {

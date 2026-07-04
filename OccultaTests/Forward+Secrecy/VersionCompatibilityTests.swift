@@ -36,16 +36,15 @@ struct VersionCapabilityTests {
     }
 
     @Test func max_groupCapableRange_returnsGroupCapable() {
+        // groupShardCapable's threshold is 1.9.1, immediately above groupCapable's
+        // 1.9.0 — so 1.9.0 is the only version in this range, not "any future version"
+        // the way it was before groupShardCapable existed.
         #expect(OccultaBundle.Version.max(forAppVersion: "1.9.0") == .groupCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "1.9.1") == .groupCapable)
-        // Below groupShardCapable's 1.10.0 threshold — the range's upper bound is now
-        // finite rather than "any future version", since groupShardCapable sits above it.
-        #expect(OccultaBundle.Version.max(forAppVersion: "1.9.9") == .groupCapable)
     }
 
     @Test func max_groupShardCapableRange_returnsGroupShardCapable() {
-        #expect(OccultaBundle.Version.max(forAppVersion: "1.10.0") == .groupShardCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "1.10.1") == .groupShardCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "1.9.1") == .groupShardCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "1.9.2") == .groupShardCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .groupShardCapable)
     }
 
