@@ -50,9 +50,11 @@ Verified `Contact.Profile.identifier` (`Contact+Model.swift:12`) is `UUID().uuid
 
 `expiredOn` (`Contact+Model.swift:257`) is currently the only invalidation mechanism, and it's rotation semantics: one key expires, a new one becomes active. Multi-device needs "kill device B's key, leave device A's key active" — a concurrently-active-keys model, not a rotation model. Not designed yet.
 
-### Q-02 · Pairing UX for "add another device to an existing contact"
+### Q-02 · Pairing UX for "add another device to an existing contact" — RESOLVED, see Design Session 3
 
-Unclear whether re-running UWB pairing with someone who already has a `Contact.Profile` should be detected as "this is contact X, add a device" vs. treated as a brand new contact. No dedupe-by-identity flow exists today to hook into.
+~~Unclear whether re-running UWB pairing with someone who already has a `Contact.Profile` should be detected as "this is contact X, add a device" vs. treated as a brand new contact. No dedupe-by-identity flow exists today to hook into.~~
+
+Resolved: no auto-detection. The user explicitly triggers "add a device" from Bob's existing `Contact.Profile` and performs a fresh physical UWB exchange, which attaches the new key to that profile as an additional device slot instead of creating a new contact. See D-07.
 
 ### Q-03 · Group cap interaction
 
@@ -98,3 +100,37 @@ Display call sites (fingerprint view, "last exchanged" label) currently show one
 ### Q-06 · `reset(identity:)` becomes a latent bug under multi-device if untouched (refines Q-01)
 
 As written, `reset(identity:)` does `contactPublicKeys?.last?.expiredOn = ...` — expires only the most-recently-added key. Once multiple devices are active concurrently, this would silently leave every other device's key live while appearing to have "reset" the contact. Needs to split into two explicit operations: revoke one device's key vs. revoke/forget the entire contact (all devices). This mostly resolves Q-01's revocation question — `expiredOn` was already a manual per-key kill switch, it just needs to be correctly scoped once there's more than one row to choose from.
+
+---
+
+## Design Session 3 — Device Discovery & Revocation Propagation (2026-07-05)
+
+Two mechanisms were proposed and rejected in discussion. Keeping the reasoning here so it isn't re-litigated later.
+
+### Rejected: self-vouching device certs
+
+**Proposal:** Bob's own devices pair with each other and jointly produce a signed roster cert listing all of Bob's device public keys. The cert rides piggyback on outbound bundles (like `prekeyBatch`, D-04). Alice's app ingests it and starts encrypting to every device it lists, without physically pairing with each one herself.
+
+**Why rejected:** this requires Alice to trust a new device on the strength of another device's signature vouching for it — trust extended without Alice ever having been physically present for that device's key exchange. That's a direct exception to Occulta's core invariant since Act 1: physical proximity is the *only* key distribution mechanism. The user's concern, stated directly: people will be afraid to trust any key they weren't physically present to exchange, even from an already-trusted contact. Standing principle going forward (saved to memory as `no-self-vouching-device-trust`): **any mechanism that grants trust to a new key must be a fresh physical UWB exchange.** A device signing its own revocation (or an already-trusted device revoking another of its own devices) is fine and doesn't violate this — revocation only narrows trust, it never grants it to something unverified.
+
+Secondary reasons this would have been costly even setting the principle aside: SE identity keys aren't exportable across a contact's own devices, so there's no single "Bob" signing key to anchor a roster cert to in the first place — the cert would have had to be signed by whichever specific device Alice already trusts, vouching for a new one, which is exactly the trust-extension the user rejected.
+
+### Rejected: mesh/gossip revocation propagation
+
+**Proposal:** when Bob revokes a device, he tells one contact (Alice); Alice then relays the revocation to her own contacts, so it propagates transitively through the social graph faster than Bob messaging everyone directly.
+
+**Why rejected:**
+- For Alice to relay *only* to contacts who also know Bob, her app needs to determine "does Carol also have Bob as a contact" — there's no server or shared namespace to check this against, so it requires either a contact-list correlation mechanism (a privacy leak in itself) or blind broadcast to every contact regardless of whether they know Bob (which leaks unrelated third-party metadata into every conversation Alice has).
+- It spreads risk across the graph: a duress search of Alice's device would surface revocation history for people Alice never directly exchanged keys with, exposing structure of Bob's device management through a contact who was only ever a courier.
+- The actual speed benefit over direct broadcast is marginal — it only matters if Bob has no working device left to broadcast from at all, at which point a verbal "my phone was stolen" to his contacts achieves the same thing without any of the above risk.
+
+**Resolution:** revocation propagates by direct, immediate broadcast — the moment a device is revoked, a signed self-revocation (from the revoked device itself, or from another of Bob's already-trusted devices) is sent directly to every one of Bob's contacts, with no relay hop. This is a self-contained, independently verifiable artifact for each recipient (each contact checks it against a device key they already trust for Bob) and requires no gossip infrastructure.
+
+### D-07 · Resolved device-add flow
+
+Adding a device is a user-initiated action, not an automatic detection:
+1. From Bob's existing `Contact.Profile`, the user explicitly starts "add a device."
+2. A fresh UWB physical exchange runs, identical to first-contact pairing.
+3. The resulting key attaches to Bob's existing `Contact.Profile` as a new device slot (new `deviceID`, per D-03), instead of creating a new contact.
+
+No cert, no vouching, no auto-detection needed — this fully resolves Q-02. Revocation of any one device slot is a direct, immediately-broadcast, signed self-revocation per the resolution above, refining Q-01/Q-06 further: `reset(identity:)` needs a per-device revoke path that also triggers this broadcast, separate from "forget contact entirely."

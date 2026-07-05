@@ -179,6 +179,8 @@ These are architectural gaps and logical extensions identified from the trajecto
 
 **Prerequisite:** Group messaging (v1.9.0) for the envelope format. Needs its own design pass on key-rotation semantics (concurrent active keys) and per-device revocation before implementation — raised 2026-07-01, not yet scoped. Design findings so far: [Multi-Device Contacts/FINDINGS.md](Multi-Device%20Contacts/FINDINGS.md).
 
+**Strategic roadmap:** [Multi-Device Contacts/ROADMAP.md](Multi-Device%20Contacts/ROADMAP.md) — Device-Bound, Recoverable Through People. A three-year feature arc extending to guardian-based revocation and optional passkey provider, with five releases (R0–R5), constraint analysis, trade-off reasoning, and the honest case against passkeys. Recommends shipping R1 and R2 (Owner Device Set + Guardian Revocation) and deferring R3–R4 (Passkey Provider) until retention data justifies the additional surface area.
+
 ---
 
 ## The Bigger Pattern
