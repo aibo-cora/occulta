@@ -2414,3 +2414,70 @@ N-depth-aware storage (`sealedDuressVerifiers[N]`, `coercerBaseDepth`, per-conta
 prior mention of groups — so this interaction was never analyzed.
 
 Given the negligible magnitude, this is low priority and can be deferred.
+
+---
+
+## Bug 74 — Eager `deeperMemberSlots` migration caused launch crash/freeze; reverted to lazy-only
+
+**Status:** Closed (Reverted) — v1.9.1 shipped with the eager migration; a follow-up patch removes it.
+
+**Target:** v1.9.2 (or next patch)
+
+### Severity: High (crash), for affected users
+
+### What happened
+
+Bug 73's fix (depth-indexed group membership, `deeperMemberSlots` for duress depths 2+) included
+an eager migration (`OccultaApp.migrateGroupDeeperSlots()`) that swept every stored `Group` at
+launch and called `refreshCiphertext()` on each — re-encrypting all 32 depths x 32 slots per
+group — so that a group nobody edits after upgrading wouldn't keep a distinguishable (unpadded)
+row shape indefinitely (see the "Multi-Layer Membership" forensic note this was meant to close).
+
+In production, this caused a real crash for any user with existing groups: `Manager.Crypto`'s
+`.encrypt()`/`.decrypt()` re-derive the local DB key from scratch on every single call (multiple
+Secure Enclave + Keychain round trips each, no caching — see `Key+Manager.swift:432`
+`createHybridLocalEncryptionKey()`), and doing this for up to 1024 slots per group, synchronously
+inside `OccultaApp.init()` (before the first frame is presented), exhausted iOS's ~20s
+process-launch watchdog budget:
+
+```
+Termination Reason: FRONTBOARD ... 0x8BADF00D "process-launch watchdog transgression:
+... exhausted real (wall clock) time allowance of 20.00 seconds"
+```
+
+Confirmed via a real device crash log, stack sitting in `migrateGroupDeeperSlots ->
+Group.refreshCiphertext -> Data.decrypt -> SecItemCopyMatching`, blocked on `securityd` IPC.
+
+### Fix attempts before reverting
+
+1. Moved the migration out of `init()` into a `.task` on the root view, gated behind a
+   one-time-completion `UserDefaults` flag. This stopped the crash but not a ~15s UI freeze right
+   after launch, because SwiftUI runs a plain `.task { }` closure on the calling view's actor
+   (main) — so the work was still on the main thread, just after first frame instead of before it.
+2. Moved to a genuinely backgrounded `Task.detached`, with its own dedicated `ModelContext` (to
+   avoid racing `ContactManager`'s shared context, which the UI also uses on the main thread).
+   This still didn't fix the freeze: the Secure Enclave is a single physical resource. Regardless
+   of which thread issues the requests, the migration's flood of SE/Keychain round trips queues up
+   behind (or ahead of) the main thread's own decrypt calls (e.g. rendering the contact list),
+   which need the same hardware. Threading the caller doesn't parallelize the chip.
+
+### Decision
+
+Reverted the eager migration entirely. `Group+Model.swift`'s actual Bug 73 fix (depth-indexed
+storage, `ensureDeeperSlotsPadded()` running lazily on a group's first post-upgrade edit) is
+unaffected and stays as the sole mechanism — this is the same lazy-only behavior the codebase
+already used successfully for the analogous `AppLayerConfig.ensurePadded()` case.
+
+The residual forensic gap (a pre-1.9.1 group nobody edits after upgrading keeps an empty,
+distinguishable `deeperMemberSlots` until its first edit) is accepted for now: group messaging
+only shipped in v1.9.0, one release prior, so very few users have groups at all yet, and fewer
+still have groups that both predate 1.9.1 and go untouched afterward. Considered not worth a
+launch-time performance/stability risk to close immediately.
+
+### Revisit later if
+
+- Group adoption grows enough that the residual gap's exposed population becomes meaningful.
+- A cheap way to close it is found that doesn't require touching every group's full ciphertext
+  eagerly — e.g. a lighter migration that only touches groups actually missing padding (accepting
+  the narrower "which specific groups changed" tell that the full-touch design was avoiding), or
+  spreading the sweep across many launches instead of one.

@@ -282,9 +282,16 @@ final class Group {
     /// by a migration, not edited by the user." Always going through
     /// `reencryptAllDepths` (via `refreshCiphertext()`, `purgeMembersFromDuressDepths(_:)`,
     /// or `setMembers`) keeps every depth's ciphertext changing together, so a padding-only
-    /// touch is indistinguishable from a real edit. See `OccultaApp.migrateGroupDeeperSlots()`
-    /// for the eager, launch-time counterpart to this lazy path — it calls
-    /// `refreshCiphertext()` on every group, not this method directly.
+    /// touch is indistinguishable from a real edit.
+    ///
+    /// An eager, launch-time version of this (sweeping every stored group up front,
+    /// rather than waiting for each group's own first edit) was tried and reverted —
+    /// see `Docs/Features/Secure Mode/bugs.md`. It caused real device crashes/launch
+    /// freezes from the sheer number of Keychain-backed crypto round trips needed to
+    /// touch every depth of every group at once. Given how few users have groups at
+    /// all yet, the residual forensic gap this lazy-only path leaves (a group nobody
+    /// edits after upgrading keeps a distinguishable row shape until its first edit)
+    /// was judged an acceptable trade for now.
     private func ensureDeeperSlotsPadded() throws {
         while self.deeperMemberSlots.count < Self.depthCount - 2 {
             self.deeperMemberSlots.append(try Self.freshFillerArray())
