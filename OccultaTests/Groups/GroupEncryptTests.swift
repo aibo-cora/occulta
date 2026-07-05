@@ -173,6 +173,63 @@ private struct Pair {
         let recipientPayload = try pair.openFallback(entry: bundle.group!.recipients[0], blind: bundle.group!.blind)
         #expect(recipientPayload.prekeyBatch?.prekeys.count == 1)
     }
+
+    @Test func shardFields_emptyByDefault_survivesRoundTrip() throws {
+        let pair = try Pair()
+        let groupID = UUID()
+        let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.seal(message: Data("hi".utf8), groupID: groupID, recipients: [r])
+
+        let recipientPayload = try pair.openFallback(entry: bundle.group!.recipients[0], blind: bundle.group!.blind)
+        #expect(recipientPayload.shardOperations.isEmpty)
+        #expect(recipientPayload.custodyManifest.isEmpty)
+        #expect(recipientPayload.custodyManifestCount == 0)
+        #expect(recipientPayload.expectedShards.isEmpty)
+        #expect(recipientPayload.expectedShardsCount == 0)
+    }
+
+    @Test func shardFields_present_survivesRoundTrip() throws {
+        let pair = try Pair()
+        let groupID = UUID()
+        let manifestID = UUID()
+        let expectedID = UUID()
+        let op = OccultaBundle.ShardOperation(kind: .distribute)
+        let r = GroupRecipient(
+            publicKey:            pair.recipientPub,
+            quantumMaterial:      nil,
+            contactPrekey:        nil,
+            pendingBatch:         nil,
+            shardOperations:      [op],
+            custodyManifest:      [manifestID],
+            custodyManifestCount: 1,
+            expectedShards:       [expectedID],
+            expectedShardsCount:  1
+        )
+        let bundle = try pair.senderCrypto.seal(message: Data("hi".utf8), groupID: groupID, recipients: [r])
+
+        let recipientPayload = try pair.openFallback(entry: bundle.group!.recipients[0], blind: bundle.group!.blind)
+        #expect(recipientPayload.shardOperations.count == 1)
+        #expect(recipientPayload.shardOperations.first?.kind == .distribute)
+        #expect(recipientPayload.custodyManifest == [manifestID])
+        #expect(recipientPayload.custodyManifestCount == 1)
+        #expect(recipientPayload.expectedShards == [expectedID])
+        #expect(recipientPayload.expectedShardsCount == 1)
+    }
+
+    @Test func oldFormatPayload_missingShardKeys_decodesWithEmptyDefaults() throws {
+        // Simulates a RecipientPayload JSON blob from a pre-groupShardCapable
+        // sender — no shardOperations/custodyManifest/expectedShards keys at all.
+        let json = """
+        {"sessionKey":"aGVsbG8="}
+        """
+        let data = try #require(json.data(using: .utf8))
+        let payload = try JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: data)
+        #expect(payload.shardOperations.isEmpty)
+        #expect(payload.custodyManifest.isEmpty)
+        #expect(payload.custodyManifestCount == 0)
+        #expect(payload.expectedShards.isEmpty)
+        #expect(payload.expectedShardsCount == 0)
+    }
 }
 
 // MARK: - FS path round-trip

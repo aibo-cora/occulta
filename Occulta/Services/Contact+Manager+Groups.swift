@@ -48,18 +48,18 @@ extension ContactManager {
 
     // MARK: Members
 
-    func addGroupMember(_ memberIdentifier: String, toGroupID groupID: UUID, in layer: RoutingDepth) throws {
+    func addGroupMember(_ memberIdentifier: String, toGroupID groupID: UUID, atDepth depth: Int) throws {
         guard let group = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
-        
-        try group.addMember(memberIdentifier, in: layer)
+
+        try group.addMember(memberIdentifier, atDepth: depth)
         try self.modelContext.save()
     }
 
-    func removeGroupMember(_ memberIdentifier: String, fromGroupID groupID: UUID, in layer: RoutingDepth) throws {
+    func removeGroupMember(_ memberIdentifier: String, fromGroupID groupID: UUID, atDepth depth: Int) throws {
         guard let group = try self.group(withID: groupID) else { throw Errors.groupIDMissing }
-        
-        try group.removeMember(memberIdentifier, in: layer)
-        
+
+        try group.removeMember(memberIdentifier, atDepth: depth)
+
         try self.modelContext.save()
     }
 
@@ -94,5 +94,15 @@ extension ContactManager {
 
     func group(withID id: UUID) throws -> Group? {
         try self.modelContext.fetch(FetchDescriptor<Group>()).first { $0.readID() == id }
+    }
+
+    /// Applies `operation` to every stored group, then saves once. Used by classification
+    /// and deletion cleanup, which must touch every group uniformly — see
+    /// `Group.purgeMembersFromDuressDepths(_:)`, `Group.refreshCiphertext()`, and `Group.purgeMember(_:)`.
+    func forEachGroup(_ operation: (Group) throws -> Void) throws {
+        for group in try self.modelContext.fetch(FetchDescriptor<Group>()) {
+            try operation(group)
+        }
+        try self.modelContext.save()
     }
 }

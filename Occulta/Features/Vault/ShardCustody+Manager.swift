@@ -41,24 +41,33 @@ final class ShardCustodyManager {
 
     // MARK: - Inbound dispatch
 
-    /// Route decoded SealedPayload fields to per-role handlers.
+    /// Route real (already de-padded, if applicable) shard-protocol fields to
+    /// per-role handlers.
+    ///
+    /// Takes the three fields explicitly rather than a whole `SealedPayload` so a
+    /// group-bundle caller can pass per-recipient fields (already stripped of tier
+    /// padding by `ContactManager.openGroup`) through the same path a 1:1 caller
+    /// uses with a `SealedPayload`'s own fields — this method has no notion of
+    /// padding at all.
     ///
     /// Returns `true` when any shard-protocol field was present — caller must not
     /// render the bundle as a regular message basket.
     @discardableResult
     func handleInbound(
-        sealed:           OccultaBundle.SealedPayload,
+        shardOperations:  [OccultaBundle.ShardOperation]?,
+        custodyManifest:  [UUID]?,
+        expectedShards:   [UUID]?,
         senderPublicKey:  Data,
         senderIdentifier: String,
         vaultManager:     VaultManager
     ) -> Bool {
-        let hasOps      = (sealed.shardOperations?.isEmpty == false)
-        let hasManifest = sealed.custodyManifest != nil
-        let hasExpected = sealed.expectedShards  != nil
-        
+        let hasOps      = (shardOperations?.isEmpty == false)
+        let hasManifest = custodyManifest != nil
+        let hasExpected = expectedShards  != nil
+
         guard hasOps || hasManifest || hasExpected else { return false }
 
-        for op in sealed.shardOperations ?? [] {
+        for op in shardOperations ?? [] {
             do {
                 switch op.kind {
                 case .distribute:
@@ -77,7 +86,7 @@ final class ShardCustodyManager {
             }
         }
 
-        if let manifest = sealed.custodyManifest {
+        if let manifest = custodyManifest {
             do { try self.processInboundManifest(manifest, from: senderIdentifier, vaultManager: vaultManager) }
             catch {
                 #if DEBUG
@@ -85,7 +94,7 @@ final class ShardCustodyManager {
                 #endif
             }
         }
-        if let expected = sealed.expectedShards {
+        if let expected = expectedShards {
             do { try self.processExpectedShards(expected, from: senderIdentifier, senderPublicKey: senderPublicKey) }
             catch {
                 #if DEBUG

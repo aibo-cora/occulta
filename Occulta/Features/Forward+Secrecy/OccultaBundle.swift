@@ -105,6 +105,14 @@ struct OccultaBundle: Codable {
         /// Group bundles are JSON-encoded with `version: .v4`; this case exists solely so
         /// `resolveTargetVersion` can signal group eligibility to the caller.
         case groupCapable
+        /// Capability watermark: contact's build understands the per-recipient shard
+        /// distribution fields on `RecipientPayload` (shardOperations / custodyManifest /
+        /// expectedShards). Never written to the wire `version` field — stored only in
+        /// `Contact.Profile.maxBundleVersion` as byte 0x06. Group bundles carrying
+        /// per-recipient shard content still wire-encode with `version: .v4`; this case
+        /// exists solely so `resolveTargetVersion` can signal shard-distribution
+        /// eligibility to the caller.
+        case groupShardCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -116,10 +124,11 @@ struct OccultaBundle: Codable {
         /// `nil` means the case is not a real wire format (legacy, unsupported).
         var minimumAppVersion: String? {
             switch self {
-            case .v3fs:        return "0.0.0"
-            case .v4:          return "1.8.2"
-            case .groupCapable: return "1.9.0"
-            default:           return nil
+            case .v3fs:             return "0.0.0"
+            case .v4:               return "1.8.2"
+            case .groupCapable:     return "1.9.0"
+            case .groupShardCapable: return "1.9.1"
+            default:                return nil
             }
         }
 
@@ -127,17 +136,26 @@ struct OccultaBundle: Codable {
         /// `nil` for cases that are JSON-only or not real wire formats.
         var wireByte: UInt8? {
             switch self {
-            case .v4:           return 0x04
-            case .groupCapable: return 0x05
-            default:            return nil
+            case .v4:                return 0x04
+            case .groupCapable:      return 0x05
+            case .groupShardCapable: return 0x06
+            default:                 return nil
             }
         }
 
         /// True when this contact's app version supports group bundles.
-        var supportsGroups: Bool { self == .groupCapable }
+        var supportsGroups: Bool { self == .groupCapable || self == .groupShardCapable }
 
-        /// All real capability levels in descending order.
-        private static let known: [Version] = [.groupCapable, .v4, .v3fs]
+        /// All real capability levels, descending — `max(forAppVersion:)` returns the
+        /// first entry whose `minimumAppVersion` the given app version satisfies, so
+        /// order matters: the highest tier a contact could possibly qualify for must
+        /// be checked first.
+        private static let known: [Version] = [
+            .groupShardCapable, // 1.9.1+  — per-recipient shard fields on RecipientPayload
+            .groupCapable,      // 1.9.0+  — can process group bundles (Mode.group)
+            .v4,                // 1.8.2+  — binary wire format (no base64 inflation)
+            .v3fs,              // 0.0.0+  — per-contact prekeys, floor/fallback tier
+        ]
 
         /// The highest capability level a contact running `appVersion` can handle.
         static func max(forAppVersion appVersion: String) -> Version {
@@ -494,6 +512,16 @@ struct OccultaBundle: Codable {
 
     /// Plaintext sealed inside each `Recipient.wrappedPayload`.
     /// Only the intended recipient can derive `wrappingKey` to open it.
+    ///
+    /// The five shard-related fields are always populated by a `.groupShardCapable`
+    /// sender, padded to a fixed per-bundle tier (`ShardPadding.tier(for:)`) so every
+    /// recipient's encoded payload is the same length regardless of whether they
+    /// carry real shard content — otherwise ciphertext length alone would reveal
+    /// which group member is an SSS trustee (`GroupEnvelope`/`wrappedPayload` travel
+    /// as a cleartext JSON TLV block; see `WireHandle.encode(_:)`). Filler
+    /// `shardOperations` entries carry `kind == .unsupported` (already ignored by
+    /// `ShardCustodyManager.handleInbound`'s dispatch); filler `custodyManifest`/
+    /// `expectedShards` entries are random UUIDs beyond the real count fields.
     nonisolated
     struct RecipientPayload: Codable {
         /// 32-byte random session key that decrypts the shared outer ciphertext.
@@ -502,6 +530,77 @@ struct OccultaBundle: Codable {
         /// and the forward-secret path was used. Mirrors the single-recipient
         /// replenishment logic — same threshold, same `PrekeySyncBatch` type.
         let prekeyBatch: SealedPayload.PrekeySyncBatch?
+        /// Fixed-size (tier-padded), always present. Real ops first; entries beyond
+        /// the real count carry `kind == .unsupported` filler.
+        let shardOperations: [ShardOperation]
+        /// Fixed-size (tier-padded), always present. Only the first
+        /// `custodyManifestCount` entries are real shard IDs.
+        let custodyManifest: [UUID]
+        let custodyManifestCount: Int
+        /// Fixed-size (tier-padded), always present. Only the first
+        /// `expectedShardsCount` entries are real shard IDs.
+        let expectedShards: [UUID]
+        let expectedShardsCount: Int
+        /// Whether the sender actually attempted to build `custodyManifest` and
+        /// `expectedShards` for this recipient — always both together, never one
+        /// without the other (see `ContactManager.encryptGroupBundle`).
+        ///
+        /// Needed because `custodyManifestCount`/`expectedShardsCount == 0` is
+        /// genuinely ambiguous on its own: it means either "sender attempted this
+        /// and found nothing" (a real, meaningful signal — e.g. "I hold zero of
+        /// your shards", or an intentional revoke-all) or "sender never attempted
+        /// this at all" (ineligible member, or a locked vault at send time — no
+        /// signal was intended). Those two cases must be told apart: a real empty
+        /// list has to reach `ShardCustodyManager.processInboundManifest`/
+        /// `processExpectedShards` (the receive side reads a `nil` array as "skip
+        /// verification" and a real, possibly-empty array as "process it" — see
+        /// `ContactManager.openGroup`), while a not-attempted list must not.
+        /// Without this flag both cases decode to the same `count == 0`, so the
+        /// receiver would silently skip real revoke-all/loss-detection signals
+        /// exactly as often as it correctly skips irrelevant ones.
+        let shardMetadataAttempted: Bool
+
+        init(
+            sessionKey: Data,
+            prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
+            shardOperations: [ShardOperation] = [],
+            custodyManifest: [UUID] = [],
+            custodyManifestCount: Int = 0,
+            expectedShards: [UUID] = [],
+            expectedShardsCount: Int = 0,
+            shardMetadataAttempted: Bool = false
+        ) {
+            self.sessionKey             = sessionKey
+            self.prekeyBatch            = prekeyBatch
+            self.shardOperations        = shardOperations
+            self.custodyManifest        = custodyManifest
+            self.custodyManifestCount   = custodyManifestCount
+            self.expectedShards         = expectedShards
+            self.expectedShardsCount    = expectedShardsCount
+            self.shardMetadataAttempted = shardMetadataAttempted
+        }
+
+        // Custom decoding: a payload from a pre-groupShardCapable sender simply
+        // won't have these keys at all. decodeIfPresent + defaults (rather than
+        // synthesized Decodable, which would treat a non-Optional array as
+        // required and throw) keeps decoding old-format payloads working.
+        // shardMetadataAttempted defaults to false for the same reason — a sender
+        // old enough not to know about it never attempted anything.
+        enum CodingKeys: String, CodingKey {
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount, shardMetadataAttempted
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.sessionKey             = try c.decode(Data.self, forKey: .sessionKey)
+            self.prekeyBatch            = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
+            self.shardOperations        = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
+            self.custodyManifest        = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
+            self.custodyManifestCount   = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
+            self.expectedShards         = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
+            self.expectedShardsCount    = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
+            self.shardMetadataAttempted = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
+        }
     }
 
     // MARK: - Fields
@@ -548,7 +647,7 @@ struct OccultaBundle: Codable {
 
     func encoded(version: Version = .v3fs) throws -> Data {
         switch version {
-        case .v4, .groupCapable:
+        case .v4, .groupCapable, .groupShardCapable:
             return try WireHandle.encode(self)
         default:
             return try JSONEncoder().encode(self)
@@ -604,6 +703,31 @@ struct OccultaBundle: Codable {
         case .group:             return "Group Encrypted"
         case .unsupported:       return "Unsupported"
         }
+    }
+}
+
+// MARK: - ShardPadding
+
+/// Fixed-size tiering for `RecipientPayload`'s shard-related arrays.
+///
+/// A group recipient's ciphertext length must not reveal whether they carry real
+/// shard content, since `GroupEnvelope`/`Recipient.wrappedPayload` travel as a
+/// cleartext JSON TLV block (see `WireHandle.encode(_:)`) — anyone holding the
+/// bundle can measure per-recipient byte lengths without decrypting anything.
+/// `ContactManager.encryptGroupBundle` pads every recipient's shard arrays up to
+/// the same tier for a given send, computed from the real maximum across all
+/// recipients in that send.
+enum ShardPadding {
+    /// Smallest doubling tier (2, 4, 8, 16, ...) that fits `count`. No upper bound —
+    /// tiers grow to fit whatever the real maximum is for this specific send, so
+    /// there is no reject/truncate path. Tradeoff: bundle size correlates with real
+    /// content amount at tier granularity (coarser than exact size, far coarser than
+    /// per-recipient distinguishability) across bundles observed over time — an
+    /// accepted residual, not the leak this scheme closes.
+    static func tier(for count: Int) -> Int {
+        var t = 2
+        while t < count { t *= 2 }
+        return t
     }
 }
 

@@ -45,7 +45,7 @@ private struct DecryptPair {
         let pair = try DecryptPair()
         let (bundle, _) = try pair.sealBundle()
         let senderPub = try pair.senderKM.retrieveIdentity()
-        let (payload, _) = try pair.recipientCrypto.findAndOpenRecipientSlot(
+        let (payload, _, _) = try pair.recipientCrypto.findAndOpenRecipientSlot(
             in: bundle,
             blind: bundle.group!.blind,
             senderContactID: "sender",
@@ -90,6 +90,37 @@ private struct DecryptPair {
         }
     }
 
+    // Regression: an envelope claiming more recipients than Group.slotCount allows must
+    // be rejected before any trial-decryption work runs. No legitimately-created group
+    // can exceed this cap, so a larger count means a malformed or maliciously crafted
+    // bundle designed to force expensive per-entry ECDH work on the receiving device.
+    @Test func tooManyRecipients_throwsBeforeTrialDecrypting() throws {
+        let senderKM  = TestKeyManager()
+        let crypto    = Manager.Crypto(keyManager: senderKM)
+        let senderPub = try senderKM.retrieveIdentity()
+
+        let recipients = try (0...Group.slotCount).map { _ -> GroupRecipient in
+            GroupRecipient(
+                publicKey: try TestKeyManager().retrieveIdentity(),
+                quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil
+            )
+        }
+        #expect(recipients.count == Group.slotCount + 1)
+
+        let bundle = try crypto.seal(message: Data("flood".utf8), groupID: UUID(), recipients: recipients)
+
+        #expect(throws: GroupDecryptError.tooManyRecipients) {
+            try Manager.Crypto(keyManager: TestKeyManager()).findAndOpenRecipientSlot(
+                in: bundle,
+                blind: bundle.group!.blind,
+                senderContactID: "sender",
+                senderPublicKey: senderPub,
+                quantumMaterial: nil,
+                prekeyManager: Manager.PrekeyManager()
+            )
+        }
+    }
+
     @Test func multipleRecipients_findsCorrectSlot() throws {
         let senderKM  = TestKeyManager()
         let crypto    = Manager.Crypto(keyManager: senderKM)
@@ -106,7 +137,7 @@ private struct DecryptPair {
                 GroupRecipient(publicKey: targetPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil),
             ]
         )
-        let (payload, _) = try Manager.Crypto(keyManager: target).findAndOpenRecipientSlot(
+        let (payload, _, _) = try Manager.Crypto(keyManager: target).findAndOpenRecipientSlot(
             in: bundle,
             blind: bundle.group!.blind,
             senderContactID: "sender",
@@ -284,6 +315,61 @@ private struct DecryptPair {
         let sealedB = try openSealed(bundleB, senderKM: senderBKM)
 
         #expect(sealedA.senderProof != sealedB.senderProof)
+    }
+}
+
+// MARK: - Per-recipient shard field de-padding
+//
+// ContactManager.openGroup strips tier padding off the caller's own
+// RecipientPayload right after opening it (filter kind != .unsupported for
+// shardOperations; truncate custodyManifest/expectedShards to their real-count
+// fields) before returning per-recipient shard fields to buildOwnedBasket. This
+// exercises that exact transformation directly against a RecipientPayload value
+// -- ContactManager.openGroup itself has no existing test harness (it requires a
+// full SwiftData + ContactManager fixture with a resolvable sender contact), so
+// the end-to-end path is verified manually alongside the UI wiring step instead.
+
+@Suite("RecipientPayload — shard field de-padding")
+@MainActor struct ShardDePaddingTests {
+
+    private func dePad(_ payload: OccultaBundle.RecipientPayload) -> (
+        ops: [OccultaBundle.ShardOperation]?, manifest: [UUID]?, expected: [UUID]?
+    ) {
+        let ops      = payload.shardOperations.filter { $0.kind != .unsupported }
+        let manifest = Array(payload.custodyManifest.prefix(payload.custodyManifestCount))
+        let expected = Array(payload.expectedShards.prefix(payload.expectedShardsCount))
+        return (ops.isEmpty ? nil : ops, manifest.isEmpty ? nil : manifest, expected.isEmpty ? nil : expected)
+    }
+
+    @Test func noRealContent_dePadsToNil() throws {
+        let payload = OccultaBundle.RecipientPayload(
+            sessionKey: Data(count: 32),
+            shardOperations: [.init(kind: .unsupported), .init(kind: .unsupported)],
+            custodyManifest: [UUID(), UUID()], custodyManifestCount: 0,
+            expectedShards:  [UUID(), UUID()], expectedShardsCount: 0
+        )
+        let (ops, manifest, expected) = self.dePad(payload)
+        #expect(ops == nil)
+        #expect(manifest == nil)
+        #expect(expected == nil)
+    }
+
+    @Test func realContentAmongFiller_dePadsToRealOnly() throws {
+        let realOp = OccultaBundle.ShardOperation(kind: .distribute)
+        let realManifestID = UUID()
+        let realExpectedID = UUID()
+
+        let payload = OccultaBundle.RecipientPayload(
+            sessionKey: Data(count: 32),
+            shardOperations: [realOp, .init(kind: .unsupported), .init(kind: .unsupported)],
+            custodyManifest: [realManifestID, UUID(), UUID()], custodyManifestCount: 1,
+            expectedShards:  [realExpectedID, UUID(), UUID()], expectedShardsCount: 1
+        )
+        let (ops, manifest, expected) = self.dePad(payload)
+        #expect(ops?.count == 1)
+        #expect(ops?.first?.kind == .distribute)
+        #expect(manifest == [realManifestID])
+        #expect(expected == [realExpectedID])
     }
 }
 

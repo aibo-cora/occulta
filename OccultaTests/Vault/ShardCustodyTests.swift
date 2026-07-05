@@ -83,11 +83,6 @@ private func makeShardAttr(
 }
 
 @MainActor
-private func sealedOp(_ op: OccultaBundle.ShardOperation) -> OccultaBundle.SealedPayload {
-    OccultaBundle.SealedPayload(message: Data(), shardOperations: [op])
-}
-
-@MainActor
 private func custodyShardCount(in container: ModelContainer) throws -> Int {
     let ctx = ModelContext(container)
     return try ctx.fetch(FetchDescriptor<CustodyShard>()).count
@@ -177,7 +172,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let alicePub = try alice.retrieveIdentity()
 
         _ = custody.handleInbound(
-            sealed:           sealedOp(op),
+            shardOperations:  [op],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -198,7 +195,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Verifying against the imposter's public key MUST fail and skip insert.
         let imposterPub = try imposter.retrieveIdentity()
         _ = custody.handleInbound(
-            sealed:           sealedOp(op),
+            shardOperations:  [op],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  imposterPub,
             senderIdentifier: "imposter",
             vaultManager:     try makeAlice().vault
@@ -217,7 +216,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // First distribution.
         let oldAttr = try makeShardAttr(signer: alice, entryID: entryID, shardBytes: Data([0x01, 0x02]))
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .distribute, attribute: oldAttr)),
+            shardOperations:  [.init(kind: .distribute, attribute: oldAttr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -227,7 +228,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Re-distribution — .replace supersedes oldAttr.
         let newAttr = try makeShardAttr(signer: alice, entryID: entryID, shardBytes: Data([0x09, 0x0A]))
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)),
+            shardOperations:  [.init(kind: .replace, attribute: newAttr, attributeID: oldAttr.id)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     try makeAlice().vault
@@ -252,7 +255,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 
         let attr = try makeShardAttr(signer: alice)
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .distribute, attribute: attr)),
+            shardOperations:  [.init(kind: .distribute, attribute: attr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     aliceVault
@@ -273,7 +278,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 
         let attr = try makeShardAttr(signer: alice)
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .distribute, attribute: attr)),
+            shardOperations:  [.init(kind: .distribute, attribute: attr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     aliceVault
@@ -296,7 +303,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 
         let attr = try makeShardAttr(signer: alice)
         _ = custody.handleInbound(
-            sealed:           sealedOp(.init(kind: .distribute, attribute: attr)),
+            shardOperations:  [.init(kind: .distribute, attribute: attr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
             vaultManager:     aliceVault
