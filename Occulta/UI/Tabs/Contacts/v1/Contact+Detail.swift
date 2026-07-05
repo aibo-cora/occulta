@@ -99,7 +99,7 @@ extension Contact {
             self.identifier = identifier
             let predicate = #Predicate<Contact.Profile> { $0.identifier == identifier }
             self._contacts = Query(filter: predicate)
-            self._composeVM = State(initialValue: ComposeViewModel(identifier: identifier))
+            self._composeVM = State(initialValue: ComposeViewModel(recipient: .contact(identifier)))
         }
 
         var body: some View {

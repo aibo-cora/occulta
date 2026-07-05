@@ -50,13 +50,6 @@ extension Group {
             return false
         }
 
-        private var layer: RoutingDepth? {
-            switch self.security.currentDepth {
-            case 0:          return .normal
-            case let d where d > 0: return .duress
-            default:         return nil
-            }
-        }
 
         private var ineligibleHeader: String {
             let hasUnknown = self.ineligible.contains { $0.maxBundleVersion == nil }
@@ -68,14 +61,26 @@ extension Group {
             return "Version unknown — ask them to send you a message."
         }
 
+        // selectedIdentifiers includes hidden/sensitive members' identifiers (seeded from
+        // the group's raw per-depth member list), so this true total is what must gate
+        // capacity — a hidden member still occupies a real slot.
         private var atCapacity: Bool {
             self.selectedIdentifiers.count >= Group.slotCount
         }
 
+        // Displayed count intentionally excludes hidden members, matching GroupDetailV3's
+        // member count for the same group. Using the raw selectedIdentifiers.count here
+        // would print e.g. "30 / 32" while only 25 rows are visible/checkable — a countable
+        // mismatch, and one that would disagree with the detail screen's "25 members" for
+        // the identical group and depth. Both are concrete, calculable forensic tells.
+        private var visibleSelectedCount: Int {
+            self.eligible.filter { self.selectedIdentifiers.contains($0.identifier) }.count
+        }
+
         private var membersHeader: String {
-            self.selectedIdentifiers.isEmpty
+            self.visibleSelectedCount == 0
                 ? "Members"
-                : "Members · \(self.selectedIdentifiers.count) / \(Group.slotCount)"
+                : "Members · \(self.visibleSelectedCount) / \(Group.slotCount)"
         }
 
         private var canSave: Bool {
@@ -123,9 +128,9 @@ extension Group {
                 .navigationBarTitleDisplayMode(.large)
                 .onAppear {
                     self.computeEligibility()
-                    guard let grp = self.existingGroup, let layer = self.layer else { return }
+                    guard let grp = self.existingGroup else { return }
                     self.name                = grp.readName() ?? ""
-                    self.selectedIdentifiers = Set(grp.members(in: layer))
+                    self.selectedIdentifiers = Set(grp.members(atDepth: self.security.currentDepth))
                 }
                 .onChange(of: self.contacts) { _, _ in self.computeEligibility() }
                 .toolbar {
@@ -235,22 +240,22 @@ extension Group {
             guard !trimmed.isEmpty else { return }
 
             do {
-                guard let layer = self.layer else { throw ContactManager.Errors.invalidRoutingDepth }
+                let depth = self.security.currentDepth
                 if let group = self.existingGroup {
                     try group.writeName(trimmed)
-                    let current = Set(group.members(in: layer))
+                    let current = Set(group.members(atDepth: depth))
                     for identifier in current.subtracting(self.selectedIdentifiers) {
-                        try group.removeMember(identifier, in: layer)
+                        try group.removeMember(identifier, atDepth: depth)
                     }
                     for identifier in self.selectedIdentifiers.subtracting(current) {
-                        try group.addMember(identifier, in: layer)
+                        try group.addMember(identifier, atDepth: depth)
                     }
                     try self.modelContext.save()
                 } else {
                     let group = try Group(name: trimmed)
                     self.modelContext.insert(group)
                     for identifier in self.selectedIdentifiers {
-                        try group.addMember(identifier, in: layer)
+                        try group.addMember(identifier, atDepth: depth)
                     }
                     try self.modelContext.save()
                 }

@@ -19,6 +19,10 @@ enum GroupDecryptError: Error {
     case unknownEnvelopeVersion
     /// SealedPayload.groupID is nil — required for group message routing.
     case missingGroupID
+    /// `recipients.count` exceeds `Group.slotCount`. No legitimately-created group can
+    /// exceed this cap, so a larger count means a malformed or maliciously crafted
+    /// envelope — reject before trial-decrypting any entry.
+    case tooManyRecipients
 }
 
 // MARK: - Group-decrypt crypto helpers
@@ -38,9 +42,16 @@ extension Manager.Crypto {
         senderPublicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
         prekeyManager: Manager.PrekeyManager
-    ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?) {
+    ) throws -> (payload: OccultaBundle.RecipientPayload, consumable: Prekey?, mode: OccultaBundle.Mode) {
         guard let recipients = bundle.group?.recipients else {
             throw GroupDecryptError.noGroupEnvelope
+        }
+        // No legitimately-created group ever exceeds Group.slotCount members. Reject an
+        // oversized envelope before spending any ECDH/AEAD work on it — otherwise a
+        // crafted bundle with an arbitrarily large recipient list forces every receiving
+        // device through one expensive trial decryption per entry.
+        guard recipients.count <= Group.slotCount else {
+            throw GroupDecryptError.tooManyRecipients
         }
         for entry in recipients {
             guard let (wrappingKey, consumable) = try? self.deriveInboundKey(
@@ -54,7 +65,7 @@ extension Manager.Crypto {
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),
                   let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
             else { continue }
-            return (payload, consumable)
+            return (payload, consumable, entry.secrecyContext.mode)
         }
         throw GroupDecryptError.recipientSlotNotFound
     }

@@ -14,6 +14,7 @@ struct ComposableMessage: View {
     @Bindable var vm: ComposeViewModel
 
     @Query private var contacts: [Contact.Profile]
+    @Query private var groups:   [Group]
     @Environment(ContactManager.self) private var contactManager
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(VaultManager.self) private var vaultManager: VaultManager?
@@ -23,12 +24,21 @@ struct ComposableMessage: View {
 
     init(vm: ComposeViewModel) {
         self.vm = vm
-        let id = vm.identifier
-        self._contacts = Query(filter: #Predicate { $0.identifier == id })
+        switch vm.recipient {
+        case .contact(let id):
+            self._contacts = Query(filter: #Predicate { $0.identifier == id })
+        case .group:
+            self._contacts = Query(filter: #Predicate { _ in false })
+        }
     }
 
-    private var firstName: String {
-        self.contacts.first?.givenName.decrypt() ?? ""
+    private var recipient: String {
+        switch self.vm.recipient {
+        case .contact:
+            return self.contacts.first?.givenName.decrypt() ?? ""
+        case .group(let groupID):
+            return self.groups.first { $0.readID() == groupID }?.readName() ?? ""
+        }
     }
 
     private var canEncrypt: Bool {
@@ -104,7 +114,7 @@ struct ComposableMessage: View {
             .background(Color(.systemBackground))
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle(self.firstName)
+        .navigationTitle(self.recipient)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -675,7 +685,7 @@ struct PHPickerRepresentable: UIViewControllerRepresentable {
 
 #Preview {
     NavigationStack {
-        ComposableMessage(vm: ComposeViewModel(identifier: UUID().uuidString))
+        ComposableMessage(vm: ComposeViewModel(recipient: .contact(UUID().uuidString)))
             .environment(ContactManager.preview)
     }
 }

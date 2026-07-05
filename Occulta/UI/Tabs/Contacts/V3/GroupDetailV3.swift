@@ -14,30 +14,29 @@ struct GroupDetailV3: View {
     @Query private var contacts: [Contact.Profile]
     @Query private var groups:   [Group]
 
-    @Environment(ContactManager.self)   private var contactManager
-    @Environment(Manager.Security.self) private var security
-    @Environment(\.dismiss)             private var dismiss
+    @Environment(ContactManager.self)      private var contactManager
+    @Environment(Manager.Security.self)    private var security
+    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(VaultManager.self)        private var vaultManager: VaultManager?
+    @Environment(\.dismiss)                private var dismiss
 
     @State private var editing          = false
     @State private var useThreadCompose = false
     @State private var membersExpanded  = false
-    @State private var composeVM        = ComposeViewModel(identifier: "")
+    @State private var composeVM: ComposeViewModel
+
+    init(groupID: UUID) {
+        self.groupID = groupID
+        self._composeVM = State(initialValue: ComposeViewModel(recipient: .group(groupID)))
+    }
 
     private var group: Group? {
         self.groups.first { $0.readID() == self.groupID }
     }
 
-    private var resolvedLayer: RoutingDepth? {
-        switch self.security.currentDepth {
-        case 0:          return .normal
-        case let d where d > 0: return .duress
-        default:         return nil
-        }
-    }
-
     private var resolvedMembers: [Contact.Profile] {
-        guard let grp = self.group, let layer = self.resolvedLayer else { return [] }
-        let identifiers = Set(grp.members(in: layer))
+        guard let grp = self.group else { return [] }
+        let identifiers = Set(grp.members(atDepth: self.security.currentDepth))
         return self.contacts.filter { identifiers.contains($0.identifier) && self.security.isDisplayable($0) }
     }
 
@@ -55,13 +54,7 @@ struct GroupDetailV3: View {
                     thumbnail: nil
                 )
 
-                if self.resolvedLayer == nil {
-                    Text("Security layer unavailable. Restart the app.")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 8)
-                } else if count > 0 {
+                if count > 0 {
                     ComposeToggleV3(useThread: self.$useThreadCompose)
 
                     if self.useThreadCompose {
@@ -86,12 +79,13 @@ struct GroupDetailV3: View {
                         }
                     } else {
                         let cm  = self.contactManager
-                        let gID = self.groupID
+                        let scm = self.shardCustodyManager
+                        let vlt = self.vaultManager
                         ComposeHeroV3(
                             vm:           self.composeVM,
                             headerRight:  "→ \(count) RECIPIENT\(count == 1 ? "" : "S")",
                             encryptLabel: "Encrypt for \(count)",
-                            onEncrypt:    { await self.composeVM.encrypt(groupID: gID, contactManager: cm) }
+                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
                         )
                     }
 

@@ -1,12 +1,13 @@
 # Occulta — Master Feature & Expansion Analysis
 **Date:** May 10, 2026
-**Revised:** June 12, 2026
+**Revised:** July 4, 2026
 **Sources:**
 - Feature Discovery Report, Apr 30, 2026
 - Feature Discovery Report, May 9, 2026
 - Expansion Opportunity Analysis, May 2026
 - Critical review session, May 13, 2026
 - Authentication pain-point research pass, June 12, 2026 (features 15–17; web-sourced demand evidence verified against the codebase)
+- Feature ideation pass, July 4, 2026 (features 18–25; new Expansion I; checked against the README Security Properties/Threat Model tables, Features.swift/FeatureFlags, CRYPTO_REVIEW_CHECKLIST.md, IDENTITY_CHALLENGE_PROTOCOL.md, CODE_GENERATION_GUIDELINES.md, and the Share Extension plan)
 
 **Scope:** Unified ranking of consumer app features and platform expansion opportunities, sorted by potential audience reach and community demand.
 
@@ -275,6 +276,173 @@ TOTP (RFC 6238) seed storage as a vault item class: seeds SE-wrapped at rest, co
 
 ---
 
+### 18. Owner Device Set — Multi-Device Identity via Self-UWB Ceremony
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Authentication / Crypto
+**Audience:** Broad — converts Occulta's most-cited limitation ("lose your phone, lose your contacts") into a non-event; the #1 objection on the App Store page
+
+Hold two owned iPhones ≤25 cm apart and run the standard UWB + Diceware ceremony against yourself. Each device's SE identity key signs a domain-separated "same-owner certificate" over the other device's public key (`"occulta-device-set-v1"` prefix, nonce-freshened), distributed to contacts inside normal encrypted baskets as an optional `SealedPayload` sub-envelope per the `OccultaBundle` no-new-Version/Mode-case rule. Contacts store both keys under one identity; senders encrypt to every device in the set using the existing `useMultipleRecipientMessageFormat` capsule array. Each device keeps its own SE prekey pool, so forward secrecy stays per-device and never crosses hardware.
+
+Distinct from `allowSynchingBetweenDevices` (disabled iCloud *data* sync) and from the signed key rotation protocol (replaces one key with another) — this establishes concurrent attested membership, which neither does.
+
+**Security model fit:** No server (certs travel inside encrypted baskets, AES-GCM, wire format unchanged). Both keys stay SE-bound; nothing exportable. FS preserved per-device; PQ preserved (each device runs its own ML-KEM exchange on next contact).
+
+**iOS constraint:** iPhone 11+ (U1) on both devices; reuses `ExchangeManager` as-is. `Contact` gains an optional device-set array (new optional SwiftData property, default nil) — old builds ignore the sub-envelope and keep encrypting to one key.
+
+> **Ruling (July 2026):** A stolen *unlocked* phone enrolling an attacker device is the main attack surface — mitigated to zero by requiring biometric-gated SE signing on **both** devices within the same UWB session, so an attacker needs two biometric passes on two devices simultaneously. Cert forgery requires an SE private key, excluded by hardware. Run CRYPTO_REVIEW_CHECKLIST §3 (multi-party trace) carefully: per-device prekey pools must never be shared — the historical prekey-batch flaw. Medium lift (ceremony reuse is free; the work is contact-model evolution and multi-device prekey bookkeeping). **Priority: Near-term.**
+
+---
+
+### 19. Guardian Revocation Certificates (Pre-Signed, K-of-N Released)
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Security / Authentication
+**Audience:** All users — completes the key lifecycle (establish → rotate → **revoke**) that any serious protocol review probes first; particular pull for the journalist/activist segment where device seizure is the threat model
+
+At setup, the SE signs a revocation statement over the owner's own public key (`"occulta-revocation-v1"` domain prefix). The cert is Shamir-split K-of-N using the existing SSS (`enableShamirShardSharing`) and shards distributed to guardian contacts via encrypted baskets. If the device is lost or stolen, guardians coordinate out-of-band; K of them release shards, any one guardian reconstructs the cert and forwards it. The reconstructed cert is wrapped as `AES-GCM(cert, key = HKDF(owner_pubkey, info: "occulta-revocation-wrap-v1"))`, so guardians can broadcast the blob to their entire contact list but only people who already hold the owner's public key can open it — everyone else sees random bytes. Recipients verify the SE signature against the stored key and mark the owner revoked/untrusted until a fresh in-person exchange.
+
+Distinct from Contact Compromise Detection (removed — Consumer #5, Occulta has no server key-substitution path to detect), the Dead Man's Switch (#8, releases *data*, not a revocation), and signed key rotation (requires the SE that was just stolen). This is the missing quadrant: killing a key you no longer control.
+
+**Security model fit:** No server — revocation propagates P2P through guardians. SE-bound (cert SE-signed at creation; no new private keys). No metadata leakage — encrypt-to-knowledge wrapping means broadcasting the blob reveals no relationship graph. FS/PQ untouched (pure signature verification against already-pinned keys).
+
+**iOS constraint:** iOS 16+, zero new primitives — ECDSA, SSS, and basket distribution are all already shipped. Remaining work is UX (guardian selection, "report lost device" flow on the guardian side) and CRYPTO_REVIEW_CHECKLIST §2 (shard release must be one-way and idempotent).
+
+> **Ruling (July 2026):** Highest reuse ratio of this batch. Malicious or coerced guardians could revoke falsely — mitigated by K-of-N threshold; worst case is a forced re-exchange (denial-of-convenience), never a confidentiality loss. Replay is moot (revocation is idempotent and terminal). Low lift. **Priority: Near-term.**
+
+---
+
+### 20. Serverless Passkey Provider — Hardware-Bound Passkeys, Socially Recoverable
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Authentication
+**Audience:** The mainstream password-manager market — the largest adjacent segment available to this codebase
+
+Occulta registers as an iOS Credential Provider (`ASCredentialProviderExtension` with passkey support, iOS 17+). Each relying party gets a dedicated `SecureEnclave.P256` key (WebAuthn ES256), biometric-gated, `ThisDeviceOnly`, in a shared keychain access group so the extension can sign assertions. Unlike 1Password, Bitwarden, and iCloud Keychain — all of which sync passkey private keys through cloud infrastructure as *software* keys — Occulta passkeys stay hardware-bound, closer to a YubiKey that's already in the user's pocket. The device-loss problem that forces competitors into cloud sync is instead solved by Owner Device Set (#18) for multi-device continuity, with Occulta's existing SSS custody covering the vault of RP records.
+
+**Why not covered elsewhere:** Adjacent to, but distinct from, Expansion C (Developer/API Authentication, an enterprise SDK play) — this is consumer WebAuthn shipped in the app itself, a different product and buyer.
+
+**Security model fit:** No server — assertions compute locally; relying parties hold only public keys, outside Occulta's trust boundary. SE-bound — per-RP SE keys, domain-separated, never the identity key. No metadata leakage — RP IDs/usernames encrypted under the hybrid local DB key.
+
+**iOS constraint:** iOS 17 floor for third-party passkey provisioning/assertion. User must enable Occulta in Settings → Passwords; `LAContext` biometrics work in-extension; no network entitlement on the extension. Self-attestation only (standard for consumer providers).
+
+> **Ruling (July 2026):** The extension holds no plaintext secrets (SE signs; DB fields decrypt on demand under biometric), has no network entitlement, and no IPC beyond the ASAuthorization API — phishing resistance is inherited from WebAuthn origin binding. Medium-high lift: the extension, RP record model, and Settings UX are real work, though zero new cryptography. **Priority: Mid-term.**
+
+---
+
+### 21. Uniform Basket Envelopes — Length Padding + Traffic-Shape Hiding
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Privacy / Crypto (protocol hardening)
+**Audience:** Not an audience feature — a credibility feature. It is the difference between surviving and failing the first independent protocol review.
+
+**Constraint alert:** this closes a live nonconformance with the project's own metadata rule. AES-GCM is length-preserving and no padding scheme currently exists in the bundle format (Consumer #13 covers manifest filenames/MIME types/counts, not length). A passive observer of an `.occ` file — mail server, chat platform, forensic acquisition — can currently distinguish "a 3-word text" from "a 4 MB video," and fingerprint prekey-batch-carrying bundles by their characteristic size, even though file size is explicitly listed among the metadata classes this project treats as sensitive.
+
+Before `seal()`, pad `SealedPayload` to the next size bucket (e.g., 4 KB / 64 KB / 1 MB / next power-of-two, plus small random jitter within the bucket) via an optional `padding: Data` field of random bytes. Old builds' JSON decoders ignore the unknown field — no version bump needed, per the `OccultaBundle` house rule. AAD unchanged. This also makes `PrekeySyncBatch`-carrying bundles size-invisible, closing the piggyback signature.
+
+**Why new / overlap declaration:** Overlaps Consumer #13 (Basket Manifest Filename Encryption) — #13 encrypts manifest *strings*; this closes the *length* side-channel, which #13 explicitly does not address. Without it, #13's protection is partially theater: an observer who can't read the filename can still tell it's a video.
+
+**Security model fit:** No server. SE untouched. Strictly reduces metadata. FS/PQ preserved — padding sits inside the ciphertext; derivation paths, `info` strings, and wire fields are unmodified.
+
+**iOS constraint:** iOS 16+, pure CryptoKit/Data work. Watch memory on large files — stream-friendly bucketing or a capped top bucket for video. Padding bytes must come from `SecRandomCopyBytes`, never zeros (a compressibility oracle if anything downstream ever compresses — nothing does today, but zero-tolerance says random regardless).
+
+> **Ruling (July 2026):** Like #13, ship opportunistically as a protocol version bump when the bundle format is touched for another reason — low lift, no new attack surface, and it upgrades #13 from partial to real protection. **Priority: Near-term, opportunistic (pairs with #13).**
+
+---
+
+### 22. Private Mutual-Contact Discovery + Key Corroboration
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Privacy / Crypto
+**Audience:** Activist cells and field teams get relay-adjacent routing information; all users get a sybil-resistant trust signal no server-based product can honestly offer
+
+Two already-verified contacts, over an authenticated session (in person or an existing pairwise channel), derive a fresh session secret and each compute `tag_i = HMAC-SHA256(sessionKey, contact_i.publicKey)` for every contact, pad the tag set to a fixed bucket size with random dummy tags (hiding counts, which are metadata), and exchange sets. Matching tags reveal mutual contacts and only mutuals. Because Occulta public keys are high-entropy and never travel in cleartext, membership probing is only possible for keys the prober already physically collected — precisely the intersection being computed. This gives PSI-equivalent leakage using pure CryptoKit HMAC (true DH-PSI needs hash-to-curve + raw scalar multiplication, which CryptoKit doesn't expose, so a hand-rolled constant-time curve implementation was ruled out as violating the Apple-frameworks-only convention). Optional layer: for each discovered mutual, exchange an SE-signed key attestation so the UI can show "2 physically-verified contacts corroborate Carol's key."
+
+**Why new:** The missing primitive under any mesh-relay concept (which silently assumes mutual contacts are already known — today they aren't, discoverably), and a direct answer to the most-documented structural complaint about Signal-style contact discovery: it requires phone numbers and server-side infrastructure.
+
+**Security model fit:** No server — pairwise P2P computation. SE-bound where attestations are signed. Opt-in per session, mutuals-only disclosure, padded set sizes, tags unlinkable across sessions (fresh session key each time). FS/PQ untouched.
+
+**iOS constraint:** iOS 16+. HMAC + set intersection is trivial; the work is session UX and the corroboration data model.
+
+> **Ruling (July 2026):** A malicious verified contact learns your mutuals *with them* — inherent to the feature's purpose and consented per session; keep it opt-in and never automatic. Low-medium lift. **Priority: Near-to-mid-term.**
+
+---
+
+### 23. Hybrid PQ Signatures (SE-ECDSA + ML-DSA) for Long-Lived Signed Artifacts
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Crypto / Security
+**Audience:** Applies wherever a signed artifact must remain unforgeable for decades — revocation certs (#19), device-set certs (#18), and any future document-signing or audit-log artifact
+
+Dual-signature format for artifacts whose validity must outlive ECDSA's quantum horizon. Every such artifact carries both an SE ECDSA P-256 signature (unchanged, mandatory root) and an ML-DSA-87 (FIPS 204) signature under a distinct domain prefix; verification requires **both**. If `SecureEnclave.MLDSA` exists in the target iOS SDK, use it; if SE support covers only ML-KEM (true as of the last check — verify against current CryptoKit headers before scoping), hold the ML-DSA private key software-side, wrapped under the hybrid local DB key. This does not weaken the SE-custody rule the way sole software custody would: forgery still requires the SE (ECDSA is always required), so the ML-DSA half only *adds* unforgeability — the same both-must-hold logic as the existing hybrid KEM construction and the same protection class as the already-accepted ML-KEM shared-secret storage.
+
+**Why new:** "Harvest now, forge later" is the one PQ threat the existing ML-KEM work doesn't touch — a signed contract or notarized document must remain unforgeable for decades.
+
+**Security model fit:** No server. SE remains the mandatory signing root. No metadata change (signatures travel where signatures already travel). PQ strengthened — the first feature to extend PQ from confidentiality to authenticity.
+
+**iOS constraint:** Gated on SDK verification of SE ML-DSA support. ML-DSA-87 signatures run ~4.6 KB — irrelevant for documents, but worth noting against #21's padding buckets if ever used on the wire. New domain prefixes only, per IDENTITY_CHALLENGE_PROTOCOL's domain-separation mandate — never modify existing signing paths.
+
+> **Ruling (July 2026):** Software ML-DSA key compromise still can't forge anything (needs the SE) — worst case equals today's status quo. Run CRYPTO_REVIEW_CHECKLIST §4 on cross-protocol separation for every new prefix. Medium lift, gated on SDK support. **Priority: Mid-term.**
+
+---
+
+### 24. Signed Destruction Receipts — Expiring Baskets with Cryptographic Burn Proof
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Security / Privacy
+**Audience:** Lawyers, HR, journalists handling source material with retention obligations — anyone who needs to *demonstrate* ephemerality, not just claim it
+
+Sender sets a TTL inside `SealedPayload` (optional sub-envelope, same house pattern as #18). On receipt, the item is stored under a per-item wrap key; at expiry the recipient's app deletes the wrap key and SE-signs a destruction receipt over `(item fingerprint ∥ timestamp)` with prefix `"occulta-destruction-receipt-v1"`, returned as a normal basket. Sender's UI shows "destroyed, cryptographically confirmed at [time]." Mirrors the delivery-receipt pattern already specified for the Proximity Outbox concept (Consumer #7, removed) — same machinery, opposite lifecycle end.
+
+**Why new:** Signal's disappearing messages — the obvious comparison — offer zero proof of deletion, a recurring complaint in legal/compliance discussions of ephemeral messaging.
+
+**Security model fit:** No server. SE signs receipts. Receipt content (fingerprint, timestamp) travels only inside encrypted baskets — no metadata. FS/PQ untouched.
+
+**iOS constraint:** iOS 16+. Honest limitation to state in-product: this proves an *unmodified Occulta app* executed the burn protocol — it cannot prevent screenshots or a jailbroken recipient, the same honest-recipient boundary as every ephemeral system and as the documented "compromised install" trust boundary. Market as protocol proof, never as DRM.
+
+> **Ruling (July 2026):** No new attack surface — receipts are signatures over non-secret data with their own domain prefix. Low-medium lift. **Priority: Near-to-mid-term.**
+
+---
+
+### 25. On-Device Visual PII Redaction (Pre-Encryption Pipeline)
+**Added July 4, 2026 (feature ideation pass)**
+**Category:** Privacy
+**Audience:** Journalists protecting sources in photos, parents, protest documentation — and a feature that demos well, which matters for growth in a category where protocol features rarely do
+
+Optional pass before basket assembly: Vision framework detects faces (`VNDetectFaceRectanglesRequest`), human figures, and text regions (`VNRecognizeTextRequest` — catches license plates, street signs, documents in frame); the user taps regions to irreversibly pixelate/blackout via Core Image, then the redacted image enters the normal encryption flow. Fully offline — Vision runs on-device, no network entitlement anywhere near it.
+
+**Why new / overlap declaration:** The Share Extension plan ships EXIF/GPS stripping — that removes *metadata about* the image. This removes identifying *content within* the image, a different threat (a photo of a source is identifying regardless of EXIF).
+
+**Security model fit:** No server, no crypto changes, SE untouched, no metadata (redaction happens pre-encryption in-process; originals deleted per the share-extension cleanup discipline — redact-then-delete inside the same do/catch pattern). FS/PQ untouched.
+
+**iOS constraint:** iOS 16+. Redaction must re-encode the image and destroy the original — never store both. Pixelation must be destructive (heavy mosaic/solid fill; light blurs are ML-reversible, so zero-tolerance means solid fill by default).
+
+> **Ruling (July 2026):** No cryptographic attack surface — the failure mode is UX (a missed region), mitigated by a manual-confirm workflow, never auto-send. Low-medium lift. **Priority: Near-to-mid-term.**
+
+---
+
+### July 2026 Pass — Ranking by Impact-to-Lift
+
+| Rank | Item | Impact | Lift | Phase |
+|---|---|---|---|---|
+| 1 | Owner Device Set (#18) | Very high | Medium | Near-term |
+| 2 | Guardian Revocation Certificates (#19) | Med-high | Low | Near-term |
+| 3 | Uniform Basket Envelopes (#21) | Medium (credibility-critical) | Low | Near-term |
+| 4 | Serverless Passkey Provider (#20) | Very high | Med-high | Mid-term |
+| 5 | Mutual-Contact Discovery (#22) | Medium | Low-med | Near-mid |
+| 6 | Signed Destruction Receipts (#24) | Medium | Low-med | Near-mid |
+| 7 | Hybrid PQ Signatures (#23) | Med-high | Medium (SDK-gated) | Mid-term |
+| 8 | Visual PII Redaction (#25) | Medium | Low-med | Near-mid |
+| 9 | Air-Gapped SE Wallet Signer (Expansion I) | High potential | High | Exploratory |
+
+**Top 3 of this pass:**
+1. **Owner Device Set (#18)** — kills the single biggest adoption objection ("what if I lose my phone") using ceremony code already shipped.
+2. **Guardian Revocation Certificates (#19)** — highest reuse ratio in the batch (ECDSA + SSS + baskets, all shipped) and completes the key lifecycle reviewers will probe first.
+3. **Serverless Passkey Provider (#20)** — the only idea in this pass that opens the mainstream password-manager market, with a pitch ("hardware-bound passkeys, no YubiKey, no cloud") no incumbent can copy without abandoning their sync architecture.
+
+### Ideas Considered and Omitted (July 2026 pass)
+
+- **Anonymous source drop / SecureDrop-lite** (encrypt-to-published-journalist-key): any workable design either reuses prekeys across unknown sources (the documented prekey-sharing flaw) or ships a mode without forward secrecy. FS must never be weakened — omitted rather than softened.
+- **Peer app-integrity attestation during exchange** (App Attest proving the peer runs a genuine Occulta binary): would close part of the "compromised install" gap, but attestation-key creation requires a round trip to Apple's attestation service — a remote dependency and a usage signal to a third party. Zero-server/zero-telemetry — omitted. Revisit only if Apple ships fully offline attestation.
+- **Key-transparency log / chain-anchored timestamping:** requires a network or public ledger dependency — omitted; #22's corroboration achieves the useful subset P2P.
+- **Duress biometric variants:** iOS cannot distinguish which finger/face authenticated, and passcode-level duress is already covered by the Deniable Partitions + Panic Wipe cluster (Consumer #6, #3) — not new.
+- **True DH-PSI for contact discovery:** needs hash-to-curve and raw scalar multiplication CryptoKit doesn't expose; a hand-rolled constant-time curve implementation would violate the Apple-frameworks-only convention — replaced by the HMAC construction in #22.
+
+---
+
 ## Section 1 Summary Table
 
 | Rank | Feature | Status | Audience | Phase |
@@ -287,6 +455,14 @@ TOTP (RFC 6238) seed storage as a vault item class: seeds SE-wrapped at rest, co
 | 10 | NFC Key Exchange | **Keep** | Medium | Phase 2 (lower) |
 | 17 | Duress-Aware 2FA Codes | **Keep** | Medium-broad | Phase 2 (after duress cluster) |
 | 16 | Serverless Social Recovery | **Built** (flagged) | Broad | Positioning/UX pass only |
+| 18 | Owner Device Set | **Keep** | Broad | Near-term |
+| 19 | Guardian Revocation Certificates | **Keep** | Broad | Near-term |
+| 21 | Uniform Basket Envelopes | **Keep** | — (protocol) | Near-term, opportunistic |
+| 20 | Serverless Passkey Provider | **Keep** | Broad | Mid-term |
+| 22 | Mutual-Contact Discovery | **Keep** | Narrow-medium | Near-mid |
+| 24 | Signed Destruction Receipts | **Keep** | Narrow-medium | Near-mid |
+| 23 | Hybrid PQ Signatures | **Keep** | — (protocol) | Mid-term (SDK-gated) |
+| 25 | Visual PII Redaction | **Keep** | Narrow-medium | Near-mid |
 | 1 | Wi-Fi Aware Basket Delivery | Removed | — | — |
 | 4 | YubiKey NFC Second Factor | Deferred | — | — |
 | 5 | Contact Compromise Detection | Removed | — | — |
@@ -491,6 +667,24 @@ This is the most technically ambitious expansion and the longest time horizon. Z
 
 ---
 
+### I. Air-Gapped SE Signer for P-256 Smart Wallets + Physically-Verified Social Recovery
+**Added July 4, 2026 (feature ideation pass)**
+**Conviction:** Exploratory
+**Market size:** Large — crypto asset holders, security-literate, accustomed to paying, evangelical
+**Technical lift:** High
+
+Occulta as a fully offline hardware-wallet-grade signer for chains that verify secp256r1: RIP-7212 precompile L2s (Base, Optimism, Polygon) via account-abstraction wallets, and Sui/Aptos natively. A **dedicated** SE key per wallet (distinct tag, never the identity key — signing attacker-supplied digests with the identity key would be a cross-protocol catastrophe, per CRYPTO_REVIEW_CHECKLIST §4). Transaction arrives as QR/file, is decoded and human-readably displayed (EIP-712 typed data where available), biometric-gated SE signs the digest, low-s normalized (public post-processing, no private key needed), returned as QR/file. Occulta carries zero network code for this — broadcasting is the wallet app's job, outside Occulta's trust boundary. Recovery: the smart wallet's guardian set maps to physically-verified Occulta contacts who co-sign recovery operations with their own SE keys — guardians actually met in person, with hardware keys, rather than addresses configured and hoped-correct.
+
+**Why new / overlap declaration:** Adjacent to Expansion E (M-of-N Authorization, removed — co-signs *Occulta* payloads); this signs *external chain* payloads with dedicated keys and an air-gap workflow — a different product surface.
+
+**Security model fit:** No server — strictly air-gapped signing. SE-bound, dedicated domain-separated keys. No metadata — nothing persisted beyond encrypted wallet-key references; no chain data stored. Chain signatures are classical by the *chain's* spec — fully separate keys and paths, so this neither touches nor weakens Occulta's own protocol.
+
+**iOS constraint:** iOS 16+ (SE digest signing, AVFoundation QR). Per-chain payload decoding is where the real lift lives; blind-signing must be refused (display-or-decline policy); s-normalization required for chains enforcing canonical signatures.
+
+> **Ruling (July 2026):** A malicious transaction presented for signing is mitigated by mandatory decode-and-display consent and per-wallet key isolation — worst case bounds to one wallet's assets, never Occulta identity/contacts. WalletConnect-style online pairing is explicitly out — QR/file only. High lift. **Priority: Exploratory.**
+
+---
+
 ## Section 2 Summary Table
 
 | | Opportunity | Status | Notes |
@@ -503,6 +697,7 @@ This is the most technically ambitious expansion and the longest time horizon. Z
 | G | Asset Provenance | Downstream of A only | Every market has entrenched incumbents; not standalone |
 | D | Document Signing / Notarization | Removed | — |
 | E | M-of-N Authorization | Removed | — |
+| I | Air-Gapped SE Smart-Wallet Signer | **Keep — Exploratory** | High-lift, high-potential; crypto asset holders; strictly air-gapped, dedicated per-wallet SE keys, no overlap with Occulta identity |
 
 ---
 
@@ -546,6 +741,8 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 | 1 | Offline Travel Mode | Broadest new audience; documents a real gap vs. 1Password; fully offline; no external dependencies |
 | 2 | Cryptographic Panic Wipe | Requires key hierarchy rework as prerequisite; wipe itself is then trivial; post-Graphite urgency |
 | 1 (parallel) | Presence Verification | Identity Challenge protocol already shipped; remaining work is presence mode + transport + positioning; independent of the key-hierarchy rework, so it runs as a parallel track |
+| 1 (parallel) | Owner Device Set (#18) | Kills the "lose your phone, lose your contacts" objection using ceremony code already shipped; independent of the key-hierarchy rework |
+| 2 (parallel) | Guardian Revocation Certificates (#19) | Highest reuse ratio of any feature on this list (ECDSA + SSS + baskets, all shipped); completes the key lifecycle reviewers probe first |
 
 ### Phase 2 — Duress Cluster Completion + Coverage
 
@@ -555,6 +752,17 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 | 4 | Shamir Dead Man's Switch | Only serverless iOS implementation; SSS custody rails already shipped (see #16) |
 | 5 | NFC Key Exchange (fallback) | Removes hard UWB-device requirement; no security tradeoff |
 | 6 | Duress-Aware 2FA Codes | Unique only once the duress cluster exists; sequence after Travel Mode + Panic Wipe |
+| 7 | Uniform Basket Envelopes (#21) | Low lift, opportunistic; upgrades #13 (filename encryption) from partial to real metadata protection — ship together on the next bundle-format touch |
+| 8 | Mutual-Contact Discovery (#22) | Sybil-resistant trust signal no server-based product can offer; low-medium lift |
+| 9 | Signed Destruction Receipts (#24) | Answers the "prove it was deleted" gap in every ephemeral-messaging competitor; low-medium lift |
+| 10 | Visual PII Redaction (#25) | Demos well, distinct threat from existing EXIF/GPS stripping; low-medium lift |
+
+### Phase 2/3 — Gated on Platform or SDK
+
+| Item | Rationale |
+|------|-----------|
+| Serverless Passkey Provider (#20) | Opens the mainstream password-manager market; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor |
+| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for revocation certs (#19), device-set certs (#18), and any future signed artifact; gated on confirming SE ML-DSA support in the target SDK |
 
 ### Ongoing — Positioning (no engineering)
 
@@ -572,7 +780,8 @@ These are not buildable as near-term targets. Direct enterprise sales requires c
 | Anonymous Credentials (H) | Don't build ZK. Implement W3C VC / SD-JWT as a privacy-preserving credential holder with SE binding and no platform intermediary. EU Digital Identity Wallet rollout (2–3 years) is the concrete trigger. |
 | Physical Access Control (B) | Downstream of A only. HID Mobile Access already owns this market as a standalone product. |
 | Asset Provenance (G) | Downstream of A only. Every market segment has entrenched incumbents that work with a browser. |
+| Air-Gapped SE Smart-Wallet Signer (I) | Exploratory, high lift. Strictly air-gapped, dedicated per-wallet SE keys with no overlap with Occulta identity/contacts; real work is per-chain payload decoding and a mandatory display-or-decline consent flow. |
 
 ---
 
-*Consolidated from three independent research passes. All features are zero-server and Secure Enclave-compatible. Feature descriptions reflect the more detailed specification where sources diverge. Consumer feature rulings, expansion opportunity rulings, competitive landscape analysis, and enterprise structural barrier assessment added May 13, 2026.*
+*Consolidated from four independent research passes. All features are zero-server and Secure Enclave-compatible. Feature descriptions reflect the more detailed specification where sources diverge. Consumer feature rulings, expansion opportunity rulings, competitive landscape analysis, and enterprise structural barrier assessment added May 13, 2026. Features 18–25 and Expansion I (multi-device identity, key revocation, passkey provider, traffic-shape hardening, mutual-contact discovery, hybrid PQ signatures, destruction receipts, visual PII redaction, and an air-gapped smart-wallet signer) added July 4, 2026.*

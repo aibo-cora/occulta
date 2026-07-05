@@ -62,7 +62,7 @@ Encrypt a file or message for multiple contacts at once and share it as a single
 
 Groups are local: a named list of contacts on your device. No server, no membership notifications. Deliver the bundle over any channel, same as individual messages.
 
-Forward secrecy and post-quantum protection apply per recipient. The duress layer model extends to groups — a coerced unlock shows a separate member list with no trace of the real one.
+Forward secrecy and post-quantum protection apply per recipient. Occulta's full multi-layer duress model extends to groups — each duress depth shows its own independent member list, with no trace of the real one or of any other depth. Group sends can also distribute Vault recovery shards to eligible trustees alongside the message.
 
 → [How group messaging works](https://github.com/aibo-cora/occulta/wiki/Group-Messaging)
 

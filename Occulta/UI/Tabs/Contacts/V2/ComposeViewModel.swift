@@ -19,7 +19,12 @@ struct PendingImport: Identifiable {
 
 @Observable
 final class ComposeViewModel {
-    let identifier: String
+    enum Recipient {
+        case contact(String)
+        case group(UUID)
+    }
+
+    let recipient: Recipient
 
     var messages:       [Occulta.File]  = []
     var draftText:      String          = ""
@@ -31,14 +36,17 @@ final class ComposeViewModel {
 
     private(set) var attachmentManager: AttachmentManager? = nil
 
-    init(identifier: String) {
-        self.identifier = identifier
+    init(recipient: Recipient) {
+        self.recipient = recipient
     }
 
     // MARK: Setup
 
     func setup(contactManager: ContactManager) {
-        guard let key = try? contactManager.fileEncryptionKey(for: self.identifier) else { return }
+        guard
+            case .contact(let identifier) = self.recipient,
+            let key = try? contactManager.fileEncryptionKey(for: identifier)
+        else { return }
         self.attachmentManager = AttachmentManager(contactKey: key)
     }
 
@@ -163,6 +171,30 @@ final class ComposeViewModel {
 
     func encrypt(
         contactManager:      ContactManager,
+        shardCustodyManager: ShardCustodyManager? = nil,
+        vaultManager:        VaultManager?        = nil
+    ) async {
+        switch self.recipient {
+        case .contact(let identifier):
+            await self.encrypt(
+                for:                 identifier,
+                contactManager:      contactManager,
+                shardCustodyManager: shardCustodyManager,
+                vaultManager:        vaultManager
+            )
+        case .group(let groupID):
+            await self.encrypt(
+                groupID:             groupID,
+                contactManager:      contactManager,
+                shardCustodyManager: shardCustodyManager,
+                vaultManager:        vaultManager
+            )
+        }
+    }
+
+    private func encrypt(
+        for identifier:      String,
+        contactManager:      ContactManager,
         shardCustodyManager: ShardCustodyManager?,
         vaultManager:        VaultManager?
     ) async {
@@ -197,30 +229,30 @@ final class ComposeViewModel {
             }
 
             let basket     = Basket(files: processed)
-            let contactPub = try? contactManager.currentPublicKey(forIdentifier: self.identifier)
-            
-            let shardOps   = try await shardCustodyManager?.buildShardOperations(for: self.identifier, currentContactPublicKey: contactPub) ?? []
-            let manifest   = try? await shardCustodyManager?.buildCustodyManifest(for: self.identifier)
+            let contactPub = try? contactManager.currentPublicKey(forIdentifier: identifier)
+
+            let shardOps   = try await shardCustodyManager?.buildShardOperations(for: identifier, currentContactPublicKey: contactPub) ?? []
+            let manifest   = try? await shardCustodyManager?.buildCustodyManifest(for: identifier)
             let expected: [UUID]?
-            
+
             if let custody = shardCustodyManager, let vm = vaultManager {
-                expected = try? await custody.buildExpectedShards(for: self.identifier, vaultManager: vm)
+                expected = try? await custody.buildExpectedShards(for: identifier, vaultManager: vm)
             } else {
                 expected = nil
             }
 
             let encrypted: Data
-            
+
             do {
                 encrypted = try contactManager.encryptBundle(
                     basket:          basket,
-                    for:             self.identifier,
+                    for:             identifier,
                     shardOperations: shardOps.isEmpty ? nil : shardOps,
                     custodyManifest: manifest,
                     expectedShards:  expected
                 )
             } catch ContactManager.Errors.trusteeLacksQuantumMaterial {
-                encrypted = try contactManager.encryptBundle(basket: basket, for: self.identifier)
+                encrypted = try contactManager.encryptBundle(basket: basket, for: identifier)
             }
 
             guard !encrypted.isEmpty else {
@@ -237,9 +269,15 @@ final class ComposeViewModel {
         }
     }
 
-    func encrypt(groupID: UUID, contactManager: ContactManager) async {
+    private func encrypt(
+        groupID: UUID,
+        contactManager: ContactManager,
+        shardCustodyManager: ShardCustodyManager? = nil,
+        vaultManager: VaultManager? = nil
+    ) async {
         do {
             var allFiles = self.messages
+            
             let text = self.draftText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
                 allFiles.append(Occulta.File(content: text.data(using: .utf8), format: .text, date: Date()))
@@ -263,7 +301,10 @@ final class ComposeViewModel {
             }
 
             let basket    = Basket(files: processed)
-            let encrypted = try contactManager.encryptGroupBundle(basket: basket, groupID: groupID)
+            let encrypted = try contactManager.encryptGroupBundle(
+                basket: basket, groupID: groupID,
+                shardCustodyManager: shardCustodyManager, vaultManager: vaultManager
+            )
             
             guard !encrypted.isEmpty else {
                 await MainActor.run { self.showError("Encryption failed. Try again.") }

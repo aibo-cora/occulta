@@ -63,3 +63,38 @@ The 32-member group cap (`b702ce4`) counts recipient slots. If each device of a 
 ## Prerequisite for implementation
 
 `Contact.Profile`'s key model must move from "one active key, rotation history" to "several concurrently-active keys, one per device" before any of D-01–D-04 can be implemented. Q-01–Q-03 should be resolved (or explicitly deferred with a documented reason) before writing a SPEC.md.
+
+---
+
+## Design Session 2 — Schema Brainstorm (2026-07-03)
+
+Scope: how `Contact.Profile` should actually represent multiple active keys. No code written — findings below are grounded in the current implementation, read directly.
+
+### D-05 · `expiredOn` is manual-only today, not automatic rotation
+
+`update(key:for:)` (`Contact+Manager.swift:483–520`) only **appends** a new `Key` — it never expires the previous one. `expiredOn` is set exclusively by `reset(identity:)` (`Contact+Manager.swift:522–537`), an explicit user-triggered action. The "one active key" behavior everywhere else in the codebase is an accident of `.last(where: { expiredOn == nil })` resolving to the most recently appended row, not an enforced invariant.
+
+**Implication:** the rotation-vs-new-device fork we were treating as a hard architectural decision is softer than it looked — there's no existing automatic-rotation mechanism to preserve or work around. We're formalizing a loose pattern, not replacing a strict one.
+
+### D-06 · Blast radius confirmed: 34 call sites, two distinct access patterns
+
+Grepped every `contactPublicKeys` reference. All 34 call sites assume a single key and split into two categories that need different treatment under multi-device:
+
+- **Fan-out sites** — `Contact+Manager.swift` (encryption/decryption paths), `IdentityChallenge+Coordinator.swift` — need *all* active devices (`.filter`, not `.last`).
+- **Display sites** — `Contact+Detail.swift`, `Contacts+DesignTokens.swift` (fingerprint, "last exchanged" UI) — need *one* key to show, because no UI currently exists for a device list. This is a product decision hiding inside what looks like a pure data-model change (see Q-05).
+
+### Q-04 · Schema shape: field addition vs. new `Device` entity (undecided)
+
+**Option A (minimal):** add `deviceID: String` to the existing `Key` struct, keep the flat `[Key]` array on `Profile`. "All active devices" = `.filter { $0.expiredOn == nil }` grouped by `deviceID`. New optional column, lightweight SwiftData migration, same pattern already used for `encryptionScheme` / `maxBundleVersion`. Existing rows get `deviceID == nil`, treated as one implicit legacy device — no backfill needed.
+
+**Option B (richer):** a new `Device` model owning its own key-rotation history. Gives a natural home for device metadata (label, added date, revoked flag) beyond key material, but is a new `@Model`, a new relationship, and a heavier migration.
+
+Leaning toward Option A on simplicity grounds unless per-device metadata (beyond the key itself) is wanted now. Not decided.
+
+### Q-05 · Does the UI need real multi-device display in this pass?
+
+Display call sites (fingerprint view, "last exchanged" label) currently show one key. Under multi-device, either: (a) UI stays single-key and picks "most recently added device" as a display default, or (b) UI grows an actual device list/picker. Affects whether `deviceID` alone is sufficient or a `deviceLabel`/nickname field is also needed. Not decided.
+
+### Q-06 · `reset(identity:)` becomes a latent bug under multi-device if untouched (refines Q-01)
+
+As written, `reset(identity:)` does `contactPublicKeys?.last?.expiredOn = ...` — expires only the most-recently-added key. Once multiple devices are active concurrently, this would silently leave every other device's key live while appearing to have "reset" the contact. Needs to split into two explicit operations: revoke one device's key vs. revoke/forget the entire contact (all devices). This mostly resolves Q-01's revocation question — `expiredOn` was already a manual per-key kill switch, it just needs to be correctly scoped once there's more than one row to choose from.
