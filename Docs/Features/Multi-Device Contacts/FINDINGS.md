@@ -134,3 +134,29 @@ Adding a device is a user-initiated action, not an automatic detection:
 3. The resulting key attaches to Bob's existing `Contact.Profile` as a new device slot (new `deviceID`, per D-03), instead of creating a new contact.
 
 No cert, no vouching, no auto-detection needed — this fully resolves Q-02. Revocation of any one device slot is a direct, immediately-broadcast, signed self-revocation per the resolution above, refining Q-01/Q-06 further: `reset(identity:)` needs a per-device revoke path that also triggers this broadcast, separate from "forget contact entirely."
+
+---
+
+## Design Session 4 — Async ML-KEM Introduction for a Device-Set Member (2026-07-10) — RESOLVED, see below
+
+**Resolved 2026-07-10 — cert-vouching rejected; Design Session 3 / D-07 stands as the design.** This session's design work (captured in [ROADMAP.md](ROADMAP.md), R1) built a cert-based mechanism where a contact accepts a new device belonging to someone they've already met, on the strength of a signature from a device they've already pinned — *without* physically exchanging keys with the new device directly. That was structurally identical to "Rejected: self-vouching device certs" above, which Design Session 3 already rejected and recorded as a standing principle in memory (`no-self-vouching-device-trust`): *"any mechanism that grants trust to a new key must be a fresh physical UWB exchange."*
+
+The deciding argument, beyond the standing principle itself: **attacker cost under coercion.** A coerced device-set ceremony (Face ID compelled once, the exact scenario the app's whole duress cluster exists to resist) would silently propagate an attacker's device to a victim's *entire* contact graph in one event, with no physical tell for any contact. Direct re-pairing (D-07) requires an attacker to physically stage a ceremony with every contact individually — an O(1)-vs-O(N) attacker-cost gap that matters specifically because Occulta's threat model is "person with physical access under duress," not a remote attacker. R1's cert mechanism reopened exactly the class of attack the last two version cycles (Vault/SSS, then the v1.8 duress cluster) were built to close.
+
+**Outcome:** R1 in ROADMAP.md has been rewritten to drop the cert entirely and hold D-07's model as designed — renamed "Multi-Device Contacts" (no shared cross-device "set" object exists in the resolved design). R2's guardian-revocation cert was also corrected, since it had assumed a shared `identityRootPubKey` across devices that the resolved model doesn't have; it now pre-signs and escrows one cert per device.
+
+The finding below (D-08) was reached in the course of designing R1's now-abandoned cert mechanism. It's kept — not deleted — because the reasoning itself (KEMs are inherently asynchronous; Occulta's live-mutual-ceremony usage was a design choice, not a requirement) is sound and may be useful if a future, *explicitly opt-in* feature ever needs async remote key introduction under a deliberately different, weaker trust model. **It does not apply to R1 as resolved.** Every device-contact pairing under the current design is a full live exchange, so there is no async-introduction problem left to solve.
+
+### D-08 · ML-KEM material can be introduced asynchronously, without weakening the shipped protocol
+
+**Starting assumption (wrong, corrected in discussion):** ML-KEM material only ever comes from a live *mutual* encapsulation performed during physical UWB proximity — per bundle.md, "device-bound, never transmitted after the exchange." Initial framing treated this as a hard constraint: a new device (B) introduced via R1's cert would have no way to get PQ protection with any of the owner's existing contacts short of physically re-meeting each one.
+
+**Correction:** the live-mutual-ceremony usage is a design choice in how Occulta *currently* uses ML-KEM, not a requirement of what a KEM *is*. A KEM public key is inherently asynchronous — publish it once, and anyone holding it can encapsulate against it later with no interaction from the owner, symmetric to how classical prekeys already work in this codebase. Signal ships exactly this pattern in production (PQXDH: a signed, longer-lived KEM public key, encapsulated against asynchronously).
+
+**Resulting design:**
+- Device B's persistent ML-KEM public key (the public half of a keypair it already generates and retains locally — no new primitive) is bound into the same signed introduction payload as its identity key, delivered to the contact once.
+- Establishment is then asynchronous: whichever side sends first performs one-sided encapsulation against the recipient's public key, embeds the resulting ciphertext inline in that bundle (new field, same treatment as today's ephemeral public key), and the recipient decapsulates and caches the shared secret exactly like today's live-ceremony-derived one — symmetric, usable bidirectionally from then on.
+- Two deltas stated explicitly rather than hidden: (a) no forward-secrecy regression, since the shipped ML-KEM component was never forward-secret to begin with; (b) asymmetric contribution — only the initiating side's randomness goes into the secret, versus both sides contributing in the live ceremony. Doesn't weaken ML-KEM's IND-CCA2 confidentiality guarantee, but is a real behavioral difference from what ships today.
+- A parallel bootstrap problem for classical one-time prekeys (B has no prekey pool with any contact it never physically met) is solved the same way: B signs a compact digest over a locally-generated prekey batch, which travels alongside the ML-KEM key in the same introduction payload — anchoring a bag of unsigned one-time prekeys the way a Signal-style signed prekey does.
+
+Full mechanism, wire fields, and test plan: [ROADMAP.md](ROADMAP.md) R1 §2, §7, §9.

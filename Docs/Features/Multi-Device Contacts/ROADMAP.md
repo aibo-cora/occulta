@@ -2,7 +2,7 @@
 
 **Status:** Strategic plan, pre-R0
 **Date:** 2026-07-05
-**Scope:** Three-year feature arc: Owner Device Set → Guardian Revocation → Passkey Provider → Recovery Layer
+**Scope:** Three-year feature arc: Multi-Device Contacts → Guardian Revocation → Passkey Provider → Recovery Layer
 
 ---
 
@@ -10,13 +10,13 @@
 
 Occulta's core thesis is *identity anchored in hardware and physical presence instead of servers*. This roadmap extends that thesis across three dimensions:
 
-1. **Device Set (R1):** Two of your iPhones become one attested identity. Losing one is an inconvenience, not an identity death.
+1. **Multi-Device Contacts (R1):** Add a second iPhone to a contact by physically re-pairing with them directly — the same ceremony as first contact, no vouching, no shortcut. Losing one device is an inconvenience, not an identity death, because your other device's trust with each contact was never dependent on the lost one.
 2. **Guardian Revocation (R2):** Losing *all* devices kills your keys, not your contacts' trust in a ghost. Physical contacts you've verified can revoke your identity on your behalf.
 3. **Passkey Provider (R3–R4, optional):** Extend device-bound identity to service logins. The moat engages when recovery flows through physically verified humans.
 
-The invariant, stated once and enforced everywhere: **private keys are *never* recoverable** — not passkey keys, not identity keys. "Recovery" means exactly three things:
-- (a) **Sibling credentials** already live on your other Device Set member
-- (b) **Identity continuity** — contacts keep trusting you because your surviving device is cross-signed
+The invariant, stated once and enforced everywhere: **private keys are *never* recoverable** — not passkey keys, not identity keys. **A second, equally strict invariant governs trust itself: no mechanism may grant trust to a new key except a fresh physical UWB exchange; only revocation may travel by signature alone, because narrowing trust is always safe and granting it never is** (see [FINDINGS.md](FINDINGS.md), Design Sessions 3–4 — an earlier cert-vouching design for R1 was rejected on exactly this principle). "Recovery" means exactly three things:
+- (a) **Sibling credentials** already live on your other device, independently, because you physically re-paired it with each contact
+- (b) **Identity continuity** — contacts who've physically verified more than one of your devices keep trusting whichever one survives, because neither depended on the other
 - (c) **Fast re-enrollment** — the encrypted ledger of *what* to re-enroll survives through guardians
 
 ---
@@ -53,24 +53,18 @@ The invariant, stated once and enforced everywhere: **private keys are *never* r
 
 **Mitigation:** Extend the banned-log list (RP IDs, usernames, credential IDs, user handles) to the new target; `#if DEBUG` only, CI-enforced (R3, Step 9).
 
-### 6. PQ gap on secondary devices (temporary, visible)
-
-**Problem:** A contact's messages to your second device are classical-path until that device obtains ML-KEM material. This is a real security-property delta.
-
-**Mitigation:** Never fake the badge. Secondary devices display "PQ: classical path only" per-device in the contact detail view. R1.1 uplift: device B's ML-KEM encapsulation key travels to the contact *inside* the existing PQ-protected channel through device A — transitive protection (R1, Step 9).
-
-### 7. Two SDK verifications before committing
+### 6. Two SDK verifications before committing
 
 1. `SecureEnclave.P256` key usage from within an `ASCredentialProviderExtension` via shared access group — expected to work, verify on-device.
 2. Whether cross-device (hybrid QR/BLE) passkey requests route to third-party providers on the current SDK.
 
 Neither blocks R1/R2 (R3, Step 10 gate).
 
-### 8. Hybrid device-set signatures are opportunistic, not guaranteed
+### 7. Multi-device re-pairing doesn't scale with contact count
 
-**Problem:** `SecureEnclave.MLDSA65`/`MLDSA87` (iOS 26+, ML-DSA-capable SE only) let the device-set cert carry a PQ signature alongside the classical one — but the app floor for R1 is iOS 16 + U1. Most set members won't have PQ-capable hardware for years, and public keys/signatures are far larger than P-256 (ML-DSA-65: ~1952-byte public key, ~3309-byte signature).
+**Problem:** Holding the no-vouching invariant (see Executive Summary; [FINDINGS.md](FINDINGS.md) Design Sessions 3–4) means adding a device requires physically re-pairing it with every contact individually — there is no cryptographic shortcut, deliberately. This is real friction, and friction nobody tolerates is friction that gets routed around, which is its own failure mode.
 
-**Mitigation:** Hybrid signing is additive, never required — see R1 Step 2. The `hybridCapable` flag lives *inside* the classically-signed payload so a relay can't silently strip the PQ signature and downgrade a capable device without also breaking the classical signature (same anti-downgrade shape as the bundle's existing "explicit unsupported error, never silent fallback" rule). Wire-size growth is bounded to sets that actually negotiate hybrid, and stays inside the existing optional-sub-envelope budget (R0, Step 4).
+**Mitigation:** Solve it with UX, never with a shortcut that reintroduces vouching. A per-contact "devices to re-pair" checklist, reminders, and the NFC fallback (Master Analysis) to lower the bar for arranging a physical meeting (R1, Step 7).
 
 ---
 
@@ -79,17 +73,17 @@ Neither blocks R1/R2 (R3, Step 10 gate).
 | Release | Ships | Feature | Floor | Flag |
 |---|---|---|---|---|
 | R0 | Design gates only | Protocol review (no code) | — | — |
-| R1 | 2026 Q4 | Owner Device Set | iOS 16 + U1 (both) | `enableOwnerDeviceSet` |
+| R1 | 2026 Q4 | Multi-Device Contacts | iOS 16 + U1 | `enableMultiDeviceContacts` |
 | R2 | 2027 Q1 | Guardian Revocation Custody | iOS 16 | `enableGuardianRevocation` |
 | R3 | 2027 Q2 | Passkey Provider | iOS 17 | `enablePasskeyProvider` |
 | R4 | 2027 Q3 | Recovery Layer (coverage + escrow) | iOS 17 | `enableRecoveryLedger` |
 | R5 | 2027 Q4+ | Guardian Succession (gated, exploratory) | iOS 18+ | — |
 
-R1's floor (iOS 16 + U1) is the *classical* cert path. Hybrid ML-DSA signing (Alert #8) is an opportunistic upgrade negotiated per-device on iOS 26+/ML-DSA-capable SE — it does not raise the feature floor.
+R1's floor matches the existing UWB exchange requirement exactly — there is no separate ceremony or protocol to raise it. Adding a device is running the same pairing flow again, per contact.
 
 ### Sequencing Rationale
 
-Passkeys ship *third*, not first — shipped alone they inherit the lockout objection that caps device-bound adoption. **The recovery substrate (R1, R2) must exist before the credential feature that depends on it.** Device Set without revocation is a half-told recovery story. Guardian Succession is exploratory and gated pending full R0-style review.
+Passkeys ship *third*, not first — shipped alone they inherit the lockout objection that caps device-bound adoption. **The recovery substrate (R1, R2) must exist before the credential feature that depends on it.** Multi-Device Contacts without revocation is a half-told recovery story. Guardian Succession is exploratory and gated pending full R0-style review.
 
 ---
 
@@ -99,8 +93,8 @@ No implementation begins until these gates pass. Each section is a separate chec
 
 ### 1. Run CRYPTO_REVIEW_CHECKLIST.md end-to-end
 
-Separately, for each of the three new protocols:
-- Device-set certificates (R1)
+Separately, for each of the new protocols/models:
+- Multi-device key and prekey isolation model (R1) — no new protocol (R1 reuses the existing exchange ceremony unchanged), but the concurrent-key data model and per-device prekey scoping still need sign-off
 - Guardian revocation (R2)
 - Passkey issuance/assertion (R3)
 
@@ -111,7 +105,6 @@ Per house rule, **no cryptographic code before all items check**. The §3 multi-
 ### 2. Register domain prefixes in one place
 
 Extend the `SaltInfo`/constants pattern:
-- `occulta-device-set-v1`
 - `occulta-device-revocation-v1`
 - `occulta-identity-revocation-v1`
 - `occulta-revocation-wrap-v1`
@@ -121,9 +114,8 @@ Every future signature verification rejects cross-prefix input — same mandate 
 
 ### 3. Write the threat-model delta doc per feature
 
-Write **before** implementation (checklist §4: state what is NOT achieved). The four honest deltas:
-- PQ gap on secondary devices (encryption)
-- PQ gap on device-set certs when either device lacks ML-DSA SE support (signing, iOS 26+ only — Alert #8)
+Write **before** implementation (checklist §4: state what is NOT achieved). Two honest deltas — down from an earlier draft's four, because removing R1's cert mechanism removed two PQ-signing deltas that no longer apply once R1 no longer shortcuts anything cryptographically:
+- **R1 has none.** Every device-contact pairing is a full physical UWB exchange, identical in strength to any other contact relationship — there is nothing to disclose.
 - Guardian collusion metadata exposure
 - Passkey hardware-binding is user-verifiable, not RP-attestable
 
@@ -133,71 +125,58 @@ Everything below travels as **optional sub-envelopes on `SealedPayload`** riding
 
 ---
 
-## R1 — Owner Device Set
+## R1 — Multi-Device Contacts
 
-**Goal:** Two of your iPhones become one attested identity; losing one is an inconvenience, not an identity death.
+*(Renamed from "Owner Device Set." The earlier design named after a shared, cross-device "set" object that this resolution doesn't have — see the rejection below. Full history: [FINDINGS.md](FINDINGS.md), Design Sessions 3–4.)*
+
+**Goal:** A contact can hold more than one of your device keys concurrently, each independently and physically verified. Losing one device is an inconvenience, not an identity death — your other device's trust with each contact was never dependent on the lost one.
+
+**Why not a device-to-device ceremony.** An earlier design had your two devices pair with *each other*, produce a signed cert, and have contacts accept the new device transitively on the strength of that signature — never physically meeting it. That was explicitly rejected: under Occulta's threat model (person with physical access under duress, not just a remote attacker), a single coerced cert ceremony would silently compromise the vouching device owner's *entire* contact graph in one event, with no physical tell for any contact to notice. Direct re-pairing, by contrast, requires an attacker to physically stage a ceremony with every contact individually — an attack-cost gap the cert model erased. The standing principle this holds to: **no mechanism may grant trust to a new key except a fresh physical UWB exchange; revocation is the only thing that may travel by signature alone**, because narrowing trust is always safe and granting it never is.
 
 ### 1. Ceremony
 
-Reuse `ExchangeManager` wholesale: MC session, `NIDiscoveryToken`, ≤0.25m gate, Diceware confirm — between your own two devices. New session-type flag only. Both devices require U1 (iPhone 11+, no SE-model iPhones); the NFC fallback from the Master Analysis can extend coverage later, not now.
+None — new, that is. Reuse the existing exchange flow exactly as it stands today. Adding a device to an existing contact is: from that contact's `Contact.Profile`, start "add a device," and run the ordinary UWB pairing ceremony again with the new device, directly with that contact. No new session type, no device-to-device step, no cert. This is [FINDINGS.md](FINDINGS.md) D-07's resolved flow, unchanged by this rewrite.
 
-### 2. Certificate format (hybrid: classical + opportunistic PQ)
+### 2. Data model
 
-Payload, biometric-gated: `prefix ∥ certVersion ∥ peerDevicePubKey ∥ peerDeviceMLDSAPubKey? ∥ hybridCapable ∥ exchangeNonce ∥ timestamp`.
+`Contact.Profile` moves from "one active key, rotation history" to "several concurrently-active keys, one per device." `deviceID: String` is added to `Key` (D-03) — minted once, at first exchange with that specific device, never reassigned. `expiredOn` becomes an explicit per-device kill switch rather than the implicit single-key rotation behavior it accidentally has today (D-05, D-06). New optional column, lightweight SwiftData migration; existing rows get `deviceID == nil`, treated as one implicit legacy device, no backfill needed.
 
-- `peerDeviceMLDSAPubKey` is present iff the signing device's Secure Enclave supports `SecureEnclave.MLDSA65` (iOS 26+, ML-DSA-capable hardware). `hybridCapable` is the same boolean, carried *inside the signed payload* — not inferred from field presence alone.
-- Each device SE-signs this payload twice: `classicalSignature` (`SecureEnclave.P256`, always) and, iff `hybridCapable`, `pqSignature` (`SecureEnclave.MLDSA65`).
-- Bidirectional — the set exists only when both certs verify (classical, and PQ where claimed). Nonce comes from the ceremony (replay-dead). Requiring biometrics on *both* devices during one UWB session is the anti-evil-maid property: an attacker holding your unlocked phone cannot enroll their device without your face/finger, twice.
+### 3. Fan-out at existing call sites
 
-**Anti-downgrade property:** because `hybridCapable` is bound inside the classically-signed payload, a relay cannot strip `pqSignature` to force silent classical-only fallback without also invalidating `classicalSignature`. A cert claiming `hybridCapable = true` with a missing or invalid `pqSignature` is rejected outright — never silently downgraded (§5).
+All 34 call sites reading `contactPublicKeys` (D-06) split into two categories: fan-out sites (encryption/decryption, identity challenge) move from `.last` to `.filter { $0.expiredOn == nil }` — *all* active devices, not one. Display sites (fingerprint view, "last exchanged" label) keep showing one key by product decision, since no multi-device picker UI exists yet — not a data-model gap, a deferred UI decision.
 
-### 3. Storage
+### 4. Encryption to multiple devices
 
-New optional SwiftData fields, default `nil`, on your own identity record: set-member public keys + certs, encrypted under the hybrid local DB key like everything else. Lightweight migration per the model-evolution rules.
+Reuse the shipped `useMultipleRecipientMessageFormat` capsule array exactly as group messaging already does: one session key, wrapped once per active device-key belonging to the contact. No wire-format change — `GroupRecipient` already takes a raw public key with no contact identifier threaded through the crypto layer at all (D-01).
 
-### 4. Distribution to contacts
+### 5. Forward secrecy per device (highest risk, highest oversight)
 
-New optional `deviceSet: DeviceSetAnnouncement?` on `SealedPayload`, piggybacked on the next outbound bundle to each contact — the exact pattern `prekeyBatch` and `identityChallenge` already use.
+Each device gets its own prekey pool with each contact, established the ordinary way during its own direct exchange — no bootstrapping needed, because there is no device that hasn't physically exchanged. SE tags extend to `"prekey.<contactID>.<deviceID>.<id>"` (D-02, D-03); `ContactManager` fans out one `GroupRecipient` per (contact, device) pair, each carrying that device's own `pendingBatch` computed against that device's own threshold (D-04). Device A never sees device B's prekeys or replenishment batches — a useful isolation property if one device is later compromised.
 
-### 5. Contact-side acceptance rule (the security core)
+**This is the one place this plan can recreate the documented historical prekey flaw.** Write the trace test proving device A never consumes or ships device B's prekeys before this ships.
 
-Accept a set member if and only if the cert verifies under a key *already pinned* for that identity. Never transitive, never from an unpinned key. Cap set size (4). Surface every set change through the Compromise Detection UI path — a device addition is exactly the event that feature exists to make visible.
+### 6. Revocation
 
-Verification order:
-1. Verify `classicalSignature` against the pinned P-256 key — mandatory, unconditional. Fail closed if this fails, full stop.
-2. If `hybridCapable` is true, `pqSignature` must also be present and verify against `peerDeviceMLDSAPubKey` — reject the whole cert if either is missing or fails. Do **not** fall back to classical-only in this case (that's the downgrade hole §2 closes).
-3. If `hybridCapable` is false, accept on the classical signature alone and badge the member "PQ: classical path only" in the device-set UI (same honest-badge pattern as the encryption gap, §9/Alert #6).
+Two paths, both narrowing trust only — consistent with the standing principle above:
+- **You still have another working device:** that device live-signs `occulta-device-revocation-v1 ∥ lostDevicePubKey ∥ timestamp` (it has an SE — no pre-signing needed) and distributes it directly to every contact who has the lost device's key pinned. Contacts drop the revoked key immediately; UI: "Alex removed a device."
+- **You have no working device left at all:** out of scope for R1, covered by R2 (Guardian Revocation).
 
-Net effect: forging or suppressing a device's PQ-capable status requires breaking the classical P-256 signature, not just the PQ one — an attacker can never silently downgrade a hybrid-capable member.
+### 7. PQ posture
 
-### 6. Encryption to a set
+No gap to disclose, and no separate section needed beyond this line: every device-contact pairing is a full live UWB exchange, so ML-KEM material is established identically to any other relationship — mutual encapsulation, cached, folded into every session key, exactly per bundle.md. There is no "secondary device" from the protocol's point of view; each device is a first-class, independently-verified relationship with its own full PQ material from day one.
 
-Reuse the shipped `useMultipleRecipientMessageFormat` capsule array: one session key, wrapped per set-member key. Each member is an independent crypto recipient.
+### 8. UX cost, named honestly
 
-### 7. Forward secrecy per device (highest risk, highest oversight)
+Adding a device means re-pairing with every contact individually — see Alert #7. This is the real, ongoing cost of holding the no-vouching line, and it's named rather than hidden. Mitigate with UX (reminders, a per-contact re-pair checklist, the NFC fallback), never with a shortcut that reintroduces vouching.
 
-Each set member maintains its own prekey pools per contact; SE tags already scope by `contactID` — extend scoping so pools are per-(contact, own-device) and write the §3 trace test proving device A never consumes or ships device B's prekeys. 
-
-**This is the one place this plan can recreate the documented historical prekey flaw.** Spend the most careful design hours here.
-
-### 8. Intra-set revocation
-
-Surviving device live-signs `occulta-device-revocation-v1 ∥ lostDevicePubKey ∥ timestamp` (it has an SE — no pre-signing needed) and distributes via the same envelope. Contacts drop the revoked key immediately; UI: "Alex removed a device."
-
-### 9. PQ posture
-
-Ship R1 with secondary devices on the classical path, badged per-device in the contact detail view ("PQ: classical path only"). 
-
-R1.1 uplift: device B's ML-KEM encapsulation key travels to the contact *inside* the existing PQ-protected channel through device A — transitive protection, matching the documented transitive model — with direct PQ restored at the next physical meeting. Never fake the badge.
-
-### 10. Tests + gate
+### 9. Tests + gate
 
 Mirror OCCULTA_TEST_PLAN structure:
-- Input validation (cert length, off-curve keys, oversized ML-DSA fields)
-- Tamper table (flipped cert fields → signature fail)
-- Hybrid-specific cases: `pqSignature` stripped with `hybridCapable = true` → reject (not classical-fallback); `hybridCapable` flipped false with a valid `pqSignature` still attached → reject (classical signature no longer matches payload); `peerDeviceMLDSAPubKey` swapped for another device's PQ key → `pqSignature` fails
-- Attack scenarios (unpinned-key cert injection, cross-identity cert replay, set-size overflow DoS, device A/B prekey isolation)
-- Mandatory old/new build fixture tests — a v1.3 build must decode a set-carrying bundle (classical-only *and* hybrid) and render the message untouched, ignoring the PQ fields entirely
+- Data-model migration (existing single-key rows get `deviceID == nil`, treated as one implicit legacy device)
+- Fan-out correctness at all 34 D-06 call sites (encryption/decryption reach every active device; display sites pick one sensibly)
+- Prekey/pool isolation trace test — device A never touches device B's pool for the same contact
+- Revocation: tamper table (flipped fields → signature fail), replay idempotence, "no surviving device" correctly falls through to R2 rather than failing silently
+- Mandatory old/new build fixture — a pre-multi-device build must decode a multi-key-carrying bundle and render the message untouched (D-01 predicts this should already hold with zero wire changes; prove it)
 
 Fixtures into CI permanently.
 
@@ -207,29 +186,29 @@ Fixtures into CI permanently.
 
 **Goal:** Losing *all* devices kills your keys, not your contacts' trust in a ghost.
 
-### 1. Pre-signed certificate
+### 1. Pre-signed certificate — per device, not per identity
 
-At enrollment, SE signs `occulta-identity-revocation-v1 ∥ identityRootPubKey ∥ issuedAt`. Revokes the identity — all set members — terminally.
+At enrollment, **each device's own SE** signs `occulta-identity-revocation-v1 ∥ thisDevicePubKey ∥ issuedAt`. There is no shared root key to sign once for every device — SE keys are non-exportable and device-bound by construction (D-02), which is exactly what makes multi-device work at all under R1. If you carry more than one device, you have one pre-signed cert per device.
 
-Plaintext of this cert never persists; it is generated, wrapped (step 2), split (step 3), and discarded in one flow.
+Plaintext of each cert never persists; it is generated, wrapped (step 2), bundled and split (step 3), and discarded in one flow.
 
-### 2. Encrypt-to-knowledge wrap
+### 2. Encrypt-to-knowledge wrap — one per device, bundled
 
-`AES-GCM(cert, key: HKDF(identityRootPubKey, info: "occulta-revocation-wrap-v1"))`.
+Each device's cert is wrapped separately: `AES-GCM(cert, key: HKDF(thisDevicePubKey, info: "occulta-revocation-wrap-v1"))`. All of a user's wrapped device-blobs are then bundled into a single escrow payload.
 
-Anyone can relay the blob; only holders of your public key — people you physically met — can open it. Broadcasting leaks nothing to non-contacts: no graph, no identity, random bytes. This is what makes guardian *distribution* metadata-clean.
+Anyone can relay the bundle; only a contact holding a *given device's* public key — someone who physically met that specific device — can open that device's blob. A contact who only ever met one of your two devices can still revoke the one they know; they simply can't open the other device's blob, which is correct — they were never trusted to. Broadcasting leaks nothing to non-contacts: no graph, no identity, random bytes. This is what makes guardian *distribution* metadata-clean.
 
 ### 3. Split and distribute
 
-Shamir K-of-N over the wrapped blob's key material using the shipped SSS implementation, delivered through the existing `ShardOperation` protocol (`.distribute` / `.acknowledge` / `.revoke` are already in `OccultaBundle`) — near-zero new wire surface.
+Shamir K-of-N over one root secret that gates every per-device wrap key in the bundle, so guardians manage a single K-of-N split regardless of how many devices you carry — delivered through the existing `ShardOperation` protocol (`.distribute` / `.acknowledge` / `.revoke` are already in `OccultaBundle`) — near-zero new wire surface.
 
 Constant-time GF(2^8) path already exists per the Master Analysis notes.
 
 ### 4. Guardian release flow
 
-Guardian-side UI: "Alex reports total device loss" → release shard to a coordinating guardian → K shards reconstruct → broadcast wrapped blob to the guardian's own full contact list (safe per step 2).
+Guardian-side UI: "Alex reports total device loss" → release shard to a coordinating guardian → K shards reconstruct → broadcast the full bundle to the guardian's own full contact list (safe per step 2).
 
-Recipients verify the SE signature against their pinned key and mark the identity revoked-pending-re-exchange.
+Each recipient opens only the blob(s) matching a device key they actually have pinned, verifies the SE signature against it, and marks that device revoked-pending-re-exchange. A contact who only ever knew one of your devices only ever revokes that one — correct, not a partial failure.
 
 ### 5. Abuse containment
 
@@ -316,7 +295,7 @@ Extend the banned-log list (RP IDs, usernames, credential IDs, user handles) to 
 - Tamper table (wrong rpID → no credential surfaced; clientDataHash substitution → RP-side verify fails)
 - Duplicate-registration/excluded-credential handling
 - ACL behavior on device
-- **Two SDK verifications from Alert #7 signed off on hardware** before this gate passes
+- **Two SDK verifications from Alert #6 signed off on hardware** before this gate passes
 
 ---
 
@@ -324,7 +303,9 @@ Extend the banned-log list (RP IDs, usernames, credential IDs, user handles) to 
 
 ### 1. Coverage ledger
 
-Per-credential device-coverage map inside the passkey store, synced between set members through the encrypted channel (they're contacts of each other, cryptographically).
+Per-credential device-coverage map inside the passkey store, synced between your own devices.
+
+**Open question, not resolved here:** this assumed a direct encrypted channel between your own devices ("they're contacts of each other, cryptographically") — that assumption no longer holds under R1's resolved model, where your own devices never establish any relationship with each other at all, only with contacts. Since R3/R4 are already the deferred half of this roadmap (see Trade-off Analysis), this doesn't need solving now, but it does need its own resolution before R4 is scoped for real — likely either a guardian-mediated sync path or accepting the coverage dashboard is per-device, not unified.
 
 Dashboard: "12 of 14 accounts covered on both devices."
 
@@ -385,7 +366,7 @@ Every release must verify:
 
 **First: usage frequency.** Occulta's core loop is episodic (you exchange keys occasionally, encrypt files occasionally). Episodic apps get deleted in storage purges. Passkeys are the opposite: five to twenty touchpoints a day. An app you authenticate with daily is an app that survives on the phone long enough for the proximity contact book to become valuable. That's a retention engine for the mission.
 
-**Second: unique moat.** Device-bound passkeys alone are commodity — 1Password could use them tomorrow. The moat only engages when recovery flows through physically verified humans: Device Set enrollment is a UWB ceremony, guardians are people you've stood next to. The defensible product isn't "passkeys," it's "your service logins inherit your human trust graph."
+**Second: unique moat.** Device-bound passkeys alone are commodity — 1Password could use them tomorrow. The moat only engages when recovery flows through physically verified humans: Multi-Device Contacts is built from direct physical UWB pairings with each contact, guardians are people you've stood next to. The defensible product isn't "passkeys," it's "your service logins inherit your human trust graph."
 
 ### The Decent Reason That Doesn't Fully Justify It
 
