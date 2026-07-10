@@ -1,8 +1,10 @@
 # Device-Bound, Recoverable Through People — Release Roadmap
 
-**Status:** Strategic plan, pre-R0
-**Date:** 2026-07-05
+**Status:** Strategic plan, pre-R0. **R1's scope was narrowed 2026-07-10 — see note below.**
+**Date:** 2026-07-05 (R1 scope revised 2026-07-10)
 **Scope:** Three-year feature arc: Multi-Device Contacts → Guardian Revocation → Passkey Provider → Recovery Layer
+
+> **2026-07-10 scope decision:** the "backup phone that just works across your whole contact list" ambition originally driving R1 is **shelved**, not built. The secure design (direct physical re-pairing per contact — see R1 below) makes that promise hold only for a handful of close contacts someone is willing to re-meet in person; for a real contact list, the cost of re-pairing with everyone outweighs the convenience of a second device. That's not a flaw in this design specifically — it's structural, the necessary price of Occulta's no-vouching invariant, and no better version of it exists. What remains in scope: the underlying data-model fix (concurrent device keys, so re-pairing a second device no longer *silently overwrites* the first device's access to a contact — a real defect today). No UX investment is planned to promote or streamline broad multi-device adoption. Full reasoning: [FINDINGS.md](FINDINGS.md), Design Session 5.
 
 ---
 
@@ -10,7 +12,7 @@
 
 Occulta's core thesis is *identity anchored in hardware and physical presence instead of servers*. This roadmap extends that thesis across three dimensions:
 
-1. **Multi-Device Contacts (R1):** Add a second iPhone to a contact by physically re-pairing with them directly — the same ceremony as first contact, no vouching, no shortcut. Losing one device is an inconvenience, not an identity death, because your other device's trust with each contact was never dependent on the lost one.
+1. **Multi-Device Contacts (R1, narrowed):** *Not* a flagship "backup phone that just works" feature — that ambition is shelved (see note above). What ships: a data-model fix so pairing a second device with a contact adds a key instead of silently overwriting the first device's. If you *do* re-pair a second device directly with a contact — the same ceremony as first contact, no vouching, no shortcut — both stay valid for that contact. No UX is built to encourage doing this broadly.
 2. **Guardian Revocation (R2):** Losing *all* devices kills your keys, not your contacts' trust in a ghost. Physical contacts you've verified can revoke your identity on your behalf.
 3. **Passkey Provider (R3–R4, optional):** Extend device-bound identity to service logins. The moat engages when recovery flows through physically verified humans.
 
@@ -60,11 +62,11 @@ The invariant, stated once and enforced everywhere: **private keys are *never* r
 
 Neither blocks R1/R2 (R3, Step 10 gate).
 
-### 7. Multi-device re-pairing doesn't scale with contact count
+### 7. Multi-device re-pairing doesn't scale with contact count — accepted, not mitigated
 
-**Problem:** Holding the no-vouching invariant (see Executive Summary; [FINDINGS.md](FINDINGS.md) Design Sessions 3–4) means adding a device requires physically re-pairing it with every contact individually — there is no cryptographic shortcut, deliberately. This is real friction, and friction nobody tolerates is friction that gets routed around, which is its own failure mode.
+**Problem:** Holding the no-vouching invariant (see Executive Summary; [FINDINGS.md](FINDINGS.md) Design Sessions 3–4) means adding a device requires physically re-pairing it with every contact individually — there is no cryptographic shortcut, deliberately. This is real friction, and it's exactly why R1's scope was narrowed (2026-07-10, see status note): the friction outweighs the convenience for anyone with a real contact list, so "make multi-device broadly convenient" isn't a goal worth chasing here.
 
-**Mitigation:** Solve it with UX, never with a shortcut that reintroduces vouching. A per-contact "devices to re-pair" checklist, reminders, and the NFC fallback (Master Analysis) to lower the bar for arranging a physical meeting (R1, Step 7).
+**Decision:** don't mitigate — accept it as a known limit and don't build UX to encourage broad adoption of re-pairing multiple devices. It remains *possible* (a user can re-pair a second device with a contact they care enough about to re-meet), just not promoted or streamlined. If usage data ever shows real demand from users with small, close contact circles, revisit with UX investment then — not speculatively now.
 
 ---
 
@@ -73,17 +75,17 @@ Neither blocks R1/R2 (R3, Step 10 gate).
 | Release | Ships | Feature | Floor | Flag |
 |---|---|---|---|---|
 | R0 | Design gates only | Protocol review (no code) | — | — |
-| R1 | 2026 Q4 | Multi-Device Contacts | iOS 16 + U1 | `enableMultiDeviceContacts` |
+| R1 | Opportunistic, low-priority | Multi-Device Contacts (narrowed to bug fix) | iOS 16 + U1 | `enableMultiDeviceContacts` |
 | R2 | 2027 Q1 | Guardian Revocation Custody | iOS 16 | `enableGuardianRevocation` |
 | R3 | 2027 Q2 | Passkey Provider | iOS 17 | `enablePasskeyProvider` |
 | R4 | 2027 Q3 | Recovery Layer (coverage + escrow) | iOS 17 | `enableRecoveryLedger` |
 | R5 | 2027 Q4+ | Guardian Succession (gated, exploratory) | iOS 18+ | — |
 
-R1's floor matches the existing UWB exchange requirement exactly — there is no separate ceremony or protocol to raise it. Adding a device is running the same pairing flow again, per contact.
+R1's floor matches the existing UWB exchange requirement exactly — there is no separate ceremony or protocol to raise it. Adding a device is running the same pairing flow again, per contact. R1 moved from a committed 2026 Q4 slot to opportunistic/low-priority once its scope narrowed to the data-model bug fix (2026-07-10) — it's a real defect worth fixing, but not one that justifies dedicated near-term engineering time on its own.
 
 ### Sequencing Rationale
 
-Passkeys ship *third*, not first — shipped alone they inherit the lockout objection that caps device-bound adoption. **The recovery substrate (R1, R2) must exist before the credential feature that depends on it.** Multi-Device Contacts without revocation is a half-told recovery story. Guardian Succession is exploratory and gated pending full R0-style review.
+Passkeys ship *third*, not first — shipped alone they inherit the lockout objection that caps device-bound adoption. **R2 stands on its own merits and does not depend on R1's scope.** R1's narrowed form (a data-model fix, not a flagship feature) doesn't constitute "recovery substrate" in any meaningful sense — losing all your devices (R2's problem) is orthogonal to whether `Contact.Profile` supports concurrent device keys (R1's problem). Guardian Succession is exploratory and gated pending full R0-style review.
 
 ---
 
@@ -125,11 +127,11 @@ Everything below travels as **optional sub-envelopes on `SealedPayload`** riding
 
 ---
 
-## R1 — Multi-Device Contacts
+## R1 — Multi-Device Contacts (scope narrowed to a data-model fix)
 
-*(Renamed from "Owner Device Set." The earlier design named after a shared, cross-device "set" object that this resolution doesn't have — see the rejection below. Full history: [FINDINGS.md](FINDINGS.md), Design Sessions 3–4.)*
+*(Renamed from "Owner Device Set." The earlier design named after a shared, cross-device "set" object that this resolution doesn't have — see the rejection below. Full history: [FINDINGS.md](FINDINGS.md), Design Sessions 3–5.)*
 
-**Goal:** A contact can hold more than one of your device keys concurrently, each independently and physically verified. Losing one device is an inconvenience, not an identity death — your other device's trust with each contact was never dependent on the lost one.
+**Goal, narrowed (2026-07-10):** fix the defect where pairing a second device with an existing contact silently overwrites the first device's key — `Contact.Profile` should hold several concurrently-active device keys, not one. This is *not* a bid to make "backup phone that just works across your whole contact list" a promoted, first-class feature — that ambition was assessed and shelved: the secure mechanism (direct physical re-pairing per contact) only pays off for a handful of close contacts someone would re-meet in person anyway, and there's no cheaper version of it that doesn't reintroduce vouching. What ships is quiet infrastructure: if a user re-pairs a second device with a contact, both stay valid for that contact, instead of one silently breaking.
 
 **Why not a device-to-device ceremony.** An earlier design had your two devices pair with *each other*, produce a signed cert, and have contacts accept the new device transitively on the strength of that signature — never physically meeting it. That was explicitly rejected: under Occulta's threat model (person with physical access under duress, not just a remote attacker), a single coerced cert ceremony would silently compromise the vouching device owner's *entire* contact graph in one event, with no physical tell for any contact to notice. Direct re-pairing, by contrast, requires an attacker to physically stage a ceremony with every contact individually — an attack-cost gap the cert model erased. The standing principle this holds to: **no mechanism may grant trust to a new key except a fresh physical UWB exchange; revocation is the only thing that may travel by signature alone**, because narrowing trust is always safe and granting it never is.
 
@@ -165,9 +167,9 @@ Two paths, both narrowing trust only — consistent with the standing principle 
 
 No gap to disclose, and no separate section needed beyond this line: every device-contact pairing is a full live UWB exchange, so ML-KEM material is established identically to any other relationship — mutual encapsulation, cached, folded into every session key, exactly per bundle.md. There is no "secondary device" from the protocol's point of view; each device is a first-class, independently-verified relationship with its own full PQ material from day one.
 
-### 8. UX cost, named honestly
+### 8. UX cost — accepted, not mitigated (Alert #7)
 
-Adding a device means re-pairing with every contact individually — see Alert #7. This is the real, ongoing cost of holding the no-vouching line, and it's named rather than hidden. Mitigate with UX (reminders, a per-contact re-pair checklist, the NFC fallback), never with a shortcut that reintroduces vouching.
+Adding a device means re-pairing with every contact individually. Unlike the original plan, no UX (checklists, reminders, promoted "add a device" flows) is being built to make this convenient at scale — see the scope note at the top of this document and Alert #7. This section exists so the fix doesn't get silently re-scoped upward later without revisiting that decision.
 
 ### 9. Tests + gate
 
@@ -382,7 +384,7 @@ Every hour spent there is an hour not spent on the duress cluster, Wi-Fi Aware, 
 
 ### The Recommendation
 
-**Skip passkeys for now, and lose nothing by doing so.** R1 and R2 serve identity-between-people on their own merits (device loss and revocation are unsolved problems in your core product today). Ship those because they complete the mission.
+**Skip passkeys for now, and lose nothing by doing so.** R2 serves identity-between-people on its own merits (total device loss and recovery is a real, unsolved problem today) — ship it because it completes the mission. R1, since its 2026-07-10 narrowing, is a small data-model bug fix, not a mission-critical feature; ship it opportunistically, not as a reason to prioritize this arc.
 
 If, a year from now, retention data says you need a daily-use hook, the passkey substrate will already exist and the decision becomes cheap. Building the recovery layer first and deferring the credential layer isn't a compromise — it's the version of this roadmap where every shipped line serves the thesis you just articulated.
 

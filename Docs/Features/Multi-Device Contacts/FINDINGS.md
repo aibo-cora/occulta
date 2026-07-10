@@ -3,7 +3,9 @@
 **Status:** Exploratory — no SPEC.md yet, not scoped for a release
 **Context:** Design discussion, 2026-07-02. Captures conclusions reached before any implementation, so the reasoning isn't lost before this gets formally scoped.
 
-**Problem statement:** A contact who owns more than one paired device (phone + backup phone, personal + work) should be reachable by a single send, openable on any of their devices that completed key exchange. Today `Contact.Profile` models exactly one active key at a time — a second device pairing would rotate/overwrite the first device's key rather than adding to it.
+**Problem statement (original, kept for the reasoning trail):** A contact who owns more than one paired device (phone + backup phone, personal + work) should be reachable by a single send, openable on any of their devices that completed key exchange. Today `Contact.Profile` models exactly one active key at a time — a second device pairing would rotate/overwrite the first device's key rather than adding to it.
+
+**Scope narrowed 2026-07-10 — see Design Session 5.** The "reachable on any device, seamlessly" ambition is shelved. What's still being fixed: the overwrite defect (last sentence above) — a real bug regardless of how far the broader feature goes.
 
 ---
 
@@ -160,3 +162,18 @@ The finding below (D-08) was reached in the course of designing R1's now-abandon
 - A parallel bootstrap problem for classical one-time prekeys (B has no prekey pool with any contact it never physically met) is solved the same way: B signs a compact digest over a locally-generated prekey batch, which travels alongside the ML-KEM key in the same introduction payload — anchoring a bag of unsigned one-time prekeys the way a Signal-style signed prekey does.
 
 Full mechanism, wire fields, and test plan: [ROADMAP.md](ROADMAP.md) R1 §2, §7, §9.
+
+---
+
+## Design Session 5 — Scope Narrowed: Bug Fix, Not Flagship Feature (2026-07-10)
+
+**Question raised:** with the cert-vouching mechanism gone (Design Session 4) and the secure fallback being "physically re-pair every device with every contact," is the broader feature still worth building — or did fixing the security hole quietly gut the value proposition too?
+
+**Answer: mostly gutted, yes.** Two distinct things had been bundled under "Multi-Device Contacts":
+
+1. **A real defect.** Today, pairing a second device with an existing contact silently overwrites the first device's key for that contact (see problem statement above) — the first device stops receiving from that contact with no warning. This is a genuine bug, independent of everything else, and D-01–D-06's concurrent-key data model fixes it correctly.
+2. **A "backup phone that just works" ambition.** This was R1's actual driving pitch, and it's the part that doesn't survive the secure redesign. Making a second device useful to a contact now requires physically re-pairing with *that contact*, one at a time (D-07). For someone with a real contact list, that cost exceeds the convenience of a second device. This isn't a shortcoming of R1's specific design — it's structural: any cheaper version of "multi-device for many contacts" requires the vouching shortcut Design Sessions 3–4 already rejected, and Occulta's no-server, no-vouching thesis has no cheaper substitute to offer. Every other messenger can do backup-device sync cheaply because it has a server and an account model to lean on; Occulta explicitly doesn't.
+
+**Resolution:** ship (1), shelve (2). R1 in ROADMAP.md is narrowed to the data-model fix — quiet infrastructure, not a promoted feature. No UX (checklists, reminders, dashboards) will be built to encourage broad re-pairing. R1 moves from a committed 2026 Q4 slot to opportunistic/low-priority. R2 (Guardian Revocation) is confirmed to stand on its own merits — it solves total device loss, which is orthogonal to whether `Contact.Profile` supports concurrent keys — so this doesn't affect R2's priority. R3–R5 were already deferred in the Trade-off Analysis for independent reasons and remain so, now with one less justification (R1 no longer serves as their "recovery substrate" foundation in any meaningful sense).
+
+If usage data ever shows real demand from users with small, close contact circles willing to re-meet in person for a second device, the narrowed R1 becomes cheap to extend with UX — the underlying mechanism doesn't need to change, just the amount of product investment wrapped around it.
