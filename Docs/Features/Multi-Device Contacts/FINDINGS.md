@@ -48,9 +48,9 @@ Verified `Contact.Profile.identifier` (`Contact+Model.swift:12`) is `UUID().uuid
 
 ## Open Questions (Unresolved)
 
-### Q-01 · Revocation of a single device
+### Q-01 · Revocation of a single device — design resolved (Q-06, D-07), not implemented
 
-`expiredOn` (`Contact+Model.swift:257`) is currently the only invalidation mechanism, and it's rotation semantics: one key expires, a new one becomes active. Multi-device needs "kill device B's key, leave device A's key active" — a concurrently-active-keys model, not a rotation model. Not designed yet.
+`expiredOn` (`Contact+Model.swift:257`) is currently the only invalidation mechanism, and it's rotation semantics: one key expires, a new one becomes active. Multi-device needs "kill device B's key, leave device A's key active" — a concurrently-active-keys model, not a rotation model. **Design settled:** `expiredOn` becomes a correctly-scoped per-device kill switch (Q-06) distributed via the direct revocation broadcast (D-07, Design Session 3). **Not built:** neither the corrected `reset(identity:)` split nor the broadcast itself exist in code yet — see Design Session 6's "load-bearing dependency" note.
 
 ### Q-02 · Pairing UX for "add another device to an existing contact" — RESOLVED, see Design Session 3
 
@@ -62,11 +62,15 @@ Resolved: no auto-detection. The user explicitly triggers "add a device" from Bo
 
 The 32-member group cap (`b702ce4`) counts recipient slots. If each device of a multi-device contact consumes its own slot, a contact with 3 devices in a group send costs 3 of the 32 slots. Not yet decided whether that's acceptable or whether multi-device contacts should be capped separately.
 
+### Q-07 · Vault custody reconciliation has no device provenance — safety-critical, blocking. Fix proposed, not implemented. See Design Session 6
+
+`ShardCustodyManager.processInboundManifest`/`processExpectedShards` key everything by `Contact.Profile.identifier` (the same value regardless of which of the contact's devices sent the bundle) and have no concept of "which device established this custody relationship." A second device with no local custody history sending an empty manifest can cause real shards to be flagged possibly-absent or handed back, purely because it doesn't know about a relationship the contact's other device built. Design deferred — logged only. **Fix design not yet done; do not ship any multi-device change that reaches these code paths until it is.**
+
 ---
 
 ## Prerequisite for implementation
 
-`Contact.Profile`'s key model must move from "one active key, rotation history" to "several concurrently-active keys, one per device" before any of D-01–D-04 can be implemented. Q-01–Q-03 should be resolved (or explicitly deferred with a documented reason) before writing a SPEC.md.
+`Contact.Profile`'s key model must move from "one active key, rotation history" to "several concurrently-active keys, one per device" before any of D-01–D-04 can be implemented. Q-01–Q-03 should be resolved (or explicitly deferred with a documented reason) before writing a SPEC.md. **Q-07 additionally blocks shipping any multi-device change that touches Vault/shard custody — this is a correctness-and-safety gap, not a cosmetic one.**
 
 ---
 
@@ -87,17 +91,15 @@ Grepped every `contactPublicKeys` reference. All 34 call sites assume a single k
 - **Fan-out sites** — `Contact+Manager.swift` (encryption/decryption paths), `IdentityChallenge+Coordinator.swift` — need *all* active devices (`.filter`, not `.last`).
 - **Display sites** — `Contact+Detail.swift`, `Contacts+DesignTokens.swift` (fingerprint, "last exchanged" UI) — need *one* key to show, because no UI currently exists for a device list. This is a product decision hiding inside what looks like a pure data-model change (see Q-05).
 
-### Q-04 · Schema shape: field addition vs. new `Device` entity (undecided)
+### Q-04 · Schema shape: field addition vs. new `Device` entity — RESOLVED 2026-07-10, Option A
 
-**Option A (minimal):** add `deviceID: String` to the existing `Key` struct, keep the flat `[Key]` array on `Profile`. "All active devices" = `.filter { $0.expiredOn == nil }` grouped by `deviceID`. New optional column, lightweight SwiftData migration, same pattern already used for `encryptionScheme` / `maxBundleVersion`. Existing rows get `deviceID == nil`, treated as one implicit legacy device — no backfill needed.
+**Decision: Option A.** Add `deviceID: String?` to the existing `Contact.Profile.Key` `@Model` (`Contact+Model.swift:245`) — not a new `Device` entity. Confirmed by reading the actual model, not just the earlier abstract description: `Key` is already a proper SwiftData model with its own row and a cascade relationship to `Profile`, and it already carries `quantumKeyMaterialEncrypted` directly on the key itself — so ML-KEM material is already scoped at exactly the right granularity for multi-device with zero extra work. "All active devices" = `.filter { $0.expiredOn == nil }` grouped by `deviceID`. New optional column, lightweight SwiftData migration — same precedent already used for `signedAttributes` ("new optional column, no plan required," `Contact+Model.swift:56`). Existing rows get `deviceID == nil`, treated as one implicit legacy device, no backfill.
 
-**Option B (richer):** a new `Device` model owning its own key-rotation history. Gives a natural home for device metadata (label, added date, revoked flag) beyond key material, but is a new `@Model`, a new relationship, and a heavier migration.
+Option B's stated justification (a natural home for device labels/metadata) is moot given Q-05's resolution — no device-list UI is being built, so there's no metadata to give a home to yet. ML-DSA was also considered for this model at one point (device-set cert signing) and is explicitly dropped — nothing in the resolved design (Design Session 4) signs anything, so there's no material to store.
 
-Leaning toward Option A on simplicity grounds unless per-device metadata (beyond the key itself) is wanted now. Not decided.
+### Q-05 · Does the UI need real multi-device display in this pass? — RESOLVED 2026-07-10, no
 
-### Q-05 · Does the UI need real multi-device display in this pass?
-
-Display call sites (fingerprint view, "last exchanged" label) currently show one key. Under multi-device, either: (a) UI stays single-key and picks "most recently added device" as a display default, or (b) UI grows an actual device list/picker. Affects whether `deviceID` alone is sufficient or a `deviceLabel`/nickname field is also needed. Not decided.
+**Decision: no.** Design Session 5 narrowed R1 to a quiet data-model fix with no UX investment to promote or streamline multi-device adoption — a device-list/picker UI is exactly the kind of investment that decision rules out. Display call sites (fingerprint view, "last exchanged" label) keep showing one key, defaulting to whichever is currently selected by the existing `.last`-style logic at those sites (per D-06, these are display-only call sites, not fan-out ones — picking "wrong" here is cosmetic, not a correctness issue). No `deviceLabel`/nickname field needed since there's no UI to show it in.
 
 ### Q-06 · `reset(identity:)` becomes a latent bug under multi-device if untouched (refines Q-01)
 
@@ -177,3 +179,49 @@ Full mechanism, wire fields, and test plan: [ROADMAP.md](ROADMAP.md) R1 §2, §7
 **Resolution:** ship (1), shelve (2). R1 in ROADMAP.md is narrowed to the data-model fix — quiet infrastructure, not a promoted feature. No UX (checklists, reminders, dashboards) will be built to encourage broad re-pairing. R1 moves from a committed 2026 Q4 slot to opportunistic/low-priority. R2 (Guardian Revocation) is confirmed to stand on its own merits — it solves total device loss, which is orthogonal to whether `Contact.Profile` supports concurrent keys — so this doesn't affect R2's priority. R3–R5 were already deferred in the Trade-off Analysis for independent reasons and remain so, now with one less justification (R1 no longer serves as their "recovery substrate" foundation in any meaningful sense).
 
 If usage data ever shows real demand from users with small, close contact circles willing to re-meet in person for a second device, the narrowed R1 becomes cheap to extend with UX — the underlying mechanism doesn't need to change, just the amount of product investment wrapped around it.
+
+---
+
+## Design Session 6 — Vault Custody Reconciliation Has No Device Provenance (2026-07-10)
+
+**Logged only — fix design deferred to a separate pass.**
+
+**Question raised:** even the narrowed R1 (concurrent device keys) adds a second device that can send bundles to a contact. Does the existing Vault/shard-custody system handle that safely, or can a second device's bundle corrupt custody state established by the first?
+
+**Finding: it doesn't handle it safely — this is a real, previously-uncatalogued gap, and it's more serious than the `contactPublicKeys` fan-out issues D-01–D-06 already cover.**
+
+`ShardCustodyManager.processInboundManifest` (`ShardCustody+Manager.swift:227`) and `processExpectedShards` (`ShardCustody+Manager.swift:280`) are both keyed by the contact's overall identity (`senderIdentifier` / `ownerIdentifier`, resolving to `Contact.Profile.identifier`), which is identical regardless of which of the contact's devices actually sent the bundle. Neither function has any concept of device provenance.
+
+**Concretely, two failure paths:**
+
+1. **`processInboundManifest`, lines 258–268:** loops over every `PotentiallyLostShard` row for `senderIdentifier` and sets `isAbsent = !manifestSet.contains(...)` for each — i.e., it treats *this one manifest* as authoritative for the whole custody relationship with that contact. A second device with no local custody history (it never participated in any shard exchange — a contact's own devices don't sync with each other, no more than ours do) sends an empty manifest by construction, not because anything was lost. Run through this loop, every real shard held for that contact gets flagged possibly-absent.
+2. **`processExpectedShards`, line 280 onward:** derives `currentFP` from `senderPublicKey` (the sending device's own key) and deletes `CustodyShard` rows whose stored `ownerKeyFingerprint` doesn't match. Per `buildShardOperations`'s doc comment (`ShardCustody+Manager.swift:300`), a fingerprint mismatch is the *existing, deliberate* signal for identity key rotation, triggering a trustee-side handback. A second concurrently-valid device is not a rotation — but this code has no way to distinguish the two. If device B ever exercises this path, the rotation-detection logic could misfire and hand back shards still correctly held for device A.
+
+**Why this is a different tier of problem than D-01–D-06:** those findings are about who can *read* a message (fan-out, display defaults) — recoverable, cosmetic-adjacent. This one can cause **active, incorrect deletion or false-loss-flagging of real custody state** in a system (Vault/SSS recovery) that exists precisely so users don't lose access to their own data. The team already hardened one adjacent version of this exact problem class — the `shardMetadataAttempted` flag (`Contact+Manager.swift:1695`) exists specifically to stop an ambiguous empty manifest from being misread, with an explicit comment that collapsing the distinction "would drop that signal." Multi-device reopens a harder version of the same class of bug: not just empty-vs-not-attempted, but *whose* manifest gets to speak for a relationship at all.
+
+**Status:** logged as Q-07, marked blocking. A fix direction is proposed below — **not implemented, not fully verified, expected to keep changing as this gets iterated on.** Do not ship R1 (even in its narrowed, data-model-only form) if it enables a second device to reach `processInboundManifest`/`processExpectedShards` before this is resolved.
+
+### Proposed fix direction v2 (2026-07-10 — supersedes v1 above, will keep iterating)
+
+**Core simplification: don't make Vault/custody multi-device-aware at all. Keep it scoped to one device per identity, in both directions, and let `processInboundManifest`/`processExpectedShards`/`mismatchHandbackOps` keep the single-device assumption they already have.** This replaces the recorded-recipient-fingerprint-set proposal above — that design solved cross-device reconciliation; this one avoids needing reconciliation in the first place.
+
+**Which of a contact's devices we trust for shard traffic — outward-facing, fully computed, no new signal.** Define it as the oldest key with `expiredOn == nil` for that contact (`Key.acquiredAt`, already a field — [Contact+Model.swift:245](Occulta/Data%20Models/Contact+Model.swift:245)). Both sides derive the same answer independently, with zero new wire messages. When a contact revokes a device, the existing revocation broadcast (R1 §6) removes it from the active set and every recipient recomputes the new answer automatically — "promotion" isn't an event, it's a side effect of data that already changes for other reasons.
+
+**Bundle routing:** `shardOperations`/`custodyManifest`/`expectedShards` populate *only* the recipient slot for whichever of a contact's devices resolves to the above — every other part of the fanned-out bundle still reaches all their active devices per R1 §4 unchanged. This is the one real code change: the per-recipient payload assembly (`Contact+Manager.swift`, around the recipient-construction pass that already calls `buildShardOperations`) needs to know, per recipient, whether it's building for the trusted device or not.
+
+**Defense in depth on receipt, not just well-behaved senders:** don't rely solely on contacts' clients correctly withholding shard content from their own non-trusted devices. `processInboundManifest`/`processExpectedShards` should also verify the sender's fingerprint matches the resolved trusted-device answer and discard shard-relevant content otherwise — the same "don't trust the sender's claim, verify independently" posture already used for fallback-mode filtering a few lines away (`Contact+Manager.swift`, the `isFallback` filtering comment: *"regardless of what the sender claims, drop them here — rather than relying on the sender to have gated correctly"*).
+
+**Our own vault needs no local "master" tracking at all — this was the wrong frame.** A device's local behavior is already fully determined by whether it holds local `PendingShardDistribute`/`CustodyShard` rows, which only ever exist where they were created. No flag to compute, nothing to consult. The only real requirement: **a newly-paired second device doesn't get Vault-initiating capability by default**, so it can't start an independent, unsynchronized distribution history that fragments the same underlying vault. That's a local gate ("is Vault already active on this device"), not a cross-device concept.
+
+**Loss and promotion — exactly one unavoidable manual step, everything else automatic:**
+- A contact's device being lost: fully automatic on our side, via the existing revocation broadcast + the deterministic recomputation above.
+- *Our own* device being lost: **cannot be automatic**, and this isn't a gap to close — Occulta's own devices have no channel to each other by design (the same standing invariant that killed the cert-vouching design earlier this session). There is no data path by which a surviving device could independently verify the other is gone. The user must say so, on the surviving device, once. Every downstream step — revocation broadcast, contacts recomputing the new trusted device, Vault activating on the surviving device — follows automatically from that one trigger.
+- **Open, not yet decided:** whether the resync step (the newly-designated device asking known trustees what they currently hold, to rebuild local tracking state) runs automatically once the manual trigger fires, or wants its own confirmation — it's the one part of this flow that reaches out and potentially alters trustee-facing state, not just a passive broadcast. Also still depends on unverified capabilities of `Vault+Manager+Reconstruction.swift`.
+
+**Also still needed:** wherever `buildShardOperations(for:currentContactPublicKey:)`'s caller currently resolves "the contact's public key," it must resolve to the trusted-device key specifically — not whatever D-06's general `.last`-pattern cleanup happens to pick for other (cosmetic) call sites. Getting this one wrong reintroduces the false-rotation risk this whole design exists to close.
+
+**Why this is preferred over v1:** no new schema fields, no set-based comparisons, and `processInboundManifest`/`processExpectedShards`/`mismatchHandbackOps` need no internal changes at all — they only ever see one device's traffic per relationship, exactly as today. It also concentrates Vault-sensitive material on fewer devices, which is a security property, not just a simplification.
+
+**Not yet verified:** `mismatchHandbackOps`'s actual implementation (only its doc comment read so far). Whether the recipient-payload assembly can cleanly special-case one recipient's fields without restructuring the fan-out loop. `Vault+Manager+Reconstruction.swift`'s actual resync capabilities. No tamper table, trace tests, or R0-style checklist pass done yet — expect this to keep changing.
+
+**Load-bearing dependency that doesn't exist yet:** this whole design leans on "the revocation broadcast" (R1 §6: a surviving device SE-signs `occulta-device-revocation-v1 ∥ lostDevicePubKey ∥ timestamp` and sends it directly to every contact) treating it as a stable given. Checked 2026-07-10: **it isn't implemented anywhere** — `occulta-device-revocation-v1` appears nowhere in the codebase outside this doc and ROADMAP.md. It's a resolved *design* (FINDINGS.md Design Session 3, 2026-07-05) with a wire shape written down (ROADMAP.md R1 §6), but no struct, no bundle field, no handler. The only shipped, related code is `reset(identity:)` (`Contact+Manager.swift:524`), which is local-only (`contact.contactPublicKeys?.last?.expiredOn = ...`, no send) and already has Q-06's documented bug (`.last` instead of all active keys) baked in. Everything in this write-up described as "automatic once the manual trigger fires" depends on building this broadcast first.

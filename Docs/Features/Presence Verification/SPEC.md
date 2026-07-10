@@ -1,7 +1,7 @@
 # Presence Verification ("Live Check") — Specification
 
-**Status:** Draft for review
-**Date:** June 12, 2026
+**Status:** Delayed — blocked on an unresolved relay/MITM attack, see §6 addendum. Not scheduled.
+**Date:** June 12, 2026 (delayed 2026-07-10)
 **Builds on:** Identity Challenge protocol (shipped, `Occulta/Features/IdentityChallenge/`)
 **Master analysis entry:** Feature #15, `Docs/Features/Master Feature & Expansion Analysis.md`
 **Feature flag:** `presenceVerification` (features.plist)
@@ -269,6 +269,27 @@ Rules:
   device about a conversation they are not in); the 120 s window forces the relay to run
   in real time; education copy on the verdict screen. This is the same residual class as
   number-matching MFA. **Not eliminated. Marketing copy must never claim it is.**
+
+  > **Addendum (July 10, 2026) — reclassified from residual to blocking.** Re-assessed:
+  > this is a relay ("mafia fraud") attack, a category in challenge-response
+  > authentication generally considered unsolvable without distance-bounding (round-trip
+  > time-of-flight measurement between prover and verifier) — infeasible here because
+  > network jitter over an arbitrary video/audio call swamps any timing signal precise
+  > enough to bound distance. The stated mitigations do not proportionally raise the
+  > attacker's cost against this feature's own target threat model: an adversary already
+  > capable of running a live synthetic video deepfake (the Arup-class scenario this
+  > feature is named for) finds "phone the real contact and get them to scan a code"
+  > easier than the deepfake itself, not harder. "Same residual class as number-matching
+  > MFA" is not a defense — the MGM/Scattered Spider breach cited in §1 as validation for
+  > this feature *is* that same attack class succeeding in the wild. Content-binding
+  > (mixing session-specific live-call content into the signed challenge) raises the bar
+  > but is not a guarantee: a sufficiently resourced attacker running both the deepfake
+  > call and a synchronized real-time relay of that content defeats it too. No known fix
+  > guarantees protection. **Feature delayed — do not implement until either (a) a
+  > protocol change closes this gap with a real guarantee, or (b) the product claim is
+  > narrowed to explicitly exclude live, resourced, dual-channel relay attacks and the
+  > marketing/UX makes that limit explicit before shipping.** See `Master Feature &
+  > Expansion Analysis.md` #15 for the corresponding priority downgrade.
 - **Coerced or compromised contact:** presence proves *the person with the key actively
   approved*, not that they are free, honest, or alone. Out of scope by design.
 - **Compromised responder device with biometric bypass:** equivalent to full device
