@@ -122,7 +122,11 @@ struct KeyExchange: View {
 
         @Environment(ContactManager.self) private var contactManager: ContactManager?
         @Environment(\.dismiss) private var dismiss
-        
+
+        private enum SaveState { case confirming, saving, saved, failed }
+        private enum SaveError: Error { case invalidKeyMaterial }
+        @State private var saveState: SaveState = .confirming
+
         var identity: Data {
             let identity = try? Manager.Key().retrieveIdentity()
             let compareWith = identity ?? Data()
@@ -162,19 +166,54 @@ struct KeyExchange: View {
                             .foregroundStyle(Color.occultaVerified)
                     }
 
-                    Button("Confirm") {
-                        self.save()
+                    switch self.saveState {
+                    case .confirming, .saving:
+                        Button {
+                            self.save()
+                        } label: {
+                            if self.saveState == .saving {
+                                ProgressView().tint(.white)
+                            } else {
+                                Text("Confirm")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.occultaAccent)
+                        .frame(maxWidth: .infinity)
+                        .disabled(self.saveState == .saving)
+
+                        Button("Cancel") {
+                            self.manager.finish()
+                            self.dismiss()
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(self.saveState == .saving)
+
+                    case .saved:
+                        Label("Key saved", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Color.occultaVerified)
+
+                    case .failed:
+                        Label("Couldn't save key", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.occultaDanger)
+
+                        Button("Retry") {
+                            self.save()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.occultaAccent)
+                        .frame(maxWidth: .infinity)
+
+                        Button("Cancel") {
+                            self.manager.finish()
+                            self.dismiss()
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.occultaAccent)
-                    .frame(maxWidth: .infinity)
-                    
-                    Button("Cancel") {
-                        self.manager.finish()
-                        self.dismiss()
-                    }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
                 }
                 .padding()
             }
@@ -220,21 +259,35 @@ struct KeyExchange: View {
         }
 
         private func save() {
-            let myIdentity = (try? self.keyManager.retrieveIdentity()) ?? Data()
-            let date = String(Date.now.timeIntervalSince1970)
-            let quantum = self.payload.hybridResult.map {
-                QuantumKeyMaterial(
-                    encapsulatedSecret: $0.mlkemSecret1,
-                    decapsulatedSecret: $0.mlkemSecret2,
-                    ourCiphertext: $0.ourCiphertext,
-                    peerCiphertext: $0.peerCiphertext
-                )
+            self.saveState = .saving
+
+            do {
+                let myIdentity = try self.keyManager.retrieveIdentity()
+                let date = String(Date.now.timeIntervalSince1970)
+                let quantum = self.payload.hybridResult.map {
+                    QuantumKeyMaterial(
+                        encapsulatedSecret: $0.mlkemSecret1,
+                        decapsulatedSecret: $0.mlkemSecret2,
+                        ourCiphertext: $0.ourCiphertext,
+                        peerCiphertext: $0.peerCiphertext
+                    )
+                }
+
+                guard let key = Contact.Draft.Key(material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum) else {
+                    throw SaveError.invalidKeyMaterial
+                }
+
+                try self.contactManager?.update(key: key, for: self.identifier)
+
+                self.saveState = .saved
+                self.manager.finish()
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    self.dismiss()
+                }
+            } catch {
+                self.saveState = .failed
             }
-            if let key = Contact.Draft.Key(material: self.payload.classicalKey, owner: myIdentity, date: date, quantumKeyMaterial: quantum) {
-                try? self.contactManager?.update(key: key, for: self.identifier)
-            }
-            self.manager.finish()
-            self.dismiss()
         }
     }
 }
