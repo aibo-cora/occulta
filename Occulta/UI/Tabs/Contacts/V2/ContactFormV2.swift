@@ -19,6 +19,7 @@ extension Contact {
         @State private var displayingRevokeKeyWarning = false
         @State private var displayingDeleteWarning = false
         @State private var isSensitive = false
+        @State private var showSaveError = false
 
         @Environment(\.dismiss)              private var dismiss
         @Environment(ContactManager.self)    private var contactManager
@@ -98,16 +99,16 @@ extension Contact {
                             .padding(.vertical, 10)
                         }
 
-                        if self.isCreate {
-                            EncryptionCTAV2()
-
-                            Text("You can save without a key — you just can't encrypt until you exchange one.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 24)
-                        } else {
+                        if !self.isCreate {
                             self.editOnlyActions
+                        }
+
+                        if self.showSaveError {
+                            Label("Couldn't save contact", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.occultaDanger)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.horizontal, 4)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -124,11 +125,15 @@ extension Contact {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Save") {
-                            try? self.contactManager.save(contact: self.contact,
-                                                          currentDepth: self.security.currentDepth)
-                            try? self.contactManager.setVisibility(for: self.contact.identifier,
-                                                                   isSensitive: self.isSensitive)
-                            self.dismiss()
+                            do {
+                                try self.contactManager.save(contact: self.contact,
+                                                              currentDepth: self.security.currentDepth)
+                                try self.contactManager.setVisibility(for: self.contact.identifier,
+                                                                       isSensitive: self.isSensitive)
+                                self.dismiss()
+                            } catch {
+                                self.showSaveError = true
+                            }
                         }
                         .tint(Color.occultaAccent)
                         .disabled(!self.canSave)
@@ -381,38 +386,6 @@ private struct EmailSectionRowsV2: View {
                 addButtonV2(label: "add email") { self.contact.emailAddresses.append(.init()) }
             }
         }
-    }
-}
-
-// MARK: - Encryption CTA
-
-private struct EncryptionCTAV2: View {
-    var body: some View {
-        HStack(spacing: 14) {
-            RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(.white.opacity(0.6), lineWidth: 1.5)
-                .frame(width: 44, height: 44)
-                .overlay(Image(systemName: "key.horizontal.fill").foregroundStyle(.white.opacity(0.9)))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Exchange keys")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("scan · paste · or receive")
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.7))
-        }
-        .padding(16)
-        .background(Color.occultaAccent)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .shadow(color: Color.occultaAccent.opacity(0.25), radius: 12, x: 0, y: 8)
     }
 }
 
