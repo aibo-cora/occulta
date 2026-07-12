@@ -35,18 +35,6 @@ struct OnboardingView: View {
             .animation(.easeInOut, value: self.pageIndex)
 
             VStack {
-                HStack {
-                    Spacer()
-                    Button("Skip") {
-                        withAnimation {
-                            self.hasCompleted = true
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding()
-                    .opacity(self.pageIndex < 3 ? 1 : 0)
-                }
-
                 Spacer()
 
                 HStack(spacing: 8) {
