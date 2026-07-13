@@ -208,13 +208,16 @@ Remaining Sweep 1 work: encrypt/send progress feedback only.
 Highest-ROI work available: every failed exchange loses two users in person,
 and every silent failure poisons word of mouth.
 
-**Watchdog recovery.**
-Replace the exchange watchdog's 3-step both-device manual recovery (toggle
-Settings → Privacy → Location Services → System Services → "Networking &
-Wireless" off/on, restart both devices, retry) with in-app guidance and a
-one-tap retry. Distinct from Sweep 1 — this is exchange-specific
-timer/hardware logic, not a feedback-pattern gap — but equally P0 since it
-sits in the same fragile 30-second window (C2).
+**Watchdog recovery.** ✅ Fixed.
+Replaced the exchange watchdog's silent teardown-and-dismiss (`KeyExchange.swift`
+called `finish()` then `dismiss()` on `.timedOut` with zero explanation — worse
+than the 3-step manual recovery this item originally described, which was never
+actually shown in-app) with an in-app banner and one-tap retry. Since `finish()`
+already resets `phase` to `.resting`, dropping the `dismiss()` call lets the view
+fall back to the existing "Exchange Keys" button instead of closing — that
+button is now the retry, no Settings toggle or device restart required. Note:
+`.failed` is declared in `ExchangePhase` but never assigned anywhere in
+`Exchange+Manager.swift` — `.timedOut` is the only reachable failure phase today.
 
 ### P1
 
@@ -271,7 +274,7 @@ ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
 | # | Finding | Severity | Type | Addressed by | Status |
 |---|---------|----------|------|--------------|--------|
 | C1 | Zero value at install | Critical | assessment | Sweep 3 | ✅ Resolved — capability already existed (vault notes), onboarding now signposts it |
-| C2 | Exchange failure modes (silent save, watchdog, gates) | Critical | code | Sweep 1, Watchdog recovery | 🟡 Silent save fixed; watchdog recovery still open |
+| C2 | Exchange failure modes (silent save, watchdog, gates) | Critical | code | Sweep 1, Watchdog recovery | ✅ Fixed — silent save and watchdog recovery both resolved |
 | C3 | No retention trigger | Critical | code | Sweep 2 | ⬜ Open |
 | H1 | Composition state loss | High | code | Sweep 2 | ⬜ Open |
 | H2 | Inbound delivery silent failure | High | code | Sweep 1, Sweep 2 | 🟡 Messaging already existed; landing place (inbox) still open |
@@ -281,8 +284,12 @@ ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
 | M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 | ⬜ Open |
 | M3 | Skippable onboarding hides UWB requirement | Medium | code | Sweep 3 | ✅ Fixed — Skip removed |
 
-The single highest-friction point remains key exchange: hardware-gated,
-proximity-gated, permission-gated, with a fragile 30-second window and a
-silent save failure on success. It is also the demo, the onboarding, and the
-growth loop. Fix it first; then give the app day-one value and a reason to
-return; then earn credibility in public rather than asserting it in broadcast.
+Key exchange remains hardware-gated, proximity-gated, and permission-gated —
+inherent to the UWB approach, not fixable in code. But the two failure modes
+that were silent (save failing invisibly on success, timeout dismissing with
+no explanation) are now loud instead: explicit save states with retry, and an
+in-app banner with one-tap retry on timeout. It was also the demo, the
+onboarding, and the growth loop, which is why this was P0. Next: encrypt/send
+progress feedback closes out Sweep 1; then day-one value and a reason to
+return (Sweep 2); then earn credibility in public rather than asserting it in
+broadcast.
