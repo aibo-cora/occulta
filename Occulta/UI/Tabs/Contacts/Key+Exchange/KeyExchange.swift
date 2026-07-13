@@ -13,11 +13,11 @@ struct KeyExchange: View {
     @State private var exchangeManager: ExchangeManager = .init()
     @State private var displayingInfo: Bool = true
     @State private var confirmingPayload: ExchangeManager.ExchangePhase.Payload?
+    @State private var showTimeoutBanner: Bool = false
 
     @Query(Contact.Profile.descriptor) var contacts: [Contact.Profile]
 
     @Environment(ContactManager.self) private var contactManager: ContactManager?
-    @Environment(\.dismiss) private var dismiss
 
     init(identifier: String) {
         let predicate = #Predicate<Contact.Profile> {
@@ -43,6 +43,13 @@ struct KeyExchange: View {
             } else {
                 if self.exchangeManager.isExchangePossible {
                     VStack(spacing: 24) {
+                        if self.showTimeoutBanner {
+                            Label("Didn't connect — make sure both devices are within 25 cm and try again.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.occultaWarn)
+                                .padding(.horizontal)
+                        }
+
                         if self.displayingInfo {
                             VStack(alignment: .leading, spacing: 16) {
                                 Text("Exchange keys with **\(self.name)**")
@@ -73,6 +80,7 @@ struct KeyExchange: View {
 
                         HStack(spacing: 16) {
                             Button {
+                                self.showTimeoutBanner = false
                                 self.exchangeManager.start()
                             } label: {
                                 Label("Exchange Keys", systemImage: "key.horizontal")
@@ -104,8 +112,8 @@ struct KeyExchange: View {
             }
             if newPhase == .timedOut || newPhase == .failed {
                 self.confirmingPayload = nil
+                self.showTimeoutBanner = true
                 self.exchangeManager.finish()
-                self.dismiss()
             }
         }
     }
