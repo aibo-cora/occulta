@@ -192,13 +192,19 @@ operation succeeded, failed, or is in progress. Build one reusable
 idle → loading → success → error pattern and wire it into all four sites in a
 single pass instead of patching each independently:
 
-| Site | Current gap |
-|---|---|
-| Key save on exchange confirm | `ExchangeResult.swift:132–136` — empty catch, no success confirmation |
-| Contact form save | `Contact+Form.swift:209` — `TODO`, no error shown |
-| Encrypt/send | No progress indicator during async processing |
-| Inbound delivery | No "sender not found" message when contact/key missing |
+| Site | Current gap | Status |
+|---|---|---|
+| Key save on exchange confirm | `KeyExchange.swift`'s `ConfirmationView` — silent `try?`, unconditional dismiss | ✅ Fixed — explicit save state, retry on failure |
+| Contact form save | `ContactFormV2.swift` — silent `try?`, unconditional dismiss | ✅ Fixed — inline error, form stays open, retry via Save |
+| Encrypt/send | No progress indicator during async processing | ⬜ Open |
+| Inbound delivery | Already handled — `noPublicKeyToEncryptWith` surfaces "message was not addressed to you" (`OccultaApp.swift:487–489`, thrown from `Contact+Manager.swift:1414`) | ✅ Already existed — not a gap |
 
+Note: the two `ExchangeResult.swift` / `Contact+Form.swift:209` citations above were dead
+v1 code by the time this was fixed — the live bugs were in `KeyExchange.swift` and
+`ContactFormV2.swift` respectively. Both files were confirmed via `OccultaApp.swift`'s
+tab wiring before fixing.
+
+Remaining Sweep 1 work: encrypt/send progress feedback only.
 Highest-ROI work available: every failed exchange loses two users in person,
 and every silent failure poisons word of mouth.
 
@@ -262,18 +268,18 @@ ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
 
 ## Summary
 
-| # | Finding | Severity | Type | Addressed by |
-|---|---------|----------|------|--------------|
-| C1 | Zero value at install | Critical | assessment | Sweep 3 |
-| C2 | Exchange failure modes (silent save, watchdog, gates) | Critical | code | Sweep 1, Watchdog recovery |
-| C3 | No retention trigger | Critical | code | Sweep 2 |
-| H1 | Composition state loss | High | code | Sweep 2 |
-| H2 | Inbound delivery silent failure | High | code | Sweep 1, Sweep 2 |
-| H3 | Distribution channel mismatch | High | assessment | Distribution to scrutiny, Seed adoption |
-| H4 | Competing with "good enough" (Signal) | High | assessment | Distribution to scrutiny, Sequence market honestly |
-| M1 | Silent contact save failure | Medium | code | Sweep 1 |
-| M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 |
-| M3 | Skippable onboarding hides UWB requirement | Medium | code | Sweep 3 |
+| # | Finding | Severity | Type | Addressed by | Status |
+|---|---------|----------|------|--------------|--------|
+| C1 | Zero value at install | Critical | assessment | Sweep 3 | ✅ Resolved — capability already existed (vault notes), onboarding now signposts it |
+| C2 | Exchange failure modes (silent save, watchdog, gates) | Critical | code | Sweep 1, Watchdog recovery | 🟡 Silent save fixed; watchdog recovery still open |
+| C3 | No retention trigger | Critical | code | Sweep 2 | ⬜ Open |
+| H1 | Composition state loss | High | code | Sweep 2 | ⬜ Open |
+| H2 | Inbound delivery silent failure | High | code | Sweep 1, Sweep 2 | 🟡 Messaging already existed; landing place (inbox) still open |
+| H3 | Distribution channel mismatch | High | assessment | Distribution to scrutiny, Seed adoption | ⬜ Open |
+| H4 | Competing with "good enough" (Signal) | High | assessment | Distribution to scrutiny, Sequence market honestly | ⬜ Open |
+| M1 | Silent contact save failure | Medium | code | Sweep 1 | ✅ Fixed |
+| M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 | ⬜ Open |
+| M3 | Skippable onboarding hides UWB requirement | Medium | code | Sweep 3 | ✅ Fixed — Skip removed |
 
 The single highest-friction point remains key exchange: hardware-gated,
 proximity-gated, permission-gated, with a fragile 30-second window and a
