@@ -33,6 +33,7 @@ final class ComposeViewModel {
     var encryptedURL:   URL?            = nil
     var isShowingError  = false
     var errorMessage    = ""
+    var isEncrypting    = false
 
     private(set) var attachmentManager: AttachmentManager? = nil
 
@@ -109,6 +110,9 @@ final class ComposeViewModel {
                 }
             }
         } else {
+            let pending = PendingImport(filename: filename, ext: ext)
+            await MainActor.run { self.pendingImports.append(pending) }
+
             do {
                 let data = try await loadItemData(from: provider, typeID: typeID)
                 try await Task.detached(priority: .userInitiated) {
@@ -119,16 +123,23 @@ final class ComposeViewModel {
                     }
                 }.value
                 await MainActor.run {
-                    self.messages.append(Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date()))
+                    self.pendingImports.removeAll { $0.id == pending.id }
+                    var file = Occulta.File(url: url, format: .file(.init(name: filename, extension: ext)), date: Date())
+                    file.id = pending.id
+                    self.messages.append(file)
                 }
             } catch {
-                await MainActor.run { self.showError(error.localizedDescription) }
+                await MainActor.run {
+                    self.pendingImports.removeAll { $0.id == pending.id }
+                    self.showError(error.localizedDescription)
+                }
             }
         }
     }
 
     func handleFile(_ result: Result<[URL], Error>) {
         Task {
+            var pendingImport: PendingImport?
             do {
                 guard let srcURL = try result.get().first,
                       srcURL.startAccessingSecurityScopedResource() else { return }
@@ -139,18 +150,22 @@ final class ComposeViewModel {
                 let tmp      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
                 let manager  = self.attachmentManager
 
+                let pending = PendingImport(filename: filename, ext: ext)
+                pendingImport = pending
+                await MainActor.run { self.pendingImports.append(pending) }
+
                 try await Task.detached(priority: .userInitiated) {
                     if let manager {
                         let source = try FileHandle(forReadingFrom: srcURL)
-                        
+
                         defer { try? source.close() }
                         let encryptor = try await manager.streamingEncryptor(to: tmp)
-                        
-                        
+
+
                         while let chunk = try source.read(upToCount: 65_536), !chunk.isEmpty {
                             try await encryptor.append(chunk)
                         }
-                        
+
                         try await encryptor.finalize()
                     } else {
                         let data = try Data(contentsOf: srcURL, options: .mappedIfSafe)
@@ -159,10 +174,18 @@ final class ComposeViewModel {
                 }.value
 
                 await MainActor.run {
-                    self.messages.append(Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date()))
+                    self.pendingImports.removeAll { $0.id == pending.id }
+                    var file = Occulta.File(url: tmp, format: .file(.init(name: filename, extension: ext)), date: Date())
+                    file.id = pending.id
+                    self.messages.append(file)
                 }
             } catch {
-                await MainActor.run { self.showError(error.localizedDescription) }
+                await MainActor.run {
+                    if let pendingImport {
+                        self.pendingImports.removeAll { $0.id == pendingImport.id }
+                    }
+                    self.showError(error.localizedDescription)
+                }
             }
         }
     }
@@ -174,6 +197,7 @@ final class ComposeViewModel {
         shardCustodyManager: ShardCustodyManager? = nil,
         vaultManager:        VaultManager?        = nil
     ) async {
+        await MainActor.run { self.isEncrypting = true }
         switch self.recipient {
         case .contact(let identifier):
             await self.encrypt(
@@ -256,16 +280,25 @@ final class ComposeViewModel {
             }
 
             guard !encrypted.isEmpty else {
-                await MainActor.run { self.showError("Encryption failed. Try again.") }
+                await MainActor.run {
+                    self.isEncrypting = false
+                    self.showError("Encryption failed. Try again.")
+                }
                 return
             }
 
             let name = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
             let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
             try encrypted.writeProtected(to: outURL)
-            await MainActor.run { self.encryptedURL = outURL }
+            await MainActor.run {
+                self.isEncrypting = false
+                self.encryptedURL = outURL
+            }
         } catch {
-            await MainActor.run { self.showError(error.localizedDescription) }
+            await MainActor.run {
+                self.isEncrypting = false
+                self.showError(error.localizedDescription)
+            }
         }
     }
 
@@ -307,18 +340,27 @@ final class ComposeViewModel {
             )
             
             guard !encrypted.isEmpty else {
-                await MainActor.run { self.showError("Encryption failed. Try again.") }
+                await MainActor.run {
+                    self.isEncrypting = false
+                    self.showError("Encryption failed. Try again.")
+                }
                 return
             }
-            
+
             let name   = UUID().uuidString.components(separatedBy: "-").last ?? "msg"
             let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).occ")
-            
+
             try encrypted.writeProtected(to: outURL)
-            
-            await MainActor.run { self.encryptedURL = outURL }
+
+            await MainActor.run {
+                self.isEncrypting = false
+                self.encryptedURL = outURL
+            }
         } catch {
-            await MainActor.run { self.showError(error.localizedDescription) }
+            await MainActor.run {
+                self.isEncrypting = false
+                self.showError(error.localizedDescription)
+            }
         }
     }
 

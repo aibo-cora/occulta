@@ -322,9 +322,12 @@ private struct ComposeHeroV2: View {
             let fileItems = self.vm.messages
                 .filter { if case .file = $0.format { return true }; return false }
                 .sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
-            if !fileItems.isEmpty {
+            if !fileItems.isEmpty || !self.vm.pendingImports.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
+                        ForEach(self.vm.pendingImports) { pending in
+                            PendingImportChipV2(pending: pending)
+                        }
                         ForEach(fileItems) { file in
                             AttachmentChipV2(file: file) {
                                 self.vm.deleteMessage(file)
@@ -370,14 +373,22 @@ private struct ComposeHeroV2: View {
                 }
                 Spacer()
                 Button(action: self.encryptAction) {
-                    Text("Encrypt")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(self.canEncrypt ? .white : .secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(self.canEncrypt ? Color.occultaAccent : Color(.tertiarySystemFill)))
+                    if self.vm.isEncrypting {
+                        ProgressView()
+                            .tint(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(Color.occultaAccent))
+                    } else {
+                        Text("Encrypt")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(self.canEncrypt ? .white : .secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(self.canEncrypt ? Color.occultaAccent : Color(.tertiarySystemFill)))
+                    }
                 }
-                .disabled(!self.canEncrypt)
+                .disabled(!self.canEncrypt || self.vm.isEncrypting)
                 .buttonStyle(.plain)
             }
             .padding(.top, 10)
@@ -404,6 +415,29 @@ private struct ComposeHeroV2: View {
         let scm = self.shardCustodyManager
         let vlt = self.vaultManager
         Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+    }
+}
+
+// MARK: - Pending Import Chip
+
+private struct PendingImportChipV2: View {
+    let pending: PendingImport
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 20, height: 20)
+            Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .padding(.vertical, 5)
+        .background(Color(.tertiarySystemFill))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
