@@ -190,6 +190,10 @@ Destroy the wrapped `DraftKey` blob (making every existing draft's ciphertext pe
 
 Unlike the still-open Q-04 for full message history, drafts don't get the Vault's biometric-gated SE key tier. The point of a draft is frictionless resume of an in-progress composition — requiring Face ID to reopen one would defeat that, and the residual risk is already bounded by the sensitivity gate (nothing sensitive-contact-shaped is ever stored) and the activation-purge safety net. Decided, not left open.
 
-### Open: backup exclusion
+### Resolved: excluded from backup
 
-Should `Drafts/` (and the wrapped `DraftKey`) be `isExcludedFromBackup = true`, matching §B7's precedent for the Secure Mode blob — reducing exposure if a device backup is ever examined, at the cost of losing drafts across a backup-restore/device migration? Real product trade-off, not yet decided.
+`Drafts/` and the wrapped `DraftKey` get `isExcludedFromBackup = true`, matching §B7's precedent for the Secure Mode blob. Accepted trade-off: drafts don't survive a backup-restore or device migration, in exchange for not exposing them if a device backup is ever examined. Decided, not left open.
+
+---
+
+All open items for drafts are now resolved. Nothing blocks moving this to implementation.
