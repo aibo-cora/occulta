@@ -203,9 +203,26 @@ At save time (backgrounding, navigating away), check whether the recipient is *c
 
 Find and delete that one recipient's `Message.Draft` row and folder, if either exists — bounded, cheap, at most one row.
 
-### Purge on Secure Mode activation
+### Purge on Secure Mode activation — corrected: selective, not blanket
 
-Explicitly delete every `Message.Draft` row and folder as its own activation step — blanket, no exceptions, matching §S7's activation philosophy. Explicit deletion, not passive omission from whatever re-encryption pass carries other tables forward: relying on drafts simply not being migrated is more fragile, since a future refactor that loops "re-encrypt everything under the new key" could accidentally sweep drafts into surviving activation if there's no explicit step saying they don't. The canonical-key rotation (above) already makes any copy that isn't deleted permanently unreadable regardless; explicit deletion is hygiene on top, closing the same row-count/timestamp residue §S8 already accepts as a gap for vault entries.
+**An earlier version of this section said "delete every draft, blanket, no exceptions," and cited §S7 as the precedent. That citation was wrong, and the design was too destructive.** Re-checking the actual §S7 text: `VaultEntry` handling is a *preserve-and-rekey* pass, not a wipe — "Non-nil, readable — existing depth value re-encrypted under staged key **verbatim**." Non-sensitive vault entries survive activation intact; fail-safe-to-hidden is reserved for the ambiguous cases (nil or corrupt values) only. A blanket draft wipe would destroy every ordinary contact's draft for no reason, which isn't what the codebase's own pattern does elsewhere.
+
+There's also a mechanical reason this needs to be an explicit, *selective* step rather than an afterthought: since drafts are sealed under the canonical DB key (per the simplification above), and that key itself rotates at activation (§S1 — old key deleted, new key created), **every existing draft becomes unreadable the instant activation runs unless something explicitly re-encrypts the ones that should survive.** Crypto-erasure for sensitive contacts' drafts comes free from the key rotation; preservation for everyone else requires action, or it's lost too.
+
+Corrected step, sequenced right after (or alongside) contact classification — it needs to know which contacts are being moved into the sensitive/`LayerStore` set in *this* activation pass:
+
+```
+for each Message.Draft row:
+    decrypt encryptedRecipientID (under the old canonical key)
+    if that recipient is being classified sensitive this activation:
+        delete the row and its folder
+    else:
+        decrypt encryptedContent under the old key
+        re-seal encryptedRecipientID and encryptedContent under the new (staged) key
+        update the row in place
+```
+
+This gives two things at once: sensitive contacts' drafts are actively deleted (explicit deletion as hygiene on top of the key-rotation crypto-erasure, not passive omission — a future "re-encrypt everything" refactor pass could otherwise accidentally sweep a sensitive contact's draft along if nothing explicitly excludes it), and ordinary contacts' drafts survive instead of being needlessly destroyed. It also mirrors §S7's actual defense-in-depth property: even if the day-to-day `setVisibility` purge hook (previous section) had a bug and let a sensitive contact's draft slip through earlier, activation independently re-checks every row against current sensitivity rather than trusting upstream logic already worked.
 
 ### Resolved: no biometric-gated key tier for drafts
 
@@ -214,6 +231,24 @@ Unlike the still-open Q-04 for full message history, drafts don't get the Vault'
 ### Resolved: excluded from backup
 
 `Drafts/` gets `isExcludedFromBackup = true`, matching §B7's precedent for the Secure Mode blob. Accepted trade-off: drafts don't survive a backup-restore or device migration, in exchange for not exposing them if a device backup is ever examined. Decided, not left open.
+
+### Resolved: UI — a "Draft" label on the contact row, replacing the fingerprint slot rather than adding to it
+
+The only new UI surface this feature needs: a small indicator on a contact's row in `ContactsListV2` so a saved draft is discoverable (and trustworthy — otherwise nothing tells the user their unsent text really survived). No text preview — just the label, to avoid decrypting and displaying content in a list context. Everywhere else (the compose views themselves), a restored draft should look identical to having never left; no "recovering your draft..." banner, no new screen.
+
+Checked the actual `ContactRowV2` implementation (`ContactsListV2.swift:218-274`) before designing this, rather than assuming a layout — good thing, since the obvious first guess (a job-title subtitle line) is wrong. The real subtitle row is `[verification-status dot] + [optional fingerprint hex text, shown only when a `showFingerprint` toggle is on]` (`:256-267`). That fingerprint text is a real, already-conditional occupant of the same line a draft label would want. Appending "Draft" unconditionally would let both render simultaneously when `showFingerprint` is true, cramping a single-line `HStack`.
+
+Fix is precedence, not more space — the status dot always shows (compact, always-meaningful), but the second slot picks one of two occupants, draft taking priority:
+
+```swift
+if hasDraft {
+    Text("Draft")
+} else if self.showFingerprint, let fp = self.contact.fingerprintPreview {
+    Text(fp)
+}
+```
+
+They never render at the same time regardless of how `showFingerprint` is toggled.
 
 ---
 
