@@ -156,19 +156,28 @@ extension Message {
     final class Draft {
         var id: UUID = UUID()                  // row identity AND the folder name — opaque, no meaning outside this row
         var encryptedRecipientID: Data          // AES-GCM sealed contact/group identifier
-        var encryptedContent: Data              // draft text + attachment manifest, sealed under the draft key (not the identity secret directly)
+        var encryptedContent: Data              // sealed Basket (text + attachments together) — see Content below
     }
 }
 ```
 
 No `visibleThroughDepth`-equivalent field, unlike `VaultEntry`/the deferred `Contact.Message` design — the sensitivity gate (below) runs *before* a row is ever inserted, so nothing sensitive-contact-shaped reaches the table in the first place. No plaintext timestamp either: draft count is small enough that decrypting all rows to sort/display costs nothing worth trading a metadata leak for.
 
-### Two-layer key, so "purge" means crypto-erasure, not just file deletion
+### Content: a sealed `Basket`, not a bespoke encoding
 
-- `selfKey = HKDF(ECDH(myIdentityPrivateKey, myIdentityPublicKey))` — the static self-key-agreement secret already settled on for encrypt-to-self. Deterministic, tied to the permanent identity key, never rotates.
-- One shared `DraftKey` for *all* currently-active drafts (not one per draft) — a random 32-byte key, generated lazily on first draft save, stored once as `AES.GCM.seal(rawDraftKeyBytes, using: selfKey)` alongside other small encrypted Secure Mode state (matching §K1's precedent — no new Keychain dependency).
-- Every `Message.Draft.encryptedContent` is sealed under the *current* `DraftKey`, never directly under `selfKey`.
-- One shared key, not per-draft, because purge is all-or-nothing (see below): destroying one wrapped-key blob makes every draft permanently unreadable in a single operation, mirroring §S1's DB-key-rotation-as-cryptographic-erasure technique rather than falling short of it with a "delete the files and hope" fallback — `selfKey` alone never changes, so encrypting directly under it would mean deleted ciphertext remains decryptable forever if any copy survives deletion (a backup taken moments earlier, wear-leveled flash residue).
+A draft's text and attachments are bundled into the same `Basket` (`Occulta/Data Models/Transfers.swift:27-36`) already used for real sends — reusing the existing structure instead of inventing a separate draft format, and closing a gap an earlier version of this design had (text and attachments under two different keys, so a purge of one wouldn't necessarily erase the other). Sealing the whole `Basket` as one AES-GCM operation means there's only ever one thing to crypto-erase.
+
+Full reuse of `ContactManager.encryptBundle(for:)` (`Contact+Manager.swift:938-1073`) was considered and rejected: it requires a real `Contact.Profile` — `fetchContact(by:)`, prekey pop/forward-secrecy state, version resolution — all genuinely contact-specific. Making "self" work through that path means inventing a synthetic self-contact, which is exactly the complexity already avoided once for the Vault feature (chose `VaultEntry.note` over a synthetic "You" contact). Not worth reopening for drafts.
+
+What *is* reusable: the sealing primitive underneath is already generic. `Crypto+Manager+GroupEncrypt.swift:122-165` generates a random session key and does a plain `AES.GCM.seal(payloadData, using: sessionKey, ...)`, with recipient-specific ECDH key-wrapping happening as a separate step afterward — the seal itself doesn't know or care about contacts. The decrypt side already has the shortcut this needs: `open(_:using: SymmetricKey)` (`Crypto+Manager+ForwardSecrecy.swift:100`) takes a raw symmetric key directly, no contact lookup. The encrypt side has no counterpart yet — add a small `seal(sealedPayload:using: SymmetricKey)` mirroring it, calling the same already-generic internals. Small addition, not a restructuring.
+
+### Key: the canonical local DB key, not a new self-derived one
+
+Originally scoped as a two-layer scheme (a static self-key-agreement secret wrapping a separate, rotatable draft key) specifically so Secure Mode activation could destroy the wrapping key and crypto-erase every draft. Unnecessary: **the canonical local DB key already rotates on activation** — §S1 documents this as an existing, audited, Critical-severity mechanism ("the local DB key is `ECDH(ourSEKey_localDB, G)`... rotation... is the core reason the DB key rotates on activation," old key deleted after commit). Encrypting `Message.Draft.encryptedContent` directly under this same canonical key gets the identical crypto-erasure guarantee for free, through a mechanism that's already built and already trusted, instead of a parallel one that needed auditing from scratch.
+
+It's also the more consistent choice given a decision already made below: drafts get Tier 1, not the Vault's biometric-gated tier. The canonical DB key *is* Tier 1 — the same key already protecting `Contact.Profile.visibleThroughDepth` and everything else at that level. A separate self-key-agreement-derived key wouldn't have been stronger (it's tied to the permanent identity key, which never rotates — the two-layer scheme was really just reinventing "rotatable" one level further in, when the DB key already is that).
+
+Standard per-row AAD applies (id + field + timestamp, matching `VaultEntry.aad(for:)`'s existing convention) so `encryptedContent` stays bound to its own row even though the key is shared with the rest of the app's Tier-1 data.
 
 ### Folder structure
 
@@ -178,7 +187,13 @@ Application Support/Drafts/<id>/
     attachment2.enc
 ```
 
-One folder per recipient, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. Draft text lives inline in `encryptedContent`; only attachments (which can be large media) go on disk, each individually encrypted the same way active composition already encrypts them (`AttachmentManager`). The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `Message.Draft` row that stores the same `id`. `.completeFileProtection` on every file, matching §S3.
+One folder per recipient, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. If attachments are small enough to fit in the sealed `Basket` inline, the folder may not be needed at all; for larger media, each attachment file is itself sealed under the same canonical DB key (matching the content decision above) and referenced from within the decrypted `Basket`. The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `Message.Draft` row that stores the same `id`. `.completeFileProtection` on every file, matching §S3.
+
+### Lifecycle: when a draft is actually written, read, and cleared
+
+- **Persisted lazily**, not on every keystroke: at the same point `ComposeViewModel.cleanup()` currently fires (`.onDisappear`, backgrounding) — replacing "delete the attachment" with "run the sensitivity gate, then persist if not sensitive."
+- **Resumed on open**: when a compose view opens for a recipient, check for an existing `Message.Draft`, decrypt it, and load its `Basket` back into `draftText`/`messages` before the user starts typing.
+- **Cleared on send, not on encrypt.** `ComposeViewModel.encrypt(for:...)` (`Contact+Manager.swift`-adjacent, `ComposeViewModel.swift`) is unchanged — it builds a *separate* `Basket`, sealed under the recipient's actual exchanged key via `contactManager.encryptBundle`, completely independent of how the draft itself was sealed. The `Message.Draft` row and folder are deleted at the same point `clearAfterEncrypt()` already fires today — from `ActivityView`'s completion handler, only `if completed` (the user actually sent, not just cancelled the share sheet). Cancelling the share sheet leaves the draft (and its persisted copy) intact for another attempt, exactly like today's in-memory-only behavior already does.
 
 ### Sensitivity gate (Option E, applied live, not stamped)
 
@@ -190,7 +205,7 @@ Find and delete that one recipient's `Message.Draft` row and folder, if either e
 
 ### Purge on Secure Mode activation
 
-Destroy the wrapped `DraftKey` blob (making every existing draft's ciphertext permanently unreadable, wherever a copy might physically linger) *and* delete every `Message.Draft` row and folder — blanket, no exceptions, matching §S7's activation philosophy. The key destruction is what matters cryptographically; deleting the now-useless ciphertext afterward is hygiene, closing the same row-count/timestamp residue §S8 already accepts as a gap for vault entries.
+Explicitly delete every `Message.Draft` row and folder as its own activation step — blanket, no exceptions, matching §S7's activation philosophy. Explicit deletion, not passive omission from whatever re-encryption pass carries other tables forward: relying on drafts simply not being migrated is more fragile, since a future refactor that loops "re-encrypt everything under the new key" could accidentally sweep drafts into surviving activation if there's no explicit step saying they don't. The canonical-key rotation (above) already makes any copy that isn't deleted permanently unreadable regardless; explicit deletion is hygiene on top, closing the same row-count/timestamp residue §S8 already accepts as a gap for vault entries.
 
 ### Resolved: no biometric-gated key tier for drafts
 
@@ -198,7 +213,7 @@ Unlike the still-open Q-04 for full message history, drafts don't get the Vault'
 
 ### Resolved: excluded from backup
 
-`Drafts/` and the wrapped `DraftKey` get `isExcludedFromBackup = true`, matching §B7's precedent for the Secure Mode blob. Accepted trade-off: drafts don't survive a backup-restore or device migration, in exchange for not exposing them if a device backup is ever examined. Decided, not left open.
+`Drafts/` gets `isExcludedFromBackup = true`, matching §B7's precedent for the Secure Mode blob. Accepted trade-off: drafts don't survive a backup-restore or device migration, in exchange for not exposing them if a device backup is ever examined. Decided, not left open.
 
 ---
 
