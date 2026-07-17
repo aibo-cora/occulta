@@ -7,6 +7,8 @@ Each finding is tagged **[code]** (derived from source, file:line cited) or
 Original fact-based audit: 2026-04-30.
 Updated 2026-07-12: line references re-verified against current source, adoption-level
 findings added, document reorganized by severity and priority.
+Updated 2026-07-17: encryption-before-verification analysis added (H5, Sweep 4) —
+evaluated ways to message before a physical key exchange; key-in-bundle rejected.
 
 ---
 
@@ -131,6 +133,40 @@ accept large, concrete friction for a subtle jurisdictional benefit. Argument
 alone does not win this trade; expert vouching and a visibly working product
 do.
 
+### H5. Encryption is hard-gated on physical verification [assessment]
+
+Messaging requires a completed key exchange — a contact without a stored key
+cannot be encrypted to at all (`buildOwnedBasket` throws
+`noPublicKeyToEncryptWith`, `Contact+Manager.swift:1414`). Every gate in
+C1/C2 is therefore multiplied into the messaging funnel: nobody can receive a
+first message until they have stood within 25 cm of the sender. Signal,
+WhatsApp, and Threema all encrypt fully for unverified contacts and treat
+verification as an *authenticity upgrade*, not a gate on encryption — the
+gate is Occulta-specific friction, not an industry baseline.
+
+One shortcut was evaluated and rejected (2026-07-17): allow sends to
+unverified contacts by shipping the session key inside the bundle, behind a
+warning. Rejected because:
+
+- **It is plaintext with extra steps.** Every bundle carrier can read it,
+  forever. For a product positioned as "nothing to hack, subpoena, or shut
+  down," *"ships the decryption key next to the ciphertext"* becomes the
+  headline of every security review — the warning dialog does not appear in
+  that headline.
+- **The warning cannot cover the worse half: authenticity.** With a public
+  session key the bundle is also forgeable and tamperable — `senderProof` is
+  an HMAC under the session key, so a carrier can rewrite content or
+  impersonate the sender undetectably, inside Occulta's trust halo.
+- **It poisons the upgrade path.** "Reply with your real key so we can go
+  secure" is exactly the MITM insertion point; an active carrier becomes the
+  permanent man-in-the-middle.
+- **Warning fatigue and downgrade surface.** A click-through warning trains
+  users out of reading the app's security signals (`securityLabel` tiers lose
+  meaning), and attackers don't break crypto — they social-engineer victims
+  into the weak mode.
+
+The friction is real; the fix is Sweep 4 (trust ladder), not weakened crypto.
+
 ---
 
 ## Medium severity
@@ -236,6 +272,55 @@ same redesign to stop Skip from hiding the hardware requirement it currently
 hides from screen 1. Doing these separately means reworking onboarding twice.
 (New feature — the existing Vault directory is shard custody, not this.)
 
+**Sweep 4: Trust ladder — encryption before verification.** (H5; structural
+relief for C1/C2's funnel shape)
+Unverified contacts get real encryption immediately; verification tiers
+upgrade *authenticity*. Threat frame: passive readability by any bundle
+carrier must be impossible; an active MITM at first contact is the managed
+residual, shrunk by each tier climbed. UWB stays the top tier unchanged.
+
+| Tier | How keys arrived | Assurance |
+|---|---|---|
+| Verified | UWB tap (or in-person QR) | Full — current model |
+| Confirmed | SAS compared over a live call | Strong vs MITM, no meeting needed |
+| Introduced | Forwarded by a verified mutual contact | MITM requires a trusted friend defecting |
+| Unverified | Contact card / TOFU intro bundle | Real encryption; first-contact MITM possible, caught by later tiers + gossip |
+
+Components, in recommended build order:
+
+1. **Contact cards** — user-exported card carrying the long-term public key
+   plus a signed prekey batch (reuses `PrekeySyncBatch` and the
+   `longTermFallback` derivation; Threema's red/orange/green trust UX is the
+   proven model). Anyone holding a card can send an encrypted first message
+   with zero round trips — the actual friction-killer. Cards must be handed
+   over privately (AirDrop, existing messengers): a publicly posted card is a
+   durable "I use Occulta" artifact, in tension with forensic cleanliness.
+   Cross-checking a card's fingerprint over a second channel forces a MITM to
+   control both.
+2. **SAS remote verification** — ZRTP-style short authentication string
+   derived from the session, compared over any live call; hash commitment
+   prevents grinding. Grow `IdentityChallenge` into this. Makes remote
+   verification possible at all — today the only authenticity upgrade is a
+   physical meeting.
+3. **Gossip key-consistency audit** — contacts sharing a mutual acquaintance
+   cross-check the fingerprint each holds for that person, inside existing
+   E2E channels (same in-payload pattern as `custodyManifest`). Detection,
+   not prevention: never blocks anything, but makes a first-contact MITM
+   increasingly likely to be caught as the graph fills in.
+4. **Introductions — needs an explicit decision.** A verified mutual contact
+   forwards both parties' keys, signed, through already-secure channels.
+   Serverless-native (the trust graph is the infrastructure) and the largest
+   UX win per unit of engineering, but it is third-party key vouching — the
+   no-vouching line was previously drawn for own-device keys, and whether it
+   extends to introducing *other people* is a product-owner call, not an
+   engineering one.
+
+Evaluated and shelved: PAKE / wormhole codes (interactive, and CryptoKit
+exposes no PAKE primitive — building one means rolling our own crypto);
+key-transparency logs and Keybase-style social proofs (require
+servers/accounts — "zero servers, zero accounts" is the brand). Key-in-bundle
+rejected outright — see H5.
+
 ### P2
 
 **Switch distribution from broadcast to scrutiny.**
@@ -280,12 +365,16 @@ ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
 | H2 | Inbound delivery silent failure | High | code | Sweep 1, Sweep 2 | 🟡 Messaging already existed; landing place (inbox) still open |
 | H3 | Distribution channel mismatch | High | assessment | Distribution to scrutiny, Seed adoption | ⬜ Open |
 | H4 | Competing with "good enough" (Signal) | High | assessment | Distribution to scrutiny, Sequence market honestly | ⬜ Open |
+| H5 | Encryption hard-gated on verification; no first-contact messaging | High | assessment | Sweep 4 | ⬜ Open — key-in-bundle shortcut rejected |
 | M1 | Silent contact save failure | Medium | code | Sweep 1 | ✅ Fixed |
 | M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 | ⬜ Open |
 | M3 | Skippable onboarding hides UWB requirement | Medium | code | Sweep 3 | ✅ Fixed — Skip removed |
 
 Key exchange remains hardware-gated, proximity-gated, and permission-gated —
-inherent to the UWB approach, not fixable in code. But the two failure modes
+inherent to the UWB approach, not fixable in code. Sweep 4 reframes what that
+gate has to gate: verification, not encryption — the trust ladder lets an
+encrypted first message flow before any meeting, while UWB stays the top
+assurance tier. But the two failure modes
 that were silent (save failing invisibly on success, timeout dismissing with
 no explanation) are now loud instead: explicit save states with retry, and an
 in-app banner with one-tap retry on timeout. It was also the demo, the
