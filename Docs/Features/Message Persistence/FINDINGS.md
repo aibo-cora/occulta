@@ -177,7 +177,7 @@ Originally scoped as a two-layer scheme (a static self-key-agreement secret wrap
 
 It's also the more consistent choice given a decision already made below: drafts get Tier 1, not the Vault's biometric-gated tier. The canonical DB key *is* Tier 1 — the same key already protecting `Contact.Profile.visibleThroughDepth` and everything else at that level. A separate self-key-agreement-derived key wouldn't have been stronger (it's tied to the permanent identity key, which never rotates — the two-layer scheme was really just reinventing "rotatable" one level further in, when the DB key already is that).
 
-Standard per-row AAD applies (id + field + timestamp, matching `VaultEntry.aad(for:)`'s existing convention) so `encryptedContent` stays bound to its own row even though the key is shared with the rest of the app's Tier-1 data.
+Standard per-row AAD applies — `id + field`, the same construction as `VaultEntry.aad(for:)` minus its timestamp component. `Message.Draft` has no persisted creation date to bind one to, matching the no-plaintext-timestamp decision above. This still keeps `encryptedContent` bound to its own row even though the key is shared with the rest of the app's Tier-1 data.
 
 ### Folder structure
 

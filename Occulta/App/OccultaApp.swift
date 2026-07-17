@@ -40,6 +40,7 @@ struct OccultaApp: App {
             Contact.Profile.URLAddress.self,
             Contact.Profile.Key.self,
             Contact.Message.self,
+            Message.Draft.self,
             VaultEntry.self,
             CustodyShard.self,
             ReconstructShard.self,

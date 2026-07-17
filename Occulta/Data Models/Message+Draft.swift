@@ -1,0 +1,83 @@
+//
+//  Message+Draft.swift
+//  Occulta
+//
+
+import Foundation
+import SwiftData
+
+// MARK: - Message
+
+enum Message { }
+
+// MARK: - Message.Draft
+
+extension Message {
+
+    /// A single in-progress, unsent composition — at most one per recipient.
+    ///
+    /// Named `Message.Draft`, not `ContactDraft`: `Contact.Draft` already exists
+    /// (`Contact+Draft.swift`) as an unrelated staging struct for editing a
+    /// contact's profile fields. See `Docs/Features/Message Persistence/FINDINGS.md`,
+    /// "Drafts — Resolved Design", for the full design rationale.
+    @Model
+    final class Draft {
+
+        // MARK: Persisted fields
+
+        /// Row identity and the on-disk attachment folder name — opaque, carries
+        /// no meaning outside this row.
+        var id: UUID = UUID()
+
+        /// AES-256-GCM ciphertext of the recipient's contact/group identifier.
+        /// Sealed with the canonical local DB key; AAD = `aad(for: .recipientID)`.
+        var encryptedRecipientID: Data = Data()
+
+        /// AES-256-GCM ciphertext of a sealed `Basket` (draft text + attachments,
+        /// bundled together so there's only ever one thing to crypto-erase).
+        /// Sealed with the canonical local DB key; AAD = `aad(for: .content)`.
+        var encryptedContent: Data = Data()
+
+        // MARK: Init
+
+        init(encryptedRecipientID: Data, encryptedContent: Data) {
+            self.id                   = UUID()
+            self.encryptedRecipientID = encryptedRecipientID
+            self.encryptedContent     = encryptedContent
+        }
+
+        // MARK: AAD construction
+
+        /// Identifies which ciphertext field an AAD blob belongs to — prevents
+        /// cross-field ciphertext swaps (sealing `encryptedContent` with
+        /// `.recipientID`'s AAD, or vice versa) from passing GCM authentication.
+        enum Field: UInt8 {
+            case recipientID = 0x01
+            case content     = 0x02
+        }
+
+        /// Authenticated additional data for AES-GCM seal/open of a specific field.
+        ///
+        /// Wire encoding: `id.uuidString` (UTF-8, 36 bytes) ∥ `field.rawValue`
+        /// (1 byte). No timestamp component — unlike `VaultEntry.aad(for:)`,
+        /// `Message.Draft` has no persisted creation date to bind one to (see
+        /// "Drafts — Resolved Design" in FINDINGS.md: draft count is too small
+        /// for a plaintext timestamp to be worth the metadata leak).
+        ///
+        /// ⚠️ This layout is a sealed contract. Any change to field order,
+        /// encoding, or byte width makes existing ciphertext unreadable.
+        func aad(for field: Field) -> Data {
+            Self.aad(id: self.id, field: field)
+        }
+
+        /// Static variant for callers that need the AAD before a row exists —
+        /// e.g. sealing a brand-new draft's fields with an `id` not yet backed
+        /// by an inserted `Draft` instance.
+        static func aad(id: UUID, field: Field) -> Data {
+            var data = Data()
+            data.append(id.uuidString.data(using: .utf8)!)
+            data.append(field.rawValue)
+            return data
+        }
+    }
+}
