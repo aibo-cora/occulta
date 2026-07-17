@@ -72,21 +72,53 @@ Confirmed zero `UserNotifications` usage anywhere in the target. But §C1 alread
 
 ---
 
+## Linkage & Persistence: Options Considered
+
+Six options were weighed for how a message relates to its contact, given D-08's constraint (never cross the depth boundary before normal unlock) and the forensic goal (don't let a hidden contact's existence be inferred from message data).
+
+### Option B · Encrypted `contactID`, decrypt-all-then-filter, in-memory index built once per unlock
+
+The design worked through in detail above (D-05–D-11). Tier 1: no queryable linkage at rest, protects against cold/offline forensic extraction, but doesn't close the live-duress case — the canonical key that decrypts the index is the same key derivable whenever the device is unlocked. Viable performance-wise *only* if the decrypt pass is a one-time per-unlock index build (mirroring `VaultManager.authContext`'s lifecycle — derived once, held in memory, wiped on `lock()`) with incremental updates for new messages, never a per-view or per-render rescan. A literal "decrypt everything, every time" implementation is not viable at power-user message volumes (estimated low seconds, serially, at ~100k messages).
+
+### Option C · Deterministic pseudonymous tag for SQL narrowing — considered, rejected
+
+A stable per-contact tag (e.g. an HMAC over contact key material) stored as a plaintext-but-non-identifying column would let SwiftData push a predicate instead of scanning everything. Rejected: a live examiner who already has key material for every *visible* contact can compute the same tags and identify which messages' tags don't match any visible contact — the identical tell as a raw identifier, just relabeled. Since Option B's in-memory index already solves the performance problem this was meant to solve, C buys nothing beyond B while offering a weaker guarantee.
+
+### Option D · True structural separation (Tier 2 for messages) — the real fix, out of scope for this pass
+
+Analogous to `activateSecureMode`'s `LayerStore` relocation for sensitive contacts: each contact's messages would live in a separate encrypted container, keyed by something only derivable if you already trust that specific contact, with no distinguishable row in the main store when hidden. This is the only option that closes the gap completely rather than raising the effort bar. It's also substantially bigger: `LayerStore`'s fixed-size-slot trick (§B3 — constant file size regardless of payload) works because it protects a *bounded* roster of sensitive contacts; messages are unbounded and continuously growing, so the same trick needs pagination/archival solved on top before it generalizes. Confirmed as its own initiative, matching Q-03 — not a Sweep 2 sub-task.
+
+### Option E · Don't persist messages for sensitive contacts at all
+
+If a contact is marked sensitive, their conversations stay exactly as ephemeral as they are today — no row inserted, nothing to find. Everyone else gets full persistence. Reuses existing shape: §C1 already suppresses a basket at set-time if the sender isn't safe; extending that same check to gate *persistence* during normal (non-duress) processing is a small extension, not new architecture. Fully closes D-10's row-count tell for exactly the contacts it matters for, since there's nothing to count. Honest residual: absence of messages is a *softer* signal than a correlatable orphaned row (it doesn't positively prove a hidden contact exists — plenty of ordinary contacts legitimately have little history), but it isn't literally zero information.
+
+### Option F · Fold messages into the contact's own encrypted record, no separate table
+
+If a message were just part of the already-hidden `Contact.Profile` payload, it would automatically inherit whatever protection that row already has — Tier 2 relocation moves it for free, and D-06's whole class of gap disappears by construction. Cost: AES-GCM seals a blob as a whole, not incrementally, so every new message means decrypt-entire-history, append, re-encrypt, rewrite the whole thing back — unboundedly more expensive as a conversation grows, which is the wrong shape for the workload that actually dominates (sending/receiving happens far more often than opening an old thread cold). Only attractive if per-contact message volume is expected to stay small.
+
+### Option H · Accept the linkage tell, invest in content strength instead
+
+Explicitly accept the row-existence/count tell (matching §S5 and §S8's already-accepted precedent for contacts and vault entries) and put the security budget into Q-04 instead — require the Vault's biometric-gated key tier for message *content*, so a live examiner who fully correlates "contact X has messages" still can't read them without forcing Face ID specifically. A deliberate prioritization (protect content over metadata), not a technical scheme — the same trade-off the codebase already made once (§S8: "the current gap exposes only metadata... without biometric coercion").
+
+---
+
 ## Design Decisions
 
 **Drafts will be self-encrypted, not stored plaintext or File-Protection-only.** Reuses the self key-agreement mechanism scoped for the Vault's encrypt-to-self feature (`privateKey.sharedSecretFromKeyAgreement(with: publicKey)`, deriving a stable symmetric key from one's own SE identity key) rather than introducing a plaintext exception or relying solely on iOS Data Protection. Keeps "plaintext never touches SwiftData" true without exception, matching `VaultManager`'s stated rule verbatim. Attachments stay encrypted on disk through drafting exactly the way they already are during active composition (`AttachmentManager.encrypt`/`streamingEncryptor`, per `ComposeViewModel.swift`) — no weaker-protection window while a draft sits unsent.
+
+**Linkage/persistence: Option E + Option B, combined, not either alone.** Sensitive contacts get zero persistence (Option E) — no `Contact.Message` row is ever inserted for them, reusing §C1's existing suppress-at-set-time shape extended to the normal-unlock persistence path. Every other contact gets Option B's encrypted-`contactID` design with a once-per-unlock in-memory index (never a per-view decrypt-all). This closes the sharpest edge of the risk cheaply (Option E) where it matters most, without paying Option D's much larger structural cost for contacts where correlation isn't a meaningful concern in the first place (they aren't hidden). Option D remains the documented upgrade path if the threat model is ever elevated — deferred, not rejected, the same way Design B was already deferred for contacts themselves in §S5.
 
 ---
 
 ## Open Questions (Unresolved)
 
-### Q-01 · Message-to-contact linkage: raw identifier or derived? — revised, precedent now leans guarded
+### Q-01 · RESOLVED — encrypted linkage for non-sensitive contacts; moot for sensitive ones
 
-Revised given D-07's correction: the codebase's actual precedent (`CustodyShard`'s top-level model) is *no plaintext contact link at all*, not "raw identifiers are the convention" as originally framed. A raw `Contact.Profile.identifier` on `Contact.Message` is still simplest to query (`#Predicate` matches directly), but no longer has the precedent it was originally credited with — the stronger-precedent option (derived/hashed linkage, computed before querying) is the one actually consistent with how the codebase already treats contact-adjacent linkage elsewhere. Not yet decided, but the bar for choosing the raw identifier anyway is higher than first stated.
+Settled by the Option E + B decision above. Non-sensitive contacts use encrypted `contactID` with a once-per-unlock in-memory index (Option B) — the guarded approach `CustodyShard`'s precedent actually supports (D-07's correction), not the raw identifier originally assumed. Sensitive contacts never get a `Contact.Message` row at all (Option E), so the linkage-field question doesn't apply to them — there's nothing to link.
 
-### Q-02 · Retroactive re-tagging is undesigned — now scoped to messages specifically
+### Q-02 · Retroactive re-tagging — narrowed, but one new sub-question opened by Option E
 
-Revised given D-06's correction: this only applies to `Contact.Message` — `VaultEntry`/`CustodyShard` don't have the gap originally claimed (see D-06). `setVisibility` needs a new path to re-stamp existing message rows when a contact's sensitivity changes. No design done yet for how the re-stamp walks the message table or what it costs to do atomically at scale (a contact with years of history is a very different re-stamp cost than a contact with one vault entry).
+`setVisibility` still needs a new path for `Contact.Message`, but Option E changes what that path has to do: going forward, a contact marked sensitive gets zero new persisted messages, so there's nothing new to re-tag for them. The open question is what happens to messages that were **already persisted before the contact was marked sensitive** — do they get purged entirely (matching Option E's invariant that sensitive contacts have zero message history, full stop), or retroactively depth-tagged and left in place (weaker, but keeps history if the contact is later un-marked)? Purging is more consistent with Option E's own logic and simpler to reason about; retroactive tagging keeps more data but reopens exactly the kind of "existing row that should have been hidden" gap Option E was meant to avoid. Leaning toward purge-on-mark-sensitive, not yet decided.
 
 ### Q-03 · Tier 2 protection for messages is explicitly out of scope for this pass
 
@@ -100,4 +132,4 @@ Raised by D-10. The Vault's dedicated biometric-gated SE key (fresh Face ID per 
 
 ## Prerequisite for implementation
 
-Q-01 (linkage field) and Q-04 (SE-key tier) need answers before the `Contact.Message` schema extension is written — both change the field shape, and Q-04 also changes the UX. Q-02 (retroactive re-tagging) should be at least designed, even if implemented as a fast-follow, before shipping persisted messages tied to a sensitivity toggle that can currently orphan visibility state. Q-03 should be written down as a known limitation in whatever SPEC.md eventually follows this doc, not left implicit. D-08 (preserve §C2's unconditional duress-discard exactly) and D-09 (stamp new messages at insert time from current contact sensitivity) are not optional — either being missed breaks the existing security model rather than just leaving a gap in the new one.
+Q-01 is resolved (Option E + B). Q-04 (SE-key tier) still needs an answer before the `Contact.Message` schema extension is written — it changes both the field shape and the UX. Q-02's purge-vs-retag sub-question should be settled before shipping, since it determines part of the `setVisibility` extension's behavior. Q-03 should be written down as a known limitation in whatever SPEC.md eventually follows this doc, not left implicit. D-08 (preserve §C2's unconditional duress-discard exactly) and D-09 (stamp new messages at insert time from current contact sensitivity) are not optional — either being missed breaks the existing security model rather than just leaving a gap in the new one. Option E's persistence gate (§C1-style suppression extended to normal-unlock processing) is now equally non-optional alongside them.
