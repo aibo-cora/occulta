@@ -3,6 +3,8 @@
 **Status:** Exploratory — no SPEC.md yet, not scoped for a release
 **Context:** Design discussion, 2026-07-14. Originates from the friction report's Sweep 2 (`Friction/USER_ENGAGEMENT_FRICTION.md`, C3/H1/H2) — "one persisted store + one inbox UI + one notification hook" for drafts, message history, and inbound delivery. Captures the security investigation done before any schema or code is written, so the reasoning isn't lost before this gets formally scoped.
 
+**Scope narrowed 2026-07-14.** Sent/received message-history persistence (C3, H2) is deferred, not decided against permanently — the findings and options below (D-01–D-12, Options B–H) remain the reference if that work resumes later. What's moving forward now is drafts only (H1 — composition state loss), which turned out to be a meaningfully smaller and simpler problem once separated from unbounded message history: see "Drafts — Resolved Design" below for the settled schema, key scheme, and purge behavior.
+
 **Authoritative framework:** `Occulta/Features/SecureMode/forensic-trace-avoidance.md` already documents this exact class of problem in depth (blob forensics, SQLite forensics, keychain forensics, UI tells, content gating) for contacts and vault entries. Findings below are written against that doc's existing severity scale and measures (`C1`/`C2`/`S5`/`S7`/`S8`/`K1` etc., cited directly below) rather than reinventing the framework — message persistence should extend it, not sit beside it.
 
 **Problem statement:** Nothing survives past the current view. Composing a message and navigating away loses it; receiving a message shows it once and discards it; nothing tells the user something arrived while the app was closed. Fixing this means persisting message content for the first time anywhere in the app — which raises a forensic question this doc exists to work through carefully before any schema is written: does persisting messages create a way to detect the existence of a contact someone has hidden?
@@ -130,6 +132,64 @@ Raised by D-10. The Vault's dedicated biometric-gated SE key (fresh Face ID per 
 
 ---
 
-## Prerequisite for implementation
+## Prerequisite for implementation (message history — deferred)
 
 Q-01 is resolved (Option E + B). Q-04 (SE-key tier) still needs an answer before the `Contact.Message` schema extension is written — it changes both the field shape and the UX. Q-02's purge-vs-retag sub-question should be settled before shipping, since it determines part of the `setVisibility` extension's behavior. Q-03 should be written down as a known limitation in whatever SPEC.md eventually follows this doc, not left implicit. D-08 (preserve §C2's unconditional duress-discard exactly) and D-09 (stamp new messages at insert time from current contact sensitivity) are not optional — either being missed breaks the existing security model rather than just leaving a gap in the new one. Option E's persistence gate (§C1-style suppression extended to normal-unlock processing) is now equally non-optional alongside them.
+
+**This entire section is on hold per the 2026-07-14 scope narrowing above.** Nothing here blocks the drafts work below, which doesn't depend on `Contact.Message` at all.
+
+---
+
+## Drafts — Resolved Design
+
+Scoped down from the full message-persistence problem: drafts don't accumulate the way sent/received message history would. At most one active draft per recipient at a time, replaced or cleared on send — bounded by contact count, not by message volume. That difference is what makes several of the hard problems above (Option B's performance concern, most of Q-01–Q-04) not apply here, or apply so cheaply they're not worth a separate mechanism.
+
+### Model
+
+```swift
+@Model
+final class ContactDraft {
+    var id: UUID = UUID()                  // row identity AND the folder name — opaque, no meaning outside this row
+    var encryptedRecipientID: Data          // AES-GCM sealed contact/group identifier
+    var encryptedContent: Data              // draft text + attachment manifest, sealed under the draft key (not the identity secret directly)
+}
+```
+
+No `visibleThroughDepth`-equivalent field, unlike `VaultEntry`/the deferred `Contact.Message` design — the sensitivity gate (below) runs *before* a row is ever inserted, so nothing sensitive-contact-shaped reaches the table in the first place. No plaintext timestamp either: draft count is small enough that decrypting all rows to sort/display costs nothing worth trading a metadata leak for.
+
+### Two-layer key, so "purge" means crypto-erasure, not just file deletion
+
+- `selfKey = HKDF(ECDH(myIdentityPrivateKey, myIdentityPublicKey))` — the static self-key-agreement secret already settled on for encrypt-to-self. Deterministic, tied to the permanent identity key, never rotates.
+- One shared `DraftKey` for *all* currently-active drafts (not one per draft) — a random 32-byte key, generated lazily on first draft save, stored once as `AES.GCM.seal(rawDraftKeyBytes, using: selfKey)` alongside other small encrypted Secure Mode state (matching §K1's precedent — no new Keychain dependency).
+- Every `ContactDraft.encryptedContent` is sealed under the *current* `DraftKey`, never directly under `selfKey`.
+- One shared key, not per-draft, because purge is all-or-nothing (see below): destroying one wrapped-key blob makes every draft permanently unreadable in a single operation, mirroring §S1's DB-key-rotation-as-cryptographic-erasure technique rather than falling short of it with a "delete the files and hope" fallback — `selfKey` alone never changes, so encrypting directly under it would mean deleted ciphertext remains decryptable forever if any copy survives deletion (a backup taken moments earlier, wear-leveled flash residue).
+
+### Folder structure
+
+```
+Application Support/Drafts/<id>/
+    attachment1.enc
+    attachment2.enc
+```
+
+One folder per recipient, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. Draft text lives inline in `encryptedContent`; only attachments (which can be large media) go on disk, each individually encrypted the same way active composition already encrypts them (`AttachmentManager`). The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `ContactDraft` row that stores the same `id`. `.completeFileProtection` on every file, matching §S3.
+
+### Sensitivity gate (Option E, applied live, not stamped)
+
+At save time (backgrounding, navigating away), check whether the recipient is *currently* sensitive. If yes, don't touch the table — today's ephemeral loss (D-01) continues unchanged for them. If no, upsert the row and folder. Because this check runs fresh on every save rather than storing a stamped value, there's no stale-flag problem the way messages would have had (D-09's concern doesn't apply here).
+
+### Purge on `setVisibility(isSensitive: true)`
+
+Find and delete that one recipient's `ContactDraft` row and folder, if either exists — bounded, cheap, at most one row.
+
+### Purge on Secure Mode activation
+
+Destroy the wrapped `DraftKey` blob (making every existing draft's ciphertext permanently unreadable, wherever a copy might physically linger) *and* delete every `ContactDraft` row and folder — blanket, no exceptions, matching §S7's activation philosophy. The key destruction is what matters cryptographically; deleting the now-useless ciphertext afterward is hygiene, closing the same row-count/timestamp residue §S8 already accepts as a gap for vault entries.
+
+### Resolved: no biometric-gated key tier for drafts
+
+Unlike the still-open Q-04 for full message history, drafts don't get the Vault's biometric-gated SE key tier. The point of a draft is frictionless resume of an in-progress composition — requiring Face ID to reopen one would defeat that, and the residual risk is already bounded by the sensitivity gate (nothing sensitive-contact-shaped is ever stored) and the activation-purge safety net. Decided, not left open.
+
+### Open: backup exclusion
+
+Should `Drafts/` (and the wrapped `DraftKey`) be `isExcludedFromBackup = true`, matching §B7's precedent for the Secure Mode blob — reducing exposure if a device backup is ever examined, at the cost of losing drafts across a backup-restore/device migration? Real product trade-off, not yet decided.
