@@ -146,12 +146,18 @@ Scoped down from the full message-persistence problem: drafts don't accumulate t
 
 ### Model
 
+Named `Message.Draft`, not `ContactDraft` — `Contact.Draft` already exists (`Contact+Draft.swift:14`) as an unrelated plain `Codable` staging struct for editing a contact's *profile* fields (name, phones, emails — what `ContactFormV2` binds to). No symbol collision either way, but confusingly close for anyone reading the code. `Contact` itself is a caseless namespacing enum (`enum Contact { }`, `Contact+Model.swift:7`); the new model gets its own parallel namespace instead of overloading `Contact`'s:
+
 ```swift
-@Model
-final class ContactDraft {
-    var id: UUID = UUID()                  // row identity AND the folder name — opaque, no meaning outside this row
-    var encryptedRecipientID: Data          // AES-GCM sealed contact/group identifier
-    var encryptedContent: Data              // draft text + attachment manifest, sealed under the draft key (not the identity secret directly)
+enum Message { }
+
+extension Message {
+    @Model
+    final class Draft {
+        var id: UUID = UUID()                  // row identity AND the folder name — opaque, no meaning outside this row
+        var encryptedRecipientID: Data          // AES-GCM sealed contact/group identifier
+        var encryptedContent: Data              // draft text + attachment manifest, sealed under the draft key (not the identity secret directly)
+    }
 }
 ```
 
@@ -161,7 +167,7 @@ No `visibleThroughDepth`-equivalent field, unlike `VaultEntry`/the deferred `Con
 
 - `selfKey = HKDF(ECDH(myIdentityPrivateKey, myIdentityPublicKey))` — the static self-key-agreement secret already settled on for encrypt-to-self. Deterministic, tied to the permanent identity key, never rotates.
 - One shared `DraftKey` for *all* currently-active drafts (not one per draft) — a random 32-byte key, generated lazily on first draft save, stored once as `AES.GCM.seal(rawDraftKeyBytes, using: selfKey)` alongside other small encrypted Secure Mode state (matching §K1's precedent — no new Keychain dependency).
-- Every `ContactDraft.encryptedContent` is sealed under the *current* `DraftKey`, never directly under `selfKey`.
+- Every `Message.Draft.encryptedContent` is sealed under the *current* `DraftKey`, never directly under `selfKey`.
 - One shared key, not per-draft, because purge is all-or-nothing (see below): destroying one wrapped-key blob makes every draft permanently unreadable in a single operation, mirroring §S1's DB-key-rotation-as-cryptographic-erasure technique rather than falling short of it with a "delete the files and hope" fallback — `selfKey` alone never changes, so encrypting directly under it would mean deleted ciphertext remains decryptable forever if any copy survives deletion (a backup taken moments earlier, wear-leveled flash residue).
 
 ### Folder structure
@@ -172,7 +178,7 @@ Application Support/Drafts/<id>/
     attachment2.enc
 ```
 
-One folder per recipient, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. Draft text lives inline in `encryptedContent`; only attachments (which can be large media) go on disk, each individually encrypted the same way active composition already encrypts them (`AttachmentManager`). The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `ContactDraft` row that stores the same `id`. `.completeFileProtection` on every file, matching §S3.
+One folder per recipient, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. Draft text lives inline in `encryptedContent`; only attachments (which can be large media) go on disk, each individually encrypted the same way active composition already encrypts them (`AttachmentManager`). The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `Message.Draft` row that stores the same `id`. `.completeFileProtection` on every file, matching §S3.
 
 ### Sensitivity gate (Option E, applied live, not stamped)
 
@@ -180,11 +186,11 @@ At save time (backgrounding, navigating away), check whether the recipient is *c
 
 ### Purge on `setVisibility(isSensitive: true)`
 
-Find and delete that one recipient's `ContactDraft` row and folder, if either exists — bounded, cheap, at most one row.
+Find and delete that one recipient's `Message.Draft` row and folder, if either exists — bounded, cheap, at most one row.
 
 ### Purge on Secure Mode activation
 
-Destroy the wrapped `DraftKey` blob (making every existing draft's ciphertext permanently unreadable, wherever a copy might physically linger) *and* delete every `ContactDraft` row and folder — blanket, no exceptions, matching §S7's activation philosophy. The key destruction is what matters cryptographically; deleting the now-useless ciphertext afterward is hygiene, closing the same row-count/timestamp residue §S8 already accepts as a gap for vault entries.
+Destroy the wrapped `DraftKey` blob (making every existing draft's ciphertext permanently unreadable, wherever a copy might physically linger) *and* delete every `Message.Draft` row and folder — blanket, no exceptions, matching §S7's activation philosophy. The key destruction is what matters cryptographically; deleting the now-useless ciphertext afterward is hygiene, closing the same row-count/timestamp residue §S8 already accepts as a gap for vault entries.
 
 ### Resolved: no biometric-gated key tier for drafts
 
