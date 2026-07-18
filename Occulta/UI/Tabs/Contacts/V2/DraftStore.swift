@@ -168,8 +168,7 @@ final class DraftStore {
                 existing.encryptedRecipientID = recipientCombined
                 existing.encryptedContent     = contentCombined
             } else {
-                let draft = Message.Draft(encryptedRecipientID: recipientCombined, encryptedContent: contentCombined)
-                draft.id = draftID
+                let draft = Message.Draft(id: draftID, encryptedRecipientID: recipientCombined, encryptedContent: contentCombined)
                 modelContext.insert(draft)
             }
             try? modelContext.save()

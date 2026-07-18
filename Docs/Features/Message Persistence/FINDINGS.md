@@ -163,6 +163,8 @@ extension Message {
 
 No `visibleThroughDepth`-equivalent field, unlike `VaultEntry`/the deferred `Contact.Message` design — the sensitivity gate (below) runs *before* a row is ever inserted, so nothing sensitive-contact-shaped reaches the table in the first place. No plaintext timestamp either: draft count is small enough that decrypting all rows to sort/display costs nothing worth trading a metadata leak for.
 
+`Draft`'s initializer requires `id` as an explicit parameter (`init(id:encryptedRecipientID:encryptedContent:)`), not a default-generated one. Both ciphertext fields are always sealed against a specific `id` via `Message.Draft.aad(id:field:)` before the row exists — the AAD has to be computed first, since it's the id that makes a fresh insert's AAD differ from what an update would reuse. A default-generated `id` decoupled from the one already baked into the ciphertext would produce a row that fails GCM authentication forever, with no separate "reassign it after construction" step to accidentally drop.
+
 ### Content: a sealed `Basket`, not a bespoke encoding
 
 A draft's text and attachments are bundled into the same `Basket` (`Occulta/Data Models/Transfers.swift:27-36`) already used for real sends — reusing the existing structure instead of inventing a separate draft format, and closing a gap an earlier version of this design had (text and attachments under two different keys, so a purge of one wouldn't necessarily erase the other). Sealing the whole `Basket` as one AES-GCM operation means there's only ever one thing to crypto-erase.

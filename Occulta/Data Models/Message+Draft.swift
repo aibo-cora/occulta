@@ -41,8 +41,15 @@ extension Message {
 
         // MARK: Init
 
-        init(encryptedRecipientID: Data, encryptedContent: Data) {
-            self.id                   = UUID()
+        /// `id` must be provided explicitly, not left to default, whenever the
+        /// caller already sealed `encryptedRecipientID`/`encryptedContent` against
+        /// a specific id via `Message.Draft.aad(id:field:)` — which every real
+        /// caller does, since the AAD has to exist before the row does. Passing a
+        /// mismatched (or default-generated) id here would silently produce a row
+        /// whose ciphertext fails GCM authentication forever; there's no separate
+        /// "fix up the id afterward" step to forget.
+        init(id: UUID, encryptedRecipientID: Data, encryptedContent: Data) {
+            self.id                   = id
             self.encryptedRecipientID = encryptedRecipientID
             self.encryptedContent     = encryptedContent
         }
