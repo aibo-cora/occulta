@@ -497,6 +497,20 @@ extension Manager {
                 }
                 try vaultManager.modelContext.save()
 
+                // Re-key or purge Message.Draft rows — selective, matching §S7's
+                // preserve-and-rekey precedent above, not a blanket wipe. Must run
+                // before Step 9 commits the staged key: `oldKey` has to still be the
+                // active canonical key to decrypt existing draft ciphertext.
+                if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
+                    try Message.Draft.reKeyOrPurgeAll(
+                        safeContactIdentifiers: Set(safeProfiles.map(\.identifier)),
+                        allContactIdentifiers:  Set(allProfiles.map(\.identifier)),
+                        oldKey:  oldKey,
+                        newKey:  stagedKey,
+                        in:      contactManager.modelContext
+                    )
+                }
+
                 // ── Step 9: Commit staged key → point of no return ───────────────────
                 //
                 // WAL checkpoint intentionally comes AFTER commit (Step 10).

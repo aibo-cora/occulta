@@ -97,5 +97,68 @@ extension Message {
                 return decoded == recipientID
             }
         }
+
+        // MARK: Lifecycle (classification-driven)
+
+        /// Deletes the draft for a recipient, if any. Called when that recipient
+        /// becomes sensitive — Option E: sensitive contacts get zero draft
+        /// persistence going forward, and any draft already written before the
+        /// classification change is purged rather than left to linger.
+        static func purge(recipientID: String, in modelContext: ModelContext) {
+            guard let draft = find(recipientID: recipientID, in: modelContext) else { return }
+            modelContext.delete(draft)
+        }
+
+        /// Secure Mode activation pass: every draft either survives re-keyed under
+        /// the staged key, or is purged — never left encrypted under a key about to
+        /// be destroyed. Selective, matching §S7's preserve-and-rekey precedent for
+        /// `VaultEntry`, not a blanket wipe.
+        ///
+        /// A draft survives if its recipient isn't a known contact (a group, not yet
+        /// classified sensitive/safe here — see FINDINGS.md) or is in
+        /// `safeContactIdentifiers` (visible at the new, deeper layer too). Anything
+        /// undecryptable under `oldKey`, or that fails to re-seal, is purged rather
+        /// than left in a broken or ambiguous state — fail-safe to gone.
+        static func reKeyOrPurgeAll(
+            safeContactIdentifiers: Set<String>,
+            allContactIdentifiers:  Set<String>,
+            oldKey: SymmetricKey,
+            newKey: SymmetricKey,
+            in modelContext: ModelContext
+        ) throws {
+            for draft in try modelContext.fetch(FetchDescriptor<Message.Draft>()) {
+                guard
+                    let recipientBox   = try? AES.GCM.SealedBox(combined: draft.encryptedRecipientID),
+                    let recipientPlain = try? AES.GCM.open(recipientBox, using: oldKey, authenticating: draft.aad(for: .recipientID)),
+                    let recipientID    = String(data: recipientPlain, encoding: .utf8)
+                else {
+                    modelContext.delete(draft)
+                    continue
+                }
+
+                let isKnownContact = allContactIdentifiers.contains(recipientID)
+                let survives = !isKnownContact || safeContactIdentifiers.contains(recipientID)
+                guard survives else {
+                    modelContext.delete(draft)
+                    continue
+                }
+
+                guard
+                    let contentBox   = try? AES.GCM.SealedBox(combined: draft.encryptedContent),
+                    let contentPlain = try? AES.GCM.open(contentBox, using: oldKey, authenticating: draft.aad(for: .content)),
+                    let newRecipient = try? AES.GCM.seal(recipientPlain, using: newKey, nonce: AES.GCM.Nonce(),
+                                                          authenticating: draft.aad(for: .recipientID)).combined,
+                    let newContent   = try? AES.GCM.seal(contentPlain, using: newKey, nonce: AES.GCM.Nonce(),
+                                                          authenticating: draft.aad(for: .content)).combined
+                else {
+                    modelContext.delete(draft)
+                    continue
+                }
+
+                draft.encryptedRecipientID = newRecipient
+                draft.encryptedContent     = newContent
+            }
+            try modelContext.save()
+        }
     }
 }

@@ -79,6 +79,11 @@ extension ContactManager {
         contact.visibleThroughDepth = try JSONEncoder().encode(
             isSensitive ? depth : Int.max
         ).encrypt()
+
+        if isSensitive {
+            Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+        }
+
         try self.modelContext.save()
 
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: isSensitive ? [identifier] : [])
