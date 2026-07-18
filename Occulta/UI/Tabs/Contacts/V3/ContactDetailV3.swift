@@ -21,6 +21,7 @@ struct ContactDetailV3: View {
     @State private var editing          = false
     @State private var useThreadCompose = false
     @State private var composeVM: ComposeViewModel
+    @State private var draftStore = DraftStore()
 
     init(identifier: String) {
         self.identifier = identifier
@@ -114,9 +115,33 @@ struct ContactDetailV3: View {
                 }
             }
         }
-        .task { self.composeVM.setup(contactManager: self.contactManager) }
+        .task {
+            self.composeVM.setup(contactManager: self.contactManager)
+            if let loaded = self.draftStore.load(
+                recipientID:       self.composeVM.recipientIDString,
+                attachmentManager: self.composeVM.attachmentManager,
+                modelContext:      self.contactManager.modelContext
+            ) {
+                self.composeVM.draftText = loaded.text
+                self.composeVM.messages  = loaded.messages
+            }
+        }
+        .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
+        .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
         .onChange(of: self.useThreadCompose) { _, _ in self.composeVM.clearAfterEncrypt() }
-        .onDisappear { self.composeVM.cleanup() }
+        .onDisappear {
+            Task {
+                await self.draftStore.flush(
+                    recipientID:       self.composeVM.recipientIDString,
+                    isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+                    text:              self.composeVM.draftText,
+                    messages:          self.composeVM.messages,
+                    attachmentManager: self.composeVM.attachmentManager,
+                    modelContext:      self.contactManager.modelContext
+                )
+                self.composeVM.cleanup()
+            }
+        }
         .fullScreenCover(isPresented: self.$editing) {
             Contact.FormV2(mode: .edit(identifier: self.identifier)) { self.dismiss() }
         }
@@ -131,6 +156,17 @@ struct ContactDetailV3: View {
         } message: {
             Text(self.composeVM.errorMessage)
         }
+    }
+
+    private func scheduleDraftSave() {
+        self.draftStore.scheduleSave(
+            recipientID:       self.composeVM.recipientIDString,
+            isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+            text:              self.composeVM.draftText,
+            messages:          self.composeVM.messages,
+            attachmentManager: self.composeVM.attachmentManager,
+            modelContext:      self.contactManager.modelContext
+        )
     }
 }
 

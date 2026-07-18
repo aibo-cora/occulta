@@ -51,6 +51,23 @@ final class ComposeViewModel {
         self.attachmentManager = AttachmentManager(contactKey: key)
     }
 
+    var recipientIDString: String {
+        switch self.recipient {
+        case .contact(let identifier): return identifier
+        case .group(let groupID):      return groupID.uuidString
+        }
+    }
+
+    /// Group-level sensitivity gating for drafts is not yet designed — see
+    /// Docs/Features/Message Persistence/FINDINGS.md. Groups are never treated
+    /// as sensitive here; their drafts always persist.
+    func isSensitive(contactManager: ContactManager) -> Bool {
+        switch self.recipient {
+        case .contact(let identifier): return contactManager.isSensitive(identifier)
+        case .group:                   return false
+        }
+    }
+
     // MARK: Text
 
     func addText() {

@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftData
+import CryptoKit
 
 // MARK: - Message
 
@@ -78,6 +79,23 @@ extension Message {
             data.append(id.uuidString.data(using: .utf8)!)
             data.append(field.rawValue)
             return data
+        }
+
+        // MARK: Lookup
+
+        /// Finds the draft for a given recipient, if one exists. `encryptedRecipientID`
+        /// isn't queryable (it's ciphertext), so this decrypts and compares every row —
+        /// acceptable because draft count is bounded by contact count, not message volume.
+        static func find(recipientID: String, in context: ModelContext) -> Message.Draft? {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return nil }
+            let rows = (try? context.fetch(FetchDescriptor<Message.Draft>())) ?? []
+            return rows.first { row in
+                guard let box     = try? AES.GCM.SealedBox(combined: row.encryptedRecipientID),
+                      let opened  = try? AES.GCM.open(box, using: key, authenticating: row.aad(for: .recipientID)),
+                      let decoded = String(data: opened, encoding: .utf8)
+                else { return false }
+                return decoded == recipientID
+            }
         }
     }
 }
