@@ -124,7 +124,6 @@ extension Contact {
                 self.composeVM.setup(contactManager: self.contactManager)
                 if let loaded = self.draftStore.load(
                     recipientID:       self.composeVM.recipientIDString,
-                    attachmentManager: self.composeVM.attachmentManager,
                     modelContext:      self.contactManager.modelContext
                 ) {
                     self.composeVM.draftText = loaded.text
@@ -141,7 +140,6 @@ extension Contact {
                         isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
                         text:              self.composeVM.draftText,
                         messages:          self.composeVM.messages,
-                        attachmentManager: self.composeVM.attachmentManager,
                         modelContext:      self.contactManager.modelContext
                     )
                     self.composeVM.cleanup()
@@ -169,7 +167,6 @@ extension Contact {
                 isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
                 text:              self.composeVM.draftText,
                 messages:          self.composeVM.messages,
-                attachmentManager: self.composeVM.attachmentManager,
                 modelContext:      self.contactManager.modelContext
             )
         }

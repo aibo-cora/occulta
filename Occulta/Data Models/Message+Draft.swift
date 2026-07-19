@@ -105,7 +105,33 @@ extension Message {
             }
         }
 
+        // MARK: Attachment storage
+
+        /// `Application Support/Drafts/<id>/` — one folder per draft, named by the
+        /// row's own opaque id, never by the recipient's identifier. Holds each
+        /// attachment as its own file, named by its `Occulta.File.id`, still sealed
+        /// under the contact's per-contact key (see FINDINGS.md, "Key" and
+        /// "Attachment storage" — attachment bytes are never re-sealed under the
+        /// canonical DB key that protects this row).
+        static func attachmentsFolder(for id: UUID) -> URL {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            return appSupport
+                .appendingPathComponent("Drafts", isDirectory: true)
+                .appendingPathComponent(id.uuidString, isDirectory: true)
+        }
+
         // MARK: Lifecycle (classification-driven)
+
+        /// Deletes a draft row and its entire attachment folder together — the
+        /// only correct way to delete a draft. Attachment files aren't protected
+        /// by the row's own key rotation (see FINDINGS.md), so deleting just the
+        /// row would leave their content readable on disk, referenced by nothing.
+        /// Does not save `modelContext` — callers that need the deletion committed
+        /// immediately are responsible for that, matching existing call sites.
+        static func delete(_ draft: Message.Draft, in modelContext: ModelContext) {
+            try? FileManager.default.removeItem(at: attachmentsFolder(for: draft.id))
+            modelContext.delete(draft)
+        }
 
         /// Deletes the draft for a recipient, if any. Called when that recipient
         /// becomes sensitive — Option E: sensitive contacts get zero draft
@@ -113,19 +139,26 @@ extension Message {
         /// classification change is purged rather than left to linger.
         static func purge(recipientID: String, in modelContext: ModelContext) {
             guard let draft = find(recipientID: recipientID, in: modelContext) else { return }
-            modelContext.delete(draft)
+            delete(draft, in: modelContext)
         }
 
-        /// Secure Mode activation pass: every draft either survives re-keyed under
-        /// the staged key, or is purged — never left encrypted under a key about to
-        /// be destroyed. Selective, matching §S7's preserve-and-rekey precedent for
-        /// `VaultEntry`, not a blanket wipe.
+        /// Secure Mode activation pass: every draft row either survives re-keyed
+        /// under the staged key, or is purged (row and attachment folder) — never
+        /// left encrypted under a key about to be destroyed. Selective, matching
+        /// §S7's preserve-and-rekey precedent for `VaultEntry`, not a blanket wipe.
         ///
         /// A draft survives if its recipient isn't a known contact (a group, not yet
         /// classified sensitive/safe here — see FINDINGS.md) or is in
         /// `safeContactIdentifiers` (visible at the new, deeper layer too). Anything
         /// undecryptable under `oldKey`, or that fails to re-seal, is purged rather
         /// than left in a broken or ambiguous state — fail-safe to gone.
+        ///
+        /// Attachment *files* are never touched here, surviving or not: a surviving
+        /// contact's per-contact key keeps deriving correctly after their profile is
+        /// re-encrypted elsewhere in activation, so their attachment folder needs no
+        /// re-seal; a purged contact's folder is deleted outright by `delete(_:in:)`,
+        /// which is the only erasure mechanism attachment files get (see FINDINGS.md,
+        /// "Key" — they're never protected by this row's key rotation).
         static func reKeyOrPurgeAll(
             safeContactIdentifiers: Set<String>,
             allContactIdentifiers:  Set<String>,
@@ -139,14 +172,14 @@ extension Message {
                     let recipientPlain = try? AES.GCM.open(recipientBox, using: oldKey, authenticating: draft.aad(for: .recipientID)),
                     let recipientID    = String(data: recipientPlain, encoding: .utf8)
                 else {
-                    modelContext.delete(draft)
+                    delete(draft, in: modelContext)
                     continue
                 }
 
                 let isKnownContact = allContactIdentifiers.contains(recipientID)
                 let survives = !isKnownContact || safeContactIdentifiers.contains(recipientID)
                 guard survives else {
-                    modelContext.delete(draft)
+                    delete(draft, in: modelContext)
                     continue
                 }
 
@@ -158,7 +191,7 @@ extension Message {
                     let newContent   = try? AES.GCM.seal(contentPlain, using: newKey, nonce: AES.GCM.Nonce(),
                                                           authenticating: draft.aad(for: .content)).combined
                 else {
-                    modelContext.delete(draft)
+                    delete(draft, in: modelContext)
                     continue
                 }
 

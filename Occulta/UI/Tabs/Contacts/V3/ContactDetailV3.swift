@@ -119,7 +119,6 @@ struct ContactDetailV3: View {
             self.composeVM.setup(contactManager: self.contactManager)
             if let loaded = self.draftStore.load(
                 recipientID:       self.composeVM.recipientIDString,
-                attachmentManager: self.composeVM.attachmentManager,
                 modelContext:      self.contactManager.modelContext
             ) {
                 self.composeVM.draftText = loaded.text
@@ -136,7 +135,6 @@ struct ContactDetailV3: View {
                     isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
                     text:              self.composeVM.draftText,
                     messages:          self.composeVM.messages,
-                    attachmentManager: self.composeVM.attachmentManager,
                     modelContext:      self.contactManager.modelContext
                 )
                 self.composeVM.cleanup()
@@ -164,7 +162,6 @@ struct ContactDetailV3: View {
             isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
             text:              self.composeVM.draftText,
             messages:          self.composeVM.messages,
-            attachmentManager: self.composeVM.attachmentManager,
             modelContext:      self.contactManager.modelContext
         )
     }

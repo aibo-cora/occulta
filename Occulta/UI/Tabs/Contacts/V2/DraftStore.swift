@@ -18,12 +18,11 @@ final class DraftStore {
     private var saveTask: Task<Void, Never>? = nil
 
     func scheduleSave(
-        recipientID:       String,
-        isSensitive:       Bool,
-        text:              String,
-        messages:          [Occulta.File],
-        attachmentManager: AttachmentManager?,
-        modelContext:      ModelContext
+        recipientID:  String,
+        isSensitive:  Bool,
+        text:         String,
+        messages:     [Occulta.File],
+        modelContext: ModelContext
     ) {
         self.saveTask?.cancel()
         self.saveTask = Task { [weak self] in
@@ -31,7 +30,7 @@ final class DraftStore {
             guard !Task.isCancelled, let self else { return }
             await self.save(
                 recipientID: recipientID, isSensitive: isSensitive, text: text,
-                messages: messages, attachmentManager: attachmentManager, modelContext: modelContext
+                messages: messages, modelContext: modelContext
             )
         }
     }
@@ -39,26 +38,30 @@ final class DraftStore {
     /// Immediate, non-debounced save — for `.onDisappear`, where a 2s wait would
     /// risk losing state to backgrounding or termination before it fires.
     func flush(
-        recipientID:       String,
-        isSensitive:       Bool,
-        text:              String,
-        messages:          [Occulta.File],
-        attachmentManager: AttachmentManager?,
-        modelContext:      ModelContext
+        recipientID:  String,
+        isSensitive:  Bool,
+        text:         String,
+        messages:     [Occulta.File],
+        modelContext: ModelContext
     ) async {
         self.saveTask?.cancel()
         await self.save(
             recipientID: recipientID, isSensitive: isSensitive, text: text,
-            messages: messages, attachmentManager: attachmentManager, modelContext: modelContext
+            messages: messages, modelContext: modelContext
         )
     }
 
     /// Decrypts an existing draft for this recipient, if one exists. Call once,
     /// before the user starts typing.
+    ///
+    /// Attachment entries in the decrypted `Basket` are already `url` references
+    /// into `Message.Draft.attachmentsFolder(for:)`, still sealed under the
+    /// contact's per-contact key — the exact key the compose UI's own
+    /// `AttachmentManager` already holds. No decrypt/re-encrypt/temp-copy is
+    /// needed to make them usable again; the reference is handed back as-is.
     func load(
-        recipientID:       String,
-        attachmentManager: AttachmentManager?,
-        modelContext:      ModelContext
+        recipientID:  String,
+        modelContext: ModelContext
     ) -> (text: String, messages: [Occulta.File])? {
         guard let row = Message.Draft.find(recipientID: recipientID, in: modelContext) else { return nil }
         do {
@@ -70,21 +73,12 @@ final class DraftStore {
             var text = ""
             var loadedMessages: [Occulta.File] = []
             for file in basket.files {
-                guard let data = file.content else { continue }
-                if case .text = file.format, let str = String(data: data, encoding: .utf8) {
+                if case .text = file.format, let data = file.content,
+                   let str = String(data: data, encoding: .utf8) {
                     text = str
                     continue
                 }
-                guard case .file(let meta) = file.format else { continue }
-                let filename = [meta.name, meta.extension].compactMap { $0 }.joined(separator: ".")
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent(
-                    filename.isEmpty ? UUID().uuidString : filename
-                )
-                if let attachmentManager {
-                    try? attachmentManager.encrypt(data, to: url)
-                } else {
-                    try? data.writeProtected(to: url)
-                }
+                guard let url = file.url else { continue }
                 var restored = Occulta.File(url: url, format: file.format, date: file.date)
                 restored.id = file.id
                 loadedMessages.append(restored)
@@ -99,14 +93,14 @@ final class DraftStore {
     /// Persist the current composition as a draft. No-ops if the recipient is
     /// currently sensitive (Option E) — nothing is written for them, matching
     /// today's ephemeral-loss behavior exactly. If there's nothing to save,
-    /// deletes any stale existing draft row instead of writing an empty one.
+    /// deletes any stale existing draft row (and its attachment folder) instead
+    /// of writing an empty one.
     private func save(
-        recipientID:       String,
-        isSensitive:       Bool,
-        text:              String,
-        messages:          [Occulta.File],
-        attachmentManager: AttachmentManager?,
-        modelContext:      ModelContext
+        recipientID:  String,
+        isSensitive:  Bool,
+        text:         String,
+        messages:     [Occulta.File],
+        modelContext: ModelContext
     ) async {
         guard !isSensitive else { return }
 
@@ -114,7 +108,7 @@ final class DraftStore {
         let hasContent = !trimmed.isEmpty || !messages.isEmpty
         guard hasContent else {
             if let existing = Message.Draft.find(recipientID: recipientID, in: modelContext) {
-                modelContext.delete(existing)
+                Message.Draft.delete(existing, in: modelContext)
                 try? modelContext.save()
             }
             return
@@ -123,33 +117,42 @@ final class DraftStore {
         do {
             guard let key = try Manager.Key().createHybridLocalEncryptionKey() else { return }
 
-            var allFiles = messages
-            if !trimmed.isEmpty {
-                allFiles.append(Occulta.File(content: trimmed.data(using: .utf8), format: .text, date: Date()))
+            let existing = Message.Draft.find(recipientID: recipientID, in: modelContext)
+            let draftID  = existing?.id ?? UUID()
+
+            // Attachments stay separate encrypted files, referenced by URL from the
+            // Basket, never inlined into it — see FINDINGS.md, "Attachment storage."
+            // Each is copied into place once (same bytes, same per-contact key —
+            // no decrypt/re-encrypt) and left untouched on every subsequent save.
+            let folder = Message.Draft.attachmentsFolder(for: draftID)
+            if !FileManager.default.fileExists(atPath: folder.path) {
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                var excludedFolder = folder
+                var resourceValues = URLResourceValues()
+                resourceValues.isExcludedFromBackup = true
+                try? excludedFolder.setResourceValues(resourceValues)
             }
 
-            // Inline attachment plaintext into the Basket so the whole draft seals
-            // as one unit — one key to destroy, not two, on Secure Mode activation
-            // or when the recipient later becomes sensitive.
-            var inlineFiles: [Occulta.File] = []
-            for file in allFiles {
-                if let fileURL = file.url {
-                    guard let data = try? await attachmentManager?.data(at: fileURL) else { continue }
-                    var inlined = Occulta.File(content: data, format: file.format, date: file.date)
-                    inlined.id = file.id
-                    inlineFiles.append(inlined)
-                } else {
-                    inlineFiles.append(file)
+            var referencedFiles: [Occulta.File] = []
+            for file in messages {
+                guard let sourceURL = file.url else { continue }
+                let destinationURL = folder.appendingPathComponent(file.id.uuidString)
+                if !FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try? FileManager.default.copyItem(at: sourceURL, to: destinationURL)
                 }
+                guard FileManager.default.fileExists(atPath: destinationURL.path) else { continue }
+                var referenced = Occulta.File(url: destinationURL, format: file.format, date: file.date)
+                referenced.id = file.id
+                referencedFiles.append(referenced)
+            }
+            if !trimmed.isEmpty {
+                referencedFiles.append(Occulta.File(content: trimmed.data(using: .utf8), format: .text, date: Date()))
             }
 
             guard !Task.isCancelled else { return }
 
-            let basket     = Basket(files: inlineFiles)
+            let basket     = Basket(files: referencedFiles)
             let basketData = try JSONEncoder().encode(basket)
-
-            let existing = Message.Draft.find(recipientID: recipientID, in: modelContext)
-            let draftID  = existing?.id ?? UUID()
 
             let recipientData = Data(recipientID.utf8)
             let sealedRecipient = try AES.GCM.seal(
