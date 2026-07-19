@@ -105,6 +105,22 @@ extension Message {
             }
         }
 
+        /// All currently-known recipient identifiers with a draft, decrypted from
+        /// the given rows. Takes already-fetched rows (e.g. from a reactive
+        /// `@Query`) rather than fetching itself, so callers — like a contact
+        /// list deciding whether to show a "Draft" indicator — stay reactive to
+        /// `Message.Draft` changes without a second, non-reactive fetch.
+        static func allRecipientIdentifiers(from drafts: [Message.Draft]) -> Set<String> {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+            return Set(drafts.compactMap { draft -> String? in
+                guard let box     = try? AES.GCM.SealedBox(combined: draft.encryptedRecipientID),
+                      let opened  = try? AES.GCM.open(box, using: key, authenticating: draft.aad(for: .recipientID)),
+                      let decoded = String(data: opened, encoding: .utf8)
+                else { return nil }
+                return decoded
+            })
+        }
+
         // MARK: Attachment storage
 
         /// `Application Support/Drafts/<id>/` — one folder per draft, named by the
