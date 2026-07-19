@@ -167,29 +167,45 @@ No `visibleThroughDepth`-equivalent field, unlike `VaultEntry`/the deferred `Con
 
 ### Content: a sealed `Basket`, not a bespoke encoding
 
-A draft's text and attachments are bundled into the same `Basket` (`Occulta/Data Models/Transfers.swift:27-36`) already used for real sends — reusing the existing structure instead of inventing a separate draft format, and closing a gap an earlier version of this design had (text and attachments under two different keys, so a purge of one wouldn't necessarily erase the other). Sealing the whole `Basket` as one AES-GCM operation means there's only ever one thing to crypto-erase.
+A draft's text and attachments are bundled into the same `Basket` (`Occulta/Data Models/Transfers.swift:27-36`) already used for real sends — reusing the existing structure instead of inventing a separate draft format. Text and attachment *references* travel inside one sealed `Basket`, so there's only one thing to crypto-erase for the row's own content; attachment file *bytes* are a separate question, addressed below under "Key" and "Attachment storage."
 
 Full reuse of `ContactManager.encryptBundle(for:)` (`Contact+Manager.swift:938-1073`) was considered and rejected: it requires a real `Contact.Profile` — `fetchContact(by:)`, prekey pop/forward-secrecy state, version resolution — all genuinely contact-specific. Making "self" work through that path means inventing a synthetic self-contact, which is exactly the complexity already avoided once for the Vault feature (chose `VaultEntry.note` over a synthetic "You" contact). Not worth reopening for drafts.
 
 What *is* reusable: the sealing primitive underneath is already generic. `Crypto+Manager+GroupEncrypt.swift:122-165` generates a random session key and does a plain `AES.GCM.seal(payloadData, using: sessionKey, ...)`, with recipient-specific ECDH key-wrapping happening as a separate step afterward — the seal itself doesn't know or care about contacts. The decrypt side already has the shortcut this needs: `open(_:using: SymmetricKey)` (`Crypto+Manager+ForwardSecrecy.swift:100`) takes a raw symmetric key directly, no contact lookup. The encrypt side has no counterpart yet — add a small `seal(sealedPayload:using: SymmetricKey)` mirroring it, calling the same already-generic internals. Small addition, not a restructuring.
 
-### Key: the canonical local DB key, not a new self-derived one
+### Key: the canonical local DB key for the row; the existing per-contact key for attachment files
 
-Originally scoped as a two-layer scheme (a static self-key-agreement secret wrapping a separate, rotatable draft key) specifically so Secure Mode activation could destroy the wrapping key and crypto-erase every draft. Unnecessary: **the canonical local DB key already rotates on activation** — §S1 documents this as an existing, audited, Critical-severity mechanism ("the local DB key is `ECDH(ourSEKey_localDB, G)`... rotation... is the core reason the DB key rotates on activation," old key deleted after commit). Encrypting `Message.Draft.encryptedContent` directly under this same canonical key gets the identical crypto-erasure guarantee for free, through a mechanism that's already built and already trusted, instead of a parallel one that needed auditing from scratch.
+The `Message.Draft` row itself (`encryptedRecipientID`, `encryptedContent`) is sealed under the canonical local DB key. Originally scoped as a two-layer scheme (a static self-key-agreement secret wrapping a separate, rotatable draft key) specifically so Secure Mode activation could destroy the wrapping key and crypto-erase every draft. Unnecessary: **the canonical local DB key already rotates on activation** — §S1 documents this as an existing, audited, Critical-severity mechanism ("the local DB key is `ECDH(ourSEKey_localDB, G)`... rotation... is the core reason the DB key rotates on activation," old key deleted after commit). Encrypting the row directly under this same canonical key gets the identical crypto-erasure guarantee for free, through a mechanism that's already built and already trusted, instead of a parallel one that needed auditing from scratch. It's also the more consistent choice given a decision already made below: drafts get Tier 1, not the Vault's biometric-gated tier — the canonical DB key *is* Tier 1, the same key already protecting `Contact.Profile.visibleThroughDepth` and everything else at that level.
 
-It's also the more consistent choice given a decision already made below: drafts get Tier 1, not the Vault's biometric-gated tier. The canonical DB key *is* Tier 1 — the same key already protecting `Contact.Profile.visibleThroughDepth` and everything else at that level. A separate self-key-agreement-derived key wouldn't have been stronger (it's tied to the permanent identity key, which never rotates — the two-layer scheme was really just reinventing "rotatable" one level further in, when the DB key already is that).
+**Attachment *files* stay under the existing per-contact key** (`ContactManager.fileEncryptionKey(for:)`) already protecting them during active composition — they are *not* re-sealed under the canonical key. This isn't the rejected two-layer scheme above (a *new*, purpose-built rotatable key wrapping something static) — it's simpler: reusing a key and a manager (`AttachmentManager`) that already exist and are already used for this exact content at every other stage of a message's life (composing, sending, displaying a sent thread). Re-sealing under the canonical key at save time was considered and rejected: it would cost a decrypt/re-encrypt round-trip per attachment, on top of the encrypt/decrypt `AttachmentManager` already does at send time, for no security benefit — see below for why.
 
-Standard per-row AAD applies — `id + field`, the same construction as `VaultEntry.aad(for:)` minus its timestamp component. `Message.Draft` has no persisted creation date to bind one to, matching the no-plaintext-timestamp decision above. This still keeps `encryptedContent` bound to its own row even though the key is shared with the rest of the app's Tier-1 data.
+Two things make the per-contact key safe here rather than a gap:
 
-### Folder structure
+1. **`fileEncryptionKey(for:)` requires the contact's live `Contact.Profile` row** (`Contact+Manager.swift:589-600` — reads `contact.contactPublicKeys?.last?.material`). When a contact becomes sensitive-at-this-layer during Secure Mode activation, their profile is physically relocated out of the queryable store into the `LayerStore` blob (D-05's Tier 2). `fetchContact(by:)` then fails, and `fileEncryptionKey(for:)` throws — the per-contact key becomes undeirvable as a direct consequence of contact relocation that's already built and audited, no extra rotation needed for attachments specifically. For contacts who *survive* activation (profile stays, re-encrypted under the staged key via `reencryptAllFields`), their key material survives too, so the same per-contact key keeps deriving correctly — exactly the behavior wanted for a surviving draft's attachments.
+2. **Explicit deletion, not key rotation, is the actual erasure mechanism** for attachment files, matching how they're already treated everywhere else in this codebase (`ComposeViewModel.cleanup()`/`clearAfterEncrypt()` delete files outright; nothing anywhere relies on rotating a key to make an attachment file unreadable). Point 1 above is real defense-in-depth, not the primary guarantee — the primary guarantee is that purging a draft (day-to-day sensitivity marking, or activation) deletes its attachment files, not just its database row. See "Attachment storage" and "Purge" below.
+
+The row's own AAD is unaffected by any of this: `id + field`, the same construction as `VaultEntry.aad(for:)` minus its timestamp component. `Message.Draft` has no persisted creation date to bind one to, matching the no-plaintext-timestamp decision above. This still keeps `encryptedContent` bound to its own row even though the key is shared with the rest of the app's Tier-1 data.
+
+### Attachment storage: separate files, referenced from the `Basket`, never inlined
+
+**An earlier implementation of this design inlined every attachment's full plaintext into the sealed `Basket` on every save** — reading each file via `AttachmentManager`, JSON-encoding the raw bytes alongside the text, and sealing the whole thing as one `encryptedContent` blob. This was wrong in three compounding ways: a large attachment's *entire* plaintext got decrypted and re-sealed on every debounced save, not just when it actually changed; the resulting ciphertext (base64-JSON of raw bytes) could balloon `encryptedContent` to hundreds of megabytes for a single video, landing in a SQLite column and rewriting the WAL on every save; and a database or WAL file suddenly hundreds of megabytes larger than a normal contact/draft count would explain is itself a forensic signal, visible without decryption — a worse leak than anything §D-10 already accepted.
+
+The fix: `Occulta.File` (`Transfers.swift:40-58`) already distinguishes `content: Data?` (inline plaintext bytes) from `url: URL?` (an on-disk reference) — exactly how attachments already work during active composition, before any draft-saving happens. Drafts preserve that shape instead of collapsing it. No separate manifest is needed — the `Basket` already is one; a `File` entry's existing `url`/`format` fields carry everything needed to find and describe an attachment, and the whole `Basket` (references included) is what gets sealed as `encryptedContent`:
+
+- **Text** stays inlined via `content`, exactly as today — small, cheap to reseal on every save.
+- **Attachments** are referenced via `url`, never inlined via `content`.
+
+**Where the referenced file lives:**
 
 ```
-Application Support/Drafts/<id>/
-    attachment1.enc
-    attachment2.enc
+Application Support/Drafts/<draftID>/<file.id>
 ```
 
-One folder per recipient, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. If attachments are small enough to fit in the sealed `Basket` inline, the folder may not be needed at all; for larger media, each attachment file is itself sealed under the same canonical DB key (matching the content decision above) and referenced from within the decrypted `Basket`. The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `Message.Draft` row that stores the same `id`. `.completeFileProtection` on every file, matching §S3.
+One folder per draft, named by the row's own opaque `id` — never by the recipient's identifier, which would recreate the exact linkage tell this whole design avoids in the database, except worse: listing a directory requires no decryption at all. Each attachment inside it is named by its own `Occulta.File.id` — a stable UUID already assigned when the attachment was first added — with no extension and no trace of the original filename; that metadata stays inside the sealed `Basket`'s `format` field, never on disk in the clear. `.completeFileProtection` on every file, matching §S3. The folder never needs to know or expose which recipient it belongs to — that fact exists exactly once, encrypted, inside the `Message.Draft` row that stores the same `id`.
+
+**Getting a file there:** on save, for each attachment, check whether `Drafts/<draftID>/<file.id>` already exists. If it does, do nothing — an attachment's bytes never change once added, so a prior save already has a durable copy and there's nothing to redo. If it doesn't, *copy* (not move, and not decrypt/re-encrypt) the file from its live compose-session temp-directory location into that path. Same key, same bytes, a plain `FileManager` copy — the only file-system work draft-saving does for an unmodified attachment set, and a one-time cost per attachment rather than a per-debounce one.
+
+**Getting it back on load:** since the persisted file is already sealed under the exact key the compose UI's `AttachmentManager` already holds, `load()` doesn't need to decrypt-then-re-encrypt into a fresh temp copy — it points `Occulta.File.url` straight at `Drafts/<draftID>/<file.id>` and hands that back into `messages`. Display, playback, and re-editing all work unmodified, since nothing about the file's protection or location changes for the rest of the compose session. If the user removes that attachment mid-edit, the existing delete path (`FileManager.removeItem(at:)`) now deletes the persistent copy directly — correct, since removing an attachment from a draft should get rid of both the live and durable copies, not just one.
 
 ### Lifecycle: when a draft is actually written, read, and cleared
 
@@ -203,28 +219,30 @@ At save time (backgrounding, navigating away), check whether the recipient is *c
 
 ### Purge on `setVisibility(isSensitive: true)`
 
-Find and delete that one recipient's `Message.Draft` row and folder, if either exists — bounded, cheap, at most one row.
+Find and delete that one recipient's `Message.Draft` row, and its entire `Drafts/<id>/` attachment folder if present — bounded, cheap, at most one row and one folder. The folder deletion is now the operative erasure step for any attachment content, per the per-contact-key reasoning above: nothing rotates that key at this point, so nothing else makes the file unreadable.
 
 ### Purge on Secure Mode activation — corrected: selective, not blanket
 
 **An earlier version of this section said "delete every draft, blanket, no exceptions," and cited §S7 as the precedent. That citation was wrong, and the design was too destructive.** Re-checking the actual §S7 text: `VaultEntry` handling is a *preserve-and-rekey* pass, not a wipe — "Non-nil, readable — existing depth value re-encrypted under staged key **verbatim**." Non-sensitive vault entries survive activation intact; fail-safe-to-hidden is reserved for the ambiguous cases (nil or corrupt values) only. A blanket draft wipe would destroy every ordinary contact's draft for no reason, which isn't what the codebase's own pattern does elsewhere.
 
-There's also a mechanical reason this needs to be an explicit, *selective* step rather than an afterthought: since drafts are sealed under the canonical DB key (per the simplification above), and that key itself rotates at activation (§S1 — old key deleted, new key created), **every existing draft becomes unreadable the instant activation runs unless something explicitly re-encrypts the ones that should survive.** Crypto-erasure for sensitive contacts' drafts comes free from the key rotation; preservation for everyone else requires action, or it's lost too.
+There's also a mechanical reason this needs to be an explicit, *selective* step rather than an afterthought for the row itself: since a draft row is sealed under the canonical DB key, and that key rotates at activation (§S1 — old key deleted, new key created), **every existing draft row becomes unreadable the instant activation runs unless something explicitly re-encrypts the ones that should survive.** Crypto-erasure for sensitive contacts' draft rows comes free from the key rotation; preservation for everyone else requires action, or it's lost too. Attachment *files* don't need this same treatment — per the per-contact-key reasoning above, a surviving contact's attachment files stay readable automatically (their key material survives alongside their re-encrypted profile), and a purged contact's attachment folder is deleted outright rather than needing any re-seal.
 
-Corrected step, sequenced right after (or alongside) contact classification — it needs to know which contacts are being moved into the sensitive/`LayerStore` set in *this* activation pass:
+Sequenced right after (or alongside) contact classification — it needs to know which contacts are being moved into the sensitive/`LayerStore` set in *this* activation pass:
 
 ```
 for each Message.Draft row:
     decrypt encryptedRecipientID (under the old canonical key)
-    if that recipient is being classified sensitive this activation:
-        delete the row and its folder
+    if undecryptable, or that recipient is being classified sensitive this activation:
+        delete the row and its Drafts/<id>/ attachment folder
     else:
         decrypt encryptedContent under the old key
         re-seal encryptedRecipientID and encryptedContent under the new (staged) key
         update the row in place
+        (attachment files: untouched — still valid under the surviving contact's
+         still-derivable per-contact key, nothing to re-seal)
 ```
 
-This gives two things at once: sensitive contacts' drafts are actively deleted (explicit deletion as hygiene on top of the key-rotation crypto-erasure, not passive omission — a future "re-encrypt everything" refactor pass could otherwise accidentally sweep a sensitive contact's draft along if nothing explicitly excludes it), and ordinary contacts' drafts survive instead of being needlessly destroyed. It also mirrors §S7's actual defense-in-depth property: even if the day-to-day `setVisibility` purge hook (previous section) had a bug and let a sensitive contact's draft slip through earlier, activation independently re-checks every row against current sensitivity rather than trusting upstream logic already worked.
+This gives two things at once: sensitive contacts' drafts (row and attachment folder) are actively deleted (explicit deletion as hygiene on top of the key-rotation crypto-erasure for the row, and as the *only* erasure mechanism for attachment files — not passive omission, since a future "re-encrypt everything" refactor pass could otherwise accidentally sweep a sensitive contact's draft along if nothing explicitly excludes it), and ordinary contacts' drafts survive instead of being needlessly destroyed. It also mirrors §S7's actual defense-in-depth property: even if the day-to-day `setVisibility` purge hook (previous section) had a bug and let a sensitive contact's draft slip through earlier, activation independently re-checks every row against current sensitivity rather than trusting upstream logic already worked.
 
 ### Resolved: no biometric-gated key tier for drafts
 
