@@ -156,8 +156,6 @@ final class DraftStore {
                 referencedFiles.append(Occulta.File(content: trimmed.data(using: .utf8), format: .text, date: Date()))
             }
 
-            guard !Task.isCancelled else { return }
-
             let basket     = Basket(files: referencedFiles)
             let basketData = try JSONEncoder().encode(basket)
 
