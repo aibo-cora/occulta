@@ -54,11 +54,14 @@ final class DraftStore {
     /// Decrypts an existing draft for this recipient, if one exists. Call once,
     /// before the user starts typing.
     ///
-    /// Attachment entries in the decrypted `Basket` are already `url` references
-    /// into `Message.Draft.attachmentsFolder(for:)`, still sealed under the
+    /// Attachment entries in the decrypted `Basket` carry no stored `url` — each
+    /// one's location is reconstructed fresh from the row's own id and the
+    /// file's id via `Message.Draft.attachmentsFolder(for:)`/`attachmentFilename(for:)`,
+    /// never trusted from a path persisted at save time (see FINDINGS.md,
+    /// "Attachment storage"). The resulting file is still sealed under the
     /// contact's per-contact key — the exact key the compose UI's own
-    /// `AttachmentManager` already holds. No decrypt/re-encrypt/temp-copy is
-    /// needed to make them usable again; the reference is handed back as-is.
+    /// `AttachmentManager` already holds — so no decrypt/re-encrypt/temp-copy is
+    /// needed to make it usable again.
     func load(
         recipientID:  String,
         modelContext: ModelContext
@@ -70,6 +73,7 @@ final class DraftStore {
             let plain = try AES.GCM.open(box, using: key, authenticating: row.aad(for: .content))
             let basket = try JSONDecoder().decode(Basket.self, from: plain)
 
+            let folder = Message.Draft.attachmentsFolder(for: row.id)
             var text = ""
             var loadedMessages: [Occulta.File] = []
             for file in basket.files {
@@ -78,7 +82,7 @@ final class DraftStore {
                     text = str
                     continue
                 }
-                guard let url = file.url else { continue }
+                let url = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
                 var restored = Occulta.File(url: url, format: file.format, date: file.date)
                 restored.id = file.id
                 loadedMessages.append(restored)
@@ -133,15 +137,18 @@ final class DraftStore {
                 try? excludedFolder.setResourceValues(resourceValues)
             }
 
+            // The Basket entry deliberately carries no `url` — load() reconstructs
+            // one fresh from the row's own id + file.id rather than trusting a
+            // path persisted at save time (see FINDINGS.md, "Attachment storage").
             var referencedFiles: [Occulta.File] = []
             for file in messages {
                 guard let sourceURL = file.url else { continue }
-                let destinationURL = folder.appendingPathComponent(file.id.uuidString)
+                let destinationURL = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
                 if !FileManager.default.fileExists(atPath: destinationURL.path) {
                     try? FileManager.default.copyItem(at: sourceURL, to: destinationURL)
                 }
                 guard FileManager.default.fileExists(atPath: destinationURL.path) else { continue }
-                var referenced = Occulta.File(url: destinationURL, format: file.format, date: file.date)
+                var referenced = Occulta.File(format: file.format, date: file.date)
                 referenced.id = file.id
                 referencedFiles.append(referenced)
             }

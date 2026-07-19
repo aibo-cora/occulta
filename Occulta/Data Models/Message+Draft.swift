@@ -120,6 +120,25 @@ extension Message {
                 .appendingPathComponent(id.uuidString, isDirectory: true)
         }
 
+        /// On-disk filename for a given attachment within its draft's folder —
+        /// `<file.id>` plus a real extension when one is known, so AVFoundation's
+        /// content-type detection (`URL.pathExtension`, used for video playback)
+        /// still works after a draft is reloaded. The tradeoff: a directory listing
+        /// now reveals attachment *type* (`.mp4`, `.jpg`), not just an opaque id —
+        /// still never the original filename, which stays inside the sealed
+        /// `Basket`'s `format` metadata.
+        ///
+        /// Used identically by both the save side (to know where to copy a file
+        /// to) and the load side (to reconstruct a fresh, correct URL rather than
+        /// trusting one persisted at save time — see `attachmentsFolder(for:)`
+        /// callers in `DraftStore`).
+        static func attachmentFilename(for file: Occulta.File) -> String {
+            guard case .file(let meta) = file.format,
+                  let ext = meta.extension, !ext.isEmpty
+            else { return file.id.uuidString }
+            return "\(file.id.uuidString).\(ext)"
+        }
+
         // MARK: Lifecycle (classification-driven)
 
         /// Deletes a draft row and its entire attachment folder together — the
