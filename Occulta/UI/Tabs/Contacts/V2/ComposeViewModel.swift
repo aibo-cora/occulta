@@ -13,6 +13,13 @@ struct PendingImport: Identifiable {
     let ext:      String
     var progress:  Double = 0
     var isLoading: Bool   = true
+
+    init(filename: String, ext: String, progress: Double = 0, isLoading: Bool = true) {
+        self.filename  = filename
+        self.ext       = ext.lowercased()
+        self.progress  = progress
+        self.isLoading = isLoading
+    }
 }
 
 // MARK: - ComposeViewModel
@@ -81,7 +88,10 @@ final class ComposeViewModel {
 
     func handleMedia(_ result: PHPickerResult) async {
         let provider = result.itemProvider
-        let typeID   = provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
+        let typeID   = provider.registeredTypeIdentifiers.first { id in
+            guard let type = UTType(id) else { return false }
+            return type.conforms(to: .image) || type.conforms(to: .movie)
+        } ?? provider.registeredTypeIdentifiers.first ?? UTType.data.identifier
         let ext      = UTType(typeID)?.preferredFilenameExtension ?? "bin"
         let filename = "media_\(UUID().uuidString.prefix(8))"
         let url      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
@@ -163,7 +173,7 @@ final class ComposeViewModel {
                 defer { srcURL.stopAccessingSecurityScopedResource() }
 
                 let filename = srcURL.deletingPathExtension().lastPathComponent
-                let ext      = srcURL.pathExtension
+                let ext      = srcURL.pathExtension.lowercased()
                 let tmp      = FileManager.default.temporaryDirectory.appendingPathComponent("\(filename).\(ext)")
                 let manager  = self.attachmentManager
 

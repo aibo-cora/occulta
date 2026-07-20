@@ -50,6 +50,19 @@ struct File: Identifiable, Codable, Hashable {
         var `extension`: String?
         /// Message accompanying the file.
         var note: String?
+
+        init(name: String? = nil, extension ext: String? = nil, note: String? = nil) {
+            self.name = name
+            self.extension = ext?.lowercased()
+            self.note = note
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.name = try container.decodeIfPresent(String.self, forKey: .name)
+            self.extension = try container.decodeIfPresent(String.self, forKey: .extension)?.lowercased()
+            self.note = try container.decodeIfPresent(String.self, forKey: .note)
+        }
     }
 
     enum Format: Codable, Equatable, Hashable {
