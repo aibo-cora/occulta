@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 // MARK: - Contact Detail V3
 
@@ -17,11 +18,13 @@ struct ContactDetailV3: View {
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(VaultManager.self)        private var vaultManager: VaultManager?
     @Environment(\.dismiss)               private var dismiss
+    @Environment(\.scenePhase)            private var scenePhase
 
     @State private var editing          = false
     @State private var useThreadCompose = false
     @State private var composeVM: ComposeViewModel
     @State private var draftStore = DraftStore()
+    @State private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     init(identifier: String) {
         self.identifier = identifier
@@ -140,6 +143,7 @@ struct ContactDetailV3: View {
                 self.composeVM.cleanup()
             }
         }
+        .onChange(of: self.scenePhase) { _, newPhase in self.flushOnBackground(newPhase) }
         .fullScreenCover(isPresented: self.$editing) {
             Contact.FormV2(mode: .edit(identifier: self.identifier)) { self.dismiss() }
         }
@@ -164,6 +168,31 @@ struct ContactDetailV3: View {
             messages:          self.composeVM.messages,
             modelContext:      self.contactManager.modelContext
         )
+    }
+
+    /// `.onDisappear` only fires on navigation away — it doesn't fire when the
+    /// app backgrounds while this screen stays on top (a phone call, switching
+    /// apps). The debounced auto-save alone doesn't cover that: an edit made
+    /// in the last couple seconds before backgrounding may not have fired yet,
+    /// and iOS can suspend the process before a plain Task gets to run. A
+    /// background task assertion buys the time to flush immediately instead.
+    private func flushOnBackground(_ newPhase: ScenePhase) {
+        guard newPhase != .active else { return }
+        self.backgroundTaskID = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
+        }
+        Task {
+            await self.draftStore.flush(
+                recipientID:       self.composeVM.recipientIDString,
+                isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+                text:              self.composeVM.draftText,
+                messages:          self.composeVM.messages,
+                modelContext:      self.contactManager.modelContext
+            )
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
+        }
     }
 }
 
