@@ -218,8 +218,17 @@ final class DraftStore {
                 let draft = Message.Draft(id: draftID, encryptedRecipientID: recipientCombined, encryptedContent: contentCombined)
                 modelContext.insert(draft)
             }
-            try? modelContext.save()
-            self.lastPersisted = currentSnapshot
+            do {
+                try modelContext.save()
+                // Only trust the cache after a save that actually succeeded —
+                // updating it unconditionally would let a silent write failure
+                // look identical to "already correctly persisted," causing a
+                // later debounce/flush to see "matches cache" and skip retrying
+                // entirely, permanently losing this content.
+                self.lastPersisted = currentSnapshot
+            } catch {
+                // Best-effort — failing to save a draft is no worse than today's loss.
+            }
         } catch {
             // Best-effort — failing to save a draft is no worse than today's loss.
         }
