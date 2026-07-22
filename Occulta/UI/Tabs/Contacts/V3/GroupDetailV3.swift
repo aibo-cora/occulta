@@ -27,7 +27,6 @@ struct GroupDetailV3: View {
     @State private var membersExpanded  = false
     @State private var composeVM: ComposeViewModel
     @State private var draftStore = DraftStore()
-    @State private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     init(groupID: UUID) {
         self.groupID = groupID
@@ -59,7 +58,13 @@ struct GroupDetailV3: View {
                 )
 
                 if count > 0 {
-                    ComposeToggleV3(useThread: self.$useThreadCompose)
+                    ComposeToggleV3(useThread: Binding(
+                        get: { self.useThreadCompose },
+                        set: { newValue in
+                            self.useThreadCompose = newValue
+                            self.composeVM.clearAfterEncrypt()
+                        }
+                    ))
 
                     if self.useThreadCompose {
                         NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
@@ -122,11 +127,11 @@ struct GroupDetailV3: View {
             ) {
                 self.composeVM.draftText = loaded.text
                 self.composeVM.messages  = loaded.messages
+                self.useThreadCompose    = loaded.wasThreadMode
             }
         }
         .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
         .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
-        .onChange(of: self.useThreadCompose) { _, _ in self.composeVM.clearAfterEncrypt() }
         .onDisappear {
             Task {
                 await self.draftStore.flush(
@@ -134,6 +139,7 @@ struct GroupDetailV3: View {
                     isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
                     text:              self.composeVM.draftText,
                     messages:          self.composeVM.messages,
+                    useThread:         self.useThreadCompose,
                     modelContext:      self.contactManager.modelContext
                 )
                 self.composeVM.cleanup()
@@ -162,6 +168,7 @@ struct GroupDetailV3: View {
             isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
             text:              self.composeVM.draftText,
             messages:          self.composeVM.messages,
+            useThread:         self.useThreadCompose,
             modelContext:      self.contactManager.modelContext
         )
     }
@@ -172,11 +179,16 @@ struct GroupDetailV3: View {
     /// in the last couple seconds before backgrounding may not have fired yet,
     /// and iOS can suspend the process before a plain Task gets to run. A
     /// background task assertion buys the time to flush immediately instead.
+    ///
+    /// `taskID` is a local, per-call variable, not shared state — if
+    /// `scenePhase` bounces away from `.active` more than once in quick
+    /// succession, each call ends exactly the assertion it started, rather
+    /// than a shared slot letting one call's cleanup end another's.
     private func flushOnBackground(_ newPhase: ScenePhase) {
         guard newPhase != .active else { return }
-        self.backgroundTaskID = UIApplication.shared.beginBackgroundTask {
-            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
-            self.backgroundTaskID = .invalid
+        var taskID: UIBackgroundTaskIdentifier = .invalid
+        taskID = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(taskID)
         }
         Task {
             await self.draftStore.flush(
@@ -184,10 +196,10 @@ struct GroupDetailV3: View {
                 isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
                 text:              self.composeVM.draftText,
                 messages:          self.composeVM.messages,
+                useThread:         self.useThreadCompose,
                 modelContext:      self.contactManager.modelContext
             )
-            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
-            self.backgroundTaskID = .invalid
+            UIApplication.shared.endBackgroundTask(taskID)
         }
     }
 }
