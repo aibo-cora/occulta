@@ -277,6 +277,57 @@ for each Message.Draft row:
 
 This gives two things at once: sensitive contacts' drafts (row and attachment folder) are actively deleted (explicit deletion as hygiene on top of the key-rotation crypto-erasure for the row, and as the *only* erasure mechanism for attachment files — not passive omission, since a future "re-encrypt everything" refactor pass could otherwise accidentally sweep a sensitive contact's draft along if nothing explicitly excludes it), and ordinary contacts' drafts survive instead of being needlessly destroyed. It also mirrors §S7's actual defense-in-depth property: even if the day-to-day `setVisibility` purge hook (previous section) had a bug and let a sensitive contact's draft slip through earlier, activation independently re-checks every row against current sensitivity rather than trusting upstream logic already worked.
 
+### Gap found: bulk classification (`saveClassification`) doesn't purge, unlike the single-contact toggle
+
+`setVisibility(for:isSensitive:)` (`ContactManager+Classification.swift:73-90`) — the per-contact toggle — purges that contact's draft the moment it's marked sensitive (line 84). `saveClassification(safeIDs:)` (`:52-65`) — the bulk pass behind `ContactClassification.swift`'s "Save" button — does not; it only writes `visibleThroughDepth` and runs the group-membership cleanup. It already computes exactly the set this needs: `hiddenIdentifiers` (`:55-60`) is every contact this call is newly classifying hidden at the current depth — precisely the set `setVisibility` purges for, just batched.
+
+Fix is mechanical, not a new mechanism: after the classification loop, before `modelContext.save()` (i.e. right where `setVisibility` sequences its own purge relative to its save), purge each identifier in `hiddenIdentifiers`:
+
+```swift
+for identifier in hiddenIdentifiers {
+    Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+}
+```
+
+Purging an identifier that was *already* hidden before this save (also present in `hiddenIdentifiers`, since the set isn't restricted to newly-hidden ones) is a harmless no-op — `find` won't match a row that isn't there. No change to `Message.Draft` itself; this only closes a gap in one caller.
+
+### Considered and rejected: allowing drafts for sensitive contacts, backstopped by activation/duress purging alone
+
+Revisited whether the Option E gate (§ above, "Sensitivity gate") could be dropped — save sensitive contacts' drafts too, and rely on the purge passes to clean them up before anyone under coercion could reach them. Doesn't hold up:
+
+- **Activation (previous section) purges at layer *creation*, not at layer *entry*.** The canonical DB key only rotates when a duress layer is created or changed via Settings. A contact classified sensitive between one activation and the next — which could be indefinitely long, or the layer may never be touched again — would have its draft sit in the main store under the *same key* used for everything visible at that depth for that entire window. Anyone who reaches that depth, coerced or not, already holds the key that opens it.
+- **Tier 1 has no activation event at all.** A contact can be marked sensitive via `ContactClassification.swift`'s "Save" flow with Secure Mode never turned on. There is no `activateSecureMode` call to hook a purge into for these installs, ever — "purge on duress" has nothing to attach to.
+- **The gap directly above (`saveClassification` not purging) would have been silently load-bearing** for exactly this scenario — mark several contacts sensitive in bulk while a draft already exists, and today nothing purges it.
+
+Conclusion: the sensitivity gate itself stays. What follows (duress-entry purge, previous gap fix) is worth doing on its own merits — defense in depth for drafts saved for contacts that later *become* sensitive — not as a replacement for the gate.
+
+### New hook: purge on duress-entry, not just duress-layer-creation
+
+Today, entering an *already-created* duress PIN is a pure state transition — `Manager.Security.verify(_:)` (`Manager+Security.swift:841-882`) returns `.duress`, and `applyVerifyState(for:)` (`:927`) does `currentDepth += 1`. No key rotation, no draft purge — the rekey/purge pass only ever runs once, at the moment that layer was *set up* (previous section). A contact classified sensitive after setup, with a draft saved before this proposal even ships (or under a lifted Option E gate, if that's ever revisited), would keep that draft indefinitely across any number of later duress-PIN entries.
+
+Fix: run a purge pass at the same place `currentDepth` actually changes — inside `applyVerifyState(for:)`'s `.duress` case, after the increment, using `self.currentDepth` (the new, post-transition depth). `Manager.Security` already owns a private `modelContext` (`:108`) and the static `isVisible(_:atDepth:)` (`:1143`) needs nothing but a fetched `Contact.Profile` and a depth — no `ContactManager` dependency needs to be added to `Security` or plumbed into `PINEntry` (which today has neither in scope).
+
+```swift
+// inside Manager.Security, called from applyVerifyState's .duress case,
+// after self.currentDepth += 1
+private func purgeDraftsNotSafeAtCurrentDepth() {
+    guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+    let profiles = (try? self.modelContext.fetch(
+        FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
+    )) ?? []
+    let allIdentifiers  = Set(profiles.map(\.identifier))
+    let safeIdentifiers = Set(profiles.filter { Manager.Security.isVisible($0, atDepth: self.currentDepth) }.map(\.identifier))
+    try? Message.Draft.reKeyOrPurgeAll(
+        safeContactIdentifiers: safeIdentifiers, allContactIdentifiers: allIdentifiers,
+        oldKey: key, newKey: key, in: self.modelContext
+    )
+}
+```
+
+Reuses `reKeyOrPurgeAll` unchanged rather than adding a new purge-only variant: no draft-row key rotation actually happens at duress entry (the canonical key is the same key at every depth, and only rotates at activation), so calling it with `oldKey == newKey` re-seals surviving rows under an identical key with a fresh nonce — a no-op in effect, not a new crypto path to review — while getting the exact same, already-reviewed survive/purge semantics (including "a draft addressed to a group always survives this pass," matching activation's behavior, since group membership sensitivity is handled separately via `purgeMembersFromDuressDepths`, not via this identifier set).
+
+Runs on every `.duress` verify, not just the first: idempotent (a contact already purged has no row left to find), and cheap — bounded by draft count, the same bound `Message.Draft.find` already relies on elsewhere.
+
 ### Resolved: no biometric-gated key tier for drafts
 
 Unlike the still-open Q-04 for full message history, drafts don't get the Vault's biometric-gated SE key tier. The point of a draft is frictionless resume of an in-progress composition — requiring Face ID to reopen one would defeat that, and the residual risk is already bounded by the sensitivity gate (nothing sensitive-contact-shaped is ever stored) and the activation-purge safety net. Decided, not left open.

@@ -59,6 +59,9 @@ extension ContactManager {
             contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             if depthValue != Int.max { hiddenIdentifiers.insert(contact.identifier) }
         }
+        for identifier in hiddenIdentifiers {
+            Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+        }
         try self.modelContext.save()
 
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: hiddenIdentifiers)

@@ -924,9 +924,37 @@ extension Manager {
         func applyVerifyState(for result: PINVerifyResult) {
             switch result {
             case .normal(let depth): self.currentDepth = depth
-            case .duress:            self.currentDepth += 1
+            case .duress:
+                self.currentDepth += 1
+                self.purgeDraftsNotSafeAtCurrentDepth()
             case .wrong, .locked:    break
             }
+        }
+
+        /// Defense in depth alongside `reKeyOrPurgeAll` at activation (`Message+Draft.swift`):
+        /// activation only purges at layer *creation*, not at every later entry into an
+        /// already-created layer. A contact classified sensitive sometime after that layer
+        /// was set up — with a draft saved before this pass existed, or before the sensitivity
+        /// gate was in place — would otherwise keep that draft across any number of duress-PIN
+        /// entries. Called after `currentDepth` has already advanced, so `isVisible` checks
+        /// against the depth actually being entered.
+        ///
+        /// No key rotation happens at entry into an existing layer (only at activation), so
+        /// this reuses `reKeyOrPurgeAll` with `oldKey == newKey` — surviving rows are re-sealed
+        /// under an identical key with a fresh nonce, a no-op in effect, not a new crypto path —
+        /// to get the exact same, already-reviewed survive/purge semantics rather than a second
+        /// implementation of them.
+        private func purgeDraftsNotSafeAtCurrentDepth() {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            let profiles = (try? self.modelContext.fetch(
+                FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
+            )) ?? []
+            let allIdentifiers  = Set(profiles.map(\.identifier))
+            let safeIdentifiers = Set(profiles.filter { Self.isVisible($0, atDepth: self.currentDepth) }.map(\.identifier))
+            try? Message.Draft.reKeyOrPurgeAll(
+                safeContactIdentifiers: safeIdentifiers, allContactIdentifiers: allIdentifiers,
+                oldKey: key, newKey: key, in: self.modelContext
+            )
         }
 
         // MARK: - PIN check (no side effects)
