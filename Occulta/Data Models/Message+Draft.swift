@@ -210,11 +210,14 @@ extension Message {
         /// left encrypted under a key about to be destroyed. Selective, matching
         /// §S7's preserve-and-rekey precedent for `VaultEntry`, not a blanket wipe.
         ///
-        /// A draft survives if its recipient isn't a known contact (a group, not yet
-        /// classified sensitive/safe here — see FINDINGS.md) or is in
-        /// `safeContactIdentifiers` (visible at the new, deeper layer too). Anything
-        /// undecryptable under `oldKey`, or that fails to re-seal, is purged rather
-        /// than left in a broken or ambiguous state — fail-safe to gone.
+        /// A draft survives if its recipient is a known group (`allGroupIdentifiers`
+        /// — group membership sensitivity is handled separately via
+        /// `purgeMembersFromDuressDepths`, not here) or a safe contact
+        /// (`safeContactIdentifiers`, visible at the new, deeper layer too). Anything
+        /// else — undecryptable under `oldKey`, fails to re-seal, or simply doesn't
+        /// match a known group or safe contact (including a contact identifier that
+        /// used to exist and was deleted — see FINDINGS.md, "Scoping item 2's fix") —
+        /// is purged rather than left in a broken or ambiguous state — fail-safe to gone.
         ///
         /// Attachment *files* are never touched here, surviving or not: a surviving
         /// contact's per-contact key keeps deriving correctly after their profile is
@@ -224,7 +227,7 @@ extension Message {
         /// "Key" — they're never protected by this row's key rotation).
         static func reKeyOrPurgeAll(
             safeContactIdentifiers: Set<String>,
-            allContactIdentifiers:  Set<String>,
+            allGroupIdentifiers:    Set<String>,
             oldKey: SymmetricKey,
             newKey: SymmetricKey,
             in modelContext: ModelContext
@@ -239,8 +242,7 @@ extension Message {
                     continue
                 }
 
-                let isKnownContact = allContactIdentifiers.contains(recipientID)
-                let survives = !isKnownContact || safeContactIdentifiers.contains(recipientID)
+                let survives = allGroupIdentifiers.contains(recipientID) || safeContactIdentifiers.contains(recipientID)
                 guard survives else {
                     delete(draft, in: modelContext)
                     continue

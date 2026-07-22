@@ -63,6 +63,7 @@ extension ContactManager {
             Message.Draft.purge(recipientID: identifier, in: self.modelContext)
         }
         try self.modelContext.save()
+        self.security.checkpointStore()
 
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: hiddenIdentifiers)
     }
@@ -88,6 +89,7 @@ extension ContactManager {
         }
 
         try self.modelContext.save()
+        self.security.checkpointStore()
 
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: isSensitive ? [identifier] : [])
     }

@@ -502,9 +502,13 @@ extension Manager {
                 // before Step 9 commits the staged key: `oldKey` has to still be the
                 // active canonical key to decrypt existing draft ciphertext.
                 if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
+                    let allGroupIdentifiers = Set(
+                        ((try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
+                            .compactMap { $0.readID()?.uuidString }
+                    )
                     try Message.Draft.reKeyOrPurgeAll(
                         safeContactIdentifiers: Set(safeProfiles.map(\.identifier)),
-                        allContactIdentifiers:  Set(allProfiles.map(\.identifier)),
+                        allGroupIdentifiers:    allGroupIdentifiers,
                         oldKey:  oldKey,
                         newKey:  stagedKey,
                         in:      contactManager.modelContext
@@ -949,12 +953,38 @@ extension Manager {
             let profiles = (try? self.modelContext.fetch(
                 FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
             )) ?? []
-            let allIdentifiers  = Set(profiles.map(\.identifier))
             let safeIdentifiers = Set(profiles.filter { Self.isVisible($0, atDepth: self.currentDepth) }.map(\.identifier))
+            let allGroupIdentifiers = Set(
+                ((try? self.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
+                    .compactMap { $0.readID()?.uuidString }
+            )
             try? Message.Draft.reKeyOrPurgeAll(
-                safeContactIdentifiers: safeIdentifiers, allContactIdentifiers: allIdentifiers,
+                safeContactIdentifiers: safeIdentifiers, allGroupIdentifiers: allGroupIdentifiers,
                 oldKey: key, newKey: key, in: self.modelContext
             )
+            self.checkpointStore()
+        }
+
+        /// Forces a WAL checkpoint on the persistent store after a `Message.Draft` purge.
+        /// `PRAGMA secure_delete = ON` (`OccultaApp.swift`) only zeroes a page's content for
+        /// the write that frees it — an earlier, un-checkpointed WAL frame from before the
+        /// purge can still hold the real, recoverable ciphertext, decryptable by whatever key
+        /// is still live, since none of these purge call sites rotates any key (only activation
+        /// does). Matches what `activateSecureMode` already does after its own commit (below).
+        ///
+        /// Not `private`: `ContactManager` already holds a `security: Manager.Security`
+        /// reference (`Contact+Manager.swift`) and calls this from its own purge sites
+        /// (`setVisibility`, `saveClassification`) — reusing this rather than a third copy
+        /// of the same SQLite pragma call.
+        ///
+        /// Must run unconditionally, every call, not only when a purge actually happened —
+        /// same principle `cleanUpGroupDuressMembership` already applies to its own ciphertext
+        /// refresh: a checkpoint that only fires when something was purged would turn
+        /// checkpoint timing itself into the exact kind of differential signal this exists
+        /// to remove.
+        func checkpointStore() {
+            guard let url = self.storeURL else { return }
+            Self.walCheckpoint(at: url)
         }
 
         // MARK: - PIN check (no side effects)

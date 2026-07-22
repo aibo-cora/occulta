@@ -196,7 +196,7 @@ The `Message.Draft` row itself (`encryptedRecipientID`, `encryptedContent`) is s
 
 Two things make the per-contact key safe here rather than a gap:
 
-1. **`fileEncryptionKey(for:)` requires the contact's live `Contact.Profile` row** (`Contact+Manager.swift:589-600` — reads `contact.contactPublicKeys?.last?.material`). When a contact becomes sensitive-at-this-layer during Secure Mode activation, their profile is physically relocated out of the queryable store into the `LayerStore` blob (D-05's Tier 2). `fetchContact(by:)` then fails, and `fileEncryptionKey(for:)` throws — the per-contact key becomes undeirvable as a direct consequence of contact relocation that's already built and audited, no extra rotation needed for attachments specifically. For contacts who *survive* activation (profile stays, re-encrypted under the staged key via `reencryptAllFields`), their key material survives too, so the same per-contact key keeps deriving correctly — exactly the behavior wanted for a surviving draft's attachments.
+1. ~~`fileEncryptionKey(for:)` requires the contact's live `Contact.Profile` row... When a contact becomes sensitive-at-this-layer during Secure Mode activation, their profile is physically relocated out of the queryable store into the `LayerStore` blob (D-05's Tier 2). `fetchContact(by:)` then fails, and `fileEncryptionKey(for:)` throws — the per-contact key becomes undeirvable as a direct consequence of contact relocation.`~~ **Corrected — this was factually wrong, found while investigating the `isKnownContact` open item below.** `activateSecureMode` does not remove a sensitive contact from the main store at all: "Sensitive contacts remain in the DB (not hard-deleted)... Depth-based visibility (`visibleThroughDepth`) controls what appears in the UI — not the key" (`Manager+Security.swift:469-472`), and every profile — safe or sensitive — gets looped over and re-encrypted under the staged key (`:475-478`). `fetchContact(by:)` (`Contact+Manager.swift:400-404`) filters only on `identifier == identifier` — no depth check, no `deletionToken` check either. So `fileEncryptionKey(for:)` does *not* throw for a sensitive contact; it derives the same key it always would. The "blob" pushed to `LayerStore` (`LayerContact`) is a separate, additional restoration snapshot used by deactivation, not a removal of the row from the queryable store. Point 2 below was already carrying the real weight of this guarantee ("Point 1 above is real defense-in-depth, not the primary guarantee") — so nothing about attachments' actual safety changes, but there is one less real backstop than previously documented here: a sensitive contact's per-contact key stays fully derivable indefinitely, with no crypto-level fallback if a purge is ever missed.
 2. **Explicit deletion, not key rotation, is the actual erasure mechanism** for attachment files, matching how they're already treated everywhere else in this codebase (`ComposeViewModel.cleanup()`/`clearAfterEncrypt()` delete files outright; nothing anywhere relies on rotating a key to make an attachment file unreadable). Point 1 above is real defense-in-depth, not the primary guarantee — the primary guarantee is that purging a draft (day-to-day sensitivity marking, or activation) deletes its attachment files, not just its database row. See "Attachment storage" and "Purge" below.
 
 The row's own AAD is unaffected by any of this: `id + field`, the same construction as `VaultEntry.aad(for:)` minus its timestamp component. `Message.Draft` has no persisted creation date to bind one to, matching the no-plaintext-timestamp decision above. This still keeps `encryptedContent` bound to its own row even though the key is shared with the rest of the app's Tier-1 data.
@@ -299,7 +299,7 @@ Revisited whether the Option E gate (§ above, "Sensitivity gate") could be drop
 - **Tier 1 has no activation event at all.** A contact can be marked sensitive via `ContactClassification.swift`'s "Save" flow with Secure Mode never turned on. There is no `activateSecureMode` call to hook a purge into for these installs, ever — "purge on duress" has nothing to attach to.
 - **The gap directly above (`saveClassification` not purging) would have been silently load-bearing** for exactly this scenario — mark several contacts sensitive in bulk while a draft already exists, and today nothing purges it.
 
-Conclusion: the sensitivity gate itself stays. What follows (duress-entry purge, previous gap fix) is worth doing on its own merits — defense in depth for drafts saved for contacts that later *become* sensitive — not as a replacement for the gate.
+Conclusion: the sensitivity gate itself stays, on the evidence available at the time. Revisited below ("Explored: universal chaff-backed drafts") once a substantially different mechanism was on the table — not because this conclusion was wrong for what it evaluated (dropping the gate with *no* other change), but because it didn't yet have a chaff-based alternative to weigh against. What follows here (duress-entry purge, previous gap fix) is worth doing on its own merits regardless — defense in depth for drafts saved for contacts that later *become* sensitive.
 
 ### New hook: purge on duress-entry, not just duress-layer-creation
 
@@ -327,6 +327,168 @@ private func purgeDraftsNotSafeAtCurrentDepth() {
 Reuses `reKeyOrPurgeAll` unchanged rather than adding a new purge-only variant: no draft-row key rotation actually happens at duress entry (the canonical key is the same key at every depth, and only rotates at activation), so calling it with `oldKey == newKey` re-seals surviving rows under an identical key with a fresh nonce — a no-op in effect, not a new crypto path to review — while getting the exact same, already-reviewed survive/purge semantics (including "a draft addressed to a group always survives this pass," matching activation's behavior, since group membership sensitivity is handled separately via `purgeMembersFromDuressDepths`, not via this identifier set).
 
 Runs on every `.duress` verify, not just the first: idempotent (a contact already purged has no row left to find), and cheap — bounded by draft count, the same bound `Message.Draft.find` already relies on elsewhere.
+
+### Investigated: does `reKeyOrPurgeAll`'s `isKnownContact` check let an already-hidden contact's orphaned draft survive?
+
+**Status: original hypothesis wrong; investigation found a different, real bug instead.**
+
+The suspected shape: `reKeyOrPurgeAll` (`Message+Draft.swift:225-262`) treats `!isKnownContact` as automatically safe — meant to let group drafts through, since groups aren't `Contact.Profile` rows. The worry was that a contact already Tier-2-relocated *before* a given activation wouldn't appear in `allContactIdentifiers` (built from `contactManager.fetchAllContacts()`) either, so their orphaned draft would read as "not a known contact" and survive un-purged, same as a group.
+
+**Doesn't happen — the premise was wrong.** `activateSecureMode` never removes a sensitive contact from the queryable store at all: "Sensitive contacts remain in the DB (not hard-deleted)... Depth-based visibility... controls what appears in the UI — not the key" (`Manager+Security.swift:469-472`). Every profile, safe or sensitive, gets re-encrypted under the staged key at every activation (`:475-478`), and `fetchAllContacts()` (`Contact+Manager.swift:393-397`) filters only on `deletionToken == nil` — no depth check. A sensitive contact, however deeply hidden, always comes back from that fetch and always lands in `allContactIdentifiers` on the next activation. There's no state where a still-a-contact identifier silently drops out of that set, so `isKnownContact` is correct for every genuinely-still-a-contact row.
+
+**The real bug: ordinary contact deletion, not Tier 2 relocation.** `deleteContact(identifier:)` (`Contact+Manager.swift:435-449`) — the actual delete-a-contact flow, called from `Contact+Form.swift:177` and `ContactFormV2.swift:200` — sets `deletionToken`, purges the identifier from every group's membership, but never calls `Message.Draft.purge`. Once `deletionToken` is set, that identifier drops out of `fetchAllContacts()` and therefore out of `allContactIdentifiers` on the next activation — so `!isKnownContact` now reads true for them, and an orphaned draft for a genuinely deleted contact survives (gets re-keyed, not purged) indefinitely, exactly the shape of bug originally suspected, just triggered by deletion instead of relocation. Not yet fixed — the fix is mechanical (add a `Message.Draft.purge` call to `deleteContact`, matching the pattern already used by `setVisibility`/`saveClassification`), but out of scope for this investigation pass.
+
+**Bigger, adjacent finding: this investigation disproved a security claim already documented and relied on elsewhere in this same file.** See the correction inline in "Key" above — the "Key" section's original point 1 claimed Tier 2 relocation makes a sensitive contact's per-contact key undeivable (`fetchContact(by:)` "fails"). It doesn't; `fetchContact(by:)` has no depth filter and the contact row is never removed. The design's actual safety doesn't depend on this — point 2 in that same section ("explicit deletion, not key rotation, is the actual erasure mechanism") was already carrying the real weight — but the documented defense-in-depth claim was wrong, and there is one fewer real backstop than believed: a sensitive contact's attachment key stays derivable forever, with no crypto-level fallback if a purge is ever missed (which is exactly what the `deleteContact` gap above demonstrates happening in practice).
+
+### `deleteContact`'s draft-purge gap — fixed
+
+**Status: implemented.**
+
+Mechanical, matching the existing `setVisibility`/`saveClassification` pattern exactly:
+
+```swift
+func deleteContact(identifier: String) throws {
+    guard let contact = try self.fetchContact(by: identifier) else {
+        throw ContactManager.Errors.contactNotFound
+    }
+
+    let softDeleted = try self.fetchSoftDeletedContacts()
+    if softDeleted.count >= 50, let victim = softDeleted.first {
+        self.modelContext.delete(victim)
+    }
+
+    contact.deletionToken = try Data([1]).encrypt()
+    Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+    try self.modelContext.save()
+    self.security.checkpointStore()
+
+    try self.forEachGroup { try $0.purgeMember(identifier) }
+}
+```
+
+- Purge sequenced *before* `modelContext.save()`, same ordering as the two existing sites, so the `deletionToken` write and the draft's removal land in one transaction.
+- `self.security.checkpointStore()` unconditionally after save — reuses the method already added for this exact staleness concern ("Closing the staleness gap" below); `ContactManager` already holds `self.security`, no new plumbing needed.
+- No attachment-specific handling needed — `Message.Draft.purge` → `delete(_:in:)` already removes the attachment folder alongside the row.
+
+**Two things explicitly out of scope for this fix, named rather than silently dropped:**
+
+1. **Existing orphaned drafts from past deletions aren't retroactively cleaned up.** This only stops new orphans from being created going forward. `activateSecureMode`'s own `reKeyOrPurgeAll` doesn't incidentally fix old ones either — confirmed: `!isKnownContact` reads true for an already-deleted identifier, so it "survives" (gets re-keyed, not purged) on every future activation, perpetuating rather than cleaning up the orphan. A backfill for drafts that are already orphaned today would be a separate, deliberate step.
+2. **A more complete alternative exists, touching `reKeyOrPurgeAll` itself instead.** `!isKnownContact` is really trying to mean "this is a group, not a contact" — but it collapses that together with "this identifier used to be a contact and was deleted," treating both the same way. Checking against a known-groups set too, and purging only genuine unknowns, would fix both the forward case *and* retroactively clean up existing orphans on the next activation, without needing item 1's separate migration. Not pursued here — it's a bigger, riskier change to a Critical-severity operation (Secure Mode activation) than the narrow `deleteContact` fix above, worth its own decision rather than bundling in by default.
+
+### Item 2's fix: replace `!isKnownContact` with an explicit group check — implemented
+
+**Status: implemented.**
+
+The fix is a net simplification, not just an addition. Today's survive check (`Message+Draft.swift:242-243`):
+
+```swift
+let isKnownContact = allContactIdentifiers.contains(recipientID)
+let survives = !isKnownContact || safeContactIdentifiers.contains(recipientID)
+```
+
+`allContactIdentifiers` is used for nothing else anywhere in the function — its only job is computing `isKnownContact`, which is the flawed part. Replacing it with an explicit, positive check removes that parameter entirely rather than adding a third one alongside it:
+
+```swift
+let survives = allGroupIdentifiers.contains(recipientID) || safeContactIdentifiers.contains(recipientID)
+```
+
+Purge everything that isn't affirmatively a known group or a safe contact — no more negative heuristic standing in for "is a group." Confirmed via `ComposeViewModel.recipientIDString` that contacts and groups (`.contact(String)` / `.group(UUID)`, the latter as `groupID.uuidString`) are the only two recipient shapes a draft can have, so nothing else needs accounting for.
+
+**Building `allGroupIdentifiers` is simpler than expected — the fork flagged last turn resolves cleanly.** `Group.readID()` (`Group+Model.swift:115-120`) decrypts `encryptedID` with the same shared canonical key everything else at this tier uses, no group-specific key material involved. Both call sites can build the set with a small, local, unshared fetch:
+
+```swift
+let allGroupIdentifiers = Set(
+    ((try? modelContext.fetch(FetchDescriptor<Group>())) ?? [])
+        .compactMap { $0.readID()?.uuidString }
+)
+```
+
+- **`activateSecureMode`** (`Manager+Security.swift:404-511`) already holds `contactManager`; add this fetch alongside the existing `allProfiles`/`safeProfiles` computation in Step 4, pass it through to `reKeyOrPurgeAll`.
+- **`purgeDraftsNotSafeAtCurrentDepth`** (inside `Manager.Security`) — last turn I flagged a fork here (direct fetch vs. threading `ContactManager` through `PINEntry`, which doesn't have it in scope today). Resolved: `Group` is a plain SwiftData model in the same store, and `Security` already holds `self.modelContext` — a direct `FetchDescriptor<Group>()` fetch needs no new dependency and no `PINEntry` plumbing at all.
+
+Two identical small fetch snippets, one per call site, not factored into a shared helper — consistent with how this codebase already tolerates `walCheckpoint`'s own SQLite pragma helper being duplicated between `OccultaApp.swift` and `Manager+Security.swift` rather than shared.
+
+**A side effect worth naming, not a new risk:** any recipientID that matches neither a known group nor a safe contact — not just a deleted contact, but any genuinely unrecognized or corrupt value — now gets purged instead of surviving. That's tightening toward the function's own already-stated philosophy ("fail-safe to gone"), not a behavior change introducing new risk.
+
+**Confirms item 1 becomes unnecessary if this ships:** the very next `activateSecureMode` or duress-PIN entry after this fix lands would correctly purge every already-orphaned draft too, with no separate backfill migration needed.
+
+**Testing note, given this touches a Critical-severity operation:** the whole drafts feature already has zero automated test coverage (`Manager.Key()` is hardcoded, not injectable via `KeyManagerProtocol`, requiring real Secure Enclave hardware) — this change would need real-device manual verification (delete a contact with an active draft, then activate/duress-enter and confirm the draft is gone; create a group draft and confirm it survives) rather than a unit test, same limitation as everything else in this feature.
+
+### Closing the staleness gap: forced WAL checkpoint after every draft purge
+
+**Status: implemented.**
+
+Three call sites purge `Message.Draft` rows today; only one of them cleans up after itself the way `activateSecureMode` already does.
+
+- `setVisibility(for:isSensitive:)` (`ContactManager+Classification.swift:73-90`) — purges the one contact's draft, pre-existing, never had this.
+- `saveClassification(safeIDs:)` (`:52-65`) — bulk purge added earlier this session.
+- `Manager.Security.purgeDraftsNotSafeAtCurrentDepth()` (`Manager+Security.swift`, called from `applyVerifyState`'s `.duress` case) — added earlier this session.
+- `activateSecureMode` (`Manager+Security.swift:524-529`) — already forces `PRAGMA wal_checkpoint(TRUNCATE)` right after its commit. Not touched here.
+
+The gap all three share: `PRAGMA secure_delete = ON` (`OccultaApp.swift:128-151`) zeroes a page's content the instant it's freed by a write, but only for *that* write. If the row's original `INSERT` landed in a WAL frame that hasn't been checkpointed yet, that earlier frame — holding the real, pre-purge ciphertext — can still be sitting in the WAL file, recoverable, regardless of how cleanly the purge itself deletes the row. None of these three call sites rotates any key either (only activation does), so a recovered stale frame stays decryptable by whoever holds today's still-live canonical key.
+
+**Fix:** add one small method to `Manager.Security`, reusing its existing private `storeURL` and `walCheckpoint(at:)` (`:1234-1239`) rather than a fourth copy of the same four-line SQLite pragma call (a third copy already exists between `OccultaApp.swift` and `Manager+Security.swift` itself; this codebase already tolerates that duplication for this exact helper):
+
+```swift
+// Manager.Security — internal, not private: ContactManager already holds
+// a `security: Manager.Security` reference (Contact+Manager.swift:57, 64)
+// and needs to reach this from its own purge call sites.
+func checkpointStore() {
+    guard let url = self.storeURL else { return }
+    Self.walCheckpoint(at: url)
+}
+```
+
+Call it from all three sites — `setVisibility` and `saveClassification` via `self.security.checkpointStore()` (no new plumbing needed; `ContactManager` already holds the reference), `purgeDraftsNotSafeAtCurrentDepth` via `self.checkpointStore()` directly, since it already runs inside `Manager.Security`.
+
+**Must run unconditionally, every call, not only when a purge actually happened.** This is the same principle `cleanUpGroupDuressMembership` already applies to its own ciphertext refresh (see its doc comment, "a classification save has to produce the identical observable footprint... no matter the depth or outcome — skipping the refresh whenever no real purge happens would itself be a keyless, forensically-visible signal"). A checkpoint that only fires when something was purged turns *checkpoint timing itself* into the exact kind of differential signal this whole fix exists to remove. `purgeDraftsNotSafeAtCurrentDepth` already satisfies this — it runs on every `.duress` verify regardless of outcome. `setVisibility`/`saveClassification` need the same discipline: call `checkpointStore()` on every invocation, whether or not `isSensitive`/`hiddenIdentifiers` ends up empty.
+
+Cost is a non-issue — these are infrequent, deliberate user actions (a Settings toggle, a duress-PIN entry), not a hot path; `activateSecureMode` already pays this same cost unconditionally today.
+
+### Explored: universal chaff-backed drafts as an alternative to the sensitivity gate
+
+**Status: explored, not decided.** A candidate that would let every contact — safe or sensitive — get real draft persistence, evaluated in depth but not committed to; a materially bigger lift than anything shipped so far in this feature, and requiring its own dedicated implementation pass if pursued. Recorded here so the reasoning survives even if picked back up much later.
+
+**Reframing.** "Forensic tell" splits into two independent things that need different fixes:
+- *Existence tell* — a row appearing or disappearing correlated with a classification or duress event.
+- *Content tell* — the row existing but being decryptable, by anyone holding the currently-live canonical key, to reveal who it's for and what it says.
+
+The purge hooks above are the best available answer to the existence tell *within* a delete-based model, but delete is never actually "as if it never existed" — see "Closing the staleness gap" above: a stale, un-checkpointed WAL frame can still hold recoverable, decryptable pre-purge ciphertext regardless of how cleanly the row itself gets deleted.
+
+**The chaff mechanism.** Give every contact and group a draft row from the moment they're addressable — not gated on typing activity, and never deleted. Real typing overwrites the row FAKE→REAL through the normal debounced save. Anything that would otherwise *purge* a real draft (reclassification, duress entry, send) instead overwrites it REAL→FAKE with freshly generated filler. There is never a create or delete event tied to a classification boundary — the row's lifecycle is identical for every contact, always, so there is nothing for a reclassification or duress-entry moment to leak by its mere occurrence.
+
+This dominates delete-based purging on the existence axis specifically, and folds in cleanly with the per-contact-key content-sealing idea from the same brainstorm (seal `encryptedContent`, real or fake, under the recipient's own key rather than the canonical one — real or Tier 2-relocated protection then applies automatically to whichever content currently occupies the row, with no special-casing for fake vs. real anywhere).
+
+Two things it does *not* solve for free:
+
+1. **Staleness on the swap.** REAL→FAKE is still an `UPDATE`, not a delete, but the same un-checkpointed-WAL-frame gap applies identically — the just-replaced real content can still be recoverable until a checkpoint runs. Any implementation of this needs the same `PRAGMA wal_checkpoint(TRUNCATE)` immediately after a REAL→FAKE swap that activation already does after its own commit.
+2. **Content plausibility becomes the hard problem**, addressed below.
+
+**Content generation — what was ruled out, and why.**
+
+- *Deterministically deriving each fake from key material (e.g. HKDF off the per-contact key)* — rejected. Anyone who holds the key needed to decrypt a row can recompute whatever deterministically generated its fake and diff the two: exact match → fake, mismatch → real. That's not a soft tell, it's a perfect oracle, strictly worse than no per-contact variation at all. Fakes must be generated with **true, one-shot randomness** (`SecRandomCopyBytes`) and the *result* persisted through the same `DraftStore.save` path real content uses — once written there is no seed left over anywhere to recompute against, exactly as unrecoverable as what a real, never-sent draft's origin is.
+- *Reusing `Assets/eff_large_wordlist.txt`* (already bundled for diceware passphrases, `Passphrase+Manager.swift`) — rejected on two grounds: diceware words are chosen to be mutually *unrelated* for entropy, so concatenating them reads as word-salad, not typed prose; and this exact list already carries a known security meaning elsewhere in the app, so recognizing it inside a "draft" is a direct, specific correlation between the deception mechanism and the app's own security tooling — sharper and more damning than generic corpus-fingerprinting risk.
+- *Bundling a dedicated small on-device model* — solves device coverage (`FoundationModels`/Apple Intelligence needs A17 Pro+, well above Occulta's iPhone 11+/A13 floor per this file's build requirements) but reopens the same shape of problem one level up: a bundled model with no corresponding *visible* app feature has no innocent explanation for its own existence in the IPA. Mitigated only by right-sizing it (a tiny char/word-level generator, not a "small LLM" in the modern sense — this task needs no more than that) and, more durably, by giving it a genuine user-visible secondary purpose so its presence isn't explained *solely* by the deception it also enables.
+- **Chosen direction: source vocabulary from the OS itself, not from anything Occulta bundles.** `UITextChecker.completions(forPartialWordRange:in:language:)` returns real words from the device's own active-language system dictionary given a random prefix — nothing Occulta-specific ships as a data asset, and content automatically localizes to whatever language(s) the device's own keyboard is configured for. A small hardcoded set of universal connector words ("hey", "so", "ok") is still needed as template glue, since the API is prefix-based, not "give me a greeting" — but these are common enough to carry no real fingerprint value on their own, unlike a curated corpus. Needs a retry-with-a-different-prefix fallback since some prefixes (e.g. "qz") return no completions.
+- **Never derive prefix or word selection from the contact's own identity/name/profile fields.** Doing so would inject a real, decryptable correlation between actual identity and "fake" content — the opposite of the goal, and a more direct leak than anything else considered here.
+
+**Shape of the generated content.** Skew heavily toward incomplete fragments ("hey did you" with no ending), not complete sentences — a draft is disproportionately an abandoned partial thought in reality, which is simultaneously *more* plausible and *easier* to generate convincingly than forcing grammatical coherence out of independently-drawn dictionary words. Draw length from a distribution weighted toward short, then pad to the same fixed-size buckets real content pads to (§K1's existing fixed-width-encoding precedent) so post-encryption size carries no real/fake signal either way; randomize which bucket a given fake lands in so fakes don't cluster into one bucket while real content spreads across several.
+
+**Write-cadence — resolved: reseal everything, uniformly, on `.active`, no background task.** A fake generated once and never touched again is conspicuously *still* next to a row that gets genuinely debounce-updated while someone actively types. Rather than a `BGTaskScheduler` job nudging a random subset on some independent schedule (rejected — opportunistic/throttled by iOS's own heuristics, real registration overhead, hard to test, and it doesn't actually need to exist separately from an event the app already has), tie it to `scenePhase` becoming `.active`: on every foreground transition, re-seal *every* `Message.Draft` row unconditionally, fake or real, touched-since-last-time or not. This doesn't approximate organic touch patterns statistically — it removes the differential outright. There's no such thing as "a row that's sat untouched for months" anymore, for anyone; the starkest, easiest-to-notice signal is gone by construction rather than papered over with randomization. It's also simpler to build than the background-job version: no candidate-selection logic, no scheduling, no separate battery budget — just a sweep on an event the app already reacts to.
+
+Honest residual, not chased further: a contact actually being typed to *also* gets extra debounce-triggered writes clustered within that compose session, on top of the uniform per-open touch everyone gets — so write-*burstiness* (several rapid writes in a few minutes vs. exactly one touch per app-open) could still distinguish a genuinely active conversation from a swept-along fake, to a sufficiently close comparison. Accepted: this is a far finer signal than today's baseline, and matches the same "defeat bulk/statistical inspection, not exhaustive forensic timing analysis" bar already settled on elsewhere in this section.
+
+**Concurrency with real debounced saves.** The resweep is a separate, batch-wide operation over every row directly via `ModelContext` — not an extension of the existing per-view `DraftStore` instances, which only exist while a specific compose screen is mounted and only track one `saveTask` for that screen's own recipient. If a compose screen for contact X is open at the exact moment `.active` fires, the resweep and that screen's own live debounced save could race on the same row. Fix: a small in-memory registry of "recipient IDs with a compose screen currently mounted" (each `ContactDetailV3`/`GroupDetailV3`/`ContactDetailV2`'s `.task`/`.onDisappear` registers and unregisters itself) — the resweep simply skips anyone in that set on a given pass. No persistence, no locking, removes the race by construction rather than detecting or recovering from it.
+
+Explicitly ruled out as part of this: an `isFake: Bool` field on the sealed `Payload` to let the resweep (or anything else) cheaply tell real from fake. That would be a serious mistake, not a shortcut — anyone with the decryption key wouldn't need any content analysis at all, they'd just read the flag. "Is this fake" can only ever be in-memory, code-path knowledge (which function is currently running), never anything persisted in or derivable from the row itself.
+
+**Scope call: text only.** Faking plausible binary attachments (matching real image/video size and structure) is a much larger surface for uncertain benefit, since most real drafts are probably text-only anyway — absence of an attachment isn't itself unusual. Leave out unless the real attachment rate turns out high enough to make its absence in every fake a statistical tell on its own.
+
+**The honest ceiling.** None of this defeats a maximally resourced, target-specific adversary who both holds the live key *and* is willing to do manual linguistic forensics against a reverse-engineered generation scheme for one flagged individual — that ceiling is inherent to any offline, source-available, zero-server app and isn't specific to drafts (the same line was already drawn once, deliberately, in Option H above, for message history). What this design achieves is real: it eliminates the existence-tell and write-cadence-tell for bulk/automated inspection, which is the far more likely real-world threat shape, without pretending to win an unwinnable arms race against the narrower one.
+
+**Decided: no per-contact-key content sealing.** Considered as an orthogonal, composable addition (§ above, "why switch to per-contact key" discussion) — the concrete gap that originally motivated it, missed purge-invocation sites, is now closed by the checkpoint-fix scoping, and its staleness benefit only ever covered content, not `encryptedRecipientID` (which needs that same checkpoint fix regardless of this decision). `Message.Draft` rows, real or fake, stay uniformly Tier 1 — sealed under the canonical local DB key, matching the original "Key" decision above and everything else at that tier. Moot as a result: the parallel per-group-key mechanism this would have required, since groups have no stable per-recipient key the way contacts do via `ContactManager.fileEncryptionKey(for:)`.
+
+**Open before implementation, if this is picked up:** exact bucket boundaries and template slot design.
 
 ### Resolved: no biometric-gated key tier for drafts
 

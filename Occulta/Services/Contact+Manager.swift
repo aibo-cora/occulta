@@ -443,7 +443,9 @@ class ContactManager {
         }
 
         contact.deletionToken = try Data([1]).encrypt()
+        Message.Draft.purge(recipientID: identifier, in: self.modelContext)
         try self.modelContext.save()
+        self.security.checkpointStore()
 
         try self.forEachGroup { try $0.purgeMember(identifier) }
     }
