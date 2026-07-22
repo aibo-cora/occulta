@@ -184,15 +184,16 @@ struct ContactDetailV3: View {
     /// and iOS can suspend the process before a plain Task gets to run. A
     /// background task assertion buys the time to flush immediately instead.
     ///
-    /// `taskID` is a local, per-call variable, not shared state — if
+    /// `taskID` lives in a small reference box, not a local `var` — if
     /// `scenePhase` bounces away from `.active` more than once in quick
-    /// succession, each call ends exactly the assertion it started, rather
-    /// than a shared slot letting one call's cleanup end another's.
+    /// succession, each call gets its own box, so each ends exactly the
+    /// assertion it started, rather than a shared slot letting one call's
+    /// cleanup end another's.
     private func flushOnBackground(_ newPhase: ScenePhase) {
         guard newPhase != .active else { return }
-        var taskID: UIBackgroundTaskIdentifier = .invalid
-        taskID = UIApplication.shared.beginBackgroundTask {
-            UIApplication.shared.endBackgroundTask(taskID)
+        let taskBox = BackgroundTaskBox()
+        taskBox.id = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(taskBox.id)
         }
         Task {
             await self.draftStore.flush(
@@ -203,9 +204,20 @@ struct ContactDetailV3: View {
                 useThread:         self.useThreadCompose,
                 modelContext:      self.contactManager.modelContext
             )
-            UIApplication.shared.endBackgroundTask(taskID)
+            UIApplication.shared.endBackgroundTask(taskBox.id)
         }
     }
+}
+
+/// Holds a `UIBackgroundTaskIdentifier` across the expiration handler and the
+/// completion of the `Task` that uses it. A plain local `var` reassigned after
+/// `beginBackgroundTask`'s expiration closure has already captured it trips
+/// Swift's "mutated after capture by Sendable closure" diagnostic; mutating a
+/// property on a captured reference type instead doesn't hit that check.
+/// Shared with `GroupDetailV3` and `ContactDetailV2`, which have the identical
+/// `flushOnBackground` — not `private` since it needs to be visible there too.
+final class BackgroundTaskBox: @unchecked Sendable {
+    var id: UIBackgroundTaskIdentifier = .invalid
 }
 
 // MARK: - Identity Strip (shared)

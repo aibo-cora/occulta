@@ -180,15 +180,17 @@ struct GroupDetailV3: View {
     /// and iOS can suspend the process before a plain Task gets to run. A
     /// background task assertion buys the time to flush immediately instead.
     ///
-    /// `taskID` is a local, per-call variable, not shared state — if
+    /// `taskID` lives in a small reference box, not a local `var` — if
     /// `scenePhase` bounces away from `.active` more than once in quick
-    /// succession, each call ends exactly the assertion it started, rather
-    /// than a shared slot letting one call's cleanup end another's.
+    /// succession, each call gets its own box, so each ends exactly the
+    /// assertion it started, rather than a shared slot letting one call's
+    /// cleanup end another's. `BackgroundTaskBox` is defined in
+    /// `ContactDetailV3.swift`, shared here since both need it identically.
     private func flushOnBackground(_ newPhase: ScenePhase) {
         guard newPhase != .active else { return }
-        var taskID: UIBackgroundTaskIdentifier = .invalid
-        taskID = UIApplication.shared.beginBackgroundTask {
-            UIApplication.shared.endBackgroundTask(taskID)
+        let taskBox = BackgroundTaskBox()
+        taskBox.id = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(taskBox.id)
         }
         Task {
             await self.draftStore.flush(
@@ -199,7 +201,7 @@ struct GroupDetailV3: View {
                 useThread:         self.useThreadCompose,
                 modelContext:      self.contactManager.modelContext
             )
-            UIApplication.shared.endBackgroundTask(taskID)
+            UIApplication.shared.endBackgroundTask(taskBox.id)
         }
     }
 }
