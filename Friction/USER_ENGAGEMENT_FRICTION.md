@@ -9,6 +9,15 @@ Updated 2026-07-12: line references re-verified against current source, adoption
 findings added, document reorganized by severity and priority.
 Updated 2026-07-17: encryption-before-verification analysis added (H5, Sweep 4) —
 evaluated ways to message before a physical key exchange; key-in-bundle rejected.
+Updated 2026-07-18: Sweep 4 refined after a second-opinion security review —
+first-message FS nuance, no-retroactive-protection caveat, and a second open
+decision (send-capable vs import-only unverified tier) added; degraded-crypto
+signaling and a separate "Lite" app rejected.
+Updated 2026-07-22: consumer-opening memo analyzed in
+CONSUMER_OPENING_AND_CEREMONY.md — casual-ceremony concepts catalogued, a
+"Verified (casual)" rung proposed for the Sweep 4 ladder (commitment-based
+glance SAS; short-SAS-is-weak assumption corrected), SMS/web-view fallback
+rejected; two new open decisions (D3 badge rendering, D4 SAS format).
 
 ---
 
@@ -279,6 +288,13 @@ upgrade *authenticity*. Threat frame: passive readability by any bundle
 carrier must be impossible; an active MITM at first contact is the managed
 residual, shrunk by each tier climbed. UWB stays the top tier unchanged.
 
+The design invariant, stated once so reviews don't conflate the two axes:
+**every tier preserves "only the holder of the recipient key can read this,
+period" — tiers vary only in how strongly that key is bound to the intended
+human.** Confidentiality against carriers is identical at every rung; what
+the lower rungs weaken is authenticity of the binding, deliberately and
+visibly.
+
 | Tier | How keys arrived | Assurance |
 |---|---|---|
 | Verified | UWB tap (or in-person QR) | Full — current model |
@@ -297,6 +313,12 @@ Components, in recommended build order:
    durable "I use Occulta" artifact, in tension with forensic cleanliness.
    Cross-checking a card's fingerprint over a second channel forces a MITM to
    control both.
+   Known nuance: card prekeys are static — not one-time-consumed like the
+   per-contact batches — so first-message forward secrecy degrades to
+   signed-prekey level (Signal's same tradeoff for its last-resort prekey)
+   until the first reply establishes fresh consumed batches. Cards can carry
+   ML-KEM material, so hybrid PQ is preserved. Disclosable and temporary,
+   not a blocker.
 2. **SAS remote verification** — ZRTP-style short authentication string
    derived from the session, compared over any live call; hash commitment
    prevents grinding. Grow `IdentityChallenge` into this. Makes remote
@@ -315,11 +337,39 @@ Components, in recommended build order:
    extends to introducing *other people* is a product-owner call, not an
    engineering one.
 
+Caveats any spec must state plainly:
+
+- **Verification detects; it does not rewind.** A first-contact MITM caught
+  later — by SAS, UWB, or gossip — compromises every message sent before
+  detection. Later tiers upgrade the future, not the past.
+- **Warning fatigue is the primary failure mode.** Users click through
+  dismissible warnings; historically these fail. The tier must be a
+  persistent per-contact badge visible in the contact list, at compose, and
+  at send — never a one-time dialog — and nothing about an unverified
+  contact may render green or "secure."
+
+Second open decision (alongside the introductions call in item 4): is the
+Unverified tier **send-capable** (Threema model — the encrypted first
+message flows immediately, the badge carries the risk) or **import-only**
+(cards can be imported, but the first send requires a minimum confirmation:
+SAS over a live call or a manual fingerprint compare)? Import-only
+eliminates the first-contact MITM residual at the cost of the
+zero-round-trip async first message — a stricter posture that is defensible
+for Occulta's threat-sensitive personas. Both variants keep every bundle
+carrier-blind; the choice only sets the authenticity floor.
+
 Evaluated and shelved: PAKE / wormhole codes (interactive, and CryptoKit
 exposes no PAKE primitive — building one means rolling our own crypto);
 key-transparency logs and Keybase-style social proofs (require
 servers/accounts — "zero servers, zero accounts" is the brand). Key-in-bundle
 rejected outright — see H5.
+
+Also rejected (2026-07-18 second-opinion review): **deliberately degraded
+crypto (no FS/PQ) as an unverified-tier signal** — trust level is label
+metadata, never a reason to weaken the cipher suite; that is key-in-bundle's
+mistake in softer form. And **a separate "Occulta Lite" app** — splitting
+the product doubles the maintenance surface and ships a weaker app under
+the same name, the worst possible positioning.
 
 ### P2
 
@@ -365,7 +415,7 @@ ready to ship — unrelated to the sweeps above, doesn't need to wait on them.
 | H2 | Inbound delivery silent failure | High | code | Sweep 1, Sweep 2 | 🟡 Messaging already existed; landing place (inbox) still open |
 | H3 | Distribution channel mismatch | High | assessment | Distribution to scrutiny, Seed adoption | ⬜ Open |
 | H4 | Competing with "good enough" (Signal) | High | assessment | Distribution to scrutiny, Sequence market honestly | ⬜ Open |
-| H5 | Encryption hard-gated on verification; no first-contact messaging | High | assessment | Sweep 4 | ⬜ Open — key-in-bundle shortcut rejected |
+| H5 | Encryption hard-gated on verification; no first-contact messaging | High | assessment | Sweep 4 | ⬜ Open — key-in-bundle rejected; two decisions pending (introductions; send-capable vs import-only) |
 | M1 | Silent contact save failure | Medium | code | Sweep 1 | ✅ Fixed |
 | M2 | Encrypt/send lacks feedback | Medium | code | Sweep 1 | ⬜ Open |
 | M3 | Skippable onboarding hides UWB requirement | Medium | code | Sweep 3 | ✅ Fixed — Skip removed |
