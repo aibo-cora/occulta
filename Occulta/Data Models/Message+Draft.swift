@@ -34,9 +34,10 @@ extension Message {
         /// Sealed with the canonical local DB key; AAD = `aad(for: .recipientID)`.
         var encryptedRecipientID: Data = Data()
 
-        /// AES-256-GCM ciphertext of a sealed `Basket` (draft text + attachments,
-        /// bundled together so there's only ever one thing to crypto-erase).
-        /// Sealed with the canonical local DB key; AAD = `aad(for: .content)`.
+        /// AES-256-GCM ciphertext of a sealed `DraftPayload` (input-field text,
+        /// committed thread items, and compose mode, bundled together so
+        /// there's only ever one thing to crypto-erase). Sealed with the
+        /// canonical local DB key; AAD = `aad(for: .content)`.
         var encryptedContent: Data = Data()
 
         // MARK: Init
@@ -62,6 +63,33 @@ extension Message {
         enum Field: UInt8 {
             case recipientID = 0x01
             case content     = 0x02
+        }
+
+        // MARK: Content payload
+
+        /// What actually gets sealed into `encryptedContent`.
+        ///
+        /// `draftText` and `basket` are kept separate rather than merged into
+        /// one array, because they represent two genuinely different things:
+        /// `draftText` is whatever's currently sitting in the input field, not
+        /// yet committed to anything; `basket.files` is every already-committed
+        /// item, in order — attachments *and*, in thread compose mode, already-
+        /// "sent"-into-thread text bubbles (`ComposeViewModel.addText()` appends
+        /// a `.text`-formatted `Occulta.File` per bubble; a single draft can
+        /// hold several). Trying to tell those apart by position in one flat
+        /// array (e.g. "the last `.text` entry is the input field") is exactly
+        /// the kind of implicit convention this codebase has already been
+        /// burned by elsewhere — an explicit field removes the ambiguity.
+        ///
+        /// `wasThreadMode` restores which compose UI (Quick vs Thread) the
+        /// draft was composed in — without it, a reload always defaults to
+        /// Quick mode, whose UI never displays `.text`-formatted entries in
+        /// `basket.files` at all, making a restored thread invisible even
+        /// though its content would still be sent correctly if untouched.
+        struct Payload: Codable {
+            var draftText:     String
+            var basket:        Basket
+            var wasThreadMode: Bool
         }
 
         /// Authenticated additional data for AES-GCM seal/open of a specific field.

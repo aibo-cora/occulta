@@ -17,11 +17,19 @@ import CryptoKit
 final class DraftStore {
     private var saveTask: Task<Void, Never>? = nil
 
+    /// What this store last confirmed matches disk — set after `load()` and
+    /// after every successful `save()`. Used only as a cheap pre-filter for
+    /// whether a save is worth attempting at all; never trusted on its own to
+    /// skip one. `save()` always re-verifies against the actual persisted row
+    /// before it actually skips writing — see `matchesPersisted`.
+    private var lastPersisted: (text: String, attachmentIDs: Set<UUID>, wasThreadMode: Bool)? = nil
+
     func scheduleSave(
         recipientID:  String,
         isSensitive:  Bool,
         text:         String,
         messages:     [Occulta.File],
+        useThread:    Bool,
         modelContext: ModelContext
     ) {
         self.saveTask?.cancel()
@@ -30,7 +38,7 @@ final class DraftStore {
             guard !Task.isCancelled, let self else { return }
             await self.save(
                 recipientID: recipientID, isSensitive: isSensitive, text: text,
-                messages: messages, modelContext: modelContext
+                messages: messages, useThread: useThread, modelContext: modelContext
             )
         }
     }
@@ -42,44 +50,45 @@ final class DraftStore {
         isSensitive:  Bool,
         text:         String,
         messages:     [Occulta.File],
+        useThread:    Bool,
         modelContext: ModelContext
     ) async {
         self.saveTask?.cancel()
         await self.save(
             recipientID: recipientID, isSensitive: isSensitive, text: text,
-            messages: messages, modelContext: modelContext
+            messages: messages, useThread: useThread, modelContext: modelContext
         )
     }
 
     /// Decrypts an existing draft for this recipient, if one exists. Call once,
     /// before the user starts typing.
     ///
-    /// Attachment entries in the decrypted `Basket` carry no stored `url` — each
-    /// one's location is reconstructed fresh from the row's own id and the
-    /// file's id via `Message.Draft.attachmentsFolder(for:)`/`attachmentFilename(for:)`,
-    /// never trusted from a path persisted at save time (see FINDINGS.md,
-    /// "Attachment storage"). The resulting file is still sealed under the
-    /// contact's per-contact key — the exact key the compose UI's own
-    /// `AttachmentManager` already holds — so no decrypt/re-encrypt/temp-copy is
-    /// needed to make it usable again.
+    /// `payload.basket.files` mixes two kinds of already-committed entries:
+    /// attachments (no stored `url` — each one's location is reconstructed
+    /// fresh from the row's own id and the file's id via
+    /// `Message.Draft.attachmentsFolder(for:)`/`attachmentFilename(for:)`,
+    /// never trusted from a path persisted at save time, see FINDINGS.md
+    /// "Attachment storage") and, in thread compose mode, already-"sent"
+    /// text bubbles (`.text` format, `content` already inline — passed
+    /// through as-is, nothing to reconstruct). `payload.draftText` is the
+    /// separate, not-yet-committed input field text; `payload.wasThreadMode`
+    /// tells the caller which compose UI to restore.
     func load(
         recipientID:  String,
         modelContext: ModelContext
-    ) -> (text: String, messages: [Occulta.File])? {
+    ) -> (text: String, messages: [Occulta.File], wasThreadMode: Bool)? {
         guard let row = Message.Draft.find(recipientID: recipientID, in: modelContext) else { return nil }
         do {
             guard let key = try Manager.Key().createHybridLocalEncryptionKey() else { return nil }
-            let box   = try AES.GCM.SealedBox(combined: row.encryptedContent)
-            let plain = try AES.GCM.open(box, using: key, authenticating: row.aad(for: .content))
-            let basket = try JSONDecoder().decode(Basket.self, from: plain)
+            let box     = try AES.GCM.SealedBox(combined: row.encryptedContent)
+            let plain   = try AES.GCM.open(box, using: key, authenticating: row.aad(for: .content))
+            let payload = try JSONDecoder().decode(Message.Draft.Payload.self, from: plain)
 
             let folder = Message.Draft.attachmentsFolder(for: row.id)
-            var text = ""
             var loadedMessages: [Occulta.File] = []
-            for file in basket.files {
-                if case .text = file.format, let data = file.content,
-                   let str = String(data: data, encoding: .utf8) {
-                    text = str
+            for file in payload.basket.files {
+                if case .text = file.format, file.content != nil {
+                    loadedMessages.append(file)
                     continue
                 }
                 let url = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
@@ -87,7 +96,8 @@ final class DraftStore {
                 restored.id = file.id
                 loadedMessages.append(restored)
             }
-            return (text, loadedMessages)
+            self.lastPersisted = (payload.draftText, Set(loadedMessages.map(\.id)), payload.wasThreadMode)
+            return (payload.draftText, loadedMessages, payload.wasThreadMode)
         } catch {
             // Corrupt or undecryptable draft — treat as if none existed.
             return nil
@@ -104,6 +114,7 @@ final class DraftStore {
         isSensitive:  Bool,
         text:         String,
         messages:     [Occulta.File],
+        useThread:    Bool,
         modelContext: ModelContext
     ) async {
         guard !isSensitive else { return }
@@ -115,49 +126,77 @@ final class DraftStore {
                 Message.Draft.delete(existing, in: modelContext)
                 try? modelContext.save()
             }
+            self.lastPersisted = nil
             return
         }
+
+        let currentSnapshot = (
+            text: trimmed,
+            attachmentIDs: Set(messages.map(\.id)),
+            wasThreadMode: useThread
+        )
 
         do {
             guard let key = try Manager.Key().createHybridLocalEncryptionKey() else { return }
 
             let existing = Message.Draft.find(recipientID: recipientID, in: modelContext)
-            let draftID  = existing?.id ?? UUID()
 
-            // Attachments stay separate encrypted files, referenced by URL from the
-            // Basket, never inlined into it — see FINDINGS.md, "Attachment storage."
-            // Each is copied into place once (same bytes, same per-contact key —
-            // no decrypt/re-encrypt) and left untouched on every subsequent save.
-            let folder = Message.Draft.attachmentsFolder(for: draftID)
-            if !FileManager.default.fileExists(atPath: folder.path) {
-                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                var excludedFolder = folder
-                var resourceValues = URLResourceValues()
-                resourceValues.isExcludedFromBackup = true
-                try? excludedFolder.setResourceValues(resourceValues)
+            // Fast pre-filter: only worth checking against disk at all if we
+            // believe nothing changed since the last save/load. If the cache
+            // already disagrees, a real edit happened — skip straight to
+            // writing, no point verifying first.
+            if let lastPersisted, lastPersisted == currentSnapshot {
+                if let existing, self.matchesPersisted(existing, currentSnapshot, key: key) {
+                    return
+                }
+                // Cache said "unchanged" but disk disagrees — the row is
+                // missing, corrupted, or was changed elsewhere. Fall through
+                // and write for real rather than trusting a stale belief.
             }
 
-            // The Basket entry deliberately carries no `url` — load() reconstructs
-            // one fresh from the row's own id + file.id rather than trusting a
-            // path persisted at save time (see FINDINGS.md, "Attachment storage").
+            let draftID = existing?.id ?? UUID()
+
+            // Attachments stay separate encrypted files, referenced by id from
+            // the payload's Basket, never inlined into it — see FINDINGS.md,
+            // "Attachment storage." Each is copied into place once (same bytes,
+            // same per-contact key — no decrypt/re-encrypt) and left untouched
+            // on every subsequent save. The folder itself is created lazily, on
+            // the first real attachment — a text-only draft never gets one.
+            //
+            // Already-committed thread text bubbles (ComposeViewModel.addText())
+            // are already just inline content — passed through as-is, nothing
+            // to copy. The current, not-yet-committed input field text is kept
+            // out of this array entirely — it lives in Payload.draftText.
+            let folder = Message.Draft.attachmentsFolder(for: draftID)
             var referencedFiles: [Occulta.File] = []
             for file in messages {
-                guard let sourceURL = file.url else { continue }
-                let destinationURL = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
-                if !FileManager.default.fileExists(atPath: destinationURL.path) {
-                    try? FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                if let sourceURL = file.url {
+                    let destinationURL = folder.appendingPathComponent(Message.Draft.attachmentFilename(for: file))
+                    if !FileManager.default.fileExists(atPath: destinationURL.path) {
+                        if !FileManager.default.fileExists(atPath: folder.path) {
+                            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                            var excludedFolder = folder
+                            var resourceValues = URLResourceValues()
+                            resourceValues.isExcludedFromBackup = true
+                            try? excludedFolder.setResourceValues(resourceValues)
+                        }
+                        try? FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+                    }
+                    guard FileManager.default.fileExists(atPath: destinationURL.path) else { continue }
+                    var referenced = Occulta.File(format: file.format, date: file.date)
+                    referenced.id = file.id
+                    referencedFiles.append(referenced)
+                } else if file.content != nil {
+                    referencedFiles.append(file)
                 }
-                guard FileManager.default.fileExists(atPath: destinationURL.path) else { continue }
-                var referenced = Occulta.File(format: file.format, date: file.date)
-                referenced.id = file.id
-                referencedFiles.append(referenced)
-            }
-            if !trimmed.isEmpty {
-                referencedFiles.append(Occulta.File(content: trimmed.data(using: .utf8), format: .text, date: Date()))
             }
 
-            let basket     = Basket(files: referencedFiles)
-            let basketData = try JSONEncoder().encode(basket)
+            let payload = Message.Draft.Payload(
+                draftText:     trimmed,
+                basket:        Basket(files: referencedFiles),
+                wasThreadMode: useThread
+            )
+            let payloadData = try JSONEncoder().encode(payload)
 
             let recipientData = Data(recipientID.utf8)
             let sealedRecipient = try AES.GCM.seal(
@@ -165,7 +204,7 @@ final class DraftStore {
                 authenticating: Message.Draft.aad(id: draftID, field: .recipientID)
             )
             let sealedContent = try AES.GCM.seal(
-                basketData, using: key, nonce: AES.GCM.Nonce(),
+                payloadData, using: key, nonce: AES.GCM.Nonce(),
                 authenticating: Message.Draft.aad(id: draftID, field: .content)
             )
             guard let recipientCombined = sealedRecipient.combined,
@@ -180,8 +219,34 @@ final class DraftStore {
                 modelContext.insert(draft)
             }
             try? modelContext.save()
+            self.lastPersisted = currentSnapshot
         } catch {
             // Best-effort — failing to save a draft is no worse than today's loss.
         }
+    }
+
+    /// Decrypts `row`'s persisted content and checks whether it already
+    /// matches `snapshot` — the live-truth check that gates whether a save can
+    /// actually be skipped. `lastPersisted` alone is never enough: it's only a
+    /// memory of what this store last wrote, and can go stale if the row is
+    /// ever deleted or changed by something else (an activation re-key pass
+    /// purging a corrupted row, for instance). This always re-derives the
+    /// answer from the row itself before anything is allowed to skip.
+    private func matchesPersisted(
+        _ row: Message.Draft,
+        _ snapshot: (text: String, attachmentIDs: Set<UUID>, wasThreadMode: Bool),
+        key: SymmetricKey
+    ) -> Bool {
+        guard
+            let box     = try? AES.GCM.SealedBox(combined: row.encryptedContent),
+            let plain   = try? AES.GCM.open(box, using: key, authenticating: row.aad(for: .content)),
+            let payload = try? JSONDecoder().decode(Message.Draft.Payload.self, from: plain)
+        else { return false }
+
+        guard payload.draftText == snapshot.text, payload.wasThreadMode == snapshot.wasThreadMode
+        else { return false }
+
+        let persistedIDs = Set(payload.basket.files.map(\.id))
+        return persistedIDs == snapshot.attachmentIDs
     }
 }

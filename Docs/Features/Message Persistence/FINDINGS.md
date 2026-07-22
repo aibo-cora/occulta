@@ -165,9 +165,24 @@ No `visibleThroughDepth`-equivalent field, unlike `VaultEntry`/the deferred `Con
 
 `Draft`'s initializer requires `id` as an explicit parameter (`init(id:encryptedRecipientID:encryptedContent:)`), not a default-generated one. Both ciphertext fields are always sealed against a specific `id` via `Message.Draft.aad(id:field:)` before the row exists — the AAD has to be computed first, since it's the id that makes a fresh insert's AAD differ from what an update would reuse. A default-generated `id` decoupled from the one already baked into the ciphertext would produce a row that fails GCM authentication forever, with no separate "reassign it after construction" step to accidentally drop.
 
-### Content: a sealed `Basket`, not a bespoke encoding
+### Content: `Message.Draft.Payload` — a sealed `Basket`, plus the two things a `Basket` alone can't represent
 
-A draft's text and attachments are bundled into the same `Basket` (`Occulta/Data Models/Transfers.swift:27-36`) already used for real sends — reusing the existing structure instead of inventing a separate draft format. Text and attachment *references* travel inside one sealed `Basket`, so there's only one thing to crypto-erase for the row's own content; attachment file *bytes* are a separate question, addressed below under "Key" and "Attachment storage."
+A draft's committed content is bundled into the same `Basket` (`Occulta/Data Models/Transfers.swift:27-36`) already used for real sends — reusing the existing structure instead of inventing a separate draft format. `Basket`/`Occulta.File` alone turned out not to be quite enough, though — the compose UI has two things a `Basket` has no way to express, both of which matter for restoring a draft faithfully:
+
+- **The current, not-yet-committed input field text**, separate from anything already "sent" into a `Basket`. Quick mode's whole composition lives here the entire time it's being typed, so this has to be persisted too, not just committed items.
+- **Which compose UI (Quick vs Thread) the draft was composed in.** Thread mode's `ComposeViewModel.addText()` appends one `.text`-formatted `Occulta.File` to `messages` *per sent bubble* — a single draft's `messages` can hold several, interleaved with attachments, forming a whole conversation transcript, not just one string. An earlier version of this design tried to fold the current input text into the same `Basket.files` array as everything else and pick it back out by position (e.g. "the last `.text` entry is the input field") — that's exactly the kind of implicit convention this codebase has been burned by before, and it silently drops every thread text bubble except the very first, since the original code path only ever recognized one `.text` entry total. Restoring the wrong compose mode is a separate, compounding problem: reloading always defaulted to Quick mode, whose UI never displays `.text`-formatted entries in `messages` at all, so a restored thread's bubbles would still exist in memory but be invisible until the user hit Encrypt.
+
+`Message.Draft.Payload` (`Occulta/Data Models/Message+Draft.swift`) is the small wrapper actually sealed into `encryptedContent`, resolving both explicitly instead of by inference:
+
+```swift
+struct Payload: Codable {
+    var draftText:     String   // the input field, not yet committed
+    var basket:        Basket   // committed items, in order — attachments and text bubbles alike
+    var wasThreadMode: Bool     // which compose UI to restore
+}
+```
+
+Attachments and already-committed text bubbles both live in `basket.files`, distinguished on load by `format`/`content` (an attachment has a reconstructed `url` and no `content`; a text bubble has `content` and no `url` — see "Attachment storage" below), not by position. Restoring `wasThreadMode` at load time turned out to have its own hazard — see "Restoring compose mode without re-triggering the wipe," below.
 
 Full reuse of `ContactManager.encryptBundle(for:)` (`Contact+Manager.swift:938-1073`) was considered and rejected: it requires a real `Contact.Profile` — `fetchContact(by:)`, prekey pop/forward-secrecy state, version resolution — all genuinely contact-specific. Making "self" work through that path means inventing a synthetic self-contact, which is exactly the complexity already avoided once for the Vault feature (chose `VaultEntry.note` over a synthetic "You" contact). Not worth reopening for drafts.
 
@@ -207,10 +222,28 @@ One folder per draft, named by the row's own opaque `id` — never by the recipi
 
 **Getting it back on load:** since the persisted file is already sealed under the exact key the compose UI's `AttachmentManager` already holds, `load()` doesn't need to decrypt-then-re-encrypt into a fresh temp copy. It also doesn't trust a `url` stored at save time — an earlier version of this design did, baking the full absolute path into the sealed `Basket`. That's fragile: Apple's own guidance is that a container path should always be re-resolved via API, not persisted and assumed stable, and a stale stored path would silently reproduce the exact class of attachment loss this whole feature exists to prevent. Instead, `load()` reconstructs the URL fresh every time from `Message.Draft.attachmentsFolder(for: row.id)` plus `Message.Draft.attachmentFilename(for: file)` — the same two pieces of information (`draftID`, `file.id`) both save and load always have on hand regardless of what the container path happens to be right now. Display, playback, and re-editing all work unmodified, since nothing about the file's protection or naming changes for the rest of the compose session. If the user removes that attachment mid-edit, the existing delete path (`FileManager.removeItem(at:)`) now deletes the persistent copy directly — correct, since removing an attachment from a draft should get rid of both the live and durable copies, not just one.
 
+### Restoring compose mode without re-triggering the wipe
+
+Each compose view has a pre-existing, pre-drafts behavior: switching `useThreadCompose` between Quick and Thread deliberately wipes the current composition (`ComposeViewModel.clearAfterEncrypt()`), since stale content from one mode isn't assumed safe to carry into the other. Restoring `wasThreadMode` at load time — a plain `self.useThreadCompose = loaded.wasThreadMode` assignment — runs straight into that: if the original binding for the toggle is `self.$useThreadCompose` and the wipe is wired to `.onChange(of: useThreadCompose)`, a *programmatic* restore assignment fires the exact same handler a *user* toggle does, wiping the `draftText`/`messages` the load just finished restoring, moments after restoring them. A guard flag to suppress the wipe during restore was considered and rejected: it can't be reliably reset. If the restored draft was already in Quick mode, assigning `useThreadCompose = false` is a no-op (same as the default) — `.onChange` never fires — so a flag meant to be cleared inside that handler never gets cleared, and silently suppresses the wipe on the *next real* user-initiated toggle too.
+
+Resolved by moving the wipe out of `.onChange` entirely, into the toggle's own `Binding`'s setter, constructed by the parent view rather than passing `self.$useThreadCompose` directly:
+
+```swift
+ComposeStyleToggle(useThread: Binding(
+    get: { self.useThreadCompose },
+    set: { newValue in
+        self.useThreadCompose = newValue
+        self.composeVM.clearAfterEncrypt()
+    }
+))
+```
+
+This isn't managing the race, it removes it: the wipe now only ever runs when something calls through *this specific binding* — which only the toggle button's own tap does. A `.task`-time restore assignment (`self.useThreadCompose = loaded.wasThreadMode`) writes directly to the underlying `@State` property, never through the binding, so it can't trigger the wipe no matter what the before/after values are. No flag, no ambiguity between "is this a restore or a real toggle" — the two paths are structurally distinct, not inferred at runtime.
+
 ### Lifecycle: when a draft is actually written, read, and cleared
 
-- **Persisted lazily**, not on every keystroke: at the same point `ComposeViewModel.cleanup()` currently fires (`.onDisappear`, backgrounding) — replacing "delete the attachment" with "run the sensitivity gate, then persist if not sensitive."
-- **Resumed on open**: when a compose view opens for a recipient, check for an existing `Message.Draft`, decrypt it, and load its `Basket` back into `draftText`/`messages` before the user starts typing.
+- **Persisted lazily**, not on every keystroke: at the same point `ComposeViewModel.cleanup()` currently fires (`.onDisappear`, backgrounding) — replacing "delete the attachment" with "run the sensitivity gate, then persist if not sensitive." Also flushed immediately on backgrounding (`scenePhase` leaving `.active`, wrapped in a `UIApplication.beginBackgroundTask` assertion) — `.onDisappear` alone only fires on navigation away, not when the app backgrounds while a compose screen stays on top.
+- **Resumed on open**: when a compose view opens for a recipient, check for an existing `Message.Draft`, decrypt it, and load `draftText`, `messages`, and `useThreadCompose` back from the decoded `Payload` before the user starts typing.
 - **Cleared on send, not on encrypt.** `ComposeViewModel.encrypt(for:...)` (`Contact+Manager.swift`-adjacent, `ComposeViewModel.swift`) is unchanged — it builds a *separate* `Basket`, sealed under the recipient's actual exchanged key via `contactManager.encryptBundle`, completely independent of how the draft itself was sealed. The `Message.Draft` row and folder are deleted at the same point `clearAfterEncrypt()` already fires today — from `ActivityView`'s completion handler, only `if completed` (the user actually sent, not just cancelled the share sheet). Cancelling the share sheet leaves the draft (and its persisted copy) intact for another attempt, exactly like today's in-memory-only behavior already does.
 
 ### Sensitivity gate (Option E, applied live, not stamped)
