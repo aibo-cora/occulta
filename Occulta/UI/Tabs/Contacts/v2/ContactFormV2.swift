@@ -16,16 +16,12 @@ extension Contact {
 
         @State private var contact: Contact.Draft
         @State private var selectedPhotoItem: PhotosPickerItem?
-        @State private var displayingRevokeKeyWarning = false
         @State private var displayingDeleteWarning = false
-        @State private var isSensitive = false
         @State private var showSaveError = false
 
         @Environment(\.dismiss)              private var dismiss
         @Environment(ContactManager.self)    private var contactManager
         @Environment(Manager.Security.self)  private var security
-
-        @Query private var profiles: [Contact.Profile]
 
         let mode: Mode
         var onDismiss: (() -> Void)?
@@ -34,10 +30,8 @@ extension Contact {
             switch mode {
             case .create:
                 self._contact  = State(initialValue: .init(identifier: UUID().uuidString))
-                self._profiles = Query(filter: #Predicate { _ in false })
             case .edit(let identifier):
                 self._contact  = State(initialValue: .init(identifier: identifier))
-                self._profiles = Query(filter: #Predicate { $0.identifier == identifier })
             }
             self.mode      = mode
             self.onDismiss = onDismiss
@@ -45,18 +39,13 @@ extension Contact {
 
         private var isCreate: Bool {
             if case .create = self.mode { return true }
-            
+
             return false
         }
 
         private var canSave: Bool {
             !self.contact.givenName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !self.contact.familyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-
-        private var keyIsRevocable: Bool {
-            guard case .edit = self.mode, let key = self.contact.contactPublicKeys.last else { return false }
-            return key.expiredOn == nil
         }
 
         var body: some View {
@@ -76,27 +65,6 @@ extension Contact {
                         FormSectionV2(header: "CONTACT") {
                             PhoneSectionRowsV2(contact: self.$contact)
                             EmailSectionRowsV2(contact: self.$contact)
-                        }
-
-                        // No depth guard — isSensitive and setVisibility are depth-relative;
-                        // hiding the section at depth > 0 is a tell with no security benefit.
-                        // (Bug 60, same reasoning as Bug 57 for ContactClassification.)
-                        FormSectionV2(header: "VISIBILITY") {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Private contact")
-                                        .font(.system(size: 15))
-                                    Text("Hidden in alternate view")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Toggle("", isOn: self.$isSensitive)
-                                    .labelsHidden()
-                                    .tint(Color.occultaDanger)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
                         }
 
                         if !self.isCreate {
@@ -128,8 +96,6 @@ extension Contact {
                             do {
                                 try self.contactManager.save(contact: self.contact,
                                                               currentDepth: self.security.currentDepth)
-                                try self.contactManager.setVisibility(for: self.contact.identifier,
-                                                                       isSensitive: self.isSensitive)
                                 self.dismiss()
                             } catch {
                                 self.showSaveError = true
@@ -156,33 +122,12 @@ extension Contact {
                     if let mutable = try? self.contactManager.convertToMutableCopy(using: identifier) {
                         self.contact = mutable
                     }
-                    self.isSensitive = self.contactManager.isSensitive(identifier)
                 }
             }
         }
 
         @ViewBuilder
         private var editOnlyActions: some View {
-            Button(role: .destructive) {
-                self.displayingRevokeKeyWarning = true
-            } label: {
-                Label("Revoke Key", systemImage: "key.horizontal.fill")
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.occultaDanger)
-            .confirmationDialog("Warning", isPresented: self.$displayingRevokeKeyWarning) {
-                Button("Revoke", role: .destructive) {
-                    try? self.contactManager.reset(identity: self.contact.identifier)
-                }
-            } message: {
-                Text("A new key exchange needs to happen after revoking this contact's public key. Are you sure?")
-            }
-            .disabled(self.profiles.first?.contactPublicKeys?.last?.expiredOn != nil)
-
             if case .edit(let identifier) = self.mode {
                 Button(role: .destructive) {
                     self.displayingDeleteWarning = true

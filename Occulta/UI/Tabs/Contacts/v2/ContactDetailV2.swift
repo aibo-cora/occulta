@@ -61,11 +61,6 @@ extension Contact {
                     if self.needsExchange {
                         ExchangeHeroV2(identifier: self.identifier)
                     } else {
-                        if self.status == .verified, let p = self.profile {
-                            IdentityChallenge.VerifyIdentityButton(contact: p)
-                                .padding(.horizontal, 16)
-                        }
-
                         ComposeStyleToggle(useThread: Binding(
                             get: { self.useThreadCompose },
                             set: { newValue in
@@ -113,6 +108,10 @@ extension Contact {
 
                     if self.status == .unverified {
                         UnverifiedNoticeV2(expanded: self.$displayingVerificationInfo)
+                    }
+
+                    if let p = self.profile {
+                        Contact.TrustCheckV2(profile: p)
                     }
                 }
                 .padding(.horizontal, 16)

@@ -312,6 +312,8 @@ Distinct from Contact Compromise Detection (removed — Consumer #5, Occulta has
 **iOS constraint:** iOS 16+, zero new primitives — ECDSA, SSS, and basket distribution are all already shipped. Remaining work is UX (guardian selection, "report lost device" flow on the guardian side) and CRYPTO_REVIEW_CHECKLIST §2 (shard release must be one-way and idempotent).
 
 > **Ruling (July 2026):** Highest reuse ratio of this batch. Malicious or coerced guardians could revoke falsely — mitigated by K-of-N threshold; worst case is a forced re-exchange (denial-of-convenience), never a confidentiality loss. Replay is moot (revocation is idempotent and terminal). Low lift. **Priority: Near-term.**
+>
+> **Addendum (July 22, 2026) — superseded, downgraded to positioning.** UX scoping for this feature (guardian shard-release confirmation, cross-guardian shard coordination, broadcast delivery with no server or push infrastructure) surfaced that the mechanism this spec assumed doesn't hold up: a malicious or falsely-triggered revocation's worst case, *by this doc's own ruling above*, is "a forced re-exchange, never a confidentiality loss" — but that is already the exact worst case of the feature that ships today. `Contact+Form.swift`/`ContactFormV2.swift`'s existing "Revoke Key" button (`ContactManager.reset(identity:)`) lets any contact unilaterally expire a stored key on their own device, which blocks sends (`resolveKeyMaterial`), surfaces a "PENDING EXCHANGE" badge, and requires a fresh UWB exchange to clear — with zero cryptography, zero guardians, and zero new engineering. Since the guardian/SSS/K-of-N apparatus cannot produce a better worst-case than a feature that already ships, it is not solving a gap; it is re-solving a solved problem at a much higher UX and engineering cost. The only value it could still add — reaching a contact who has *no channel to the owner besides Occulta itself* (met once via UWB, no phone number or email) — is real but narrow, and does not justify guardian shard coordination or SSS reconstruction on its own. **Downgraded from Near-term/Priority 2 (parallel) to positioning-only**, mirroring the #16 ruling: no new engineering, just make the existing "Revoke Key" button discoverable (onboarding or a security FAQ: "lost your phone? tell your contacts — they can revoke you from Contact → Revoke Key"). Revisit as an engineering item only if evidence shows the no-other-channel case is common enough to matter, and if so scope it as a minimal signed self-revocation broadcast, not the SSS/guardian design above.
 
 ---
 
@@ -441,6 +443,8 @@ Optional pass before basket assembly: Vision framework detects faces (`VNDetectF
 3. **Serverless Passkey Provider (#20)** — the only idea in this pass that opens the mainstream password-manager market, with a pitch ("hardware-bound passkeys, no YubiKey, no cloud") no incumbent can copy without abandoning their sync architecture.
 
 > **Addendum (July 10, 2026):** Item 1 above (Owner Device Set, #18) is superseded — see the addendum on section 18 above and [Multi-Device Contacts/ROADMAP.md](Multi-Device%20Contacts/ROADMAP.md). The cert-vouching mechanism this ranking assumed was rejected as a security hole; the feature was renamed **Multi-Device Contacts**, narrowed to a data-model bug fix, and downgraded from Near-term/Rank 1 to opportunistic/low-priority. Guardian Revocation Certificates (#19) and Serverless Passkey Provider (#20) are unaffected and retain their rank/priority.
+>
+> **Addendum (July 22, 2026):** Correction to the addendum immediately above — Guardian Revocation Certificates (#19) is *not* unaffected. See the July 22 addendum on section 19 itself: the existing "Revoke Key" contact action already delivers this feature's entire worst-case-bounded value with zero new engineering, so #19 is downgraded from Rank 2/Near-term to positioning-only. Serverless Passkey Provider (#20) retains its rank/priority.
 
 ### Ideas Considered and Omitted (July 4, 2026 pass)
 
@@ -532,6 +536,68 @@ Re-prioritisations folded from this pass: #21 promoted from opportunistic to sch
 
 ---
 
+### 29. Situational Contact Actions — "Trust Check" Picker
+**Added July 22, 2026 (session following the Guardian Revocation Certificates re-scoping, #19)**
+**Revised July 22, 2026 (same-day, eight passes)** — rescoped from a global picker to a contact-detail-embedded one; narrowed to security/identity events only, CRUD excluded; renamed from "Something happened?" to "Significant Event" and moved below Message/Edit Contact since those are used far more often; added per-scenario eligibility so a scenario is only offered when the contact actually qualifies for it; the entry point itself is now hidden entirely when zero scenarios are eligible, rather than opening onto an empty list; renamed to "Security Actions," then to "Trust Check"; **the fourth scenario (Vault Trustee, originally "custody") removed entirely** — see below
+**Category:** UX / Discoverability
+**Audience:** Broad — every user with at least one contact; adds no new capability, makes existing ones findable
+
+A guided, scenario-first prompt inside a specific contact's detail view — "Trust Check," positioned below the routine Message/Edit Contact actions rather than above them — that maps a plain-language event *about that person* to whichever existing security or identity action already addresses it, instead of expecting the user to already know that "this contact's phone was stolen" means "go to Contact → Edit → Revoke Key."
+
+**First rescoping (global → contact-detail).** The original draft was a single global list reachable from the top of the Contacts tab, covering both contact-scoped events and device-level events ("I lost my own phone"). Splitting it revealed a stronger design: the contact-scoped scenarios are inherently about one person, and if the user is already looking at that person's contact card — which is what they'd naturally do after hearing from them — routing through a global list and picking the contact back out is a wasted screen. Embedding the prompt directly in contact detail removes that step, and two of its destinations (Revoke Key, the Private toggle) already live on that exact screen today. Device-level events have no associated contact and remain out of scope for this entry.
+
+**Second narrowing (security/identity only, CRUD excluded, custody removed).** A codebase pass for other contact-scoped actions turned up Delete Contact (`Contact+Manager.swift:435`) as a real, shipped, contact-specific action — but on review it was explicitly excluded: this picker's purpose is routing a security-relevant event to the action that resolves it, and plain data management (editing a name, deleting a record) isn't that, even when it's contact-specific. Mixing "something happened, get help" with "manage this record" would blur exactly the distinction the picker exists to draw.
+
+The picker originally also carried a fourth, "custody" scenario — Vault shard trustee designation — but it was cut on the same reasoning that excluded Delete Contact: it isn't a reactive security event either. An implementation-planning pass into `ShamirSecretSharing.swift` and `Vault+ShardSetup.swift` confirmed why it doesn't fit even setting the framing question aside — adding one trustee isn't an independent action. `ShamirSecretSharing.split` (`ShamirSecretSharing.swift:111-118`) regenerates a fresh random polynomial on every call, so there's no way to hand out one incremental share; `VaultShardSetup.markForDistribution()` (`Vault+ShardSetup.swift:607-656`) re-runs the full split across the *entire* trustee roster and pushes a `.replace` operation — invalidating and reissuing — to every trustee already in place, not just the new one. That's real multi-party blast radius triggered from what would have looked like a quick, contact-scoped confirmation. It belongs with the deliberate, multi-step setup flow it already has in Vault → Settings, not next to "something happened?" prompts a user taps into mid-crisis. The three remaining scenarios all fall cleanly under security/identity and none are CRUD:
+
+| Scenario | Routed action | Reachable today? |
+|---|---|---|
+| [Name]'s phone was lost or stolen | Revoke Key (`ContactManager.reset(identity:)`, `Contact+Manager.swift:524`) | Yes — shipped |
+| I got a suspicious call or message from [Name] | Identity Challenge | Yes, but scope the promise to "still controls the key as of now" — see iOS constraint |
+| Hide [Name] if my phone is forced open | Mark Private / Secure Mode classification (`ContactManager+Classification.swift:76`) | Yes — shipped |
+
+**Considered and left out:** **Delete Contact** — real and shipped, but out of scope by design (CRUD, not a security/identity event; see above). **Vault shard trustee designation** — real and shipped (via Vault → Settings), but out of scope by design: not a reactive event, and structurally a multi-party operation (see above), not a single-contact one. **Removing one person from a shared group** (`Contact+Manager+Groups.swift:58`) — technically contact-specific, but the only real UI path is deselecting a checkbox while editing the whole group's membership (`Group+FormV3.swift:238`), which doesn't read as an event about *this contact*. No block/mute/report action exists anywhere in the codebase to consider.
+
+**`enableShamirShardSharing` flipped to `true` in `features.plist` (2026-07-22), unrelated to Trust Check's scope directly but decided during this investigation.** Since the flag has zero call sites anywhere in the codebase (see iOS constraint below, formerly #2), this has no functional effect on the shipped app today — it's a housekeeping change so the plist reflects intent (SSS custody is considered live, not experimental) rather than a stale `false` that could read as "still gated" to a future reader. If the flag is ever wired to something real, this is already set correctly.
+
+**A small compensating discoverability hint, separate from Trust Check itself.** Removing Vault Trustee left the underlying problem this doc has repeatedly named — most users never visit Vault → Settings at all, so a capability that only lives there effectively doesn't exist for them — unaddressed for this specific case. Rather than reintroduce a scenario the multi-party finding above rules out, contact detail gets a small inert "Trustee" chip (dashed outline, reusing the exact visual meaning "not yet" already established by the Pending Exchange badge) shown when a contact has ML-KEM material and isn't already a trustee. It has no tap target — it's a curiosity hook, not a shortcut, and it deliberately can't trigger the re-split/reissue chain, since it does nothing at all beyond render.
+
+**Correction (2026-07-22, same day): "isn't already a trustee" is not a single check.** The product owner flagged directly that the app has *two* separate trustee mechanisms, which an earlier pass through this doc missed — the mockup and the claim above only ever checked one of them. Both are real, both matter, and they don't behave the same way:
+
+- **Global roster** — `GlobalShardConfig.Payload.trusteeIDs: [String]` (`GlobalShardConfig+Model.swift:66`), a single app-wide list. Checked via `shardCustodyManager.globalShardConfig()?.trusteeIDs.contains(identifier)` (`ShardCustody+Manager.swift:406-417`), sealed under a device-unlock-level key (`Key+Manager.swift:816-839`, explicitly "no `LAContext` needed"). Cheap, and available whether or not the vault itself is unlocked.
+- **Per-item roster** — `ShardDistributionMetadata.shards: [ShardRecord]` (`Vault+Model.swift:94-99,79-88`), one list *per vault entry* (and a separate one for the backup key, via `bekShardMetadata()`), sealed under the vault key itself. `VaultManager.shardRecordsForTrustee(_:)` (`Vault+Manager+Shards.swift:401-420`) is the only function that answers "is this contact a trustee of mine anywhere" for this half — and it does so by fetching *every* `VaultEntry` and running an AES-GCM decrypt on each one's `shardDistributionEncrypted` blob, purely to check one contact. There is no per-contact index.
+
+**The two checks are not just two lookups — one of them can lie.** `shardRecordsForTrustee` requires the vault to be unlocked; if it's locked, it silently returns `[]`, which is indistinguishable from "genuinely not a trustee for anything." A chip suppressed only by this check would risk confidently showing "not yet a trustee" for someone who already holds a shard, purely because the vault happened to be locked at render time — the exact class of "badge claims something false" mistake this doc has otherwise been careful to rule out (see the naming/pronoun/eligibility disciplines above).
+
+**Not yet resolved — this needs a product call, not an engineering default.** Two live options, with the tradeoff stated plainly rather than picked silently:
+1. Combine both checks; when the vault is locked (so the per-item half can't be answered), suppress the chip entirely rather than risk showing a false "not yet." Correct, but adds a full vault-entry decrypt-scan to a screen this doc has already established gets visited far more often than Vault itself — a real performance cost for a purely decorative hint, worth caching per session rather than re-running on every contact-detail render.
+2. Keep the chip on the global check alone, and accept — documented, not silently — that a contact who is *only* a per-item trustee (holds a shard for one specific entry but was never added to the global roster) would be incorrectly offered the "not yet" hint. Cheaper and simpler, at a known, bounded accuracy cost for a low-stakes, inert, non-actionable element.
+
+The mockup currently implements option 2 (global check only) as originally built, pending this decision — it has not been changed to reflect the correction above.
+
+**Position, naming, and per-scenario eligibility.** Message and Edit Contact are opened on nearly every visit to this screen; Trust Check is opened rarely, by definition — it only applies when something has actually gone wrong. Placing it below the routine actions, and naming it as a noun phrase rather than a question, keeps it from competing with what the screen is used for most of the time while staying one scroll and one tap away. On top of that, each scenario now carries its own eligibility check, not just the feature-level reachability check described under iOS constraint below:
+- **Revoke Key** and **Identity Challenge** only appear if the contact's key is currently active (`state === verified` in the mockup, mirroring the real `keyIsRevocable` gate already on the shipped Revoke Key button) — a contact whose key is already revoked has nothing left for either action to act on.
+- **Hide contact** only appears if the contact isn't already marked private.
+
+With only one category of scenario left after custody's removal, the picker no longer groups rows under a section header at all — a "Security & identity" label would just repeat what the screen's own title already says.
+
+**Naming: "Trust Check" over "Security Actions."** A friction review of this entry raised a real risk in the naming trend up to that point ("Something happened?" → "Significant Event" → "Security Actions"): each step moved further toward auth/security vocabulary and further from the "identity first, not auth" framing the Consumer Opening memo argues is the strongest idea available to this product. A label sitting on every contact's page that reads as a security alert risks a low-grade "is something wrong with this contact?" signal even when nothing is. "Trust Check" was chosen over softer alternatives ("If something's wrong," "Need help with [Name]?") specifically because it stays legible on its own without over-explaining itself in the label — the label doesn't need to enumerate what it covers, since tapping it immediately shows the scenarios; ambiguity at rest, clarity on tap, is an acceptable trade for a row that must sit quietly on a screen most visits don't need it.
+
+**The entry point disappears, not just the list.** If a contact fails every scenario's eligibility check — key already revoked, already marked private — Trust Check doesn't open onto an empty screen; it isn't shown at all on that contact's detail view. An empty picker would still have been a real state to design for (what does "nothing applies" even communicate to a worried user?); removing the entry point avoids the question rather than answering it, which is the right call here — there is no version of "nothing you can do" that reads as reassuring rather than alarming, so the honest move is to not raise it.
+
+**Why new / overlap declaration:** Concrete implementation of the recommendation in #19's addendum ("make Revoke Key discoverable"), generalized to every contact-scoped security/identity action instead of a bespoke fix per feature. Also subsumes the *mechanism* (not the audience) of Anti-Scam Family Circle (#27)'s "Assisted Mode" and "Second Opinion" — still valid under the narrower scope, since both are themselves about a specific contact.
+
+**Security model fit:** No new cryptography, no new attack surface — pure navigation over already-shipped actions. The scenario→action mapping is content, not code, but it's a living artifact that needs a pass whenever a destination's status changes elsewhere in this doc.
+
+**iOS constraint:** None beyond standard SwiftUI navigation. Three copy/design disciplines matter more than the technical lift:
+1. **Suspicious call/message** must not imply live-call authenticity — Identity Challenge proves "still controls the key," not "this is them, right now." Presence Verification's live-window mode would provide that stronger claim and is currently Delayed on an unresolved relay attack (#15's addendum).
+2. **Scenario and result copy must name the contact, never refer to them by pronoun.** Each scenario is read one contact at a time in a security context, where an ambiguous "they/them/their" costs more than the minor repetition of using the name twice in a sentence — explicit beats concise here.
+3. **Eligibility must be evaluated per contact at render time, not cached or assumed.** A contact's key state and private flag can both change between visits (a re-exchange, a duress-classification edit); the picker has to re-check on every open rather than reusing whatever was true last time.
+
+> **Ruling (July 22, 2026, revised eight times):** Narrowing to contact-detail placement strengthens the case rather than shrinking it — it cuts a screen from the three originally-global scenarios. Excluding CRUD, and later excluding Vault Trustee on the same reasoning plus the multi-party-blast-radius finding, keeps the picker's purpose legible: this answers "something happened, what do I do," not "manage this contact" and not "set up a recovery scheme." Repositioning below the routine actions and adding per-contact eligibility are both refinements in the same direction — the picker earns its place by only ever showing what's true and actionable for the contact in front of the user, never a menu padded with options that don't apply or don't belong. What's left is deliberately small: three scenarios, all copy and routing over already-shipped actions, no new engineering. **Priority: Near-term.**
+
+---
+
 ## Section 1 Summary Table
 
 | Rank | Feature | Status | Audience | Phase |
@@ -545,7 +611,7 @@ Re-prioritisations folded from this pass: #21 promoted from opportunistic to sch
 | 17 | Duress-Aware 2FA Codes | **Keep** | Medium-broad | Phase 2 (after duress cluster) |
 | 16 | Serverless Social Recovery | **Built** (flagged) | Broad | Positioning/UX pass only |
 | 18 | Multi-Device Contacts (was "Owner Device Set") | **Keep — narrowed to bug fix 2026-07-10** | Broad ambition shelved; bug fix affects all multi-device users | Opportunistic, low-priority |
-| 19 | Guardian Revocation Certificates | **Keep** | Broad | Near-term |
+| 19 | Guardian Revocation Certificates | **Downgraded 2026-07-22 — positioning only, see addendum** | Broad | Ongoing (positioning, no engineering) |
 | 21 | Uniform Basket Envelopes | **Keep** | — (protocol) | Near-term, opportunistic |
 | 20 | Serverless Passkey Provider | **Keep** | Broad | Mid-term |
 | 22 | Mutual-Contact Discovery | **Keep** | Narrow-medium | Near-mid |
@@ -555,6 +621,7 @@ Re-prioritisations folded from this pass: #21 promoted from opportunistic to sch
 | 26 | Verified Payment Instructions | **Keep** | Broad | Near-term |
 | 27 | Anti-Scam Family Circle | **Keep** | Broad | Near-term (with #15) |
 | 28 | Sealed Evidence Journal | **Keep** | Narrow-medium | Phase 2 |
+| 29 | Situational Contact Actions ("Trust Check" Picker) | **Keep** | Broad | Near-term |
 | 1 | Wi-Fi Aware Basket Delivery | Removed | — | — |
 | 4 | YubiKey NFC Second Factor | Deferred | — | — |
 | 5 | Contact Compromise Detection | Removed | — | — |
@@ -838,9 +905,9 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 |----------|------|-----------|
 | 1 | Offline Travel Mode | Broadest new audience; documents a real gap vs. 1Password; fully offline; no external dependencies |
 | 2 | Cryptographic Panic Wipe | Requires key hierarchy rework as prerequisite; wipe itself is then trivial; post-Graphite urgency |
-| 2 (parallel) | Guardian Revocation Certificates (#19) | Highest reuse ratio of any feature on this list (ECDSA + SSS + baskets, all shipped); completes the key lifecycle reviewers probe first |
 | 1 (parallel) | Verified Payment Instructions (#26) | Largest documented loss pool adjacent to the app (BEC $3.05B, 2025 IC3); trusted asynchronous artifact no competitor has; anti-impersonation pairing with Presence Verification (#15) on hold — see Delayed section below |
 | 2 (parallel) | Anti-Scam Family Circle (#27) | Mainstream reach + family install loop; blocked — built entirely on top of Presence Verification (#15), which is delayed. See Delayed section below |
+| 1 (parallel) | Situational Contact Actions ("Trust Check" Picker, #29) | Very low lift, no new attack surface; generalized fix for a discoverability gap this doc has hit twice (#19, #27's Assisted Mode); not blocked on Presence Verification if the suspicious-call row is scoped honestly (see #29's iOS constraint) |
 
 ### Delayed — Blocked Pending Protocol Fix
 
@@ -868,13 +935,14 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 | Item | Rationale |
 |------|-----------|
 | Serverless Passkey Provider (#20) | Opens the mainstream password-manager market; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor |
-| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for revocation certs (#19), the per-device revocation broadcast (#18, narrowed scope), and any future signed artifact; gated on confirming SE ML-DSA support in the target SDK |
+| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for the per-device revocation broadcast (#18, narrowed scope) and any future signed artifact; gated on confirming SE ML-DSA support in the target SDK. (No longer paired with #19 — downgraded 2026-07-22, no revocation cert remains to sign) |
 
 ### Ongoing — Positioning (no engineering)
 
 | Item | Rationale |
 |------|-----------|
 | Serverless Social Recovery (#16) | Already built behind `enableShamirShardSharing`; surface it as the answer to "what if I lose my phone?" — the validation (Google Recovery Contacts, passkey-lockout coverage) is marketing material |
+| Guardian Revocation Certificates (#19) | Downgraded 2026-07-22: the existing per-contact "Revoke Key" action already bounds the worst case to a forced re-exchange with zero new engineering; make it discoverable (onboarding/security FAQ: "lost your phone? tell your contacts to revoke you"), don't build the guardian/SSS layer |
 
 ### Future — Enterprise (prerequisite: consumer product first)
 
