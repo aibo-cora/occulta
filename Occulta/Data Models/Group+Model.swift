@@ -135,8 +135,17 @@ final class Group {
     /// 1...31 are duress depths, each with its own independent membership.
     /// Slots that fail to decrypt (filler) are silently skipped.
     func members(atDepth depth: Int) -> [String] {
+        guard let key = try? Self.requireKey() else { return [] }
+        return self.members(atDepth: depth, usingKey: key)
+    }
+
+    /// Same as `members(atDepth:)` but decrypts with an already-derived key instead of
+    /// deriving one per slot. Used by the batch re-encryption paths below, which must
+    /// reuse one derivation across every depth of every group rather than re-deriving
+    /// per slot — see `ContactManager.cleanUpGroupDuressMembership`.
+    func members(atDepth depth: Int, usingKey key: SymmetricKey) -> [String] {
         self.slots(atDepth: depth).compactMap { slot -> String? in
-            guard let decrypted = slot.decrypt() else { return nil }
+            guard let decrypted = slot.decrypt(using: key) else { return nil }
             // Strip null-byte padding introduced by encryptedSlots(for:).
             let trimmed = decrypted.prefix(while: { $0 != 0 })
             guard !trimmed.isEmpty,
@@ -144,6 +153,16 @@ final class Group {
             else { return nil }
             return str
         }
+    }
+
+    /// Derives the hybrid local DB key once, throwing if SE/Keychain is unavailable.
+    /// Used by the no-key convenience overloads below (single-edit paths) and by
+    /// `setMembers`, which derives its own key once per call rather than per slot.
+    private static func requireKey() throws -> SymmetricKey {
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+        return key
     }
 
     func addMember(_ identifier: String, atDepth depth: Int) throws {
@@ -190,8 +209,15 @@ final class Group {
     /// groups had their ciphertext touched" becomes a keyless signal for "did this
     /// classification happen at depth 0."
     func purgeMembersFromDuressDepths(_ identifiers: Set<String>) throws {
-        try self.reencryptAllDepths { depth in
-            depth == 0 ? self.members(atDepth: 0) : self.members(atDepth: depth).filter { !identifiers.contains($0) }
+        try self.purgeMembersFromDuressDepths(identifiers, usingKey: try Self.requireKey())
+    }
+
+    /// Same as `purgeMembersFromDuressDepths(_:)` but reuses an already-derived key.
+    func purgeMembersFromDuressDepths(_ identifiers: Set<String>, usingKey key: SymmetricKey) throws {
+        try self.reencryptAllDepths(usingKey: key) { depth in
+            depth == 0
+                ? self.members(atDepth: 0, usingKey: key)
+                : self.members(atDepth: depth, usingKey: key).filter { !identifiers.contains($0) }
         }
     }
 
@@ -202,7 +228,13 @@ final class Group {
     /// regardless of whether real content was actually removed or which depth the save
     /// happened at.
     func refreshCiphertext() throws {
-        try self.reencryptAllDepths { self.members(atDepth: $0) }
+        try self.refreshCiphertext(usingKey: try Self.requireKey())
+    }
+
+    /// Same as `refreshCiphertext()` but reuses an already-derived key across every
+    /// depth instead of deriving one per slot.
+    func refreshCiphertext(usingKey key: SymmetricKey) throws {
+        try self.reencryptAllDepths(usingKey: key) { self.members(atDepth: $0, usingKey: key) }
     }
 
     /// Removes `identifier` from every depth's membership (0...depthCount-1), including
@@ -214,8 +246,13 @@ final class Group {
     /// identifier being removed and leaves every other member untouched, so it can't
     /// destroy separately-prepared decoy content.
     func purgeMember(_ identifier: String) throws {
-        try self.reencryptAllDepths { depth in
-            self.members(atDepth: depth).filter { $0 != identifier }
+        try self.purgeMember(identifier, usingKey: try Self.requireKey())
+    }
+
+    /// Same as `purgeMember(_:)` but reuses an already-derived key.
+    func purgeMember(_ identifier: String, usingKey key: SymmetricKey) throws {
+        try self.reencryptAllDepths(usingKey: key) { depth in
+            self.members(atDepth: depth, usingKey: key).filter { $0 != identifier }
         }
     }
 
@@ -223,12 +260,12 @@ final class Group {
     /// and `purgeMember(_:)`: re-encrypts every depth with fresh nonces, sourcing each
     /// depth's plaintext from `content`. A database diff always shows every depth's
     /// slots change, regardless of which of the three callers ran or what it changed.
-    private func reencryptAllDepths(content: (Int) -> [String]) throws {
+    private func reencryptAllDepths(usingKey key: SymmetricKey, content: (Int) -> [String]) throws {
         try self.ensureDeeperSlotsPadded()
 
-        self.realMemberSlots   = try Self.encryptedSlots(for: content(0))
-        self.duressMemberSlots = try Self.encryptedSlots(for: content(1))
-        self.deeperMemberSlots = try (2..<Self.depthCount).map { try Self.encryptedSlots(for: content($0)) }
+        self.realMemberSlots   = try Self.encryptedSlots(for: content(0), using: key)
+        self.duressMemberSlots = try Self.encryptedSlots(for: content(1), using: key)
+        self.deeperMemberSlots = try (2..<Self.depthCount).map { try Self.encryptedSlots(for: content($0), using: key) }
     }
 
     // MARK: - Filler helpers
@@ -261,12 +298,16 @@ final class Group {
         guard depth >= 0, depth < Self.depthCount else { throw GroupError.invalidDepth }
         try self.ensureDeeperSlotsPadded()
 
-        var perDepth = (0..<Self.depthCount).map { self.members(atDepth: $0) }
+        // Derived once and reused across all 32 depths' reads and writes below, rather
+        // than per slot — see `members(atDepth:usingKey:)`.
+        let key = try Self.requireKey()
+
+        var perDepth = (0..<Self.depthCount).map { self.members(atDepth: $0, usingKey: key) }
         perDepth[depth] = identifiers
 
-        self.realMemberSlots   = try Self.encryptedSlots(for: perDepth[0])
-        self.duressMemberSlots = try Self.encryptedSlots(for: perDepth[1])
-        self.deeperMemberSlots = try perDepth[2...].map { try Self.encryptedSlots(for: $0) }
+        self.realMemberSlots   = try Self.encryptedSlots(for: perDepth[0], using: key)
+        self.duressMemberSlots = try Self.encryptedSlots(for: perDepth[1], using: key)
+        self.deeperMemberSlots = try perDepth[2...].map { try Self.encryptedSlots(for: $0, using: key) }
     }
 
     /// Pads `deeperMemberSlots` to full size (depths 2...depthCount-1) with fresh filler.
@@ -298,14 +339,14 @@ final class Group {
         }
     }
 
-    private static func encryptedSlots(for identifiers: [String]) throws -> [Data] {
+    private static func encryptedSlots(for identifiers: [String], using key: SymmetricKey) throws -> [Data] {
         var slots: [Data] = try identifiers.map { id in
             let raw = Data(id.utf8)
             guard raw.count <= Self.maxIdentifierBytes else { throw GroupError.identifierTooLong }
             // Pad to maxIdentifierBytes so all real slots produce the same ciphertext
             // length as filler. Null bytes are safe — identifiers never contain them.
             let padded = raw + Data(repeating: 0, count: Self.maxIdentifierBytes - raw.count)
-            guard let encrypted = try padded.encrypt() else { throw GroupError.encryptionFailed }
+            guard let encrypted = try padded.encrypt(using: key) else { throw GroupError.encryptionFailed }
             return encrypted
         }
         while slots.count < slotCount {
@@ -333,4 +374,9 @@ enum GroupError: Error {
     case entropyUnavailable
     /// `depth` passed to a member-storage method was outside 0..<Group.depthCount.
     case invalidDepth
+    /// Upfront hybrid key derivation failed (SE/Keychain unavailable) before a batch
+    /// re-encryption pass began. Must abort the whole pass rather than proceed with a
+    /// missing key — silently skipping the mandatory ciphertext refresh would itself be
+    /// a forensic tell (see `ContactManager.cleanUpGroupDuressMembership`).
+    case keyUnavailable
 }

@@ -85,6 +85,32 @@ extension Manager {
         /// Used exclusively during migration from v1 → v2. After migration completes,
         /// no v1 ciphertext should remain in the database. This method should not be
         /// called from any path other than DatabaseMigration.
+        // MARK: - Local encryption with a caller-supplied key (skips derivation)
+
+        /// Same as `encrypt(data:)` but uses an already-derived key instead of deriving
+        /// one via `keyManager`. For batch callers that derive once and reuse the result
+        /// across many calls (see `Group.reencryptAllDepths(usingKey:content:)`) rather
+        /// than re-deriving per call.
+        func encrypt(data: Data?, using key: SymmetricKey) throws -> Data? {
+            guard let data else { return nil }
+
+            let aad = EncryptionScheme.v2_hybridPQ.aad
+            let sealed = try AES.GCM.seal(data, using: key, nonce: AES.GCM.Nonce(), authenticating: aad)
+
+            return sealed.combined
+        }
+
+        /// Same as `decrypt(data:)` but uses an already-derived key instead of deriving
+        /// one via `keyManager`.
+        func decrypt(data: Data?, using key: SymmetricKey) throws -> Data? {
+            guard let data else { return nil }
+
+            let box = try AES.GCM.SealedBox(combined: data)
+            let aad = EncryptionScheme.v2_hybridPQ.aad
+
+            return try AES.GCM.open(box, using: key, authenticating: aad)
+        }
+
         func decryptLegacy(data: Data?) throws -> Data? {
             guard
                 let data,
@@ -195,5 +221,16 @@ extension Data {
     func encrypt() throws -> Data? {
         let cryptoOps: CryptoProtocol = Manager.Crypto()
         return try cryptoOps.encrypt(data: self)
+    }
+
+    /// Encrypts using an already-derived key instead of deriving one fresh.
+    func encrypt(using key: SymmetricKey) throws -> Data? {
+        try Manager.Crypto().encrypt(data: self, using: key)
+    }
+
+    /// Decrypts using an already-derived key instead of deriving one fresh.
+    /// Swallows failure to nil, matching `decrypt()`'s convention.
+    func decrypt(using key: SymmetricKey) -> Data? {
+        try? Manager.Crypto().decrypt(data: self, using: key)
     }
 }

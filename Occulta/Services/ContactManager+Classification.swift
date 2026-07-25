@@ -123,11 +123,23 @@ extension ContactManager {
     /// future coercion scenario that a same-depth or shallower action shouldn't destroy.
     private func cleanUpGroupDuressMembership(hiddenIdentifiers: Set<String>) throws {
         let purgeForReal = !hiddenIdentifiers.isEmpty && self.security.currentDepth == 0
+
+        // Derived once and reused across every group and every depth in the pass below,
+        // instead of once per slot — the dominant cost here is the Keychain/Secure
+        // Enclave round trip inside key derivation, not the AES operation itself, and
+        // the derived key is identical on every call until the local-DB key is rotated.
+        // Failure must abort the whole pass rather than proceed with a missing key:
+        // silently skipping the mandatory ciphertext refresh on some or all groups would
+        // itself be a forensic tell (see the doc comment below).
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+
         try self.forEachGroup { group in
             if purgeForReal {
-                try group.purgeMembersFromDuressDepths(hiddenIdentifiers)
+                try group.purgeMembersFromDuressDepths(hiddenIdentifiers, usingKey: key)
             } else {
-                try group.refreshCiphertext()
+                try group.refreshCiphertext(usingKey: key)
             }
         }
     }
