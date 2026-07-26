@@ -432,7 +432,19 @@ class ContactManager {
     /// run regardless of depth: it only ever touches the one identifier being removed
     /// and leaves every other member untouched, so it can't destroy decoy content
     /// prepared for a different depth.
-    func deleteContact(identifier: String) throws {
+    ///
+    /// `vaultManager`/`shardCustodyManager` are optional, nil-safe parameters —
+    /// following the same shape as `encryptGroupBundle`/`activateSecureMode` — so a
+    /// call site without them just skips shard-custody cleanup rather than failing.
+    /// When provided, purges `CustodyShard`/`PendingShardDistribute`/
+    /// `PotentiallyLostShard`/`GlobalShardConfig.trusteeIDs` for this identifier (see
+    /// `ShardCustodyManager.purgeCustody(for:)`) and marks any of this contact's
+    /// outstanding vault shards lost.
+    func deleteContact(
+        identifier: String,
+        vaultManager: VaultManager? = nil,
+        shardCustodyManager: ShardCustodyManager? = nil
+    ) throws {
         guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
         }
@@ -455,6 +467,9 @@ class ContactManager {
             throw GroupError.keyUnavailable
         }
         try self.forEachGroup { try $0.purgeMember(identifier, usingKey: key) }
+
+        try shardCustodyManager?.purgeCustody(for: identifier)
+        vaultManager?.markShardsLost(forContact: identifier)
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.

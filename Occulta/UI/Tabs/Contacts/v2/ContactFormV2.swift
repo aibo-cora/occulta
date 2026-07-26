@@ -22,6 +22,8 @@ extension Contact {
         @Environment(\.dismiss)              private var dismiss
         @Environment(ContactManager.self)    private var contactManager
         @Environment(Manager.Security.self)  private var security
+        @Environment(VaultManager.self)          private var vaultManager
+        @Environment(ShardCustodyManager.self)   private var shardCustodyManager
 
         let mode: Mode
         var onDismiss: (() -> Void)?
@@ -142,7 +144,11 @@ extension Contact {
                 .foregroundStyle(Color.occultaDanger)
                 .confirmationDialog("Delete Contact", isPresented: self.$displayingDeleteWarning) {
                     Button("Delete", role: .destructive) {
-                        try? self.contactManager.deleteContact(identifier: identifier)
+                        try? self.contactManager.deleteContact(
+                            identifier: identifier,
+                            vaultManager: self.vaultManager,
+                            shardCustodyManager: self.shardCustodyManager
+                        )
                         
                         self.dismiss()
                         self.onDismiss?()

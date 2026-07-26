@@ -1021,4 +1021,34 @@ struct GroupStructuralTests {
 
         #expect(group.members(atDepth: 0) == [bystander])
     }
+
+    // Confirms the wiring, not just ShardCustodyManager.purgeCustody(for:) in
+    // isolation (covered thoroughly in ShardCustodyPurgeTests.swift) — that
+    // deleteContact actually calls it when a manager is supplied.
+    @Test func deleteContact_withShardCustodyManager_purgesGlobalShardConfigTrustee() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+
+        let schema = Schema([
+            Group.self,
+            Contact.Profile.self, Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
+            VaultEntry.self, CustodyShard.self, ReconstructShard.self,
+            PendingShardDistribute.self, PendingShardStatusUpdate.self, PotentiallyLostShard.self,
+            GlobalShardConfig.self
+        ])
+        let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let km        = TestKeyManager()
+        let security  = try Manager.Security(modelContainer: container, keyManager: km)
+        let cm        = ContactManager(modelContainer: container, security: security)
+        let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
+        let vault     = VaultManager(modelContainer: container, keyManager: km)
+
+        let identifier = UUID().uuidString
+        try self.insertPlainProfile(identifier: identifier, in: cm)
+        try custody.saveGlobalShardConfig(.init(trusteeIDs: [identifier, "someone-else"]))
+
+        try cm.deleteContact(identifier: identifier, vaultManager: vault, shardCustodyManager: custody)
+
+        #expect(try custody.globalShardConfig()?.trusteeIDs == ["someone-else"])
+    }
 }
