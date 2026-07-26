@@ -11,9 +11,14 @@ import UniformTypeIdentifiers
 
 struct ComposeHeroV3: View {
     @Bindable var vm: ComposeViewModel
-    let headerRight:  String
-    let encryptLabel: String
-    let onEncrypt:    () async -> Void
+    let headerRight:     String
+    let encryptLabel:    String
+    /// Whether the next bundle to this recipient will use the forward-secret
+    /// path (a prekey is available) or fall back to the long-term key.
+    /// `nil` hides the indicator — used for group compose, where the answer
+    /// is per-recipient rather than a single yes/no.
+    var isForwardSecret: Bool? = nil
+    let onEncrypt:        () async -> Void
 
     @State private var showMediaPicker = false
     @State private var showFilePicker  = false
@@ -100,6 +105,10 @@ struct ComposeHeroV3: View {
                             .contentTransition(.numericText())
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
+
+                    if let isForwardSecret = self.isForwardSecret {
+                        SecrecyIndicator(isForwardSecret: isForwardSecret)
+                    }
                 }
                 Spacer()
                 Button {
@@ -132,6 +141,27 @@ struct ComposeHeroV3: View {
             allowsMultipleSelection: false
         ) { result in
             self.vm.handleFile(result)
+        }
+    }
+}
+
+// MARK: - Secrecy Indicator
+
+/// Compose-time tag showing which key path the next bundle will use.
+/// Mirrors `OccultaBundle.securityLabel`'s wording so the pre-send tag and any
+/// post-send label agree. A prediction, not a guarantee — the actual mode is
+/// still decided inside `ContactManager.encryptBundle` at send time.
+struct SecrecyIndicator: View {
+    let isForwardSecret: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(self.isForwardSecret ? Color.occultaVerified : Color.occultaWarn)
+                .frame(width: 6, height: 6)
+            Text(self.isForwardSecret ? "Forward Secret" : "Standard Encryption")
+                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
     }
 }

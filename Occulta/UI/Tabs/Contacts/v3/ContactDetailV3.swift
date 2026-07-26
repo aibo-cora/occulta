@@ -97,10 +97,11 @@ struct ContactDetailV3: View {
                         let scm = self.shardCustodyManager
                         let vlt = self.vaultManager
                         ComposeHeroV3(
-                            vm:           self.composeVM,
-                            headerRight:  "→ TO \(self.givenName.uppercased())",
-                            encryptLabel: "Encrypt",
-                            onEncrypt:    { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+                            vm:              self.composeVM,
+                            headerRight:     "→ TO \(self.givenName.uppercased())",
+                            encryptLabel:    "Encrypt",
+                            isForwardSecret: self.profile?.hasPrekeyAvailable,
+                            onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
                         )
                     }
 

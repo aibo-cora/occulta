@@ -446,6 +446,10 @@ private struct ComposeHeroV2: View {
                             .contentTransition(.numericText())
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
+
+                    if let isForwardSecret = self.contacts.first?.hasPrekeyAvailable {
+                        SecrecyIndicator(isForwardSecret: isForwardSecret)
+                    }
                 }
                 Spacer()
                 Button(action: self.encryptAction) {
