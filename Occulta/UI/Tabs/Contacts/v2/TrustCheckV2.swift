@@ -105,10 +105,13 @@ private struct TrustCheckSheetV2: View {
     @Environment(ContactManager.self) private var contactManager
 
     @State private var showRevokeConfirm = false
-    @State private var isSensitive = false
 
     private var canRevokeKey: Bool { self.profile.trustCheckCanRevokeKey }
     private var canChallenge: Bool { self.profile.trustCheckCanChallenge }
+
+    private var isSensitive: Bool {
+        self.contactManager.isSensitive(self.profile.identifier)
+    }
 
     private var displayName: String {
         let name = self.profile.givenName.decrypt()
@@ -139,9 +142,6 @@ private struct TrustCheckSheetV2: View {
             }
         }
         .presentationDetents([.medium, .large])
-        .task {
-            self.isSensitive = self.contactManager.isSensitive(self.profile.identifier)
-        }
     }
 
     private var header: some View {
