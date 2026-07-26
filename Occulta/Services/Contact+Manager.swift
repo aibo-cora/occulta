@@ -444,10 +444,17 @@ class ContactManager {
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+        Manager.PrekeyManager().deleteAllKeys(for: identifier)
         try self.modelContext.save()
         self.security.checkpointStore()
 
-        try self.forEachGroup { try $0.purgeMember(identifier) }
+        // Derived once and reused across every group in the pass below, instead of once
+        // per group — see `ContactManager.cleanUpGroupDuressMembership`, which applies
+        // the same fix for the identical cost on the classification path.
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+        try self.forEachGroup { try $0.purgeMember(identifier, usingKey: key) }
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.

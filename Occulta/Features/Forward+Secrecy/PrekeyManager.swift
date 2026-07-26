@@ -88,9 +88,13 @@ extension Manager {
 
         /// Retrieve a prekey private key from the SE by its full ``Prekey`` struct.
         ///
+        /// Matches on the full `"prekey.<contactID>.<uuid>"` tag, not just the `uuid` —
+        /// a prekey belonging to one contact must never resolve for a lookup claiming
+        /// a different `contactID`, even if the `uuid` happens to be presented correctly.
+        ///
         /// Returns `nil` if the key was already consumed, pruned, or never existed.
         func retrievePrivateKey(for prekey: Prekey) -> SecKey? {
-            self.retrieveSecKeysInSE(matching: prekey.id)
+            self.retrieveKey(tag: prekey.seTag)
         }
 
         // MARK: - Consumption
@@ -98,9 +102,16 @@ extension Manager {
         /// Delete a prekey private key from the SE immediately after use.
         ///
         /// This is the exact moment forward secrecy is established for a message.
+        /// Matches on the full `"prekey.<contactID>.<uuid>"` tag — see ``retrievePrivateKey(for:)``.
         @discardableResult
         func consume(prekey: Prekey) -> Int {
-            self.deleteSecKeysInSE(matchingTagSubstring: prekey.id)
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassKey,
+                kSecAttrApplicationTag as String: prekey.seTag.data(using: .utf8)!,
+                kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
+            ]
+            return SecItemDelete(query as CFDictionary) == errSecSuccess ? 1 : 0
         }
 
         /// Delete ALL SE private keys for a contact, regardless of sequence.
@@ -162,46 +173,6 @@ extension Manager {
                 
                 return tag.hasPrefix(prefix)
             }.count
-        }
-        
-        /// Returns all SecKey objects from the Secure Enclave whose Application Tag
-        /// contains the given substring (case-insensitive).
-        func retrieveSecKeysInSE(matching substring: String) -> SecKey? {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassKey,
-                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
-                kSecReturnAttributes as String: true,
-                kSecReturnRef as String: true,
-                kSecMatchLimit as String: kSecMatchLimitAll
-            ]
-            
-            var result: AnyObject?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
-            
-            guard
-                status == errSecSuccess,
-                let items = result as? [[String: Any]]
-            else {
-                if status != errSecItemNotFound {
-                    print("SecItemCopyMatching failed: \(status)")
-                }
-                return nil
-            }
-            
-            let filtered =  items.compactMap { item -> SecKey? in
-                guard
-                    let tagData = item[kSecAttrApplicationTag as String] as? Data,
-                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasSuffix(substring)
-                else {
-                    return nil
-                }
-                
-                let key = item[kSecValueRef as String] as! SecKey
-                
-                return key
-            }
-            
-            return filtered.first
         }
         
         private func findAllTags() -> [String] {
@@ -292,65 +263,6 @@ extension Manager {
             return result
         }
         
-        /// Deletes all Secure Enclave SecKeys whose Application Tag contains the given substring.
-        /// Returns the number of keys successfully deleted.
-        @discardableResult
-        private func deleteSecKeysInSE(matchingTagSubstring substring: String) -> Int {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassKey,
-                kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
-                kSecReturnAttributes as String: true,
-                kSecMatchLimit as String: kSecMatchLimitAll
-            ]
-            
-            var result: AnyObject?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
-            
-            guard status == errSecSuccess,
-                  let items = result as? [[String: Any]] else {
-                if status != errSecItemNotFound {
-                    print("SecItemCopyMatching failed: \(status)")
-                }
-                return 0
-            }
-            
-            var deletedCount = 0
-            
-            // Step 2: Filter + delete one by one
-            
-            for item in items {
-                guard
-                    let tagData = item[kSecAttrApplicationTag as String] as? Data,
-                    let tagString = String(data: tagData, encoding: .utf8), tagString.hasSuffix(substring)
-                else {
-                    continue
-                }
-                
-                // Step 3: Delete using the *exact* full tag (this is what makes deletion work)
-                
-                let deleteQuery: [String: Any] = [
-                    kSecClass as String: kSecClassKey,
-                    kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-                    kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
-                    kSecAttrApplicationTag as String: tagData
-                ]
-                
-                let delStatus = SecItemDelete(deleteQuery as CFDictionary)
-                
-                if delStatus == errSecSuccess {
-                    deletedCount += 1
-                    #if DEBUG
-                    print("✅ Deleted key with tag: \(tagString)")
-                    #endif
-                } else {
-                    #if DEBUG
-                    print("⚠️ Failed to delete key '\(tagString)': \(delStatus)")
-                    #endif
-                }
-            }
-            
-            return deletedCount
-        }
     }
 }
 
