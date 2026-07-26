@@ -28,6 +28,15 @@ private func ephemeralKeyPair() -> (privateKey: SecKey, publicKey: Data) {
     return (priv, SecKeyCopyExternalRepresentation(pub, nil)! as Data)
 }
 
+/// Well-formed ML-KEM material for exercising the hybrid PQ path.
+/// Contents are unstructured filler — `isValid` only requires correct byte counts.
+private func testQuantumMaterial() -> QuantumKeyMaterial {
+    QuantumKeyMaterial(
+        encapsulatedSecret: Data(count: 32), decapsulatedSecret: Data(count: 32),
+        ourCiphertext: Data(count: 32), peerCiphertext: Data(count: 32)
+    )
+}
+
 // MARK: - seal — forward secret path
 
 @Suite("Crypto — seal (forward secret)")
@@ -46,7 +55,7 @@ private func ephemeralKeyPair() -> (privateKey: SecKey, publicKey: Data) {
 
     @Test func seal_FS_modeIsForwardSecret() throws {
         let (prekey, _) = validPrekey()
-        let bundle = try crypto.seal(message: Data("test".utf8), contactPrekey: prekey, recipientMaterial: recipPub)
+        let bundle = try crypto.seal(message: Data("test".utf8), contactPrekey: prekey, recipientMaterial: recipPub, quantumMaterial: testQuantumMaterial())
         #expect(bundle.secrecy.mode == .forwardSecret)
     }
 
@@ -106,7 +115,7 @@ private func ephemeralKeyPair() -> (privateKey: SecKey, publicKey: Data) {
     var recipPub:    Data           { try! recipientKM.retrieveIdentity() }
 
     @Test func seal_fallback_modeIsLongTermFallback() throws {
-        let bundle = try crypto.seal(message: Data("test".utf8), contactPrekey: nil, recipientMaterial: recipPub)
+        let bundle = try crypto.seal(message: Data("test".utf8), contactPrekey: nil, recipientMaterial: recipPub, quantumMaterial: testQuantumMaterial())
         #expect(bundle.secrecy.mode == .longTermFallback)
     }
 
@@ -178,20 +187,22 @@ private func ephemeralKeyPair() -> (privateKey: SecKey, publicKey: Data) {
         // Create a prekey where we control both sides
         let (prekeyPriv, prekeyPub) = ephemeralKeyPair()
         let prekey  = Prekey(id: "k1", contactID: "alice", publicKey: prekeyPub)
+        let quantum = testQuantumMaterial()
 
         // Sender seals: ECDH(senderEphemeral, prekeyPub)
         let message = Data("forward secret roundtrip".utf8)
         let payload = OccultaBundle.SealedPayload(message: message, prekeyBatch: nil)
         let encoded = try JSONEncoder().encode(payload)
         let bundle  = try Manager.Crypto(keyManager: senderKM).seal(
-            message: encoded, contactPrekey: prekey, recipientMaterial: recipPub
+            message: encoded, contactPrekey: prekey, recipientMaterial: recipPub, quantumMaterial: quantum
         )
         #expect(bundle.secrecy.mode == .forwardSecret)
 
         // Recipient derives session key: ECDH(prekeyPriv, senderEphemeralPub)
         let sessKey = Manager.Crypto(keyManager: recipientKM).deriveSessionKey(
             ephemeralPrivateKey: prekeyPriv,
-            recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+            recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
+            quantumMaterial:     quantum
         )
         let raw     = try Manager.Crypto(keyManager: recipientKM).open(bundle, using: sessKey!)
         let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: raw)
@@ -209,17 +220,18 @@ private func ephemeralKeyPair() -> (privateKey: SecKey, publicKey: Data) {
         let recipientKM = TestKeyManager()
         let senderPub   = try senderKM.retrieveIdentity()
         let recipPub    = try recipientKM.retrieveIdentity()
+        let quantum     = testQuantumMaterial()
 
         let message = Data("fallback roundtrip".utf8)
         let payload = OccultaBundle.SealedPayload(message: message, prekeyBatch: nil)
         let encoded = try JSONEncoder().encode(payload)
         let bundle  = try Manager.Crypto(keyManager: senderKM).seal(
-            message: encoded, contactPrekey: nil, recipientMaterial: recipPub
+            message: encoded, contactPrekey: nil, recipientMaterial: recipPub, quantumMaterial: quantum
         )
         #expect(bundle.secrecy.mode == .longTermFallback)
 
         // Recipient: ECDH(recipientPriv, senderPub) — matches ECDH(senderPriv, recipientPub)
-        let sessKey = recipientKM.createSharedSecret(using: senderPub)!
+        let sessKey = recipientKM.createHybridSharedSecret(peerP256Material: senderPub, quantumMaterial: quantum)!
         let raw     = try Manager.Crypto(keyManager: recipientKM).open(bundle, using: sessKey)
         let decoded = try JSONDecoder().decode(OccultaBundle.SealedPayload.self, from: raw)
         #expect(decoded.message == message)

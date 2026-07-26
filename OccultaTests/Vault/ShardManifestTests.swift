@@ -683,10 +683,10 @@ private func distribute(
         let recipients = try makeProfiles(count: 3)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        // attrs[0] → "bob" (pending)
-        try aliceCustody.queueDistribute(attribute: attrs[0], for: "bob")
+        // attrs[0] → recipients[0] (pending)
+        try aliceCustody.queueDistribute(attribute: attrs[0], for: recipients[0].identifier)
 
-        let expected = try aliceCustody.buildExpectedShards(for: "bob", vaultManager: vault)
+        let expected = try aliceCustody.buildExpectedShards(for: recipients[0].identifier, vaultManager: vault)
         #expect(expected.contains(attrs[0].id))
         _ = km // silence warning
     }
