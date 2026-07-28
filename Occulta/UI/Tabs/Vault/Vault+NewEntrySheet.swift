@@ -7,6 +7,7 @@ import SwiftUI
 
 struct VaultNewEntrySheet: View {
     @Environment(VaultManager.self) private var vault
+    @Environment(Manager.Security.self) private var security
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedType: VaultEntryType = .seedPhrase
@@ -166,7 +167,12 @@ struct VaultNewEntrySheet: View {
         self.error = nil
         do {
             let data = self.content.data(using: .utf8) ?? Data()
-            _ = try self.vault.addEntry(label: self.label, content: data, type: self.selectedType)
+            _ = try self.vault.addEntry(
+                label: self.label,
+                content: data,
+                type: self.selectedType,
+                currentDepth: self.security.currentDepth
+            )
             self.dismiss()
         } catch VaultManager.VaultError.locked {
             self.error = "Vault locked — unlock and try again."
