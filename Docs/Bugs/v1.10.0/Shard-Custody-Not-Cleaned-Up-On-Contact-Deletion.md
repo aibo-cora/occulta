@@ -98,7 +98,7 @@ The drafts gap (a deleted contact's orphaned `Message.Draft` surviving re-keying
 
 ## Gap 2, scoped
 
-**Status: scoped, not yet implemented.**
+**Status: fully scoped (five pieces, grounded against current code), not yet implemented.** See "Build order this implies" near the bottom before starting.
 
 **No screen in this app hides itself entirely at a non-zero depth** — confirmed by searching every `currentDepth`/`security.` read in `Occulta/UI/`. The architecture is consistently per-row/per-entry filtering (a hidden contact just doesn't appear in a list; `VaultManager` itself has zero depth-awareness, only the Vault tab's row-level `isEntryVisible` filter does). Any Gap 2 fix should follow that same shape, not invent a coarser "disable this screen" mechanism.
 
@@ -125,7 +125,43 @@ The drafts gap (a deleted contact's orphaned `Message.Draft` surviving re-keying
 
 **Correction, found while implementing the prerequisite below:** this does *not* extend to per-entry trustee assignment after all. [`Decoy-Vault-Entries-Unreachable-New-Entry-Sheet-Ignores-Depth.md`](Decoy-Vault-Entries-Unreachable-New-Entry-Sheet-Ignores-Depth.md) turned out to be based on a mistaken premise — `VaultEntry.visibleThroughDepth` is a one-directional ceiling (visible from depth 0 through N, hidden beyond N), the same shape as `Contact.Profile`'s sensitivity model, *not* `Group`'s independent-per-depth-array decoy model. An entry stamped depth 2 is still visible at depth 0 — it can't hide from the real view while showing only under duress. That doc's fix is real and now implemented (it corrects an actual bug: an entry created while at a duress depth was wrongly stamped ceiling 0, hiding it even at the depth it was just created at), but it does not unlock decoy vault entries, and `Vault+ShardSetup.swift`'s depth-agnostic trustee assignment is no longer relevant here as a result — there's still no way to create a vault entry that's hidden at depth 0 and shown only under duress. Extending decoys to per-entry trustee assignment would need a `Group`-style independent-per-depth storage change to `VaultEntry` itself — a materially bigger, separate undertaking, not scoped here.
 
-**Not yet done:** the actual filtering change to the two files, the merge-not-overwrite save logic for `VaultGlobalTrustees`, the per-depth `GlobalShardConfig` schema change, the new decoy-custodian store for the Vault tab, and the prerequisite `Vault+NewEntrySheet` fix (tracked separately).
+**Prerequisite `Vault+NewEntrySheet` fix: done** (`183e8f8`, tracked in the sibling doc). Everything below is grounded against a fresh read of the actual current code, not the decisions above alone — this has five distinct pieces, more than the drafts fix had, and none of the current code does any of it yet.
+
+### 1. `Vault+Tab.swift` — filter the real custodian list
+
+`custodianRows` (lines 453-476) currently resolves each `heldShards`-grouped `ownerContactIdentifier` against `self.allContacts` (`Contact.Profile.descriptor` — `deletionToken == nil` only, no depth check) with no filter at all. Fix: resolve the owner, then keep the row only if `security.isDisplayable(contact)`; drop it if the owner can't be resolved to a contact at all, unless at depth 0 (matching decision 1's "an unresolvable owner identifier should also not render outside depth 0"). `VaultTab` already injects `@Environment(Manager.Security.self) private var security` for the personal-entries list (lines 199-202) — reuse the same instance, no new plumbing needed here.
+
+The section's two emptiness checks (`!self.rawCustodyShards.isEmpty` at line 405, and the inner empty-state branch at line 407) both key off the *unfiltered* real query. Once decoys exist (item 4), these need to check the *merged* real+decoy list instead, or a duress depth with real custodians hidden but decoys present would incorrectly show the empty state.
+
+### 2. `VaultGlobalTrustees.swift` — filter the picker, and fix the save path for real
+
+Confirmed by direct read: `mlkemContacts` (lines 25-27) has no depth filter, and neither does anything else in the file — no `Manager.Security` is injected anywhere today. `loadConfig()` (lines 266-269) seeds `selectedIDs` from the *entire* stored `trusteeIDs`, and `save()` (lines 271-278) calls `saveGlobalShardConfig(.init(trusteeIDs: Array(selectedIDs)))` — a **wholesale overwrite**, confirmed by reading `saveGlobalShardConfig` itself (`ShardCustody+Manager.swift:426-436`, which deletes every row and inserts exactly one fresh one from whatever payload it's given, with no awareness of anything prior).
+
+Today, with no filtering at all, this overwrite is harmless — whatever's selected *is* everyone. The moment `mlkemContacts`/`selectedIDs` get filtered through `isDisplayable` (this fix), that stops being true: `selectedIDs` would only ever contain currently-visible identifiers, and `save()`'s literal `Array(selectedIDs)` would silently drop every hidden trustee. Fix, in order:
+1. Add `@Environment(Manager.Security.self) private var security` to this view.
+2. Filter `mlkemContacts` (candidates) and the seeded `selectedIDs` (from `loadConfig()`) through `security.isDisplayable(_:)`.
+3. On save, fetch the *current, full* `trusteeIDs` first, split it into `hiddenIdentifiers` (not currently displayable — untouched, since the UI never showed them and `selectedIDs` says nothing about them either way) and everything else, then write `hiddenIdentifiers + Array(selectedIDs)` — merge, never `Array(selectedIDs)` alone.
+
+### 3. `GlobalShardConfig` — per-depth schema change
+
+Confirmed current shape is a single flat `struct Payload: Codable { let trusteeIDs: [String] }` (`GlobalShardConfig+Model.swift:65-67`) — no depth concept, no fixed slot count, no padding. This needs more than "one array per depth": `Group`'s scheme (`realMemberSlots`/`duressMemberSlots`/`deeperMemberSlots`, fixed `slotCount = 32`, fixed-size padded `Data` entries, `slotSize = 156`) exists specifically so real and filler slots produce *identical ciphertext sizes* — a flat, depth-indexed `[String]` array whose length varies between a real depth (2 real trustees) and a decoy depth (1 decoy trustee) would recreate exactly the size-differential tell padding was built to avoid elsewhere in this codebase. The fix should mirror `Group`'s *full* discipline, not just its top-level array shape: fixed-size padded slots, and — critically — `Group.setMembers`'s "re-encrypt every depth on any single-depth edit" rule (confirmed private, only reachable via `addMember`/`removeMember`, `Group+Model.swift:297-311`), which exists specifically to stop depth-to-depth ciphertext diffs revealing which single depth was just edited (Bug 73). A `GlobalShardConfig` fix that only rewrites the depth actually being edited reopens that exact class of leak.
+Read/write shape needed: an `addTrustee(_:atDepth:)`/`removeTrustee(_:atDepth:)` public pair backed by a private `setTrustees(_:atDepth:)`, matching `Group`'s public/private split exactly.
+Migration: existing installs have a flat `trusteeIDs` with no depth concept at all — needs to land as depth-0-only content on upgrade, matching how `Group` already handles pre-1.9.1 rows ("absent until first post-upgrade edit, at which point `setMembers` pads it to full size").
+
+### 4. New decoy-custodian display store — and a hard constraint on what it can contain
+
+Confirmed `CustodyShard.Payload` (`CustodyShard+Model.swift:73-82`) carries a real `SignedAttribute` — an actual owner-signed Shamir shard from a genuine protocol exchange, consumed by `handleInbound`/manifest reconciliation. A decoy entry cannot reuse this model without either crashing that reconciliation code or, worse, having fake data mistaken for recoverable material. The new store needs nothing but an encrypted display name and a shard-count integer, sealed under `deriveShardCustodyKey()` like everything else in this system, with zero interaction with the real shard protocol — no `SignedAttribute`, no fingerprint, never touched by `handleInbound`.
+
+**A constraint worth stating explicitly, not implied:** the decoy display name must be entirely fabricated — never a real contact's name, hidden or not. Reusing an actual hidden contact's identity as decoy-custodian "flavor text" would mean that contact's real name renders in the clear (once decrypted) at a duress depth specifically designed to keep them invisible — a direct, catastrophic leak of exactly the thing being protected, worse than anything else in scope here. Generation approach can be as simple as this system needs — a small fixed set of plausible display-name shapes is enough; this doesn't need the drafts feature's OS-dictionary/anti-fingerprinting rigor, since a person's name isn't trying to pass as typed prose.
+
+Same per-depth storage discipline as item 3 applies here too (fixed-size padded slots, whole-scheme re-encryption on any single-depth edit) — same underlying problem, same fix shape.
+
+### 5. Wiring the decoy store into `Vault+Tab.swift`
+
+Confirmed minimal: `custodianRows` already produces a plain `{ownerIdentifier, ownerName, count}`-shaped row (`CustodianRow`, lines 453-457) consumed by an unconditional `ForEach` (lines 413-433) with no real-vs-decoy distinction baked into the row type or the rendering code. Once item 1's filtering and item 4's store both exist, the only change needed is in assembly: concatenate the depth-filtered real rows with rows read from the new decoy store at `security.currentDepth` into one array before it reaches the `ForEach` — no new row view, no new template.
+
+### Build order this implies
+Items 1 and 2 (filtering + the merge-not-overwrite save fix) are independently useful and lower-risk — they close the live leak even with zero decoy content, and don't depend on anything else here. Items 3, 4, and 5 (the actual decoy machinery) are a materially bigger undertaking, only worth it once 1 and 2 are done and confirmed safe on their own.
 
 ## Implementation status
 

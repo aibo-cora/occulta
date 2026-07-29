@@ -44,6 +44,10 @@ _ = try self.vault.addEntry(label: self.label, content: data, type: self.selecte
 
 **Actual consequence:** an entry created while at a duress depth (say depth 2) got stamped ceiling `0` instead of `2` — meaning it would be visible **only at depth 0** and hidden at depth 1 onward, including **the very depth it was just created at.** Create something while at depth 2, and it immediately vanishes from your own view at that depth, permanently, unless you happen to drop back to depth 0. That's a real, narrow, user-facing bug regardless of decoys.
 
+## Related, tracked separately
+
+This fix makes creation work correctly wherever you are, but the ceiling model it stamps into means anything created away from depth 0 is also visible at depth 0 — permanently. That risk (and the options for it) is tracked in [`Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`](Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md).
+
 ## Why this was chased down at all
 
 This surfaced while checking whether decoy `VaultEntry` support existed as a foundation for per-entry decoy trustee assignment (Gap 2 of the shard-custody doc). It doesn't provide that — see the correction above. `Vault+ShardSetup.swift` (per-entry trustee assignment) is still worth noting as already depth-agnostic in a good way (entry-UUID-scoped, trustee candidates already filtered via `security.isDisplayable(_:)`), but that's no longer relevant to unlocking genuine decoys here, since this fix doesn't create any.
