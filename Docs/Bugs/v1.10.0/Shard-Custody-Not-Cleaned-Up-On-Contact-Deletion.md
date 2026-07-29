@@ -70,9 +70,11 @@ So shard custody isn't just missing from contact deletion — **it sits complete
 
 The drafts gap (a deleted contact's orphaned `Message.Draft` surviving re-keying) is conversation content. This is live cryptographic recovery material — a device continuing to hold actual shard bytes for a contact the user has already deleted, with no expiry, no purge, and no interaction with the app's own duress-protection model at all.
 
-## Scoping the fix for Gap 1 (contact deletion) — Gap 2 stays explicitly out of scope
+## Gap 1 (contact deletion) — implemented
 
-**Status: scoped, not yet implemented — one open question deferred, blocks implementation.** Verified against the actual plumbing before writing this — the drafts fix had one mature `Message.Draft.purge` to lean on; this one has four different data models with different owners and no equivalent single precedent, so each piece needed checking rather than assuming. See "Deferred, not investigated" below before starting on `GlobalShardConfig`.
+**Status: implemented** (`1b1d387`, `ShardCustodyManager.purgeCustody(for:)` plus a call to `vaultManager.markShardsLost(forContact:)`, both wired into `deleteContact`), **with test coverage** (`OccultaTests/Vault/ShardCustodyPurgeTests.swift`). The deferred `GlobalShardConfig` depth-gating question below was resolved as part of landing this — see "Resolved — unconditional, not depth-gated."
+
+What follows records the scoping this was built from, for reference.
 
 **`ContactManager` doesn't hold `VaultManager` or `ShardCustodyManager` today.** The only existing cross-manager reference is `security: Manager.Security` (`Contact+Manager.swift:57,64`). This codebase already has a precedent for exactly this situation, though: `encryptGroupBundle` and `activateSecureMode` both take `vaultManager: VaultManager? = nil`/`vaultManager: VaultManager` as a parameter rather than a stored reference. `deleteContact` should follow the same shape — add `vaultManager: VaultManager? = nil, shardCustodyManager: ShardCustodyManager? = nil` as parameters, optional and nil-safe so a call site without them just skips this cleanup rather than failing. The two UI call sites (`Contact+Form.swift:177`, `ContactFormV2.swift:200`) would need to pass these through from their own `@Environment` — both managers are already injected at the app root (`OccultaApp.swift`), so this is adding an environment read at the call site, not new wiring through the tree; worth confirming those two specific files declare it already or need to add it.
 
