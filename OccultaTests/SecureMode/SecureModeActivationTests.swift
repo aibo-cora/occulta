@@ -130,6 +130,39 @@ private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
 }
 
+/// Decrypts and JSON-decodes an `Int` depth ceiling. `nil` in, or any failure, → `nil` out —
+/// callers distinguish "no depth stamped" from "stamped but undecryptable" only where it matters.
+private func decodedDepth(from data: Data?) -> Int? {
+    guard let data, let plain = data.decrypt() else { return nil }
+    return try? JSONDecoder().decode(Int.self, from: plain)
+}
+
+// MARK: - Vault entry helpers
+
+/// Insert a VaultEntry directly into the persistent store, mirroring `insertContact`.
+/// Returns the entry's `id` so the caller can find it again after a fresh fetch
+/// (VaultEntry has no string identifier field to match on).
+@MainActor
+private func insertVaultEntry(
+    in container: ModelContainer,
+    visibleThroughDepth: Data? = nil
+) throws -> UUID {
+    let ctx   = ModelContext(container)
+    let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+    entry.visibleThroughDepth = visibleThroughDepth
+    ctx.insert(entry)
+    try ctx.save()
+    return entry.id
+}
+
+/// Fetch all VaultEntry rows from a fresh ModelContext — bypasses any in-memory cache,
+/// same rationale as `fetchAllProfiles`.
+@MainActor
+private func fetchAllVaultEntries(from container: ModelContainer) throws -> [VaultEntry] {
+    let ctx = ModelContext(container)
+    return try ctx.fetch(FetchDescriptor<VaultEntry>())
+}
+
 // MARK: - Blob helpers
 
 /// Reads the activation payload non-destructively from the blob store.
@@ -552,6 +585,217 @@ struct SecureModeWALPersistenceTests {
         let countAfter = try fetchAllProfiles(from: c.container).count
         #expect(countAfter == countBefore,
                 "repeated activate/deactivate cycles must not create duplicate rows")
+    }
+}
+
+// MARK: - Cascade deactivation depth preservation
+//
+// Regression coverage for the bug where deactivateSecureMode's Step 4 (contacts) and
+// Step 6 (vault entries) unconditionally wiped `visibleThroughDepth` to `nil` on EVERY
+// deactivation, including a *cascade* deactivation (currentDepth >= 2, removing only the
+// outermost nested duress layer). That unconditionally exposes:
+//   - contacts/entries hidden at a SHALLOWER depth than the layer being removed (e.g. the
+//     real user's depth-0 secrets, surfaced the moment a nested depth-2 layer is stripped
+//     back to depth 1), and
+//   - contacts/entries classified at a DEEPER depth than the layer being removed (e.g. "hide
+//     once beyond depth 2", flattened to "never hide" by an unrelated depth-3→2 cascade).
+// The fix: always re-encrypt the item's real classification depth under the new staged key;
+// never manufacture `nil` for a value that was genuinely finite. `nil` is reserved for items
+// whose real classification already decodes to `Int.max` (never classified), matching the
+// existing "erase the activation watermark" forensic-neutrality convention.
+@MainActor
+@Suite("Secure Mode — Cascade deactivation depth preservation", .serialized)
+struct CascadeDeactivationDepthTests {
+
+    /// A depth-0 secret must still be hidden after activating two nested layers
+    /// (0→1→2) and then cascading back down from depth 2 to depth 1 — it must NOT
+    /// become visible just because an unrelated, deeper layer was removed.
+    @Test func depthZeroContact_staysHiddenAfterCascadeDeactivation() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(0).encrypt())
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "999999", duressPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+
+        // Cascade deactivation: depth 2 → depth 1. Must NOT touch the depth-0 secret.
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        #expect(c.security.currentDepth == 1)
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(restored != nil, "contact row must survive the cascade")
+        #expect(decodedDepth(from: restored?.visibleThroughDepth) == 0,
+                """
+                depth-0 contact was exposed by an unrelated depth-2→1 cascade deactivation — \
+                visibleThroughDepth must decode to 0 (still hidden), not nil (always visible).
+                """)
+    }
+
+    /// Same scenario as above, for a VaultEntry. Vault entries have no blob/restore
+    /// mechanism at all, so this specifically guards Step 6 in isolation.
+    @Test func depthZeroVaultEntry_staysHiddenAfterCascadeDeactivation() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let entryID = try insertVaultEntry(
+            in: c.container,
+            visibleThroughDepth: try JSONEncoder().encode(0).encrypt()
+        )
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "999999", duressPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        #expect(c.security.currentDepth == 1)
+
+        let restored = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
+        #expect(restored != nil, "vault entry must survive the cascade")
+        #expect(decodedDepth(from: restored?.visibleThroughDepth) == 0,
+                """
+                depth-0 vault entry was exposed by an unrelated depth-2→1 cascade \
+                deactivation — visibleThroughDepth must decode to 0, not nil.
+                """)
+    }
+
+    /// A contact classified "hide once beyond depth 2" must keep that exact classification
+    /// after a shallower, unrelated cascade (depth 2 → depth 1) — it must NOT be flattened
+    /// to "never hide" (nil). Verified two ways: the raw stored value, and behaviorally by
+    /// re-nesting back to depth 2 and confirming the contact hides again.
+    @Test func deeperClassification_survivesUnrelatedShallowerCascade() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "999999", duressPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+
+        // Classify a contact as "hide once we go past depth 2" while at depth 2.
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(2).encrypt())
+
+        // Cascade depth 2 → depth 1. blobDepth (1) < this contact's depth (2) —
+        // it is not the layer being removed, so it must survive untouched.
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        #expect(c.security.currentDepth == 1)
+
+        let afterCascade = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedDepth(from: afterCascade?.visibleThroughDepth) == 2,
+                """
+                contact classified at depth 2 was flattened to nil by an unrelated \
+                depth-2→1 cascade — its classification must survive exactly as 2.
+                """)
+
+        // Behavioral confirmation: re-nest back down to depth 2 and confirm the contact
+        // is still classified to hide beyond that point (i.e. its depth-2 threshold
+        // still functions, rather than the raw value just happening to read back as 2).
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "999999", duressPIN: "555555",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("555555"))
+        #expect(c.security.currentDepth == 2)
+
+        let atDepth2 = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedDepth(from: atDepth2?.visibleThroughDepth) == 2,
+                "classification must still read back as 2 after re-nesting to depth 2")
+    }
+
+    /// A never-classified ("safe") contact must come back as literal `nil` after a cascade
+    /// deactivation, not an explicit encrypted `Int.max` — matching the codebase's own
+    /// stated forensic-neutrality goal (deactivated-but-never-sensitive must be
+    /// indistinguishable from a contact that never went through Secure Mode at all).
+    @Test func neverClassifiedContact_remainsLiteralNilAfterCascadeDeactivation() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: nil)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "999999", duressPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(restored?.visibleThroughDepth == nil,
+                """
+                never-classified contact must remain literal nil after deactivation, not an \
+                explicit encrypted Int.max — a structural difference a raw-DB examiner could \
+                use to distinguish "was in Secure Mode" from "never was".
+                """)
     }
 }
 
