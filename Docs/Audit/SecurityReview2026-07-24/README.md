@@ -12,15 +12,15 @@
 The crypto core is generally disciplined (fresh AES-GCM nonces everywhere checked, sound HKDF domain separation, a sound hybrid P-256+ML-KEM combiner, a correct Shamir threshold implementation), but this pass found **two HIGH-severity logic bugs that break stated security invariants** the code's own comments and docs promise:
 
 1. ~~**Forward-secrecy prekey lookups ignore which contact they were issued to**, letting any existing contact forge messages that are misattributed to any *other* contact the recipient trusts (`Occulta/Features/Forward+Secrecy/PrekeyManager.swift`).~~ **FIXED 2026-07-26** — see the finding's "Fix applied" note for details.
-2. **Cascading out of a nested Secure Mode duress layer permanently un-hides real hidden data and every vault entry**, defeating the "convincing first-duress view" guarantee the duress-layer design is built around (`Occulta/Features/SecureMode/Manager+Security.swift`).
+2. ~~**Cascading out of a nested Secure Mode duress layer permanently un-hides real hidden data and every vault entry**, defeating the "convincing first-duress view" guarantee the duress-layer design is built around (`Occulta/Features/SecureMode/Manager+Security.swift`).~~ **FIXED 2026-07-30** — see the finding's "Fix applied" note for details.
 
-Three issues from the prior (2026-06-10) audit remain unfixed (wall-clock PIN lockout bypass, lockout counters lost on key rotation, `Crypto.sign` leaking error strings as fake signatures — the last one is flag-gated off). One prior issue (release-build peer-key logging) is confirmed fixed.
+Both HIGH findings from this pass are now fixed. Three issues from the prior (2026-06-10) audit remain unfixed (wall-clock PIN lockout bypass, lockout counters lost on key rotation, `Crypto.sign` leaking error strings as fake signatures — the last one is flag-gated off). One prior issue (release-build peer-key logging) is confirmed fixed.
 
 *Update after a second verification pass:* one originally-listed finding ("broader `AppLayerConfig` rotation gaps") was **retracted** — it turned out to describe a deliberate, documented, fail-safe design choice rather than a bug — and one ("Share Extension session freshness") was **downgraded from MEDIUM to LOW** once it was clear no external attacker can actually reach the affected code path. See the Methodology section at the end for details.
 
 *Update after an objection to finding #1:* an objection was raised that the prekey cross-contact scoping bug is a known, deliberate tradeoff (citing commit `49393d7`, which loosened matching to fix a real `CNContact.identifier`-churn bug on contact re-import). This was investigated and **the finding stands** — the objection's risk argument mischaracterizes the exploit (it doesn't require guessing a UUID; the attacker uses their own legitimate prekey and forges an unauthenticated identity-claim field instead). More importantly, this surfaced that a **pre-existing, committed regression test for this exact bug** (`tempPrekey_wrongContactID_returnsNil`, added 8 days before the loosening commit) was, at review time, being **silently weakened via an uncommitted working-tree change** rather than the underlying bug being fixed — see the addendum under finding #1 below. That uncommitted test change should not be merged as-is.
 
-**Fix priority:** the two new HIGH findings first (both are logic bugs with a clear, bounded fix — not architectural rewrites), then the still-open SEC-1 wall-clock lockout bypass, then the rest in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
+**Fix priority:** with both HIGH findings from this pass now fixed, the still-open SEC-1 wall-clock lockout bypass is next, then the rest in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
 
 ---
 
@@ -73,13 +73,34 @@ Went with **Option A** (revert to strict exact-tag matching) rather than the sta
 
 ### Secure Mode / Duress
 
-#### 🔴 HIGH — Cascade deactivation of a nested duress layer un-hides shallower-hidden contacts and *all* vault entries
+#### ✅ FIXED (was 🔴 HIGH) — Cascade deactivation of a nested duress layer un-hides shallower-hidden contacts and *all* vault entries
 - **File:** `Occulta/Features/SecureMode/Manager+Security.swift:690-697` (Step 4, contacts), `:717-726` (Step 6, vault entries), inside `deactivateSecureMode` (function starts `:611`)
 - **Confidence:** 8/10 — independently traced against `activateSecureMode` (`:390-498`) to confirm both how `visibleThroughDepth` is set on activation and that nothing re-derives it after Step 4/6 for layers other than the one blob being restored.
 - **Description:** `deactivateSecureMode` supports two cases: a full deactivation (`depth ≤ 1`, Secure Mode goes fully off) and a **cascade** deactivation (`depth ≥ 2`, removing one nested "expendable" duress layer while landing back at depth 1 — an intentional, carefully-commented feature: *"shallower blobs remain intact"*, `:775`). But Step 4 unconditionally loops over **every** `Contact.Profile` via `fetchAllContacts()` (no depth filter) and sets `profile.visibleThroughDepth = nil` — which the visibility check (`:1202`, `guard let data = contact.visibleThroughDepth else { return true }`) treats as "visible at every depth." Step 6 does the identical unconditional reset for **every** `VaultEntry` (`:720-723`) — and vault entries have **no blob backup at all** ("Vault entries are not included in the blob," `:453`), so there is no restore mechanism for them under any circumstance.
   Step 5 only restores content + `visibleThroughDepth` for contacts recorded in the *specific* blob being removed (`blobDepth = depth - 1`, `:649,709-712`). A contact hidden at a **shallower** depth (e.g. depth 0 — the real user's actual data, hidden since the very first activation) lives in a *different* blob (`blobDepth = 0`) that this cascade call never touches. Since its real, decrypted text content is continuously carried forward through every key rotation (`reencryptAllFields`, `:475-478` during activation, `:691` during deactivation — it's never left undecryptable), and Step 4 just cleared its visibility gate to "always visible," it becomes fully visible the moment the app lands at depth 1.
 - **Exploit scenario:** The real user activates Secure Mode (depth 0→1) with genuinely sensitive contacts and vault entries hidden at depth 0. Later — from within the depth-1 duress view, e.g. under actual coercion — a second, nested Secure Mode layer is activated (depth 1→2; supported by `activateSecureMode`'s depth-based branching). When that depth-2 layer is deactivated (cascading back to depth 1), every depth-0-hidden contact and **every vault entry regardless of its configured depth** becomes visible in the depth-1 view — exactly the view meant to stay a convincing, clean duress presentation for a coercer. `OccultaTests/SecureMode/` has no test exercising `currentDepth ≥ 2` activate/deactivate, so this path is unverified by CI.
 - **Recommendation:** Scope Step 4/6's `visibleThroughDepth = nil` reset to `depth ≤ 1` only (full deactivation). For cascade deactivation (`depth ≥ 2`), leave contacts/entries whose stored depth is shallower than `blobDepth` untouched, and restore only the depth being removed. Vault entries need an actual restore path for the cascade case since they currently have none.
+
+##### Fix applied — 2026-07-30
+
+Implemented a simpler rule than the recommendation above, arrived at during planning: rather than adding a `blobDepth` comparison to Step 4/6 and a new restore mechanism for vault entries, both steps now **always preserve each item's real classification depth**, re-encrypting it verbatim under the staged key instead of resetting it:
+
+- Decode the item's current depth before touching anything else (contacts default to `Int.max` on decode failure, vault entries to `0` — each keeping its own pre-existing fallback convention).
+- If the decoded depth **is** `Int.max` (genuinely never classified) → write literal `nil`, preserving the existing forensic-neutrality convention (indistinguishable from an item that never went through Secure Mode).
+- Any other, genuinely finite depth → re-encrypted verbatim under the staged key. Never manufacture `nil` for a value that was genuinely finite.
+
+This fixes the reported shallow-depth exposure (both for contacts and vault entries), and additionally fixes a second, related bug found during planning that the original recommendation's `blobDepth`-conditional approach would **not** have caught: a contact/entry classified *deeper* than the layer being removed (e.g. "hide once beyond depth 2") was also being permanently flattened to "never hide" by an unrelated, shallower cascade — the same root cause in the other direction. Vault entries needed no separate restore mechanism once Step 6 stopped clobbering them, since they were never removed from the DB in the first place — there was nothing to restore, only something to stop destroying.
+
+`activateSecureMode` was checked and needed no equivalent fix — its own classification logic already preserved depths correctly; only `deactivateSecureMode` had the blanket-reset bug.
+
+**Test coverage** (`OccultaTests/SecureMode/SecureModeActivationTests.swift`, `CascadeDeactivationDepthTests` suite — written red first, confirmed failing against the unfixed code, then made to pass):
+- `depthZeroContact_staysHiddenAfterCascadeDeactivation` — the exact reported scenario (depth-0 secret exposed by a 2→1 cascade).
+- `depthZeroVaultEntry_staysHiddenAfterCascadeDeactivation` — same scenario for vault entries, which have no blob/restore path at all.
+- `deeperClassification_survivesUnrelatedShallowerCascade` — the additional bug found during planning (a deeper classification erased by an unrelated shallower cascade).
+- `neverClassifiedContact_remainsLiteralNilAfterCascadeDeactivation` — forensic-neutrality check: an unclassified contact must come back as literal `nil`, not an explicit encrypted `Int.max`.
+- `blobBoundaryContact_stillRestoredCorrectlyDuringCascade` — confirms a contact classified at *exactly* the depth being removed is still correctly restored via Step 5's blob-restore path, i.e. this fix doesn't interfere with the existing restore mechanism it sits alongside.
+
+**Verification:** full `OccultaTests` target run after the fix — 0 failures.
 
 #### 🔴 HIGH — PIN lockout is wall-clock based and bypassable by changing the device clock *(still present, from 2026-06-10 audit — SEC-1)*
 - **File:** `Occulta/Features/SecureMode/Manager+Security.swift:851` (`Date.now < expiry` inside `verify(_:)`), `:882` (`Date.now.addingTimeInterval(delay)`)
@@ -197,7 +218,7 @@ One already-tracked, pre-existing gap (not re-reported as new — see `Docs/Bugs
 ## Prioritized Remediation Order
 
 1. ~~**HIGH** — Prekey contact-scoping bug (Forward Secrecy) — bounded fix (tag matching), high impact (message forgery/misattribution).~~ **FIXED 2026-07-26.**
-2. **HIGH** — Cascade deactivation exposure (Secure Mode) — bounded fix (scope the visibility reset to full deactivation only), directly undermines the duress feature's core promise.
+2. ~~**HIGH** — Cascade deactivation exposure (Secure Mode) — bounded fix (scope the visibility reset to full deactivation only), directly undermines the duress feature's core promise.~~ **FIXED 2026-07-30.**
 3. **HIGH** — Wall-clock PIN lockout bypass (Secure Mode, still open since 2026-06-10) — needs a monotonic/anti-rollback clock source; slightly larger fix but well-understood.
 4. **HIGH** — DraftStore stale-`isSensitive` race (Contacts & Messaging) — *(added: omitted from this list in the original draft)* bounded fix (re-check inside the `Task`), and unlike #1-#3 it needs no adversary at all — ordinary same-device usage (type, then hide the contact within 2s) triggers it.
 5. **MEDIUM** — Path traversal via inbound attachment filename (App Core) — bounded fix (drop peer-supplied name), real data-integrity impact.
