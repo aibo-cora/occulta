@@ -435,6 +435,23 @@ final class ShardCustodyManager {
         try self.modelContext.save()
     }
 
+    /// Merges an edited *visible* trustee selection into the full stored list —
+    /// never a wholesale replace. A caller that only shows currently-visible
+    /// candidates (e.g. a duress-depth-filtered picker) must not save just that
+    /// subset directly: `saveGlobalShardConfig(_:)` deletes and replaces the whole
+    /// row, so doing that would silently delete every currently-hidden trustee.
+    ///
+    /// `isVisible` classifies each identifier *currently stored* in `trusteeIDs`:
+    /// identifiers it reports as not visible are preserved untouched; everything
+    /// else is replaced wholesale by `visibleSelection`. Callers should return
+    /// `false` (preserve, don't touch) for any identifier they can't resolve or
+    /// evaluate, rather than guessing.
+    func saveGlobalShardConfig(mergingVisibleSelection visibleSelection: Set<String>, isVisible: (String) -> Bool) throws {
+        let current = try self.globalShardConfig()?.trusteeIDs ?? []
+        let hidden  = current.filter { !isVisible($0) }
+        try self.saveGlobalShardConfig(.init(trusteeIDs: hidden + Array(visibleSelection)))
+    }
+
     // MARK: - Contact deletion cleanup
 
     /// Removes every trace of a deleted contact from shard-custody state: any

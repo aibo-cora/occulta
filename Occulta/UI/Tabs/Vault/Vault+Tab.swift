@@ -402,9 +402,9 @@ struct VaultTab: View {
                 }
             }
 
-            if self.filter != .personal && !self.rawCustodyShards.isEmpty {
+            if self.filter != .personal {
                 Section {
-                    if self.rawCustodyShards.isEmpty {
+                    if self.custodianRows.isEmpty {
                         Text("Shards appear here once you get one from a contact for custody via .occ.")
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -456,6 +456,12 @@ struct VaultTab: View {
         let count: Int
     }
 
+    /// Filtered by current-depth visibility — a hidden owner's row disappears
+    /// entirely, the same tradeoff already applied to hidden contacts/groups
+    /// everywhere else in the app. An owner identifier that can't be resolved to
+    /// any contact at all has no basis to be called safe to show outside depth 0,
+    /// so it's dropped there too (it still falls back to "Unknown"/raw identifier
+    /// at depth 0, matching prior behavior).
     private var custodianRows: [CustodianRow] {
         guard let mgr = self.shardCustodyManager else { return [] }
         return mgr.heldShards(from: self.rawCustodyShards)
@@ -464,10 +470,12 @@ struct VaultTab: View {
                 let contact = self.allContacts.first { $0.identifier == identifier }
                 let name: String
                 if let c = contact {
+                    guard self.security.isDisplayable(c) else { return nil }
                     let given  = c.givenName.decrypt()
                     let family = c.familyName.decrypt()
                     name = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
                 } else {
+                    guard self.security.currentDepth == 0 else { return nil }
                     name = identifier.isEmpty ? "Unknown" : identifier
                 }
                 return CustodianRow(ownerIdentifier: identifier, ownerName: name, count: info.count)

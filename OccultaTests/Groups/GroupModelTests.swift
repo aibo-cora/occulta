@@ -1052,3 +1052,129 @@ struct GroupStructuralTests {
         #expect(try custody.globalShardConfig()?.trusteeIDs == ["someone-else"])
     }
 }
+
+// MARK: - Manager.Security — Contact.Profile depth visibility (isDisplayable/isVisible)
+//
+// Covers Gap 2 items 1+2 of the shard-custody doc — Vault+Tab.swift's custodian
+// list and VaultGlobalTrustees.swift's picker both newly gate on isDisplayable(_:),
+// which had no direct test coverage of its own before this (only an indirect,
+// shallow check via isSensitive's default-false case).
+
+@Suite("Manager.Security — Contact.Profile depth visibility")
+@MainActor struct ContactDepthVisibilityTests {
+
+    private func makeContactManager() throws -> ContactManager {
+        let container = try makeContainer()
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        return ContactManager(modelContainer: container, security: security)
+    }
+
+    private func insertPlainProfile(identifier: String, in cm: ContactManager) throws {
+        let profile = Contact.Profile(
+            identifier: identifier, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        try cm.insertProfile(profile)
+    }
+
+    @Test func safeContact_visibleAtEveryDepth() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let id = UUID().uuidString
+        try self.insertPlainProfile(identifier: id, in: cm)
+        try cm.setVisibility(for: id, isSensitive: false) // safe → Int.max
+
+        let contact = try cm.fetchContact(by: id)!
+        cm.security.applyVerifyState(for: .normal(depth: 0))
+        #expect(cm.security.isDisplayable(contact))
+        cm.security.applyVerifyState(for: .normal(depth: 5))
+        #expect(cm.security.isDisplayable(contact), "a safe contact must stay visible at every depth")
+    }
+
+    @Test func sensitiveContact_visibleThroughClassificationDepth_hiddenBeyond() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let id = UUID().uuidString
+        try self.insertPlainProfile(identifier: id, in: cm)
+
+        cm.security.applyVerifyState(for: .normal(depth: 2))
+        try cm.setVisibility(for: id, isSensitive: true) // stamps ceiling = currentDepth = 2
+
+        let contact = try cm.fetchContact(by: id)!
+        cm.security.applyVerifyState(for: .normal(depth: 0))
+        #expect(cm.security.isDisplayable(contact), "still visible at a shallower depth than its classification ceiling")
+        cm.security.applyVerifyState(for: .normal(depth: 2))
+        #expect(cm.security.isDisplayable(contact), "visible at its own classification depth")
+        cm.security.applyVerifyState(for: .normal(depth: 3))
+        #expect(!cm.security.isDisplayable(contact), "hidden beyond its classification depth")
+    }
+
+    @Test func unclassifiedContact_nilVisibleThroughDepth_alwaysVisible() throws {
+        let cm = try self.makeContactManager()
+        let id = UUID().uuidString
+        try self.insertPlainProfile(identifier: id, in: cm)
+
+        let contact = try cm.fetchContact(by: id)!
+        #expect(contact.visibleThroughDepth == nil)
+        cm.security.applyVerifyState(for: .normal(depth: 4))
+        #expect(cm.security.isDisplayable(contact), "a never-classified contact (nil visibleThroughDepth) must stay visible everywhere")
+    }
+}
+
+// MARK: - ShardCustodyManager — merge-not-overwrite trustee save
+//
+// Covers the sharp edge in Gap 2 item 2: once VaultGlobalTrustees only shows
+// currently-visible candidates, saving just that subset would silently delete
+// every currently-hidden trustee. saveGlobalShardConfig(mergingVisibleSelection:isVisible:)
+// exists specifically to prevent that.
+
+@Suite("ShardCustodyManager — merge-not-overwrite trustee save")
+@MainActor struct SaveGlobalShardConfigMergeTests {
+
+    private func makeCustody() throws -> ShardCustodyManager {
+        let km     = TestKeyManager()
+        let schema = Schema([GlobalShardConfig.self])
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        return ShardCustodyManager(modelContainer: container, keyManager: km)
+    }
+
+    @Test func preservesHiddenTrustees_whileApplyingVisibleEdits() throws {
+        let custody = try self.makeCustody()
+        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["visible-a", "hidden-b", "visible-c"]))
+
+        // Simulate a duress-depth save: only "visible-a"/"visible-c" were ever
+        // shown; the user deselects "visible-a" and the picker submits what it saw.
+        try custody.saveGlobalShardConfig(
+            mergingVisibleSelection: ["visible-c"],
+            isVisible: { $0 != "hidden-b" }
+        )
+
+        let result = Set(try custody.globalShardConfig()?.trusteeIDs ?? [])
+        #expect(result == ["hidden-b", "visible-c"], "hidden-b must survive untouched; visible-a's deselection must still apply")
+    }
+
+    @Test func mergingIntoEmptyConfig_justWritesTheSelection() throws {
+        let custody = try self.makeCustody()
+        #expect(try custody.globalShardConfig() == nil)
+
+        try custody.saveGlobalShardConfig(mergingVisibleSelection: ["alice"], isVisible: { _ in true })
+
+        #expect(try custody.globalShardConfig()?.trusteeIDs == ["alice"])
+    }
+
+    @Test func unresolvableStoredIdentifier_preservedByDefault() throws {
+        let custody = try self.makeCustody()
+        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["stale-deleted-contact"]))
+
+        // A caller that can't resolve an identifier to a contact returns false
+        // (not visible) for it — same convention VaultGlobalTrustees uses.
+        try custody.saveGlobalShardConfig(
+            mergingVisibleSelection: ["new-trustee"],
+            isVisible: { $0 == "new-trustee" ? true : false }
+        )
+
+        let result = Set(try custody.globalShardConfig()?.trusteeIDs ?? [])
+        #expect(result == ["stale-deleted-contact", "new-trustee"])
+    }
+}

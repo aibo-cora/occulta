@@ -16,14 +16,20 @@ import SwiftData
 struct VaultGlobalTrustees: View {
 
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(Manager.Security.self) private var security
     @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []
     @State private var saveError: String?
 
+    /// Filtered by current-depth visibility — a hidden contact isn't offered as a
+    /// trustee candidate at all, the same tradeoff already applied everywhere else
+    /// hidden contacts appear in a list.
     private var mlkemContacts: [Contact.Profile] {
-        allContacts.filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
+        allContacts
+            .filter { self.security.isDisplayable($0) }
+            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     private var selected: [Contact.Profile] {
@@ -265,12 +271,27 @@ struct VaultGlobalTrustees: View {
 
     private func loadConfig() {
         guard let config = try? shardCustodyManager?.globalShardConfig() else { return }
-        selectedIDs = Set(config.trusteeIDs)
+        // Seed only currently-visible selections — matches what the picker can
+        // actually show and let the user toggle. Hidden trustees are preserved
+        // separately in save(), not tracked here.
+        let visibleIdentifiers = Set(self.mlkemContacts.map(\.identifier))
+        selectedIDs = Set(config.trusteeIDs).intersection(visibleIdentifiers)
     }
 
+    /// Merges the visible, user-edited selection back into the full underlying
+    /// list — see `ShardCustodyManager.saveGlobalShardConfig(mergingVisibleSelection:isVisible:)`
+    /// for why a wholesale replace isn't safe here.
     private func save() {
         do {
-            try shardCustodyManager?.saveGlobalShardConfig(.init(trusteeIDs: Array(selectedIDs)))
+            try shardCustodyManager?.saveGlobalShardConfig(
+                mergingVisibleSelection: selectedIDs,
+                isVisible: { id in
+                    guard let contact = self.allContacts.first(where: { $0.identifier == id }) else {
+                        return false // unresolvable, never shown to edit — preserve, don't guess
+                    }
+                    return self.security.isDisplayable(contact)
+                }
+            )
             dismiss()
         } catch {
             saveError = "Failed to save: \(error.localizedDescription)"
