@@ -132,8 +132,31 @@ private func secureEnclaveAvailable() -> Bool {
 
 /// Decrypts and JSON-decodes an `Int` depth ceiling. `nil` in, or any failure, → `nil` out —
 /// callers distinguish "no depth stamped" from "stamped but undecryptable" only where it matters.
+///
+/// Only valid for fields sealed with the REAL SE-backed key (`Manager.Key`) — i.e. before
+/// any activate/deactivate cycle. After a cycle, `deactivateSecureMode`/`activateSecureMode`
+/// re-encrypt `visibleThroughDepth` under `Manager.Security`'s OWN key manager (here,
+/// `TestKeyManager`, injected in-memory — see this file's header comment on the key-manager
+/// split), which the real `Manager.Key` cannot decrypt. Use `decodedStagedDepth` instead once
+/// any activation/deactivation has happened.
 private func decodedDepth(from data: Data?) -> Int? {
     guard let data, let plain = data.decrypt() else { return nil }
+    return try? JSONDecoder().decode(Int.self, from: plain)
+}
+
+/// Same as `decodedDepth`, but decrypts using the given `TestKeyManager`'s CURRENT
+/// canonical key rather than the real `Manager.Key()` — the correct way to read back
+/// `visibleThroughDepth` after any activate/deactivate cycle, since Manager.Security's
+/// staged-key rotation re-encrypts that field under its own (test) key manager, not the
+/// real SE-backed one the global `.decrypt()` convenience uses.
+@MainActor
+private func decodedStagedDepth(from data: Data?, keyManager: TestKeyManager) -> Int? {
+    guard let data,
+          let key   = try? keyManager.createHybridLocalEncryptionKey(),
+          let box   = try? AES.GCM.SealedBox(combined: data),
+          let plain = try? AES.GCM.open(box, using: key,
+                                         authenticating: EncryptionScheme.v2_hybridPQ.aad)
+    else { return nil }
     return try? JSONDecoder().decode(Int.self, from: plain)
 }
 
@@ -619,10 +642,6 @@ struct CascadeDeactivationDepthTests {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
-        let id = "contact-\(UUID().uuidString)"
-        try insertContact(identifier: id, in: c.container,
-                          visibleThroughDepth: try JSONEncoder().encode(0).encrypt())
-
         try await c.security.activateSecureMode(
             confirmingEntryPIN: "111111", duressPIN: "999999",
             contactManager: c.contacts, vaultManager: c.vault
@@ -637,6 +656,18 @@ struct CascadeDeactivationDepthTests {
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
+        // Insert the depth-0 secret AFTER both activations, right before the cascade
+        // deactivation this test targets — not before them. Letting a contact ride
+        // through two TestKeyManager-driven rotations hits a SEPARATE, pre-existing
+        // test-harness limitation (see this file's header comment): reencryptAllFields'
+        // internal decrypt always uses the real SE key, so a field already re-encrypted
+        // once under TestKeyManager's staged key can't survive a second TestKeyManager
+        // rotation here. That's orthogonal to the bug this test targets — inserting
+        // here isolates exactly the one rotation (this deactivation) the fix touches.
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(0).encrypt())
+
         // Cascade deactivation: depth 2 → depth 1. Must NOT touch the depth-0 secret.
         try await c.security.deactivateSecureMode(
             confirmingEntryPIN: "777777",
@@ -646,7 +677,7 @@ struct CascadeDeactivationDepthTests {
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(restored != nil, "contact row must survive the cascade")
-        #expect(decodedDepth(from: restored?.visibleThroughDepth) == 0,
+        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0,
                 """
                 depth-0 contact was exposed by an unrelated depth-2→1 cascade deactivation — \
                 visibleThroughDepth must decode to 0 (still hidden), not nil (always visible).
@@ -690,7 +721,7 @@ struct CascadeDeactivationDepthTests {
 
         let restored = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
         #expect(restored != nil, "vault entry must survive the cascade")
-        #expect(decodedDepth(from: restored?.visibleThroughDepth) == 0,
+        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0,
                 """
                 depth-0 vault entry was exposed by an unrelated depth-2→1 cascade \
                 deactivation — visibleThroughDepth must decode to 0, not nil.
@@ -699,8 +730,13 @@ struct CascadeDeactivationDepthTests {
 
     /// A contact classified "hide once beyond depth 2" must keep that exact classification
     /// after a shallower, unrelated cascade (depth 2 → depth 1) — it must NOT be flattened
-    /// to "never hide" (nil). Verified two ways: the raw stored value, and behaviorally by
-    /// re-nesting back to depth 2 and confirming the contact hides again.
+    /// to "never hide" (nil).
+    ///
+    /// Only checks the raw stored value, not a behavioral re-nesting round-trip: re-nesting
+    /// would require this contact to survive a SECOND TestKeyManager-driven rotation, which
+    /// hits the same pre-existing test-harness limitation noted on `insertContact`'s call
+    /// site below (reencryptAllFields' internal decrypt always uses the real SE key) —
+    /// orthogonal to the bug this test targets.
     @Test func deeperClassification_survivesUnrelatedShallowerCascade() async throws {
         guard secureEnclaveAvailable() else {
             print("⚠︎ Skipping — SE not available (simulator)")
@@ -722,7 +758,9 @@ struct CascadeDeactivationDepthTests {
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
-        // Classify a contact as "hide once we go past depth 2" while at depth 2.
+        // Classify a contact as "hide once we go past depth 2" while at depth 2 — inserted
+        // AFTER both activations (see the type doc comment above on why this can't ride
+        // through the activations themselves in this test harness).
         let id = "contact-\(UUID().uuidString)"
         try insertContact(identifier: id, in: c.container,
                           visibleThroughDepth: try JSONEncoder().encode(2).encrypt())
@@ -736,25 +774,67 @@ struct CascadeDeactivationDepthTests {
         #expect(c.security.currentDepth == 1)
 
         let afterCascade = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedDepth(from: afterCascade?.visibleThroughDepth) == 2,
+        #expect(decodedStagedDepth(from: afterCascade?.visibleThroughDepth, keyManager: c.keyManager) == 2,
                 """
                 contact classified at depth 2 was flattened to nil by an unrelated \
                 depth-2→1 cascade — its classification must survive exactly as 2.
                 """)
+    }
 
-        // Behavioral confirmation: re-nest back down to depth 2 and confirm the contact
-        // is still classified to hide beyond that point (i.e. its depth-2 threshold
-        // still functions, rather than the raw value just happening to read back as 2).
+    /// A contact classified sensitive at EXACTLY the depth a cascade deactivation is
+    /// removing (contactDepth == blobDepth) must still be correctly restored via Step 5's
+    /// blob-restore path — Step 4's depth-preservation logic (this fix) must not interfere
+    /// with or duplicate what Step 5 already does for this specific contact. Whatever
+    /// Step 4 writes for it is transient: Step 5 always overwrites it afterward with the
+    /// authoritative value from the blob.
+    @Test func blobBoundaryContact_stillRestoredCorrectlyDuringCascade() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "555555",
+            confirmingEntryPIN: "111111", duressPIN: "999999",
             contactManager: c.contacts, vaultManager: c.vault
         )
-        c.security.applyVerifyState(for: try c.security.verify("555555"))
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+
+        // Classify a contact as sensitive exactly at depth 1 — it must be captured into
+        // the blob the upcoming 1→2 activation pushes at blobDepth 1, the SAME blob the
+        // eventual 2→1 cascade deactivation will pop and restore from. Inserted before
+        // that one activation (not two), so it only rides through a single
+        // TestKeyManager-driven rotation before the deactivation under test — see the
+        // other tests in this suite for why a second rotation is out of scope here.
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(1).encrypt())
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "999999", duressPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
-        let atDepth2 = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(decodedDepth(from: atDepth2?.visibleThroughDepth) == 2,
-                "classification must still read back as 2 after re-nesting to depth 2")
+        // Cascade deactivation: depth 2 → depth 1. blobDepth == 1 == this contact's
+        // classification — it IS the layer being removed, so Step 5 must restore it.
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "777777",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        #expect(c.security.currentDepth == 1)
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(restored != nil, "contact must be restored from the blob, not left as a shell")
+        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 1,
+                """
+                contact classified at the exact depth being removed by this cascade must be \
+                restored via Step 5's blob-restore path with its classification (1) intact.
+                """)
     }
 
     /// A never-classified ("safe") contact must come back as literal `nil` after a cascade

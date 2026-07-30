@@ -676,9 +676,21 @@ extension Manager {
                 // ── Step 4: Re-encrypt safe contacts (currently in DB) ───────────────
                 // Pre-fix visibleThroughDepth, signedAttributes, and contactPublicKeys
                 // BEFORE the save so they land in the same modelContext.save() batch.
-                // visibleThroughDepth is set to nil (not re-encrypted) so the activation
-                // watermark is erased: nil is the pre-activation default and functionally
-                // identical to Int.max — isVisible returns true for both.
+                //
+                // visibleThroughDepth is re-encrypted preserving the contact's REAL
+                // classification depth — never flattened to nil as a side effect of
+                // deactivation. A contact classified "hide once beyond depth N" must keep
+                // that exact threshold across ANY deactivation (full or a cascade that
+                // only removes a deeper, unrelated layer) — otherwise a cascade exposes
+                // shallower-hidden contacts, and a full deactivation erases a deeper
+                // threshold the moment an intermediate layer is stripped. Step 5's
+                // restoreContact overwrites this again (with the same value, from the
+                // blob) for the specific contacts belonging to the layer actually being
+                // removed — this loop just has to not corrupt anyone else's classification
+                // in the meantime. Only a genuinely unclassified contact (decodes to
+                // Int.max) becomes literal nil — the pre-activation default, kept for
+                // forensic neutrality (indistinguishable from a contact that never went
+                // through Secure Mode at all).
                 //
                 // convertToMutableCopy is wrapped in a local do/catch. Sensitive shells
                 // have all text fields encrypted under the deleted activation key and
@@ -688,12 +700,28 @@ extension Manager {
                 // Instead, the shell stays in the DB; Step 5 overwrites its text fields via
                 // the UPDATE path using blob plaintext re-encrypted under the staged key.
                 for profile in try contactManager.fetchAllContacts() {
+                    // Decode the contact's current classification BEFORE re-encrypting
+                    // other fields — this still uses the active OLD canonical key.
+                    // Same fallback as activateSecureMode's own classification step:
+                    // undecryptable or absent → Int.max (safe / never classified).
+                    let contactDepth: Int = {
+                        guard let data = profile.visibleThroughDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return Int.max }
+                        return value
+                    }()
+
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
                     try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
-                    // Clear visibleThroughDepth to erase the activation watermark — nil is
-                    // the pre-activation default and isVisible treats it identically to Int.max.
-                    // Sensitive shell text fields left unreadable here are overwritten in Step 5.
-                    profile.visibleThroughDepth = nil
+
+                    if contactDepth == Int.max {
+                        profile.visibleThroughDepth = nil
+                    } else {
+                        profile.visibleThroughDepth = try AES.GCM.seal(
+                            JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
+                        ).combined
+                    }
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.
                 // Same invariant as activation: in-memory changes must reach SQLite BEFORE
@@ -714,12 +742,27 @@ extension Manager {
                     try contactManager.modelContext.save()
                 }
 
-                // ── Step 6: Restore all vault entries to visible under staged key ────
-                // nil = always visible (pre-activation default). Erases the activation
-                // watermark on vault entries the same way Step 4 does for contacts.
+                // ── Step 6: Re-encrypt vault entry depth ceilings under the staged key ──
+                // Vault entries have no blob/restore mechanism at all (see activation's
+                // own comment on this), so this loop is the only thing that determines
+                // their classification after a deactivation — it must preserve each
+                // entry's REAL depth ceiling, mirroring Step 4's contact handling above,
+                // rather than flattening every entry to nil. An entry with no depth stamp
+                // (nil) needs no action: there is no ciphertext to strand under the old key.
                 let allVaultEntries = try vaultManager.fetchAllEntries()
                 for entry in allVaultEntries {
-                    entry.visibleThroughDepth = nil
+                    guard let data = entry.visibleThroughDepth else { continue }
+                    // Undecryptable (Bug 27: corrupt/wrong-key ciphertext) → treat as
+                    // hidden, matching activateSecureMode's own fallback for this field.
+                    let entryDepth: Int = {
+                        guard let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return 0 }
+                        return value
+                    }()
+                    entry.visibleThroughDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(entryDepth), using: stagedKey, authenticating: aad
+                    ).combined
                 }
                 if !allVaultEntries.isEmpty {
                     try vaultManager.modelContext.save()
