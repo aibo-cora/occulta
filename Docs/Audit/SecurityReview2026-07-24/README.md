@@ -14,13 +14,17 @@ The crypto core is generally disciplined (fresh AES-GCM nonces everywhere checke
 1. ~~**Forward-secrecy prekey lookups ignore which contact they were issued to**, letting any existing contact forge messages that are misattributed to any *other* contact the recipient trusts (`Occulta/Features/Forward+Secrecy/PrekeyManager.swift`).~~ **FIXED 2026-07-26** — see the finding's "Fix applied" note for details.
 2. ~~**Cascading out of a nested Secure Mode duress layer permanently un-hides real hidden data and every vault entry**, defeating the "convincing first-duress view" guarantee the duress-layer design is built around (`Occulta/Features/SecureMode/Manager+Security.swift`).~~ **FIXED 2026-07-30** — see the finding's "Fix applied" note for details.
 
-Both HIGH findings from this pass are now fixed. Three issues from the prior (2026-06-10) audit remain unfixed (wall-clock PIN lockout bypass, lockout counters lost on key rotation, `Crypto.sign` leaking error strings as fake signatures — the last one is flag-gated off). One prior issue (release-build peer-key logging) is confirmed fixed.
+A third HIGH finding, folded in from the prior branch-diff review rather than newly discovered by this pass, is also now fixed:
+
+3. ~~**Draft persistence trusted a stale sensitivity snapshot captured before a 2-second debounce delay**, letting a draft get written to disk moments after a contact was marked sensitive — needing no adversary at all, just ordinary same-device use (`Occulta/UI/Tabs/Contacts/v2/DraftStore.swift`).~~ **FIXED 2026-08-02** — see the finding's "Fix applied" note for details.
+
+All three HIGH findings from this pass are now fixed. Three issues from the prior (2026-06-10) audit remain unfixed (wall-clock PIN lockout bypass, lockout counters lost on key rotation, `Crypto.sign` leaking error strings as fake signatures — the last one is flag-gated off). One prior issue (release-build peer-key logging) is confirmed fixed.
 
 *Update after a second verification pass:* one originally-listed finding ("broader `AppLayerConfig` rotation gaps") was **retracted** — it turned out to describe a deliberate, documented, fail-safe design choice rather than a bug — and one ("Share Extension session freshness") was **downgraded from MEDIUM to LOW** once it was clear no external attacker can actually reach the affected code path. See the Methodology section at the end for details.
 
 *Update after an objection to finding #1:* an objection was raised that the prekey cross-contact scoping bug is a known, deliberate tradeoff (citing commit `49393d7`, which loosened matching to fix a real `CNContact.identifier`-churn bug on contact re-import). This was investigated and **the finding stands** — the objection's risk argument mischaracterizes the exploit (it doesn't require guessing a UUID; the attacker uses their own legitimate prekey and forges an unauthenticated identity-claim field instead). More importantly, this surfaced that a **pre-existing, committed regression test for this exact bug** (`tempPrekey_wrongContactID_returnsNil`, added 8 days before the loosening commit) was, at review time, being **silently weakened via an uncommitted working-tree change** rather than the underlying bug being fixed — see the addendum under finding #1 below. That uncommitted test change should not be merged as-is.
 
-**Fix priority:** with both HIGH findings from this pass now fixed, the still-open SEC-1 wall-clock lockout bypass is next, then the rest in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
+**Fix priority:** with all three HIGH findings now fixed, the still-open SEC-1 wall-clock lockout bypass is next, then the rest in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
 
 ---
 
@@ -132,12 +136,24 @@ This fixes the reported shallow-depth exposure (both for contacts and vault entr
 
 ### Contacts & Messaging
 
-#### 🔴 HIGH — Draft persistence trusts a stale sensitivity flag captured before a debounce delay
-*(Confirmed in the prior branch-diff security review on 2026-07-25; reproduced here for completeness since it's part of the full codebase, not yet fixed.)*
+#### ✅ FIXED (was 🔴 HIGH) — Draft persistence trusts a stale sensitivity flag captured before a debounce delay
+*(Confirmed in the prior branch-diff security review on 2026-07-25; reproduced here for completeness since it's part of the full codebase.)*
 - **File:** `Occulta/UI/Tabs/Contacts/v2/DraftStore.swift:27-46` (`scheduleSave`), consumed from `ContactDetailV2.swift:178-186` and identically in `v3/ContactDetailV3.swift`
 - **Confidence:** 8/10.
 - **Description:** `scheduleDraftSave()` evaluates `composeVM.isSensitive(contactManager:)` once, at keystroke time, and captures that `Bool` into a `Task` that sleeps 2 seconds before calling `save()`. `save()`'s only sensitivity gate (`guard !isSensitive else { return }`) trusts that stale value and never re-checks the contact's live classification at write time. Marking a contact sensitive via Trust Check within that 2-second window doesn't cancel the pending task, so the draft gets written to disk moments after the purge that was meant to remove it — defeating the documented "Option E: no draft is ever written for a sensitive contact" invariant.
 - **Recommendation:** Re-evaluate `isSensitive` fresh (fetched from `ContactManager`) inside the `Task`, immediately before calling `save()`, rather than capturing it at schedule time.
+
+##### Fix applied — 2026-08-02
+
+`scheduleSave`'s `isSensitive` parameter changed from a `Bool` to `@escaping () -> Bool`, called once inside the debounced `Task`, immediately before `save()` — after the delay, not before. Updated at all three call sites (`ContactDetailV2.swift`, `ContactDetailV3.swift`, and a third site not originally listed, `GroupDetailV3.swift`, which shares the identical pattern): each now extracts `composeVM`/`contactManager` as local references and passes a closure over them instead of a pre-computed snapshot. `flush()` (used by `.onDisappear`/backgrounding) was left unchanged — it saves synchronously with no delay, so it was never stale.
+
+This also turned out to be a performance win, not just a correctness fix: `scheduleDraftSave()` fires on every keystroke, and `isSensitive` does a real DB fetch plus a Secure Enclave decrypt with no caching. Under the old design every keystroke paid that cost even though only the last one before the debounce window closes ever mattered — the fix cuts it from once per keystroke to once per debounce window that actually completes.
+
+Confirmed via the Trust Check interaction specifically raised during planning: since both `ContactManager.setVisibility` and the post-delay body of `save()` are synchronous with no internal suspension points, and `isSensitive` re-fetches live state on every call with no caching, a sensitivity change made mid-debounce is correctly observed at write time. The only remaining theoretical gap is an ordering coincidence between the Task's wake-from-sleep and a button tap landing in the exact same run-loop tick — not reachable through ordinary user interaction, and not worth formal locking to close.
+
+**Test coverage** (`OccultaTests/Contacts/DraftStoreTests.swift`, new): `staleSensitivity_doesNotWriteWhenMarkedSensitiveDuringDebounce` reproduces the exact reported race directly against `DraftStore`; two control tests confirm the fix isn't just a no-op; `isSensitiveClosure_evaluatedOnlyOnce_acrossARapidKeystrokeBurst` confirms the performance improvement. Verified meaningful by temporarily reintroducing eager evaluation (same signature, old timing) and confirming exactly the two relevant tests went red while the controls stayed green.
+
+**Verification:** full `OccultaTests` target, 633/633, twice in a row (a first pass surfaced a real Secure-Enclave-contention timing flake under full-suite parallel load, unrelated to the fix itself, resolved by polling with a generous timeout instead of a fixed sleep).
 
 #### 🟢 LOW — Contact identifier is encrypted for imported contacts but stored in plaintext for locally-created ones
 - **File:** `Occulta/Services/Contact+Manager.swift:95` (`createContacts(from:)` — encrypts `identifier`) vs. `:230` (`save(contact:currentDepth:using:)` — `let encryptedIdentifier = contact.identifier`, stored verbatim); root cause in `Occulta/UI/Tabs/Contacts/v2/ContactFormV2.swift:36` (`.create` mode seeds a raw `UUID().uuidString`)
@@ -220,7 +236,7 @@ One already-tracked, pre-existing gap (not re-reported as new — see `Docs/Bugs
 1. ~~**HIGH** — Prekey contact-scoping bug (Forward Secrecy) — bounded fix (tag matching), high impact (message forgery/misattribution).~~ **FIXED 2026-07-26.**
 2. ~~**HIGH** — Cascade deactivation exposure (Secure Mode) — bounded fix (scope the visibility reset to full deactivation only), directly undermines the duress feature's core promise.~~ **FIXED 2026-07-30.**
 3. **HIGH** — Wall-clock PIN lockout bypass (Secure Mode, still open since 2026-06-10) — needs a monotonic/anti-rollback clock source; slightly larger fix but well-understood.
-4. **HIGH** — DraftStore stale-`isSensitive` race (Contacts & Messaging) — *(added: omitted from this list in the original draft)* bounded fix (re-check inside the `Task`), and unlike #1-#3 it needs no adversary at all — ordinary same-device usage (type, then hide the contact within 2s) triggers it.
+4. ~~**HIGH** — DraftStore stale-`isSensitive` race (Contacts & Messaging) — bounded fix (re-check inside the `Task`), and unlike #1-#3 it needs no adversary at all — ordinary same-device usage (type, then hide the contact within 2s) triggers it.~~ **FIXED 2026-08-02.**
 5. **MEDIUM** — Path traversal via inbound attachment filename (App Core) — bounded fix (drop peer-supplied name), real data-integrity impact.
 6. **MEDIUM** — Peer-identity pinning gap (Identity Challenge/Key Exchange) — bounded fix (extend one existing check to two more phases).
 7. **MEDIUM** — Lockout counters lost on key rotation (Secure Mode, still open) — same rotation loop that needs fixing for #2 could absorb this.
