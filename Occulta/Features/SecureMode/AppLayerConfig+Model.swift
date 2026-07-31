@@ -94,8 +94,15 @@ final class AppLayerConfig {
     /// nil = 0 (no wrong attempts). Reset to nil on any successful verification or activation.
     var lockoutCountEncrypted: Data? = nil
 
-    /// Encrypted Date. When the current lockout expires; nil = not currently locked out.
-    var lockoutExpiryEncrypted: Data? = nil
+    /// Encrypted TimeInterval — `ProcessInfo.systemUptime` at the moment the current
+    /// lockout wait period started (set on the wrong attempt that first triggers a
+    /// delay, or re-anchored if a reboot is detected before the wait completes).
+    /// nil = not currently locked out. Deliberately NOT wall-clock time — see SEC-1:
+    /// a stored `Date` compared against `Date.now` is bypassable by changing the
+    /// device clock. Monotonic uptime can't be changed by the user and can only
+    /// decrease if the device has actually rebooted, which `verify()` detects and
+    /// re-anchors rather than treating as elapsed time.
+    var lockoutAnchorUptimeEncrypted: Data? = nil
 
     /// Encrypted slot index per depth, parallel to sealedDuressVerifiers.
     /// Index 0 = real layer (depth 0). Padded to 32 entries with random filler
@@ -396,20 +403,20 @@ final class AppLayerConfig {
         self.lockoutCountEncrypted = try JSONEncoder().encode(count).encrypt()
     }
 
-    func readLockoutExpiry() -> Date? {
-        guard let data      = self.lockoutExpiryEncrypted,
+    func readLockoutAnchorUptime() -> TimeInterval? {
+        guard let data      = self.lockoutAnchorUptimeEncrypted,
               let decrypted = data.decrypt(),
-              let value     = try? JSONDecoder().decode(Date.self, from: decrypted)
+              let value     = try? JSONDecoder().decode(TimeInterval.self, from: decrypted)
         else { return nil }
         return value
     }
 
-    func writeLockoutExpiry(_ date: Date) throws {
-        self.lockoutExpiryEncrypted = try JSONEncoder().encode(date).encrypt()
+    func writeLockoutAnchorUptime(_ uptime: TimeInterval) throws {
+        self.lockoutAnchorUptimeEncrypted = try JSONEncoder().encode(uptime).encrypt()
     }
 
     func resetLockout() {
-        self.lockoutCountEncrypted  = nil
-        self.lockoutExpiryEncrypted = nil
+        self.lockoutCountEncrypted        = nil
+        self.lockoutAnchorUptimeEncrypted = nil
     }
 }

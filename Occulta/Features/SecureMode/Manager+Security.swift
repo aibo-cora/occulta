@@ -14,6 +14,27 @@ import SwiftData
 import CryptoKit
 import SQLite3
 
+// MARK: - LockoutClock
+
+/// Abstraction over wall-clock time and monotonic boot-relative uptime, used only by
+/// the PIN lockout gate (SEC-1 fix). Injectable so tests can simulate a clock rollback
+/// or a reboot deterministically, without touching the real system clock.
+///
+/// `now` is wall-clock time — user-adjustable via Settings, used only for *display*
+/// estimates, never trusted for the actual gate. `systemUptime` is monotonic time since
+/// the device last booted — unaffected by Settings changes, and can only decrease if
+/// the device has actually rebooted. The lockout gate is built entirely on the latter.
+protocol LockoutClock {
+    var now: Date { get }
+    var systemUptime: TimeInterval { get }
+}
+
+/// Production implementation — the real system clock and boot-relative uptime.
+struct SystemLockoutClock: LockoutClock {
+    var now: Date { Date.now }
+    var systemUptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+}
+
 extension Manager {
     @Observable
     final class Security {
@@ -113,6 +134,10 @@ extension Manager {
         /// Layer store for push/pop during key rotation.
         /// Defaults to AppGroupLayerStoreBackend (production). Tests inject InMemoryLayerStoreBackend.
         private let layerStore: Manager.LayerStore
+        /// Wall-clock + monotonic-uptime source for the lockout gate (SEC-1 fix).
+        /// Defaults to the real system clock. Tests inject a fake to simulate clock
+        /// rollback and reboot without touching the actual system clock.
+        private let clock: any LockoutClock
 
         private static let normalLabel = Data("secure-mode-normal-pin-2026".utf8)
         private static let duressLabel = Data("secure-mode-duress-pin-2026".utf8)
@@ -122,6 +147,7 @@ extension Manager {
         /// - Parameters:
         ///   - modelContainer: The shared SwiftData container.
         ///   - keyManager: Key manager implementation (injectable for testing).
+        ///   - clock: Wall-clock/uptime source (injectable for testing the lockout gate).
         ///   - enabled: When `false` (feature flag `secureMode` is off), the manager
         ///     skips all `AppLayerConfig` reads. `requiresPIN` returns `false`, all
         ///     filtering is inert, and the PIN overlay never appears.
@@ -129,12 +155,14 @@ extension Manager {
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
              layerStore: Manager.LayerStore = Manager.LayerStore(),
+             clock: any LockoutClock = SystemLockoutClock(),
              enabled: Bool = true) {
             let context        = ModelContext(modelContainer)
             self.modelContext  = context
             self.keyManager    = keyManager
             self.storeURL      = storeURL
             self.layerStore    = layerStore
+            self.clock         = clock
 
             // Feature-flag off path: skip all DB reads. requiresPIN returns false,
             // isRestricted = false. All properties stay at defaults.
@@ -888,11 +916,30 @@ extension Manager {
         func verify(_ pin: String) throws -> PINVerifyResult {
             guard self.requiresPIN else { throw SecurityError.notConfigured }
 
-            let config = try self.requireConfig()
+            let config        = try self.requireConfig()
+            let currentUptime = self.clock.systemUptime
 
             // ── Lockout check ─────────────────────────────────────────────────────────
-            if let expiry = config.readLockoutExpiry(), Date.now < expiry {
-                return .locked(until: expiry)
+            // SEC-1 fix: gated on monotonic uptime, never wall-clock Date.now — Settings
+            // → Date & Time changes have zero effect on systemUptime, so there's nothing
+            // for that attack to bypass. The only way to move this value backward is an
+            // actual reboot, and that's handled explicitly below rather than mistaken for
+            // elapsed time.
+            if let anchorUptime = config.readLockoutAnchorUptime() {
+                let requiredDelay = Self.lockoutDelay(for: config.readLockoutCount()) ?? 0
+                if currentUptime < anchorUptime {
+                    // Uptime went backward — only possible if the device rebooted since
+                    // this anchor was set. Re-anchor to now; the same required delay is
+                    // owed again, measured from this point. A reboot buys nothing.
+                    try config.writeLockoutAnchorUptime(currentUptime)
+                    try self.modelContext.save()
+                    return .locked(until: self.clock.now.addingTimeInterval(requiredDelay))
+                }
+                let elapsed = currentUptime - anchorUptime
+                if elapsed < requiredDelay {
+                    return .locked(until: self.clock.now.addingTimeInterval(requiredDelay - elapsed))
+                }
+                // Required delay has genuinely elapsed — fall through to verification.
             }
 
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
@@ -918,11 +965,11 @@ extension Manager {
                 }
             }
 
-            // ── Step 3: No match — persist incremented counter and expiry ─────────────
+            // ── Step 3: No match — persist incremented counter and anchor ─────────────
             let newCount = config.readLockoutCount() + 1
             try config.writeLockoutCount(newCount)
-            if let delay = Self.lockoutDelay(for: newCount) {
-                try config.writeLockoutExpiry(Date.now.addingTimeInterval(delay))
+            if Self.lockoutDelay(for: newCount) != nil {
+                try config.writeLockoutAnchorUptime(currentUptime)
             }
             try self.modelContext.save()
             return .wrong
@@ -951,14 +998,24 @@ extension Manager {
             }
         }
 
-        /// Returns the lockout expiry date if the device is currently locked out, nil otherwise.
-        /// Used by PINEntry on appear to restore a persisted lockout after an app kill.
+        /// Returns an estimated wall-clock lockout-until date, for display only — the
+        /// actual gate lives in `verify()` and is uptime-based; this never feeds back
+        /// into it. Used by PINEntry on appear to restore a persisted lockout after an
+        /// app kill. Read-only: unlike `verify()`, this never re-anchors on a detected
+        /// reboot — it just reports "still locked, full delay remaining" without
+        /// mutating state, since a passive display read shouldn't have side effects.
         func lockoutExpiry() -> Date? {
-            guard let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                  let expiry = config.readLockoutExpiry(),
-                  Date.now < expiry
+            guard let config        = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
+                  let anchorUptime  = config.readLockoutAnchorUptime(),
+                  let requiredDelay = Self.lockoutDelay(for: config.readLockoutCount())
             else { return nil }
-            return expiry
+
+            // A negative delta (uptime decreased — device rebooted since the anchor was
+            // set) is clamped to 0 elapsed: still locked for the full remaining delay,
+            // matching what verify() would do without this read needing to write anything.
+            let elapsed = max(0, self.clock.systemUptime - anchorUptime)
+            guard elapsed < requiredDelay else { return nil }
+            return self.clock.now.addingTimeInterval(requiredDelay - elapsed)
         }
 
         /// Applies the routing-depth state transition for a verified result.
