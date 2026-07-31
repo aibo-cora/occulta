@@ -635,9 +635,18 @@ private struct RootView: View {
             for file in basket.files {
                 switch file.format {
                 case .file(let metadata):
+                    // metadata.name/.extension come from the decrypted, sender-controlled
+                    // Basket — never trusted for path construction. The name is dropped
+                    // entirely in favor of a fresh UUID (matching the outbound share-extension
+                    // path's existing discipline); the extension is validated by
+                    // sanitizedFilesystemExtension since a crafted value like
+                    // "../../etc/passwd" could otherwise steer the write outside tempDir.
+                    // Rejecting anything unsafe doesn't lose real data — the file's display
+                    // name/extension in the UI still comes from the untouched `metadata` in
+                    // `file.format` below, only the on-disk path changes.
                     let fileURL = tempDir
-                        .appendingPathComponent(metadata.name ?? UUID().uuidString)
-                        .appendingPathExtension(metadata.extension ?? "bin")
+                        .appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(Occulta.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
                     let content = file.content ?? Data()
 
                     group.addTask {
