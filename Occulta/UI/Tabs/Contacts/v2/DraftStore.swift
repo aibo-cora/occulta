@@ -5,7 +5,7 @@ import CryptoKit
 // MARK: - DraftStore
 
 /// Debounced persistence for message drafts. Depends only on `ModelContext` (and an
-/// `isSensitive` flag the caller computes) — never on `ContactManager` — so a compose
+/// `isSensitive` check the caller provides) — never on `ContactManager` — so a compose
 /// screen's draft handling stays decoupled from the app's contact/classification layer.
 ///
 /// Every method takes `modelContext` as a plain parameter rather than storing one.
@@ -17,6 +17,11 @@ import CryptoKit
 final class DraftStore {
     private var saveTask: Task<Void, Never>? = nil
 
+    /// How long `scheduleSave` waits before actually writing. A `let` (not hardcoded
+    /// inline) only so tests can use a short interval instead of waiting out the real
+    /// debounce window; production call sites all use the default.
+    private let debounceDelay: Duration
+
     /// What this store last confirmed matches disk — set after `load()` and
     /// after every successful `save()`. Used only as a cheap pre-filter for
     /// whether a save is worth attempting at all; never trusted on its own to
@@ -24,20 +29,33 @@ final class DraftStore {
     /// before it actually skips writing — see `matchesPersisted`.
     private var lastPersisted: (text: String, attachmentIDs: Set<UUID>, wasThreadMode: Bool)? = nil
 
+    init(debounceDelay: Duration = .seconds(2)) {
+        self.debounceDelay = debounceDelay
+    }
+
+    /// `isSensitive` is a closure, not a `Bool` — it's called once, AFTER the debounce
+    /// delay, immediately before the write, never before. A contact's classification can
+    /// change during the delay (e.g. the user hides it via Trust Check mid-keystroke);
+    /// capturing a `Bool` snapshot at schedule time would let a draft get written to disk
+    /// moments after a purge meant to remove it, defeating `save()`'s "Option E" no-write
+    /// guarantee for sensitive contacts. Evaluating once, late, also means a burst of
+    /// keystrokes pays this check's cost (a DB fetch + Secure Enclave decrypt) at most
+    /// once per debounce window instead of once per keystroke — every earlier call in the
+    /// same window gets superseded by `saveTask?.cancel()` before its closure ever runs.
     func scheduleSave(
         recipientID:  String,
-        isSensitive:  Bool,
+        isSensitive:  @escaping () -> Bool,
         text:         String,
         messages:     [Occulta.File],
         useThread:    Bool,
         modelContext: ModelContext
     ) {
         self.saveTask?.cancel()
-        self.saveTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+        self.saveTask = Task { [weak self, debounceDelay] in
+            try? await Task.sleep(for: debounceDelay)
             guard !Task.isCancelled, let self else { return }
             await self.save(
-                recipientID: recipientID, isSensitive: isSensitive, text: text,
+                recipientID: recipientID, isSensitive: isSensitive(), text: text,
                 messages: messages, useThread: useThread, modelContext: modelContext
             )
         }

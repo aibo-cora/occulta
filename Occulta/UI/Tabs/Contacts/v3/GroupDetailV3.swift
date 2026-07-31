@@ -163,13 +163,15 @@ struct GroupDetailV3: View {
     }
 
     private func scheduleDraftSave() {
+        let composeVM      = self.composeVM
+        let contactManager = self.contactManager
         self.draftStore.scheduleSave(
-            recipientID:       self.composeVM.recipientIDString,
-            isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
-            text:              self.composeVM.draftText,
-            messages:          self.composeVM.messages,
+            recipientID:       composeVM.recipientIDString,
+            isSensitive:       { composeVM.isSensitive(contactManager: contactManager) },
+            text:              composeVM.draftText,
+            messages:          composeVM.messages,
             useThread:         self.useThreadCompose,
-            modelContext:      self.contactManager.modelContext
+            modelContext:      contactManager.modelContext
         )
     }
 
