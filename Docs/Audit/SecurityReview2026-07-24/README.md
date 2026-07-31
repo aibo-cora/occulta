@@ -18,13 +18,13 @@ A third HIGH finding, folded in from the prior branch-diff review rather than ne
 
 3. ~~**Draft persistence trusted a stale sensitivity snapshot captured before a 2-second debounce delay**, letting a draft get written to disk moments after a contact was marked sensitive — needing no adversary at all, just ordinary same-device use (`Occulta/UI/Tabs/Contacts/v2/DraftStore.swift`).~~ **FIXED 2026-08-02** — see the finding's "Fix applied" note for details.
 
-All three HIGH findings from this pass are now fixed. Three issues from the prior (2026-06-10) audit remain unfixed (wall-clock PIN lockout bypass, lockout counters lost on key rotation, `Crypto.sign` leaking error strings as fake signatures — the last one is flag-gated off). One prior issue (release-build peer-key logging) is confirmed fixed.
+All three HIGH findings from this pass are now fixed. Of the three still-open issues from the prior (2026-06-10) audit, the wall-clock PIN lockout bypass (SEC-1) — also HIGH severity — is now fixed as well (2026-08-05); lockout counters lost on key rotation (SEC-2) and `Crypto.sign` leaking error strings as fake signatures (SEC-3, flag-gated off) remain open. One prior issue (release-build peer-key logging) is confirmed fixed.
 
 *Update after a second verification pass:* one originally-listed finding ("broader `AppLayerConfig` rotation gaps") was **retracted** — it turned out to describe a deliberate, documented, fail-safe design choice rather than a bug — and one ("Share Extension session freshness") was **downgraded from MEDIUM to LOW** once it was clear no external attacker can actually reach the affected code path. See the Methodology section at the end for details.
 
 *Update after an objection to finding #1:* an objection was raised that the prekey cross-contact scoping bug is a known, deliberate tradeoff (citing commit `49393d7`, which loosened matching to fix a real `CNContact.identifier`-churn bug on contact re-import). This was investigated and **the finding stands** — the objection's risk argument mischaracterizes the exploit (it doesn't require guessing a UUID; the attacker uses their own legitimate prekey and forges an unauthenticated identity-claim field instead). More importantly, this surfaced that a **pre-existing, committed regression test for this exact bug** (`tempPrekey_wrongContactID_returnsNil`, added 8 days before the loosening commit) was, at review time, being **silently weakened via an uncommitted working-tree change** rather than the underlying bug being fixed — see the addendum under finding #1 below. That uncommitted test change should not be merged as-is.
 
-**Fix priority:** with all three HIGH findings now fixed, the still-open SEC-1 wall-clock lockout bypass is next, then the rest in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
+**Fix priority:** every HIGH-severity finding in this report is now fixed. What remains is the MEDIUM/LOW backlog, in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
 
 ---
 
@@ -106,16 +106,31 @@ This fixes the reported shallow-depth exposure (both for contacts and vault entr
 
 **Verification:** full `OccultaTests` target run after the fix — 0 failures.
 
-#### 🔴 HIGH — PIN lockout is wall-clock based and bypassable by changing the device clock *(still present, from 2026-06-10 audit — SEC-1)*
+#### ✅ FIXED (was 🔴 HIGH) — PIN lockout is wall-clock based and bypassable by changing the device clock *(from 2026-06-10 audit — SEC-1)*
 - **File:** `Occulta/Features/SecureMode/Manager+Security.swift:851` (`Date.now < expiry` inside `verify(_:)`), `:882` (`Date.now.addingTimeInterval(delay)`)
 - **Confidence:** 9/10 — re-verified against current line numbers.
 - **Description:** The escalating lockout after repeated wrong PIN attempts (up to 24h) is enforced purely by comparing `Date.now` to a stored expiry. Since SE-bound PIN verifiers already prevent offline brute force, this wall-clock check is the *only* throttle against an online (on-device) brute force. An adversary holding the unlocked device — the exact coercion scenario Secure Mode exists to resist — can open Settings and roll the system clock forward to instantly clear any lockout, then keep guessing (a 6-digit PIN is a 10⁶ keyspace; automated input via accessibility/HID scripting makes exhaustive search plausible over a period of days without this throttle).
 - **Recommendation:** Back the lockout with a monotonic, non-user-adjustable clock source (e.g. `ProcessInfo.systemUptime` combined with a persisted boot-count/anti-rollback counter, or a Secure Enclave–backed counter) instead of wall-clock `Date`.
 
+##### Fix applied — 2026-08-05
+
+Implemented via `ProcessInfo.systemUptime` rather than a Secure-Enclave-backed counter — Apple doesn't expose a general-purpose tamper-evident counter to third-party apps via CryptoKit/Security.framework, so that half of the original recommendation wasn't actually implementable as stated. `verify(_:)`'s gate now compares a stored **uptime anchor** against current `systemUptime` instead of a wall-clock `Date`:
+
+- Settings → Date & Time changes have zero effect on `systemUptime`, so there's nothing left for that attack to bypass.
+- The only way uptime can move backward is an actual reboot, detected explicitly (`currentUptime < anchor`) and re-anchored rather than credited as elapsed time — a reboot re-starts the same required wait from a fresh anchor rather than clearing it for free.
+
+An injectable `LockoutClock` protocol was added (`Manager+Security.swift`), with `SystemLockoutClock` as the real implementation wired in via a default init parameter — no existing call site needed to change. `AppLayerConfig`'s `lockoutExpiryEncrypted` (a `Date`) was replaced by `lockoutAnchorUptimeEncrypted` (a `TimeInterval`); `lockoutExpiry()` (the `PINEntry` countdown display) now computes an estimated wall-clock date from the same uptime math, purely for display, never fed back into the actual gate.
+
+Simpler than first sketched: only one new field was needed, not three — the required delay is always re-derivable from the already-persisted `lockoutCount` via the existing `lockoutDelay(for:)` schedule, and a separate wall-clock tamper-detection field turned out to be redundant once the comparison is uptime-only, since uptime is already immune to clock changes by construction.
+
+**Test coverage** (`OccultaTests/SecureMode/LockoutAntiRollbackTests.swift`, new): a `FakeLockoutClock` with independently-settable `now`/`systemUptime` reproduces both attacks directly — rolling the clock forward, and simulating a reboot — plus control cases confirming genuine elapsed uptime still clears the lockout normally and a reboot delays rather than permanently locks. Verified meaningful by temporarily swapping the uptime source back to wall-clock-derived seconds (reintroducing the original bug) and confirming the core tests went red, then reverting. All existing `LockoutCounterTests` pass unchanged.
+
+**Verification:** full `OccultaTests` target, 639/639, twice in a row.
+
 #### 🟡 MEDIUM — Lockout counters silently reset on decode failure and aren't carried through key rotation *(still present — SEC-2)*
-- **File:** `Occulta/Features/SecureMode/AppLayerConfig+Model.swift:387-393` (`readLockoutCount()` → 0 on any failure), `:399-405` (`readLockoutExpiry()` → nil on any failure)
+- **File:** `Occulta/Features/SecureMode/AppLayerConfig+Model.swift:394-400` (`readLockoutCount()` → 0 on any failure), `:406-412` (`readLockoutAnchorUptime()` → nil on any failure — renamed from `readLockoutExpiry()` by the SEC-1 fix above, same underlying gap)
 - **Confidence:** 8/10 — re-verified; root cause confirmed as the canonical local-DB key rotation loop never touching these two fields.
-- **Description:** `lockoutCountEncrypted`/`lockoutExpiryEncrypted` are encrypted under the same canonical local-DB key that gets staged/rotated/deleted during Secure Mode activation/deactivation, but neither field appears anywhere in the rotation sequence. Once the old key is deleted, any in-progress lockout becomes permanently undecryptable and silently reads back as "no lockout" — compounding SEC-1 above, and meaning any single-field DB read hiccup also resets the brute-force counter.
+- **Description:** `lockoutCountEncrypted`/`lockoutAnchorUptimeEncrypted` are encrypted under the same canonical local-DB key that gets staged/rotated/deleted during Secure Mode activation/deactivation, but neither field appears anywhere in the rotation sequence. Once the old key is deleted, any in-progress lockout becomes permanently undecryptable and silently reads back as "no lockout" — not compounding SEC-1 anymore since that gate is no longer wall-clock-based, but still a real, independent gap: any single-field DB read hiccup, or a Secure Mode activation/deactivation mid-lockout, silently resets the brute-force counter.
 - **Recommendation:** Include these two fields in the same re-encryption pass that already runs for contacts/vault entries during activation/deactivation.
 
 #### 🟡 MEDIUM — WAL checkpoint runs before the group-membership purge it's supposed to cover
@@ -235,7 +250,7 @@ One already-tracked, pre-existing gap (not re-reported as new — see `Docs/Bugs
 
 1. ~~**HIGH** — Prekey contact-scoping bug (Forward Secrecy) — bounded fix (tag matching), high impact (message forgery/misattribution).~~ **FIXED 2026-07-26.**
 2. ~~**HIGH** — Cascade deactivation exposure (Secure Mode) — bounded fix (scope the visibility reset to full deactivation only), directly undermines the duress feature's core promise.~~ **FIXED 2026-07-30.**
-3. **HIGH** — Wall-clock PIN lockout bypass (Secure Mode, still open since 2026-06-10) — needs a monotonic/anti-rollback clock source; slightly larger fix but well-understood.
+3. ~~**HIGH** — Wall-clock PIN lockout bypass (Secure Mode, open since 2026-06-10) — needs a monotonic/anti-rollback clock source; slightly larger fix but well-understood.~~ **FIXED 2026-08-05.**
 4. ~~**HIGH** — DraftStore stale-`isSensitive` race (Contacts & Messaging) — bounded fix (re-check inside the `Task`), and unlike #1-#3 it needs no adversary at all — ordinary same-device usage (type, then hide the contact within 2s) triggers it.~~ **FIXED 2026-08-02.**
 5. **MEDIUM** — Path traversal via inbound attachment filename (App Core) — bounded fix (drop peer-supplied name), real data-integrity impact.
 6. **MEDIUM** — Peer-identity pinning gap (Identity Challenge/Key Exchange) — bounded fix (extend one existing check to two more phases).
