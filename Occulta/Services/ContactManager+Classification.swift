@@ -63,9 +63,14 @@ extension ContactManager {
             Message.Draft.purge(recipientID: identifier, in: self.modelContext)
         }
         try self.modelContext.save()
-        self.security.checkpointStore()
 
+        // Checkpoint after the group purge, not before: cleanUpGroupDuressMembership
+        // does its own separate save() for the group re-encryption, and checkpointStore()
+        // exists specifically to flush purge-adjacent writes immediately — running it
+        // before that save would leave the group write uncovered until whatever
+        // unrelated checkpoint happens next (SecurityReview2026-07-24, finding #10).
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: hiddenIdentifiers)
+        self.security.checkpointStore()
     }
 
     /// Sets a single contact's visibility relative to `security.currentDepth`.
@@ -89,9 +94,11 @@ extension ContactManager {
         }
 
         try self.modelContext.save()
-        self.security.checkpointStore()
 
+        // See saveClassification's identical comment above — checkpoint after the
+        // group purge's own save, not before, so it's actually covered.
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: isSensitive ? [identifier] : [])
+        self.security.checkpointStore()
     }
 
     /// Cleans up group duress membership after a classification change.

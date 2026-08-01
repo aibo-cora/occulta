@@ -458,7 +458,6 @@ class ContactManager {
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
         Manager.PrekeyManager().deleteAllKeys(for: identifier)
         try self.modelContext.save()
-        self.security.checkpointStore()
 
         // Derived once and reused across every group in the pass below, instead of once
         // per group — see `ContactManager.cleanUpGroupDuressMembership`, which applies
@@ -467,6 +466,11 @@ class ContactManager {
             throw GroupError.keyUnavailable
         }
         try self.forEachGroup { try $0.purgeMember(identifier, usingKey: key) }
+
+        // Checkpoint after the group purge's own save, not before — see the identical
+        // comment in ContactManager+Classification.swift's saveClassification/
+        // setVisibility (SecurityReview2026-07-24, finding #10).
+        self.security.checkpointStore()
 
         try shardCustodyManager?.purgeCustody(for: identifier)
         vaultManager?.markShardsLost(forContact: identifier)
