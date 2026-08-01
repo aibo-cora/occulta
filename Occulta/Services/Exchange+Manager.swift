@@ -348,6 +348,15 @@ class ExchangeManager: NSObject {
     private func handleSessionStateChange(peerID: MCPeerID, state: MCSessionState) {
         guard state == .connected else { return }
 
+        // Pin to the first peer only — a second peer connecting mid-exchange must not
+        // hijack the slot the MITM guard below checks against.
+        if let pinned = self.connectedPeerID, pinned != peerID {
+            #if DEBUG
+            debugPrint("[KE] Ignoring connection from second peer \(peerID.displayName) — already pinned to \(pinned.displayName)")
+            #endif
+            return
+        }
+
         self.phase = .found
         self.connectedPeerID = peerID
         self.isInitiator = self.multipeerSession!.myPeerID.displayName < peerID.displayName
@@ -390,6 +399,12 @@ class ExchangeManager: NSObject {
             // MARK: Phase 1 — Discovery (token + optional nonce)
 
             if decoded.isDiscovery {
+                guard peerID == self.connectedPeerID else {
+                    #if DEBUG
+                    debugPrint("[KE] MITM guard: discovery from unexpected peer \(peerID.displayName)")
+                    #endif
+                    return
+                }
                 let token: NIDiscoveryToken
                 do {
                     guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
@@ -541,6 +556,12 @@ class ExchangeManager: NSObject {
             // MARK: Phase 3 — Ciphertext (ML-KEM ciphertext for decapsulation)
 
             if decoded.isCiphertext {
+                guard peerID == self.connectedPeerID else {
+                    #if DEBUG
+                    debugPrint("[KE] MITM guard: ciphertext from unexpected peer \(peerID.displayName)")
+                    #endif
+                    return
+                }
                 let ours: QuantumPayload
                 if case .waitingForPeerQuantum(let o) = self.exchangeStatus {
                     ours = o
