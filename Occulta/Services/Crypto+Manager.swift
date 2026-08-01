@@ -33,7 +33,7 @@ final class LegacyCryptoManager: CryptoProtocol {
     func decrypt(data: Data?) throws -> Data?                          { try Manager.Crypto().decrypt(data: data) }
     func encrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().encrypt(message: message, using: material) }
     func decrypt(message: Data, using material: Data?) throws -> Data? { try Manager.Crypto().decrypt(message: message, using: material) }
-    func sign(data: Data?) -> String { Manager.Crypto().sign(data: data) }
+    func sign(data: Data?) throws -> String { try Manager.Crypto().sign(data: data) }
 }
 
 extension Manager {
@@ -147,33 +147,28 @@ extension Manager {
             return try AES.GCM.open(sealed, using: key)
         }
 
-        // MARK: - Signing (unchanged)
+        // MARK: - Signing
 
-        func sign(data: Data?) -> String {
-            do {
-                let key = try Manager.Key().retrievePrivateKey()
-                let algorithm: SecKeyAlgorithm = .ecdsaSignatureMessageX962SHA256
+        func sign(data: Data?) throws -> String {
+            let key = try Manager.Key().retrievePrivateKey()
+            let algorithm: SecKeyAlgorithm = .ecdsaSignatureMessageX962SHA256
 
-                var error: Unmanaged<CFError>?
-
-                guard let key, let data else {
-                    return "Key or data is missing"
-                }
-
-                guard SecKeyIsAlgorithmSupported(key, .sign, algorithm) else {
-                    return "Algorithm is not supported"
-                }
-
-                guard
-                    let signature = SecKeyCreateSignature(key, algorithm, data as CFData, &error) as Data?
-                else {
-                    return "Error creating signature: \(error!.takeRetainedValue() as Error)"
-                }
-
-                return signature.hexEncodedString()
-            } catch {
-                return "Signature could not be created, try again."
+            guard let key, let data else {
+                throw SigningError.missingKeyOrData
             }
+
+            guard SecKeyIsAlgorithmSupported(key, .sign, algorithm) else {
+                throw SigningError.unsupportedAlgorithm
+            }
+
+            var error: Unmanaged<CFError>?
+            guard
+                let signature = SecKeyCreateSignature(key, algorithm, data as CFData, &error) as Data?
+            else {
+                throw SigningError.signingFailed(underlying: error!.takeRetainedValue() as Error)
+            }
+
+            return signature.hexEncodedString()
         }
     }
 }
@@ -186,7 +181,19 @@ protocol CryptoProtocol {
     func decryptLegacy(data: Data?) throws -> Data?
     func encrypt(message: Data, using material: Data?) throws -> Data?
     func decrypt(message: Data, using material: Data?) throws -> Data?
-    func sign(data: Data?) -> String
+    func sign(data: Data?) throws -> String
+}
+
+// MARK: - Signing errors
+
+/// `sign(data:)` throws on any failure rather than returning a human-readable string —
+/// a prior version returned strings like "Key or data is missing" as the signature
+/// value itself, which callers could display/copy as if they were real signatures
+/// (SecurityReview2026-07-24, finding #9 / SEC-3).
+enum SigningError: Error {
+    case missingKeyOrData
+    case unsupportedAlgorithm
+    case signingFailed(underlying: Error)
 }
 
 // MARK: - Convenience extensions (use v2 path post-migration)

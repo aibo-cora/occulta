@@ -471,7 +471,7 @@ private final class LegacyOnlyCrypto: CryptoProtocol {
         try self.inner.decrypt(message: message, using: material)
     }
 
-    func sign(data: Data?) -> String {
-        self.inner.sign(data: data)
+    func sign(data: Data?) throws -> String {
+        try self.inner.sign(data: data)
     }
 }

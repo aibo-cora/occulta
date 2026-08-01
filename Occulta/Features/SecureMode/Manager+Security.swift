@@ -1435,5 +1435,5 @@ private final class StagedCryptoManager: CryptoProtocol {
     func decryptLegacy(data: Data?) throws -> Data?                          { nil }
     func encrypt(message: Data, using material: Data?) throws -> Data?       { nil }
     func decrypt(message: Data, using material: Data?) throws -> Data?       { nil }
-    func sign(data: Data?) -> String                                         { "" }
+    func sign(data: Data?) throws -> String                                  { "" }
 }

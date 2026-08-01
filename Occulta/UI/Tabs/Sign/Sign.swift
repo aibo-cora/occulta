@@ -13,6 +13,8 @@ struct Sign: View {
     @State private var mode: Mode = .message
     
     @State private var displayingInfo: Bool = false
+    @State private var isShowingSignError: Bool = false
+    @State private var signErrorMessage: String = ""
     
     private enum Mode: Hashable {
         case message, document
@@ -72,10 +74,15 @@ struct Sign: View {
                                 
                                 HStack {
                                     Button("Copy", systemImage: "doc.on.doc", role: .cancel) {
-                                        let signature = crypto.sign(data: self.text.data(using: .utf8)).uppercased()
-                                        let signedMessage = self.text + "\n\n\n" + "MavSig: \(signature)"
-                                        
-                                        UIPasteboard.general.string = signedMessage
+                                        do {
+                                            let signature = try crypto.sign(data: self.text.data(using: .utf8)).uppercased()
+                                            let signedMessage = self.text + "\n\n\n" + "MavSig: \(signature)"
+
+                                            UIPasteboard.general.string = signedMessage
+                                        } catch {
+                                            self.signErrorMessage = "Could not create a signature. Please try again."
+                                            self.isShowingSignError = true
+                                        }
                                     }
                                     .prominentButtonStyle()
                                     
@@ -98,6 +105,11 @@ struct Sign: View {
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
+            .alert("Error", isPresented: self.$isShowingSignError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(self.signErrorMessage)
+            }
         }
     }
 }
