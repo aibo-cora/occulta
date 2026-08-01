@@ -444,7 +444,18 @@ private struct RootView: View {
 
             do {
                 /// Contents of the encrypted file we opened.
-                let (data, _) = try await URLSession.shared.data(from: fileLocation)
+                ///
+                /// Memory-mapped rather than eagerly read into a heap buffer: this file
+                /// can legitimately be large (photo/video attachments, vault backups),
+                /// and mapping lets the OS page it in lazily and reclaim pages under
+                /// memory pressure instead of committing the whole file to RSS upfront
+                /// (SecurityReview2026-07-24, finding #11 — unbounded inbound file read).
+                /// Run off the main actor: `RootView` conforms to `View`, which is
+                /// `@MainActor`, and while mapping itself is nearly free, touching pages
+                /// later (or a cold/on-demand-downloaded file) can still block briefly.
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: fileLocation, options: .mappedIfSafe)
+                }.value
 
                 // .occbak — vault backup restore file.
                 if fileLocation.pathExtension == "occbak" {
