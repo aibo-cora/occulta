@@ -31,8 +31,11 @@ class ExchangeManager: NSObject {
     private var nearbySession: NISession?
     private var lastNIConfiguration: NINearbyPeerConfiguration?
 
-    private var multipeerSession: MCSession?
-    private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
+    // Not `private`: peer-pinning tests construct the manager without going through
+    // `start()` (which would trigger real Bluetooth advertising/browsing) and instead
+    // set this directly, then drive state via the MCSessionDelegate conformance below.
+    var multipeerSession: MCSession?
+    private(set) var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
 
     private let serviceType = "peer-data-ex"
     private let log = Logger(subsystem: "com.occulta.multipeer", category: "multipeer")
@@ -48,7 +51,7 @@ class ExchangeManager: NSObject {
     // MARK: - Sequential protocol state
 
     /// Peer we connected to via MC. Identity/ciphertext from any other peer is rejected.
-    private var connectedPeerID: MCPeerID?
+    private(set) var connectedPeerID: MCPeerID?
     /// True if our UUID display name sorts below the peer's — set once at MC connect.
     private var isInitiator: Bool = false
     /// Drives the sequential send/wait ordering for both identity and quantum phases.
