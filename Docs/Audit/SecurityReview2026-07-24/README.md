@@ -182,7 +182,7 @@ Confirmed via the Trust Check interaction specifically raised during planning: s
 
 ### App Core, Key Management & Services
 
-#### 🟡 MEDIUM — Path traversal via attacker-controlled attachment filename on the inbound message path
+#### ✅ FIXED (was 🟡 MEDIUM) — Path traversal via attacker-controlled attachment filename on the inbound message path
 - **File:** `Occulta/App/OccultaApp.swift:638-641`
 - **Confidence:** 8/10 — independently verified: `Occulta.File.Metadata.init(from:)` (`Occulta/Data Models/Transfers.swift:59-64`) decodes `name` verbatim from the wire payload with zero sanitization, and this `metadata` genuinely originates from the decrypted, sender-controlled `Basket`.
   ```swift
@@ -192,6 +192,9 @@ Confirmed via the Trust Check interaction specifically raised during planning: s
   ```
 - **Description:** `metadata.name` is attacker-controlled content — chosen by whoever built the inbound `.occ` bundle (a contact's app, or a modified/malicious client after key exchange), decoded with no path-separator stripping. `URL.appendingPathComponent` does not collapse `..` segments before the resulting path is used for file I/O, so a crafted name like `"../Library/Application Support/default.store"` can steer the write outside `tempDir` to a deterministic, guessable sandbox path — one `..` is enough to reach `Library/` as a sibling of `tmp/`. Combined with fully attacker-controlled file *content* (the decrypted attachment bytes), this is a path + content write primitive within the app sandbox. Concretely, overwriting the SwiftData store file corrupts it and causes `ModelContainer` creation to `fatalError` on next launch (`OccultaApp.swift:58-62`) — targeted, persistent data corruption from a single crafted incoming message, not just a crash. Only the *outbound* share-extension path already generates safe randomized names (`UUID().uuidString`); that discipline isn't applied here.
 - **Recommendation:** Ignore the peer-supplied `name` for path construction — always use a generated UUID, keeping only the (still-should-be-sanitized) extension from `metadata.extension`.
+
+##### Fix applied — 2026-08-01
+`OccultaApp.swift`'s inbound-basket file-writing path now ignores `metadata.name` entirely and always builds the temp file path from a freshly generated `UUID().uuidString`, matching the discipline the outbound share-extension path already had. `metadata.extension` is no longer used verbatim in `.appendingPathExtension` either — it's passed through a new `Occulta.File.Metadata.sanitizedFilesystemExtension(_:)` (`Transfers.swift`) that falls back to `"bin"` unless the value is a short (≤10 char), non-empty, plain ASCII alphanumeric string. An operator-precedence slip in the first draft of that guard (`$0.isASCII && $0.isLetter || $0.isNumber`, which due to `&&`/`||` precedence let non-ASCII "numeric" Unicode characters slip through) was caught before landing and fixed with explicit parens. Display name/extension shown in the UI are unaffected — those still come from the untouched `metadata` on `file.format`; only the on-disk path changed. Covered by 10 new tests in `AttachmentExtensionSanitizationTests.swift`, including dedicated path-traversal, embedded-slash, double-extension, oversize, and non-ASCII-numeral regression cases — verified meaningful by temporarily reintroducing the precedence bug and confirming only the non-ASCII-numeral test failed. Full `OccultaTests` suite green before and after.
 
 #### 🟡 MEDIUM — `Crypto.sign(data:)` returns human-readable error strings as the signature value itself *(still present — SEC-3)*
 - **File:** `Occulta/Services/Crypto+Manager.swift:126-151`, consumed unconditionally at `Occulta/UI/Tabs/Sign/Sign.swift:75-76`
@@ -252,7 +255,7 @@ One already-tracked, pre-existing gap (not re-reported as new — see `Docs/Bugs
 2. ~~**HIGH** — Cascade deactivation exposure (Secure Mode) — bounded fix (scope the visibility reset to full deactivation only), directly undermines the duress feature's core promise.~~ **FIXED 2026-07-30.**
 3. ~~**HIGH** — Wall-clock PIN lockout bypass (Secure Mode, open since 2026-06-10) — needs a monotonic/anti-rollback clock source; slightly larger fix but well-understood.~~ **FIXED 2026-08-05.**
 4. ~~**HIGH** — DraftStore stale-`isSensitive` race (Contacts & Messaging) — bounded fix (re-check inside the `Task`), and unlike #1-#3 it needs no adversary at all — ordinary same-device usage (type, then hide the contact within 2s) triggers it.~~ **FIXED 2026-08-02.**
-5. **MEDIUM** — Path traversal via inbound attachment filename (App Core) — bounded fix (drop peer-supplied name), real data-integrity impact.
+5. ~~**MEDIUM** — Path traversal via inbound attachment filename (App Core) — bounded fix (drop peer-supplied name), real data-integrity impact.~~ **FIXED 2026-08-01.**
 6. **MEDIUM** — Peer-identity pinning gap (Identity Challenge/Key Exchange) — bounded fix (extend one existing check to two more phases).
 7. **MEDIUM** — Lockout counters lost on key rotation (Secure Mode, still open) — same rotation loop that needs fixing for #2 could absorb this.
 8. **MEDIUM** — No sender-identity binding in single-recipient forward-secret path — defense-in-depth for #1, do alongside it.
