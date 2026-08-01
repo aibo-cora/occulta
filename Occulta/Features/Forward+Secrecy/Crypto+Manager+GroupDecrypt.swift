@@ -94,4 +94,28 @@ extension Manager.Crypto {
         let box = try AES.GCM.SealedBox(combined: bundle.ciphertext)
         return try AES.GCM.open(box, using: sessionKey, authenticating: aad)
     }
+
+    /// Verify that `signature` is a valid ECDSA signature over `ephemeralPublicKey`,
+    /// produced by the holder of `senderPublicKey`'s private key.
+    ///
+    /// Authenticates FS-mode group messages: `deriveInboundKey`'s `.forwardSecret`
+    /// branch never involves the sender's long-term identity, so `senderProof` alone
+    /// doesn't prove who sent the message for that mode (see finding #8,
+    /// SecurityReview2026-07-24) — this signature is the actual binding. Mirrors
+    /// `SignedAttribute.verify(against:)`'s verification pattern.
+    func verifySenderEphemeralSignature(_ signature: Data, ephemeralPublicKey: Data, senderPublicKey: Data) -> Bool {
+        guard senderPublicKey.count == 65 else { return false }
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
+            kSecAttrKeySizeInBits as String: 256
+        ]
+        var error: Unmanaged<CFError>?
+        guard let pubKey = SecKeyCreateWithData(senderPublicKey as CFData, attrs as CFDictionary, &error)
+        else { return false }
+        return SecKeyVerifySignature(
+            pubKey, .ecdsaSignatureMessageX962SHA256,
+            ephemeralPublicKey as CFData, signature as CFData, &error
+        )
+    }
 }

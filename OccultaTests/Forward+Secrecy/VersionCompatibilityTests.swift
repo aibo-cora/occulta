@@ -71,6 +71,59 @@ struct VersionCapabilityTests {
         #expect(OccultaBundle.Version.v3fs.supportsGroups == false)
         #expect(OccultaBundle.Version.unsupported.supportsGroups == false)
     }
+
+    // Regression guard for the exact footgun found while designing the
+    // senderSignatureCapable tier: supportsGroups is a manually maintained
+    // `self == .x || self == .y` list, not a >= comparison. A contact upgrading to
+    // a newer capability tier must not silently lose an older, unrelated capability
+    // check just because that check's case list wasn't updated.
+    @Test func max_senderSignatureCapableRange_returnsSenderSignatureCapable() {
+        #expect(OccultaBundle.Version.max(forAppVersion: "1.10.0") == .senderSignatureCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "1.10.1") == .senderSignatureCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .senderSignatureCapable)
+    }
+
+    @Test func wireByte_senderSignatureCapable_is0x07() {
+        #expect(OccultaBundle.Version.senderSignatureCapable.wireByte == 0x07)
+    }
+
+    @Test func supportsGroups_remainsTrueForNewerCapabilityTiers() {
+        // senderSignatureCapable (1.10.0+) is strictly newer than groupCapable
+        // (1.9.0+) — a contact on 1.10.0 obviously still supports group bundles.
+        #expect(OccultaBundle.Version.senderSignatureCapable.supportsGroups == true)
+    }
+}
+
+// MARK: - Version capability ranking (isAtLeast)
+
+@Suite("Version — capability ranking (isAtLeast)")
+struct VersionRankingTests {
+
+    @Test func higherTier_isAtLeast_lowerTier() {
+        #expect(OccultaBundle.Version.groupShardCapable.isAtLeast(.groupCapable) == true)
+        #expect(OccultaBundle.Version.senderSignatureCapable.isAtLeast(.groupCapable) == true)
+        #expect(OccultaBundle.Version.senderSignatureCapable.isAtLeast(.groupShardCapable) == true)
+    }
+
+    @Test func sameTier_isAtLeast_itself() {
+        #expect(OccultaBundle.Version.groupCapable.isAtLeast(.groupCapable) == true)
+    }
+
+    @Test func lowerTier_isNotAtLeast_higherTier() {
+        #expect(OccultaBundle.Version.groupCapable.isAtLeast(.groupShardCapable) == false)
+        #expect(OccultaBundle.Version.v3fs.isAtLeast(.groupCapable) == false)
+        #expect(OccultaBundle.Version.v4.isAtLeast(.groupCapable) == false)
+    }
+
+    @Test func nonTieredCases_areNeverAtLeastAnything() {
+        #expect(OccultaBundle.Version.unsupported.isAtLeast(.groupCapable) == false)
+        #expect(OccultaBundle.Version.v1.isAtLeast(.v3fs) == false)
+    }
+
+    @Test func nothingIsAtLeast_aNonTieredCase() {
+        // .v1 isn't in `known` at all, so nothing can be "at least" it via this mechanism.
+        #expect(OccultaBundle.Version.senderSignatureCapable.isAtLeast(.v1) == false)
+    }
 }
 
 // MARK: - WireHandle byte tables
@@ -84,6 +137,10 @@ struct WireHandleByteTableTests {
 
     @Test func byteToVersion_0x05_isGroupCapable() {
         #expect(WireHandle.byteToVersion(0x05) == .groupCapable)
+    }
+
+    @Test func byteToVersion_0x07_isSenderSignatureCapable() {
+        #expect(WireHandle.byteToVersion(0x07) == .senderSignatureCapable)
     }
 
     @Test func byteToVersion_unknownByte_isNil() {

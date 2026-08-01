@@ -113,6 +113,13 @@ struct OccultaBundle: Codable {
         /// exists solely so `resolveTargetVersion` can signal shard-distribution
         /// eligibility to the caller.
         case groupShardCapable
+        /// Capability watermark: contact's build signs the ephemeral key on FS-mode
+        /// group messages (`RecipientPayload.senderEphemeralSignature`), closing the
+        /// gap where `senderProof` alone doesn't authenticate the sender for FS mode
+        /// (see finding #8, SecurityReview2026-07-24). Never written to the wire
+        /// `version` field — stored only in `Contact.Profile.maxBundleVersion` as
+        /// byte 0x07.
+        case senderSignatureCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -145,6 +152,20 @@ struct OccultaBundle: Codable {
 
         /// True when this contact's app version supports group bundles.
         var supportsGroups: Bool { self == .groupCapable || self == .groupShardCapable }
+
+        /// Position in `known` — lower index = newer/higher capability tier.
+        /// `nil` for non-tiered cases (`.v1`, `.v2`, `.unsupported`) that never come
+        /// from `max(forAppVersion:)`.
+        private var rank: Int? { Self.known.firstIndex(of: self) }
+
+        /// True if this tier is at least as capable as `other` — i.e. `other`'s
+        /// feature set is a subset of this one's. Adding a new tier above `other` in
+        /// `known` extends this automatically; no separate case list to maintain,
+        /// unlike `supportsGroups` above.
+        func isAtLeast(_ other: Version) -> Bool {
+            guard let mine = self.rank, let theirs = other.rank else { return false }
+            return mine <= theirs
+        }
 
         /// All real capability levels, descending — `max(forAppVersion:)` returns the
         /// first entry whose `minimumAppVersion` the given app version satisfies, so
@@ -560,6 +581,17 @@ struct OccultaBundle: Codable {
         /// exactly as often as it correctly skips irrelevant ones.
         let shardMetadataAttempted: Bool
 
+        /// ECDSA signature over `Recipient.secrecyContext.ephemeralPublicKey`, signed
+        /// with the sender's long-term identity key. Populated only for FS-mode
+        /// recipients (`.forwardSecret`/`.forwardSecretNoPQ`) — fallback mode's
+        /// wrapping-key ECDH already requires the sender's real long-term private key,
+        /// so it doesn't need this. `nil` on bundles from builds older than 1.10.0, or
+        /// for fallback-mode recipients. See finding #8, SecurityReview2026-07-24: FS
+        /// mode's session key never involves the sender's long-term identity, so
+        /// without this, `senderProof` alone can be satisfied without holding the
+        /// real sender's private key. Added in v1.10.0.
+        let senderEphemeralSignature: Data?
+
         init(
             sessionKey: Data,
             prekeyBatch: SealedPayload.PrekeySyncBatch? = nil,
@@ -568,16 +600,18 @@ struct OccultaBundle: Codable {
             custodyManifestCount: Int = 0,
             expectedShards: [UUID] = [],
             expectedShardsCount: Int = 0,
-            shardMetadataAttempted: Bool = false
+            shardMetadataAttempted: Bool = false,
+            senderEphemeralSignature: Data? = nil
         ) {
-            self.sessionKey             = sessionKey
-            self.prekeyBatch            = prekeyBatch
-            self.shardOperations        = shardOperations
-            self.custodyManifest        = custodyManifest
-            self.custodyManifestCount   = custodyManifestCount
-            self.expectedShards         = expectedShards
-            self.expectedShardsCount    = expectedShardsCount
-            self.shardMetadataAttempted = shardMetadataAttempted
+            self.sessionKey               = sessionKey
+            self.prekeyBatch              = prekeyBatch
+            self.shardOperations          = shardOperations
+            self.custodyManifest          = custodyManifest
+            self.custodyManifestCount     = custodyManifestCount
+            self.expectedShards           = expectedShards
+            self.expectedShardsCount      = expectedShardsCount
+            self.shardMetadataAttempted   = shardMetadataAttempted
+            self.senderEphemeralSignature = senderEphemeralSignature
         }
 
         // Custom decoding: a payload from a pre-groupShardCapable sender simply
@@ -587,19 +621,20 @@ struct OccultaBundle: Codable {
         // shardMetadataAttempted defaults to false for the same reason — a sender
         // old enough not to know about it never attempted anything.
         enum CodingKeys: String, CodingKey {
-            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount, shardMetadataAttempted
+            case sessionKey, prekeyBatch, shardOperations, custodyManifest, custodyManifestCount, expectedShards, expectedShardsCount, shardMetadataAttempted, senderEphemeralSignature
         }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            self.sessionKey             = try c.decode(Data.self, forKey: .sessionKey)
-            self.prekeyBatch            = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
-            self.shardOperations        = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
-            self.custodyManifest        = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
-            self.custodyManifestCount   = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
-            self.expectedShards         = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
-            self.expectedShardsCount    = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
-            self.shardMetadataAttempted = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
+            self.sessionKey               = try c.decode(Data.self, forKey: .sessionKey)
+            self.prekeyBatch              = try c.decodeIfPresent(SealedPayload.PrekeySyncBatch.self, forKey: .prekeyBatch)
+            self.shardOperations          = try c.decodeIfPresent([ShardOperation].self, forKey: .shardOperations) ?? []
+            self.custodyManifest          = try c.decodeIfPresent([UUID].self, forKey: .custodyManifest) ?? []
+            self.custodyManifestCount     = try c.decodeIfPresent(Int.self, forKey: .custodyManifestCount) ?? 0
+            self.expectedShards           = try c.decodeIfPresent([UUID].self, forKey: .expectedShards) ?? []
+            self.expectedShardsCount      = try c.decodeIfPresent(Int.self, forKey: .expectedShardsCount) ?? 0
+            self.shardMetadataAttempted   = try c.decodeIfPresent(Bool.self, forKey: .shardMetadataAttempted) ?? false
+            self.senderEphemeralSignature = try c.decodeIfPresent(Data.self, forKey: .senderEphemeralSignature)
         }
     }
 

@@ -453,6 +453,78 @@ private struct Pair {
     }
 }
 
+// MARK: - Sender ephemeral signature (finding #8, SecurityReview2026-07-24)
+
+@Suite("seal(recipients:) — sender ephemeral signature")
+@MainActor struct GroupSenderEphemeralSignatureTests {
+
+    // FS mode's session key never involves the sender's long-term identity
+    // (ECDH(senderEphemeral, recipientPrekey) only) — senderProof alone doesn't
+    // authenticate the sender for this mode. wrapRecipient must sign the ephemeral
+    // key with the sender's real identity so the recipient can verify it.
+    @Test func fsMode_recipientPayload_hasValidSignatureOverEphemeralKey() throws {
+        let pair = try Pair()
+        let groupID = UUID()
+        let (prekeyPriv, prekeyPub) = pair.recipientKM.generateEphemeralKeyPair()!
+        let prekey = Prekey(id: UUID().uuidString, contactID: "test", publicKey: prekeyPub)
+        let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: prekey, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.seal(message: Data("fs sig test".utf8), groupID: groupID, recipients: [r])
+
+        let entry = bundle.group!.recipients[0]
+        #expect(entry.secrecyContext.mode == .forwardSecretNoPQ)
+
+        let wrappingKey = pair.recipientKM.createSharedSecret(
+            ephemeralPrivateKey: prekeyPriv, recipientMaterial: entry.secrecyContext.ephemeralPublicKey
+        )!
+        let recipientPayload = try Manager.Crypto(keyManager: pair.recipientKM)
+            .openWrappedPayload(entry, blind: bundle.group!.blind, using: wrappingKey)
+
+        let signature = try #require(recipientPayload.senderEphemeralSignature)
+        let senderPub = try pair.senderKM.retrieveIdentity()
+        #expect(pair.senderCrypto.verifySenderEphemeralSignature(
+            signature, ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, senderPublicKey: senderPub
+        ) == true)
+    }
+
+    // Fallback mode's wrapping-key ECDH already requires the sender's real
+    // long-term private key — no additional signature is needed there.
+    @Test func fallbackMode_recipientPayload_hasNoSignature() throws {
+        let pair = try Pair()
+        let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.seal(message: Data("fallback sig test".utf8), groupID: UUID(), recipients: [r])
+
+        let recipientPayload = try pair.openFallback(entry: bundle.group!.recipients[0], blind: bundle.group!.blind)
+        #expect(recipientPayload.senderEphemeralSignature == nil)
+    }
+
+    // A signature signed by anyone other than the real sender must not verify
+    // against the real sender's public key — the core impersonation-resistance
+    // property this fix exists for.
+    @Test func fsMode_signatureFromImpostor_doesNotVerifyAgainstRealSender() throws {
+        let pair = try Pair()
+        let groupID = UUID()
+        let (prekeyPriv, prekeyPub) = pair.recipientKM.generateEphemeralKeyPair()!
+        let prekey = Prekey(id: UUID().uuidString, contactID: "test", publicKey: prekeyPub)
+        let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: prekey, pendingBatch: nil)
+        let bundle = try pair.senderCrypto.seal(message: Data("fs sig test".utf8), groupID: groupID, recipients: [r])
+
+        let entry = bundle.group!.recipients[0]
+        let wrappingKey = pair.recipientKM.createSharedSecret(
+            ephemeralPrivateKey: prekeyPriv, recipientMaterial: entry.secrecyContext.ephemeralPublicKey
+        )!
+        let recipientPayload = try Manager.Crypto(keyManager: pair.recipientKM)
+            .openWrappedPayload(entry, blind: bundle.group!.blind, using: wrappingKey)
+        let signature = try #require(recipientPayload.senderEphemeralSignature)
+
+        // An impostor's public key must not validate the real sender's signature —
+        // and the real sender's signature must not validate against the impostor.
+        let impostorPub = try TestKeyManager().retrieveIdentity()
+        #expect(pair.senderCrypto.verifySenderEphemeralSignature(
+            signature, ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, senderPublicKey: impostorPub
+        ) == false)
+    }
+}
+
 // MARK: - Basket round-trip
 
 // Validates the calling contract between encryptGroupBundle and seal(recipients:):
