@@ -284,18 +284,20 @@ struct WireHandle {
     static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
     static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
-    // groupCapable/groupShardCapable encode to 0x04 on the wire (same binary layout
-    // as v4); 0x05/0x06 are only written into Contact.Profile.maxBundleVersion as
-    // capability markers.
+    // groupCapable/groupShardCapable/senderSignatureCapable encode to 0x04 on the
+    // wire (same binary layout as v4); 0x05/0x06/0x07 are only written into
+    // Contact.Profile.maxBundleVersion as capability markers.
     private static let _versionToByte: [OccultaBundle.Version: UInt8] = [
-        .v4:                0x04,
-        .groupCapable:      0x04,
-        .groupShardCapable: 0x04,
+        .v4:                     0x04,
+        .groupCapable:           0x04,
+        .groupShardCapable:      0x04,
+        .senderSignatureCapable: 0x04,
     ]
     private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
         0x04: .v4,
         0x05: .groupCapable,
         0x06: .groupShardCapable,
+        0x07: .senderSignatureCapable,
     ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [

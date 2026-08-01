@@ -1679,6 +1679,18 @@ extension ContactManager {
             prekeyManager: prekeyManager
         )
 
+        // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
+        // FS mode's session key never involves the sender's long-term identity (finding
+        // #8, SecurityReview2026-07-24) — senderEphemeralSignature is the actual binding
+        // for that mode, verified inside findAndOpenRecipientSlot if present. Require it
+        // only once this contact has previously demonstrated (via appVersion) that their
+        // build produces one; older contacts can't, so their absence is accepted as before.
+        let isFSMode = recipientMode == .forwardSecret || recipientMode == .forwardSecretNoPQ
+        if isFSMode, recipientPayload.senderEphemeralSignature == nil,
+           Self.resolveTargetVersion(for: sender, using: cryptoOps).isAtLeast(.senderSignatureCapable) {
+            throw GroupDecryptError.missingSenderEphemeralSignature
+        }
+
         // ── 4. Prekey management ─────────────────────────────────────────
         if let consumable {
             prekeyManager.consume(prekey: consumable)

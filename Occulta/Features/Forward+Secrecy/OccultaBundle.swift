@@ -135,6 +135,7 @@ struct OccultaBundle: Codable {
             case .v4:               return "1.8.2"
             case .groupCapable:     return "1.9.0"
             case .groupShardCapable: return "1.9.1"
+            case .senderSignatureCapable: return "1.10.0"
             default:                return nil
             }
         }
@@ -146,12 +147,13 @@ struct OccultaBundle: Codable {
             case .v4:                return 0x04
             case .groupCapable:      return 0x05
             case .groupShardCapable: return 0x06
+            case .senderSignatureCapable: return 0x07
             default:                 return nil
             }
         }
 
         /// True when this contact's app version supports group bundles.
-        var supportsGroups: Bool { self == .groupCapable || self == .groupShardCapable }
+        var supportsGroups: Bool { self.isAtLeast(.groupCapable) }
 
         /// Position in `known` — lower index = newer/higher capability tier.
         /// `nil` for non-tiered cases (`.v1`, `.v2`, `.unsupported`) that never come
@@ -172,6 +174,7 @@ struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
+            .senderSignatureCapable, // 1.10.0+ — signs FS-mode group recipients' ephemeral key
             .groupShardCapable, // 1.9.1+  — per-recipient shard fields on RecipientPayload
             .groupCapable,      // 1.9.0+  — can process group bundles (Mode.group)
             .v4,                // 1.8.2+  — binary wire format (no base64 inflation)

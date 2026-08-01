@@ -488,13 +488,28 @@ private struct Pair {
 
     // Fallback mode's wrapping-key ECDH already requires the sender's real
     // long-term private key — no additional signature is needed there.
-    @Test func fallbackMode_recipientPayload_hasNoSignature() throws {
+    // Fallback mode's wrapping ECDH already requires the sender's real long-term
+    // private key, so this field carries random filler rather than a real signature —
+    // present and correctly sized (matching a real signature's max size) so a
+    // mixed-mode group send can't distinguish FS from fallback recipients by
+    // RecipientPayload size alone (see GroupShardGatingTests.
+    // mixedGroupSendsToAllWithUniformSlotSize, which regression-tests this directly).
+    @Test func fallbackMode_recipientPayload_hasFillerNotRealSignature() throws {
         let pair = try Pair()
         let r = GroupRecipient(publicKey: pair.recipientPub, quantumMaterial: nil, contactPrekey: nil, pendingBatch: nil)
         let bundle = try pair.senderCrypto.seal(message: Data("fallback sig test".utf8), groupID: UUID(), recipients: [r])
 
-        let recipientPayload = try pair.openFallback(entry: bundle.group!.recipients[0], blind: bundle.group!.blind)
-        #expect(recipientPayload.senderEphemeralSignature == nil)
+        let entry = bundle.group!.recipients[0]
+        let recipientPayload = try pair.openFallback(entry: entry, blind: bundle.group!.blind)
+        let filler = try #require(recipientPayload.senderEphemeralSignature)
+        #expect(filler.count == 72)
+
+        // Fallback mode's ephemeralPublicKey is always empty Data() — the filler must
+        // not happen to verify against it (it's random, not a real signature).
+        let senderPub = try pair.senderKM.retrieveIdentity()
+        #expect(pair.senderCrypto.verifySenderEphemeralSignature(
+            filler, ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey, senderPublicKey: senderPub
+        ) == false)
     }
 
     // A signature signed by anyone other than the real sender must not verify

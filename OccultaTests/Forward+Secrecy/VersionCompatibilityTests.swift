@@ -43,9 +43,12 @@ struct VersionCapabilityTests {
     }
 
     @Test func max_groupShardCapableRange_returnsGroupShardCapable() {
+        // senderSignatureCapable's threshold is 1.10.0, immediately above this tier —
+        // so the range is bounded, not "any future version" (same reasoning as
+        // groupCapable's own comment above, now recurring one tier up).
         #expect(OccultaBundle.Version.max(forAppVersion: "1.9.1") == .groupShardCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "1.9.2") == .groupShardCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .groupShardCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "1.9.9") == .groupShardCapable)
     }
 
     @Test func wireByte_v4_is0x04() {

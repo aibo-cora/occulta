@@ -23,6 +23,16 @@ enum GroupDecryptError: Error {
     /// exceed this cap, so a larger count means a malformed or maliciously crafted
     /// envelope — reject before trial-decrypting any entry.
     case tooManyRecipients
+    /// `RecipientPayload.senderEphemeralSignature` is present but does not verify
+    /// against the entry's ephemeral key and the resolved sender's public key. FS
+    /// mode's session key never involves the sender's long-term identity (finding #8,
+    /// SecurityReview2026-07-24), so a bad signature here is a genuine forgery signal,
+    /// not slot ambiguity — the wrapping key already decrypted correctly.
+    case senderEphemeralSignatureMismatch
+    /// A FS-mode recipient's signature is missing, but the sender has previously
+    /// demonstrated (via `appVersion`) that their build produces one — so its absence
+    /// here means it was stripped, not that the sender can't produce it.
+    case missingSenderEphemeralSignature
 }
 
 // MARK: - Group-decrypt crypto helpers
@@ -65,6 +75,21 @@ extension Manager.Crypto {
                   let plain = try? AES.GCM.open(box, using: wrappingKey, authenticating: blind),
                   let payload = try? JSONDecoder().decode(OccultaBundle.RecipientPayload.self, from: plain)
             else { continue }
+            // The wrapping key already decrypted correctly, so this is genuinely our
+            // slot — a signature mismatch here is forgery, not slot ambiguity, and
+            // must not be treated as "try the next entry". Only FS-mode entries carry
+            // a real signature — fallback-mode entries carry random filler of the same
+            // size (see wrapRecipient) purely to keep RecipientPayload's size uniform
+            // across modes, so it must never be checked here.
+            let isFSMode = entry.secrecyContext.mode == .forwardSecret
+                        || entry.secrecyContext.mode == .forwardSecretNoPQ
+            if isFSMode, let signature = payload.senderEphemeralSignature {
+                guard self.verifySenderEphemeralSignature(
+                    signature,
+                    ephemeralPublicKey: entry.secrecyContext.ephemeralPublicKey,
+                    senderPublicKey: senderPublicKey
+                ) else { throw GroupDecryptError.senderEphemeralSignatureMismatch }
+            }
             return (payload, consumable, entry.secrecyContext.mode)
         }
         throw GroupDecryptError.recipientSlotNotFound
