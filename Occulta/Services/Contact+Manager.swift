@@ -227,7 +227,13 @@ class ContactManager {
     /// Overload used by Secure Mode activation to re-encrypt safe contacts under the staged key.
     /// Identical to `save(contact:currentDepth:)` but uses `crypto` instead of `self.cryptoManager`.
     func save(contact: Contact.Draft, currentDepth: Int = 0, using crypto: any CryptoProtocol) throws {
-        let encryptedIdentifier = contact.identifier
+        // Not encrypted here despite the name this held before — `save` is dual-purpose
+        // (create or update). For an edit, this is already the exact value stored at
+        // creation time, and the lookup below only works comparing it as-is; encrypting
+        // it here (a fresh nonce every call) would never match the stored ciphertext,
+        // turning every edit into a duplicate-creating "not found". Only the genuinely
+        // new-contact branch below encrypts it once, before it's ever stored.
+        let rawIdentifier = contact.identifier
         let encryptedGivenName = try crypto.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedFamilyName = try crypto.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedMiddleName = try crypto.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
@@ -323,7 +329,7 @@ class ContactManager {
         
         /// Storing
         
-        if let existing = try self.fetchContact(by: encryptedIdentifier) {
+        if let existing = try self.fetchContact(by: rawIdentifier) {
             /// Replace fields with new values
             existing.givenName = encryptedGivenName
             existing.familyName = encryptedFamilyName
@@ -346,6 +352,12 @@ class ContactManager {
             
             debugPrint("Updated existing contact")
         } else {
+            // Encrypted once, here, before this identifier is ever stored — matching
+            // createContacts' treatment of imported contacts' identifiers (SecurityReview
+            // 2026-07-24, finding #11). Safe specifically because this is the
+            // never-before-persisted branch: nothing later needs to re-derive this value
+            // from the raw UUID, only read back whatever ends up stored.
+            let encryptedIdentifier = try crypto.encrypt(data: rawIdentifier.data(using: .utf8))?.base64EncodedString() ?? rawIdentifier
             let newContact = Contact.Profile(
                 identifier: encryptedIdentifier,
                 givenName: encryptedGivenName,
