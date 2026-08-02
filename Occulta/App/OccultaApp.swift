@@ -749,6 +749,18 @@ private struct RootView: View {
 
             // 2. Build files — EXIF strip images before encryption (in main app, not extension)
             var files: [Occulta.File] = []
+            // Safety net for every exit from this do block, not just the success path
+            // below: a throw anywhere after files starts accumulating decrypted content
+            // (encryptBundle, a later loop iteration's decrypt/EXIF-strip) previously left
+            // that plaintext un-zeroed on the heap — the catch block only deleted the
+            // on-disk session directory. A defer here runs on the success path too (right
+            // after the explicit zero below, so it finds an already-empty array — harmless)
+            // and on any throw, whatever files currently holds.
+            defer {
+                for i in files.indices {
+                    _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                }
+            }
 
             for entry in manifest.files {
                 let fileURL = sessionDir.appendingPathComponent(entry.filename)
