@@ -702,6 +702,16 @@ private struct RootView: View {
 
     // MARK: Share Extension Processing
 
+    private enum ShareSessionError: Error, LocalizedError {
+        case staleSession
+
+        var errorDescription: String? {
+            switch self {
+            case .staleSession: return "This share session has expired. Please share the content again."
+            }
+        }
+    }
+
     /// Process a share session handed off from the extension via `occulta://share?session=<uuid>`.
     ///
     /// Reads the encrypted manifest, EXIF-strips images, encrypts via the full FS path,
@@ -722,6 +732,16 @@ private struct RootView: View {
             let keyManager = ShareIndexKeyManager()
             var manifestData = try keyManager.decrypt(data: Data(contentsOf: manifestURL))
             let manifest = try JSONDecoder().decode(ShareManifest.self, from: manifestData)
+
+            // Reject stale sessions — same 1-hour cutoff cleanupPendingSessions uses.
+            // Correctness/robustness, not a security boundary (the session directory
+            // only exists inside this app's own App Group container): guards against a
+            // stale or already-processed session being unexpectedly reprocessed, e.g. a
+            // re-tapped notification or duplicate deep-link delivery
+            // (SecurityReview2026-07-24, finding #11).
+            guard manifest.createdAt > Date().addingTimeInterval(-3600) else {
+                throw ShareSessionError.staleSession
+            }
 
             // Zero manifest plaintext — contains contact identifier (relationship metadata)
             _ = manifestData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
