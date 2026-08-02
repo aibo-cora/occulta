@@ -26,7 +26,7 @@ All three HIGH findings from this pass are now fixed. Of the three still-open is
 
 *Update after an objection to finding #1:* an objection was raised that the prekey cross-contact scoping bug is a known, deliberate tradeoff (citing commit `49393d7`, which loosened matching to fix a real `CNContact.identifier`-churn bug on contact re-import). This was investigated and **the finding stands** — the objection's risk argument mischaracterizes the exploit (it doesn't require guessing a UUID; the attacker uses their own legitimate prekey and forges an unauthenticated identity-claim field instead). More importantly, this surfaced that a **pre-existing, committed regression test for this exact bug** (`tempPrekey_wrongContactID_returnsNil`, added 8 days before the loosening commit) was, at review time, being **silently weakened via an uncommitted working-tree change** rather than the underlying bug being fixed — see the addendum under finding #1 below. That uncommitted test change should not be merged as-is.
 
-**Fix priority:** every HIGH-severity finding in this report is now fixed. What remains is the MEDIUM/LOW backlog, in the order listed under [Prioritized Remediation Order](#prioritized-remediation-order).
+**Fix priority:** every finding in this report is now either fixed or retracted. Nothing remains open — see [Prioritized Remediation Order](#prioritized-remediation-order) for the full list and fix dates.
 
 ---
 
@@ -190,11 +190,14 @@ Confirmed via the Trust Check interaction specifically raised during planning: s
 
 **Verification:** full `OccultaTests` target, 633/633, twice in a row (a first pass surfaced a real Secure-Enclave-contention timing flake under full-suite parallel load, unrelated to the fix itself, resolved by polling with a generous timeout instead of a fixed sleep).
 
-#### 🟢 LOW — Contact identifier is encrypted for imported contacts but stored in plaintext for locally-created ones
+#### ✅ FIXED (was 🟢 LOW) — Contact identifier is encrypted for imported contacts but stored in plaintext for locally-created ones
 - **File:** `Occulta/Services/Contact+Manager.swift:95` (`createContacts(from:)` — encrypts `identifier`) vs. `:230` (`save(contact:currentDepth:using:)` — `let encryptedIdentifier = contact.identifier`, stored verbatim); root cause in `Occulta/UI/Tabs/Contacts/v2/ContactFormV2.swift:36` (`.create` mode seeds a raw `UUID().uuidString`)
 - **Confidence:** 7/10.
 - **Description:** Every other field on the same `save(contact:...)` call path is encrypted; `identifier` alone is stored as a raw UUID string for contacts created natively in Occulta, while contacts imported from the system Contacts app get an AES-encrypted+base64 blob in the same column. Anyone with raw filesystem/backup access can distinguish "manually entered" from "imported" contacts purely from the identifier column's format, with no decryption needed — a structural forensic tell the project's other code goes out of its way to avoid (per its own "forensic trace clean" bar).
 - **Recommendation:** Encrypt `identifier` in the `save(contact:...)` path the same way `createContacts` does.
+
+##### Fix applied — 2026-08-01
+`save(contact:currentDepth:using:)` is dual-purpose (create or update), and an edit's `Draft.identifier` already holds the exact value stored at creation (`convertToMutableCopy` passes it through unchanged). Encrypting before the existing-contact lookup would have made every edit fail to find its own row and create a duplicate instead of updating in place. Scoped the fix to only the new-contact branch, after the lookup has already determined the identifier was never stored before. Separately noted, not fixed: `createContacts`' own "already imported?" dedup check has the same non-deterministic-encryption problem in the opposite direction — out of scope for this finding. Covered by `ContactIdentifierEncryptionTests.swift` (TestKeyManager, no SE needed): confirms encryption on create and confirms editing still updates in place rather than duplicating. Full suite green (671/671) twice in a row.
 
 #### ✅ Reviewed, no issue: no other stale-capture-before-async-gap pattern found beyond DraftStore; `deleteContact`/`setVisibility`/`saveClassification` purge coverage is consistent across contact-keyed data types (aside from the separately-tracked shard-custody gap, see Vault section below); no cross-contact leakage in SwiftData predicates; attachment filenames in the **compose/outbound** path are always locally sourced, no traversal risk there (see App Core section for the **inbound** path, which is a different, real issue).
 
@@ -227,11 +230,14 @@ Went with throwing (`func sign(data:) throws -> String`) rather than `Result`, p
 
 Covered by `CryptoSignTests.swift`. The real signing success path calls `Manager.Key()` directly rather than an injectable key manager, so — same limitation already noted elsewhere in this report for other SE-backed operations — it isn't unit-testable without real hardware; the test verifies the type-level guarantee (failure throws rather than returning a string) instead. Full `OccultaTests` suite green (669/669) twice in a row.
 
-#### 🟢 LOW — Unbounded inbound file read into memory *(still present — SEC-5)*
+#### ✅ FIXED (was 🟢 LOW) — Unbounded inbound file read into memory *(SEC-5)*
 - **File:** `Occulta/App/OccultaApp.swift:447` (`try await URLSession.shared.data(from: fileLocation)`)
 - **Confidence:** 8/10 — re-verified, no size guard added anywhere upstream since the prior audit.
 - **Description:** Any inbound `.occ`/`.occbak` file (Files app, AirDrop, share extension) is loaded fully into memory with no size check. A very large file is a crash/OOM, not a data-confidentiality issue — kept here at LOW per this review's DOS-exclusion guidance, but noted since it was already flagged and remains open.
 - **Recommendation:** Add a reasonable size cap before the full read, or stream/chunk the read.
+
+##### Fix applied — 2026-08-01
+A hard size cap was considered and rejected during discussion: attachments/backups can legitimately be large, and CryptoKit's `AES.GCM` can't decrypt incrementally anyway, so a cap would only reject large-but-legitimate files without enabling true streaming. Switched to `Data(contentsOf:options:.mappedIfSafe)` instead of the eager `URLSession` read. Measured on a 1GB local test file (same machine, `/usr/bin/time -l`, warm page cache): the old approach peaked at ~2.1GB RSS (double-buffered) and took ~0.5s; mmap with every byte touched (the realistic case, since decryption reads the whole thing) peaked at ~1.08GB RSS and took ~0.06s — roughly half the peak memory and 8-9x faster, no arbitrary size limit. Moved onto `Task.detached` since `RootView` is a `View` (MainActor) and touching pages can still block briefly. A related, bigger problem was surfaced but deliberately not addressed here — see `Docs/Features/Bundle/Streaming Large Attachments — Problem Statement.md`: this fix only bounds the *read* of the raw encrypted file; a bundle with several huge attachments still needs the whole decrypted payload in memory at once, since `OccultaBundle.ciphertext` is one atomic AES-GCM seal over the entire `SealedPayload`. That's a separate, much larger wire-format redesign, written up as its own problem statement rather than folded into this fix. Full suite green (671/671) twice in a row.
 
 #### ✅ Reviewed, no issue: SE key tag inventory has no cross-purpose reuse; `features.plist` flags fail *closed* (default `false`) on a missing/corrupt plist; release-build peer-key logging (prior SEC-4) is now fully `#if DEBUG`-gated — **confirmed fixed**; Passphrase generation uses `SecRandomCopyBytes` (CSPRNG) throughout; QR generator doesn't over-encode key material; Onboarding does no key/passphrase display or transmission.
 
@@ -254,16 +260,22 @@ Root cause turned out to be broader than the literal recommendation: `connectedP
 
 ### Share Extension
 
-#### 🟢 LOW (downgraded from MEDIUM after second pass) — No enforced ordering or freshness check between orphan-session sweep and `occulta://share` processing
+#### ✅ FIXED (was 🟢 LOW, downgraded from MEDIUM after second pass) — No enforced ordering or freshness check between orphan-session sweep and `occulta://share` processing
 - **File:** `Occulta/App/OccultaApp.swift:264-271` (cleanup trigger, only on `scenePhase == .active`), `:418-420` (`occulta://share?session=` routes straight to `processShareSession` with no staleness check), `:690-735` (`processShareSession` itself — confirmed no age/`manifest.createdAt` check anywhere in the function); `Occulta/Features/ShareExtension/ContactManager+ShareIndex.swift:118-155` (`cleanupPendingSessions`, has its own 1-hour cutoff, gated on `containerURL(forSecurityApplicationGroupIdentifier:)` for `group.com.occulta.shared`)
 - **Confidence:** 6/10 — the ordering/staleness gap itself is confirmed real on re-reading all three functions in full. Severity downgraded from the original MEDIUM: re-verification confirms `pending/<uuid>/` only exists inside the `group.com.occulta.shared` App Group container, which **only Occulta's own main app and its own Share Extension can write to** — no external/third-party app, despite being able to invoke the globally-registered `occulta://` URL scheme with an arbitrary guessed UUID, has any way to seed a session directory for that UUID to begin with. A guessed/malicious invocation from another app hits a nonexistent directory and no-ops (caught by the surrounding `do/catch`). The realistic residual risk is narrower than originally framed: a legitimate but stale/already-processed session belonging to this app being unexpectedly reprocessed (e.g. a re-tapped notification or duplicate deep-link delivery) — a correctness/idempotency concern, not a cross-app data-exposure path.
 - **Recommendation:** Apply the same staleness cutoff `cleanupPendingSessions` uses inside `processShareSession` itself, for correctness/robustness rather than as a security fix.
 
-#### 🟢 LOW — Decrypted attachment plaintext isn't zeroed on the error/throw path
+##### Fix applied — 2026-08-01
+Applied the same 1-hour cutoff `cleanupPendingSessions` uses, checked right after decoding the manifest (which already carries `createdAt`, added for exactly this purpose per its own doc comment) and before any further processing. Reuses the existing `do`/`catch`'s session-directory cleanup path via a small `ShareSessionError.staleSession` case with a clear user-facing message. No new tests: `processShareSession` is a private method on a SwiftUI `View` requiring real App Group container state to exercise, and `cleanupPendingSessions`' identical staleness pattern has no existing test coverage to extend either — verified via build + full suite instead, green (671/671) twice in a row.
+
+#### ✅ FIXED (was 🟢 LOW) — Decrypted attachment plaintext isn't zeroed on the error/throw path
 - **File:** `Occulta/App/OccultaApp.swift:713-773` (`processShareSession`)
 - **Confidence:** 7/10.
 - **Description:** Ciphertext buffers are correctly zeroed immediately after each decrypt, and plaintext is zeroed in the success-path loop (`:752-754`) — but the `catch` block (`:768-773`) only deletes the session directory; it never touches the in-memory `files` array, so on any failure after decryption, plaintext attachment bytes are left un-zeroed on the heap until ARC happens to deallocate them. Inconsistent with the function's own zeroing discipline elsewhere.
 - **Recommendation:** Zero the `files` array's content in the `catch` block too, not just on the success path.
+
+##### Fix applied — 2026-08-01
+`files` is declared inside the `do` block, so it isn't visible from the `catch` block at all — a plain "zero it in catch too" wasn't directly possible. Added a `defer`, set up right after `files` is declared, that zeroes every entry's content on any exit from the `do` block: on the success path it runs after the existing early explicit zero (finds an already-empty array — harmless no-op; that early zero is kept as-is so plaintext clears as soon as `encryptBundle` no longer needs it, rather than waiting for the whole `do` block to finish), and on any throw it zeroes whatever `files` currently holds. No new tests: same reasoning as the staleness fix above, plus verifying zeroed heap memory isn't practically testable at the unit level regardless. Full suite green (671/671) twice in a row.
 
 #### ✅ Reviewed, no issue: extension writes only to its designated `pending/<sessionID>/` subdirectory with internally-generated filenames (no traversal vector); deep link carries only a UUID; ciphertext is never logged/cached; session directories are cleaned up on both success and failure; `OccultaPreview` never touches decrypted content, so no QuickLook plaintext-cache exposure.
 
@@ -289,7 +301,7 @@ One already-tracked, pre-existing gap (not re-reported as new — see `Docs/Bugs
 8. ~~**MEDIUM** — No real sender-identity binding for forward-secret messages, in *both* the single-recipient and group paths (the group path's `senderProof` doesn't cover FS mode either — found while scoping this fix) — defense-in-depth for #1, do alongside it.~~ **FIXED for the group path 2026-08-01** — legacy single-recipient path (<1.9.0 contacts) intentionally left as an accepted residual gap.
 9. ~~**MEDIUM** — `Crypto.sign` error-string-as-signature (App Core, still open, currently flag-gated off) — low urgency while `signature` flag stays `false`, but fix before ever enabling it.~~ **FIXED 2026-08-01.**
 10. ~~**MEDIUM** — WAL checkpoint ordering around group-membership purge (Secure Mode / Contacts) — forensic hygiene, not a data-breach path.~~ **FIXED 2026-08-01.**
-11. **LOW** — Contact-identifier plaintext inconsistency, unzeroed plaintext on share-extension error path, unbounded inbound file read, share-extension session freshness ordering (all low real-world impact/exploitability, cheap fixes).
+11. ~~**LOW** — Contact-identifier plaintext inconsistency, unzeroed plaintext on share-extension error path, unbounded inbound file read, share-extension session freshness ordering (all low real-world impact/exploitability, cheap fixes).~~ **FIXED 2026-08-01** (all four).
 
 ---
 
