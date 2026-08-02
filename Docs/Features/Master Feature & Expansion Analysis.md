@@ -62,9 +62,9 @@ Briar is the Android gold standard for this model and is explicitly Android-only
 **Community demand:** Very high — Freedom of the Press Foundation 2026 checklist, r/privacy, r/privacyguides, journalist security forums, multiple border-crossing threads
 **Audience:** Broad — anyone who crosses a border with a device; business travelers, lawyers, students, journalists, activists
 
-Cryptographically removes designated contacts and vault items from the device before a border crossing. Not a UI hide — the item keys are re-encrypted under a separate travel passphrase and all other Keychain access paths are deleted. Under the primary credential, the sensitive items simply do not exist. Deactivation requires both the travel key and the original credential. Entirely offline: activate on airplane mode before landing, deactivate after clearing customs.
+Cryptographically removes designated contacts and vault items from the device ahead of a high-risk inspection or device-handover scenario. Not a UI hide — the item keys are re-encrypted under a separate travel passphrase and all other Keychain access paths are deleted. Under the primary credential, the sensitive items simply do not exist. Deactivation requires both the travel key and the original credential. Entirely offline — no network dependency at the moment of use, unlike existing solutions.
 
-The community's expressed ideal — "toggle Travel Mode on the plane, before landing, with no internet, and have my sensitive vault be cryptographically non-existent by the time a border agent picks up my phone" — is quoted verbatim across multiple forum threads. 1Password Travel Mode is the current recommendation but requires a web session at precisely the moment users need it most. No app currently offers a fully offline equivalent.
+This gap is well documented in community discussion of existing tools: 1Password's Travel Mode is the current go-to recommendation, but it requires an online session to toggle — exactly when users are least likely to have connectivity or time. No app currently offers a fully offline equivalent.
 
 **iOS constraint:** All operations are Keychain writes and deletes. `item_key = HKDF(travel_key, item_id)`; deleting the travel_key Keychain item makes all sensitive items inaccessible while the main vault remains functional. CryptoKit HKDF supports this architecture directly.
 
