@@ -225,3 +225,140 @@ If usage data ever shows real demand from users with small, close contact circle
 **Not yet verified:** `mismatchHandbackOps`'s actual implementation (only its doc comment read so far). Whether the recipient-payload assembly can cleanly special-case one recipient's fields without restructuring the fan-out loop. `Vault+Manager+Reconstruction.swift`'s actual resync capabilities. No tamper table, trace tests, or R0-style checklist pass done yet — expect this to keep changing.
 
 **Load-bearing dependency that doesn't exist yet:** this whole design leans on "the revocation broadcast" (R1 §6: a surviving device SE-signs `occulta-device-revocation-v1 ∥ lostDevicePubKey ∥ timestamp` and sends it directly to every contact) treating it as a stable given. Checked 2026-07-10: **it isn't implemented anywhere** — `occulta-device-revocation-v1` appears nowhere in the codebase outside this doc and ROADMAP.md. It's a resolved *design* (FINDINGS.md Design Session 3, 2026-07-05) with a wire shape written down (ROADMAP.md R1 §6), but no struct, no bundle field, no handler. The only shipped, related code is `reset(identity:)` (`Contact+Manager.swift:524`), which is local-only (`contact.contactPublicKeys?.last?.expiredOn = ...`, no send) and already has Q-06's documented bug (`.last` instead of all active keys) baked in. Everything in this write-up described as "automatic once the manual trigger fires" depends on building this broadcast first.
+
+---
+
+## Design Session 7 — Mothership: Restricting Revocation Authority to the Per-Contact Trusted Device (2026-08-03)
+
+**Question raised:** what if the first device that exchanged keys with a given contact becomes that contact's authoritative "mothership" — the only device allowed to perform shard/vault custody ops and to manage (revoke) that identity's other devices?
+
+**Finding: R1 §6 as currently written has a real, previously uncatalogued gap.** The revocation broadcast is symmetric by construction — *any* surviving device belonging to the identity can sign `occulta-device-revocation-v1` for *any other* of that identity's devices. Concretely: compromising a low-value secondary (a spare phone, weaker passcode, carried less carefully) is enough to forge "the primary is lost" and kill trust in the legitimate primary across the entire contact graph, with the attacker never having touched the primary at all. Restricting revocation authority to a single recognized device per relationship closes this.
+
+### Resolution
+
+**Scope: per-contact, not global (confirmed 2026-08-03).** No new state to track — this is exactly Q-07's already-designed "trusted device" rule (D-06 v2 fix direction: oldest key with `expiredOn == nil` for that contact, `Key.acquiredAt`), now governing revocation authority in addition to shard-op routing. Both sides already compute this independently; extending its jurisdiction adds no new signal, no new field.
+
+**Mothership loss: falls through to guardians, no unilateral secondary override (confirmed 2026-08-03).** If the lost device is a secondary, the surviving mothership signs and broadcasts as R1 §6 already describes. If the lost device *is* the mothership, no surviving secondary may revoke it unilaterally — that would reopen the exact symmetric-authority hole this session exists to close. This routes through R2 instead.
+
+**This requires no new R2 mechanism — only a framing correction.** R2 already pre-signs and escrows a cert *per device* (§1: "each device's own SE signs... there is no shared root key to sign once for every device"), and each recipient "opens only the blob(s) matching a device key they have pinned" (§2, §4). The guardian-flow UI copy ("Alex reports total device loss") assumed the total-loss case, but the underlying per-device cert mechanism already supports revoking a single device — specifically the mothership — while secondaries keep working. Action item: correct R2 §4's UI framing to cover "mothership lost, secondaries survive" as a first-class case, not just total loss.
+
+**No explicit promotion step, and no new attack surface from adding one.** Because mothership status is never assigned — it's always "the oldest surviving active key, recomputed automatically as a side effect of `expiredOn` changes" (same property Q-07 v2 already relies on) — there is no promotion *event* for a compromised secondary to forge. Authority only ever shifts because the real mothership was properly revoked (via R2's guardian cert, which carries its own K-of-N abuse containment), never by any device's own claim.
+
+**Compatibility check against standing invariants: holds.** This only narrows *which already-trusted device's signature* a contact accepts for shard ops and revocation broadcasts — it grants no new device access to any contact without a fresh physical UWB exchange (D-07 unchanged). The `no-self-vouching-device-trust` principle from Design Session 3 governs trust *extension to contacts*; this governs authority *among an identity's own already-independently-verified devices*. No new cryptographic primitive, so the R0 threat-model delta line ("R1 has none") still holds — this is a policy/verification-rule change, not new key material.
+
+### Open
+
+**"Sync" — meaning not yet confirmed.** The only existing open item this could map to is Design Session 6's unresolved question: whether trustee resync (a device rebuilding local tracking state by asking known trustees what they currently hold) runs automatically once mothership authority shifts, or needs its own confirmation step. No direct device-to-device channel exists to build a literal push-sync on top of (same invariant that killed cert-vouching) — any "sync" has to be contact/guardian-mediated. Needs explicit confirmation before this is folded into R1 as scoped.
+
+### Action items
+
+- ROADMAP.md R1 §6: rewrite to state the authority restriction (done, same date)
+- ROADMAP.md R2 §4: correct UI framing to include single-device (mothership) loss, not only total loss
+- IMPLEMENTATION_PLAN.md Step 4: add the receiver-side authority check (contacts verify the signer is their currently-recomputed mothership for that identity, not just any pinned device)
+
+---
+
+## Design Session 8 — Uniform Custody Transport, Receiver-Only Authority, Trustee Resync After Promotion (2026-08-03)
+
+**Question raised:** two follow-ons to Design Session 7 — (a) does "sync" (left open in Session 7) mean syncing contacts or device metadata between an identity's own devices, or something narrower; (b) could custody/manifest content simply travel from whichever device sends it, relying entirely on the receiver to decide what counts, instead of gating what the sender addresses to which device?
+
+### Ruled out: syncing contacts between an identity's own devices
+
+No new channel between one identity's own devices would change anything, because a contact's software gates every device independently by physical UWB pairing (D-07) — it doesn't matter what my own devices know about each other. Handing a secondary device a copy of my contact list doesn't make any contact's app trust that device's key; they never met it. This is the same wall Design Session 5 already hit. Not revisited further — confirms Design Session 5's conclusion rather than reopening it.
+
+### Confirmed: "device metadata for addressing" is already-shipped, not new work
+
+"The mothership collects a list of a contact's available devices, so a bundle is openable on any of them" describes the existing `Contact.Profile.Key` model (one row per `deviceID`, `expiredOn` gating active/inactive) plus the existing group-envelope fan-out (D-01, D-04, ROADMAP.md R1 §4). Ordinary messages already reach every active device of a multi-device contact. Nothing new required here — worth stating explicitly so it isn't proposed as new scope later.
+
+### Resolved: custody/manifest transport moves to uniform sending + receiver-only authority (supersedes the "Bundle routing" bullet in Design Session 6's v2 fix direction)
+
+**Old design (Session 6, v2):** two enforcement layers — sender-side gating (address `shardOperations`/`custodyManifest`/`expectedShards` only to whichever of a contact's devices resolves as trusted) *plus* receiver-side verification (check sender fingerprint against the same resolved answer) as defense-in-depth.
+
+**New design (confirmed 2026-08-03):** drop the sender-side gating layer entirely. Every device of a contact receives identical content — no per-recipient branching in the payload-assembly pass. The receiver-side check, previously a backstop, is now the *sole* enforcement point: `processInboundManifest`/`processExpectedShards` discard anything whose sender fingerprint doesn't match the independently-resolved mothership for that identity, full stop.
+
+This is a strict simplification, not a weaker version of the same guarantee — it removes Q-07's one flagged "real code change" (the per-recipient special-casing in the recipient-construction pass) entirely, and matches a posture the codebase already uses elsewhere (the `isFallback` filtering precedent: *"regardless of what the sender claims, drop them here — rather than relying on the sender to have gated correctly"*). One enforcement point instead of two that must be kept consistent is less surface for a future change to silently reopen the hole Q-07 exists to close. Confirmed explicitly (2026-08-03): outbound custody-instruction content (e.g., `expectedShards`) is *not* specially withheld from a contact's non-mothership devices either — uniform sending applies in both directions. Correctness rests entirely on the receiver, never on sender behavior.
+
+### Resolved: "sync" = trustee resync after mothership promotion
+
+Closes the question left open at the end of Design Session 6. When a mothership is revoked (R2) and authority mechanically shifts to the next-oldest surviving device per contact (Design Session 7), that device has **zero local custody history** — secondaries never accumulate `PendingShardDistribute`/`CustodyShard` rows by design (the existing "no Vault-initiating capability by default" local gate). "Sync" is this device rebuilding that state: it asks each known trustee what they currently hold on its behalf, and trustees answer.
+
+The request/response is authenticated by the same mechanism as everything else in this session — no new primitive: a trustee only answers a resync request after independently verifying the requester's device key resolves, by the trustee's own local computation, as the current mothership for that identity. Since the requesting device was already physically paired with that trustee directly (D-07 — every device-contact pairing is a full independent UWB exchange, promotion never grants trust to a new key), the trustee already has this device's key pinned; promotion only changes whether the trustee treats *this already-known* key as authoritative for custody purposes.
+
+**Not yet resolved — flagged, not decided:**
+- Whether the resync request fires automatically the moment promotion completes, or needs its own user confirmation (Design Session 6's original framing of this question, still open — the mechanism shape is now defined, the trigger point isn't).
+- **Race condition, newly identified:** revocation-broadcast delivery isn't synchronous. A trustee who hasn't yet processed the old mothership's revocation will still resolve the *old* device as mothership, and will reject a legitimate resync request from the newly-promoted device as unauthorized. Not fatal — the request can retry and will succeed once that trustee processes the revocation — but needs an explicit test case and a defined retry/backoff behavior, not silent failure.
+- `Vault+Manager+Reconstruction.swift`'s actual resync capabilities remain unverified (carried over from Design Session 6).
+
+### Action items
+
+- IMPLEMENTATION_PLAN.md Step 2: replace the sender-gating bullet with uniform sending; promote the receiver-side check from "defense-in-depth" to "the enforcement mechanism"
+- IMPLEMENTATION_PLAN.md Step 4: add trustee resync as a follow-on task to mothership promotion, including the race-condition test case above
+
+---
+
+## Design Session 9 — Security Review & Adoption Assessment (2026-08-03)
+
+**Question raised:** security review of Design Sessions 7–8's mothership/revocation model, plus a user-adoption read.
+
+### Verified, no action needed
+
+Custody content (`shardOperations`/`custodyManifest`/`expectedShards`, [OccultaBundle.swift:374-384](../../../Occulta/Features/Forward+Secrecy/OccultaBundle.swift)) needs no independent signature for the Session 8 receiver-side check — it rides inside the AEAD-sealed bundle, and successful decryption against a specific device's key already is the "sender fingerprint" being verified. This differs in kind from the revocation broadcast's explicit SE signature (`occulta-device-revocation-v1`), which exists because that artifact must be self-contained and independently verifiable *outside* a live session (guardians relay it without decrypting it). State this explicitly so no future pass builds a redundant second signing scheme for custody content.
+
+### Findings, ranked
+
+**[HIGH] Revocation broadcast has no delivery guarantee.** R1 §6 distributes "directly to every contact" with no stated retry. A contact who is offline, has since uninstalled, or simply drops the message stays on the stale answer indefinitely — and if the lost device was *stolen* rather than misplaced, that one desynced contact keeps honoring a signature from a device an attacker now physically holds. No self-healing mechanism currently specified. **Must close before this ships**, not deferred as a nice-to-have: needs an explicit retry/reconfirm path (e.g., pending-revocation state piggybacked on ordinary bundle exchange until acknowledged).
+
+**[MEDIUM] Voluntary mothership self-demotion is undocumented.** Only two cases are written down — lost secondary, and lost mothership (routes to R2). A mothership that's still possessed and working, where the user simply wants a *different* device to hold authority, isn't addressed. It already works under the existing rules (the mothership self-revoking its own key is not restricted by Session 7 — only revocation of *other* devices is), but left unwritten, a future implementer could reasonably route this through R2's guardian flow entirely unnecessarily. Needs an explicit line in ROADMAP.md R1 §6 distinguishing "mothership unavailable" (→ R2) from "mothership available, voluntary handoff" (→ direct self-revocation, no guardians).
+
+**[MEDIUM] Mothership assignment is an accident of pairing order, not a deliberate choice.** "Oldest active key wins" is clean and attacker-resistant, but whichever device happens to pair with a contact *first* — including a test device or a demo unit — becomes privileged for that relationship until explicitly revoked, with zero visibility for the user to see or choose this (Q-05 still holds: no device list UI). This undercuts the strongest security argument below: it only pays off if the mothership happens to land on the device the user would actually want least-exposed, and right now that's luck. Logged as a known limitation, not solved now — consistent with Q-05's "revisit with UX investment if usage data shows demand," not speculative UI work today.
+
+**[LOW] Uniform custody sending (Session 8) increases discardable noise volume** — a compromised or buggy non-mothership device can send junk manifests freely; correctly discarded, minor bandwidth/processing cost only, not a real risk at Occulta's traffic scale.
+
+**[Positive] Net improvement for Occulta's actual threat model.** The stated threat is physical access under duress, not a remote attacker. Before this design, coercing access to *any* device — including a throwaway secondary — was enough to forge "the primary is lost" and kill trust in the real primary. After: coercing a secondary yields zero custody/revocation power, and coercing the mothership itself still can't revoke the mothership's own trust (routes to R2 — guardians, i.e., separate humans unreachable by device coercion alone). A user who deliberately keeps the mothership device somewhere safe and carries only a secondary gains real protection against a border search or a mugging targeting whatever they're carrying — contingent on resolving the pairing-order-luck finding above, since right now nothing helps a user land their safe device as mothership on purpose.
+
+**[Gate reminder]** `CRYPTO_REVIEW_CHECKLIST.md` is referenced by ROADMAP.md's R0 gate but does not exist as a file. Per house rule, nothing in this plan ships before it's created and run.
+
+### User adoption
+
+ROADMAP.md's own Trade-off Analysis already concluded this arc isn't an adoption lever — R1 is explicitly opportunistic/low-priority, deliberately unpromoted, scoped to a narrow segment. This assessment stays inside that scope rather than re-litigating it.
+
+- No new UI cost: all of Sessions 7–8 is invisible in normal use (Q-05 holds), cost lands only in the recovery path — the right place to pay it.
+- Real regression: mothership is typically whichever device a user onboarded with — usually their daily phone, also the device statistically most likely to be lost or stolen. Losing it now requires guardian coordination (R2) instead of a simple broadcast from a surviving device, specifically *because* it's the mothership. Correct security trade, but a genuine UX cost at the moment a user is already stressed about losing their phone — should ship described as an intentional trade, not discovered the hard way.
+- **The security benefit tracks update-build adoption, not just multi-device adoption.** Q-07's fix only protects a user once their own build has it, and only fully closes once both sides of a relationship are updated (the receiver-side check is what enforces it). A single-device user talking to a multi-device contact remains exposed to Q-07's original false-shard-loss bug until their own app updates — this can't be shipped and forgotten.
+
+**Recommendation:** ship for the narrow segment as already scoped; don't treat this as an adoption feature. Close the [HIGH] delivery-guarantee gap before shipping. Document voluntary self-revocation explicitly. Leave the pairing-order-luck limitation documented but unsolved for now.
+
+### Action items
+
+- IMPLEMENTATION_PLAN.md Step 4: add revocation delivery retry/reconfirmation as a required task, not optional hardening
+- ROADMAP.md R1 §6: add the voluntary self-demotion case explicitly, distinct from the "mothership unavailable" case
+- FINDINGS.md: pairing-order-luck limitation logged above — no code action, tracked as a known limitation
+
+---
+
+## Design Session 10 — Revocation Delivery Gap: Concrete Mechanism (2026-08-03)
+
+**Question raised:** Design Session 9 flagged revocation delivery as [HIGH] and required "reconfirmation on ordinary bundle exchange until acknowledged," but didn't design how. What does that actually look like?
+
+**Confirmed against code: there is no automatic delivery channel post-pairing.** `Exchange+Manager.swift`'s `MCSession`/MultipeerConnectivity is used only for the initial UWB ceremony. Every bundle after that — ordinary messages, custody manifests, revocations — goes through `ActivityView.swift`'s `UIActivityViewController`: a manual, user-triggered share-sheet action, no persistent connection, no push channel. This rules out "automatic background retry" in the conventional sense; there's no process that could run it. Also confirms there is no delivery/read-receipt architecture at all, consistent with the no-server, forensic-trace-clean posture (a receipt channel would itself be a metadata signal).
+
+### Resolved: drop "until acknowledged"
+
+An explicit ack would itself be just another one-shot, manually-triggered bundle — exactly as capable of being lost as the original revocation. A round-trip ack protocol built on top of a fundamentally unreliable one-shot substrate mostly relocates the unreliability rather than closing it. Not adopted.
+
+### Resolved: unconditional, indefinite reattachment — no detection logic needed
+
+Every outbound bundle to a contact carries the full set of that identity's revoked devices relevant to that relationship, unconditionally, for as long as the relationship exists. No attempt to detect whether a prior copy already landed — none is needed, because revocation processing is already required to be idempotent (§9 test plan: "a revocation seen twice is a no-op"). Redundant delivery costs a few bytes and nothing else. Device revocations are rare events in practice (losing or replacing a phone), so accumulated history stays trivially small even over a years-long relationship; no pruning or expiry logic is worth building now.
+
+### Resolved: UI surfacing uses an honest proxy signal, not true acknowledgment
+
+True confirmation isn't obtainable without the ack mechanism just rejected. The UI instead lists **contacts with no bundle exchange since the revocation was issued** — a cheap, already-available signal (existing last-exchange timestamps) that is honestly imprecise (an exchange having happened doesn't *prove* the contact processed this specific revocation) but gives the user something actionable: who to consider reaching some other way (verbal, another app — same fallback already noted for R2's no-working-device case). This list is purely informational. It does not gate or affect the reattachment mechanism above, which runs unconditionally regardless of what the list shows.
+
+### Residual — disclosed, not solved
+
+A contact never messaged again after the revocation gets no further delivery attempts and never leaves the "hasn't heard" list. This is the same permanently-open case already stated in the R0 threat-model delta doc (ROADMAP.md §R0.3) — this mechanism makes it visible to the user instead of silent; it does not close it. No mechanism can, given the transport model.
+
+### Action items
+
+- IMPLEMENTATION_PLAN.md Step 4: replace "until acknowledged" with unconditional reattachment (idempotence-backed) plus the UI surfacing task
+- New UI task: "contacts who may not know yet" list, driven by last-exchange timestamp vs. revocation-issued timestamp — informational only, decoupled from the reattachment mechanism

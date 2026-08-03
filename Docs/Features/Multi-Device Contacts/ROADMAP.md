@@ -116,10 +116,14 @@ Every future signature verification rejects cross-prefix input — same mandate 
 
 ### 3. Write the threat-model delta doc per feature
 
-Write **before** implementation (checklist §4: state what is NOT achieved). Two honest deltas — down from an earlier draft's four, because removing R1's cert mechanism removed two PQ-signing deltas that no longer apply once R1 no longer shortcuts anything cryptographically:
-- **R1 has none.** Every device-contact pairing is a full physical UWB exchange, identical in strength to any other contact relationship — there is nothing to disclose.
-- Guardian collusion metadata exposure
-- Passkey hardware-binding is user-verifiable, not RP-attestable
+Write **before** implementation (checklist §4: state what is NOT achieved). Originally two honest deltas, down from an earlier draft's four once removing R1's cert mechanism removed two PQ-signing deltas that no longer applied. **Revised 2026-08-03:** R1 grew from a pure data-model bug fix into a scoped mothership/revocation/custody-authority model across FINDINGS.md Design Sessions 7–9, and "R1 has none" no longer reflects what's actually being built. Current deltas:
+
+- **R1, the pairing mechanism itself: still none.** Every device-contact pairing remains a full physical UWB exchange, identical in strength to any other contact relationship (D-07, unchanged by Sessions 7–9) — no vouching, no shortcut. This part of the original disclosure still holds exactly as written.
+- **R1, mothership is not a single global property of an identity.** Which of a user's devices is authoritative for shard/custody ops and revocation is resolved independently by each contact, from that contact's own local pairing-order history with the user's devices (Q-07). A user with two devices paired with different contacts in a different order can have — plausibly, not just theoretically — different contacts simultaneously recognizing *different* devices as their mothership. There is no single "my mothership" the app can show or the user can reason about without per-contact awareness it doesn't currently surface (Design Session 9).
+- **R1, revocation is eventually consistent, not guaranteed-delivered.** Even with the required reconfirmation-on-exchange behavior (Design Session 9), a contact who never returns online never learns of a revocation. If the revoked device was stolen rather than merely lost, that contact keeps trusting the attacker's device indefinitely. Inherent to serverless, peer-to-peer delivery — not solvable inside R1's scope, only mitigated.
+- **R1, the duress-resistance property is not automatic.** Restricting custody/revocation authority to the mothership only protects a user under coercion if the mothership happens to be a device not on their person at the time of coercion. Since mothership assignment is accidental (delta above) and invisible (Q-05, no device UI), a user cannot currently arrange this deliberately. The protection is real when it lands; nothing today makes it land on purpose.
+- Guardian collusion metadata exposure — **now also reachable via R1**, not only R2's original "total device loss" framing: R1 §6 routes any mothership-specific loss through R2's guardian mechanism, so R1's guardian-dependent path inherits this delta too.
+- Passkey hardware-binding is user-verifiable, not RP-attestable (R3)
 
 ### 4. Wire-format rule confirmation
 
@@ -157,11 +161,16 @@ Each device gets its own prekey pool with each contact, established the ordinary
 
 **This is the one place this plan can recreate the documented historical prekey flaw.** Write the trace test proving device A never consumes or ships device B's prekeys before this ships.
 
-### 6. Revocation
+### 6. Revocation — authority restricted to the per-contact mothership
 
-Two paths, both narrowing trust only — consistent with the standing principle above:
-- **You still have another working device:** that device live-signs `occulta-device-revocation-v1 ∥ lostDevicePubKey ∥ timestamp` (it has an SE — no pre-signing needed) and distributes it directly to every contact who has the lost device's key pinned. Contacts drop the revoked key immediately; UI: "Alex removed a device."
-- **You have no working device left at all:** out of scope for R1, covered by R2 (Guardian Revocation).
+**Added 2026-08-03 (FINDINGS.md, Design Session 7):** revocation authority is scoped to a contact's current *mothership* device — the same "trusted device" Q-07 already computes (oldest key with `expiredOn == nil` for that contact), now governing revocation in addition to shard-op routing. No new state: this is a jurisdiction extension of an existing computed value, not a new field. Reason: without this restriction, revocation is symmetric — any surviving device can forge "the primary is lost," so compromising a low-value secondary is enough to kill trust in the legitimate primary across the whole contact graph. Full reasoning: FINDINGS.md, Design Session 7.
+
+Three paths, all narrowing trust only — consistent with the standing principle above:
+- **The lost device is a secondary, the mothership survives:** the mothership live-signs `occulta-device-revocation-v1 ∥ lostDevicePubKey ∥ timestamp` (it has an SE — no pre-signing needed) and distributes it directly to every contact who has the lost device's key pinned. Contacts drop the revoked key immediately; UI: "Alex removed a device."
+- **Voluntary handoff — the mothership is still possessed and working, but the user wants a different device to hold authority (added 2026-08-03, FINDINGS.md Design Session 9):** distinct from "lost." The mothership device signs a revocation of *its own* public key — nothing in the Design Session 7 restriction prevents self-revocation, only revocation of *other* devices. This distributes the same way as any other revocation, and authority shifts to the next-oldest surviving device automatically, exactly as in the lost-mothership case below — but no guardians are involved, because the device signing is fully present and functional. This case exists specifically so a mismatched pairing-order (e.g., a test device that happened to pair first) can be corrected without a guardian flow.
+- **The lost device is the mothership itself, unavailable to sign anything:** no surviving secondary may revoke it unilaterally — that would reopen the symmetric-authority hole this restriction exists to close. Falls through to R2 (Guardian Revocation) — see R2 §4's updated framing, which already supports single-device revocation, not only total loss. Mothership authority then shifts automatically to the next-oldest surviving device per contact; this is a side effect of the existing recomputation, not a separate promotion step.
+
+**Delivery is not fire-and-forget (added 2026-08-03, FINDINGS.md Design Session 9 — [HIGH] finding, must close before shipping; mechanism resolved in Design Session 10):** a contact who is offline or drops the initial broadcast has no way to self-heal onto the correct answer, which is a real security gap, not just an availability one — if the lost device was stolen rather than merely lost, a desynced contact keeps honoring a signature from a device an attacker now holds. There is no automatic delivery channel to retry over — every bundle post-pairing (`ActivityView`'s share sheet) is a manual, user-triggered send, so "retry" cannot mean a background process. Resolution: every outbound bundle to that contact carries the full known-revoked-device set unconditionally, for as long as the relationship exists — no acknowledgment tracking, since redundant delivery is already safe (revocation processing is idempotent). A permanently-dormant contact who's never messaged again is disclosed as a residual, unclosable gap (see R0 §3 delta doc), surfaced to the user via an informational "may not know yet" list rather than left silent.
 
 ### 7. PQ posture
 
@@ -208,9 +217,9 @@ Constant-time GF(2^8) path already exists per the Master Analysis notes.
 
 ### 4. Guardian release flow
 
-Guardian-side UI: "Alex reports total device loss" → release shard to a coordinating guardian → K shards reconstruct → broadcast the full bundle to the guardian's own full contact list (safe per step 2).
+Guardian-side UI covers two cases, not just one (revised 2026-08-03, FINDINGS.md Design Session 7): "Alex reports total device loss" **or** "Alex's mothership device was lost, other devices still work" — R1 §6 routes mothership-specific loss here even when secondaries survive, since no secondary may unilaterally revoke a mothership. Either way: release shard to a coordinating guardian → K shards reconstruct → broadcast the full bundle to the guardian's own full contact list (safe per step 2).
 
-Each recipient opens only the blob(s) matching a device key they actually have pinned, verifies the SE signature against it, and marks that device revoked-pending-re-exchange. A contact who only ever knew one of your devices only ever revokes that one — correct, not a partial failure.
+Each recipient opens only the blob(s) matching a device key they actually have pinned, verifies the SE signature against it, and marks that device revoked-pending-re-exchange. A contact who only ever knew one of your devices only ever revokes that one — correct, not a partial failure. This is what makes the mothership-only case work without a separate mechanism: the per-device cert/blob design already supports revoking exactly one device.
 
 ### 5. Abuse containment
 
