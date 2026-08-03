@@ -1,6 +1,6 @@
 # Vault entries created at a duress depth permanently leak into the real (depth 0) vault
 
-**Status:** confirmed, not fixed. Three candidate fixes scoped below, none chosen or implemented — this doc exists to record the finding and the options for a later decision. Found while explaining the consequences of `Decoy-Vault-Entries-Unreachable-New-Entry-Sheet-Ignores-Depth.md`'s fix.
+**Status:** confirmed, not fixed. Three candidate fixes scoped below — A and B remain quick options; **Option C is now fully scoped in detail** (see "Option C, scoped" below), but none of the three has been chosen or implemented. This doc exists to record the finding and the options for a later decision. Found while explaining the consequences of `Decoy-Vault-Entries-Unreachable-New-Entry-Sheet-Ignores-Depth.md`'s fix.
 
 ## This is not a new bug introduced by the depth-passing fix — it's inherent to the ceiling model
 
@@ -27,13 +27,54 @@ This is a passive clue, not an active warning — nothing flags the entry as dur
 
 ## Option C, scoped
 
-This is comparable in size to the entire `Group` re-encryption fix (`Group-Reencryption-Multi-Second-Block-On-Visibility-Toggle.md`), not a follow-on tweak:
+**Status: fully scoped, not yet implemented.** Comparable in size to the entire `Group` re-encryption fix (`Group-Reencryption-Multi-Second-Block-On-Visibility-Toggle.md`), not a follow-on tweak — though it turns out to differ from that precedent (and from `GlobalShardConfig`'s per-depth schema change, `Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md` item 3) in two important ways: simpler in its data shape, riskier in its scale.
 
-1. **Data model:** `visibleThroughDepth`'s scalar ceiling needs to become a genuine per-depth-independent representation (an encrypted set/bitmask of visible depths), the same shape as `Group`'s independent per-depth member arrays rather than an extension of the current field. **The default must stay exactly as protective as today** — a depth-0-created entry defaults to visible-at-0-only, hidden from every duress depth, same as now. The new capability is purely additive: a separate entry explicitly scoped to a duress depth that never bleeds into the real view.
-2. **A mutation path that doesn't exist yet.** Checked: `visibleThroughDepth` is only ever set once, at creation (`Vault+Manager.swift:213`) — there's no way to edit an existing entry's visibility afterward. Genuine decoy authoring needs incremental editing, the way `Group.addMember(_:atDepth:)` works, not a creation-time-only stamp.
-3. **Migration, and a trap already hit once.** Existing rows (scalar ceiling N) need lazy, per-row migration to the new format (ceiling N → visible-at-{0...N}) — **not eager at launch.** `Group`'s `ensureDeeperSlotsPadded()` doc comment describes exactly this mistake being made and reverted already: an eager launch-time sweep "caused real device crashes/launch freezes from the sheer number of Keychain-backed crypto round trips."
-4. **The dominant cost: camouflage parity with `Group`.** If a per-entry visibility edit only touches that one entry's ciphertext, an examiner diffing the database can correlate "this entry's blob changed" with "this entry was just set up as a decoy" — the exact ciphertext-diff leak `Group`'s camouflage design exists to prevent. Matching that guarantee means every vault entry's ciphertext needs a fresh-nonce touch whenever *any* entry's visibility is edited. Built the wrong way, this is precisely the shape of bug that caused the original multi-second `Group` re-encryption hang — this needs the derive-once/batch-key-reuse pattern designed in from the start, not retrofitted after the fact.
-5. **UI:** no new authoring screen needed — matches how `Group` decoys already work. No explicit depth picker anywhere (the app never surfaces depth state); creating or editing a decoy entry happens implicitly by already being at that depth when using the existing create/edit UI.
+**Data model — simpler than `Group`/`GlobalShardConfig`, no padding scheme needed.** Unlike those two, this isn't a variable-length list of identifiers per depth — it's a single yes/no per depth for one entry. That's naturally fixed-size, so it needs no slot-count decision and no padding at all:
+```swift
+/// Encrypted UInt32 — bit N set means visible at depth N. Always encrypts all 32
+/// bits regardless of content, so unlike Group/GlobalShardConfig's variable-length
+/// member lists, no padding scheme is needed — the representation is fixed-size
+/// by construction.
+var visibleDepthMask: Data? = nil
+```
+**The default must stay exactly as protective as today** — a depth-0-created entry defaults to visible-at-0-only, hidden from every duress depth, same as now. The new capability is purely additive.
+
+**Where the logic lives — matches `Group`, not `GlobalShardConfig`.** `GlobalShardConfig`'s per-depth methods had to live on `ShardCustodyManager` because its encryption depends on an injected key manager the model can't reach on its own. `VaultEntry.visibleThroughDepth` uses the same ambient global `Data.encrypt()`/`.decrypt()` extension `Group` and `Contact.Profile` use — not `VaultManager`'s own injected vault key. So the mask read/write logic belongs directly on `VaultEntry`, the way `Group.members(atDepth:)` does. The batch-sweep orchestration (below) fits on `VaultManager` instead, since it already owns every other entry-level mutation (`addEntry`, `deleteEntry`).
+
+**Read side needs zero caller changes.** `Manager.Security.isEntryVisible(_:)` keeps its exact existing signature — internally, check `visibleDepthMask` if present; if nil (not yet migrated), fall back to computing from the legacy `visibleThroughDepth` ceiling *without mutating anything*. Migration is a write-time concern only — mutating during a `visibleEntries` filter pass, which SwiftUI can re-invoke on every render, would be a real smell. `Vault+Tab.swift`'s existing filter needs no changes at all.
+
+**Write side — new capability, and a subtlety worth stating precisely:**
+```swift
+extension VaultManager {
+    /// Sets whether `entry` is visible at `depth`. Migrates entry's legacy ceiling
+    /// to the new mask first if not yet migrated, then refreshes every other vault
+    /// entry's mask ciphertext in the same pass — so neither which entry was just
+    /// edited, nor which entries have been migrated yet, is inferable from a diff.
+    func setEntryVisible(_ entry: VaultEntry, visible: Bool, atDepth depth: Int) throws
+}
+```
+Migration can't happen in isolation, even for just the entry being edited — if entry A gets migrated because someone edited it, while untouched entry B still has `visibleDepthMask == nil`, then *whether an entry has been migrated at all* becomes its own signal, correlating with "this entry was recently touched by decoy-authoring." Same class of leak `Group`'s own doc comments warn about for padding done in isolation. Fix: any single edit's mandatory "touch every other entry" sweep must migrate *every* not-yet-migrated entry at the same time, not just the one being edited — after the first-ever decoy edit, every vault entry ends up mask-populated together, indistinguishably.
+
+**The real risk difference from `GlobalShardConfig`: this is `Group`-scale, not singleton-scale.** `GlobalShardConfig` is one row — re-encrypting "everything" on every edit costs one key derivation, cheap by construction. `VaultEntry` is not a singleton — one row per vault item — so "touch every entry's ciphertext on any single edit" is exactly the shape of cost that caused the original multi-second `Group` hang. Must be built with the derive-once/batch-key-reuse pattern from day one, not retrofitted after the fact.
+
+**Concrete upside: no new crypto plumbing needed at all.** `visibleThroughDepth`/the new mask use the identical ambient key (`Manager.Key().createHybridLocalEncryptionKey()`) `Group`'s fix already targets, and the key-accepting primitives already shipped for it — `Data.encrypt(using:)`/`Data.decrypt(using:)` (`Crypto+Manager.swift`) — are directly reusable here. `setEntryVisible` derives the key once, calls `VaultManager.fetchAllEntries()`, and reuses the derived key across every row's refresh, the same way `cleanUpGroupDuressMembership` already does for groups.
+
+**Migration timing:** lazy, write-triggered, folded into the mandatory sweep — never eager at launch. Eager-at-launch *would* hit the exact crash risk `Group` already reverted once, since there are many `VaultEntry` rows, unlike `GlobalShardConfig`'s singleton case where eager was judged acceptable.
+
+**UI:** no new authoring screen needed, matching how `Group` decoys already work — no explicit depth picker anywhere; creating or editing a decoy entry happens implicitly by already being at that depth when using the existing create/edit UI.
+
+## The dominant risk, and required mitigations
+
+Of everything above, one risk sits well above the rest: a subtle bug here doesn't just break a feature — it could make a real vault entry (a seed phrase, a password) visible at a duress depth it should never appear at, in exactly the scenario a real user has the least room to recover from. The following are not optional hardening — they're required properties of the implementation, and **each one must be written down as an explicit doc comment on the relevant code when this is built**, the same way `Group`'s own doc comments spell out its camouflage invariants, so the reasoning survives the person who wrote it.
+
+1. **Fail-closed as a hard invariant.** The current ceiling code already does this — `isEntryVisible`'s decrypt-failure path returns `false`, never `true`. This must carry through explicitly: any ambiguity (decrypt failure, unexpected state, an incomplete migration) resolves toward "hidden," never toward "visible." Worst case from a bug should be an entry reverting to depth-0-only — never becoming visible somewhere it shouldn't.
+2. **Fail-loud on read failure during the sweep — never a silent guessed write.** Exact lesson from the `Group` key-threading risk: a decrypt failure must never be treated as "assume empty/default and write that back." If any entry's mask can't be read/verified during the "touch everyone" sweep, the whole operation throws and aborts — nothing saves for anyone, since nothing commits until one final `save()`.
+3. **One single, sanctioned writer.** All mask mutations go through the one sweep function. `visibleDepthMask` should not be a plain settable property — `private(set)` or equivalent, so bypassing the discipline is a compile error, not a code-review convention someone could violate later.
+4. **Read-verify-before-commit.** After computing every entry's new sealed mask, before the batch `save()`, re-decrypt each freshly-sealed value in memory and confirm it matches the intended plaintext. Catches "encrypted the wrong thing" before it ever reaches disk.
+5. **Tests targeting these exact failure modes, not just the happy path** — a wrong-key-mid-sweep test asserting the whole operation throws (mirroring the equivalent `Group` test already written), a test confirming decrypt failure resolves to hidden, and a strong regression suite confirming entries never touched by this system behave identically to today's ceiling behavior.
+6. **No audit/change log, even though normal engineering practice would suggest one for debugging this class of bug.** A log of visibility changes would itself be exactly the forensic evidence a coercer or examiner could use — directly violating "must be forensic trace clean." Explicitly not a mitigation to reach for here.
+7. **Manual on-device verification as a release gate, not just unit tests** — create real entries, mark some duress-only, enter the duress PIN, confirm only the intended set shows. Matches the UI-wiring verification gap already hit elsewhere this session (SwiftUI call sites aren't provably correct from unit tests alone).
+8. **A dedicated review pass asking only one question:** does every code path here fail toward hidden, and is there any spot where a decrypt failure or exception gets silently swallowed? Not folded into general code review — a deliberate, separate pass.
 
 ## Not yet decided
 
