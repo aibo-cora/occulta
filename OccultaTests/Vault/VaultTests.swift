@@ -323,13 +323,12 @@ private func secureEnclaveAvailable() -> Bool {
         #expect(value == 0)
     }
 
-    // visibleThroughDepth is a one-directional ceiling — "visible from depth 0 up
-    // through N, hidden beyond N" — the same shape as Contact.Profile's sensitivity
-    // model (isSensitive: "visible now, hidden at the next layer"). It is NOT a
-    // per-depth-independent decoy mechanism the way Group's member slots are: a
-    // single scalar cannot express "hidden at depth 0, visible only starting at
-    // depth 2." An entry stamped depth 2 is visible at depths 0, 1, AND 2 — it does
-    // not hide from the real (depth 0) view at all.
+    // visibleThroughDepth is an exact-depth match, not a ceiling: an entry is
+    // visible only at exactly the depth it was created at (nil = never
+    // classified, visible everywhere). Deliberately not "visible 0 through N" —
+    // see Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md
+    // for why a ceiling let an entry created at a duress depth leak into every
+    // shallower depth, including the real depth 0.
 
     @Test func isEntryVisible_stampedDepth0_onlyVisibleAtDepth0() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
@@ -342,12 +341,12 @@ private func secureEnclaveAvailable() -> Bool {
         security.applyVerifyState(for: .normal(depth: 0))
         #expect(security.isEntryVisible(entry))
         security.applyVerifyState(for: .normal(depth: 1))
-        #expect(!security.isEntryVisible(entry), "an entry stamped depth 0 must hide at any deeper depth")
+        #expect(!security.isEntryVisible(entry), "an entry stamped depth 0 must hide at any other depth")
         security.applyVerifyState(for: .normal(depth: 3))
         #expect(!security.isEntryVisible(entry))
     }
 
-    @Test func isEntryVisible_stampedDepthN_visibleThroughN_hiddenBeyond() throws {
+    @Test func isEntryVisible_stampedDepthN_onlyVisibleAtN_hiddenElsewhere() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _)  = try makeVaultManager()
         vm.unlock(context: LAContext())
@@ -356,11 +355,11 @@ private func secureEnclaveAvailable() -> Bool {
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
 
         security.applyVerifyState(for: .normal(depth: 0))
-        #expect(security.isEntryVisible(entry), "an entry stamped depth 2 is still visible at shallower depth 0 — the ceiling model is one-directional, not a decoy mechanism")
+        #expect(!security.isEntryVisible(entry), "an entry stamped depth 2 must NOT leak into the real (depth 0) view — this is the bug this fix closes")
         security.applyVerifyState(for: .normal(depth: 2))
         #expect(security.isEntryVisible(entry), "visible at its own stamped depth")
         security.applyVerifyState(for: .normal(depth: 3))
-        #expect(!security.isEntryVisible(entry), "hidden beyond its stamped depth")
+        #expect(!security.isEntryVisible(entry), "hidden at any other depth too, including deeper ones")
     }
 
     @Test func isEntryVisible_legacyNilVisibleThroughDepth_alwaysVisible() throws {
@@ -374,28 +373,32 @@ private func secureEnclaveAvailable() -> Bool {
         #expect(security.isEntryVisible(entry), "a row with no visibleThroughDepth (pre-dating this field) must stay visible")
     }
 
-    @Test func visibleEntries_endToEnd_filtersByCeiling() throws {
+    @Test func visibleEntries_endToEnd_exactMatchOnly() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext())
 
-        let shallow = try vm.addEntry(label: "shallow", content: Data(), type: .note, currentDepth: 0)
-        let deeper  = try vm.addEntry(label: "deeper",  content: Data(), type: .note, currentDepth: 3)
+        let real  = try vm.addEntry(label: "real",  content: Data(), type: .note, currentDepth: 0)
+        let decoy = try vm.addEntry(label: "decoy", content: Data(), type: .note, currentDepth: 3)
 
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         let all      = try vm.fetchAllEntries()
 
         security.applyVerifyState(for: .normal(depth: 0))
         var visible = all.filter { security.isEntryVisible($0) }
-        #expect(Set(visible.map(\.id)) == Set([shallow.id, deeper.id]), "at depth 0, both entries are visible — a deeper ceiling still covers shallower depths")
+        #expect(visible.map(\.id) == [real.id], "at the real depth, only the real entry shows — the duress-depth entry must not leak in")
 
         security.applyVerifyState(for: .normal(depth: 1))
         visible = all.filter { security.isEntryVisible($0) }
-        #expect(visible.map(\.id) == [deeper.id], "at depth 1, the depth-0-stamped entry has already dropped out")
+        #expect(visible.isEmpty, "at depth 1, neither entry was stamped here")
+
+        security.applyVerifyState(for: .normal(depth: 3))
+        visible = all.filter { security.isEntryVisible($0) }
+        #expect(visible.map(\.id) == [decoy.id], "at depth 3, only the entry stamped exactly there shows")
 
         security.applyVerifyState(for: .normal(depth: 4))
         visible = all.filter { security.isEntryVisible($0) }
-        #expect(visible.isEmpty, "at depth 4, both have dropped out")
+        #expect(visible.isEmpty, "at depth 4, neither entry was stamped here")
     }
 }
 

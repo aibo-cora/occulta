@@ -1309,12 +1309,19 @@ extension Manager {
         // MARK: - Safe vault entries
 
         /// Returns true if the vault entry is visible at the current depth.
+        ///
+        /// Exact-depth match, not a ceiling: an entry is visible only at the exact
+        /// depth it was created at (`nil` = never classified, always visible — see
+        /// `VaultManager.addEntry`). Deliberately not `value >= currentDepth` — see
+        /// `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
+        /// for why a ceiling lets an entry created at a duress depth leak into every
+        /// shallower depth, including the real depth 0.
         func isEntryVisible(_ entry: VaultEntry) -> Bool {
             guard let data = entry.visibleThroughDepth else { return true }
             guard let decrypted = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)
             else { return false }  // non-nil field that won't decrypt = sensitive shell; exclude
-            return value >= self.currentDepth
+            return value == self.currentDepth
         }
 
         // MARK: - Private

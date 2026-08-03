@@ -1,6 +1,6 @@
 # Vault entries created at a duress depth permanently leak into the real (depth 0) vault
 
-**Status:** confirmed, not fixed. Three candidate fixes scoped below — A and B remain quick options; **Option C is now fully scoped in detail** (see "Option C, scoped" below), but none of the three has been chosen or implemented. This doc exists to record the finding and the options for a later decision. Found while explaining the consequences of `Decoy-Vault-Entries-Unreachable-New-Entry-Sheet-Ignores-Depth.md`'s fix.
+**Status: fixed** — see "Implementation status" at the bottom. Found while explaining the consequences of `Decoy-Vault-Entries-Unreachable-New-Entry-Sheet-Ignores-Depth.md`'s fix. **Superseded plan:** Options A/B/C and the full bitmask-based "Option C" design below were all scoped and (C) briefly implemented before a much smaller fix was found — kept in this doc for the reasoning trail, not as the shipped design. See "The actual fix: exact-depth match, not a ceiling" below.
 
 ## This is not a new bug introduced by the depth-passing fix — it's inherent to the ceiling model
 
@@ -17,7 +17,26 @@ If someone is coerced into creating a vault entry while at a duress depth (or cr
 
 This is a passive clue, not an active warning — nothing flags the entry as duress-created (no depth information is ever shown anywhere in the entry detail view, confirmed by inspection), consistent with the app's principle of never surfacing explicit depth state. Recognizing it requires the user to notice an unfamiliar row and mentally connect its date to a coercion incident.
 
-## Candidate fixes, none chosen
+## The actual fix: exact-depth match, not a ceiling
+
+While wiring up the bitmask-based Option C below, one question exposed a much simpler fix: *why build all this instead of just treating every entry as "sensitive at its own creation depth," the way `Contact.Profile` already works?*
+
+**The answer is that this is almost what's needed — the fix is a one-line change, not a new mutation system.** `isEntryVisible`'s check was `value >= currentDepth` (a ceiling: visible from 0 through the stamped depth). Changing it to `value == currentDepth` (exact match: visible *only* at the stamped depth) closes the leak directly, with no new field, no new mutation function, no migration, and almost none of the risk scoped below.
+
+**Why this doesn't lose anything for normal usage.** Nearly all real usage creates entries at depth 0 (Secure Mode isn't active for most users). Under a ceiling, a depth-0 entry is visible only at depth 0 anyway (`0 >= 0` true, `0 >= 1` false) — under exact match, identical result. The two models only diverge for entries created away from depth 0, which is exactly the case that needs fixing, not a case worth preserving.
+
+**Forensic analysis, done before implementing, not after:**
+- **On-disk representation is unchanged.** Same encrypted `Int`, same field, same AAD, same key. Only the comparison in `isEntryVisible` changes — a read-only interpretation of an already-existing value.
+- **No new ciphertext-diff signal.** `visibleThroughDepth` was already write-once-at-creation before this fix (there was never a post-creation edit path for it) and stays that way — there's no edit event to correlate via diffing, before or after.
+- **No new exposure to an examiner with the key.** Decrypting `visibleThroughDepth` reveals the identical plaintext `Int` under both interpretations — "the depth this entry was created at." Only the app's own comparison logic differs.
+- **The bug was actually broader than scoped, and this closes all of it.** A ceiling makes an entry visible at *every shallower depth*, not just the real depth 0 — an entry stamped for duress depth 3 was already leaking into depth 2 and depth 1 too, not only depth 0. Exact match closes all of that uniformly.
+- **No regression on the direction that already worked.** Hiding from deeper depths than creation was already correct under a ceiling and stays correct under exact match.
+- **Confirmed properly scoped.** `Contact.Profile` has its own separate visibility function (`Manager.Security.isVisible(_:atDepth:)`) that genuinely depends on ceiling/range semantics — `Int.max` marks a contact "safe" (always visible), which only works because `value >= depth` is always true for `Int.max`. This fix only touches `isEntryVisible` (the `VaultEntry`-specific function); Contact classification is untouched. Confirmed via full-codebase grep that nothing else reads `VaultEntry.visibleThroughDepth`'s value directly with its own comparison logic, and that `addEntry` never produces a non-nil "always visible" stamp today, so no reachable capability is being removed.
+- **Secure Mode activation/deactivation's re-encryption of this field is unaffected** — those paths decrypt the current `Int` and re-seal it under a new key during rotation; they don't interpret it, so they're indifferent to the comparison change.
+
+**What this means for the options below:** Option C (the bitmask/migration/sweep system) is unnecessary — its entire purpose was enabling independent multi-depth visibility per entry, which turned out not to be needed to close the leak. Options A and B are also moot now that the actual fix is smaller and lower-risk than either.
+
+## Candidate fixes, none chosen (superseded — kept for the reasoning trail)
 
 **Option A — block creation entirely away from depth 0.** Hide or disable the "+" button in `Vault+Tab.swift` when `security.isRestricted`. Simplest; nothing created, nothing to leak. Risk: the button visibly behaving differently at a duress depth is itself a signal, cutting against the app's principle of never visibly betraying duress state.
 
@@ -25,9 +44,9 @@ This is a passive clue, not an active warning — nothing flags the entry as dur
 
 **Option C — real decoy support (materially bigger, scoped in full below).**
 
-## Option C, scoped
+## Option C, scoped (superseded — not what shipped, kept for the reasoning trail)
 
-**Status: fully scoped, not yet implemented.** Comparable in size to the entire `Group` re-encryption fix (`Group-Reencryption-Multi-Second-Block-On-Visibility-Toggle.md`), not a follow-on tweak — though it turns out to differ from that precedent (and from `GlobalShardConfig`'s per-depth schema change, `Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md` item 3) in two important ways: simpler in its data shape, riskier in its scale.
+**Status: scoped, briefly implemented, then replaced by the much smaller fix above.** Comparable in size to the entire `Group` re-encryption fix (`Group-Reencryption-Multi-Second-Block-On-Visibility-Toggle.md`), not a follow-on tweak — though it turns out to differ from that precedent (and from `GlobalShardConfig`'s per-depth schema change, `Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md` item 3) in two important ways: simpler in its data shape, riskier in its scale.
 
 **Data model — simpler than `Group`/`GlobalShardConfig`, no padding scheme needed.** Unlike those two, this isn't a variable-length list of identifiers per depth — it's a single yes/no per depth for one entry. That's naturally fixed-size, so it needs no slot-count decision and no padding at all:
 ```swift
@@ -63,9 +82,9 @@ Migration can't happen in isolation, even for just the entry being edited — if
 
 **UI:** no new authoring screen needed, matching how `Group` decoys already work — no explicit depth picker anywhere; creating or editing a decoy entry happens implicitly by already being at that depth when using the existing create/edit UI.
 
-## The dominant risk, and required mitigations
+## The dominant risk, and required mitigations (moot — this risk applied to the superseded Option C design, not to the fix that shipped)
 
-Of everything above, one risk sits well above the rest: a subtle bug here doesn't just break a feature — it could make a real vault entry (a seed phrase, a password) visible at a duress depth it should never appear at, in exactly the scenario a real user has the least room to recover from. The following are not optional hardening — they're required properties of the implementation, and **each one must be written down as an explicit doc comment on the relevant code when this is built**, the same way `Group`'s own doc comments spell out its camouflage invariants, so the reasoning survives the person who wrote it.
+Kept for the record, since it's the reasoning that led to finding the simpler fix. Of everything above, one risk sits well above the rest: a subtle bug here doesn't just break a feature — it could make a real vault entry (a seed phrase, a password) visible at a duress depth it should never appear at, in exactly the scenario a real user has the least room to recover from. The following are not optional hardening — they're required properties of the implementation, and **each one must be written down as an explicit doc comment on the relevant code when this is built**, the same way `Group`'s own doc comments spell out its camouflage invariants, so the reasoning survives the person who wrote it.
 
 1. **Fail-closed as a hard invariant.** The current ceiling code already does this — `isEntryVisible`'s decrypt-failure path returns `false`, never `true`. This must carry through explicitly: any ambiguity (decrypt failure, unexpected state, an incomplete migration) resolves toward "hidden," never toward "visible." Worst case from a bug should be an entry reverting to depth-0-only — never becoming visible somewhere it shouldn't.
 2. **Fail-loud on read failure during the sweep — never a silent guessed write.** Exact lesson from the `Group` key-threading risk: a decrypt failure must never be treated as "assume empty/default and write that back." If any entry's mask can't be read/verified during the "touch everyone" sweep, the whole operation throws and aborts — nothing saves for anyone, since nothing commits until one final `save()`.
@@ -76,6 +95,13 @@ Of everything above, one risk sits well above the rest: a subtle bug here doesn'
 7. **Manual on-device verification as a release gate, not just unit tests** — create real entries, mark some duress-only, enter the duress PIN, confirm only the intended set shows. Matches the UI-wiring verification gap already hit elsewhere this session (SwiftUI call sites aren't provably correct from unit tests alone).
 8. **A dedicated review pass asking only one question:** does every code path here fail toward hidden, and is there any spot where a decrypt failure or exception gets silently swallowed? Not folded into general code review — a deliberate, separate pass.
 
-## Not yet decided
+## Implementation status
 
-Whether to ship A, B, or hold for C. Nothing implemented.
+**Done — the exact-depth-match fix, not Option C.**
+
+- **`Manager.Security.isEntryVisible(_:)`** (`Manager+Security.swift`) — the entire fix: `value >= self.currentDepth` changed to `value == self.currentDepth`. Doc comment updated to explain why (exact match, not a ceiling) and point at this doc for the reasoning.
+- **`VaultEntry.visibleThroughDepth`'s doc comment** (`Vault+Model.swift`) updated to describe exact-depth-stamp semantics instead of ceiling semantics.
+- **Everything built for Option C was removed after being briefly implemented and tested**, once the simpler fix was found: `visibleDepthMask`, `MaskReadResult`, `readRawMask`, `legacyMaskEquivalent`, `isVisible(atDepth:)`/`isVisible(atDepth:usingKey:)`, `applySealedMask` (all from `VaultEntry`), the `VaultManager.setEntryVisible` sweep (`Vault+Manager+Visibility.swift`, deleted entirely), and the three `VaultError` cases added for it (`.visibilityKeyUnavailable`, `.visibilityMaskCorrupted`, `.visibilityVerificationFailed`).
+- **Tests rewritten accordingly** (`VaultEntryDepthVisibilityTests` in `VaultTests.swift`) — `SetEntryVisibleTests` (7 tests for the removed sweep) deleted; the ceiling-parity tests updated to assert exact-match behavior instead, including a direct test that an entry stamped for a duress depth does *not* leak into the real depth-0 view (the actual bug this doc is about) and does not leak into other duress depths either.
+- **Verified:** full `OccultaTests` suite — 670 passed, 0 real failures (one confirmed pre-existing flaky timing test, unrelated, seen intermittently throughout this session on the unmodified codebase too).
+- **What's still open:** there's still no UI that lets a user build decoy entries at a specific duress depth — nothing calls `addEntry(currentDepth:)` from anywhere except the one already-fixed "+" sheet, which always uses the *current* depth implicitly. That's arguably sufficient on its own (walk into a duress depth via PIN, create entries normally, they're now correctly exact-depth-scoped) — no additional UI wiring was identified as necessary, unlike Option C's design which assumed a `setEntryVisible` call site was still needed.
