@@ -401,8 +401,12 @@ final class ShardCustodyManager {
         try self.modelContext.save()
     }
 
-    // MARK: - Global shard config
+    // MARK: - Global shard config (read-only — orphaned as of item 3's consolidation)
 
+    /// Read-only, and only for `DatabaseMigration.migrateGlobalShardConfigToPerContact`
+    /// — the one-time migration onto `Contact.Profile.globalTrusteeDepth`, the single
+    /// trustee mechanism at every depth. No app code writes `GlobalShardConfig` anymore;
+    /// once that migration has run for a given store, this always returns nil.
     func globalShardConfig() throws -> GlobalShardConfig.Payload? {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
@@ -416,63 +420,26 @@ final class ShardCustodyManager {
         return nil
     }
 
-    func decryptGlobalConfig(_ row: GlobalShardConfig) throws -> GlobalShardConfig.Payload? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        return try? self.openRow(row.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: row.id)
-    }
-
-    func saveGlobalShardConfig(_ payload: GlobalShardConfig.Payload) throws {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        let existing = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
-        for row in existing { self.modelContext.delete(row) }
-        let rowID    = UUID()
-        let combined = try self.sealRow(payload, using: custodyKey, id: rowID)
-        self.modelContext.insert(GlobalShardConfig(id: rowID, encryptedPayload: combined))
-        try self.modelContext.save()
-    }
-
-    /// Merges an edited *visible* trustee selection into the full stored list —
-    /// never a wholesale replace. A caller that only shows currently-visible
-    /// candidates (e.g. a duress-depth-filtered picker) must not save just that
-    /// subset directly: `saveGlobalShardConfig(_:)` deletes and replaces the whole
-    /// row, so doing that would silently delete every currently-hidden trustee.
-    ///
-    /// `isVisible` classifies each identifier *currently stored* in `trusteeIDs`:
-    /// identifiers it reports as not visible are preserved untouched; everything
-    /// else is replaced wholesale by `visibleSelection`. Callers should return
-    /// `false` (preserve, don't touch) for any identifier they can't resolve or
-    /// evaluate, rather than guessing.
-    func saveGlobalShardConfig(mergingVisibleSelection visibleSelection: Set<String>, isVisible: (String) -> Bool) throws {
-        let current = try self.globalShardConfig()?.trusteeIDs ?? []
-        let hidden  = current.filter { !isVisible($0) }
-        try self.saveGlobalShardConfig(.init(trusteeIDs: hidden + Array(visibleSelection)))
-    }
-
     // MARK: - Contact deletion cleanup
 
     /// Removes every trace of a deleted contact from shard-custody state: any
     /// `CustodyShard` this device holds on their behalf, any `PendingShardDistribute`
-    /// still owed to them, any `PotentiallyLostShard` watch row for them, and their
-    /// identifier from `GlobalShardConfig.trusteeIDs` if they were a default trustee.
-    /// Called from `ContactManager.deleteContact`.
+    /// still owed to them, and any `PotentiallyLostShard` watch row for them. Called
+    /// from `ContactManager.deleteContact`.
+    ///
+    /// Global-trustee status (`Contact.Profile.globalTrusteeDepth`) needs no purge step
+    /// here — it lives on the contact's own row, which is soft-deleted (not hard-
+    /// deleted) by `deleteContact`, and every read of `globalTrusteeDepth` already
+    /// excludes rows with a non-nil `deletionToken`. The designation becomes
+    /// unreachable the moment the contact is deleted, with nothing separate to purge.
     ///
     /// Unconditional, not depth-gated: unlike `Group`'s duress-depth membership,
-    /// nothing here holds separate per-depth decoy content — `GlobalShardConfig` is a
-    /// single flat setting with no depth-aware storage anywhere in the app today. A
-    /// deleted contact is invalid everywhere, and removing exactly this one identifier
-    /// from these lists touches nothing else — the same shape of operation as
-    /// `Group.purgeMember(_:)`, which is likewise ungated for the same reason.
+    /// nothing here holds separate per-depth decoy content. A deleted contact is
+    /// invalid everywhere, and removing their rows from these three stores touches
+    /// nothing else — the same shape of operation as `Group.purgeMember(_:)`, which is
+    /// likewise ungated for the same reason.
     ///
-    /// `GlobalShardConfig` is resaved unconditionally, even when `identifier` was never
-    /// a trustee — otherwise a ciphertext diff across multiple deletions would reveal
-    /// which deletions actually removed a trustee, without ever decrypting anything.
-    /// Mirrors `Group.refreshCiphertext()`'s unconditional-touch camouflage.
-    ///
-    /// Derives the shard-custody key once and reuses it across all four steps below,
+    /// Derives the shard-custody key once and reuses it across all three steps below,
     /// rather than once per step.
     func purgeCustody(for identifier: String) throws {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
@@ -504,20 +471,6 @@ final class ShardCustodyManager {
             else { continue }
             self.modelContext.delete(row)
         }
-
-        // 4. GlobalShardConfig.trusteeIDs — remove identifier if present. Always
-        //    resaved (see doc comment above), whether or not it was actually removed.
-        let existingConfig  = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
-        let currentTrustees = existingConfig.first.flatMap {
-            try? self.openRow($0.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: $0.id)
-        }?.trusteeIDs ?? []
-        for row in existingConfig { self.modelContext.delete(row) }
-        let rowID    = UUID()
-        let combined = try self.sealRow(
-            GlobalShardConfig.Payload(trusteeIDs: currentTrustees.filter { $0 != identifier }),
-            using: custodyKey, id: rowID
-        )
-        self.modelContext.insert(GlobalShardConfig(id: rowID, encryptedPayload: combined))
 
         try self.modelContext.save()
     }

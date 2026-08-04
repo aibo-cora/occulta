@@ -205,6 +205,9 @@ class ContactManager {
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
             newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
+            // until explicitly marked one via VaultGlobalTrustees.
+            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -385,6 +388,9 @@ class ContactManager {
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
             newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
+            // until explicitly marked one via VaultGlobalTrustees.
+            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -449,9 +455,10 @@ class ContactManager {
     /// following the same shape as `encryptGroupBundle`/`activateSecureMode` — so a
     /// call site without them just skips shard-custody cleanup rather than failing.
     /// When provided, purges `CustodyShard`/`PendingShardDistribute`/
-    /// `PotentiallyLostShard`/`GlobalShardConfig.trusteeIDs` for this identifier (see
+    /// `PotentiallyLostShard` for this identifier (see
     /// `ShardCustodyManager.purgeCustody(for:)`) and marks any of this contact's
-    /// outstanding vault shards lost.
+    /// outstanding vault shards lost. Global-trustee status needs no separate purge —
+    /// it lives on the contact's own (now soft-deleted) row.
     func deleteContact(
         identifier: String,
         vaultManager: VaultManager? = nil,

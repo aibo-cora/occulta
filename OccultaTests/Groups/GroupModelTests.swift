@@ -1022,10 +1022,13 @@ struct GroupStructuralTests {
         #expect(group.members(atDepth: 0) == [bystander])
     }
 
-    // Confirms the wiring, not just ShardCustodyManager.purgeCustody(for:) in
-    // isolation (covered thoroughly in ShardCustodyPurgeTests.swift) — that
-    // deleteContact actually calls it when a manager is supplied.
-    @Test func deleteContact_withShardCustodyManager_purgesGlobalShardConfigTrustee() throws {
+    // Confirms the wiring, and the item 3 consolidation's design decision: deleting
+    // a contact needs no separate global-trustee purge step at all —
+    // ShardCustodyManager.purgeCustody(for:) no longer touches trustee state (see
+    // the shard-custody bug doc, item 3). globalTrusteeDepth lives on the contact's
+    // own row, which deleteContact soft-deletes, and every trustee read already
+    // excludes soft-deleted rows.
+    @Test func deleteContact_makesGlobalTrusteeDesignationUnreachable() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
 
         let schema = Schema([
@@ -1043,13 +1046,18 @@ struct GroupStructuralTests {
         let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
         let vault     = VaultManager(modelContainer: container, keyManager: km)
 
-        let identifier = UUID().uuidString
-        try self.insertPlainProfile(identifier: identifier, in: cm)
-        try custody.saveGlobalShardConfig(.init(trusteeIDs: [identifier, "someone-else"]))
+        let target = UUID().uuidString
+        let other  = UUID().uuidString
+        try self.insertPlainProfile(identifier: target, in: cm)
+        try self.insertPlainProfile(identifier: other, in: cm)
+        try cm.saveGlobalTrusteeDepth(selectedIDs: [target, other])
+        #expect(cm.isGlobalTrustee(target))
+        #expect(cm.isGlobalTrustee(other))
 
-        try cm.deleteContact(identifier: identifier, vaultManager: vault, shardCustodyManager: custody)
+        try cm.deleteContact(identifier: target, vaultManager: vault, shardCustodyManager: custody)
 
-        #expect(try custody.globalShardConfig()?.trusteeIDs == ["someone-else"])
+        #expect(!cm.isGlobalTrustee(target), "a deleted contact's trustee designation must become unreachable")
+        #expect(cm.isGlobalTrustee(other), "an unrelated contact's designation must survive")
     }
 }
 
@@ -1121,60 +1129,12 @@ struct GroupStructuralTests {
     }
 }
 
-// MARK: - ShardCustodyManager — merge-not-overwrite trustee save
+// MARK: - ShardCustodyManager — merge-not-overwrite trustee save (removed)
 //
-// Covers the sharp edge in Gap 2 item 2: once VaultGlobalTrustees only shows
+// Covered the sharp edge in Gap 2 item 2: once VaultGlobalTrustees only showed
 // currently-visible candidates, saving just that subset would silently delete
 // every currently-hidden trustee. saveGlobalShardConfig(mergingVisibleSelection:isVisible:)
-// exists specifically to prevent that.
-
-@Suite("ShardCustodyManager — merge-not-overwrite trustee save")
-@MainActor struct SaveGlobalShardConfigMergeTests {
-
-    private func makeCustody() throws -> ShardCustodyManager {
-        let km     = TestKeyManager()
-        let schema = Schema([GlobalShardConfig.self])
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        let container = try ModelContainer(for: schema, configurations: [config])
-        return ShardCustodyManager(modelContainer: container, keyManager: km)
-    }
-
-    @Test func preservesHiddenTrustees_whileApplyingVisibleEdits() throws {
-        let custody = try self.makeCustody()
-        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["visible-a", "hidden-b", "visible-c"]))
-
-        // Simulate a duress-depth save: only "visible-a"/"visible-c" were ever
-        // shown; the user deselects "visible-a" and the picker submits what it saw.
-        try custody.saveGlobalShardConfig(
-            mergingVisibleSelection: ["visible-c"],
-            isVisible: { $0 != "hidden-b" }
-        )
-
-        let result = Set(try custody.globalShardConfig()?.trusteeIDs ?? [])
-        #expect(result == ["hidden-b", "visible-c"], "hidden-b must survive untouched; visible-a's deselection must still apply")
-    }
-
-    @Test func mergingIntoEmptyConfig_justWritesTheSelection() throws {
-        let custody = try self.makeCustody()
-        #expect(try custody.globalShardConfig() == nil)
-
-        try custody.saveGlobalShardConfig(mergingVisibleSelection: ["alice"], isVisible: { _ in true })
-
-        #expect(try custody.globalShardConfig()?.trusteeIDs == ["alice"])
-    }
-
-    @Test func unresolvableStoredIdentifier_preservedByDefault() throws {
-        let custody = try self.makeCustody()
-        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["stale-deleted-contact"]))
-
-        // A caller that can't resolve an identifier to a contact returns false
-        // (not visible) for it — same convention VaultGlobalTrustees uses.
-        try custody.saveGlobalShardConfig(
-            mergingVisibleSelection: ["new-trustee"],
-            isVisible: { $0 == "new-trustee" ? true : false }
-        )
-
-        let result = Set(try custody.globalShardConfig()?.trusteeIDs ?? [])
-        #expect(result == ["stale-deleted-contact", "new-trustee"])
-    }
-}
+// existed specifically to prevent that, on the old flat GlobalShardConfig.trusteeIDs
+// storage. Removed along with that method as part of item 3's consolidation onto
+// Contact.Profile.globalTrusteeDepth (see the shard-custody bug doc) — each contact's
+// field is independent, so there is no flat list left to corrupt with a partial save.

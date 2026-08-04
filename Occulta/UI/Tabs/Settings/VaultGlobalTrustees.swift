@@ -6,8 +6,11 @@
 //  Selections here pre-populate VaultShardSetup when setting up shards for a
 //  new vault entry. Threshold (k) is a per-entry decision set in VaultShardSetup.
 //
-//  Storage: GlobalShardConfig (SwiftData), AES-GCM sealed under the shard
-//  custody key. Read and written through ShardCustodyManager.
+//  Storage: Contact.Profile.globalTrusteeDepth (SwiftData), an exact-match depth
+//  stamp — the single mechanism at every depth, including depth 0. Read and written
+//  through ContactManager. GlobalShardConfig is orphaned as of the item 3
+//  consolidation (see the shard-custody bug doc) — kept declared in the schema for
+//  one release for migration safety only, no longer read or written here.
 //
 
 import SwiftUI
@@ -15,8 +18,8 @@ import SwiftData
 
 struct VaultGlobalTrustees: View {
 
-    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(Manager.Security.self) private var security
+    @Environment(ContactManager.self) private var contactManager
     @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
@@ -269,29 +272,19 @@ struct VaultGlobalTrustees: View {
 
     // MARK: - Load / save
 
+    /// Reads `Contact.Profile.globalTrusteeDepth` exact-matches at the current depth —
+    /// the single mechanism at every depth, including depth 0.
     private func loadConfig() {
-        guard let config = try? shardCustodyManager?.globalShardConfig() else { return }
-        // Seed only currently-visible selections — matches what the picker can
-        // actually show and let the user toggle. Hidden trustees are preserved
-        // separately in save(), not tracked here.
-        let visibleIdentifiers = Set(self.mlkemContacts.map(\.identifier))
-        selectedIDs = Set(config.trusteeIDs).intersection(visibleIdentifiers)
+        selectedIDs = self.contactManager.globalTrusteeIdentifiers()
     }
 
-    /// Merges the visible, user-edited selection back into the full underlying
-    /// list — see `ShardCustodyManager.saveGlobalShardConfig(mergingVisibleSelection:isVisible:)`
-    /// for why a wholesale replace isn't safe here.
+    /// Writes `Contact.Profile.globalTrusteeDepth` at the current depth. No merge step
+    /// needed — unlike the old flat `GlobalShardConfig` list, each contact's field is
+    /// independent, so `saveGlobalTrusteeDepth` only ever touches displayable contacts
+    /// and can't corrupt anyone else's designation at a different depth.
     private func save() {
         do {
-            try shardCustodyManager?.saveGlobalShardConfig(
-                mergingVisibleSelection: selectedIDs,
-                isVisible: { id in
-                    guard let contact = self.allContacts.first(where: { $0.identifier == id }) else {
-                        return false // unresolvable, never shown to edit — preserve, don't guess
-                    }
-                    return self.security.isDisplayable(contact)
-                }
-            )
+            try self.contactManager.saveGlobalTrusteeDepth(selectedIDs: selectedIDs)
             dismiss()
         } catch {
             saveError = "Failed to save: \(error.localizedDescription)"

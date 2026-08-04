@@ -74,11 +74,23 @@ extension Contact {
         var deletionToken: Data? = nil
 
         /// Encrypted depth-visibility (encrypted JSON Int):
-        ///   nil  — always visible (default for all new contacts)
-        ///   0    — hidden at all duress depths
-        ///   N    — visible through duress depth N, hidden at N+1 and deeper
-        /// All non-nil values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+        ///   Int.max — always visible (default for all new contacts)
+        ///   0       — hidden at all duress depths
+        ///   N       — visible through duress depth N, hidden at N+1 and deeper
+        /// All values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+        /// Always non-nil after creation (Contact+Manager.swift) or the legacy backfill
+        /// migration — nil is not a valid steady state; see forensic-trace-avoidance.md S6.
         var visibleThroughDepth: Data? = nil
+
+        /// Encrypted global-trustee depth stamp (encrypted JSON Int), exact-match — not a
+        /// ceiling, unlike visibleThroughDepth:
+        ///   -1 — not a global trustee at the current depth (default for all new contacts)
+        ///   N  — marked a global trustee at exactly depth N; not surfaced at any other depth
+        /// Exact-match (mirroring VaultEntry.visibleThroughDepth) so a trustee designation
+        /// made under duress can never leak into the real depth-0 suggestion list or vice
+        /// versa. Always non-nil after creation or the backfill migration — nil is not a
+        /// valid steady state, same invariant as visibleThroughDepth.
+        var globalTrusteeDepth: Data? = nil
 
         /// Encrypted UInt8 — maximum bundle version this contact's app can decode.
         /// nil = unknown, treat as v3fs on send. Derived from `appVersion` in received bundles.

@@ -111,9 +111,6 @@ private enum TestSetupError: Error { case keyUnavailable }
 @MainActor private func lostShardRowCount(in container: ModelContainer) throws -> Int {
     try ModelContext(container).fetch(FetchDescriptor<PotentiallyLostShard>()).count
 }
-@MainActor private func globalConfigRows(in container: ModelContainer) throws -> [GlobalShardConfig] {
-    try ModelContext(container).fetch(FetchDescriptor<GlobalShardConfig>())
-}
 
 // MARK: - CustodyShard
 
@@ -189,78 +186,23 @@ private enum TestSetupError: Error { case keyUnavailable }
     }
 }
 
-// MARK: - GlobalShardConfig
-
-@Suite("purgeCustody — GlobalShardConfig")
-@MainActor struct PurgeCustody_GlobalShardConfigTests {
-
-    @Test func removesDeletedIdentifierFromTrusteeIDs() throws {
-        let (custody, _, _, container) = try makeCustodyRig()
-        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["alice", "carol"]))
-
-        try custody.purgeCustody(for: "alice")
-
-        let config = try custody.globalShardConfig()
-        #expect(config?.trusteeIDs == ["carol"])
-    }
-
-    @Test func resavesUnconditionally_evenWhenIdentifierWasNeverATrustee() throws {
-        // The camouflage requirement: a ciphertext diff must not reveal whether a
-        // given deletion actually removed a trustee. Deleting a contact who was
-        // never in trusteeIDs must still produce a fresh row (new id, new
-        // ciphertext) — not a no-op that leaves the old row untouched.
-        let (custody, _, _, container) = try makeCustodyRig()
-        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["carol"]))
-        let before = try globalConfigRows(in: container).first
-        #expect(before != nil)
-
-        try custody.purgeCustody(for: "not-a-trustee-at-all")
-
-        let after = try globalConfigRows(in: container).first
-        #expect(after != nil)
-        #expect(after!.id != before!.id, "GlobalShardConfig must be resaved (fresh row) on every deletion, not only when a trustee was actually removed")
-        #expect(after!.encryptedPayload != before!.encryptedPayload)
-
-        // Content is unchanged — "carol" was never touched.
-        let config = try custody.globalShardConfig()
-        #expect(config?.trusteeIDs == ["carol"])
-    }
-
-    @Test func createsConfigRow_evenWhenNoneExistedBefore() throws {
-        // Deliberate: purging must not skip GlobalShardConfig entirely just because
-        // the user never set up default trustees — otherwise "does a GlobalShardConfig
-        // row exist at all" becomes its own signal for "has this user ever used Vault
-        // trustees."
-        let (custody, _, _, container) = try makeCustodyRig()
-        #expect(try globalConfigRows(in: container).isEmpty)
-
-        try custody.purgeCustody(for: "alice")
-
-        let rows = try globalConfigRows(in: container)
-        #expect(rows.count == 1)
-        #expect(try custody.globalShardConfig()?.trusteeIDs == [])
-    }
-}
-
 // MARK: - Combined pass
 
 @Suite("purgeCustody — combined pass reuses one key derivation")
 @MainActor struct PurgeCustody_CombinedTests {
 
-    @Test func purgesAllFourStoresInOnePass() throws {
+    @Test func purgesAllThreeStoresInOnePass() throws {
         let (custody, vault, km, container) = try makeCustodyRig()
         let aliceKM = TestKeyManager()
 
         try receiveShard(from: aliceKM, ownerIdentifier: "alice", into: custody, vault: vault)
         try custody.queueDistribute(attribute: try makeAttr(signer: km), for: "alice")
         try insertPotentiallyLostShard(contactIdentifier: "alice", using: km, in: container)
-        try custody.saveGlobalShardConfig(.init(trusteeIDs: ["alice"]))
 
         try custody.purgeCustody(for: "alice")
 
         #expect(try custodyShardCount(in: container) == 0)
         #expect(try distributeRowCount(in: container) == 0)
         #expect(try lostShardRowCount(in: container) == 0)
-        #expect(try custody.globalShardConfig()?.trusteeIDs == [])
     }
 }

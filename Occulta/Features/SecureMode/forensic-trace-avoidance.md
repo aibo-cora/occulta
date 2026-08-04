@@ -61,6 +61,7 @@ Measures that prevent recovery of deleted or sensitive data from the raw databas
 | S6 | `visibleThroughDepth` watermark erased on deactivation | Medium | ✅ Bug 12 fixed |
 | S7 | All vault entries stamped hidden under staged key during activation | High | ✅ Bugs 26 & 27 fixed |
 | S8 | Vault entry row count and empty-vault UI visible during biometric-coerced duress — accepted gap (content cryptographically protected) | Medium | ✅ Design decision |
+| S9 | `globalTrusteeDepth` always non-nil; sole trustee mechanism, `GlobalShardConfig` orphaned | Medium | ✅ |
 
 ### S1 — DB key rotation on activation (cryptographic erasure)
 The local DB key is `ECDH(ourSEKey_localDB, G)` — device-bound and accessible when the device is unlocked. In duress mode the device is unlocked, so the current DB key is derivable. Without rotation, an examiner who extracts the raw SQLite file could use the current DB key to decrypt page-slack still containing deleted sensitive contacts. After rotation, deleted pages are encrypted under the old key, which is deleted after commit — the current DB key decrypts nothing from those pages. This is the core reason the DB key rotates on activation.
@@ -113,6 +114,38 @@ Deactivation Step 6 sets `entry.visibleThroughDepth = nil` unconditionally, rest
 **`visibleThroughDepth` at depth 0.** `addEntry` stamps every new entry with `visibleThroughDepth = encrypt(currentDepth)` even before Secure Mode is configured, so a non-nil value is not itself a Secure Mode tell. However, decrypting the field (canonical DB key, device unlocked) and finding `0` reveals the entry is hidden at all duress depths — confirming that the entry was deliberately excluded from the duress view.
 
 **No mitigation path without architectural change.** Eliminating the row-count tell requires either (a) not persisting vault entries in SQLite — instead keeping them entirely in memory from an SE-encrypted blob, analogous to Design B for contacts — or (b) padding with decoy rows, which adds complexity without a strong attacker model. Both are deferred. The biometric gate on vault content means the current gap exposes only metadata (count, timestamps), not secrets, without biometric coercion.
+
+### S9 — `globalTrusteeDepth`: always non-nil, sole trustee mechanism
+
+`Contact.Profile.globalTrusteeDepth` marks a contact as a suggested default trustee for
+Shamir shard distribution, at a specific depth (exact-match, mirroring
+`VaultEntry.visibleThroughDepth`: -1 = not a trustee, N = trustee at exactly depth N).
+Designed alongside S6's fix, so it never repeats the nil-as-default mistake: the field
+is stamped at contact creation (`Contact+Manager.swift`), preserved through
+activation/deactivation re-keying (including the blob round-trip via
+`LayerContact.globalTrusteeDepth`), and backfilled for pre-existing contacts
+(`DatabaseMigration.migrateGlobalTrusteeDepthBackfill`) — nil is never a valid steady
+state, same invariant as `visibleThroughDepth`.
+
+**Sole mechanism at every depth, including 0.** `globalTrusteeDepth` is the only global-
+trustee storage `Vault+ShardSetup.swift` and `VaultGlobalTrustees.swift` read or write,
+at any depth — a decoy trustee designation made under duress can never leak into the
+real suggestion list, and vice versa, because there is exactly one field per contact,
+gated by exact depth match. Without this, a vault entry set up while under duress could
+seed its trustee suggestions from the real global list, leaking real trustees'
+identities into a duress-visible screen — the same shape of leak as the vault-entries
+depth bug (see
+`Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`).
+
+**`GlobalShardConfig` orphaned, not deleted.** The old flat trustee list this field
+replaced (`GlobalShardConfig.trusteeIDs`) is migrated once
+(`DatabaseMigration.migrateGlobalShardConfigToPerContact`: stamps `globalTrusteeDepth =
+encrypt(0)` for each existing trustee, deletes the row) and then never read or written
+by app code again. The model stays declared in the schema for one release, since this
+project has no `VersionedSchema`/migration plan and dropping a whole `@Model` type
+relies on SwiftData's untested (here) automatic entity-removal inference — not worth
+the risk to real user data for what is otherwise a purely cosmetic cleanup. Scheduled
+for outright removal once the migration has had time to run in the wild.
 
 ---
 

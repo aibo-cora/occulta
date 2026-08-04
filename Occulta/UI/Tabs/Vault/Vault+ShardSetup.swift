@@ -19,10 +19,10 @@ struct VaultShardSetup: View {
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(Manager.Security.self) private var security
+    @Environment(ContactManager.self) private var contactManager
     @Environment(\.dismiss) private var dismiss
 
     @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
-    @Query private var globalConfigRows: [GlobalShardConfig]
     @Query private var vaultEntries: [VaultEntry]
     @Query private var bekRows:      [BackupEncryptionKey]
 
@@ -38,14 +38,13 @@ struct VaultShardSetup: View {
     /// Shards in these two states count toward active recovery coverage.
     private static let activeStatuses: Set<ShardStatus> = [.pending, .confirmed]
 
-    /// Live set of contact IDs in the user's global trustee config.
-    /// Recomputed whenever `globalConfigRows` changes — reactive badge display.
+    /// Live set of contact IDs in the user's global trustee config, at the current
+    /// depth. Reads `Contact.Profile.globalTrusteeDepth` exact-matches — the single
+    /// mechanism at every depth, including depth 0 (see the shard-custody bug doc,
+    /// item 3). A duress-created entry's suggestions can never leak trustees
+    /// designated at a different depth.
     private var globalTrusteeIDs: Set<String> {
-        guard
-            let row     = globalConfigRows.first,
-            let payload = try? shardCustodyManager?.decryptGlobalConfig(row)
-        else { return [] }
-        return Set(payload.trusteeIDs)
+        self.contactManager.globalTrusteeIdentifiers()
     }
 
     private var mlkemContacts: [Contact.Profile] {

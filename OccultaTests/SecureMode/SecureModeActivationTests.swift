@@ -95,7 +95,8 @@ private func makeComponents() throws -> ActivationComponents {
 private func insertContact(
     identifier: String,
     in container: ModelContainer,
-    visibleThroughDepth: Data? = nil
+    visibleThroughDepth: Data? = nil,
+    globalTrusteeDepth: Data? = nil
 ) throws {
     let ctx = ModelContext(container)
     let profile = Contact.Profile(
@@ -109,6 +110,7 @@ private func insertContact(
         jobTitle:         ""
     )
     profile.visibleThroughDepth = visibleThroughDepth
+    profile.globalTrusteeDepth  = globalTrusteeDepth
     ctx.insert(profile)
     try ctx.save()
 }
@@ -880,6 +882,114 @@ struct CascadeDeactivationDepthTests {
                 nil is what would now stand out to a raw-DB examiner. See \
                 forensic-trace-avoidance.md S6.
                 """)
+    }
+}
+
+// MARK: - globalTrusteeDepth preservation
+
+@MainActor
+@Suite("Secure Mode — globalTrusteeDepth preservation", .serialized)
+struct GlobalTrusteeDepthPreservationTests {
+
+    /// A safe contact's real globalTrusteeDepth stamp must survive deactivation —
+    /// never flattened to -1 or nil. Inserted AFTER activation, right before the
+    /// deactivation this test targets — same workaround as the cascade tests above
+    /// (see their comment): a field already re-encrypted once under TestKeyManager's
+    /// staged key can't survive a second TestKeyManager-driven decrypt in this harness,
+    /// which is orthogonal to the preservation behavior actually under test here.
+    @Test func safeContact_preservedAcrossDeactivate() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(
+            identifier: id, in: c.container,
+            visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt(),
+            globalTrusteeDepth:  try JSONEncoder().encode(0).encrypt()
+        )
+
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "111111",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == 0,
+                "a real global-trustee designation must survive deactivation unchanged")
+    }
+
+    /// A never-stamped contact must decode to the -1 sentinel after deactivation,
+    /// not literal nil — same non-nil invariant as visibleThroughDepth (S6).
+    @Test func neverStamped_isSentinelNotNilAfterDeactivation() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container, globalTrusteeDepth: nil)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "111111",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == -1,
+                "a never-stamped contact must decode to -1 after deactivation, not literal nil")
+    }
+
+    /// A sensitive contact (blob-bound at activation) carrying a real globalTrusteeDepth
+    /// must have that designation restored after deactivation — the blob round-trip
+    /// must not silently lose it (LayerContact.globalTrusteeDepth).
+    @Test func sensitiveContact_survivesBlobRoundTrip() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "contact-\(UUID().uuidString)"
+        // Ceiling 0 at depth-0 activation: contactDepth == depth → sensitive for this
+        // layer, sealed into the blob rather than re-encrypted in place.
+        try insertContact(
+            identifier: id, in: c.container,
+            visibleThroughDepth: try JSONEncoder().encode(0).encrypt(),
+            globalTrusteeDepth:  try JSONEncoder().encode(0).encrypt()
+        )
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "111111",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(restored != nil, "contact row must survive the blob round trip")
+        #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == 0,
+                "a blob-bound contact's real global-trustee designation must be restored, not lost or reset to -1")
     }
 }
 

@@ -120,6 +120,24 @@ struct OccultaApp: App {
             debugPrint("visibleThroughDepth backfill error: \(error)")
             #endif
         }
+
+        do {
+            try DatabaseMigration.migrateGlobalTrusteeDepthBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("globalTrusteeDepth backfill error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateGlobalShardConfigToPerContact(
+                modelContext: context, shardCustodyManager: self.shardCustodyManager
+            )
+        } catch {
+            #if DEBUG
+            debugPrint("GlobalShardConfig consolidation error: \(error)")
+            #endif
+        }
     }
 
     var body: some Scene {

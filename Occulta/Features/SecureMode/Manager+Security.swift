@@ -457,6 +457,15 @@ extension Manager {
                             guard let enc = profile.signedAttributes, !enc.isEmpty else { return nil }
                             return enc.decrypt()
                         }()
+                        // Decode this contact's global-trustee depth stamp the same way as
+                        // its visibility ceiling — undecryptable or absent → -1 (not a trustee).
+                        let trusteeDepth: Int = {
+                            guard let data = profile.globalTrusteeDepth,
+                                  let plain = data.decrypt(),
+                                  let value = try? JSONDecoder().decode(Int.self, from: plain)
+                            else { return -1 }
+                            return value
+                        }()
                         // Strip images — they stay in the DB and are re-encrypted in
                         // Step 8, so the blob doesn't need to carry them. Including a
                         // contact photo can push the JSON over the 32 KB slot limit.
@@ -465,16 +474,22 @@ extension Manager {
                         blobDraft.thumbnailImageData = nil
                         blobContacts.append(
                             LayerContact(draft: blobDraft, signedAttributes: signedAttrs,
-                                         visibleThroughDepth: contactDepth)
+                                         visibleThroughDepth: contactDepth,
+                                         globalTrusteeDepth: trusteeDepth)
                         )
                     }
                     // contactDepth < depth: already hidden from a previous layer.
                     // Not sealed in this blob. Step 8 still re-encrypts under the staged key.
                 }
 
-                // ── Step 5: Migrate nil visibleThroughDepth (should be a no-op) ─────
+                // ── Step 5: Migrate nil visibleThroughDepth / globalTrusteeDepth (should
+                // be a no-op — creation and the backfill migration already keep both
+                // fields non-nil) ────────────────────────────────────────────────────
                 for profile in safeProfiles where profile.visibleThroughDepth == nil {
                     profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+                }
+                for profile in safeProfiles where profile.globalTrusteeDepth == nil {
+                    profile.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
                 }
 
                 // ── Step 6: Push blob ────────────────────────────────────────────────
@@ -739,6 +754,15 @@ extension Manager {
                         else { return Int.max }
                         return value
                     }()
+                    // Same preserve-real-value treatment for the global-trustee stamp —
+                    // undecryptable or absent → -1 (not a trustee), never silently dropped.
+                    let trusteeDepth: Int = {
+                        guard let data = profile.globalTrusteeDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return -1 }
+                        return value
+                    }()
 
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
                     try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
@@ -750,6 +774,10 @@ extension Manager {
                     // of blending into it. See forensic-trace-avoidance.md S6.
                     profile.visibleThroughDepth = try AES.GCM.seal(
                         JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
+                    ).combined
+                    // Same non-nil invariant applies to the global-trustee stamp.
+                    profile.globalTrusteeDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
                     ).combined
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.
