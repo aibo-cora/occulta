@@ -715,10 +715,10 @@ extension Manager {
                 // restoreContact overwrites this again (with the same value, from the
                 // blob) for the specific contacts belonging to the layer actually being
                 // removed — this loop just has to not corrupt anyone else's classification
-                // in the meantime. Only a genuinely unclassified contact (decodes to
-                // Int.max) becomes literal nil — the pre-activation default, kept for
-                // forensic neutrality (indistinguishable from a contact that never went
-                // through Secure Mode at all).
+                // in the meantime. A genuinely unclassified contact (decodes to Int.max) is
+                // re-sealed as Int.max, never flattened to literal nil — every contact has
+                // carried a non-nil visibleThroughDepth since creation, so nil would now
+                // stand out rather than blend in. See forensic-trace-avoidance.md S6.
                 //
                 // convertToMutableCopy is wrapped in a local do/catch. Sensitive shells
                 // have all text fields encrypted under the deleted activation key and
@@ -743,13 +743,14 @@ extension Manager {
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
                     try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
 
-                    if contactDepth == Int.max {
-                        profile.visibleThroughDepth = nil
-                    } else {
-                        profile.visibleThroughDepth = try AES.GCM.seal(
-                            JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
-                        ).combined
-                    }
+                    // Always re-seal, even for Int.max (safe/never-classified) contacts.
+                    // Every contact has carried a non-nil visibleThroughDepth since creation
+                    // (Contact+Manager.swift's "never nil" stamp) — resetting safe contacts to
+                    // literal nil here would make them stand out against that baseline instead
+                    // of blending into it. See forensic-trace-avoidance.md S6.
+                    profile.visibleThroughDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
+                    ).combined
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.
                 // Same invariant as activation: in-memory changes must reach SQLite BEFORE

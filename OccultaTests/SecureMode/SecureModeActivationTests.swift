@@ -513,11 +513,13 @@ struct SecureModeWALPersistenceTests {
                 """)
     }
 
-    /// Deactivation must clear `visibleThroughDepth` to nil for safe contacts and
-    /// flush that nil to the WAL.  On a device where SE is available, this contact
+    /// Deactivation must re-seal `visibleThroughDepth` to Int.max (not nil) for safe
+    /// contacts and flush that to the WAL. Nil would stand out against the "always
+    /// non-nil since creation" baseline every other contact carries — see
+    /// forensic-trace-avoidance.md S6. On a device where SE is available, this contact
     /// will have a real ciphertext after activation; without the Step 4 save the
     /// fresh context would still see that ciphertext after deactivation.
-    @Test func deactivation_safeContactVisibility_clearedToNil_inWAL() async throws {
+    @Test func deactivation_safeContactVisibility_reencryptedToIntMax_inWAL() async throws {
         guard secureEnclaveAvailable() else {
             print("⚠︎ Skipping deactivation WAL-persistence test — SE not available (simulator)")
             return
@@ -548,14 +550,15 @@ struct SecureModeWALPersistenceTests {
         let profilesAfter = try fetchAllProfiles(from: c.container)
         let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
 
-        // Deactivation Step 4 sets visibleThroughDepth = nil for safe contacts and saves.
-        // If Bug 37 regresses (save missing), the fresh context sees the activation-time
-        // ciphertext instead of nil.
-        #expect(depthAfter == nil,
+        // Deactivation Step 4 re-seals visibleThroughDepth = Int.max for safe contacts
+        // under the staged key and saves. If Bug 37 regresses (save missing), the fresh
+        // context sees the activation-time ciphertext instead. If the nil-reset bug
+        // regresses, depthAfter is nil instead of decoding to Int.max.
+        #expect(decodedStagedDepth(from: depthAfter, keyManager: c.keyManager) == Int.max,
                 """
-                Safe contact visibleThroughDepth is not nil after deactivation.
-                contactManager.modelContext.save() was not called in deactivation Step 4 \
-                (Bug 37 regression).
+                Safe contact visibleThroughDepth does not decode to Int.max after deactivation.
+                Either contactManager.modelContext.save() was not called in deactivation \
+                Step 4 (Bug 37 regression), or safe contacts are being reset to nil again.
                 """)
     }
 
@@ -841,7 +844,7 @@ struct CascadeDeactivationDepthTests {
     /// deactivation, not an explicit encrypted `Int.max` — matching the codebase's own
     /// stated forensic-neutrality goal (deactivated-but-never-sensitive must be
     /// indistinguishable from a contact that never went through Secure Mode at all).
-    @Test func neverClassifiedContact_remainsLiteralNilAfterCascadeDeactivation() async throws {
+    @Test func neverClassifiedContact_isIntMaxNotNilAfterCascadeDeactivation() async throws {
         guard secureEnclaveAvailable() else {
             print("⚠︎ Skipping — SE not available (simulator)")
             return
@@ -870,11 +873,12 @@ struct CascadeDeactivationDepthTests {
         )
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(restored?.visibleThroughDepth == nil,
+        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == Int.max,
                 """
-                never-classified contact must remain literal nil after deactivation, not an \
-                explicit encrypted Int.max — a structural difference a raw-DB examiner could \
-                use to distinguish "was in Secure Mode" from "never was".
+                never-classified contact must decode to Int.max after deactivation, not literal \
+                nil — every contact has carried a non-nil visibleThroughDepth since creation, so \
+                nil is what would now stand out to a raw-DB examiner. See \
+                forensic-trace-avoidance.md S6.
                 """)
     }
 }

@@ -110,6 +110,16 @@ struct OccultaApp: App {
             debugPrint("Migration error: \(error)")
             #endif
         }
+
+        // Independent of the v1→v2 migration above — runs regardless of Secure Mode
+        // configuration status, since legacy nil rows can exist either way.
+        do {
+            try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("visibleThroughDepth backfill error: \(error)")
+            #endif
+        }
     }
 
     var body: some Scene {

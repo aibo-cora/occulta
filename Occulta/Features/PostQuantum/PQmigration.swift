@@ -62,6 +62,31 @@ struct DatabaseMigration {
         }
     }
 
+    /// One-time backfill for contacts whose `visibleThroughDepth` predates the
+    /// "never nil" creation-time stamp (Contact+Manager.swift). A lingering nil marks
+    /// a contact as pre-dating that fix — a forensic tell distinct from its encrypted
+    /// content, since column presence/absence is visible without decryption. Re-seals
+    /// every nil row to encrypted Int.max (safe/never-classified), identical in meaning
+    /// to nil but indistinguishable in column presence from every other contact. See
+    /// forensic-trace-avoidance.md S6.
+    ///
+    /// Idempotent: the predicate only matches remaining nil rows, so already-backfilled
+    /// contacts are skipped on subsequent launches.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateSafeContactVisibilityBackfill(modelContext: ModelContext) throws {
+        let descriptor = FetchDescriptor<Contact.Profile>(
+            predicate: #Predicate { $0.visibleThroughDepth == nil }
+        )
+        let contacts = try modelContext.fetch(descriptor)
+        guard !contacts.isEmpty else { return }
+
+        for contact in contacts {
+            contact.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+        }
+        try modelContext.save()
+    }
+
     // MARK: - Per-contact migration
 
     private static func migrateContact(_ contact: Contact.Profile, legacyCrypto: CryptoProtocol, newCrypto: CryptoProtocol) throws {
