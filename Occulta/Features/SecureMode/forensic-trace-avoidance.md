@@ -287,11 +287,15 @@ Measures that prevent sensitive message content from crossing the lock/depth bou
 
 | # | Measure | Severity | Status |
 |---|---------|----------|--------|
-| C1 | Inbound message suppressed at set-time when restricted | High | ✅ Bug 1 fixed |
+| C1 | Inbound message suppressed at set-time when restricted | High | ✅ Bug 1 fixed — ⚠️ see C3, the rejection itself is a new, separate signal |
 | C2 | Inbound message discarded at duress-unlock — zero processing before depth known | High | ✅ |
+| C3 | Rejecting a known, non-safe sender's bundle under duress is a live duress-detection oracle | Critical | ⚠️ Open, unscoped |
 
 ### C1 — Content gate at set-time
 When the app is already unlocked in restricted mode (duress depth) and `buildOwnedBasket` runs inside `onOpenURL`, if the sender is not a safe contact the basket is suppressed and the standard "not addressed to you" error is surfaced. Without this, a notification tap while in duress mode could surface a message from a sensitive contact before the depth gate could prevent it.
 
 ### C2 — Raw data discarded at duress-unlock (Option B)
 When the app is locked and a `.occ` file arrives, `onOpenURL` stores the raw encrypted bytes in `pendingFileData` without any processing — no decryption, no sender identification, no shard operations. If the duress PIN is then entered, `onDuress` clears `pendingFileData` without ever calling `buildOwnedBasket` and shows "This message was not addressed to you." If the normal PIN is entered, `onNormal` calls `processInboundFile(pendingFileData)` — the single function that owns all decryption and display logic. The content never crosses the depth boundary because it is never decrypted until the depth is confirmed as normal.
+
+### C3 — Rejecting a known sender is itself a detectable signal
+C1's own mechanism produces a side effect it wasn't evaluated for: at depth 0, a bundle from any known contact always processes normally; at a duress depth, a bundle from a known contact who isn't marked safe *at that exact depth* is rejected outright, with a surfaced error, before decryption starts. Real mode has no code path that ever rejects a genuinely known contact's bundle — so that outcome, from a sender already proven to be paired with the device, is only reachable while restricted. A coercer with physical control of the device (this app's only pairing mechanism is physical UWB proximity, so they already have what's needed to force-pair a test identity) can use this as a direct, repeatable duress-detection test, independent of any content shown or hidden anywhere in the UI. Full write-up, scenario, and the fundamental tension this creates with C1's own purpose: `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`. Not yet scoped for a fix.
