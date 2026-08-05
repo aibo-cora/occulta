@@ -439,6 +439,15 @@ final class ShardCustodyManager {
     /// nothing else — the same shape of operation as `Group.purgeMember(_:)`, which is
     /// likewise ungated for the same reason.
     ///
+    /// Every surviving row in all three stores is also re-sealed with a fresh nonce,
+    /// same content — mirrors `GlobalShardConfig`'s unconditional resave and
+    /// `Group.refreshCiphertext()`. Without this, a raw-DB examiner comparing two
+    /// snapshots across a deletion would see exactly which rows disappeared and find
+    /// every surviving row byte-for-byte identical — cleanly separating "touched by
+    /// this purge" from "untouched," a diff-based tell distinct from (and cheaper to
+    /// close than) the owner-identity encryption this store already has. Rows that
+    /// fail to decrypt are left untouched, same as before — not deleted, not re-sealed.
+    ///
     /// Derives the shard-custody key once and reuses it across all three steps below,
     /// rather than once per step.
     func purgeCustody(for identifier: String) throws {
@@ -447,29 +456,38 @@ final class ShardCustodyManager {
         }
 
         // 1. CustodyShard — shards this device holds on behalf of the deleted owner.
-        for decoded in try self.decryptAllCustodyShards(using: custodyKey)
-            where decoded.payload.ownerContactIdentifier == identifier {
-            self.modelContext.delete(decoded.row)
+        for decoded in try self.decryptAllCustodyShards(using: custodyKey) {
+            if decoded.payload.ownerContactIdentifier == identifier {
+                self.modelContext.delete(decoded.row)
+            } else {
+                decoded.row.encryptedPayload = try self.sealRow(decoded.payload, using: custodyKey, id: decoded.row.id)
+            }
         }
 
         // 2. PendingShardDistribute — shards queued to be sent to the deleted contact.
         let distributeRows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
         for row in distributeRows {
             guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
-                payload.contactIdentifier == identifier
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id)
             else { continue }
-            self.modelContext.delete(row)
+            if payload.contactIdentifier == identifier {
+                self.modelContext.delete(row)
+            } else {
+                row.encryptedPayload = try self.sealRow(payload, using: custodyKey, id: row.id)
+            }
         }
 
         // 3. PotentiallyLostShard — watch rows for the deleted contact.
         let lostRows = try self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())
         for row in lostRows {
             guard
-                let payload = try? self.openRow(row.encryptedPayload, as: PotentiallyLostShard.Payload.self, using: custodyKey, id: row.id),
-                payload.contactIdentifier == identifier
+                let payload = try? self.openRow(row.encryptedPayload, as: PotentiallyLostShard.Payload.self, using: custodyKey, id: row.id)
             else { continue }
-            self.modelContext.delete(row)
+            if payload.contactIdentifier == identifier {
+                self.modelContext.delete(row)
+            } else {
+                row.encryptedPayload = try self.sealRow(payload, using: custodyKey, id: row.id)
+            }
         }
 
         try self.modelContext.save()

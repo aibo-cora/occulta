@@ -100,6 +100,29 @@ private func insertPotentiallyLostShard(
     try ctx.save()
 }
 
+/// Manually decrypts a PendingShardDistribute row's payload — mirrors
+/// ShardCustodyManager's own private openRow (same AAD scheme), needed here since
+/// there's no public read API for this store's content, only counts.
+@MainActor private func decryptPendingDistribute(
+    _ row: PendingShardDistribute, using km: TestKeyManager
+) throws -> PendingShardDistribute.Payload? {
+    guard let key = try km.deriveShardCustodyKey() else { return nil }
+    let box   = try AES.GCM.SealedBox(combined: row.encryptedPayload)
+    let plain = try AES.GCM.open(box, using: key, authenticating: row.id.uuidString.data(using: .utf8)!)
+    return try JSONDecoder().decode(PendingShardDistribute.Payload.self, from: plain)
+}
+
+/// Manually decrypts a PotentiallyLostShard row's payload — same reasoning as
+/// decryptPendingDistribute above.
+@MainActor private func decryptPotentiallyLost(
+    _ row: PotentiallyLostShard, using km: TestKeyManager
+) throws -> PotentiallyLostShard.Payload? {
+    guard let key = try km.deriveShardCustodyKey() else { return nil }
+    let box   = try AES.GCM.SealedBox(combined: row.encryptedPayload)
+    let plain = try AES.GCM.open(box, using: key, authenticating: row.id.uuidString.data(using: .utf8)!)
+    return try JSONDecoder().decode(PotentiallyLostShard.Payload.self, from: plain)
+}
+
 private enum TestSetupError: Error { case keyUnavailable }
 
 @MainActor private func custodyShardCount(in container: ModelContainer) throws -> Int {
@@ -140,6 +163,25 @@ private enum TestSetupError: Error { case keyUnavailable }
 
         #expect(try custodyShardCount(in: container) == 1)
     }
+
+    @Test func survivingShardGetsFreshCiphertext_contentPreserved() throws {
+        let (custody, vault, _, container) = try makeCustodyRig()
+        let carolKM = TestKeyManager()
+        try receiveShard(from: carolKM, ownerIdentifier: "carol", into: custody, vault: vault)
+
+        let before = try ModelContext(container).fetch(FetchDescriptor<CustodyShard>())
+        #expect(before.count == 1)
+        let beforeBytes = before[0].encryptedPayload
+
+        try custody.purgeCustody(for: "alice") // unrelated deletion — carol's row survives
+
+        let after = try ModelContext(container).fetch(FetchDescriptor<CustodyShard>())
+        #expect(after.count == 1)
+        #expect(after[0].encryptedPayload != beforeBytes,
+                "a surviving row must be re-sealed with a fresh nonce on any purge, not just deletions matching it")
+        #expect(custody.heldShards(from: after).first?.ownerContactIdentifier == "carol",
+                "content must decrypt unchanged after re-sealing")
+    }
 }
 
 // MARK: - PendingShardDistribute
@@ -168,6 +210,24 @@ private enum TestSetupError: Error { case keyUnavailable }
 
         #expect(try distributeRowCount(in: container) == 1)
     }
+
+    @Test func survivingQueuedDistributeGetsFreshCiphertext_contentPreserved() throws {
+        let (custody, _, km, container) = try makeCustodyRig()
+        try custody.queueDistribute(attribute: try makeAttr(signer: km), for: "carol")
+
+        let before = try ModelContext(container).fetch(FetchDescriptor<PendingShardDistribute>())
+        #expect(before.count == 1)
+        let beforeBytes = before[0].encryptedPayload
+
+        try custody.purgeCustody(for: "alice") // unrelated deletion — carol's row survives
+
+        let after = try ModelContext(container).fetch(FetchDescriptor<PendingShardDistribute>())
+        #expect(after.count == 1)
+        #expect(after[0].encryptedPayload != beforeBytes,
+                "a surviving row must be re-sealed with a fresh nonce on any purge, not just deletions matching it")
+        #expect(try decryptPendingDistribute(after[0], using: km)?.contactIdentifier == "carol",
+                "content must decrypt unchanged after re-sealing")
+    }
 }
 
 // MARK: - PotentiallyLostShard
@@ -183,6 +243,24 @@ private enum TestSetupError: Error { case keyUnavailable }
         try custody.purgeCustody(for: "alice")
 
         #expect(try lostShardRowCount(in: container) == 0)
+    }
+
+    @Test func survivingWatchRowGetsFreshCiphertext_contentPreserved() throws {
+        let (custody, _, km, container) = try makeCustodyRig()
+        try insertPotentiallyLostShard(contactIdentifier: "carol", using: km, in: container)
+
+        let before = try ModelContext(container).fetch(FetchDescriptor<PotentiallyLostShard>())
+        #expect(before.count == 1)
+        let beforeBytes = before[0].encryptedPayload
+
+        try custody.purgeCustody(for: "alice") // unrelated deletion — carol's row survives
+
+        let after = try ModelContext(container).fetch(FetchDescriptor<PotentiallyLostShard>())
+        #expect(after.count == 1)
+        #expect(after[0].encryptedPayload != beforeBytes,
+                "a surviving row must be re-sealed with a fresh nonce on any purge, not just deletions matching it")
+        #expect(try decryptPotentiallyLost(after[0], using: km)?.contactIdentifier == "carol",
+                "content must decrypt unchanged after re-sealing")
     }
 }
 
