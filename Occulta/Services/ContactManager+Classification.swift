@@ -39,6 +39,39 @@ extension ContactManager {
         return Manager.Security.isVisible(contact, atDepth: self.security.currentDepth)
     }
 
+    /// Returns true if the contact is marked a global trustee at the current depth
+    /// (`globalTrusteeDepth == currentDepth`, exact match — not a ceiling, unlike
+    /// visibleThroughDepth). A trustee designation made at one depth is never surfaced
+    /// at any other depth.
+    func isGlobalTrustee(_ identifier: String) -> Bool {
+        let descriptor = FetchDescriptor<Contact.Profile>(
+            predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
+        )
+        guard let contact = try? self.modelContext.fetch(descriptor).first,
+              let data    = contact.globalTrusteeDepth,
+              let plain   = data.decrypt(),
+              let value   = try? JSONDecoder().decode(Int.self, from: plain)
+        else { return false }
+        return value == self.security.currentDepth
+    }
+
+    /// Identifiers of every contact marked a global trustee at the current depth.
+    /// Restricted to displayable contacts, matching the filter every other
+    /// trustee-facing list already applies (Gap 2 items 1-2).
+    func globalTrusteeIdentifiers() -> Set<String> {
+        let depth = self.security.currentDepth
+        let contacts = (try? self.fetchAllContacts()) ?? []
+        return Set(contacts.compactMap { contact -> String? in
+            guard self.security.isDisplayable(contact),
+                  let data  = contact.globalTrusteeDepth,
+                  let plain = data.decrypt(),
+                  let value = try? JSONDecoder().decode(Int.self, from: plain),
+                  value == depth
+            else { return nil }
+            return contact.identifier
+        })
+    }
+
     // MARK: - Writes
 
     /// Classifies contacts relative to `security.currentDepth`.
@@ -59,9 +92,18 @@ extension ContactManager {
             contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             if depthValue != Int.max { hiddenIdentifiers.insert(contact.identifier) }
         }
+        for identifier in hiddenIdentifiers {
+            Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+        }
         try self.modelContext.save()
 
+        // Checkpoint after the group purge, not before: cleanUpGroupDuressMembership
+        // does its own separate save() for the group re-encryption, and checkpointStore()
+        // exists specifically to flush purge-adjacent writes immediately — running it
+        // before that save would leave the group write uncovered until whatever
+        // unrelated checkpoint happens next (SecurityReview2026-07-24, finding #10).
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: hiddenIdentifiers)
+        self.security.checkpointStore()
     }
 
     /// Sets a single contact's visibility relative to `security.currentDepth`.
@@ -79,9 +121,33 @@ extension ContactManager {
         contact.visibleThroughDepth = try JSONEncoder().encode(
             isSensitive ? depth : Int.max
         ).encrypt()
+
+        if isSensitive {
+            Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+        }
+
         try self.modelContext.save()
 
+        // See saveClassification's identical comment above — checkpoint after the
+        // group purge's own save, not before, so it's actually covered.
         try self.cleanUpGroupDuressMembership(hiddenIdentifiers: isSensitive ? [identifier] : [])
+        self.security.checkpointStore()
+    }
+
+    /// Marks `selectedIDs` as global trustees at the current depth; every other
+    /// displayable contact is stamped -1 (not a trustee at this depth). Exact-match,
+    /// current-depth only — the single mechanism at every depth, including depth 0
+    /// (`GlobalShardConfig` is orphaned as of item 3's consolidation, see the
+    /// shard-custody bug doc).
+    func saveGlobalTrusteeDepth(selectedIDs: Set<String>) throws {
+        let contacts = try self.fetchAllContacts()
+        let depth    = self.security.currentDepth
+        for contact in contacts {
+            guard self.security.isDisplayable(contact) else { continue }
+            let value = selectedIDs.contains(contact.identifier) ? depth : -1
+            contact.globalTrusteeDepth = try JSONEncoder().encode(value).encrypt()
+        }
+        try self.modelContext.save()
     }
 
     /// Cleans up group duress membership after a classification change.
@@ -113,11 +179,23 @@ extension ContactManager {
     /// future coercion scenario that a same-depth or shallower action shouldn't destroy.
     private func cleanUpGroupDuressMembership(hiddenIdentifiers: Set<String>) throws {
         let purgeForReal = !hiddenIdentifiers.isEmpty && self.security.currentDepth == 0
+
+        // Derived once and reused across every group and every depth in the pass below,
+        // instead of once per slot — the dominant cost here is the Keychain/Secure
+        // Enclave round trip inside key derivation, not the AES operation itself, and
+        // the derived key is identical on every call until the local-DB key is rotated.
+        // Failure must abort the whole pass rather than proceed with a missing key:
+        // silently skipping the mandatory ciphertext refresh on some or all groups would
+        // itself be a forensic tell (see the doc comment below).
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+
         try self.forEachGroup { group in
             if purgeForReal {
-                try group.purgeMembersFromDuressDepths(hiddenIdentifiers)
+                try group.purgeMembersFromDuressDepths(hiddenIdentifiers, usingKey: key)
             } else {
-                try group.refreshCiphertext()
+                try group.refreshCiphertext(usingKey: key)
             }
         }
     }
@@ -146,6 +224,13 @@ extension ContactManager {
         let depth = record.visibleThroughDepth ?? 0
         restored.visibleThroughDepth = try AES.GCM.seal(
             JSONEncoder().encode(depth), using: stagedKey, authenticating: aad
+        ).combined
+
+        // Same restore for the global-trustee stamp. Falls back to -1 (not a trustee)
+        // for blobs written before this field was added.
+        let trusteeDepth = record.globalTrusteeDepth ?? -1
+        restored.globalTrusteeDepth = try AES.GCM.seal(
+            JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
         ).combined
 
         if let attrs = record.signedAttributes, !attrs.isEmpty {

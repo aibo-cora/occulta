@@ -40,6 +40,7 @@ struct OccultaApp: App {
             Contact.Profile.URLAddress.self,
             Contact.Profile.Key.self,
             Contact.Message.self,
+            Message.Draft.self,
             VaultEntry.self,
             CustodyShard.self,
             ReconstructShard.self,
@@ -107,6 +108,34 @@ struct OccultaApp: App {
             // records will be retried on next launch.
             #if DEBUG
             debugPrint("Migration error: \(error)")
+            #endif
+        }
+
+        // Independent of the v1→v2 migration above — runs regardless of Secure Mode
+        // configuration status, since legacy nil rows can exist either way.
+        do {
+            try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("visibleThroughDepth backfill error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateGlobalTrusteeDepthBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("globalTrusteeDepth backfill error: \(error)")
+            #endif
+        }
+
+        do {
+            try DatabaseMigration.migrateGlobalShardConfigToPerContact(
+                modelContext: context, shardCustodyManager: self.shardCustodyManager
+            )
+        } catch {
+            #if DEBUG
+            debugPrint("GlobalShardConfig consolidation error: \(error)")
             #endif
         }
     }
@@ -264,6 +293,14 @@ private struct RootView: View {
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
+                case .inactive:
+                    // Defense-in-depth, not a correctness fix — syncShareIndex() already
+                    // runs after every contact mutation, unlock/duress-unlock, activate,
+                    // and deactivate, which cover every path that changes currentDepth or
+                    // isSecureModeActive today. This re-asserts the already-correct index
+                    // right before backgrounding, hedging against any future path that
+                    // changes security state without going through one of those four.
+                    self.contactManager.syncShareIndex()
                 default:
                     break
                 }
@@ -443,7 +480,18 @@ private struct RootView: View {
 
             do {
                 /// Contents of the encrypted file we opened.
-                let (data, _) = try await URLSession.shared.data(from: fileLocation)
+                ///
+                /// Memory-mapped rather than eagerly read into a heap buffer: this file
+                /// can legitimately be large (photo/video attachments, vault backups),
+                /// and mapping lets the OS page it in lazily and reclaim pages under
+                /// memory pressure instead of committing the whole file to RSS upfront
+                /// (SecurityReview2026-07-24, finding #11 — unbounded inbound file read).
+                /// Run off the main actor: `RootView` conforms to `View`, which is
+                /// `@MainActor`, and while mapping itself is nearly free, touching pages
+                /// later (or a cold/on-demand-downloaded file) can still block briefly.
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: fileLocation, options: .mappedIfSafe)
+                }.value
 
                 // .occbak — vault backup restore file.
                 if fileLocation.pathExtension == "occbak" {
@@ -634,9 +682,18 @@ private struct RootView: View {
             for file in basket.files {
                 switch file.format {
                 case .file(let metadata):
+                    // metadata.name/.extension come from the decrypted, sender-controlled
+                    // Basket — never trusted for path construction. The name is dropped
+                    // entirely in favor of a fresh UUID (matching the outbound share-extension
+                    // path's existing discipline); the extension is validated by
+                    // sanitizedFilesystemExtension since a crafted value like
+                    // "../../etc/passwd" could otherwise steer the write outside tempDir.
+                    // Rejecting anything unsafe doesn't lose real data — the file's display
+                    // name/extension in the UI still comes from the untouched `metadata` in
+                    // `file.format` below, only the on-disk path changes.
                     let fileURL = tempDir
-                        .appendingPathComponent(metadata.name ?? UUID().uuidString)
-                        .appendingPathExtension(metadata.extension ?? "bin")
+                        .appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(Occulta.File.Metadata.sanitizedFilesystemExtension(metadata.extension))
                     let content = file.content ?? Data()
 
                     group.addTask {
@@ -681,6 +738,16 @@ private struct RootView: View {
 
     // MARK: Share Extension Processing
 
+    private enum ShareSessionError: Error, LocalizedError {
+        case staleSession
+
+        var errorDescription: String? {
+            switch self {
+            case .staleSession: return "This share session has expired. Please share the content again."
+            }
+        }
+    }
+
     /// Process a share session handed off from the extension via `occulta://share?session=<uuid>`.
     ///
     /// Reads the encrypted manifest, EXIF-strips images, encrypts via the full FS path,
@@ -702,12 +769,34 @@ private struct RootView: View {
             var manifestData = try keyManager.decrypt(data: Data(contentsOf: manifestURL))
             let manifest = try JSONDecoder().decode(ShareManifest.self, from: manifestData)
 
+            // Reject stale sessions — same 1-hour cutoff cleanupPendingSessions uses.
+            // Correctness/robustness, not a security boundary (the session directory
+            // only exists inside this app's own App Group container): guards against a
+            // stale or already-processed session being unexpectedly reprocessed, e.g. a
+            // re-tapped notification or duplicate deep-link delivery
+            // (SecurityReview2026-07-24, finding #11).
+            guard manifest.createdAt > Date().addingTimeInterval(-3600) else {
+                throw ShareSessionError.staleSession
+            }
+
             // Zero manifest plaintext — contains contact identifier (relationship metadata)
             _ = manifestData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
             manifestData = Data()
 
             // 2. Build files — EXIF strip images before encryption (in main app, not extension)
             var files: [Occulta.File] = []
+            // Safety net for every exit from this do block, not just the success path
+            // below: a throw anywhere after files starts accumulating decrypted content
+            // (encryptBundle, a later loop iteration's decrypt/EXIF-strip) previously left
+            // that plaintext un-zeroed on the heap — the catch block only deleted the
+            // on-disk session directory. A defer here runs on the success path too (right
+            // after the explicit zero below, so it finds an already-empty array — harmless)
+            // and on any throw, whatever files currently holds.
+            defer {
+                for i in files.indices {
+                    _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                }
+            }
 
             for entry in manifest.files {
                 let fileURL = sessionDir.appendingPathComponent(entry.filename)

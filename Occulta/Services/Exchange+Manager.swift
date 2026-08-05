@@ -31,8 +31,11 @@ class ExchangeManager: NSObject {
     private var nearbySession: NISession?
     private var lastNIConfiguration: NINearbyPeerConfiguration?
 
-    private var multipeerSession: MCSession?
-    private var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
+    // Not `private`: peer-pinning tests construct the manager without going through
+    // `start()` (which would trigger real Bluetooth advertising/browsing) and instead
+    // set this directly, then drive state via the MCSessionDelegate conformance below.
+    var multipeerSession: MCSession?
+    private(set) var receivedDiscoveryTokens: [NIDiscoveryToken: MCPeerID] = [:]
 
     private let serviceType = "peer-data-ex"
     private let log = Logger(subsystem: "com.occulta.multipeer", category: "multipeer")
@@ -48,7 +51,7 @@ class ExchangeManager: NSObject {
     // MARK: - Sequential protocol state
 
     /// Peer we connected to via MC. Identity/ciphertext from any other peer is rejected.
-    private var connectedPeerID: MCPeerID?
+    private(set) var connectedPeerID: MCPeerID?
     /// True if our UUID display name sorts below the peer's — set once at MC connect.
     private var isInitiator: Bool = false
     /// Drives the sequential send/wait ordering for both identity and quantum phases.
@@ -345,6 +348,15 @@ class ExchangeManager: NSObject {
     private func handleSessionStateChange(peerID: MCPeerID, state: MCSessionState) {
         guard state == .connected else { return }
 
+        // Pin to the first peer only — a second peer connecting mid-exchange must not
+        // hijack the slot the MITM guard below checks against.
+        if let pinned = self.connectedPeerID, pinned != peerID {
+            #if DEBUG
+            debugPrint("[KE] Ignoring connection from second peer \(peerID.displayName) — already pinned to \(pinned.displayName)")
+            #endif
+            return
+        }
+
         self.phase = .found
         self.connectedPeerID = peerID
         self.isInitiator = self.multipeerSession!.myPeerID.displayName < peerID.displayName
@@ -387,6 +399,12 @@ class ExchangeManager: NSObject {
             // MARK: Phase 1 — Discovery (token + optional nonce)
 
             if decoded.isDiscovery {
+                guard peerID == self.connectedPeerID else {
+                    #if DEBUG
+                    debugPrint("[KE] MITM guard: discovery from unexpected peer \(peerID.displayName)")
+                    #endif
+                    return
+                }
                 let token: NIDiscoveryToken
                 do {
                     guard let unarchived = try NSKeyedUnarchiver.unarchivedObject(
@@ -538,6 +556,12 @@ class ExchangeManager: NSObject {
             // MARK: Phase 3 — Ciphertext (ML-KEM ciphertext for decapsulation)
 
             if decoded.isCiphertext {
+                guard peerID == self.connectedPeerID else {
+                    #if DEBUG
+                    debugPrint("[KE] MITM guard: ciphertext from unexpected peer \(peerID.displayName)")
+                    #endif
+                    return
+                }
                 let ours: QuantumPayload
                 if case .waitingForPeerQuantum(let o) = self.exchangeStatus {
                     ours = o

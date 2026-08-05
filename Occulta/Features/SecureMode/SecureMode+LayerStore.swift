@@ -49,6 +49,10 @@ struct LayerContact: Codable {
     /// deactivation (Bug 23 fix). nil in records written before this field was
     /// added — deactivation falls back to 0 (sensitive).
     let visibleThroughDepth: Int?
+    /// Decoded globalTrusteeDepth at activation time. Restored verbatim on
+    /// deactivation. nil in records written before this field was added —
+    /// deactivation falls back to -1 (not a trustee).
+    let globalTrusteeDepth: Int?
 }
 
 /// The complete payload for one activation layer.

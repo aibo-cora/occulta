@@ -50,6 +50,33 @@ struct File: Identifiable, Codable, Hashable {
         var `extension`: String?
         /// Message accompanying the file.
         var note: String?
+
+        init(name: String? = nil, extension ext: String? = nil, note: String? = nil) {
+            self.name = name
+            self.extension = ext?.lowercased()
+            self.note = note
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.name = try container.decodeIfPresent(String.self, forKey: .name)
+            self.extension = try container.decodeIfPresent(String.self, forKey: .extension)?.lowercased()
+            self.note = try container.decodeIfPresent(String.self, forKey: .note)
+        }
+
+        /// Validates a (potentially attacker-supplied) file extension for safe use in
+        /// path construction. On the inbound message path, `extension` comes from
+        /// decrypted, sender-controlled data — never trusted verbatim in an
+        /// `.appendingPathExtension` call, since a crafted value could otherwise smuggle
+        /// path-traversal characters into the resulting file path. Falls back to "bin"
+        /// for anything that isn't a short, plain ASCII alphanumeric string — real file
+        /// extensions are always exactly that; anything else is rejected, not modified.
+        static func sanitizedFilesystemExtension(_ raw: String?) -> String {
+            guard let raw, !raw.isEmpty, raw.count <= 10,
+                  raw.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
+            else { return "bin" }
+            return raw
+        }
     }
 
     enum Format: Codable, Equatable, Hashable {

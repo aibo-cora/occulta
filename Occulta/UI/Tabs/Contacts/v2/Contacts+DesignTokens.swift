@@ -7,7 +7,7 @@ import SwiftUI
 
 // MARK: - Color Tokens
 
-extension Color {
+nonisolated extension Color {
     static let occultaAccent   = Color(red: 0xD3/255, green: 0x4F/255, blue: 0x2C/255)
     static let occultaVerified = Color(red: 0x2E/255, green: 0x7D/255, blue: 0x5B/255)
     static let occultaWarn     = Color(red: 0xC0/255, green: 0x8A/255, blue: 0x2B/255)
@@ -16,7 +16,7 @@ extension Color {
 
 // MARK: - Verification Status
 
-enum VerificationStatus {
+nonisolated enum VerificationStatus {
     case verified, unverified, pending
 
     var color: Color {

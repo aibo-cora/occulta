@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>enableShamirShardSharing</key>
-	<false/>
+	<true/>
 	<key>secureMode</key>
 	<true/>
 	<key>signature</key>

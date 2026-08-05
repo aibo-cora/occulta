@@ -205,6 +205,9 @@ class ContactManager {
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
             newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
+            // until explicitly marked one via VaultGlobalTrustees.
+            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -227,7 +230,13 @@ class ContactManager {
     /// Overload used by Secure Mode activation to re-encrypt safe contacts under the staged key.
     /// Identical to `save(contact:currentDepth:)` but uses `crypto` instead of `self.cryptoManager`.
     func save(contact: Contact.Draft, currentDepth: Int = 0, using crypto: any CryptoProtocol) throws {
-        let encryptedIdentifier = contact.identifier
+        // Not encrypted here despite the name this held before — `save` is dual-purpose
+        // (create or update). For an edit, this is already the exact value stored at
+        // creation time, and the lookup below only works comparing it as-is; encrypting
+        // it here (a fresh nonce every call) would never match the stored ciphertext,
+        // turning every edit into a duplicate-creating "not found". Only the genuinely
+        // new-contact branch below encrypts it once, before it's ever stored.
+        let rawIdentifier = contact.identifier
         let encryptedGivenName = try crypto.encrypt(data: contact.givenName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedFamilyName = try crypto.encrypt(data: contact.familyName.data(using: .utf8))?.base64EncodedString() ?? ""
         let encryptedMiddleName = try crypto.encrypt(data: contact.middleName.data(using: .utf8))?.base64EncodedString() ?? ""
@@ -323,7 +332,7 @@ class ContactManager {
         
         /// Storing
         
-        if let existing = try self.fetchContact(by: encryptedIdentifier) {
+        if let existing = try self.fetchContact(by: rawIdentifier) {
             /// Replace fields with new values
             existing.givenName = encryptedGivenName
             existing.familyName = encryptedFamilyName
@@ -346,6 +355,12 @@ class ContactManager {
             
             debugPrint("Updated existing contact")
         } else {
+            // Encrypted once, here, before this identifier is ever stored — matching
+            // createContacts' treatment of imported contacts' identifiers (SecurityReview
+            // 2026-07-24, finding #11). Safe specifically because this is the
+            // never-before-persisted branch: nothing later needs to re-derive this value
+            // from the raw UUID, only read back whatever ends up stored.
+            let encryptedIdentifier = try crypto.encrypt(data: rawIdentifier.data(using: .utf8))?.base64EncodedString() ?? rawIdentifier
             let newContact = Contact.Profile(
                 identifier: encryptedIdentifier,
                 givenName: encryptedGivenName,
@@ -373,6 +388,9 @@ class ContactManager {
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
             newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
+            // until explicitly marked one via VaultGlobalTrustees.
+            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -432,7 +450,20 @@ class ContactManager {
     /// run regardless of depth: it only ever touches the one identifier being removed
     /// and leaves every other member untouched, so it can't destroy decoy content
     /// prepared for a different depth.
-    func deleteContact(identifier: String) throws {
+    ///
+    /// `vaultManager`/`shardCustodyManager` are optional, nil-safe parameters —
+    /// following the same shape as `encryptGroupBundle`/`activateSecureMode` — so a
+    /// call site without them just skips shard-custody cleanup rather than failing.
+    /// When provided, purges `CustodyShard`/`PendingShardDistribute`/
+    /// `PotentiallyLostShard` for this identifier (see
+    /// `ShardCustodyManager.purgeCustody(for:)`) and marks any of this contact's
+    /// outstanding vault shards lost. Global-trustee status needs no separate purge —
+    /// it lives on the contact's own (now soft-deleted) row.
+    func deleteContact(
+        identifier: String,
+        vaultManager: VaultManager? = nil,
+        shardCustodyManager: ShardCustodyManager? = nil
+    ) throws {
         guard let contact = try self.fetchContact(by: identifier) else {
             throw ContactManager.Errors.contactNotFound
         }
@@ -443,9 +474,25 @@ class ContactManager {
         }
 
         contact.deletionToken = try Data([1]).encrypt()
+        Message.Draft.purge(recipientID: identifier, in: self.modelContext)
+        Manager.PrekeyManager().deleteAllKeys(for: identifier)
         try self.modelContext.save()
 
-        try self.forEachGroup { try $0.purgeMember(identifier) }
+        // Derived once and reused across every group in the pass below, instead of once
+        // per group — see `ContactManager.cleanUpGroupDuressMembership`, which applies
+        // the same fix for the identical cost on the classification path.
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+        try self.forEachGroup { try $0.purgeMember(identifier, usingKey: key) }
+
+        // Checkpoint after the group purge's own save, not before — see the identical
+        // comment in ContactManager+Classification.swift's saveClassification/
+        // setVisibility (SecurityReview2026-07-24, finding #10).
+        self.security.checkpointStore()
+
+        try shardCustodyManager?.purgeCustody(for: identifier)
+        vaultManager?.markShardsLost(forContact: identifier)
     }
 
     /// Hard-deletes a single Contact.Profile row from the store.
@@ -1480,7 +1527,13 @@ extension ContactManager {
 
         // ── 4. Decode, update capability, store inbound batch ────────────
         var decodedPayload = try self.decodePayload(payloadData, version: bundle.version)
+        #if DEBUG
+        debugPrint("Contact's reported app version: \(decodedPayload.appVersion ?? "nil"), bundle wire version: \(bundle.version), maps to: \(OccultaBundle.Version.max(forAppVersion: decodedPayload.appVersion ?? ""))")
+        #endif
         try self.updateMaxVersion(from: decodedPayload.appVersion, for: sender, using: cryptoOps)
+        #if DEBUG
+        debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
+        #endif
         try self.storeInboundBatch(decodedPayload.prekeyBatch, for: sender)
 
         // Shard-protocol content requires forward secrecy. If this bundle used the
@@ -1655,7 +1708,22 @@ extension ContactManager {
             prekeyManager: prekeyManager
         )
 
+        // ── 3.5. Enforce sender-ephemeral-signature once the sender is known-capable ──
+        // FS mode's session key never involves the sender's long-term identity (finding
+        // #8, SecurityReview2026-07-24) — senderEphemeralSignature is the actual binding
+        // for that mode, verified inside findAndOpenRecipientSlot if present. Require it
+        // only once this contact has previously demonstrated (via appVersion) that their
+        // build produces one; older contacts can't, so their absence is accepted as before.
+        let isFSMode = recipientMode == .forwardSecret || recipientMode == .forwardSecretNoPQ
+        if isFSMode, recipientPayload.senderEphemeralSignature == nil,
+           Self.resolveTargetVersion(for: sender, using: cryptoOps).isAtLeast(.senderSignatureCapable) {
+            throw GroupDecryptError.missingSenderEphemeralSignature
+        }
+
         // ── 4. Prekey management ─────────────────────────────────────────
+        #if DEBUG
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumable: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
+        #endif
         if let consumable {
             prekeyManager.consume(prekey: consumable)
             try sender.clearPendingBatch()
@@ -1678,9 +1746,20 @@ extension ContactManager {
         }
 
         // ── 6. Post-processing ────────────────────────────────────────────
+        #if DEBUG
+        debugPrint("Contact's reported app version: \(decoded.appVersion ?? "nil"), maps to: \(OccultaBundle.Version.max(forAppVersion: decoded.appVersion ?? ""))")
+        #endif
         try self.updateMaxVersion(from: decoded.appVersion, for: sender, using: cryptoOps)
+        #if DEBUG
+        debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
+        debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
+        #endif
         try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
         try self.modelContext.save()
+
+        #if DEBUG
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
 
