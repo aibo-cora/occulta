@@ -194,6 +194,28 @@ extension Contact.Profile {
         self.availableInboundPrekeyCount > 0
     }
 
+    #if DEBUG
+    /// Diagnostic for "FS badge doesn't flip after receiving a message" — logs the
+    /// live, `@Query`-backed prekey count for this contact alongside a freshly
+    /// refetched count from a brand-new `ModelContext` on the same container. A
+    /// mismatch at compose-open time, or a live count that never changes despite
+    /// `syncInboundPrekeys`'s own debug logs showing a write happened, points at
+    /// the compose view's `@Query` context not picking up writes made through a
+    /// different `ModelContext` instance (e.g. `ContactManager`'s private one).
+    /// Not a fix — just makes the two candidate root causes distinguishable.
+    func debugLogPrekeyStateAtCompose(_ label: String) {
+        let liveCount = self.availableInboundPrekeyCount
+        var freshCount: Int? = nil
+        if let container = self.modelContext?.container {
+            let freshContext = ModelContext(container)
+            let id = self.identifier
+            let descriptor = FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.identifier == id })
+            freshCount = (try? freshContext.fetch(descriptor))?.first?.availableInboundPrekeyCount
+        }
+        debugPrint("[FS badge/\(label)] \(self.identifier): live=\(liveCount) fresh-refetch=\(freshCount.map(String.init) ?? "N/A") hasPrekeyAvailable(live)=\(self.hasPrekeyAvailable)")
+    }
+    #endif
+
     // MARK: - Sender identification
 
     /// SHA-256(contactPublicKey || bundle.fingerprintNonce) == bundle.senderFingerprint.

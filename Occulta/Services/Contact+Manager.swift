@@ -1527,7 +1527,13 @@ extension ContactManager {
 
         // ── 4. Decode, update capability, store inbound batch ────────────
         var decodedPayload = try self.decodePayload(payloadData, version: bundle.version)
+        #if DEBUG
+        debugPrint("Contact's reported app version: \(decodedPayload.appVersion ?? "nil"), bundle wire version: \(bundle.version), maps to: \(OccultaBundle.Version.max(forAppVersion: decodedPayload.appVersion ?? ""))")
+        #endif
         try self.updateMaxVersion(from: decodedPayload.appVersion, for: sender, using: cryptoOps)
+        #if DEBUG
+        debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
+        #endif
         try self.storeInboundBatch(decodedPayload.prekeyBatch, for: sender)
 
         // Shard-protocol content requires forward secrecy. If this bundle used the
@@ -1715,6 +1721,9 @@ extension ContactManager {
         }
 
         // ── 4. Prekey management ─────────────────────────────────────────
+        #if DEBUG
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumable: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
+        #endif
         if let consumable {
             prekeyManager.consume(prekey: consumable)
             try sender.clearPendingBatch()
@@ -1737,9 +1746,20 @@ extension ContactManager {
         }
 
         // ── 6. Post-processing ────────────────────────────────────────────
+        #if DEBUG
+        debugPrint("Contact's reported app version: \(decoded.appVersion ?? "nil"), maps to: \(OccultaBundle.Version.max(forAppVersion: decoded.appVersion ?? ""))")
+        #endif
         try self.updateMaxVersion(from: decoded.appVersion, for: sender, using: cryptoOps)
+        #if DEBUG
+        debugPrint("Stored maxBundleVersion for contact now resolves to: \(Self.resolveTargetVersion(for: sender, using: cryptoOps))")
+        debugPrint("Recipient payload prekeyBatch present: \(recipientPayload.prekeyBatch != nil), count: \(recipientPayload.prekeyBatch?.prekeys.count ?? -1)")
+        #endif
         try self.storeInboundBatch(recipientPayload.prekeyBatch, for: sender)
         try self.modelContext.save()
+
+        #if DEBUG
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
 

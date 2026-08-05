@@ -103,6 +103,12 @@ struct ContactDetailV3: View {
                             isForwardSecret: self.profile?.hasPrekeyAvailable,
                             onEncrypt:       { await self.composeVM.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
                         )
+                        #if DEBUG
+                        .onAppear { self.profile?.debugLogPrekeyStateAtCompose("V3 onAppear") }
+                        .onChange(of: self.profile?.availableInboundPrekeyCount) { old, new in
+                            debugPrint("[FS badge/V3 onChange] \(self.identifier): live availableInboundPrekeyCount \(String(describing: old)) -> \(String(describing: new))")
+                        }
+                        #endif
                     }
 
                     Text(self.encryptionSchemeLabel)

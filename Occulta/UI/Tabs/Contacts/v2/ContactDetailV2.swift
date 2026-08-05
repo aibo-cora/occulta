@@ -451,6 +451,12 @@ private struct ComposeHeroV2: View {
 
                     if let isForwardSecret = self.contacts.first?.hasPrekeyAvailable {
                         SecrecyIndicator(isForwardSecret: isForwardSecret)
+                            #if DEBUG
+                            .onAppear { self.contacts.first?.debugLogPrekeyStateAtCompose("V2 onAppear") }
+                            .onChange(of: self.contacts.first?.availableInboundPrekeyCount) { old, new in
+                                debugPrint("[FS badge/V2 onChange] \(self.identifier): live availableInboundPrekeyCount \(String(describing: old)) -> \(String(describing: new))")
+                            }
+                            #endif
                     }
                 }
                 Spacer()
