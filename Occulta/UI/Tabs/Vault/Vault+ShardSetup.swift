@@ -54,11 +54,12 @@ struct VaultShardSetup: View {
     }
 
     var body: some View {
-        let meta     = self.fetchDistributionMeta()
-        let contacts = self.mlkemContacts
-        let selected = contacts.filter { self.selectedIDs.contains($0.identifier) }
-        let k        = max(2, min(self.threshold, max(2, selected.count)))
-        let canMark  = selected.count >= 2
+        let meta       = self.fetchDistributionMeta()
+        let contacts   = self.mlkemContacts
+        let trusteeIDs = self.globalTrusteeIDs
+        let selected   = contacts.filter { self.selectedIDs.contains($0.identifier) }
+        let k          = max(2, min(self.threshold, max(2, selected.count)))
+        let canMark    = selected.count >= 2
 
         return ScrollView {
             VStack(spacing: 0) {
@@ -69,7 +70,7 @@ struct VaultShardSetup: View {
                 self.trusteesHeader(contacts: contacts)
                     .padding(.bottom, 6)
 
-                self.trusteesCard(contacts: contacts, meta: meta)
+                self.trusteesCard(contacts: contacts, meta: meta, trusteeIDs: trusteeIDs)
                     .padding(.horizontal, 16)
 
                 Spacer().frame(height: 10)
@@ -250,7 +251,7 @@ struct VaultShardSetup: View {
         .padding(.horizontal, 20)
     }
 
-    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?) -> some View {
+    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?, trusteeIDs: Set<String>) -> some View {
         VStack(spacing: 0) {
             if contacts.isEmpty {
                 Text("No ML-KEM contacts yet. Exchange keys with a contact first.")
@@ -260,7 +261,7 @@ struct VaultShardSetup: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ForEach(Array(contacts.enumerated()), id: \.element.identifier) { idx, contact in
-                    self.trusteeRow(contact, meta: meta)
+                    self.trusteeRow(contact, meta: meta, trusteeIDs: trusteeIDs)
                     if idx < contacts.count - 1 {
                         Divider().padding(.leading, 62)
                     }
@@ -271,7 +272,7 @@ struct VaultShardSetup: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?) -> some View {
+    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?, trusteeIDs: Set<String>) -> some View {
         let given  = contact.givenName.decrypt()
         let family = contact.familyName.decrypt()
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
@@ -306,7 +307,7 @@ struct VaultShardSetup: View {
                             .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
                             .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
                             .clipShape(RoundedRectangle(cornerRadius: 3))
-                        if self.globalTrusteeIDs.contains(contact.identifier) {
+                        if trusteeIDs.contains(contact.identifier) {
                             Text("GLOBAL")
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .padding(.horizontal, 5)
