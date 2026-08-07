@@ -49,55 +49,39 @@ struct VaultShardSetup: View {
         self.contactManager.mlkemEligibleContacts()
     }
 
-    private var selected: [Contact.Profile] {
-        mlkemContacts.filter { selectedIDs.contains($0.identifier) }
-    }
-
-    // k is always in [2, max(2, n)] — clamped on every render.
-    private var k: Int {
-        max(2, min(threshold, max(2, selected.count)))
-    }
-
-    private var canMark: Bool { selected.count >= 2 }
-
-    private var hasExistingDistribution: Bool { distributionMeta != nil }
-
     private var isDirty: Bool {
-        selectedIDs != snapshotIDs || threshold != snapshotThreshold
-    }
-
-    private var ctaTitle: String {
-        if !hasExistingDistribution { return "Mark for Distribution" }
-        return isDirty ? "Update Distribution" : "Up to date"
-    }
-
-    private var ctaEnabled: Bool {
-        canMark && (!hasExistingDistribution || isDirty)
+        self.selectedIDs != self.snapshotIDs || self.threshold != self.snapshotThreshold
     }
 
     var body: some View {
-        ScrollView {
+        let meta     = self.fetchDistributionMeta()
+        let contacts = self.mlkemContacts
+        let selected = contacts.filter { self.selectedIDs.contains($0.identifier) }
+        let k        = max(2, min(self.threshold, max(2, selected.count)))
+        let canMark  = selected.count >= 2
+
+        return ScrollView {
             VStack(spacing: 0) {
-                summaryCard
+                self.summaryCard(selected: selected, k: k)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
 
-                trusteesHeader
+                self.trusteesHeader(contacts: contacts)
                     .padding(.bottom, 6)
 
-                trusteesCard
+                self.trusteesCard(contacts: contacts, meta: meta)
                     .padding(.horizontal, 16)
 
                 Spacer().frame(height: 10)
 
-                infoNote
+                self.infoNote(k: k)
                     .padding(.horizontal, 16)
 
-                contextNote
+                self.contextNote(k: k)
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
 
-                if let err = error {
+                if let err = self.error {
                     Text(err)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.occultaDanger)
@@ -110,7 +94,7 @@ struct VaultShardSetup: View {
             .padding(.top, 8)
         }
         .navigationTitle({
-            switch mode {
+            switch self.mode {
             case .entry: "Shard Distribution"
             case .backup: "Backup Recovery"
             }
@@ -122,21 +106,21 @@ struct VaultShardSetup: View {
                     .tint(.occultaAccent)
             }
         }
-        .safeAreaInset(edge: .bottom) { ctaBar }
+        .safeAreaInset(edge: .bottom) { self.ctaBar(meta: meta, canMark: canMark) }
         .onAppear { self.seedInitialState() }
         .confirmationDialog(
             "Revoke Shard",
             isPresented: Binding(
-                get: { revokeTarget != nil },
-                set: { if !$0 { revokeTarget = nil } }
+                get: { self.revokeTarget != nil },
+                set: { if !$0 { self.revokeTarget = nil } }
             ),
             titleVisibility: .visible
         ) {
             Button("Revoke", role: .destructive) {
-                if let target = revokeTarget { self.revokeShard(target) }
-                revokeTarget = nil
+                if let target = self.revokeTarget { self.revokeShard(target) }
+                self.revokeTarget = nil
             }
-            Button("Cancel", role: .cancel) { revokeTarget = nil }
+            Button("Cancel", role: .cancel) { self.revokeTarget = nil }
         } message: {
             Text("The shard will be remotely erased from the trustee's device on their next interaction.")
         }
@@ -144,7 +128,7 @@ struct VaultShardSetup: View {
 
     // MARK: - Summary card
 
-    private var summaryCard: some View {
+    private func summaryCard(selected: [Contact.Profile], k: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Avatar stack + trustee count
             HStack(spacing: 12) {
@@ -158,7 +142,7 @@ struct VaultShardSetup: View {
                                 .foregroundStyle(.secondary)
                         }
                 } else {
-                    avatarStack
+                    self.avatarStack(selected: selected)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -192,8 +176,8 @@ struct VaultShardSetup: View {
             // Stepper
             HStack(spacing: 10) {
                 Button {
-                    threshold = max(2, threshold - 1)
-                    confirmationMessage = nil
+                    self.threshold = max(2, self.threshold - 1)
+                    self.confirmationMessage = nil
                 } label: {
                     Circle()
                         .fill(Color(.secondarySystemFill))
@@ -209,8 +193,8 @@ struct VaultShardSetup: View {
                 Spacer()
 
                 Button {
-                    threshold = min(max(selected.count, 2), threshold + 1)
-                    confirmationMessage = nil
+                    self.threshold = min(max(selected.count, 2), self.threshold + 1)
+                    self.confirmationMessage = nil
                 } label: {
                     Circle()
                         .fill(Color(.secondarySystemFill))
@@ -224,7 +208,7 @@ struct VaultShardSetup: View {
                 .buttonStyle(.plain)
             }
 
-            if canMark {
+            if selected.count >= 2 {
                 Text("Any **\(k)** of your \(selected.count) trustees — in any combination — can help reconstruct. No specific trustee is required.")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -242,7 +226,7 @@ struct VaultShardSetup: View {
 
     // MARK: - Trustees section
 
-    private var trusteesHeader: some View {
+    private func trusteesHeader(contacts: [Contact.Profile]) -> some View {
         HStack(spacing: 6) {
             Text("ML-KEM")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -259,25 +243,25 @@ struct VaultShardSetup: View {
 
             Spacer()
 
-            Text("\(mlkemContacts.count)")
+            Text("\(contacts.count)")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Color.secondary.opacity(0.5))
         }
         .padding(.horizontal, 20)
     }
 
-    private var trusteesCard: some View {
+    private func trusteesCard(contacts: [Contact.Profile], meta: ShardDistributionMetadata?) -> some View {
         VStack(spacing: 0) {
-            if mlkemContacts.isEmpty {
+            if contacts.isEmpty {
                 Text("No ML-KEM contacts yet. Exchange keys with a contact first.")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                ForEach(Array(mlkemContacts.enumerated()), id: \.element.identifier) { idx, contact in
-                    trusteeRow(contact)
-                    if idx < mlkemContacts.count - 1 {
+                ForEach(Array(contacts.enumerated()), id: \.element.identifier) { idx, contact in
+                    self.trusteeRow(contact, meta: meta)
+                    if idx < contacts.count - 1 {
                         Divider().padding(.leading, 62)
                     }
                 }
@@ -287,12 +271,12 @@ struct VaultShardSetup: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func trusteeRow(_ contact: Contact.Profile) -> some View {
+    private func trusteeRow(_ contact: Contact.Profile, meta: ShardDistributionMetadata?) -> some View {
         let given  = contact.givenName.decrypt()
         let family = contact.familyName.decrypt()
         let name   = [given, family].filter { !$0.isEmpty }.joined(separator: " ")
-        let sel    = selectedIDs.contains(contact.identifier)
-        let record = shardRecord(for: contact.identifier)
+        let sel    = self.selectedIDs.contains(contact.identifier)
+        let record = self.shardRecord(for: contact.identifier, in: meta)
         // A contact is selectable if he has no shard record yet, or their shard
         // is in an active (non-revoked/non-lost) state.
         let isSelectable = record.map { Self.activeStatuses.contains($0.status) } ?? true
@@ -300,15 +284,15 @@ struct VaultShardSetup: View {
         return Button {
             guard isSelectable else { return }
             if sel {
-                selectedIDs.remove(contact.identifier)
-                threshold = max(2, min(threshold, selectedIDs.count))
+                self.selectedIDs.remove(contact.identifier)
+                self.threshold = max(2, min(self.threshold, self.selectedIDs.count))
             } else {
-                selectedIDs.insert(contact.identifier)
+                self.selectedIDs.insert(contact.identifier)
             }
-            confirmationMessage = nil
+            self.confirmationMessage = nil
         } label: {
             HStack(spacing: 12) {
-                contactAvatar(contact, size: 36)
+                self.contactAvatar(contact, size: 36)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(name.isEmpty ? contact.identifier : name)
@@ -322,7 +306,7 @@ struct VaultShardSetup: View {
                             .background(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255).opacity(0.13))
                             .foregroundStyle(Color(red: 0x36/255, green: 0x62/255, blue: 0xA6/255))
                             .clipShape(RoundedRectangle(cornerRadius: 3))
-                        if globalTrusteeIDs.contains(contact.identifier) {
+                        if self.globalTrusteeIDs.contains(contact.identifier) {
                             Text("GLOBAL")
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .padding(.horizontal, 5)
@@ -332,7 +316,7 @@ struct VaultShardSetup: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 3))
                         }
                         if let record = record {
-                            let style = statusChipStyle(for: record.status)
+                            let style = self.statusChipStyle(for: record.status)
                             Text(style.label)
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .padding(.horizontal, 5)
@@ -370,7 +354,7 @@ struct VaultShardSetup: View {
         .contextMenu {
             if let record = record, Self.activeStatuses.contains(record.status) {
                 Button(role: .destructive) {
-                    revokeTarget = record
+                    self.revokeTarget = record
                 } label: {
                     Label("Revoke Shard", systemImage: "xmark.circle")
                 }
@@ -380,7 +364,7 @@ struct VaultShardSetup: View {
 
     // MARK: - Info note
 
-    private var infoNote: some View {
+    private func infoNote(k: Int) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text("🔮")
                 .font(.system(size: 14))
@@ -401,13 +385,13 @@ struct VaultShardSetup: View {
 
     // MARK: - Context note
 
-    private var contextNote: some View {
+    private func contextNote(k: Int) -> some View {
         let amber   = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
         let amberBg = VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00))
 
         let title: String
         let body:  String
-        switch mode {
+        switch self.mode {
         case .entry:
             title = "Key recovery only"
             body  = "Shards protect your encryption key — not the entry content. Export a separate vault backup to recover content after device loss. Any k trustees together can reconstruct your key — pick people who are independent of each other."
@@ -437,9 +421,11 @@ struct VaultShardSetup: View {
 
     // MARK: - CTA bar
 
-    private var ctaBar: some View {
-        VStack(spacing: 6) {
-            if let msg = confirmationMessage, !isDirty {
+    private func ctaBar(meta: ShardDistributionMetadata?, canMark: Bool) -> some View {
+        let dirty = self.isDirty
+
+        return VStack(spacing: 6) {
+            if let msg = self.confirmationMessage, !dirty {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                     Text(msg)
@@ -451,31 +437,17 @@ struct VaultShardSetup: View {
                 .background(Color.occultaAccent.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                Button(action: self.markForDistribution) {
-                    SwiftUI.Group {
-                        if self.marking {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text(ctaTitle)
-                                .font(.system(size: 16, weight: .semibold))
-                        }
-                    }
-                    .foregroundStyle(ctaEnabled ? .white : Color.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(ctaEnabled ? Color.occultaAccent : Color(.secondarySystemFill))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .shadow(color: ctaEnabled ? Color.occultaAccent.opacity(0.27) : .clear, radius: 10, y: 4)
-                }
-                .buttonStyle(.plain)
-                .disabled(!ctaEnabled || marking)
+                let hasExisting = meta != nil
+                let title = !hasExisting ? "Mark for Distribution" : (dirty ? "Update Distribution" : "Up to date")
+                let enabled = canMark && (!hasExisting || dirty)
 
-                if canMark {
-                    Text("Shards will be delivered automatically with your next message.")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Color.secondary.opacity(0.6))
-                        .multilineTextAlignment(.center)
-                }
+                DistributionCTAButton(
+                    title:     title,
+                    enabled:   enabled,
+                    isMarking: self.marking,
+                    canMark:   canMark,
+                    action:    self.markForDistribution
+                )
             }
         }
         .padding(.horizontal, 16)
@@ -485,14 +457,14 @@ struct VaultShardSetup: View {
 
     // MARK: - Avatar stack
 
-    private var avatarStack: some View {
+    private func avatarStack(selected: [Contact.Profile]) -> some View {
         let maxVis   = 7
         let visible  = Array(selected.prefix(maxVis))
         let overflow = selected.count > maxVis ? selected.count - maxVis : 0
 
         return HStack(spacing: -10) {
             ForEach(Array(visible.enumerated()), id: \.offset) { i, contact in
-                contactAvatar(contact, size: 32)
+                self.contactAvatar(contact, size: 32)
                     .zIndex(Double(maxVis - i))
             }
             if overflow > 0 {
@@ -530,8 +502,8 @@ struct VaultShardSetup: View {
 
     // MARK: - Helpers
 
-    private func shardRecord(for contactIdentifier: String) -> ShardRecord? {
-        distributionMeta?.shards.first { $0.contactIdentifier == contactIdentifier }
+    private func shardRecord(for contactIdentifier: String, in meta: ShardDistributionMetadata?) -> ShardRecord? {
+        meta?.shards.first { $0.contactIdentifier == contactIdentifier }
     }
 
     private func statusChipStyle(for status: ShardStatus) -> (label: String, bg: Color, fg: Color) {
@@ -551,25 +523,20 @@ struct VaultShardSetup: View {
 
     // MARK: - Mode helpers
 
-    /// Reactive computed property: accesses @Query arrays so SwiftUI re-renders
-    /// whenever VaultEntry or BackupEncryptionKey changes in the persistent store
-    /// (e.g., when processInboundManifest confirms a shard).
-    private var distributionMeta: ShardDistributionMetadata? {
-        switch mode {
+    /// Fetches the current shard-distribution metadata for this entry (or BEK).
+    /// Not cached — call once per need (once in `body`, once each in the action
+    /// methods below) rather than from a redundantly-read computed property.
+    /// `VaultManager.shardDistributionMetadata(for:)` already derives its own
+    /// vault key once per call internally; the fix here is call frequency, not
+    /// key derivation.
+    private func fetchDistributionMeta() -> ShardDistributionMetadata? {
+        switch self.mode {
         case .entry(let id):
             _ = self.vaultEntries
             return try? self.vault.shardDistributionMetadata(for: id)
         case .backup:
             _ = self.bekRows
             return try? self.vault.bekShardMetadata()
-        }
-    }
-
-    /// Call the correct prepare function for the current mode.
-    private func performPrepareShards() throws -> [SignedAttribute] {
-        switch mode {
-        case .entry(let id): return try vault.prepareShards(for: id, threshold: k, recipients: selected)
-        case .backup:        return try vault.prepareBEKShards(threshold: k, recipients: selected)
         }
     }
 
@@ -584,7 +551,7 @@ struct VaultShardSetup: View {
     private func seedInitialState() {
         if case .backup = self.mode { try? self.vault.setupBEK() }
 
-        if let meta = self.distributionMeta {
+        if let meta = self.fetchDistributionMeta() {
             let activeIDs = Set(meta.shards
                 .filter { Self.activeStatuses.contains($0.status) }
                 .map { $0.contactIdentifier })
@@ -602,13 +569,17 @@ struct VaultShardSetup: View {
     private func markForDistribution() {
         self.marking = true
         self.error = nil
-        
+
+        let contacts = self.mlkemContacts
+        let selected = contacts.filter { self.selectedIDs.contains($0.identifier) }
+        let k        = max(2, min(self.threshold, max(2, selected.count)))
+
         do {
             // Capture old attrIDs BEFORE prepareShards overwrites the metadata.
             // Contacts staying in the distribution get a .replace op; new ones get .distribute.
             var oldAttrIDs: [String: UUID] = [:]
-            
-            if let existingMeta = self.distributionMeta {
+
+            if let existingMeta = self.fetchDistributionMeta() {
                 let newIDs  = Set(selected.map(\.identifier))
                 let removed = existingMeta.shards.filter {
                     !newIDs.contains($0.contactIdentifier)
@@ -624,21 +595,21 @@ struct VaultShardSetup: View {
                 }
             }
 
-            let attributes = try self.performPrepareShards()
-            for (contact, attribute) in zip(self.selected, attributes) {
-                try shardCustodyManager?.queueDistribute(
+            let attributes = try self.performPrepareShards(k: k, recipients: selected)
+            for (contact, attribute) in zip(selected, attributes) {
+                try self.shardCustodyManager?.queueDistribute(
                     attribute: attribute,
                     for:       contact.identifier,
                     replacing: oldAttrIDs[contact.identifier]
                 )
             }
             let activeIDs = Set(
-                self.distributionMeta?.shards
+                self.fetchDistributionMeta()?.shards
                     .filter { Self.activeStatuses.contains($0.status) }
                     .map { $0.contactIdentifier } ?? []
             )
             self.snapshotIDs       = activeIDs
-            self.snapshotThreshold = self.k
+            self.snapshotThreshold = k
             self.marking           = false
             self.confirmationMessage = "Shards queued for delivery."
         } catch VaultManager.VaultError.locked {
@@ -647,6 +618,14 @@ struct VaultShardSetup: View {
         } catch {
             self.error   = "Failed: \(error.localizedDescription)"
             self.marking = false
+        }
+    }
+
+    /// Call the correct prepare function for the current mode.
+    private func performPrepareShards(k: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
+        switch self.mode {
+        case .entry(let id): return try self.vault.prepareShards(for: id, threshold: k, recipients: recipients)
+        case .backup:        return try self.vault.prepareBEKShards(threshold: k, recipients: recipients)
         }
     }
 
@@ -659,6 +638,46 @@ struct VaultShardSetup: View {
             self.confirmationMessage = nil
         } catch {
             self.error = "Revoke failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Distribution CTA button
+
+private struct DistributionCTAButton: View {
+    let title:     String
+    let enabled:   Bool
+    let isMarking: Bool
+    let canMark:   Bool
+    let action:    () -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Button(action: self.action) {
+                SwiftUI.Group {
+                    if self.isMarking {
+                        ProgressView().tint(.white)
+                    } else {
+                        Text(self.title)
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(self.enabled ? .white : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(self.enabled ? Color.occultaAccent : Color(.secondarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: self.enabled ? Color.occultaAccent.opacity(0.27) : .clear, radius: 10, y: 4)
+            }
+            .buttonStyle(.plain)
+            .disabled(!self.enabled || self.isMarking)
+
+            if self.canMark {
+                Text("Shards will be delivered automatically with your next message.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+                    .multilineTextAlignment(.center)
+            }
         }
     }
 }
