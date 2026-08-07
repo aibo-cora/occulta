@@ -1,6 +1,12 @@
 # Opening a vault entry's "Manage Shards" screen causes a severe hang — two separate uncached key derivations, redundantly re-run across the view's computed properties
 
-**Status:** open, partially scoped, not implemented. Found via an Instruments trace showing an 11-second hang when opening `VaultShardSetup` from a vault entry's detail view, with only 3 eligible ML-KEM contacts — disproportionate to contact count, which pointed at a fixed cost beyond the trustee-row loop (see "The multiplier" below). Root cause identified by code reading. Same anti-pattern as the already-fixed `Group-Reencryption-Multi-Second-Block-On-Visibility-Toggle.md` (uncached SE/Keychain key derivation, paid many times over per screen instead of once), independently reintroduced here — and worse, in **two** separate uncached-key call chains, not one. **Correction:** the original pass below traced only the vault key; a second, likely larger contributor — the local-DB hybrid key, reached via the generic `Data.decrypt()` used for contact names and classification fields — was found afterward and is probably the dominant cost, since it scales with *total* contact count, not just eligible ones. See "A second, likely larger cost" below. The "Scoped fix" section only covers the vault-key half; the local-DB-key half has no proposed fix yet.
+**Status: fixed and verified on-device — 11s → 1.02s.** Found via an Instruments trace showing an 11-second hang when opening `VaultShardSetup` from a vault entry's detail view, with only 3 eligible ML-KEM contacts. Root-caused to two independent uncached key derivations (vault key and local-DB hybrid key, see below), each redundantly re-run many times per render instead of once. Fixed in three commits, each measured on-device before the next:
+
+1. `3929c0d` — `ContactManager.mlkemEligibleContacts()`/`globalTrusteeIdentifiers()` changed to derive the local-DB key once internally per call instead of once per contact per field. **11s → 2.15s.**
+2. `e97a542` — vault key (`distributionMeta`) and the `mlkemContacts`/`selected`/`k`/`canMark` chain hoisted to local `let`s computed once in `body`, threaded down as parameters instead of re-read from computed properties at every call site. **2.15s → ~1.1s** (folded into the next commit's measurement).
+3. `0686126` — `globalTrusteeIDs` (the "GLOBAL" badge check), the one remaining per-row read, given the same treatment. **→ 1.02s, final measured number.**
+
+The design that shipped is **not** the one originally scoped below (a `@State`-cached result with `.onChange` invalidation) — that approach was reconsidered mid-investigation in favor of something with no caching and no invalidation logic anywhere; see "What actually shipped" for the real design and why it changed. The original root-cause tracing below is kept as-is — it's still an accurate account of the bug — but the "Scoped fix" section is superseded.
 
 ## Symptom
 
@@ -142,7 +148,9 @@ The vault-key side is bounded at 8 derivations regardless of address book size (
 
 The visibility-toggle fix (`Group-Reencryption-Multi-Second-Block-On-Visibility-Toggle.md`) scoped its change to `Data.encrypt()`/`Data.decrypt()`'s local-DB key path (`createHybridLocalEncryptionKey()`), which is a separate SE key entirely from the vault key (`deriveVaultKey`) used here. The two paths share the same *shape* of bug — an expensive, uncached per-call SE/Keychain derivation invoked once per list item — but are different code, so fixing one didn't touch the other. No general "derive once, cache for the duration of a screen" convention exists in this codebase to prevent a third instance of the same pattern elsewhere.
 
-## Scoped fix (vault key only — local-DB key below is a separate, unscoped problem)
+## Scoped fix (vault key only — local-DB key below is a separate, unscoped problem) — superseded, kept for the reasoning trail
+
+**Not what shipped.** This section was written before the local-DB-key side was scoped, and proposes a `@State`-cached `distributionMeta` with `.onChange(of: vaultEntries)`/`.onChange(of: bekRows)` reactivity plus explicit post-mutation refresh calls. That design was reconsidered during review — see "What actually shipped" below for what was built instead and why. Kept here for the reasoning trail, not as the implemented design.
 
 Lower-risk than the sibling bug's fix, because the expensive part (the `SymmetricKey` itself) never needs to leave `VaultManager` or be threaded through the View at all. What's actually worth caching at the View layer is `distributionMeta`'s *decrypted result* — `ShardDistributionMetadata`, plain bookkeeping data (contact IDs, shard status, threshold) this screen exists to display, not key material. So unlike the sibling fix, there's no `SymmetricKey`-lifetime reasoning to work through here; the key still only lives for the duration of one `deriveVaultKey` + `AES.GCM.open` call, exactly as today — the only change is calling that pair far less often.
 
@@ -156,10 +164,49 @@ Lower-risk than the sibling bug's fix, because the expensive part (the `Symmetri
 
 **Why not cache the `SymmetricKey` itself instead:** would require exposing raw key material to the View layer, which the current architecture deliberately doesn't do — `VaultManager` derives and consumes the key internally, in one call. Caching the already-decrypted application data is both simpler and keeps that boundary intact.
 
-## Not yet done
+## What actually shipped
 
-- **Implementation of either fix.** Both sections above are designs, not diffs — no code has been changed for this bug.
-- **A fix for the local-DB-key side at all.** The vault-key scoped fix above doesn't touch `mlkemContacts`, `selected`, `k`, `canMark`, or `globalTrusteeIDs` — likely the larger contributor per "A second, likely larger cost" above. Same underlying shape of problem (uncached expensive derivation, read from many redundant call sites), but a different key, a different call chain, and scales with a different variable (total contact count, not row count) — needs its own scoping pass, not assumed to be solved by the vault-key fix.
-- **Total contact count on the device that produced the 11-second trace**, and a real per-call timing baseline for `createHybridLocalEncryptionKey()` — the two numbers needed to convert the local-DB-key derivation-count bound into an actual expected wall-clock contribution, rather than leaving it as "likely dominates."
-- **Per-derivation wall-clock cost for the vault key.** 11 seconds ÷ 8 known vault-key derivations (5 CTA bar + 3 rows) ≈ 1.4s each if `body` evaluated exactly once and the local-DB key contributed nothing — almost certainly wrong now that a second, likely larger cost is known to exist. This estimate should be treated as stale; a real isolated trace of both `deriveVaultKey` and `createHybridLocalEncryptionKey` is needed to apportion the 11 seconds between them.
-- **On-device confirmation either fix collapses the hang**, once implemented — Secure Enclave is unavailable on Simulator, so, matching the sibling bug's own unresolved item, the actual wall-clock improvement needs a real device re-trace.
+Two independent design changes, one per key, layered together. Neither uses `@State` caching or any invalidation logic — the guiding principle that emerged during review was **"no caching anywhere, derive/fetch once per need, thread the result down as a parameter"**, not "cache the result and remember to invalidate it."
+
+### Local-DB key — moved into `ContactManager`, still no caching
+
+Rather than the View managing a key at all (an earlier, discarded direction considered and rejected — a `SymmetricKey` sitting in `@State` was judged too broad and uncontrolled a surface, and a `ContactManager`-internal cached key raised a real invalidation risk once it was confirmed the local-DB key genuinely rotates during Secure Mode activation via a staged-key commit protocol), `ContactManager.mlkemEligibleContacts()` and `globalTrusteeIdentifiers()` were changed to derive the key once **per call**, internally, and immediately discard it:
+
+```swift
+func mlkemEligibleContacts() -> [Contact.Profile] {
+    guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+    return self.mlkemEligibleContacts(usingKey: key)
+}
+```
+
+This alone collapsed the local-DB-key cost from "once per contact per field" (the ~550-derivation worst case estimated in "A second, likely larger cost" above) down to "once per *call* to these methods" — still redundant if called many times per render, but each call now costs one derivation instead of scaling with address-book size. Measured: **11s → 2.15s.**
+
+A side effect worth noting: getting here required deciding where the keyed decrypt logic should live at all. It was **not** added to `Manager.Security` (which previously owned the unkeyed `isVisible`/`isDisplayable` too) — that coupling of the security-state manager to `Contact.Profile`'s field layout was reconsidered and removed entirely. The comparison logic moved to `Contact.Profile` itself as `isVisible(atDepth:)` / `isVisible(atDepth:usingKey:)` / `isGlobalTrustee(atDepth:usingKey:)`, mirroring how `Group` already owns its own depth/key-aware query methods. `Manager.Security` now has zero methods that take a `Contact.Profile` — see `a0c1323`, which also updated all 14 pre-existing call sites across the app to the new shape with no behavior change.
+
+### Vault key + remaining call-frequency redundancy — hoisted to `body`, threaded as parameters
+
+`VaultManager.shardDistributionMetadata(for:)` already derived its key once per call — that was never the problem. The problem was `distributionMeta` (and, on the local-DB side, `mlkemContacts`/`selected`/`k`/`canMark`/`globalTrusteeIDs`) being **computed properties re-read many times per render** from `ctaBar`'s repeated ternaries and the trustee-row loop.
+
+`body` now computes everything once:
+```swift
+var body: some View {
+    let meta       = self.fetchDistributionMeta()
+    let contacts   = self.mlkemContacts
+    let trusteeIDs = self.globalTrusteeIDs
+    let selected   = contacts.filter { self.selectedIDs.contains($0.identifier) }
+    let k          = max(2, min(self.threshold, max(2, selected.count)))
+    let canMark    = selected.count >= 2
+    // ...threaded down as parameters to summaryCard, trusteesHeader, trusteesCard,
+    // trusteeRow, infoNote, contextNote, ctaBar, avatarStack
+}
+```
+
+`distributionMeta`, `selected`, `k`, `canMark`, `ctaTitle`, `ctaEnabled`, and `hasExistingDistribution` no longer exist as properties — `fetchDistributionMeta()` replaces `distributionMeta`, called once in `body` and independently in the two action methods (`seedInitialState`, `markForDistribution`), which run outside `body`'s render pass and always need their own fresh read regardless. The CTA button was also pulled out into its own `DistributionCTAButton` view taking `title`/`enabled`/`isMarking`/`canMark`/`action` as plain stored properties, instead of reaching into six different properties on the parent.
+
+This is deliberately **not** a persistent-cache design — there's nothing to go stale, because everything is recomputed fresh from current `@Query`/`@State` on every `body` evaluation. The reactivity `distributionMeta` originally needed (picking up a background shard confirmation via `processInboundManifest` while the screen is open) falls out automatically: `@Query` changes still trigger a `body` re-evaluation, which recomputes `meta` fresh, no `.onChange` scaffolding required. Measured after both this and the local-DB-key fix together: **→ 1.02s.**
+
+## Residual, not chased further
+
+- **Per-derivation wall-clock baseline was never isolated.** The three measurements above (11s → 2.15s → 1.02s) are real, on-device, end-to-end numbers, not derived from a controlled per-call timing baseline — useful for confirming the fixes worked, not for predicting behavior at a different contact count.
+- **`body` may still evaluate more than once per visible render** (state settling, layout passes) — the fixes reduce every known redundant call site to "once per `body` evaluation," which is the limit of this approach; going lower would mean either accepting SwiftUI's own re-render frequency as fixed cost or moving the derivation off the render path entirely (the "background thread" direction considered and set aside earlier in this investigation, since `createHybridLocalEncryptionKey`/`deriveVaultKey` default to `MainActor` project-wide and were never marked `nonisolated`).
+- **1.02s may still be worth chasing further** if it's judged not good enough — this doc doesn't take a position on that, it just records what was fixed and measured.
