@@ -1,6 +1,7 @@
 import SwiftData
 import Contacts
 import Foundation
+import CryptoKit
 
 // MARK: - Main Contact Model
 
@@ -157,6 +158,42 @@ extension Contact {
                 nickname: self.nickname
             ).formatted(.name(style: .long))
         }
+    }
+}
+
+// MARK: - Depth visibility
+
+extension Contact.Profile {
+    /// Visible at `depth`. Ceiling semantics: a contact stamped N is visible at every
+    /// depth 0...N. Canonical definition — every caller needing "is this contact visible"
+    /// goes through this or the `usingKey:` sibling below.
+    func isVisible(atDepth depth: Int) -> Bool {
+        guard let data = self.visibleThroughDepth else { return true }
+        guard let decrypted = data.decrypt(),
+              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return false }   // non-nil field that won't decrypt = sensitive shell; exclude
+        return value >= depth
+    }
+
+    /// Same as `isVisible(atDepth:)` but decrypts with an already-derived key instead of
+    /// deriving one internally. For callers filtering many contacts in one pass — derive
+    /// once, pass the same key to every call.
+    func isVisible(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
+        guard let data = self.visibleThroughDepth else { return true }
+        guard let decrypted = data.decrypt(using: key),
+              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return false }
+        return value >= depth
+    }
+
+    /// Marked a global trustee at exactly `depth` — exact match, not a ceiling. Decrypts
+    /// with an already-derived key; mirrors `ContactManager.isGlobalTrustee(_:)`.
+    func isGlobalTrustee(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
+        guard let data      = self.globalTrusteeDepth,
+              let decrypted = data.decrypt(using: key),
+              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return false }
+        return value == depth
     }
 }
 

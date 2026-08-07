@@ -1082,7 +1082,7 @@ extension Manager {
             let profiles = (try? self.modelContext.fetch(
                 FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
             )) ?? []
-            let safeIdentifiers = Set(profiles.filter { Self.isVisible($0, atDepth: self.currentDepth) }.map(\.identifier))
+            let safeIdentifiers = Set(profiles.filter { $0.isVisible(atDepth: self.currentDepth, usingKey: key) }.map(\.identifier))
             let allGroupIdentifiers = Set(
                 ((try? self.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
                     .compactMap { $0.readID()?.uuidString }
@@ -1315,24 +1315,6 @@ extension Manager {
             return PINManager.checkVerifier(pin: pin, label: Self.duressLabel,
                                             verifier: config.sealedDuressVerifiers[duressIdx],
                                             seKey: seKey)
-        }
-
-        // MARK: - Safe contacts
-
-        /// Returns true if the contact should appear in the contact list at the current depth.
-        ///
-        /// Wraps `isVisible` for use with an already-fetched `Contact.Profile`, avoiding the
-        /// per-identifier DB lookup cost of `isSafeContact`. Use this for list filtering.
-        func isDisplayable(_ contact: Contact.Profile) -> Bool {
-            Self.isVisible(contact, atDepth: self.currentDepth)
-        }
-
-        static func isVisible(_ contact: Contact.Profile, atDepth depth: Int) -> Bool {
-            guard let data = contact.visibleThroughDepth else { return true }
-            guard let decrypted = data.decrypt(),
-                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-            else { return false }   // non-nil field that won't decrypt = sensitive shell; exclude
-            return value >= depth
         }
 
         // MARK: - Safe vault entries

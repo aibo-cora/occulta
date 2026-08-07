@@ -470,7 +470,7 @@ struct VaultTab: View {
                 let contact = self.allContacts.first { $0.identifier == identifier }
                 let name: String
                 if let c = contact {
-                    guard self.security.isDisplayable(c) else { return nil }
+                    guard c.isVisible(atDepth: self.security.currentDepth) else { return nil }
                     let given  = c.givenName.decrypt()
                     let family = c.familyName.decrypt()
                     name = [given, family].filter { !$0.isEmpty }.joined(separator: " ")

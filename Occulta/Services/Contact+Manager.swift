@@ -1196,7 +1196,7 @@ extension ContactManager {
         // a message could be encrypted for a contact the UI shows as absent from the
         // group at the current security depth.
         let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
-            .filter { self.security.isDisplayable($0) }
+            .filter { $0.isVisible(atDepth: self.security.currentDepth) }
 
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 

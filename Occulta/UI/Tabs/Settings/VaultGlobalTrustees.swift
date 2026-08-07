@@ -31,7 +31,7 @@ struct VaultGlobalTrustees: View {
     /// hidden contacts appear in a list.
     private var mlkemContacts: [Contact.Profile] {
         allContacts
-            .filter { self.security.isDisplayable($0) }
+            .filter { $0.isVisible(atDepth: self.security.currentDepth) }
             .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 

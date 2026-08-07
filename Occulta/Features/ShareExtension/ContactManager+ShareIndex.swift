@@ -43,7 +43,7 @@ extension ContactManager {
         let contacts: [Contact.Profile]
         if self.security.isSecureModeActive {
             let depth = max(self.security.currentDepth, 1)
-            contacts = allContacts.filter { Manager.Security.isVisible($0, atDepth: depth) }
+            contacts = allContacts.filter { $0.isVisible(atDepth: depth) }
         } else {
             contacts = allContacts
         }

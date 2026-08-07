@@ -1094,9 +1094,9 @@ struct GroupStructuralTests {
 
         let contact = try cm.fetchContact(by: id)!
         cm.security.applyVerifyState(for: .normal(depth: 0))
-        #expect(cm.security.isDisplayable(contact))
+        #expect(contact.isVisible(atDepth: cm.security.currentDepth))
         cm.security.applyVerifyState(for: .normal(depth: 5))
-        #expect(cm.security.isDisplayable(contact), "a safe contact must stay visible at every depth")
+        #expect(contact.isVisible(atDepth: cm.security.currentDepth), "a safe contact must stay visible at every depth")
     }
 
     @Test func sensitiveContact_visibleThroughClassificationDepth_hiddenBeyond() throws {
@@ -1110,11 +1110,11 @@ struct GroupStructuralTests {
 
         let contact = try cm.fetchContact(by: id)!
         cm.security.applyVerifyState(for: .normal(depth: 0))
-        #expect(cm.security.isDisplayable(contact), "still visible at a shallower depth than its classification ceiling")
+        #expect(contact.isVisible(atDepth: cm.security.currentDepth), "still visible at a shallower depth than its classification ceiling")
         cm.security.applyVerifyState(for: .normal(depth: 2))
-        #expect(cm.security.isDisplayable(contact), "visible at its own classification depth")
+        #expect(contact.isVisible(atDepth: cm.security.currentDepth), "visible at its own classification depth")
         cm.security.applyVerifyState(for: .normal(depth: 3))
-        #expect(!cm.security.isDisplayable(contact), "hidden beyond its classification depth")
+        #expect(!contact.isVisible(atDepth: cm.security.currentDepth), "hidden beyond its classification depth")
     }
 
     @Test func unclassifiedContact_nilVisibleThroughDepth_alwaysVisible() throws {
@@ -1125,7 +1125,7 @@ struct GroupStructuralTests {
         let contact = try cm.fetchContact(by: id)!
         #expect(contact.visibleThroughDepth == nil)
         cm.security.applyVerifyState(for: .normal(depth: 4))
-        #expect(cm.security.isDisplayable(contact), "a never-classified contact (nil visibleThroughDepth) must stay visible everywhere")
+        #expect(contact.isVisible(atDepth: cm.security.currentDepth), "a never-classified contact (nil visibleThroughDepth) must stay visible everywhere")
     }
 }
 

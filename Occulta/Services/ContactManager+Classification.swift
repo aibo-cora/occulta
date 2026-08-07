@@ -36,7 +36,7 @@ extension ContactManager {
             predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
         )
         guard let contact = try? self.modelContext.fetch(descriptor).first else { return false }
-        return Manager.Security.isVisible(contact, atDepth: self.security.currentDepth)
+        return contact.isVisible(atDepth: self.security.currentDepth)
     }
 
     /// Returns true if the contact is marked a global trustee at the current depth
@@ -62,7 +62,7 @@ extension ContactManager {
         let depth = self.security.currentDepth
         let contacts = (try? self.fetchAllContacts()) ?? []
         return Set(contacts.compactMap { contact -> String? in
-            guard self.security.isDisplayable(contact),
+            guard contact.isVisible(atDepth: depth),
                   let data  = contact.globalTrusteeDepth,
                   let plain = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: plain),
@@ -70,6 +70,30 @@ extension ContactManager {
             else { return nil }
             return contact.identifier
         })
+    }
+
+    /// Same as `globalTrusteeIdentifiers()` but decrypts with an already-derived key
+    /// instead of deriving one per contact. For callers already holding a key for the
+    /// same pass (e.g. a screen that also needs `mlkemEligibleContacts(usingKey:)`).
+    func globalTrusteeIdentifiers(usingKey key: SymmetricKey) -> Set<String> {
+        let depth = self.security.currentDepth
+        let contacts = (try? self.fetchAllContacts()) ?? []
+        return Set(contacts.compactMap { contact in
+            (contact.isVisible(atDepth: depth, usingKey: key)
+                && contact.isGlobalTrustee(atDepth: depth, usingKey: key))
+                ? contact.identifier : nil
+        })
+    }
+
+    /// Contacts with a verified ML-KEM key, visible at the current depth. Decrypts with
+    /// an already-derived key instead of deriving one per contact — same reasoning as
+    /// `globalTrusteeIdentifiers(usingKey:)`.
+    func mlkemEligibleContacts(usingKey key: SymmetricKey) -> [Contact.Profile] {
+        let depth = self.security.currentDepth
+        let contacts = (try? self.fetchAllContacts()) ?? []
+        return contacts
+            .filter { $0.isVisible(atDepth: depth, usingKey: key) }
+            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     // MARK: - Writes
@@ -87,7 +111,7 @@ extension ContactManager {
         let depth    = self.security.currentDepth
         var hiddenIdentifiers: Set<String> = []
         for contact in contacts {
-            guard self.security.isDisplayable(contact) else { continue }
+            guard contact.isVisible(atDepth: depth) else { continue }
             let depthValue = safeIDs.contains(contact.identifier) ? Int.max : depth
             contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             if depthValue != Int.max { hiddenIdentifiers.insert(contact.identifier) }
@@ -143,7 +167,7 @@ extension ContactManager {
         let contacts = try self.fetchAllContacts()
         let depth    = self.security.currentDepth
         for contact in contacts {
-            guard self.security.isDisplayable(contact) else { continue }
+            guard contact.isVisible(atDepth: depth) else { continue }
             let value = selectedIDs.contains(contact.identifier) ? depth : -1
             contact.globalTrusteeDepth = try JSONEncoder().encode(value).encrypt()
         }

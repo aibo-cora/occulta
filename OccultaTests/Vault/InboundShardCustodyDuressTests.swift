@@ -143,12 +143,12 @@ struct InboundShardCustodyDuressTests {
         // filter keys entirely off the owner contact's own ceiling. Confirm that
         // ceiling already produces the desired behavior: visible at the depth it
         // arrived, and still visible back at the real depth 0 — no new field needed.
-        #expect(security.isDisplayable(alice),
+        #expect(alice.isVisible(atDepth: security.currentDepth),
                 "still visible at the duress depth it was received at")
 
         security.applyVerifyState(for: .normal(depth: 0))
         #expect(security.currentDepth == 0)
-        #expect(security.isDisplayable(alice),
+        #expect(alice.isVisible(atDepth: security.currentDepth),
                 "a safe contact's shard must remain visible back at the real depth 0 too")
     }
 
@@ -183,7 +183,7 @@ struct InboundShardCustodyDuressTests {
 
         #expect(try custodyShardCount(in: container) == 1,
                 "storage is unconditional regardless of the owner's own sensitivity — display filtering is what protects this, not a storage gate")
-        #expect(security.isDisplayable(bob) == false,
+        #expect(bob.isVisible(atDepth: security.currentDepth) == false,
                 "a sensitive owner's shard must never render at a duress depth, even though the row exists")
     }
 }
