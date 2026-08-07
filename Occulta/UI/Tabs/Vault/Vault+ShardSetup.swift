@@ -18,11 +18,9 @@ struct VaultShardSetup: View {
 
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
-    @Environment(Manager.Security.self) private var security
     @Environment(ContactManager.self) private var contactManager
     @Environment(\.dismiss) private var dismiss
 
-    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Query private var vaultEntries: [VaultEntry]
     @Query private var bekRows:      [BackupEncryptionKey]
 
@@ -48,9 +46,7 @@ struct VaultShardSetup: View {
     }
 
     private var mlkemContacts: [Contact.Profile] {
-        allContacts
-            .filter { $0.isVisible(atDepth: self.security.currentDepth) }
-            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
+        self.contactManager.mlkemEligibleContacts()
     }
 
     private var selected: [Contact.Profile] {

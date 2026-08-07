@@ -58,22 +58,18 @@ extension ContactManager {
     /// Identifiers of every contact marked a global trustee at the current depth.
     /// Restricted to displayable contacts, matching the filter every other
     /// trustee-facing list already applies (Gap 2 items 1-2).
+    ///
+    /// Derives the local-DB key once and reuses it across every contact, instead of
+    /// once per contact per field — the dominant cost here is the Keychain/Secure
+    /// Enclave round trip inside key derivation, not the AES operation itself, and the
+    /// derived key is identical on every call until the local-DB key is rotated.
     func globalTrusteeIdentifiers() -> Set<String> {
-        let depth = self.security.currentDepth
-        let contacts = (try? self.fetchAllContacts()) ?? []
-        return Set(contacts.compactMap { contact -> String? in
-            guard contact.isVisible(atDepth: depth),
-                  let data  = contact.globalTrusteeDepth,
-                  let plain = data.decrypt(),
-                  let value = try? JSONDecoder().decode(Int.self, from: plain),
-                  value == depth
-            else { return nil }
-            return contact.identifier
-        })
+        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        return self.globalTrusteeIdentifiers(usingKey: key)
     }
 
     /// Same as `globalTrusteeIdentifiers()` but decrypts with an already-derived key
-    /// instead of deriving one per contact. For callers already holding a key for the
+    /// instead of deriving one internally. For callers already holding a key for the
     /// same pass (e.g. a screen that also needs `mlkemEligibleContacts(usingKey:)`).
     func globalTrusteeIdentifiers(usingKey key: SymmetricKey) -> Set<String> {
         let depth = self.security.currentDepth
@@ -85,9 +81,17 @@ extension ContactManager {
         })
     }
 
-    /// Contacts with a verified ML-KEM key, visible at the current depth. Decrypts with
-    /// an already-derived key instead of deriving one per contact — same reasoning as
-    /// `globalTrusteeIdentifiers(usingKey:)`.
+    /// Contacts with a verified ML-KEM key, visible at the current depth. Derives the
+    /// local-DB key once and reuses it across every contact — same reasoning as
+    /// `globalTrusteeIdentifiers()`.
+    func mlkemEligibleContacts() -> [Contact.Profile] {
+        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        return self.mlkemEligibleContacts(usingKey: key)
+    }
+
+    /// Same as `mlkemEligibleContacts()` but decrypts with an already-derived key
+    /// instead of deriving one internally. For callers already holding a key for the
+    /// same pass (e.g. a screen that also needs `globalTrusteeIdentifiers(usingKey:)`).
     func mlkemEligibleContacts(usingKey key: SymmetricKey) -> [Contact.Profile] {
         let depth = self.security.currentDepth
         let contacts = (try? self.fetchAllContacts()) ?? []
