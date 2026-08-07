@@ -660,9 +660,20 @@ private struct RootView: View {
             default:
                 // Legacy path — nil, v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
-                decrypted = try self.contactManager.decrypt(data: fileContents)
-                /// If the bundle is in legacy format, make sure it goes through the checkpoint before processing it.
-                try self.passSecurityControl(identifier: decrypted.ownerID)
+                // Unlike the v3fs/v4 path, there's no fingerprint pre-check here — a
+                // successful decrypt is how the sender is identified, so the checkpoint
+                // can only run after plaintext already exists. Zero it immediately on
+                // rejection so it doesn't linger any longer than necessary.
+                let legacyResult = try self.contactManager.decrypt(data: fileContents)
+                do {
+                    /// If the bundle is in legacy format, make sure it goes through the checkpoint before processing it.
+                    try self.passSecurityControl(identifier: legacyResult.ownerID)
+                } catch {
+                    var rejectedPlaintext = legacyResult.plaintext
+                    _ = rejectedPlaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
+                    throw error
+                }
+                decrypted = legacyResult
             }
 
             let basket: Basket
