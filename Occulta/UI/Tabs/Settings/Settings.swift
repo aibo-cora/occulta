@@ -13,44 +13,81 @@ struct Settings: View {
     var body: some View {
         NavigationStack {
             List {
-                NavigationLink("My Identity") {
-                    MyIdentity()
+                Section {
+                    NavigationLink("My Identity") {
+                        MyIdentity()
+                    }
+                } header: {
+                    self.sectionHeader("Identity", "Your cryptographic identity, and how contacts verify it's you.")
                 }
 
-                NavigationLink("Contact List") {
-                    ContactListSettings()
+                Section {
+                    NavigationLink("Contact List") {
+                        ContactListSettings()
+                    }
+                } header: {
+                    self.sectionHeader("Contacts", "How your contact list looks and behaves.")
                 }
 
-                NavigationLink("Project Info") {
-                    ProjectInfo()
-                }
-
-                NavigationLink("Manage Contacts") {
-                    ManageContacts()
+                Section {
+                    NavigationLink("Vault Recovery") {
+                        VaultRecoverySettings()
+                    }
+                } header: {
+                    self.sectionHeader("Vault & Recovery", "Shard-based backup recovery for your vault and encryption key.")
                 }
 
                 if FeatureFlags.isEnabled(.secureMode) {
-                    NavigationLink("Security") {
-                        SecuritySettings()
+                    Section {
+                        NavigationLink("Security") {
+                            SecuritySettings()
+                        }
+                    } header: {
+                        self.sectionHeader("Security", "PIN protection and Secure Mode for this device.")
                     }
                 }
+
+                Section {
+                    NavigationLink("Project Info") {
+                        ProjectInfo()
+                    }
+                    HStack {
+                        Text("Version")
+                        Spacer()
+                        Text("\(Bundle.main.appVersion) (\(Bundle.main.buildNumber))")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    self.sectionHeader("About", "Open-source project details and app version.")
+                }
+
+                Section {
+                    NavigationLink {
+                        ManageContacts()
+                    } label: {
+                        Text("Erase All Data")
+                            .foregroundStyle(Color.red)
+                    }
+                } header: {
+                    self.sectionHeader("Data", "Permanently erase all local data. This cannot be undone.")
+                }
             }
-            
-            VStack {
-                Image(systemName: "info.circle")
-                    .font(.largeTitle)
-                    .padding()
-                    
-                Text("App Version: \(Bundle.main.appVersion)")
-                    .font(.headline)
-                
-                Text("Build Number: \(Bundle.main.buildNumber)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
+            .navigationTitle("Settings")
+            .scrollIndicators(.hidden)
         }
     }
-    
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String, _ description: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+            Text(description)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+        }
+    }
+
     private struct MyIdentity: View {
         @State private var displayingIdentityInfo: Bool = false
         
