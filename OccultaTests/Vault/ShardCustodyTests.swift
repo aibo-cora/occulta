@@ -239,6 +239,50 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Old row replaced by new — count is still 1, but the surviving row carries newAttr.
         #expect(try custodyShardCount(in: container) == 1)
     }
+
+    @Test(".replace cannot delete another owner's shard by targeting their attributeID")
+    func replaceCannotDeleteAnotherOwnersShard() throws {
+        let alice   = TestKeyManager()
+        let mallory = TestKeyManager()
+        let (custody, _, container) = try makeBob()
+        let alicePub   = try alice.retrieveIdentity()
+        let malloryPub = try mallory.retrieveIdentity()
+
+        // Alice distributes a real shard.
+        let aliceAttr = try makeShardAttr(signer: alice, shardBytes: Data([0x01, 0x02]))
+        _ = custody.handleInbound(
+            shardOperations:  [.init(kind: .distribute, attribute: aliceAttr)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
+            senderPublicKey:  alicePub,
+            senderIdentifier: "alice",
+            vaultManager:     try makeAlice().vault
+        )
+        #expect(try custodyShardCount(in: container) == 1)
+
+        // Mallory sends her own genuinely-signed .replace, but targets Alice's real
+        // attributeID as oldID — simulating an attacker who learned it via manifest
+        // traffic or otherwise, with no relationship to Alice's shard at all.
+        let malloryAttr = try makeShardAttr(signer: mallory, shardBytes: Data([0x09, 0x0A]))
+        _ = custody.handleInbound(
+            shardOperations:  [.init(kind: .replace, attribute: malloryAttr, attributeID: aliceAttr.id)],
+            custodyManifest:  nil,
+            expectedShards:   nil,
+            senderPublicKey:  malloryPub,
+            senderIdentifier: "mallory",
+            vaultManager:     try makeAlice().vault
+        )
+
+        // Mallory's own shard is stored, but Alice's must survive untouched — Mallory
+        // has no ownership relationship to the row her oldID happened to name.
+        let ctx  = ModelContext(container)
+        let rows = try ctx.fetch(FetchDescriptor<CustodyShard>())
+        #expect(rows.count == 2)
+
+        let byOwner = Dictionary(uniqueKeysWithValues: custody.heldShards(from: rows).map { ($0.ownerContactIdentifier, $0.count) })
+        #expect(byOwner["alice"] == 1)
+        #expect(byOwner["mallory"] == 1)
+    }
 }
 
 // MARK: - Implicit revoke via expectedShards
