@@ -29,7 +29,7 @@ struct ContactClassification: View {
     /// hidden below depth N (classified at a shallower layer), so the user only
     /// sees and edits contacts they can actually control at this layer.
     private var classifiableContacts: [Contact.Profile] {
-        self.contacts.filter { self.security.isDisplayable($0) }
+        self.contacts.filter { $0.isVisible(atDepth: self.security.currentDepth) }
     }
 
     private var visibleContacts: [Contact.Profile] {

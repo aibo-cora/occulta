@@ -1,6 +1,7 @@
 import SwiftData
 import Contacts
 import Foundation
+import CryptoKit
 
 // MARK: - Main Contact Model
 
@@ -97,6 +98,25 @@ extension Contact {
         /// SwiftData lightweight migration: new optional column, no plan required.
         var maxBundleVersion: Data? = nil
 
+        /// Encrypted duress-origin depth stamp (encrypted JSON Int), floor — not a ceiling,
+        /// and not exact-match either:
+        ///   0 — created at the real depth (default for all new contacts); no confinement,
+        ///       defer entirely to visibleThroughDepth's ceiling for visibility.
+        ///   N — created while already at duress depth N; visible at N and every depth
+        ///       nested deeper than N, hidden at any depth shallower than N (including 0).
+        /// Why a floor and not exact-match: a contact born under coercion has to keep
+        /// working normally if the operator goes deeper into another nested layer after
+        /// it was created — exact-match would make it start rejecting bundles again the
+        /// moment depth passes N, reproducing the exact duress-detection tell this field
+        /// exists to remove (see Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md).
+        /// Why sensitivity classification is bypassed entirely for these contacts (see
+        /// isVisible below): there is nothing real behind a contact the coercer created
+        /// themselves — they already know everything about it — so there is no protective
+        /// purpose in ever hiding it again, and doing so would only reopen the same tell.
+        /// Always non-nil after creation or the backfill migration — nil is not a valid
+        /// steady state, same invariant as visibleThroughDepth/globalTrusteeDepth.
+        var originDepth: Data? = nil
+
         // MARK: - Full Designated Initializer
         
         init(
@@ -157,6 +177,67 @@ extension Contact {
                 nickname: self.nickname
             ).formatted(.name(style: .long))
         }
+    }
+}
+
+// MARK: - Depth visibility
+
+extension Contact.Profile {
+    /// Visible at `depth`. Ceiling semantics: a contact stamped N is visible at every
+    /// depth 0...N. Canonical definition — every caller needing "is this contact visible"
+    /// goes through this or the `usingKey:` sibling below.
+    ///
+    /// Duress-origin contacts (originDepth > 0) short-circuit this entirely and use floor
+    /// semantics instead — visible at their origin depth and everything nested deeper,
+    /// never composed with the ceiling below. See originDepth's doc comment for why.
+    ///
+    /// originDepth's three possible states are handled differently, deliberately:
+    ///   - absent (nil): pre-backfill, or genuinely real — falls through to the ceiling
+    ///     check below. Safe: a real contact was never protected by this field anyway.
+    ///   - present, decodes to 0: genuinely not duress-origin — falls through, same as above.
+    ///   - present, fails to decode: cannot rule out that the real value was > 0 — exclude
+    ///     outright, rather than falling through to a ceiling check that was never designed
+    ///     to protect a duress-origin contact from the real depth-0 view. Falling through
+    ///     here would be fail-open for exactly the contacts this field exists to protect.
+    func isVisible(atDepth depth: Int) -> Bool {
+        if let data = self.originDepth {
+            guard let decrypted = data.decrypt(),
+                  let origin = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return false }
+            if origin > 0 { return depth >= origin }
+        }
+        guard let data = self.visibleThroughDepth else { return true }
+        guard let decrypted = data.decrypt(),
+              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return false }   // non-nil field that won't decrypt = sensitive shell; exclude
+        return value >= depth
+    }
+
+    /// Same as `isVisible(atDepth:)` but decrypts with an already-derived key instead of
+    /// deriving one internally. For callers filtering many contacts in one pass — derive
+    /// once, pass the same key to every call. Same three-state handling as above.
+    func isVisible(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
+        if let data = self.originDepth {
+            guard let decrypted = data.decrypt(using: key),
+                  let origin = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return false }
+            if origin > 0 { return depth >= origin }
+        }
+        guard let data = self.visibleThroughDepth else { return true }
+        guard let decrypted = data.decrypt(using: key),
+              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return false }
+        return value >= depth
+    }
+
+    /// Marked a global trustee at exactly `depth` — exact match, not a ceiling. Decrypts
+    /// with an already-derived key; mirrors `ContactManager.isGlobalTrustee(_:)`.
+    func isGlobalTrustee(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
+        guard let data      = self.globalTrusteeDepth,
+              let decrypted = data.decrypt(using: key),
+              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+        else { return false }
+        return value == depth
     }
 }
 

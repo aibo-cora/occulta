@@ -230,7 +230,7 @@ extension Group {
         // MARK: - Actions
 
         private func computeEligibility() {
-            let displayable = self.contacts.filter { self.security.isDisplayable($0) }
+            let displayable = self.contacts.filter { $0.isVisible(atDepth: self.security.currentDepth) }
             self.eligible   = displayable.filter {  ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups }
             self.ineligible = displayable.filter { !ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups }
         }

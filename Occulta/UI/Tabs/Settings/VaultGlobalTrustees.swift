@@ -18,9 +18,7 @@ import SwiftData
 
 struct VaultGlobalTrustees: View {
 
-    @Environment(Manager.Security.self) private var security
     @Environment(ContactManager.self) private var contactManager
-    @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []
@@ -30,9 +28,7 @@ struct VaultGlobalTrustees: View {
     /// trustee candidate at all, the same tradeoff already applied everywhere else
     /// hidden contacts appear in a list.
     private var mlkemContacts: [Contact.Profile] {
-        allContacts
-            .filter { self.security.isDisplayable($0) }
-            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
+        self.contactManager.mlkemEligibleContacts()
     }
 
     private var selected: [Contact.Profile] {

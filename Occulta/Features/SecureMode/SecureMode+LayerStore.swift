@@ -53,6 +53,14 @@ struct LayerContact: Codable {
     /// deactivation. nil in records written before this field was added —
     /// deactivation falls back to -1 (not a trustee).
     let globalTrusteeDepth: Int?
+
+    // No originDepth field here, deliberately: a duress-origin contact (originDepth > 0)
+    // is exempt from ceiling-based blob-sealing entirely (see activateSecureMode's Step 4
+    // short-circuit) and so can never reach this struct at all. Every contact that can
+    // possibly appear here has originDepth == 0 by construction, not by chance — restoring
+    // it is a provable constant, not a captured value, so restoreContact writes the
+    // sentinel directly instead of threading a field through the blob that could never
+    // legitimately hold anything else.
 }
 
 /// The complete payload for one activation layer.

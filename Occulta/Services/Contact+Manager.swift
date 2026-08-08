@@ -208,6 +208,10 @@ class ContactManager {
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
             newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            // originDepth is always encrypted, never nil — currentDepth directly, no
+            // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
+            // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
+            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -391,6 +395,10 @@ class ContactManager {
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
             newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            // originDepth is always encrypted, never nil — currentDepth directly, no
+            // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
+            // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
+            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -1196,7 +1204,7 @@ extension ContactManager {
         // a message could be encrypted for a contact the UI shows as absent from the
         // group at the current security depth.
         let members = try self.modelContext.fetch(FetchDescriptor<Contact.Profile>(predicate: predicate))
-            .filter { self.security.isDisplayable($0) }
+            .filter { $0.isVisible(atDepth: self.security.currentDepth) }
 
         guard !members.isEmpty else { throw Errors.groupHasNoMembers }
 

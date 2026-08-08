@@ -36,7 +36,7 @@ struct ContactsV2: View {
     }
 
     private var visibleContacts: [Contact.Profile] {
-        self.contacts.filter { self.security.isDisplayable($0) }
+        self.contacts.filter { $0.isVisible(atDepth: self.security.currentDepth) }
     }
 
     private var sortedContacts: [Contact.Profile] {

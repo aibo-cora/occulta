@@ -272,6 +272,18 @@ private struct SummaryView: View {
                 )
             }
 
+            if self.sensitiveCount > 0 {
+                Section {
+                    Label(
+                        "Ask each hidden contact to mark you as sensitive too — otherwise a message between you could reveal Secure Mode is active on your device.",
+                        systemImage: "person.2.fill"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(Color(.systemBlue))
+                    .listRowBackground(Color(.systemBlue).opacity(0.08))
+                }
+            }
+
             Section {
                 Label(
                     "Deleting the app while Secure Mode is active is unrecoverable.",

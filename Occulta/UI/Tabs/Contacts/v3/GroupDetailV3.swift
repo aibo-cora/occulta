@@ -40,7 +40,7 @@ struct GroupDetailV3: View {
     private var resolvedMembers: [Contact.Profile] {
         guard let grp = self.group else { return [] }
         let identifiers = Set(grp.members(atDepth: self.security.currentDepth))
-        return self.contacts.filter { identifiers.contains($0.identifier) && self.security.isDisplayable($0) }
+        return self.contacts.filter { identifiers.contains($0.identifier) && $0.isVisible(atDepth: self.security.currentDepth) }
     }
 
     var body: some View {

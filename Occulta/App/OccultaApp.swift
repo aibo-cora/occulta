@@ -130,6 +130,14 @@ struct OccultaApp: App {
         }
 
         do {
+            try DatabaseMigration.migrateOriginDepthBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("originDepth backfill error: \(error)")
+            #endif
+        }
+
+        do {
             try DatabaseMigration.migrateGlobalShardConfigToPerContact(
                 modelContext: context, shardCustodyManager: self.shardCustodyManager
             )
@@ -280,8 +288,11 @@ private struct RootView: View {
                 )
             }
             // Drain any file queued while locked when the app unlocks (PIN entry or
-            // grace-period auto-unlock). onDuress silently discards pendingFileData,
-            // so the drain is a no-op on that path.
+            // grace-period auto-unlock). Processes identically regardless of which PIN
+            // succeeded — passSecurityControl's removal (Non-Safe-Sender-Rejection-Is-A-
+            // Duress-Detection-Oracle.md) means there's no restriction-gated rejection
+            // left to differ on, so a duress unlock draining this the same way as a
+            // normal one introduces no new signal.
             .onChange(of: self.appScreen.phase) { _, newPhase in
                 guard newPhase == .unlocked else { return }
                 if let data = self.pendingFileData {
@@ -352,7 +363,6 @@ private struct RootView: View {
                     self.contactManager.syncShareIndex()
                 },
                 onDuress: {
-                    self.pendingFileData = nil
                     self.contactManager.syncShareIndex()
                     self.appScreen.pinDidSucceed()
                 }
@@ -521,7 +531,8 @@ private struct RootView: View {
     ///
     /// Single entry point for all inbound message processing — called from `onOpenURL`
     /// when the app is already unlocked, and from onChange(of: appScreen.phase) after
-    /// PIN entry clears a queued file. Never called from `onDuress` — that path discards.
+    /// any PIN entry (normal or duress) clears a queued file — both unlock paths drain
+    /// and process identically.
     ///
     /// All error handling lives here so neither call site needs to repeat it.
     private func processInboundFile(_ data: Data) async {
@@ -567,11 +578,7 @@ private struct RootView: View {
                 guard let bundle else {
                     throw ContactManager.Errors.messageHasNoData
                 }
-                /// To avoid popping a prekey prematurely, in case this ownerID belongs to a sensitive contact, we are going to run the id through the checkpoint and throw if it is on the list.
                 let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
-                if let knownOwnerID {
-                    try self.passSecurityControl(identifier: knownOwnerID)
-                }
 
                 if bundle.group != nil {
                     // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
@@ -661,8 +668,6 @@ private struct RootView: View {
                 // Legacy path — nil, v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
                 decrypted = try self.contactManager.decrypt(data: fileContents)
-                /// If the bundle is in legacy format, make sure it goes through the checkpoint before processing it.
-                try self.passSecurityControl(identifier: decrypted.ownerID)
             }
 
             let basket: Basket
@@ -723,16 +728,6 @@ private struct RootView: View {
             )
 
             return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
-        }
-    }
-
-    /// Checkpoint A.
-    ///
-    /// We need to make sure that sensitive contacts' messages are being treated as wrong recipient events.
-    /// - Parameter identifier: Contact identifier.
-    private func passSecurityControl(identifier: String) throws {
-        if self.security.isRestricted && self.contactManager.isSafeContact(identifier) == false {
-            throw ContactManager.Errors.noPublicKeyToEncryptWith
         }
     }
 
