@@ -154,6 +154,7 @@ struct Settings: View {
     
     private struct ManageContacts: View {
         @Environment(Manager.App.self) private var appManager: Manager.App
+        @State private var showingConfirmation = false
 
         var body: some View {
             VStack(spacing: 20) {
@@ -161,11 +162,23 @@ struct Settings: View {
                 Text("This cannot be undone.").italic()
 
                 Button("Delete", role: .destructive) {
-                    try? self.appManager.eraseAllData()
+                    self.showingConfirmation = true
                 }
                 .prominentButtonStyle()
             }
             .padding()
+            .confirmationDialog(
+                "Erase All Data?",
+                isPresented: self.$showingConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Everything", role: .destructive) {
+                    try? self.appManager.eraseAllData()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This permanently deletes every contact, the vault, and all encryption keys. This cannot be undone.")
+            }
         }
     }
     

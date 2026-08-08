@@ -1,6 +1,6 @@
 # "Erase All Data" is a single unconfirmed tap, reachable by whoever is holding the phone
 
-**Status:** open, unscoped — no fix proposed yet. Found while reviewing the Settings redesign shipped this release (`442b0c4`), which moved this action into its own labeled "Data" section, making it more prominent than before, not less.
+**Status:** partially fixed. A `.confirmationDialog` now sits between the "Delete" tap and the actual call to `eraseAllData()` — see "Confirmation dialog — implemented" near the bottom. This closes the accidental/idle-tap case only; it is not a gate against a coercer willing to force a second tap, and the depth-visibility and separate-panic-wipe-entry-point questions below remain open. Found while reviewing the Settings redesign shipped this release (`442b0c4`), which moved this action into its own labeled "Data" section, making it more prominent than before, not less.
 
 ## Symptom
 
@@ -60,10 +60,47 @@ Item 1 also cuts the other way: `deleteAllContacts` is explicitly commented as "
 
 Before `442b0c4`, this was a plain `NavigationLink("Manage Contacts")` row in a flat six-row list. The Settings redesign gave it its own section, header ("Permanently erase all local data. This cannot be undone."), and relabeled the link itself "Erase All Data" in red. That was a deliberate design choice to make a destructive action legible — but it also means anyone scanning Settings now sees it immediately, without having to open "Manage Contacts" first to discover what it does. Worth weighing when scoping a fix: more visible is correct for an intentional user action, wrong for a coercer's idle exploration.
 
+## Confirmation dialog — implemented
+
+`ManageContacts` (`Settings.swift`) now routes the "Delete" tap through a `.confirmationDialog` before calling `eraseAllData()`, instead of calling it directly:
+
+```swift
+private struct ManageContacts: View {
+    @Environment(Manager.App.self) private var appManager: Manager.App
+    @State private var showingConfirmation = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Delete **entire** contact database, vault, private keys and stored messages.")
+            Text("This cannot be undone.").italic()
+
+            Button("Delete", role: .destructive) {
+                self.showingConfirmation = true
+            }
+            .prominentButtonStyle()
+        }
+        .padding()
+        .confirmationDialog(
+            "Erase All Data?",
+            isPresented: self.$showingConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Everything", role: .destructive) {
+                try? self.appManager.eraseAllData()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This permanently deletes every contact, the vault, and all encryption keys. This cannot be undone.")
+        }
+    }
+}
+```
+
+Two deliberate taps and a restated warning now stand between "Delete" and actual destruction, instead of one tap and none. `.confirmationDialog` chosen over `.alert` to match iOS HIG for a destructive action off a button tap. Verified: clean build (`xcodebuild -scheme Occulta -destination "generic/platform=iOS"`).
+
+This closes the accidental/idle-tap case only — it does not gate a coercer willing to force a second tap. The two bigger options below remain open and undecided.
+
 ## Not yet decided
 
-- Add a confirmation step (`.confirmationDialog` at minimum, PIN re-entry to match `SecuritySettings`' bar for the other destructive action) — cheapest fix, doesn't touch the underlying capability.
 - Whether visibility/reachability of this row should itself depend on `Manager.Security` state (e.g. hidden or relabeled under an active duress state) — bigger, and risks becoming its own tell if the Settings list visibly changes shape under duress.
-- Whether "panic wipe" as a *deliberate* victim action deserves a distinct, harder-to-stumble-into entry point, separate from routine data management — the current single button conflates "I did this on purpose" with "someone else's finger landed here."
-
-No implementation attempted. Scoping only.
+- Whether "panic wipe" as a *deliberate* victim action deserves a distinct, harder-to-stumble-into entry point, separate from routine data management — the current flow still conflates "I did this on purpose" with "someone else's finger landed here twice."
