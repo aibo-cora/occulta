@@ -575,11 +575,7 @@ private struct RootView: View {
                 guard let bundle else {
                     throw ContactManager.Errors.messageHasNoData
                 }
-                /// To avoid popping a prekey prematurely, in case this ownerID belongs to a sensitive contact, we are going to run the id through the checkpoint and throw if it is on the list.
                 let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
-                if let knownOwnerID {
-                    try self.passSecurityControl(identifier: knownOwnerID)
-                }
 
                 if bundle.group != nil {
                     // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
@@ -668,20 +664,7 @@ private struct RootView: View {
             default:
                 // Legacy path — nil, v1, v2, or pre-versioned files.
                 // Falls back to long-term ECDH trial decryption across all contacts.
-                // Unlike the v3fs/v4 path, there's no fingerprint pre-check here — a
-                // successful decrypt is how the sender is identified, so the checkpoint
-                // can only run after plaintext already exists. Zero it immediately on
-                // rejection so it doesn't linger any longer than necessary.
-                let legacyResult = try self.contactManager.decrypt(data: fileContents)
-                do {
-                    /// If the bundle is in legacy format, make sure it goes through the checkpoint before processing it.
-                    try self.passSecurityControl(identifier: legacyResult.ownerID)
-                } catch {
-                    var rejectedPlaintext = legacyResult.plaintext
-                    _ = rejectedPlaintext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                    throw error
-                }
-                decrypted = legacyResult
+                decrypted = try self.contactManager.decrypt(data: fileContents)
             }
 
             let basket: Basket
@@ -742,16 +725,6 @@ private struct RootView: View {
             )
 
             return OwnedBasket(basket: modifiedBasket, owner: decrypted.ownerID)
-        }
-    }
-
-    /// Checkpoint A.
-    ///
-    /// We need to make sure that sensitive contacts' messages are being treated as wrong recipient events.
-    /// - Parameter identifier: Contact identifier.
-    private func passSecurityControl(identifier: String) throws {
-        if self.security.isRestricted && self.contactManager.isSafeContact(identifier) == false {
-            throw ContactManager.Errors.noPublicKeyToEncryptWith
         }
     }
 

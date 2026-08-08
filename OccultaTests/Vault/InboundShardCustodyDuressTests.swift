@@ -124,7 +124,7 @@ struct InboundShardCustodyDuressTests {
 
         // Alice sends a real, signed shard-distribute op while we're at this depth —
         // exactly what buildOwnedBasket hands to ShardCustodyManager.handleInbound
-        // once passSecurityControl has already let it through (sender is safe).
+        // (unconditionally now — passSecurityControl was removed).
         let attr = try makeShardAttr(signer: aliceKey)
         let op   = OccultaBundle.ShardOperation(kind: .distribute, attribute: attr)
         _ = custody.handleInbound(
@@ -165,11 +165,13 @@ struct InboundShardCustodyDuressTests {
         security.applyVerifyState(for: .duress)
         #expect(security.currentDepth == 1)
 
-        // passSecurityControl would actually block this bundle before it ever reaches
-        // handleInbound (C1, forensic-trace-avoidance.md) — this test isolates
+        // passSecurityControl was removed (Non-Safe-Sender-Rejection-Is-A-Duress-
+        // Detection-Oracle.md's final design) — no gate blocks this bundle before it
+        // reaches handleInbound anymore, in production or here. This test isolates
         // ShardCustodyManager's own behavior to confirm storage itself is
         // depth-agnostic, and that the real protection against a leak is the
-        // display-time isDisplayable filter, not a storage-time gate.
+        // display-time isDisplayable filter, not a storage-time gate — the only
+        // protection this content ever had, even before the removal.
         let attr = try makeShardAttr(signer: bobKey)
         let op   = OccultaBundle.ShardOperation(kind: .distribute, attribute: attr)
         _ = custody.handleInbound(
