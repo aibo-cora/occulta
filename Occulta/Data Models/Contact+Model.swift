@@ -190,9 +190,22 @@ extension Contact.Profile {
     /// Duress-origin contacts (originDepth > 0) short-circuit this entirely and use floor
     /// semantics instead — visible at their origin depth and everything nested deeper,
     /// never composed with the ceiling below. See originDepth's doc comment for why.
+    ///
+    /// originDepth's three possible states are handled differently, deliberately:
+    ///   - absent (nil): pre-backfill, or genuinely real — falls through to the ceiling
+    ///     check below. Safe: a real contact was never protected by this field anyway.
+    ///   - present, decodes to 0: genuinely not duress-origin — falls through, same as above.
+    ///   - present, fails to decode: cannot rule out that the real value was > 0 — exclude
+    ///     outright, rather than falling through to a ceiling check that was never designed
+    ///     to protect a duress-origin contact from the real depth-0 view. Falling through
+    ///     here would be fail-open for exactly the contacts this field exists to protect.
     func isVisible(atDepth depth: Int) -> Bool {
-        let origin = self.decodedOriginDepth()
-        if origin > 0 { return depth >= origin }
+        if let data = self.originDepth {
+            guard let decrypted = data.decrypt(),
+                  let origin = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return false }
+            if origin > 0 { return depth >= origin }
+        }
         guard let data = self.visibleThroughDepth else { return true }
         guard let decrypted = data.decrypt(),
               let value = try? JSONDecoder().decode(Int.self, from: decrypted)
@@ -202,35 +215,19 @@ extension Contact.Profile {
 
     /// Same as `isVisible(atDepth:)` but decrypts with an already-derived key instead of
     /// deriving one internally. For callers filtering many contacts in one pass — derive
-    /// once, pass the same key to every call.
+    /// once, pass the same key to every call. Same three-state handling as above.
     func isVisible(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
-        let origin = self.decodedOriginDepth(usingKey: key)
-        if origin > 0 { return depth >= origin }
+        if let data = self.originDepth {
+            guard let decrypted = data.decrypt(using: key),
+                  let origin = try? JSONDecoder().decode(Int.self, from: decrypted)
+            else { return false }
+            if origin > 0 { return depth >= origin }
+        }
         guard let data = self.visibleThroughDepth else { return true }
         guard let decrypted = data.decrypt(using: key),
               let value = try? JSONDecoder().decode(Int.self, from: decrypted)
         else { return false }
         return value >= depth
-    }
-
-    /// Decodes originDepth, defaulting to 0 (not duress-origin) when absent or
-    /// undecryptable — the same "fail closed to the safe default" treatment every other
-    /// depth field on this model uses. Callers only ever branch on `> 0`, so collapsing
-    /// "genuinely 0" and "couldn't decrypt" into the same result is safe here.
-    private func decodedOriginDepth() -> Int {
-        guard let data = self.originDepth,
-              let decrypted = data.decrypt(),
-              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-        else { return 0 }
-        return value
-    }
-
-    private func decodedOriginDepth(usingKey key: SymmetricKey) -> Int {
-        guard let data = self.originDepth,
-              let decrypted = data.decrypt(using: key),
-              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-        else { return 0 }
-        return value
     }
 
     /// Marked a global trustee at exactly `depth` — exact match, not a ceiling. Decrypts

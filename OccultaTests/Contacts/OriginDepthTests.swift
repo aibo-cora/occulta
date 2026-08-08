@@ -145,6 +145,29 @@ struct OriginDepthFloorTests {
         #expect(profile.isVisible(atDepth: 0))
         #expect(profile.isVisible(atDepth: 3), "a legacy contact must fall back to normal ceiling behavior, not be treated as duress-origin")
     }
+
+    /// Regression test for the fail-open decode gap: a present-but-undecryptable
+    /// originDepth must exclude the contact outright, never fall through to the
+    /// ceiling check — falling through would mean a duress-origin contact whose
+    /// origin becomes unreadable loses its protection and can leak to depth 0 the
+    /// instant its (still-valid) visibleThroughDepth ceiling includes 0, which it
+    /// always does for a contact stamped at creation (ceiling >= 0 is always true).
+    @Test func undecryptableOriginDepth_excludesOutright_neverFallsThroughToCeiling() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let (cm, _) = try makeContactManager()
+        // Present but garbage — decrypt() will fail. visibleThroughDepth is Int.max,
+        // which would make this contact visible everywhere if the check fell through.
+        let profile = try insertPlainProfile(
+            identifier: UUID().uuidString,
+            originDepth: Data([0xFF, 0xFE, 0x00, 0x01]),
+            visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt(),
+            in: cm
+        )
+        #expect(!profile.isVisible(atDepth: 0),
+                "undecryptable originDepth must exclude the contact, not fall through to an Int.max ceiling")
+        #expect(!profile.isVisible(atDepth: 5),
+                "exclusion must hold at every depth, not just 0")
+    }
 }
 
 // MARK: - Creation-time stamping
