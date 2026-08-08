@@ -14,6 +14,27 @@ import SwiftData
 import CryptoKit
 import SQLite3
 
+// MARK: - LockoutClock
+
+/// Abstraction over wall-clock time and monotonic boot-relative uptime, used only by
+/// the PIN lockout gate (SEC-1 fix). Injectable so tests can simulate a clock rollback
+/// or a reboot deterministically, without touching the real system clock.
+///
+/// `now` is wall-clock time — user-adjustable via Settings, used only for *display*
+/// estimates, never trusted for the actual gate. `systemUptime` is monotonic time since
+/// the device last booted — unaffected by Settings changes, and can only decrease if
+/// the device has actually rebooted. The lockout gate is built entirely on the latter.
+protocol LockoutClock {
+    var now: Date { get }
+    var systemUptime: TimeInterval { get }
+}
+
+/// Production implementation — the real system clock and boot-relative uptime.
+struct SystemLockoutClock: LockoutClock {
+    var now: Date { Date.now }
+    var systemUptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+}
+
 extension Manager {
     @Observable
     final class Security {
@@ -113,6 +134,10 @@ extension Manager {
         /// Layer store for push/pop during key rotation.
         /// Defaults to AppGroupLayerStoreBackend (production). Tests inject InMemoryLayerStoreBackend.
         private let layerStore: Manager.LayerStore
+        /// Wall-clock + monotonic-uptime source for the lockout gate (SEC-1 fix).
+        /// Defaults to the real system clock. Tests inject a fake to simulate clock
+        /// rollback and reboot without touching the actual system clock.
+        private let clock: any LockoutClock
 
         private static let normalLabel = Data("secure-mode-normal-pin-2026".utf8)
         private static let duressLabel = Data("secure-mode-duress-pin-2026".utf8)
@@ -122,6 +147,7 @@ extension Manager {
         /// - Parameters:
         ///   - modelContainer: The shared SwiftData container.
         ///   - keyManager: Key manager implementation (injectable for testing).
+        ///   - clock: Wall-clock/uptime source (injectable for testing the lockout gate).
         ///   - enabled: When `false` (feature flag `secureMode` is off), the manager
         ///     skips all `AppLayerConfig` reads. `requiresPIN` returns `false`, all
         ///     filtering is inert, and the PIN overlay never appears.
@@ -129,12 +155,14 @@ extension Manager {
              keyManager: any KeyManagerProtocol = Manager.Key(),
              storeURL: URL? = nil,
              layerStore: Manager.LayerStore = Manager.LayerStore(),
+             clock: any LockoutClock = SystemLockoutClock(),
              enabled: Bool = true) {
             let context        = ModelContext(modelContainer)
             self.modelContext  = context
             self.keyManager    = keyManager
             self.storeURL      = storeURL
             self.layerStore    = layerStore
+            self.clock         = clock
 
             // Feature-flag off path: skip all DB reads. requiresPIN returns false,
             // isRestricted = false. All properties stay at defaults.
@@ -429,6 +457,15 @@ extension Manager {
                             guard let enc = profile.signedAttributes, !enc.isEmpty else { return nil }
                             return enc.decrypt()
                         }()
+                        // Decode this contact's global-trustee depth stamp the same way as
+                        // its visibility ceiling — undecryptable or absent → -1 (not a trustee).
+                        let trusteeDepth: Int = {
+                            guard let data = profile.globalTrusteeDepth,
+                                  let plain = data.decrypt(),
+                                  let value = try? JSONDecoder().decode(Int.self, from: plain)
+                            else { return -1 }
+                            return value
+                        }()
                         // Strip images — they stay in the DB and are re-encrypted in
                         // Step 8, so the blob doesn't need to carry them. Including a
                         // contact photo can push the JSON over the 32 KB slot limit.
@@ -437,16 +474,22 @@ extension Manager {
                         blobDraft.thumbnailImageData = nil
                         blobContacts.append(
                             LayerContact(draft: blobDraft, signedAttributes: signedAttrs,
-                                         visibleThroughDepth: contactDepth)
+                                         visibleThroughDepth: contactDepth,
+                                         globalTrusteeDepth: trusteeDepth)
                         )
                     }
                     // contactDepth < depth: already hidden from a previous layer.
                     // Not sealed in this blob. Step 8 still re-encrypts under the staged key.
                 }
 
-                // ── Step 5: Migrate nil visibleThroughDepth (should be a no-op) ─────
+                // ── Step 5: Migrate nil visibleThroughDepth / globalTrusteeDepth (should
+                // be a no-op — creation and the backfill migration already keep both
+                // fields non-nil) ────────────────────────────────────────────────────
                 for profile in safeProfiles where profile.visibleThroughDepth == nil {
                     profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+                }
+                for profile in safeProfiles where profile.globalTrusteeDepth == nil {
+                    profile.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
                 }
 
                 // ── Step 6: Push blob ────────────────────────────────────────────────
@@ -496,6 +539,24 @@ extension Manager {
                     ).combined
                 }
                 try vaultManager.modelContext.save()
+
+                // Re-key or purge Message.Draft rows — selective, matching §S7's
+                // preserve-and-rekey precedent above, not a blanket wipe. Must run
+                // before Step 9 commits the staged key: `oldKey` has to still be the
+                // active canonical key to decrypt existing draft ciphertext.
+                if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
+                    let allGroupIdentifiers = Set(
+                        ((try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
+                            .compactMap { $0.readID()?.uuidString }
+                    )
+                    try Message.Draft.reKeyOrPurgeAll(
+                        safeContactIdentifiers: Set(safeProfiles.map(\.identifier)),
+                        allGroupIdentifiers:    allGroupIdentifiers,
+                        oldKey:  oldKey,
+                        newKey:  stagedKey,
+                        in:      contactManager.modelContext
+                    )
+                }
 
                 // ── Step 9: Commit staged key → point of no return ───────────────────
                 //
@@ -658,9 +719,21 @@ extension Manager {
                 // ── Step 4: Re-encrypt safe contacts (currently in DB) ───────────────
                 // Pre-fix visibleThroughDepth, signedAttributes, and contactPublicKeys
                 // BEFORE the save so they land in the same modelContext.save() batch.
-                // visibleThroughDepth is set to nil (not re-encrypted) so the activation
-                // watermark is erased: nil is the pre-activation default and functionally
-                // identical to Int.max — isVisible returns true for both.
+                //
+                // visibleThroughDepth is re-encrypted preserving the contact's REAL
+                // classification depth — never flattened to nil as a side effect of
+                // deactivation. A contact classified "hide once beyond depth N" must keep
+                // that exact threshold across ANY deactivation (full or a cascade that
+                // only removes a deeper, unrelated layer) — otherwise a cascade exposes
+                // shallower-hidden contacts, and a full deactivation erases a deeper
+                // threshold the moment an intermediate layer is stripped. Step 5's
+                // restoreContact overwrites this again (with the same value, from the
+                // blob) for the specific contacts belonging to the layer actually being
+                // removed — this loop just has to not corrupt anyone else's classification
+                // in the meantime. A genuinely unclassified contact (decodes to Int.max) is
+                // re-sealed as Int.max, never flattened to literal nil — every contact has
+                // carried a non-nil visibleThroughDepth since creation, so nil would now
+                // stand out rather than blend in. See forensic-trace-avoidance.md S6.
                 //
                 // convertToMutableCopy is wrapped in a local do/catch. Sensitive shells
                 // have all text fields encrypted under the deleted activation key and
@@ -670,12 +743,42 @@ extension Manager {
                 // Instead, the shell stays in the DB; Step 5 overwrites its text fields via
                 // the UPDATE path using blob plaintext re-encrypted under the staged key.
                 for profile in try contactManager.fetchAllContacts() {
+                    // Decode the contact's current classification BEFORE re-encrypting
+                    // other fields — this still uses the active OLD canonical key.
+                    // Same fallback as activateSecureMode's own classification step:
+                    // undecryptable or absent → Int.max (safe / never classified).
+                    let contactDepth: Int = {
+                        guard let data = profile.visibleThroughDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return Int.max }
+                        return value
+                    }()
+                    // Same preserve-real-value treatment for the global-trustee stamp —
+                    // undecryptable or absent → -1 (not a trustee), never silently dropped.
+                    let trusteeDepth: Int = {
+                        guard let data = profile.globalTrusteeDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return -1 }
+                        return value
+                    }()
+
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
                     try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
-                    // Clear visibleThroughDepth to erase the activation watermark — nil is
-                    // the pre-activation default and isVisible treats it identically to Int.max.
-                    // Sensitive shell text fields left unreadable here are overwritten in Step 5.
-                    profile.visibleThroughDepth = nil
+
+                    // Always re-seal, even for Int.max (safe/never-classified) contacts.
+                    // Every contact has carried a non-nil visibleThroughDepth since creation
+                    // (Contact+Manager.swift's "never nil" stamp) — resetting safe contacts to
+                    // literal nil here would make them stand out against that baseline instead
+                    // of blending into it. See forensic-trace-avoidance.md S6.
+                    profile.visibleThroughDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
+                    ).combined
+                    // Same non-nil invariant applies to the global-trustee stamp.
+                    profile.globalTrusteeDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+                    ).combined
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.
                 // Same invariant as activation: in-memory changes must reach SQLite BEFORE
@@ -696,12 +799,27 @@ extension Manager {
                     try contactManager.modelContext.save()
                 }
 
-                // ── Step 6: Restore all vault entries to visible under staged key ────
-                // nil = always visible (pre-activation default). Erases the activation
-                // watermark on vault entries the same way Step 4 does for contacts.
+                // ── Step 6: Re-encrypt vault entry depth ceilings under the staged key ──
+                // Vault entries have no blob/restore mechanism at all (see activation's
+                // own comment on this), so this loop is the only thing that determines
+                // their classification after a deactivation — it must preserve each
+                // entry's REAL depth ceiling, mirroring Step 4's contact handling above,
+                // rather than flattening every entry to nil. An entry with no depth stamp
+                // (nil) needs no action: there is no ciphertext to strand under the old key.
                 let allVaultEntries = try vaultManager.fetchAllEntries()
                 for entry in allVaultEntries {
-                    entry.visibleThroughDepth = nil
+                    guard let data = entry.visibleThroughDepth else { continue }
+                    // Undecryptable (Bug 27: corrupt/wrong-key ciphertext) → treat as
+                    // hidden, matching activateSecureMode's own fallback for this field.
+                    let entryDepth: Int = {
+                        guard let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return 0 }
+                        return value
+                    }()
+                    entry.visibleThroughDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(entryDepth), using: stagedKey, authenticating: aad
+                    ).combined
                 }
                 if !allVaultEntries.isEmpty {
                     try vaultManager.modelContext.save()
@@ -827,11 +945,30 @@ extension Manager {
         func verify(_ pin: String) throws -> PINVerifyResult {
             guard self.requiresPIN else { throw SecurityError.notConfigured }
 
-            let config = try self.requireConfig()
+            let config        = try self.requireConfig()
+            let currentUptime = self.clock.systemUptime
 
             // ── Lockout check ─────────────────────────────────────────────────────────
-            if let expiry = config.readLockoutExpiry(), Date.now < expiry {
-                return .locked(until: expiry)
+            // SEC-1 fix: gated on monotonic uptime, never wall-clock Date.now — Settings
+            // → Date & Time changes have zero effect on systemUptime, so there's nothing
+            // for that attack to bypass. The only way to move this value backward is an
+            // actual reboot, and that's handled explicitly below rather than mistaken for
+            // elapsed time.
+            if let anchorUptime = config.readLockoutAnchorUptime() {
+                let requiredDelay = Self.lockoutDelay(for: config.readLockoutCount()) ?? 0
+                if currentUptime < anchorUptime {
+                    // Uptime went backward — only possible if the device rebooted since
+                    // this anchor was set. Re-anchor to now; the same required delay is
+                    // owed again, measured from this point. A reboot buys nothing.
+                    try config.writeLockoutAnchorUptime(currentUptime)
+                    try self.modelContext.save()
+                    return .locked(until: self.clock.now.addingTimeInterval(requiredDelay))
+                }
+                let elapsed = currentUptime - anchorUptime
+                if elapsed < requiredDelay {
+                    return .locked(until: self.clock.now.addingTimeInterval(requiredDelay - elapsed))
+                }
+                // Required delay has genuinely elapsed — fall through to verification.
             }
 
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
@@ -857,11 +994,11 @@ extension Manager {
                 }
             }
 
-            // ── Step 3: No match — persist incremented counter and expiry ─────────────
+            // ── Step 3: No match — persist incremented counter and anchor ─────────────
             let newCount = config.readLockoutCount() + 1
             try config.writeLockoutCount(newCount)
-            if let delay = Self.lockoutDelay(for: newCount) {
-                try config.writeLockoutExpiry(Date.now.addingTimeInterval(delay))
+            if Self.lockoutDelay(for: newCount) != nil {
+                try config.writeLockoutAnchorUptime(currentUptime)
             }
             try self.modelContext.save()
             return .wrong
@@ -890,14 +1027,24 @@ extension Manager {
             }
         }
 
-        /// Returns the lockout expiry date if the device is currently locked out, nil otherwise.
-        /// Used by PINEntry on appear to restore a persisted lockout after an app kill.
+        /// Returns an estimated wall-clock lockout-until date, for display only — the
+        /// actual gate lives in `verify()` and is uptime-based; this never feeds back
+        /// into it. Used by PINEntry on appear to restore a persisted lockout after an
+        /// app kill. Read-only: unlike `verify()`, this never re-anchors on a detected
+        /// reboot — it just reports "still locked, full delay remaining" without
+        /// mutating state, since a passive display read shouldn't have side effects.
         func lockoutExpiry() -> Date? {
-            guard let config = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
-                  let expiry = config.readLockoutExpiry(),
-                  Date.now < expiry
+            guard let config        = try? self.modelContext.fetch(FetchDescriptor<AppLayerConfig>()).first,
+                  let anchorUptime  = config.readLockoutAnchorUptime(),
+                  let requiredDelay = Self.lockoutDelay(for: config.readLockoutCount())
             else { return nil }
-            return expiry
+
+            // A negative delta (uptime decreased — device rebooted since the anchor was
+            // set) is clamped to 0 elapsed: still locked for the full remaining delay,
+            // matching what verify() would do without this read needing to write anything.
+            let elapsed = max(0, self.clock.systemUptime - anchorUptime)
+            guard elapsed < requiredDelay else { return nil }
+            return self.clock.now.addingTimeInterval(requiredDelay - elapsed)
         }
 
         /// Applies the routing-depth state transition for a verified result.
@@ -910,9 +1057,63 @@ extension Manager {
         func applyVerifyState(for result: PINVerifyResult) {
             switch result {
             case .normal(let depth): self.currentDepth = depth
-            case .duress:            self.currentDepth += 1
+            case .duress:
+                self.currentDepth += 1
+                self.purgeDraftsNotSafeAtCurrentDepth()
             case .wrong, .locked:    break
             }
+        }
+
+        /// Defense in depth alongside `reKeyOrPurgeAll` at activation (`Message+Draft.swift`):
+        /// activation only purges at layer *creation*, not at every later entry into an
+        /// already-created layer. A contact classified sensitive sometime after that layer
+        /// was set up — with a draft saved before this pass existed, or before the sensitivity
+        /// gate was in place — would otherwise keep that draft across any number of duress-PIN
+        /// entries. Called after `currentDepth` has already advanced, so `isVisible` checks
+        /// against the depth actually being entered.
+        ///
+        /// No key rotation happens at entry into an existing layer (only at activation), so
+        /// this reuses `reKeyOrPurgeAll` with `oldKey == newKey` — surviving rows are re-sealed
+        /// under an identical key with a fresh nonce, a no-op in effect, not a new crypto path —
+        /// to get the exact same, already-reviewed survive/purge semantics rather than a second
+        /// implementation of them.
+        private func purgeDraftsNotSafeAtCurrentDepth() {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            let profiles = (try? self.modelContext.fetch(
+                FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
+            )) ?? []
+            let safeIdentifiers = Set(profiles.filter { Self.isVisible($0, atDepth: self.currentDepth) }.map(\.identifier))
+            let allGroupIdentifiers = Set(
+                ((try? self.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
+                    .compactMap { $0.readID()?.uuidString }
+            )
+            try? Message.Draft.reKeyOrPurgeAll(
+                safeContactIdentifiers: safeIdentifiers, allGroupIdentifiers: allGroupIdentifiers,
+                oldKey: key, newKey: key, in: self.modelContext
+            )
+            self.checkpointStore()
+        }
+
+        /// Forces a WAL checkpoint on the persistent store after a `Message.Draft` purge.
+        /// `PRAGMA secure_delete = ON` (`OccultaApp.swift`) only zeroes a page's content for
+        /// the write that frees it — an earlier, un-checkpointed WAL frame from before the
+        /// purge can still hold the real, recoverable ciphertext, decryptable by whatever key
+        /// is still live, since none of these purge call sites rotates any key (only activation
+        /// does). Matches what `activateSecureMode` already does after its own commit (below).
+        ///
+        /// Not `private`: `ContactManager` already holds a `security: Manager.Security`
+        /// reference (`Contact+Manager.swift`) and calls this from its own purge sites
+        /// (`setVisibility`, `saveClassification`) — reusing this rather than a third copy
+        /// of the same SQLite pragma call.
+        ///
+        /// Must run unconditionally, every call, not only when a purge actually happened —
+        /// same principle `cleanUpGroupDuressMembership` already applies to its own ciphertext
+        /// refresh: a checkpoint that only fires when something was purged would turn
+        /// checkpoint timing itself into the exact kind of differential signal this exists
+        /// to remove.
+        func checkpointStore() {
+            guard let url = self.storeURL else { return }
+            Self.walCheckpoint(at: url)
         }
 
         // MARK: - PIN check (no side effects)
@@ -1137,12 +1338,19 @@ extension Manager {
         // MARK: - Safe vault entries
 
         /// Returns true if the vault entry is visible at the current depth.
+        ///
+        /// Exact-depth match, not a ceiling: an entry is visible only at the exact
+        /// depth it was created at (`nil` = never classified, always visible — see
+        /// `VaultManager.addEntry`). Deliberately not `value >= currentDepth` — see
+        /// `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
+        /// for why a ceiling lets an entry created at a duress depth leak into every
+        /// shallower depth, including the real depth 0.
         func isEntryVisible(_ entry: VaultEntry) -> Bool {
             guard let data = entry.visibleThroughDepth else { return true }
             guard let decrypted = data.decrypt(),
                   let value = try? JSONDecoder().decode(Int.self, from: decrypted)
             else { return false }  // non-nil field that won't decrypt = sensitive shell; exclude
-            return value >= self.currentDepth
+            return value == self.currentDepth
         }
 
         // MARK: - Private
@@ -1263,5 +1471,5 @@ private final class StagedCryptoManager: CryptoProtocol {
     func decryptLegacy(data: Data?) throws -> Data?                          { nil }
     func encrypt(message: Data, using material: Data?) throws -> Data?       { nil }
     func decrypt(message: Data, using material: Data?) throws -> Data?       { nil }
-    func sign(data: Data?) -> String                                         { "" }
+    func sign(data: Data?) throws -> String                                  { "" }
 }

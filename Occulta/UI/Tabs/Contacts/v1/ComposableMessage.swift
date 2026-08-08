@@ -119,10 +119,14 @@ struct ComposableMessage: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: self.encryptAction) {
-                    Text("Encrypt")
-                        .font(.system(size: 13, weight: .semibold))
+                    if self.vm.isEncrypting {
+                        ProgressView()
+                    } else {
+                        Text("Encrypt")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
                 }
-                .disabled(!self.canEncrypt)
+                .disabled(!self.canEncrypt || self.vm.isEncrypting)
                 .tint(.occultaAccent)
             }
         }
@@ -535,32 +539,77 @@ extension ComposableMessage {
 private struct PendingImportBubble: View {
     let pending: PendingImport
 
+    private var isVisualMedia: Bool {
+        FileExtensions.Video(rawValue: self.pending.ext) != nil
+            || FileExtensions.Image(rawValue: self.pending.ext) != nil
+    }
+
     var body: some View {
         HStack(alignment: .center) {
             Spacer()
-            VStack(alignment: .trailing, spacing: 6) {
-                VStack(spacing: 6) {
-                    ZStack {
-                        Color.black
-                        VStack(spacing: 6) {
-                            ProgressView().tint(.white)
-                            Text("Loading…").font(.caption2).foregroundStyle(.white)
-                        }
-                    }
-                    .frame(width: 260, height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
+            if self.isVisualMedia {
+                self.mediaBubble
+            } else {
+                self.docBubble
+            }
+        }
+    }
 
-                    HStack(spacing: 4) {
-                        Text(self.pending.filename).font(.caption).foregroundStyle(.primary)
-                        Text("·").font(.caption).foregroundStyle(.secondary)
-                        Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
-                            .font(.caption).foregroundStyle(.secondary)
+    private var mediaBubble: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            VStack(spacing: 6) {
+                ZStack {
+                    Color.black
+                    VStack(spacing: 6) {
+                        ProgressView().tint(.white)
+                        Text("Loading…").font(.caption2).foregroundStyle(.white)
                     }
                 }
-                Text(Date(), format: .dateTime.hour().minute())
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .frame(width: 260, height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+
+                HStack(spacing: 4) {
+                    Text(self.pending.filename).font(.caption).foregroundStyle(.primary)
+                    Text("·").font(.caption).foregroundStyle(.secondary)
+                    Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
+            Text(Date(), format: .dateTime.hour().minute())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var docBubble: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.occultaAccent)
+                        .frame(width: 36, height: 36)
+                    Image(systemName: "doc.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(self.pending.filename)
+                        .font(.caption)
+                        .lineLimit(1)
+                    Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .padding(10)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+            Text(Date(), format: .dateTime.hour().minute())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 }

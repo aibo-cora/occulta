@@ -17,6 +17,8 @@ extension Contact {
 
         @Environment(\.dismiss) private var dismiss
         @Environment(ContactManager.self) private var contactManager: ContactManager
+        @Environment(VaultManager.self) private var vaultManager: VaultManager
+        @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager
 
         /// Populated only in `.edit` mode — used to pass `Contact.Profile`
         /// to `VerifyIdentityButton`, which needs SwiftData-backed state.
@@ -174,7 +176,11 @@ extension Contact {
                         }
                         .confirmationDialog("Delete Contact", isPresented: self.$displayingDeleteWarning) {
                             Button("Delete", role: .destructive) {
-                                try? self.contactManager.deleteContact(identifier: identifier)
+                                try? self.contactManager.deleteContact(
+                                    identifier: identifier,
+                                    vaultManager: self.vaultManager,
+                                    shardCustodyManager: self.shardCustodyManager
+                                )
                                 
                                 self.dismiss()
                                 self.onDismiss?()

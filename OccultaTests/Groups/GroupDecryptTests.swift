@@ -373,6 +373,73 @@ private struct DecryptPair {
     }
 }
 
+// MARK: - verifySenderEphemeralSignature tests
+
+@Suite("verifySenderEphemeralSignature")
+@MainActor struct VerifySenderEphemeralSignatureTests {
+
+    @Test func validSignature_verifiesAgainstRealSigner() throws {
+        let signerKM  = TestKeyManager()
+        let signerPub = try signerKM.retrieveIdentity()
+        let ephemeralKey = Data(repeating: 0xAB, count: 65)
+
+        let signature = try signerKM.signData(ephemeralKey)
+        let ok = Manager.Crypto(keyManager: signerKM).verifySenderEphemeralSignature(
+            signature, ephemeralPublicKey: ephemeralKey, senderPublicKey: signerPub
+        )
+        #expect(ok == true)
+    }
+
+    @Test func signature_doesNotVerifyAgainstDifferentSigner() throws {
+        let signerKM   = TestKeyManager()
+        let otherKM    = TestKeyManager()
+        let otherPub   = try otherKM.retrieveIdentity()
+        let ephemeralKey = Data(repeating: 0xCD, count: 65)
+
+        let signature = try signerKM.signData(ephemeralKey)
+        let ok = Manager.Crypto(keyManager: signerKM).verifySenderEphemeralSignature(
+            signature, ephemeralPublicKey: ephemeralKey, senderPublicKey: otherPub
+        )
+        #expect(ok == false)
+    }
+
+    @Test func signature_doesNotVerifyAgainstTamperedEphemeralKey() throws {
+        let signerKM  = TestKeyManager()
+        let signerPub = try signerKM.retrieveIdentity()
+        let ephemeralKey = Data(repeating: 0xEF, count: 65)
+        var tampered = ephemeralKey
+        tampered[0] ^= 0xFF
+
+        let signature = try signerKM.signData(ephemeralKey)
+        let ok = Manager.Crypto(keyManager: signerKM).verifySenderEphemeralSignature(
+            signature, ephemeralPublicKey: tampered, senderPublicKey: signerPub
+        )
+        #expect(ok == false)
+    }
+
+    @Test func malformedSenderPublicKey_returnsFalse() throws {
+        let signerKM = TestKeyManager()
+        let ephemeralKey = Data(repeating: 0x11, count: 65)
+        let signature = try signerKM.signData(ephemeralKey)
+
+        let ok = Manager.Crypto(keyManager: signerKM).verifySenderEphemeralSignature(
+            signature, ephemeralPublicKey: ephemeralKey, senderPublicKey: Data(count: 32)
+        )
+        #expect(ok == false)
+    }
+
+    @Test func garbageSignature_returnsFalse() throws {
+        let signerKM  = TestKeyManager()
+        let signerPub = try signerKM.retrieveIdentity()
+        let ephemeralKey = Data(repeating: 0x22, count: 65)
+
+        let ok = Manager.Crypto(keyManager: signerKM).verifySenderEphemeralSignature(
+            Data(repeating: 0x00, count: 8), ephemeralPublicKey: ephemeralKey, senderPublicKey: signerPub
+        )
+        #expect(ok == false)
+    }
+}
+
 // MARK: - deriveInboundKey tests
 
 @Suite("deriveInboundKey")

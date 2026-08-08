@@ -2,26 +2,19 @@
 //  GlobalShardConfig+Model.swift
 //  Occulta
 //
-//  SwiftData model for the user's global (default) Secret Sharing trustee
-//  configuration. A single row acts as a singleton — reads always return the
-//  first row found; writes delete all existing rows then insert a fresh one.
+//  ORPHANED as of item 3's consolidation (see the shard-custody bug doc) —
+//  `Contact.Profile.globalTrusteeDepth` is now the single global-trustee mechanism
+//  at every depth, including depth 0. No app code writes to this model anymore;
+//  `DatabaseMigration.migrateGlobalShardConfigToPerContact` reads any pre-existing
+//  row once, stamps `globalTrusteeDepth` on the contacts it names, and deletes the
+//  row. Kept declared in the schema for one release only, to avoid betting on
+//  SwiftData's untested automatic entity-removal migration with real user data —
+//  slated for outright removal once that migration has had time to run in the wild.
 //
-//  This is configuration, not shard material: it stores which contacts the
-//  user has designated as default trustees and their preferred threshold.
-//  Even so, it reveals relationship metadata ("Alice trusts Bob and Charlie
-//  for vault recovery"), so it is sealed at rest under the shard custody key.
-//
-//  Privacy model:
-//  - `id` (plaintext) — row identifier bound into AAD; carries no PII.
-//  - `encryptedPayload` — AES-GCM sealed Payload; key = deriveShardCustodyKey().
-//  - Cold-disk forensics learns "a global shard config exists" — nothing about
-//    which contacts or threshold.
-//
-//  Lifecycle:
-//  - Written when the user saves a selection in VaultGlobalTrustees.
-//  - Read in VaultGlobalTrustees (populate working state on appear) and in
-//    VaultShardSetup (seed selectedIDs for new entries).
-//  - Deleted and replaced on every save (singleton semantics).
+//  Original design, preserved for context: SwiftData model for the user's global
+//  (default) Secret Sharing trustee configuration. A single row acted as a
+//  singleton — reads always returned the first row found; writes deleted all
+//  existing rows then inserted a fresh one, sealed under the shard custody key.
 //
 
 import Foundation

@@ -45,6 +45,15 @@ private func inMemoryKeyPair() -> (privateKey: SecKey, publicKey: Data) {
 
 private func cid() -> String { "inttest.\(UUID().uuidString)" }
 
+/// Well-formed ML-KEM material for exercising the hybrid PQ path.
+/// Contents are unstructured filler — `isValid` only requires correct byte counts.
+private func testQuantumMaterial() -> QuantumKeyMaterial {
+    QuantumKeyMaterial(
+        encapsulatedSecret: Data(count: 32), decapsulatedSecret: Data(count: 32),
+        ourCiphertext: Data(count: 32), peerCiphertext: Data(count: 32)
+    )
+}
+
 /// Derive session key using the prekey private key and the bundle's ephemeral public key.
 /// This mirrors what ContactManager.decrypt does on the recipient side.
 private func deriveSessionKey(
@@ -91,10 +100,11 @@ private func openBundle(
         let prekey      = prekeys[0]
         let (_, recip)  = inMemoryKeyPair()
         let message     = Data("roundtrip test".utf8)
+        let quantum     = testQuantumMaterial()
 
         let payload  = OccultaBundle.SealedPayload(message: message, prekeyBatch: nil)
         let encoded  = try JSONEncoder().encode(payload)
-        let bundle   = try crypto.seal(message: encoded, contactPrekey: prekey, recipientMaterial: recip)
+        let bundle   = try crypto.seal(message: encoded, contactPrekey: prekey, recipientMaterial: recip, quantumMaterial: quantum)
 
         #expect(bundle.secrecy.mode == .forwardSecret)
         #expect(bundle.secrecy.prekeyID == prekey.id)
@@ -105,7 +115,8 @@ private func openBundle(
                 let privKey = pm.retrievePrivateKey(for: prekey),
                 let sessKey = crypto.deriveSessionKey(
                     ephemeralPrivateKey: privKey,
-                    recipientMaterial:   bundle.secrecy.ephemeralPublicKey
+                    recipientMaterial:   bundle.secrecy.ephemeralPublicKey,
+                    quantumMaterial:     quantum
                 )
             else { return nil }
             let raw = try crypto.open(bundle, using: sessKey)
@@ -291,6 +302,7 @@ private func openBundle(
         defer { pm.deleteAllKeys(for: contactID) }
 
         let (_, recip) = inMemoryKeyPair()
+        let quantum    = testQuantumMaterial()
 
         // Generate 3 prekeys for Bob. Alice consumes all of them.
         let prekeys = try pm.generateBatch(contactID: contactID, count: 3)
@@ -300,7 +312,8 @@ private func openBundle(
             let bundle  = try crypto.seal(
                 message:           encoded,
                 contactPrekey:     prekey,
-                recipientMaterial: recip
+                recipientMaterial: recip,
+                quantumMaterial:   quantum
             )
             #expect(bundle.secrecy.mode == .forwardSecret)
 
@@ -308,7 +321,7 @@ private func openBundle(
             let _: Data? = try {
                 guard
                     let priv = pm.retrievePrivateKey(for: prekey),
-                    let key  = crypto.deriveSessionKey(ephemeralPrivateKey: priv, recipientMaterial: bundle.secrecy.ephemeralPublicKey)
+                    let key  = crypto.deriveSessionKey(ephemeralPrivateKey: priv, recipientMaterial: bundle.secrecy.ephemeralPublicKey, quantumMaterial: quantum)
                 else { return nil }
                 let result = try crypto.open(bundle, using: key)
                 pm.consume(prekey: prekey)
@@ -325,7 +338,8 @@ private func openBundle(
         let fallback        = try crypto.seal(
             message:           fallbackEncoded,
             contactPrekey:     nil,   // no prekeys available
-            recipientMaterial: recip
+            recipientMaterial: recip,
+            quantumMaterial:   quantum
         )
         #expect(fallback.secrecy.mode == .longTermFallback)
         #expect(fallback.secrecy.prekeyID == nil)

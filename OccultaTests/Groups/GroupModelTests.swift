@@ -12,6 +12,7 @@
 import Testing
 import Foundation
 import SwiftData
+import CryptoKit
 @testable import Occulta
 
 // MARK: - Helpers
@@ -813,6 +814,143 @@ struct GroupStructuralTests {
     }
 }
 
+// MARK: - Group — keyed batch re-encryption (derive-once path)
+//
+// Covers the fix for the multi-second visibility-toggle hang: `members(atDepth:)`
+// discovers real members by attempting `.decrypt()` on every slot, which previously
+// re-derived the hybrid key from Secure Enclave + Keychain per slot. These tests verify
+// the `usingKey:` overloads — which reuse one caller-derived key across a whole batch —
+// behave identically to the original per-call-derivation path, and that a threading
+// mistake (the danger this design flags: a wrong key silently reads back zero members,
+// which then gets written as the new ground truth) is at least verified to not crash and
+// to produce the expected empty result rather than something worse.
+
+@Suite("Group — keyed batch re-encryption")
+@MainActor struct GroupKeyedReencryptionTests {
+
+    private func requireKey() throws -> SymmetricKey {
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw GroupError.keyUnavailable
+        }
+        return key
+    }
+
+    // MARK: Parity — usingKey: variants must match the no-key convenience overloads
+
+    @Test func refreshCiphertext_usingKey_matchesNoKeyOverload() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Refresh")
+        ctx.insert(group)
+
+        let realID   = UUID().uuidString
+        let duressID = UUID().uuidString
+        let deeperID = UUID().uuidString
+        try group.addMember(realID,   atDepth: 0)
+        try group.addMember(duressID, atDepth: 1)
+        try group.addMember(deeperID, atDepth: 4)
+
+        let key = try requireKey()
+        try group.refreshCiphertext(usingKey: key)
+
+        #expect(group.members(atDepth: 0) == [realID])
+        #expect(group.members(atDepth: 1) == [duressID])
+        #expect(group.members(atDepth: 4) == [deeperID])
+    }
+
+    @Test func purgeMember_usingKey_matchesNoKeyOverload() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Purge")
+        ctx.insert(group)
+
+        let target    = UUID().uuidString
+        let bystander = UUID().uuidString
+        try group.addMember(target, atDepth: 1)
+        try group.addMember(bystander, atDepth: 1)
+
+        let key = try requireKey()
+        try group.purgeMember(target, usingKey: key)
+
+        #expect(group.members(atDepth: 1) == [bystander])
+    }
+
+    @Test func purgeMembersFromDuressDepths_usingKey_matchesNoKeyOverload() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Purge")
+        ctx.insert(group)
+
+        let realID      = UUID().uuidString
+        let staleID      = UUID().uuidString
+        let unrelatedID  = UUID().uuidString
+        try group.addMember(realID,     atDepth: 0)
+        try group.addMember(staleID,     atDepth: 1)
+        try group.addMember(unrelatedID, atDepth: 1)
+
+        let key = try requireKey()
+        try group.purgeMembersFromDuressDepths([staleID], usingKey: key)
+
+        #expect(group.members(atDepth: 0) == [realID])
+        #expect(group.members(atDepth: 1) == [unrelatedID])
+    }
+
+    @Test func members_atDepth_usingKey_matchesNoKeyOverload() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "Read")
+        ctx.insert(group)
+
+        let id = UUID().uuidString
+        try group.addMember(id, atDepth: 0)
+
+        let key = try requireKey()
+        #expect(group.members(atDepth: 0, usingKey: key) == group.members(atDepth: 0))
+    }
+
+    // MARK: Defensive — a wrong key must not crash, and must not silently "succeed"
+
+    @Test func members_atDepth_usingKey_withWrongKey_returnsEmpty_notCrash() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "WrongKey")
+        ctx.insert(group)
+
+        try group.addMember(UUID().uuidString, atDepth: 0)
+        #expect(!group.members(atDepth: 0).isEmpty, "sanity check: real key reads back the member")
+
+        let wrongKey = SymmetricKey(size: .bits256)
+        #expect(
+            group.members(atDepth: 0, usingKey: wrongKey).isEmpty,
+            "A mismatched key must fail closed (no members found), not crash and not return real data"
+        )
+    }
+
+    // MARK: Fail-loud — derivation failure must abort, not silently skip the refresh
+
+    @Test func refreshCiphertext_throwsKeyUnavailable_whenSEUnavailable() throws {
+        guard !secureEnclaveAvailable() else { print("⚠︎ Skipping — requires an SE-unavailable environment"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "NoSE")
+        ctx.insert(group)
+
+        #expect(throws: GroupError.keyUnavailable) {
+            try group.refreshCiphertext()
+        }
+    }
+
+    @Test func addMember_throwsKeyUnavailable_whenSEUnavailable() throws {
+        guard !secureEnclaveAvailable() else { print("⚠︎ Skipping — requires an SE-unavailable environment"); return }
+        let ctx   = ModelContext(try makeContainer())
+        let group = try Group(name: "NoSE")
+        ctx.insert(group)
+
+        #expect(throws: GroupError.keyUnavailable) {
+            try group.addMember(UUID().uuidString, atDepth: 0)
+        }
+    }
+}
+
 // MARK: - ContactManager — deleteContact purges group membership
 
 @Suite("ContactManager — deleteContact purges group membership")
@@ -883,4 +1021,120 @@ struct GroupStructuralTests {
 
         #expect(group.members(atDepth: 0) == [bystander])
     }
+
+    // Confirms the wiring, and the item 3 consolidation's design decision: deleting
+    // a contact needs no separate global-trustee purge step at all —
+    // ShardCustodyManager.purgeCustody(for:) no longer touches trustee state (see
+    // the shard-custody bug doc, item 3). globalTrusteeDepth lives on the contact's
+    // own row, which deleteContact soft-deletes, and every trustee read already
+    // excludes soft-deleted rows.
+    @Test func deleteContact_makesGlobalTrusteeDesignationUnreachable() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+
+        let schema = Schema([
+            Group.self,
+            Contact.Profile.self, Contact.Profile.PhoneNumber.self, Contact.Profile.EmailAddress.self,
+            Contact.Profile.PostalAddress.self, Contact.Profile.URLAddress.self, Contact.Profile.Key.self,
+            VaultEntry.self, CustodyShard.self, ReconstructShard.self,
+            PendingShardDistribute.self, PendingShardStatusUpdate.self, PotentiallyLostShard.self,
+            GlobalShardConfig.self
+        ])
+        let container = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let km        = TestKeyManager()
+        let security  = try Manager.Security(modelContainer: container, keyManager: km)
+        let cm        = ContactManager(modelContainer: container, security: security)
+        let custody   = ShardCustodyManager(modelContainer: container, keyManager: km)
+        let vault     = VaultManager(modelContainer: container, keyManager: km)
+
+        let target = UUID().uuidString
+        let other  = UUID().uuidString
+        try self.insertPlainProfile(identifier: target, in: cm)
+        try self.insertPlainProfile(identifier: other, in: cm)
+        try cm.saveGlobalTrusteeDepth(selectedIDs: [target, other])
+        #expect(cm.isGlobalTrustee(target))
+        #expect(cm.isGlobalTrustee(other))
+
+        try cm.deleteContact(identifier: target, vaultManager: vault, shardCustodyManager: custody)
+
+        #expect(!cm.isGlobalTrustee(target), "a deleted contact's trustee designation must become unreachable")
+        #expect(cm.isGlobalTrustee(other), "an unrelated contact's designation must survive")
+    }
 }
+
+// MARK: - Manager.Security — Contact.Profile depth visibility (isDisplayable/isVisible)
+//
+// Covers Gap 2 items 1+2 of the shard-custody doc — Vault+Tab.swift's custodian
+// list and VaultGlobalTrustees.swift's picker both newly gate on isDisplayable(_:),
+// which had no direct test coverage of its own before this (only an indirect,
+// shallow check via isSensitive's default-false case).
+
+@Suite("Manager.Security — Contact.Profile depth visibility")
+@MainActor struct ContactDepthVisibilityTests {
+
+    private func makeContactManager() throws -> ContactManager {
+        let container = try makeContainer()
+        let security  = try Manager.Security(modelContainer: container, keyManager: TestKeyManager())
+        return ContactManager(modelContainer: container, security: security)
+    }
+
+    private func insertPlainProfile(identifier: String, in cm: ContactManager) throws {
+        let profile = Contact.Profile(
+            identifier: identifier, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        try cm.insertProfile(profile)
+    }
+
+    @Test func safeContact_visibleAtEveryDepth() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let id = UUID().uuidString
+        try self.insertPlainProfile(identifier: id, in: cm)
+        try cm.setVisibility(for: id, isSensitive: false) // safe → Int.max
+
+        let contact = try cm.fetchContact(by: id)!
+        cm.security.applyVerifyState(for: .normal(depth: 0))
+        #expect(cm.security.isDisplayable(contact))
+        cm.security.applyVerifyState(for: .normal(depth: 5))
+        #expect(cm.security.isDisplayable(contact), "a safe contact must stay visible at every depth")
+    }
+
+    @Test func sensitiveContact_visibleThroughClassificationDepth_hiddenBeyond() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let cm = try self.makeContactManager()
+        let id = UUID().uuidString
+        try self.insertPlainProfile(identifier: id, in: cm)
+
+        cm.security.applyVerifyState(for: .normal(depth: 2))
+        try cm.setVisibility(for: id, isSensitive: true) // stamps ceiling = currentDepth = 2
+
+        let contact = try cm.fetchContact(by: id)!
+        cm.security.applyVerifyState(for: .normal(depth: 0))
+        #expect(cm.security.isDisplayable(contact), "still visible at a shallower depth than its classification ceiling")
+        cm.security.applyVerifyState(for: .normal(depth: 2))
+        #expect(cm.security.isDisplayable(contact), "visible at its own classification depth")
+        cm.security.applyVerifyState(for: .normal(depth: 3))
+        #expect(!cm.security.isDisplayable(contact), "hidden beyond its classification depth")
+    }
+
+    @Test func unclassifiedContact_nilVisibleThroughDepth_alwaysVisible() throws {
+        let cm = try self.makeContactManager()
+        let id = UUID().uuidString
+        try self.insertPlainProfile(identifier: id, in: cm)
+
+        let contact = try cm.fetchContact(by: id)!
+        #expect(contact.visibleThroughDepth == nil)
+        cm.security.applyVerifyState(for: .normal(depth: 4))
+        #expect(cm.security.isDisplayable(contact), "a never-classified contact (nil visibleThroughDepth) must stay visible everywhere")
+    }
+}
+
+// MARK: - ShardCustodyManager — merge-not-overwrite trustee save (removed)
+//
+// Covered the sharp edge in Gap 2 item 2: once VaultGlobalTrustees only showed
+// currently-visible candidates, saving just that subset would silently delete
+// every currently-hidden trustee. saveGlobalShardConfig(mergingVisibleSelection:isVisible:)
+// existed specifically to prevent that, on the old flat GlobalShardConfig.trusteeIDs
+// storage. Removed along with that method as part of item 3's consolidation onto
+// Contact.Profile.globalTrusteeDepth (see the shard-custody bug doc) — each contact's
+// field is independent, so there is no flat list left to corrupt with a partial save.

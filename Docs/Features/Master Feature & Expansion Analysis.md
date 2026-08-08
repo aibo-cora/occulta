@@ -8,6 +8,7 @@
 - Critical review session, May 13, 2026
 - Authentication pain-point research pass, June 12, 2026 (features 15–17; web-sourced demand evidence verified against the codebase)
 - Feature ideation pass, July 4, 2026 (features 18–25; new Expansion I; checked against the README Security Properties/Threat Model tables, Features.swift/FeatureFlags, CRYPTO_REVIEW_CHECKLIST.md, IDENTITY_CHALLENGE_PROTOCOL.md, CODE_GENERATION_GUIDELINES.md, and the Share Extension plan)
+- Community demand pass, July 10, 2026 (features 26–28; re-prioritisation of #21 and Expansion H; web-sourced demand evidence — FBI IC3 2025 report, FTC elder-fraud data, Chat Control reinstatement (Jul 9), KOSA House passage (Jun 29), DV-advocacy evidence guidance; full research: `Feature Ideation — 2026-07-10 Community Demand Pass.md`)
 
 **Scope:** Unified ranking of consumer app features and platform expansion opportunities, sorted by potential audience reach and community demand.
 
@@ -61,9 +62,9 @@ Briar is the Android gold standard for this model and is explicitly Android-only
 **Community demand:** Very high — Freedom of the Press Foundation 2026 checklist, r/privacy, r/privacyguides, journalist security forums, multiple border-crossing threads
 **Audience:** Broad — anyone who crosses a border with a device; business travelers, lawyers, students, journalists, activists
 
-Cryptographically removes designated contacts and vault items from the device before a border crossing. Not a UI hide — the item keys are re-encrypted under a separate travel passphrase and all other Keychain access paths are deleted. Under the primary credential, the sensitive items simply do not exist. Deactivation requires both the travel key and the original credential. Entirely offline: activate on airplane mode before landing, deactivate after clearing customs.
+Cryptographically removes designated contacts and vault items from the device ahead of a high-risk inspection or device-handover scenario. Not a UI hide — the item keys are re-encrypted under a separate travel passphrase and all other Keychain access paths are deleted. Under the primary credential, the sensitive items simply do not exist. Deactivation requires both the travel key and the original credential. Entirely offline — no network dependency at the moment of use, unlike existing solutions.
 
-The community's expressed ideal — "toggle Travel Mode on the plane, before landing, with no internet, and have my sensitive vault be cryptographically non-existent by the time a border agent picks up my phone" — is quoted verbatim across multiple forum threads. 1Password Travel Mode is the current recommendation but requires a web session at precisely the moment users need it most. No app currently offers a fully offline equivalent.
+This gap is well documented in community discussion of existing tools: 1Password's Travel Mode is the current go-to recommendation, but it requires an online session to toggle — exactly when users are least likely to have connectivity or time. No app currently offers a fully offline equivalent.
 
 **iOS constraint:** All operations are Keychain writes and deletes. `item_key = HKDF(travel_key, item_id)`; deleting the travel_key Keychain item makes all sensitive items inaccessible while the main vault remains functional. CryptoKit HKDF supports this architecture directly.
 
@@ -249,6 +250,8 @@ This is the rare feature where the closed-loop critique that removed SE-Attested
 **iOS constraint:** All primitives exist (SE ECDSA, encrypted bundles, QR generation/scanning from the key-exchange flows). Known residual risk: a relay attack (attacker challenges the victim while simultaneously pretexting the real contact into approving). Mitigated — not eliminated — by the tight window and by the approval sheet naming the challenger explicitly; same residual class as number-matching MFA. Single-device video calls (call and Occulta on the same phone) fall back to the messaging transport.
 
 > **Ruling (June 2026):** Strongest addition since the duress cluster. The pain is documented at mainstream scale, the timing is exact (Google legitimized the category this month, on Android only), the architecture is uniquely suited (the physically-verified contact graph is precisely the right trust anchor), and the hard half already shipped. Carries a built-in enterprise story (helpdesk MFA-reset verification, wire-transfer callback) that gives Expansion A its missing wedge — see Section 2 addendum. Low lift, high ceiling. **Priority 1 (parallel track to the duress cluster — independent of the key-hierarchy rework that gates Panic Wipe).** Spec: `Docs/Features/Presence Verification/SPEC.md`.
+>
+> **Addendum (July 10, 2026) — delayed, priority revoked.** The relay/parallel-session attack documented in SPEC.md §6 was re-assessed and reclassified from an accepted residual risk to a blocking gap: it is a "mafia fraud"-class relay attack with no known guaranteed fix, and it hits hardest against exactly the adversary this feature is named for — a resourced attacker already running a live deepfake call finds relaying a challenge to the real contact easier than the deepfake itself. No content-binding or transport change closes it with a guarantee. **Downgraded from Priority 1 to Delayed** — not scheduled until either a protocol fix with a real guarantee is found, or the product claim and UX are explicitly narrowed to exclude live, resourced, dual-channel relay attacks. Downstream dependents inherit this delay until resolved: Verified Payment Instructions (#26)'s pairing with presence verification, Anti-Scam Family Circle (#27) which is built entirely on top of this primitive, and Expansion A's enterprise wedge (Section 2 addendum).
 
 ---
 
@@ -290,6 +293,8 @@ Distinct from `allowSynchingBetweenDevices` (disabled iCloud *data* sync) and fr
 **iOS constraint:** iPhone 11+ (U1) on both devices; reuses `ExchangeManager` as-is. `Contact` gains an optional device-set array (new optional SwiftData property, default nil) — old builds ignore the sub-envelope and keep encrypting to one key.
 
 > **Ruling (July 2026):** A stolen *unlocked* phone enrolling an attacker device is the main attack surface — mitigated to zero by requiring biometric-gated SE signing on **both** devices within the same UWB session, so an attacker needs two biometric passes on two devices simultaneously. Cert forgery requires an SE private key, excluded by hardware. Run CRYPTO_REVIEW_CHECKLIST §3 (multi-party trace) carefully: per-device prekey pools must never be shared — the historical prekey-batch flaw. Medium lift (ceremony reuse is free; the work is contact-model evolution and multi-device prekey bookkeeping). **Priority: Near-term.**
+>
+> **Addendum (July 10, 2026) — superseded.** The self-vouching device-set cert design above was rejected during implementation-planning discussion (see [Multi-Device Contacts/FINDINGS.md](Multi-Device%20Contacts/FINDINGS.md), Design Sessions 3–4): it grants trust to a new key without a fresh physical UWB exchange, violating the standing no-vouching invariant, and a single coerced ceremony would silently compromise a victim's entire contact graph. The feature was renamed **Multi-Device Contacts** and narrowed to a data-model bug fix only — `Contact.Profile` gains concurrent per-device keys so a second device no longer silently overwrites the first's; the "backup phone that just works across your whole contact list" ambition is shelved, since the secure fallback (direct physical re-pairing with every contact, one at a time) doesn't scale past a handful of close contacts. Downgraded from **Priority: Near-term** to **opportunistic, low-priority** — see [Multi-Device Contacts/ROADMAP.md](Multi-Device%20Contacts/ROADMAP.md).
 
 ---
 
@@ -307,6 +312,8 @@ Distinct from Contact Compromise Detection (removed — Consumer #5, Occulta has
 **iOS constraint:** iOS 16+, zero new primitives — ECDSA, SSS, and basket distribution are all already shipped. Remaining work is UX (guardian selection, "report lost device" flow on the guardian side) and CRYPTO_REVIEW_CHECKLIST §2 (shard release must be one-way and idempotent).
 
 > **Ruling (July 2026):** Highest reuse ratio of this batch. Malicious or coerced guardians could revoke falsely — mitigated by K-of-N threshold; worst case is a forced re-exchange (denial-of-convenience), never a confidentiality loss. Replay is moot (revocation is idempotent and terminal). Low lift. **Priority: Near-term.**
+>
+> **Addendum (July 22, 2026) — superseded, downgraded to positioning.** UX scoping for this feature (guardian shard-release confirmation, cross-guardian shard coordination, broadcast delivery with no server or push infrastructure) surfaced that the mechanism this spec assumed doesn't hold up: a malicious or falsely-triggered revocation's worst case, *by this doc's own ruling above*, is "a forced re-exchange, never a confidentiality loss" — but that is already the exact worst case of the feature that ships today. `Contact+Form.swift`/`ContactFormV2.swift`'s existing "Revoke Key" button (`ContactManager.reset(identity:)`) lets any contact unilaterally expire a stored key on their own device, which blocks sends (`resolveKeyMaterial`), surfaces a "PENDING EXCHANGE" badge, and requires a fresh UWB exchange to clear — with zero cryptography, zero guardians, and zero new engineering. Since the guardian/SSS/K-of-N apparatus cannot produce a better worst-case than a feature that already ships, it is not solving a gap; it is re-solving a solved problem at a much higher UX and engineering cost. The only value it could still add — reaching a contact who has *no channel to the owner besides Occulta itself* (met once via UWB, no phone number or email) — is real but narrow, and does not justify guardian shard coordination or SSS reconstruction on its own. **Downgraded from Near-term/Priority 2 (parallel) to positioning-only**, mirroring the #16 ruling: no new engineering, just make the existing "Revoke Key" button discoverable (onboarding or a security FAQ: "lost your phone? tell your contacts — they can revoke you from Contact → Revoke Key"). Revisit as an engineering item only if evidence shows the no-other-channel case is common enough to matter, and if so scope it as a minimal signed self-revocation broadcast, not the SSS/guardian design above.
 
 ---
 
@@ -315,7 +322,7 @@ Distinct from Contact Compromise Detection (removed — Consumer #5, Occulta has
 **Category:** Authentication
 **Audience:** The mainstream password-manager market — the largest adjacent segment available to this codebase
 
-Occulta registers as an iOS Credential Provider (`ASCredentialProviderExtension` with passkey support, iOS 17+). Each relying party gets a dedicated `SecureEnclave.P256` key (WebAuthn ES256), biometric-gated, `ThisDeviceOnly`, in a shared keychain access group so the extension can sign assertions. Unlike 1Password, Bitwarden, and iCloud Keychain — all of which sync passkey private keys through cloud infrastructure as *software* keys — Occulta passkeys stay hardware-bound, closer to a YubiKey that's already in the user's pocket. The device-loss problem that forces competitors into cloud sync is instead solved by Owner Device Set (#18) for multi-device continuity, with Occulta's existing SSS custody covering the vault of RP records.
+Occulta registers as an iOS Credential Provider (`ASCredentialProviderExtension` with passkey support, iOS 17+). Each relying party gets a dedicated `SecureEnclave.P256` key (WebAuthn ES256), biometric-gated, `ThisDeviceOnly`, in a shared keychain access group so the extension can sign assertions. Unlike 1Password, Bitwarden, and iCloud Keychain — all of which sync passkey private keys through cloud infrastructure as *software* keys — Occulta passkeys stay hardware-bound, closer to a YubiKey that's already in the user's pocket. The device-loss problem that forces competitors into cloud sync has no equivalent solution here: Multi-Device Contacts (#18) was narrowed 2026-07-10 to a data-model bug fix, not a device-continuity feature, and a user's own devices have no channel to each other under the resolved no-vouching design — RP-record coverage across a user's own devices remains an open problem, tracked as ROADMAP.md R4 §1. Occulta's existing SSS custody still covers guardian-escrowed recovery of the RP-record vault (R4 §3).
 
 **Why not covered elsewhere:** Adjacent to, but distinct from, Expansion C (Developer/API Authentication, an enterprise SDK play) — this is consumer WebAuthn shipped in the app itself, a different product and buyer.
 
@@ -344,6 +351,8 @@ Before `seal()`, pad `SealedPayload` to the next size bucket (e.g., 4 KB / 64 KB
 
 > **Ruling (July 2026):** Like #13, ship opportunistically as a protocol version bump when the bundle format is touched for another reason — low lift, no new attack surface, and it upgrades #13 from partial to real protection. **Priority: Near-term, opportunistic (pairs with #13).**
 
+> **Addendum (July 10, 2026):** Chat Control was reinstated July 9, 2026 — in a platform-scanning regime, size/shape fingerprints are exactly what service-side classifiers see. Promoted from opportunistic to scheduled: pair with the next protocol release rather than waiting for an incidental bundle-format touch.
+
 ---
 
 ### 22. Private Mutual-Contact Discovery + Key Corroboration
@@ -366,7 +375,7 @@ Two already-verified contacts, over an authenticated session (in person or an ex
 ### 23. Hybrid PQ Signatures (SE-ECDSA + ML-DSA) for Long-Lived Signed Artifacts
 **Added July 4, 2026 (feature ideation pass)**
 **Category:** Crypto / Security
-**Audience:** Applies wherever a signed artifact must remain unforgeable for decades — revocation certs (#19), device-set certs (#18), and any future document-signing or audit-log artifact
+**Audience:** Applies wherever a signed artifact must remain unforgeable for decades — revocation certs (#19), the per-device revocation broadcast introduced by Multi-Device Contacts' narrowed scope (#18), and any future document-signing or audit-log artifact
 
 Dual-signature format for artifacts whose validity must outlive ECDSA's quantum horizon. Every such artifact carries both an SE ECDSA P-256 signature (unchanged, mandatory root) and an ML-DSA-87 (FIPS 204) signature under a distinct domain prefix; verification requires **both**. If `SecureEnclave.MLDSA` exists in the target iOS SDK, use it; if SE support covers only ML-KEM (true as of the last check — verify against current CryptoKit headers before scoping), hold the ML-DSA private key software-side, wrapped under the hybrid local DB key. This does not weaken the SE-custody rule the way sole software custody would: forgery still requires the SE (ECDSA is always required), so the ML-DSA half only *adds* unforgeability — the same both-must-hold logic as the existing hybrid KEM construction and the same protection class as the already-accepted ML-KEM shared-secret storage.
 
@@ -414,7 +423,7 @@ Optional pass before basket assembly: Vision framework detects faces (`VNDetectF
 
 ---
 
-### July 2026 Pass — Ranking by Impact-to-Lift
+### July 4, 2026 Pass — Ranking by Impact-to-Lift
 
 | Rank | Item | Impact | Lift | Phase |
 |---|---|---|---|---|
@@ -433,7 +442,11 @@ Optional pass before basket assembly: Vision framework detects faces (`VNDetectF
 2. **Guardian Revocation Certificates (#19)** — highest reuse ratio in the batch (ECDSA + SSS + baskets, all shipped) and completes the key lifecycle reviewers will probe first.
 3. **Serverless Passkey Provider (#20)** — the only idea in this pass that opens the mainstream password-manager market, with a pitch ("hardware-bound passkeys, no YubiKey, no cloud") no incumbent can copy without abandoning their sync architecture.
 
-### Ideas Considered and Omitted (July 2026 pass)
+> **Addendum (July 10, 2026):** Item 1 above (Owner Device Set, #18) is superseded — see the addendum on section 18 above and [Multi-Device Contacts/ROADMAP.md](Multi-Device%20Contacts/ROADMAP.md). The cert-vouching mechanism this ranking assumed was rejected as a security hole; the feature was renamed **Multi-Device Contacts**, narrowed to a data-model bug fix, and downgraded from Near-term/Rank 1 to opportunistic/low-priority. Guardian Revocation Certificates (#19) and Serverless Passkey Provider (#20) are unaffected and retain their rank/priority.
+>
+> **Addendum (July 22, 2026):** Correction to the addendum immediately above — Guardian Revocation Certificates (#19) is *not* unaffected. See the July 22 addendum on section 19 itself: the existing "Revoke Key" contact action already delivers this feature's entire worst-case-bounded value with zero new engineering, so #19 is downgraded from Rank 2/Near-term to positioning-only. Serverless Passkey Provider (#20) retains its rank/priority.
+
+### Ideas Considered and Omitted (July 4, 2026 pass)
 
 - **Anonymous source drop / SecureDrop-lite** (encrypt-to-published-journalist-key): any workable design either reuses prekeys across unknown sources (the documented prekey-sharing flaw) or ships a mode without forward secrecy. FS must never be weakened — omitted rather than softened.
 - **Peer app-integrity attestation during exchange** (App Attest proving the peer runs a genuine Occulta binary): would close part of the "compromised install" gap, but attestation-key creation requires a round trip to Apple's attestation service — a remote dependency and a usage signal to a third party. Zero-server/zero-telemetry — omitted. Revisit only if Apple ships fully offline attestation.
@@ -443,26 +456,172 @@ Optional pass before basket assembly: Vision framework detects faces (`VNDetectF
 
 ---
 
+### 26. Verified Payment Instructions (Signed Payment Rails)
+**Added July 10, 2026 (community demand pass)**
+**Category:** Security / Anti-fraud
+**Community demand:** Very high — BEC is the #2 crime type by losses in the FBI IC3 2025 report ($3.05B across 24,768 complaints, up from $2.77B); real-estate wire fraud alone was $275.1M in 2025 (up from ~$173M); 86% of BEC losses moved by wire/ACH and are effectively unrecoverable; industry guidance (NAR, title insurers, state real-estate divisions) now recommends "establish a verbal authentication code with your title company at the start of the transaction" — the leakable analog version of what the protocol already does
+**Audience:** Broad — home buyers/sellers, small businesses paying vendors, families moving large sums, escrow/title/law offices; the largest documented per-victim loss category adjacent to the app
+
+Payment details (account/routing, IBAN, crypto address) become a first-class signed artifact: a structured basket sub-envelope signed by the sender's SE key under a new domain prefix (`"occulta-payment-instructions-v1"`), pinned to the physically-verified contact. Three UI rules do the work: (1) received instructions render as a pinned, immutable verified card — never editable text in a thread; (2) changes must be signed by the same key, and the UI diffs loudly ("⚠ account number changed from the instructions received June 3") — the entire BEC playbook is a last-minute unsigned "our bank details changed," which here cannot even be *represented* as verified; (3) a one-tap pre-wire Presence Verification (#15) challenge binds the live human, the instructions, and the amount to the key exchanged at ≤25 cm.
+
+**Why the closed-loop critique (#12/D) does not apply:** real-estate parties physically meet — buyers meet their agent and usually the title officer; small businesses meet their vendors. The UWB ceremony slots into the first in-person meeting, and "all money instructions come only through this channel" is agreed as the transaction's explicit protocol — exactly how the industry's verbal-code recommendation already works, minus the leakable code.
+
+**Why new / overlap declaration:** The June 2026 addendum to Expansion A covers wire-transfer verification only as a *live* presence check. BEC arrives asynchronously in a compromised email thread; the defense needed at the moment of wiring is a **trusted asynchronous artifact**, not just a challenge. No existing feature gives payment details pinned-immutable semantics with signed-change diffing.
+
+**Security model fit:** No server (baskets); SE-signed under a new domain-separated prefix per the IDENTITY_CHALLENGE_PROTOCOL mandate — no existing signing path touched; travels only inside AES-GCM bundles (no metadata); FS/PQ untouched.
+
+**iOS constraint:** iOS 16+, zero new primitives. Work is the structured payload type, the pinned-card UX, and the diff flow. Optional later: a signed "wire executed to account ending 1234, $X, [time]" confirmation receipt reusing the #24 pattern.
+
+> **Ruling (July 10, 2026):** Strongest candidate of this pass. Largest documented dollar losses of any addressable category; the industry's own best practice is a weaker analog of the shipped protocol; hands the Expansion A wedge a concrete artifact adoptable bottom-up (one cautious title office can adopt unilaterally for its clients). Attack surface minimal — signatures over non-secret structured data, new prefix only; run CRYPTO_REVIEW_CHECKLIST §4. Low-medium lift. **Priority: Near-term (pairs with Presence Verification as an anti-impersonation release narrative).**
+
+---
+
+### 27. Anti-Scam Family Circle (Presence Verification Packaging + Two Small Features)
+**Added July 10, 2026 (community demand pass)**
+**Category:** Anti-fraud / Positioning
+**Community demand:** Very high — $2.4B reported FTC losses for adults 60+; 1-in-4 people report encountering voice-clone scams (losses to $15K per incident); the BBB/CNN/McAfee "family safe word" advice genre is now permanent; grandparent-emergency scams are the canonical AI-fraud story of 2025–2026
+**Audience:** Broad and mainstream — every user with parents or grandparents; also the app's most natural viral loop (protecting one parent installs Occulta on 2–5 family devices, each install physically verified by definition)
+
+Presence Verification (#15) already is the cryptographic family safe word. What's missing is the product wrapper a worried adult child can deploy on a parent's phone in ten minutes:
+
+1. **Assisted Mode** — a simplified UI profile for the relative's device: a single large "Check it's really them" button running a presence challenge against the claimed family member, with plain-language verdicts ("✓ That was really Sarah — confirmed by her phone just now" / "✗ No confirmation. Hang up and call Sarah's number.").
+2. **Second Opinion** — one tap forwards a suspicious request (screenshot, voice note, message text) as a structured basket to a designated family guardian; the reply renders as a clear verdict card. One basket type plus UX; zero new crypto.
+3. **Money-request rule** — messages asking for money/gift cards/codes prompt the presence check first, and tie into #26 for the family case ("the only account details that count are signed ones").
+
+**Why new / overlap declaration:** #15 ships the primitive; this is the deployment story for the demographic the scam wave actually targets, who will never navigate challenge/attestation vocabulary. No packaging/UX-profile concept exists anywhere on this list.
+
+**Security model fit:** Nothing new — all flows are shipped or planned primitives. Assisted Mode is a UI profile, not a permission model: same crypto, same biometric gates, fewer choices, larger type. No remote management; the guardian sees only what the elder explicitly forwards.
+
+**iOS constraint:** Almost entirely UX work.
+
+> **Ruling (July 10, 2026):** Highest reach-to-lift ratio of this pass. This is how Presence Verification escapes the security-literate niche and becomes the app a normal person installs for their mother — the bottom-up adoption path Section 2 identifies as the only realistic route to everything else. **Priority: Near-term, sequenced with/immediately after Presence Verification ships.**
+
+---
+
+### 28. Sealed Evidence Journal (Tamper-Evident, Guardian-Witnessed)
+**Added July 10, 2026 (community demand pass)**
+**Category:** Security / Duress-cluster extension
+**Community demand:** Medium-high — DV advocacy orgs (NNEDV Safety Net, Operation Safe Escape) explicitly instruct survivors to preserve evidence *before* removing stalkerware or cleaning devices, and note court-grade preservation currently requires professional digital forensics; existing survivor-evidence apps are cloud-based — fatal when the abuser controls or monitors accounts. Parallel 2026 demand: documenting ICE encounters and protest policing, where current guidance ("back footage up to Google Drive/iCloud immediately") routes evidence through exactly the accounts that get subpoenaed, taken over, or watched
+**Audience:** Narrow-medium but intensely motivated — DV/stalking survivors, protest documenters, journalists; the adversary (a person with physical or account-level access) is precisely the v1.8 adversary model
+
+An append-only journal in the vault: each entry (photo, screenshot, audio, text note) is hashed into a chain; chain heads are SE-signed with timestamps. Periodically — and on demand — the signed chain head travels as a small basket to chosen guardian contacts, whose apps countersign a receipt ("held chain head H at time T"). The guardian receipt is the piece purely local designs cannot provide: tamper-evidence anchored outside the device with no server, no blockchain, no cloud account — just physically-trusted people holding 32 bytes. Entries live in the vault and automatically inherit Travel Mode, deniable partitions, and Panic Wipe when the duress cluster ships; a survivor's journal can sit in the hidden partition. In-product framing must be honest: chain-of-custody *support* — proof the record existed by date X and is unaltered since — not automatic court admissibility.
+
+**Why new / overlap declaration:** Extends the Trajectory doc's projected "Sealed Session Transcripts" in two declared ways: from message transcripts to arbitrary user-captured evidence, and adding the guardian-witnessed external anchor a purely local chain lacks (a local-only chain is self-attested — the owner could rebuild it). Reuses the #24 receipt machinery and basket rails. Distinct from the Dead Man's Switch (#8): nothing is released; guardians hold hashes, never content.
+
+**Security model fit:** No server; SE signs chain heads and receipts under new domain prefixes; guardians receive hashes only; pad receipt bundles per #21 so "evidence-journal user" is not inferable from traffic shape; FS/PQ untouched.
+
+**iOS constraint:** iOS 16+. Hash chain + signing is trivial; the work is capture UX, chain bookkeeping, and the guardian receipt flow. Camera capture must go straight into the journal (never through the system camera roll) — same cleanup discipline as the share extension.
+
+> **Ruling (July 10, 2026):** Deepens the duress cluster's story from "protect what you hide" to "prove what happened," for the same audience, on the same rails. The deniable-partition dependency is the right sequencing reason to slot it after the duress cluster. Medium lift. **Priority: Phase 2 (with the duress cluster).**
+
+---
+
+### July 10, 2026 Pass — Ranking by Impact-to-Lift
+
+| Rank | Item | Impact | Lift | Phase |
+|---|---|---|---|---|
+| 1 | Verified Payment Instructions (#26) | Very high ($3B+ documented losses; artifact no competitor has) | Low-med | Near-term |
+| 2 | Anti-Scam Family Circle (#27) | Very high (mainstream reach + viral install loop) | Low | Near-term (with #15) |
+| 3 | Sealed Evidence Journal (#28) | Med-high (intense niche; duress-cluster synergy) | Medium | Phase 2 |
+
+Re-prioritisations folded from this pass: #21 promoted from opportunistic to scheduled (Chat Control reinstated July 9, 2026); Expansion H scoping pulled forward (KOSA passed the House June 29, 2026); duress-cluster audience expanded to domestic US (see Section 3 addendum). Positioning items (Chat Control counter-positioning — time-sensitive; proof-of-personhood contrast vs. World ID; Signal-hosted-backup contrast) are documented in `Feature Ideation — 2026-07-10 Community Demand Pass.md`.
+
+### Ideas Considered and Omitted (July 10, 2026 pass)
+
+- **Steganographic carrier bundles** (`.occ` payloads embedded in innocuous media, as a Chat Control reaction): statistical stego detection is an arms race not winnable with Apple-framework primitives; a *detected* stego carrier is a worse forensic artifact than a clean encrypted file; App Store review risk for the whole product. The defensible subset of the benefit (size/shape unlinkability) is exactly #21. Omitted.
+- **Safety check-in for meetups** (dating/marketplace): Apple's Check In ships free and built-in since iOS 17. If the Dead Man's Switch (#8) ships, a short-fuse variant falls out nearly free — revisit then, not before.
+- **Standalone personal C2PA / media-provenance suite:** platform momentum (C2PA in cameras and OS pipelines) will out-deliver app-level implementations for general media; only the in-circle capture-attestation slice survives scrutiny — ship **signed voice notes** as a small affordance inside the Presence Verification narrative (SE signature over media hash + timestamp at in-app capture, `"occulta-attested-capture-v1"`, same honest-app boundary as #24), not as a standalone feature.
+- **Scam-detection AI / content classifiers:** on-device models flagging message content bring false-positive liability and scope creep; network services are excluded. The Second Opinion flow (#27) achieves the useful subset with a human the user trusts.
+- **Verified introductions (transitive trust / vouching):** re-affirmed as off-limits — every entry in the graph is physically verified or the graph's core claim dies; #22's corroboration remains the ceiling.
+
+---
+
+### 29. Situational Contact Actions — "Trust Check" Picker
+**Added July 22, 2026 (session following the Guardian Revocation Certificates re-scoping, #19)**
+**Revised July 22, 2026 (same-day, eight passes)** — rescoped from a global picker to a contact-detail-embedded one; narrowed to security/identity events only, CRUD excluded; renamed from "Something happened?" to "Significant Event" and moved below Message/Edit Contact since those are used far more often; added per-scenario eligibility so a scenario is only offered when the contact actually qualifies for it; the entry point itself is now hidden entirely when zero scenarios are eligible, rather than opening onto an empty list; renamed to "Security Actions," then to "Trust Check"; **the fourth scenario (Vault Trustee, originally "custody") removed entirely** — see below
+**Category:** UX / Discoverability
+**Audience:** Broad — every user with at least one contact; adds no new capability, makes existing ones findable
+
+A guided, scenario-first prompt inside a specific contact's detail view — "Trust Check," positioned below the routine Message/Edit Contact actions rather than above them — that maps a plain-language event *about that person* to whichever existing security or identity action already addresses it, instead of expecting the user to already know that "this contact's phone was stolen" means "go to Contact → Edit → Revoke Key."
+
+**First rescoping (global → contact-detail).** The original draft was a single global list reachable from the top of the Contacts tab, covering both contact-scoped events and device-level events ("I lost my own phone"). Splitting it revealed a stronger design: the contact-scoped scenarios are inherently about one person, and if the user is already looking at that person's contact card — which is what they'd naturally do after hearing from them — routing through a global list and picking the contact back out is a wasted screen. Embedding the prompt directly in contact detail removes that step, and two of its destinations (Revoke Key, the Private toggle) already live on that exact screen today. Device-level events have no associated contact and remain out of scope for this entry.
+
+**Second narrowing (security/identity only, CRUD excluded, custody removed).** A codebase pass for other contact-scoped actions turned up Delete Contact (`Contact+Manager.swift:435`) as a real, shipped, contact-specific action — but on review it was explicitly excluded: this picker's purpose is routing a security-relevant event to the action that resolves it, and plain data management (editing a name, deleting a record) isn't that, even when it's contact-specific. Mixing "something happened, get help" with "manage this record" would blur exactly the distinction the picker exists to draw.
+
+The picker originally also carried a fourth, "custody" scenario — Vault shard trustee designation — but it was cut on the same reasoning that excluded Delete Contact: it isn't a reactive security event either. An implementation-planning pass into `ShamirSecretSharing.swift` and `Vault+ShardSetup.swift` confirmed why it doesn't fit even setting the framing question aside — adding one trustee isn't an independent action. `ShamirSecretSharing.split` (`ShamirSecretSharing.swift:111-118`) regenerates a fresh random polynomial on every call, so there's no way to hand out one incremental share; `VaultShardSetup.markForDistribution()` (`Vault+ShardSetup.swift:607-656`) re-runs the full split across the *entire* trustee roster and pushes a `.replace` operation — invalidating and reissuing — to every trustee already in place, not just the new one. That's real multi-party blast radius triggered from what would have looked like a quick, contact-scoped confirmation. It belongs with the deliberate, multi-step setup flow it already has in Vault → Settings, not next to "something happened?" prompts a user taps into mid-crisis. The three remaining scenarios all fall cleanly under security/identity and none are CRUD:
+
+| Scenario | Routed action | Reachable today? |
+|---|---|---|
+| [Name]'s phone was lost or stolen | Revoke Key (`ContactManager.reset(identity:)`, `Contact+Manager.swift:524`) | Yes — shipped |
+| I got a suspicious call or message from [Name] | Identity Challenge | Yes, but scope the promise to "still controls the key as of now" — see iOS constraint |
+| Hide [Name] if my phone is forced open | Mark Private / Secure Mode classification (`ContactManager+Classification.swift:76`) | Yes — shipped |
+
+**Considered and left out:** **Delete Contact** — real and shipped, but out of scope by design (CRUD, not a security/identity event; see above). **Vault shard trustee designation** — real and shipped (via Vault → Settings), but out of scope by design: not a reactive event, and structurally a multi-party operation (see above), not a single-contact one. **Removing one person from a shared group** (`Contact+Manager+Groups.swift:58`) — technically contact-specific, but the only real UI path is deselecting a checkbox while editing the whole group's membership (`Group+FormV3.swift:238`), which doesn't read as an event about *this contact*. No block/mute/report action exists anywhere in the codebase to consider.
+
+**`enableShamirShardSharing` flipped to `true` in `features.plist` (2026-07-22), unrelated to Trust Check's scope directly but decided during this investigation.** Since the flag has zero call sites anywhere in the codebase (see iOS constraint below, formerly #2), this has no functional effect on the shipped app today — it's a housekeeping change so the plist reflects intent (SSS custody is considered live, not experimental) rather than a stale `false` that could read as "still gated" to a future reader. If the flag is ever wired to something real, this is already set correctly.
+
+**A small compensating discoverability hint, separate from Trust Check itself.** Removing Vault Trustee left the underlying problem this doc has repeatedly named — most users never visit Vault → Settings at all, so a capability that only lives there effectively doesn't exist for them — unaddressed for this specific case. Rather than reintroduce a scenario the multi-party finding above rules out, contact detail gets a small inert "Trustee" chip (dashed outline, reusing the exact visual meaning "not yet" already established by the Pending Exchange badge) shown when a contact has ML-KEM material and isn't already a trustee. It has no tap target — it's a curiosity hook, not a shortcut, and it deliberately can't trigger the re-split/reissue chain, since it does nothing at all beyond render.
+
+**Correction (2026-07-22, same day): "isn't already a trustee" is not a single check.** The product owner flagged directly that the app has *two* separate trustee mechanisms, which an earlier pass through this doc missed — the mockup and the claim above only ever checked one of them. Both are real, both matter, and they don't behave the same way:
+
+- **Global roster** — `GlobalShardConfig.Payload.trusteeIDs: [String]` (`GlobalShardConfig+Model.swift:66`), a single app-wide list. Checked via `shardCustodyManager.globalShardConfig()?.trusteeIDs.contains(identifier)` (`ShardCustody+Manager.swift:406-417`), sealed under a device-unlock-level key (`Key+Manager.swift:816-839`, explicitly "no `LAContext` needed"). Cheap, and available whether or not the vault itself is unlocked.
+- **Per-item roster** — `ShardDistributionMetadata.shards: [ShardRecord]` (`Vault+Model.swift:94-99,79-88`), one list *per vault entry* (and a separate one for the backup key, via `bekShardMetadata()`), sealed under the vault key itself. `VaultManager.shardRecordsForTrustee(_:)` (`Vault+Manager+Shards.swift:401-420`) is the only function that answers "is this contact a trustee of mine anywhere" for this half — and it does so by fetching *every* `VaultEntry` and running an AES-GCM decrypt on each one's `shardDistributionEncrypted` blob, purely to check one contact. There is no per-contact index.
+
+**The two checks are not just two lookups — one of them can lie.** `shardRecordsForTrustee` requires the vault to be unlocked; if it's locked, it silently returns `[]`, which is indistinguishable from "genuinely not a trustee for anything." A chip suppressed only by this check would risk confidently showing "not yet a trustee" for someone who already holds a shard, purely because the vault happened to be locked at render time — the exact class of "badge claims something false" mistake this doc has otherwise been careful to rule out (see the naming/pronoun/eligibility disciplines above).
+
+**Not yet resolved — this needs a product call, not an engineering default.** Two live options, with the tradeoff stated plainly rather than picked silently:
+1. Combine both checks; when the vault is locked (so the per-item half can't be answered), suppress the chip entirely rather than risk showing a false "not yet." Correct, but adds a full vault-entry decrypt-scan to a screen this doc has already established gets visited far more often than Vault itself — a real performance cost for a purely decorative hint, worth caching per session rather than re-running on every contact-detail render.
+2. Keep the chip on the global check alone, and accept — documented, not silently — that a contact who is *only* a per-item trustee (holds a shard for one specific entry but was never added to the global roster) would be incorrectly offered the "not yet" hint. Cheaper and simpler, at a known, bounded accuracy cost for a low-stakes, inert, non-actionable element.
+
+The mockup currently implements option 2 (global check only) as originally built, pending this decision — it has not been changed to reflect the correction above.
+
+**Position, naming, and per-scenario eligibility.** Message and Edit Contact are opened on nearly every visit to this screen; Trust Check is opened rarely, by definition — it only applies when something has actually gone wrong. Placing it below the routine actions, and naming it as a noun phrase rather than a question, keeps it from competing with what the screen is used for most of the time while staying one scroll and one tap away. On top of that, each scenario now carries its own eligibility check, not just the feature-level reachability check described under iOS constraint below:
+- **Revoke Key** and **Identity Challenge** only appear if the contact's key is currently active (`state === verified` in the mockup, mirroring the real `keyIsRevocable` gate already on the shipped Revoke Key button) — a contact whose key is already revoked has nothing left for either action to act on.
+- **Hide contact** only appears if the contact isn't already marked private.
+
+With only one category of scenario left after custody's removal, the picker no longer groups rows under a section header at all — a "Security & identity" label would just repeat what the screen's own title already says.
+
+**Naming: "Trust Check" over "Security Actions."** A friction review of this entry raised a real risk in the naming trend up to that point ("Something happened?" → "Significant Event" → "Security Actions"): each step moved further toward auth/security vocabulary and further from the "identity first, not auth" framing the Consumer Opening memo argues is the strongest idea available to this product. A label sitting on every contact's page that reads as a security alert risks a low-grade "is something wrong with this contact?" signal even when nothing is. "Trust Check" was chosen over softer alternatives ("If something's wrong," "Need help with [Name]?") specifically because it stays legible on its own without over-explaining itself in the label — the label doesn't need to enumerate what it covers, since tapping it immediately shows the scenarios; ambiguity at rest, clarity on tap, is an acceptable trade for a row that must sit quietly on a screen most visits don't need it.
+
+**The entry point disappears, not just the list.** If a contact fails every scenario's eligibility check — key already revoked, already marked private — Trust Check doesn't open onto an empty screen; it isn't shown at all on that contact's detail view. An empty picker would still have been a real state to design for (what does "nothing applies" even communicate to a worried user?); removing the entry point avoids the question rather than answering it, which is the right call here — there is no version of "nothing you can do" that reads as reassuring rather than alarming, so the honest move is to not raise it.
+
+**Why new / overlap declaration:** Concrete implementation of the recommendation in #19's addendum ("make Revoke Key discoverable"), generalized to every contact-scoped security/identity action instead of a bespoke fix per feature. Also subsumes the *mechanism* (not the audience) of Anti-Scam Family Circle (#27)'s "Assisted Mode" and "Second Opinion" — still valid under the narrower scope, since both are themselves about a specific contact.
+
+**Security model fit:** No new cryptography, no new attack surface — pure navigation over already-shipped actions. The scenario→action mapping is content, not code, but it's a living artifact that needs a pass whenever a destination's status changes elsewhere in this doc.
+
+**iOS constraint:** None beyond standard SwiftUI navigation. Three copy/design disciplines matter more than the technical lift:
+1. **Suspicious call/message** must not imply live-call authenticity — Identity Challenge proves "still controls the key," not "this is them, right now." Presence Verification's live-window mode would provide that stronger claim and is currently Delayed on an unresolved relay attack (#15's addendum).
+2. **Scenario and result copy must name the contact, never refer to them by pronoun.** Each scenario is read one contact at a time in a security context, where an ambiguous "they/them/their" costs more than the minor repetition of using the name twice in a sentence — explicit beats concise here.
+3. **Eligibility must be evaluated per contact at render time, not cached or assumed.** A contact's key state and private flag can both change between visits (a re-exchange, a duress-classification edit); the picker has to re-check on every open rather than reusing whatever was true last time.
+
+> **Ruling (July 22, 2026, revised eight times):** Narrowing to contact-detail placement strengthens the case rather than shrinking it — it cuts a screen from the three originally-global scenarios. Excluding CRUD, and later excluding Vault Trustee on the same reasoning plus the multi-party-blast-radius finding, keeps the picker's purpose legible: this answers "something happened, what do I do," not "manage this contact" and not "set up a recovery scheme." Repositioning below the routine actions and adding per-contact eligibility are both refinements in the same direction — the picker earns its place by only ever showing what's true and actionable for the contact in front of the user, never a menu padded with options that don't apply or don't belong. What's left is deliberately small: three scenarios, all copy and routing over already-shipped actions, no new engineering. **Priority: Near-term.**
+
+---
+
 ## Section 1 Summary Table
 
 | Rank | Feature | Status | Audience | Phase |
 |------|---------|--------|----------|-------|
 | 2 | Offline Travel Mode | **Keep** | Broad | Phase 1 |
 | 3 | Cryptographic Panic Wipe | **Keep** | Medium-broad | Phase 1 |
-| 15 | Presence Verification | **Keep** | Broad | Phase 1 (parallel track) |
+| 15 | Presence Verification | **Delayed** — see July 10 addendum (unresolved relay/MITM gap) | Broad | Blocked, not scheduled |
 | 6 | Deniable Vault Partitions | **Keep** | Narrow-medium | Phase 2 |
 | 8 | Shamir Dead Man's Switch | **Keep** | Narrow-medium | Phase 2 |
 | 10 | NFC Key Exchange | **Keep** | Medium | Phase 2 (lower) |
 | 17 | Duress-Aware 2FA Codes | **Keep** | Medium-broad | Phase 2 (after duress cluster) |
 | 16 | Serverless Social Recovery | **Built** (flagged) | Broad | Positioning/UX pass only |
-| 18 | Owner Device Set | **Keep** | Broad | Near-term |
-| 19 | Guardian Revocation Certificates | **Keep** | Broad | Near-term |
+| 18 | Multi-Device Contacts (was "Owner Device Set") | **Keep — narrowed to bug fix 2026-07-10** | Broad ambition shelved; bug fix affects all multi-device users | Opportunistic, low-priority |
+| 19 | Guardian Revocation Certificates | **Downgraded 2026-07-22 — positioning only, see addendum** | Broad | Ongoing (positioning, no engineering) |
 | 21 | Uniform Basket Envelopes | **Keep** | — (protocol) | Near-term, opportunistic |
 | 20 | Serverless Passkey Provider | **Keep** | Broad | Mid-term |
 | 22 | Mutual-Contact Discovery | **Keep** | Narrow-medium | Near-mid |
 | 24 | Signed Destruction Receipts | **Keep** | Narrow-medium | Near-mid |
 | 23 | Hybrid PQ Signatures | **Keep** | — (protocol) | Mid-term (SDK-gated) |
 | 25 | Visual PII Redaction | **Keep** | Narrow-medium | Near-mid |
+| 26 | Verified Payment Instructions | **Keep** | Broad | Near-term |
+| 27 | Anti-Scam Family Circle | **Keep** | Broad | Near-term (with #15) |
+| 28 | Sealed Evidence Journal | **Keep** | Narrow-medium | Phase 2 |
+| 29 | Situational Contact Actions ("Trust Check" Picker) | **Keep** | Broad | Near-term |
 | 1 | Wi-Fi Aware Basket Delivery | Removed | — | — |
 | 4 | YubiKey NFC Second Factor | Deferred | — | — |
 | 5 | Contact Compromise Detection | Removed | — | — |
@@ -535,6 +694,8 @@ This eliminates the entire class of "stolen credential" and "phished account" at
 > The physical proximity requirement removes Occulta from competition with Okta and Microsoft Entra for the mainstream enterprise market entirely. Pursue only if willing to invest in government security certification or accept the narrow high-trust niche.
 
 > **Addendum (June 2026):** Consumer Feature #15 (Presence Verification) supplies the concrete wedge this expansion was missing. The two hottest enterprise identity attack patterns of 2025–2026 — helpdesk MFA-reset social engineering (Scattered Spider/MGM playbook) and deepfake executive fraud (Arup, $25M) — are both "verify the human, not the credential" problems. Incumbent fixes (Nametag, HYPR Affirm) are cloud services running government-ID + selfie biometric pipelines. Occulta's version: the helpdesk demands a signed presence check against the key HR exchanged on Day 1; finance policy requires one before any wire transfer. No ID upload, no biometrics vendor, no cloud. This is bottom-up adoptable (a family anti-scam feature that scales into an enterprise control), consistent with the "premium complement, not replacement" positioning above, and requires no certification to pilot in a small high-trust org.
+>
+> **Addendum (July 10, 2026):** This wedge is on hold. #15 was delayed (see its ruling addendum) after a relay/MITM attack was reclassified from an accepted residual risk to a blocking gap with no known guaranteed fix. Since the wedge here — helpdesk MFA-reset and wire-transfer verification — is precisely the "resourced, real-time attacker" scenario that attack targets, this expansion inherits the delay rather than being independently viable.
 
 ---
 
@@ -665,6 +826,8 @@ This is the most technically ambitious expansion and the longest time horizon. Z
 >
 > **The right path:** Do not build ZK primitives from scratch. Implement W3C Verifiable Credentials and SD-JWT as a privacy-preserving credential holder that accepts credentials from standards-based issuers (EU Digital Identity Wallet, US mDL programs) as they come online. The SE binding is the unique security property; the no-intermediary architecture is the unique privacy property. Both are achievable without ZK. Monitor the EU Digital Identity Wallet rollout — that is the trigger that makes this worth building.
 
+> **Addendum (July 10, 2026):** The demand-side trigger arrived ahead of the issuer-side one — KOSA passed the House June 29, 2026 with large-scale age-verification mandates, and roughly half of US states now mandate some form of age gating. The community's revolt is against ID/biometric upload, not age proof itself. Pull the W3C VC / SD-JWT credential-holder scoping study forward to active; the build gate remains issuer availability (EU wallet / US mDL rollout).
+
 ---
 
 ### I. Air-Gapped SE Signer for P-256 Smart Wallets + Physically-Verified Social Recovery
@@ -691,7 +854,7 @@ Occulta as a fully offline hardware-wallet-grade signer for chains that verify s
 |--|-------------|--------|-------|
 | A | Organizational Identity Graph | **Keep — Phase 2** | Narrow to gov-adjacent orgs and high-trust cells; package with C as a single regulated-industry platform |
 | C | Developer / API Authentication | **Keep — Phase 2** | Same buyer as A; regulated-industry human API auth only; package together |
-| H | Anonymous Credentials | **Keep — Phase 3** | Build W3C VC / SD-JWT credential holder, not ZK from scratch; EU Digital Identity Wallet rollout is the trigger |
+| H | Anonymous Credentials | **Keep — Phase 3 (scoping active)** | Build W3C VC / SD-JWT credential holder, not ZK from scratch; KOSA-era age-verification mandates pulled scoping forward (Jul 2026); build still gated on issuer availability |
 | B | Physical Access Control | Downstream of A only | HID Mobile Access already owns this market; not standalone |
 | F | Inheritance / Dead Man's Switch | Same as #8 | Not a separate expansion; crypto-holder positioning |
 | G | Asset Provenance | Downstream of A only | Every market has entrenched incumbents; not standalone |
@@ -730,6 +893,8 @@ Travel Mode (#2), Panic Wipe (#3), and Deniable Vault Partitions (#6) form a nat
 
 No iOS app currently offers all three. Shipping them as a named feature set ("Protected Mode") is a strong positioning opportunity for the journalist and activist market.
 
+**Audience update (July 10, 2026):** The 2026 US domestic climate — ICE device searches at airport checkpoints, protest-documentation guidance — has expanded the duress audience from border-crossers to residents who never leave the country; civil-liberties guidance now reads like this cluster's feature list. This is the news cycle the Trajectory doc warned we keep missing: it argues for acceleration, not re-scoping. The Sealed Evidence Journal (#28) extends the cluster from "protect what you hide" to "prove what happened" for the same audience.
+
 ---
 
 ## Combined Priority Matrix
@@ -740,9 +905,15 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 |----------|------|-----------|
 | 1 | Offline Travel Mode | Broadest new audience; documents a real gap vs. 1Password; fully offline; no external dependencies |
 | 2 | Cryptographic Panic Wipe | Requires key hierarchy rework as prerequisite; wipe itself is then trivial; post-Graphite urgency |
-| 1 (parallel) | Presence Verification | Identity Challenge protocol already shipped; remaining work is presence mode + transport + positioning; independent of the key-hierarchy rework, so it runs as a parallel track |
-| 1 (parallel) | Owner Device Set (#18) | Kills the "lose your phone, lose your contacts" objection using ceremony code already shipped; independent of the key-hierarchy rework |
-| 2 (parallel) | Guardian Revocation Certificates (#19) | Highest reuse ratio of any feature on this list (ECDSA + SSS + baskets, all shipped); completes the key lifecycle reviewers probe first |
+| 1 (parallel) | Verified Payment Instructions (#26) | Largest documented loss pool adjacent to the app (BEC $3.05B, 2025 IC3); trusted asynchronous artifact no competitor has; anti-impersonation pairing with Presence Verification (#15) on hold — see Delayed section below |
+| 2 (parallel) | Anti-Scam Family Circle (#27) | Mainstream reach + family install loop; blocked — built entirely on top of Presence Verification (#15), which is delayed. See Delayed section below |
+| 1 (parallel) | Situational Contact Actions ("Trust Check" Picker, #29) | Very low lift, no new attack surface; generalized fix for a discoverability gap this doc has hit twice (#19, #27's Assisted Mode); not blocked on Presence Verification if the suspicious-call row is scoped honestly (see #29's iOS constraint) |
+
+### Delayed — Blocked Pending Protocol Fix
+
+| Item | Reason |
+|------|--------|
+| Presence Verification (#15) | Downgraded from Priority 1 on 2026-07-10: the relay/parallel-session attack (SPEC.md §6 addendum) has no known guaranteed fix and hits hardest against the exact adversary this feature targets. Not scheduled until a protocol fix with a real guarantee is found, or the product claim is explicitly narrowed to exclude live, resourced, dual-channel relay attacks. Anti-Scam Family Circle (#27), the Verified Payment Instructions (#26) release pairing, and Expansion A's enterprise wedge (Section 2 addendum) are blocked on this. |
 
 ### Phase 2 — Duress Cluster Completion + Coverage
 
@@ -752,23 +923,26 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 | 4 | Shamir Dead Man's Switch | Only serverless iOS implementation; SSS custody rails already shipped (see #16) |
 | 5 | NFC Key Exchange (fallback) | Removes hard UWB-device requirement; no security tradeoff |
 | 6 | Duress-Aware 2FA Codes | Unique only once the duress cluster exists; sequence after Travel Mode + Panic Wipe |
-| 7 | Uniform Basket Envelopes (#21) | Low lift, opportunistic; upgrades #13 (filename encryption) from partial to real metadata protection — ship together on the next bundle-format touch |
+| 7 | Uniform Basket Envelopes (#21) | Promoted July 10, 2026 (Chat Control reinstatement): schedule with the next protocol release; upgrades #13 (filename encryption) from partial to real metadata protection — ship together |
 | 8 | Mutual-Contact Discovery (#22) | Sybil-resistant trust signal no server-based product can offer; low-medium lift |
 | 9 | Signed Destruction Receipts (#24) | Answers the "prove it was deleted" gap in every ephemeral-messaging competitor; low-medium lift |
 | 10 | Visual PII Redaction (#25) | Demos well, distinct threat from existing EXIF/GPS stripping; low-medium lift |
+| 11 | Sealed Evidence Journal (#28) | Extends the duress cluster from "protect what you hide" to "prove what happened"; guardian-witnessed tamper evidence on shipped rails; sequence after deniable partitions |
+| 12 (opportunistic) | Multi-Device Contacts (#18, narrowed 2026-07-10) | Downgraded from its original Near-term/Rank-1 ranking above the table: the "backup phone that just works" ambition was rejected as a security hole (self-vouching device certs) and shelved; what remains is a data-model bug fix (a second device no longer silently overwrites the first's key for a contact). Ships opportunistically, not scheduled — see ROADMAP.md |
 
 ### Phase 2/3 — Gated on Platform or SDK
 
 | Item | Rationale |
 |------|-----------|
 | Serverless Passkey Provider (#20) | Opens the mainstream password-manager market; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor |
-| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for revocation certs (#19), device-set certs (#18), and any future signed artifact; gated on confirming SE ML-DSA support in the target SDK |
+| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for the per-device revocation broadcast (#18, narrowed scope) and any future signed artifact; gated on confirming SE ML-DSA support in the target SDK. (No longer paired with #19 — downgraded 2026-07-22, no revocation cert remains to sign) |
 
 ### Ongoing — Positioning (no engineering)
 
 | Item | Rationale |
 |------|-----------|
 | Serverless Social Recovery (#16) | Already built behind `enableShamirShardSharing`; surface it as the answer to "what if I lose my phone?" — the validation (Google Recovery Contacts, passkey-lockout coverage) is marketing material |
+| Guardian Revocation Certificates (#19) | Downgraded 2026-07-22: the existing per-contact "Revoke Key" action already bounds the worst case to a forced re-exchange with zero new engineering; make it discoverable (onboarding/security FAQ: "lost your phone? tell your contacts to revoke you"), don't build the guardian/SSS layer |
 
 ### Future — Enterprise (prerequisite: consumer product first)
 
@@ -784,4 +958,4 @@ These are not buildable as near-term targets. Direct enterprise sales requires c
 
 ---
 
-*Consolidated from four independent research passes. All features are zero-server and Secure Enclave-compatible. Feature descriptions reflect the more detailed specification where sources diverge. Consumer feature rulings, expansion opportunity rulings, competitive landscape analysis, and enterprise structural barrier assessment added May 13, 2026. Features 18–25 and Expansion I (multi-device identity, key revocation, passkey provider, traffic-shape hardening, mutual-contact discovery, hybrid PQ signatures, destruction receipts, visual PII redaction, and an air-gapped smart-wallet signer) added July 4, 2026.*
+*Consolidated from five independent research passes. All features are zero-server and Secure Enclave-compatible. Feature descriptions reflect the more detailed specification where sources diverge. Consumer feature rulings, expansion opportunity rulings, competitive landscape analysis, and enterprise structural barrier assessment added May 13, 2026. Features 18–25 and Expansion I (multi-device identity, key revocation, passkey provider, traffic-shape hardening, mutual-contact discovery, hybrid PQ signatures, destruction receipts, visual PII redaction, and an air-gapped smart-wallet signer) added July 4, 2026. Features 26–28 (verified payment instructions, anti-scam family circle, sealed evidence journal), the #21 promotion, and the Expansion H scoping pull-forward added July 10, 2026 from the community demand pass.*

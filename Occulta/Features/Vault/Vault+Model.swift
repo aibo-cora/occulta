@@ -183,9 +183,14 @@ final class VaultEntry {
     /// nil until an SSS split has been performed for this entry.
     var shardDistributionEncrypted: Data? = nil
 
-    /// Encrypted `Int` depth ceiling.
-    /// nil  = visible at all depths.
-    /// N    = visible only at depths 0..N (created while at depth N).
+    /// Encrypted `Int` depth stamp — the depth this entry was created at.
+    /// nil = never classified, visible at all depths.
+    /// N   = visible only at exactly depth N (an exact match, not a ceiling —
+    ///       see `Manager.Security.isEntryVisible` and
+    ///       `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
+    ///       for why "visible 0...N" would let an entry created at a duress depth
+    ///       leak into every shallower depth, including the real depth 0).
+    /// Set once at creation (`VaultManager.addEntry`); never edited afterward.
     var visibleThroughDepth: Data? = nil
 
     // MARK: Init

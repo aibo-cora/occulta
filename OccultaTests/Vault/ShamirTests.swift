@@ -228,9 +228,13 @@ struct SSSErrorTests {
 
     @Test("Share of wrong length throws invalidShareFormat")
     func wrongShareLength() {
-        let badShare = [UInt8](repeating: 0, count: 32)  // should be 33
+        // Two shares to clear the `shares.count >= 2` check first — otherwise
+        // a single share (regardless of length) throws insufficientShares before
+        // format is ever validated.
+        var goodShare = [UInt8](repeating: 0, count: 33); goodShare[0] = 1
+        let badShare  = [UInt8](repeating: 0, count: 32)  // should be 33
         #expect(throws: ShamirSecretSharing.Error.invalidShareFormat) {
-            _ = try ShamirSecretSharing.reconstruct(shares: [badShare])
+            _ = try ShamirSecretSharing.reconstruct(shares: [goodShare, badShare])
         }
     }
 

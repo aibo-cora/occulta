@@ -5,8 +5,8 @@
 //  SwiftUI surfaces for the three phases of identity challenge:
 //
 //    Challenger side
-//    ── VerifyIdentityButton   — entry point on Contact.Details
-//    ── EducationalSheet       — "sensitive requests should come via Occulta"
+//    ── VerifyIdentityButton   — entry point on Contact.Details, with its
+//                                explanation always visible above the CTA
 //    ── ContextNoteSheet       — optional freetext before sharing
 //    ── VerifiedBadge          — transient "Verified N ago" under the button
 //
@@ -37,11 +37,9 @@ extension IdentityChallenge {
 
         @Environment(IdentityChallenge.Coordinator.self) private var coordinator: IdentityChallenge.Coordinator?
 
-        @State private var showEducational = false
         @State private var showNoteInput   = false
         @State private var noteDraft       = ""
         @State private var errorMessage: String?
-        @State private var showInfo        = false
 
         /// A running tick so the "N minutes ago" caption updates without a
         /// full view rebuild. 30-second cadence is plenty for minute resolution.
@@ -51,7 +49,7 @@ extension IdentityChallenge {
         private var hasOutstanding: Bool {
             self.coordinator?.store.hasOutstanding(for: self.contact.identifier) ?? false
         }
-        
+
         private var hasValidIdentity: Bool {
             self.contact.contactPublicKeys?.last?.expiredOn != nil
         }
@@ -62,41 +60,27 @@ extension IdentityChallenge {
 
         var body: some View {
             VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button {
-                        self.showEducational = true
-                    } label: {
-                        Label("Challenge", systemImage: "checkmark.shield")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(self.hasOutstanding || self.hasValidIdentity)
+                VStack(alignment: .leading, spacing: 10) {
+                    self.infoStep(1, "Someone — claiming to be \(self.displayName) or anyone else — asks you for money, a transfer, or personal details by phone, text, or another app. If \(self.displayName) has Occulta, a sensitive request like that should come through here, not Telegram or WhatsApp — that mismatch alone may be a warning sign. Ask here before you act on it.")
+                    self.infoStep(2, "\(self.displayName) has to open the request and approve it with Face ID or Touch ID. Wait for signed response. We will verify their signature.")
 
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { self.showInfo.toggle() }
-                    } label: {
-                        Image(systemName: self.showInfo ? "info.bubble.fill" : "info.bubble")
-                            .font(.system(size: 18))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("What is this for?")
+                    Text("No message content is shared — just a yes or no.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+                .padding(12)
+                .background(Color.occultaVerified.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                if self.showInfo {
-                    VStack(alignment: .leading, spacing: 10) {
-                        self.infoStep(1, "Someone — claiming to be \(self.displayName) or anyone else — asks you for money, a transfer, or personal details by phone, text, or another app. Ask here before you act on it.")
-                        self.infoStep(2, "\(self.displayName) has to open the request and approve it with Face ID or Touch ID. Wait for signed response. We will verify their signature.")
-
-                        Text("No message content is shared — just a yes or no.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(12)
-                    .background(Color.occultaVerified.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                Button {
+                    self.showNoteInput = true
+                } label: {
+                    Label("Challenge", systemImage: "checkmark.shield")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(self.hasOutstanding || self.hasValidIdentity || self.showNoteInput)
 
                 if self.hasOutstanding {
                     Text("Verification in progress. Send the shared file to \(self.displayName), then open their response.")
@@ -113,16 +97,6 @@ extension IdentityChallenge {
             }
             .padding(.horizontal)
             .onReceive(self.tick) { self.now = $0 }
-            .sheet(isPresented: self.$showEducational) {
-                EducationalSheet(
-                    contactName: self.displayName,
-                    onContinue: {
-                        self.showEducational = false
-                        self.showNoteInput = true
-                    },
-                    onCancel: { self.showEducational = false }
-                )
-            }
             .sheet(isPresented: self.$showNoteInput) {
                 ContextNoteSheet(
                     note: self.$noteDraft,
@@ -176,46 +150,6 @@ extension IdentityChallenge {
             } catch {
                 self.errorMessage = "Could not create verification request."
             }
-        }
-    }
-
-    // MARK: - Educational interstitial
-
-    struct EducationalSheet: View {
-        let contactName: String
-        let onContinue: () -> Void
-        let onCancel:   () -> Void
-
-        var body: some View {
-            NavigationStack {
-                VStack(spacing: 16) {
-                    Image(systemName: "exclamationmark.shield")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.yellow)
-                    Text("Before you verify")
-                        .font(.title2.bold())
-                    Text("If \(self.contactName) has Occulta, sensitive requests should come through it — not through Telegram or WhatsApp. That alone may be a warning sign.")
-                        .font(.callout)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Spacer()
-                }
-                .padding(.top, 40)
-                .safeAreaInset(edge: .bottom) {
-                    VStack(spacing: 8) {
-                        Button {
-                            self.onContinue()
-                        } label: {
-                            Text("Continue to verify")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Button("Cancel", role: .cancel, action: self.onCancel)
-                    }
-                    .padding()
-                }
-            }
-            .presentationDetents([.medium])
         }
     }
 

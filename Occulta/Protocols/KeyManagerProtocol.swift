@@ -139,9 +139,6 @@ final class TestKeyManager: KeyManagerProtocol {
     /// Set to true to make deriveVaultKey(context:) throw — tests lock-on-failure behaviour.
     var simulateVaultKeyFailure = false
 
-    var privateKey: Data?
-    var publicKeyData: Data?
-
     /// Fixed generator point G for ECDH derivation.
     private let fixedX963 = Data([
         0x04,
@@ -494,6 +491,10 @@ final class TestKeyManager: KeyManagerProtocol {
 
     /// Raw ECDH + XOR salt without HKDF. Hybrid derivation combines ECDH with
     /// ML-KEM secrets before a single HKDF pass — running HKDF twice would produce the wrong key.
+    ///
+    /// Uses the identity key pair — same key `retrieveIdentity()` exposes and the same
+    /// one `createSharedSecret(using:)` uses for the classical fallback path. Mirrors the
+    /// real `Manager.Key.createHybridSharedSecret`, which does one ECDH via the SE identity key.
     private func rawECDHWithSalt(peerP256Material: Data) -> (rawECDH: Data, salt: Data)? {
         guard peerP256Material.count == 65 else { return nil }
 
@@ -505,24 +506,14 @@ final class TestKeyManager: KeyManagerProtocol {
         var err: Unmanaged<CFError>?
         guard
             let peerKey = SecKeyCreateWithData(peerP256Material as CFData, attrs as CFDictionary, &err),
-            let privateKey = self.privateKey,
-            let privKeyRef = SecKeyCreateWithData(privateKey as CFData, [
-                kSecAttrKeyType as String:       kSecAttrKeyTypeECSECPrimeRandom,
-                kSecAttrKeyClass as String:      kSecAttrKeyClassPrivate,
-                kSecAttrKeySizeInBits as String: 256
-            ] as CFDictionary, &err)
-        else { return nil }
-
-        guard
-            let publicKeyData = self.publicKeyData,
             let rawECDH = SecKeyCopyKeyExchangeResult(
-                privKeyRef, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
+                self.identityPrivateKey, .ecdhKeyExchangeCofactorX963SHA256, peerKey,
                 [SecKeyKeyExchangeParameter.requestedSize.rawValue: 32] as CFDictionary,
                 &err
             ) as? Data
         else { return nil }
 
-        let salt = Data(zip(peerP256Material, publicKeyData).map { $0 ^ $1 })
+        let salt = Data(zip(peerP256Material, self.identityPublicKeyData).map { $0 ^ $1 })
         return (rawECDH, salt)
     }
 }

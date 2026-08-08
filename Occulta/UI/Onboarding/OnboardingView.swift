@@ -24,33 +24,24 @@ struct OnboardingView: View {
                 TrustScreen()
                     .tag(2)
 
+                VaultScreen()
+                    .tag(3)
+
                 CommitmentScreen {
                     withAnimation {
                         self.hasCompleted = true
                     }
                 }
-                .tag(3)
+                .tag(4)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .animation(.easeInOut, value: self.pageIndex)
 
             VStack {
-                HStack {
-                    Spacer()
-                    Button("Skip") {
-                        withAnimation {
-                            self.hasCompleted = true
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding()
-                    .opacity(self.pageIndex < 3 ? 1 : 0)
-                }
-
                 Spacer()
 
                 HStack(spacing: 8) {
-                    ForEach(0..<4, id: \.self) { index in
+                    ForEach(0..<5, id: \.self) { index in
                         Circle()
                             .frame(width: 8, height: 8)
                             .foregroundStyle(self.pageIndex == index ? .primary : .secondary)
@@ -396,7 +387,64 @@ private struct TrustRow: View {
     }
 }
 
-// MARK: - Screen 4: Commitment
+// MARK: - Screen 4: Vault
+
+private struct VaultScreen: View {
+    @State private var showContent = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: 6) {
+                Text("A private vault, too")
+                    .font(.title2)
+                    .fontWeight(.medium)
+
+                Text("Not everything needs a contact.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 28)
+            .opacity(self.showContent ? 1 : 0)
+
+            VStack(spacing: 14) {
+                TrustRow(
+                    icon: "note.text",
+                    title: "Encrypted notes",
+                    description: "Store notes, seed phrases, or keys — sealed with your Secure Enclave key. Just for you, on this device.",
+                    accentColor: .purple
+                )
+
+                TrustRow(
+                    icon: "person.3.fill",
+                    title: "Recoverable, your way",
+                    description: "Split a backup key among trusted contacts later — no single one of them can recover it alone.",
+                    accentColor: .teal
+                )
+            }
+            .padding(.horizontal, 28)
+            .opacity(self.showContent ? 1 : 0)
+            .offset(y: self.showContent ? 0 : 16)
+
+            Text("Find it anytime in the Vault tab.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 20)
+                .opacity(self.showContent ? 1 : 0)
+
+            Spacer()
+            Spacer()
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5).delay(0.2)) {
+                self.showContent = true
+            }
+        }
+    }
+}
+
+// MARK: - Screen 5: Commitment
 
 private struct CommitmentScreen: View {
     let onComplete: () -> Void

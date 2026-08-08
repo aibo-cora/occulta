@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 // MARK: - Group Detail V3
 
@@ -19,11 +20,13 @@ struct GroupDetailV3: View {
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(VaultManager.self)        private var vaultManager: VaultManager?
     @Environment(\.dismiss)                private var dismiss
+    @Environment(\.scenePhase)             private var scenePhase
 
     @State private var editing          = false
     @State private var useThreadCompose = false
     @State private var membersExpanded  = false
     @State private var composeVM: ComposeViewModel
+    @State private var draftStore = DraftStore()
 
     init(groupID: UUID) {
         self.groupID = groupID
@@ -55,7 +58,13 @@ struct GroupDetailV3: View {
                 )
 
                 if count > 0 {
-                    ComposeToggleV3(useThread: self.$useThreadCompose)
+                    ComposeToggleV3(useThread: Binding(
+                        get: { self.useThreadCompose },
+                        set: { newValue in
+                            self.useThreadCompose = newValue
+                            self.composeVM.clearAfterEncrypt()
+                        }
+                    ))
 
                     if self.useThreadCompose {
                         NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
@@ -110,8 +119,33 @@ struct GroupDetailV3: View {
                 }
             }
         }
-        .onChange(of: self.useThreadCompose) { _, _ in self.composeVM.clearAfterEncrypt() }
-        .onDisappear { self.composeVM.cleanup() }
+        .task {
+            self.composeVM.setup(contactManager: self.contactManager)
+            if let loaded = self.draftStore.load(
+                recipientID:       self.composeVM.recipientIDString,
+                modelContext:      self.contactManager.modelContext
+            ) {
+                self.composeVM.draftText = loaded.text
+                self.composeVM.messages  = loaded.messages
+                self.useThreadCompose    = loaded.wasThreadMode
+            }
+        }
+        .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
+        .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
+        .onDisappear {
+            Task {
+                await self.draftStore.flush(
+                    recipientID:       self.composeVM.recipientIDString,
+                    isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+                    text:              self.composeVM.draftText,
+                    messages:          self.composeVM.messages,
+                    useThread:         self.useThreadCompose,
+                    modelContext:      self.contactManager.modelContext
+                )
+                self.composeVM.cleanup()
+            }
+        }
+        .onChange(of: self.scenePhase) { _, newPhase in self.flushOnBackground(newPhase) }
         .fullScreenCover(isPresented: self.$editing) {
             Group.FormV3(mode: .edit(groupID: self.groupID), onDelete: { self.dismiss() })
         }
@@ -125,6 +159,51 @@ struct GroupDetailV3: View {
             Button("OK") { }
         } message: {
             Text(self.composeVM.errorMessage)
+        }
+    }
+
+    private func scheduleDraftSave() {
+        let composeVM      = self.composeVM
+        let contactManager = self.contactManager
+        self.draftStore.scheduleSave(
+            recipientID:       composeVM.recipientIDString,
+            isSensitive:       { composeVM.isSensitive(contactManager: contactManager) },
+            text:              composeVM.draftText,
+            messages:          composeVM.messages,
+            useThread:         self.useThreadCompose,
+            modelContext:      contactManager.modelContext
+        )
+    }
+
+    /// `.onDisappear` only fires on navigation away — it doesn't fire when the
+    /// app backgrounds while this screen stays on top (a phone call, switching
+    /// apps). The debounced auto-save alone doesn't cover that: an edit made
+    /// in the last couple seconds before backgrounding may not have fired yet,
+    /// and iOS can suspend the process before a plain Task gets to run. A
+    /// background task assertion buys the time to flush immediately instead.
+    ///
+    /// `taskID` lives in a small reference box, not a local `var` — if
+    /// `scenePhase` bounces away from `.active` more than once in quick
+    /// succession, each call gets its own box, so each ends exactly the
+    /// assertion it started, rather than a shared slot letting one call's
+    /// cleanup end another's. `BackgroundTaskBox` is defined in
+    /// `ContactDetailV3.swift`, shared here since both need it identically.
+    private func flushOnBackground(_ newPhase: ScenePhase) {
+        guard newPhase != .active else { return }
+        let taskBox = BackgroundTaskBox()
+        taskBox.id = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(taskBox.id)
+        }
+        Task {
+            await self.draftStore.flush(
+                recipientID:       self.composeVM.recipientIDString,
+                isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+                text:              self.composeVM.draftText,
+                messages:          self.composeVM.messages,
+                useThread:         self.useThreadCompose,
+                modelContext:      self.contactManager.modelContext
+            )
+            UIApplication.shared.endBackgroundTask(taskBox.id)
         }
     }
 }

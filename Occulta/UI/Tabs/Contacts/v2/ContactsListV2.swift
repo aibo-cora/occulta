@@ -22,6 +22,11 @@ struct ContactsV2: View {
 
     @Query(Contact.Profile.descriptor) private var contacts: [Contact.Profile]
     @Query private var groups: [Group]
+    @Query private var drafts: [Message.Draft]
+
+    private var contactIdentifiersWithDrafts: Set<String> {
+        Message.Draft.allRecipientIdentifiers(from: self.drafts)
+    }
 
     private var sortedGroups: [Group] {
         let source = self.searchText.isEmpty ? self.groups : self.groups.filter {
@@ -191,9 +196,14 @@ struct ContactsV2: View {
 
     @ViewBuilder
     private func rows(_ items: [Contact.Profile]) -> some View {
+        let draftIdentifiers = self.contactIdentifiersWithDrafts
         ForEach(items) { contact in
             NavigationLink(value: contact.identifier) {
-                ContactRowV2(contact: contact, showFingerprint: self.showFingerprints)
+                ContactRowV2(
+                    contact:         contact,
+                    showFingerprint: self.showFingerprints,
+                    hasDraft:        draftIdentifiers.contains(contact.identifier)
+                )
             }
         }
     }
@@ -218,6 +228,7 @@ struct ContactsV2: View {
 struct ContactRowV2: View {
     let contact: Contact.Profile
     let showFingerprint: Bool
+    var hasDraft: Bool = false
 
     private var givenName:  String { self.contact.givenName.decrypt() }
     private var familyName: String { self.contact.familyName.decrypt() }
@@ -258,7 +269,12 @@ struct ContactRowV2: View {
                         .fill(self.contact.verificationStatus.color)
                         .frame(width: 6, height: 6)
 
-                    if self.showFingerprint, let fp = self.contact.fingerprintPreview {
+                    if self.hasDraft {
+                        Text("Draft")
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if self.showFingerprint, let fp = self.contact.fingerprintPreview {
                         Text(fp)
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)

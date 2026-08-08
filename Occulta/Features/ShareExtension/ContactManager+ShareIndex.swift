@@ -13,9 +13,14 @@ extension ContactManager {
 
     /// Rebuild the shared contact index from scratch.
     ///
-    /// Called after every contact save/delete and on `scenePhase == .active`.
-    /// The dataset is small (identifier + display name per contact), so a full
-    /// rebuild is cheap and eliminates incremental sync bugs.
+    /// Called after every contact mutation (`Contact+Manager.swift`'s
+    /// `didSaveObjectsNotification` subscription, covers classification/sensitivity
+    /// changes too), after unlock or duress-unlock (`PINEntry`'s `onAuthenticated`/
+    /// `onDuress`), after `activateSecureMode`/`deactivateSecureMode`, and on
+    /// `scenePhase == .inactive` (`OccultaApp.swift`, defense-in-depth — the other
+    /// call sites already cover every path that changes `currentDepth` or
+    /// `isSecureModeActive`). The dataset is small (identifier + display name per
+    /// contact), so a full rebuild is cheap and eliminates incremental sync bugs.
     ///
     /// Sync failures are silently caught — a failed sync is not worth crashing
     /// the primary contact operation that triggered it.

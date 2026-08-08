@@ -44,6 +44,7 @@ extension Contact.Profile {
         self.forwardSecrecyEncrypted = try reencrypt(data: self.forwardSecrecyEncrypted, to: newKey, aad: aad)
         self.signedAttributes        = try reencrypt(data: self.signedAttributes,        to: newKey, aad: aad)
         self.visibleThroughDepth     = try reencrypt(data: self.visibleThroughDepth,     to: newKey, aad: aad)
+        self.globalTrusteeDepth      = try reencrypt(data: self.globalTrusteeDepth,      to: newKey, aad: aad)
 
         // ── Relationship fields ──────────────────────────────────────────────────
         for phone in (self.phoneNumbers ?? []) {

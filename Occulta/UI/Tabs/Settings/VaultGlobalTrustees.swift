@@ -6,8 +6,11 @@
 //  Selections here pre-populate VaultShardSetup when setting up shards for a
 //  new vault entry. Threshold (k) is a per-entry decision set in VaultShardSetup.
 //
-//  Storage: GlobalShardConfig (SwiftData), AES-GCM sealed under the shard
-//  custody key. Read and written through ShardCustodyManager.
+//  Storage: Contact.Profile.globalTrusteeDepth (SwiftData), an exact-match depth
+//  stamp — the single mechanism at every depth, including depth 0. Read and written
+//  through ContactManager. GlobalShardConfig is orphaned as of the item 3
+//  consolidation (see the shard-custody bug doc) — kept declared in the schema for
+//  one release for migration safety only, no longer read or written here.
 //
 
 import SwiftUI
@@ -15,15 +18,21 @@ import SwiftData
 
 struct VaultGlobalTrustees: View {
 
-    @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
+    @Environment(Manager.Security.self) private var security
+    @Environment(ContactManager.self) private var contactManager
     @Query(Contact.Profile.descriptor) private var allContacts: [Contact.Profile]
     @Environment(\.dismiss) private var dismiss
 
     @State private var selectedIDs: Set<String> = []
     @State private var saveError: String?
 
+    /// Filtered by current-depth visibility — a hidden contact isn't offered as a
+    /// trustee candidate at all, the same tradeoff already applied everywhere else
+    /// hidden contacts appear in a list.
     private var mlkemContacts: [Contact.Profile] {
-        allContacts.filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
+        allContacts
+            .filter { self.security.isDisplayable($0) }
+            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     private var selected: [Contact.Profile] {
@@ -263,14 +272,19 @@ struct VaultGlobalTrustees: View {
 
     // MARK: - Load / save
 
+    /// Reads `Contact.Profile.globalTrusteeDepth` exact-matches at the current depth —
+    /// the single mechanism at every depth, including depth 0.
     private func loadConfig() {
-        guard let config = try? shardCustodyManager?.globalShardConfig() else { return }
-        selectedIDs = Set(config.trusteeIDs)
+        selectedIDs = self.contactManager.globalTrusteeIdentifiers()
     }
 
+    /// Writes `Contact.Profile.globalTrusteeDepth` at the current depth. No merge step
+    /// needed — unlike the old flat `GlobalShardConfig` list, each contact's field is
+    /// independent, so `saveGlobalTrusteeDepth` only ever touches displayable contacts
+    /// and can't corrupt anyone else's designation at a different depth.
     private func save() {
         do {
-            try shardCustodyManager?.saveGlobalShardConfig(.init(trusteeIDs: Array(selectedIDs)))
+            try self.contactManager.saveGlobalTrusteeDepth(selectedIDs: selectedIDs)
             dismiss()
         } catch {
             saveError = "Failed to save: \(error.localizedDescription)"

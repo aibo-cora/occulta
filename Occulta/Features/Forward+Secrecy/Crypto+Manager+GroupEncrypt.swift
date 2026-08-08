@@ -191,15 +191,34 @@ extension Manager.Crypto {
             quantumMaterial: r.quantumMaterial
         )
 
+        // FS mode's session key is ECDH(senderEphemeral, recipientPrekey) — it never
+        // involves our long-term identity, so senderProof alone doesn't prove we sent
+        // this (see finding #8, SecurityReview2026-07-24). Sign the ephemeral key with
+        // our real identity so the recipient can verify it. Fallback mode's wrapping
+        // ECDH already requires our long-term private key, so it doesn't need a real
+        // one — but it still gets random filler of the same size, matching this
+        // codebase's forensic-neutrality pattern elsewhere (verifierFillerArray,
+        // pinEnabledFillerArray, shard tier-padding): otherwise this field's mere
+        // presence/size would let a mixed-mode group send distinguish FS from
+        // fallback recipients by RecipientPayload size alone.
+        let senderEphemeralSignature: Data
+        switch secrecyContext.mode {
+        case .forwardSecret, .forwardSecretNoPQ:
+            senderEphemeralSignature = try self.keyManager.signData(secrecyContext.ephemeralPublicKey)
+        case .longTermFallback, .longTermNoPQ, .group, .unsupported:
+            senderEphemeralSignature = Self.randomEphemeralSignatureFiller()
+        }
+
         let payload = OccultaBundle.RecipientPayload(
-            sessionKey:             sessionKeyData,
-            prekeyBatch:            r.pendingBatch,
-            shardOperations:        r.shardOperations,
-            custodyManifest:        r.custodyManifest,
-            custodyManifestCount:   r.custodyManifestCount,
-            expectedShards:         r.expectedShards,
-            expectedShardsCount:    r.expectedShardsCount,
-            shardMetadataAttempted: r.shardMetadataAttempted
+            sessionKey:               sessionKeyData,
+            prekeyBatch:              r.pendingBatch,
+            shardOperations:          r.shardOperations,
+            custodyManifest:          r.custodyManifest,
+            custodyManifestCount:     r.custodyManifestCount,
+            expectedShards:           r.expectedShards,
+            expectedShardsCount:      r.expectedShardsCount,
+            shardMetadataAttempted:   r.shardMetadataAttempted,
+            senderEphemeralSignature: senderEphemeralSignature
         )
         let encodedPayload = try JSONEncoder().encode(payload)
 
@@ -208,5 +227,15 @@ extension Manager.Crypto {
         ).combined else { throw EncryptionError.sealFailed }
 
         return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload)
+    }
+
+    /// Random bytes matching the maximum size of a DER-encoded P-256 ECDSA signature
+    /// (SEQUENCE of two up-to-33-byte INTEGERs + headers = 72 bytes). Real signatures
+    /// can be a byte or two shorter when `r`/`s` don't need their padding byte — the
+    /// same residual size variance already accepted elsewhere for DER signatures in
+    /// this codebase (see `GroupShardGatingTests`).
+    private static func randomEphemeralSignatureFiller() -> Data {
+        var rng = SystemRandomNumberGenerator()
+        return Data((0..<72).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
 }

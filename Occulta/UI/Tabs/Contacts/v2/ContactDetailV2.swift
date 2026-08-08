@@ -7,6 +7,7 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 import UniformTypeIdentifiers
+import UIKit
 
 extension Contact {
     struct DetailsV2: View {
@@ -15,12 +16,14 @@ extension Contact {
         @Query private var contacts: [Contact.Profile]
         @Environment(ContactManager.self) private var contactManager
         @Environment(\.dismiss) private var dismiss
+        @Environment(\.scenePhase) private var scenePhase
 
         @State private var editing = false
         @State private var keyDetailsExpanded = false
         @State private var displayingVerificationInfo = false
         @State private var useThreadCompose = false
         @State private var composeVM: ComposeViewModel
+        @State private var draftStore = DraftStore()
 
         init(identifier: String) {
             self.identifier = identifier
@@ -58,12 +61,13 @@ extension Contact {
                     if self.needsExchange {
                         ExchangeHeroV2(identifier: self.identifier)
                     } else {
-                        if self.status == .verified, let p = self.profile {
-                            IdentityChallenge.VerifyIdentityButton(contact: p)
-                                .padding(.horizontal, 16)
-                        }
-
-                        ComposeStyleToggle(useThread: self.$useThreadCompose)
+                        ComposeStyleToggle(useThread: Binding(
+                            get: { self.useThreadCompose },
+                            set: { newValue in
+                                self.useThreadCompose = newValue
+                                self.composeVM.clearAfterEncrypt()
+                            }
+                        ))
 
                         if self.useThreadCompose {
                             NavigationLink(destination: ComposableMessage(vm: self.composeVM)) {
@@ -105,6 +109,10 @@ extension Contact {
                     if self.status == .unverified {
                         UnverifiedNoticeV2(expanded: self.$displayingVerificationInfo)
                     }
+
+                    if let p = self.profile {
+                        Contact.TrustCheckV2(profile: p)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 16)
@@ -119,9 +127,33 @@ extension Contact {
                     }
                 }
             }
-            .task { self.composeVM.setup(contactManager: self.contactManager) }
-            .onChange(of: self.useThreadCompose) { _, _ in self.composeVM.clearAfterEncrypt() }
-            .onDisappear { self.composeVM.cleanup() }
+            .task {
+                self.composeVM.setup(contactManager: self.contactManager)
+                if let loaded = self.draftStore.load(
+                    recipientID:       self.composeVM.recipientIDString,
+                    modelContext:      self.contactManager.modelContext
+                ) {
+                    self.composeVM.draftText = loaded.text
+                    self.composeVM.messages  = loaded.messages
+                    self.useThreadCompose    = loaded.wasThreadMode
+                }
+            }
+            .onChange(of: self.composeVM.draftText) { _, _ in self.scheduleDraftSave() }
+            .onChange(of: self.composeVM.messages)  { _, _ in self.scheduleDraftSave() }
+            .onDisappear {
+                Task {
+                    await self.draftStore.flush(
+                        recipientID:       self.composeVM.recipientIDString,
+                        isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+                        text:              self.composeVM.draftText,
+                        messages:          self.composeVM.messages,
+                        useThread:         self.useThreadCompose,
+                        modelContext:      self.contactManager.modelContext
+                    )
+                    self.composeVM.cleanup()
+                }
+            }
+            .onChange(of: self.scenePhase) { _, newPhase in self.flushOnBackground(newPhase) }
             .fullScreenCover(isPresented: self.$editing) {
                 Contact.FormV2(mode: .edit(identifier: self.identifier)) { self.dismiss() }
             }
@@ -137,8 +169,55 @@ extension Contact {
                 Text(self.composeVM.errorMessage)
             }
         }
+
+        private func scheduleDraftSave() {
+            let composeVM      = self.composeVM
+            let contactManager = self.contactManager
+            self.draftStore.scheduleSave(
+                recipientID:       composeVM.recipientIDString,
+                isSensitive:       { composeVM.isSensitive(contactManager: contactManager) },
+                text:              composeVM.draftText,
+                messages:          composeVM.messages,
+                useThread:         self.useThreadCompose,
+                modelContext:      contactManager.modelContext
+            )
+        }
+
+        /// `.onDisappear` only fires on navigation away — it doesn't fire when the
+        /// app backgrounds while this screen stays on top (a phone call, switching
+        /// apps). The debounced auto-save alone doesn't cover that: an edit made
+        /// in the last couple seconds before backgrounding may not have fired yet,
+        /// and iOS can suspend the process before a plain Task gets to run. A
+        /// background task assertion buys the time to flush immediately instead.
+        ///
+        /// `taskID` lives in a small reference box, not a local `var` — if
+        /// `scenePhase` bounces away from `.active` more than once in quick
+        /// succession, each call gets its own box, so each ends exactly the
+        /// assertion it started, rather than a shared slot letting one call's
+        /// cleanup end another's.
+        private func flushOnBackground(_ newPhase: ScenePhase) {
+            guard newPhase != .active else { return }
+            let taskBox = BackgroundTaskBox()
+            taskBox.id = UIApplication.shared.beginBackgroundTask {
+                UIApplication.shared.endBackgroundTask(taskBox.id)
+            }
+            Task {
+                await self.draftStore.flush(
+                    recipientID:       self.composeVM.recipientIDString,
+                    isSensitive:       self.composeVM.isSensitive(contactManager: self.contactManager),
+                    text:              self.composeVM.draftText,
+                    messages:          self.composeVM.messages,
+                    useThread:         self.useThreadCompose,
+                    modelContext:      self.contactManager.modelContext
+                )
+                UIApplication.shared.endBackgroundTask(taskBox.id)
+            }
+        }
     }
 }
+
+// BackgroundTaskBox is defined in ContactDetailV3.swift and shared here —
+// see that file for why a reference-type box is needed at all.
 
 // MARK: - Compose Style Toggle
 
@@ -165,9 +244,8 @@ private struct ComposeStyleToggle: View {
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Color.occultaAccent)
                     } else {
-                        Circle()
-                            .strokeBorder(Color(.separator), lineWidth: 1.5)
-                            .frame(width: 8, height: 8)
+                        Text("⚡")
+                            .font(.system(size: 11))
                         Text("Quick")
                             .font(.system(size: 11, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -322,9 +400,12 @@ private struct ComposeHeroV2: View {
             let fileItems = self.vm.messages
                 .filter { if case .file = $0.format { return true }; return false }
                 .sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
-            if !fileItems.isEmpty {
+            if !fileItems.isEmpty || !self.vm.pendingImports.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
+                        ForEach(self.vm.pendingImports) { pending in
+                            PendingImportChipV2(pending: pending)
+                        }
                         ForEach(fileItems) { file in
                             AttachmentChipV2(file: file) {
                                 self.vm.deleteMessage(file)
@@ -367,17 +448,35 @@ private struct ComposeHeroV2: View {
                             .contentTransition(.numericText())
                             .animation(.easeInOut(duration: 0.2), value: self.estimatedBundleSize)
                     }
+
+                    if let isForwardSecret = self.contacts.first?.hasPrekeyAvailable {
+                        SecrecyIndicator(isForwardSecret: isForwardSecret)
+                            #if DEBUG
+                            .onAppear { self.contacts.first?.debugLogPrekeyStateAtCompose("V2 onAppear") }
+                            .onChange(of: self.contacts.first?.availableInboundPrekeyCount) { old, new in
+                                debugPrint("[FS badge/V2 onChange] \(self.identifier): live availableInboundPrekeyCount \(String(describing: old)) -> \(String(describing: new))")
+                            }
+                            #endif
+                    }
                 }
                 Spacer()
                 Button(action: self.encryptAction) {
-                    Text("Encrypt")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(self.canEncrypt ? .white : .secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(self.canEncrypt ? Color.occultaAccent : Color(.tertiarySystemFill)))
+                    if self.vm.isEncrypting {
+                        ProgressView()
+                            .tint(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(Color.occultaAccent))
+                    } else {
+                        Text("Encrypt")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(self.canEncrypt ? .white : .secondary)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(self.canEncrypt ? Color.occultaAccent : Color(.tertiarySystemFill)))
+                    }
                 }
-                .disabled(!self.canEncrypt)
+                .disabled(!self.canEncrypt || self.vm.isEncrypting)
                 .buttonStyle(.plain)
             }
             .padding(.top, 10)
@@ -404,6 +503,29 @@ private struct ComposeHeroV2: View {
         let scm = self.shardCustodyManager
         let vlt = self.vaultManager
         Task { await self.vm.encrypt(contactManager: cm, shardCustodyManager: scm, vaultManager: vlt) }
+    }
+}
+
+// MARK: - Pending Import Chip
+
+private struct PendingImportChipV2: View {
+    let pending: PendingImport
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 20, height: 20)
+            Text(self.pending.isLoading ? "Loading…" : "Encrypting…")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .padding(.vertical, 5)
+        .background(Color(.tertiarySystemFill))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator), lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

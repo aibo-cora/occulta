@@ -401,8 +401,12 @@ final class ShardCustodyManager {
         try self.modelContext.save()
     }
 
-    // MARK: - Global shard config
+    // MARK: - Global shard config (read-only — orphaned as of item 3's consolidation)
 
+    /// Read-only, and only for `DatabaseMigration.migrateGlobalShardConfigToPerContact`
+    /// — the one-time migration onto `Contact.Profile.globalTrusteeDepth`, the single
+    /// trustee mechanism at every depth. No app code writes `GlobalShardConfig` anymore;
+    /// once that migration has run for a given store, this always returns nil.
     func globalShardConfig() throws -> GlobalShardConfig.Payload? {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
@@ -416,22 +420,76 @@ final class ShardCustodyManager {
         return nil
     }
 
-    func decryptGlobalConfig(_ row: GlobalShardConfig) throws -> GlobalShardConfig.Payload? {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
-        return try? self.openRow(row.encryptedPayload, as: GlobalShardConfig.Payload.self, using: custodyKey, id: row.id)
-    }
+    // MARK: - Contact deletion cleanup
 
-    func saveGlobalShardConfig(_ payload: GlobalShardConfig.Payload) throws {
+    /// Removes every trace of a deleted contact from shard-custody state: any
+    /// `CustodyShard` this device holds on their behalf, any `PendingShardDistribute`
+    /// still owed to them, and any `PotentiallyLostShard` watch row for them. Called
+    /// from `ContactManager.deleteContact`.
+    ///
+    /// Global-trustee status (`Contact.Profile.globalTrusteeDepth`) needs no purge step
+    /// here — it lives on the contact's own row, which is soft-deleted (not hard-
+    /// deleted) by `deleteContact`, and every read of `globalTrusteeDepth` already
+    /// excludes rows with a non-nil `deletionToken`. The designation becomes
+    /// unreachable the moment the contact is deleted, with nothing separate to purge.
+    ///
+    /// Unconditional, not depth-gated: unlike `Group`'s duress-depth membership,
+    /// nothing here holds separate per-depth decoy content. A deleted contact is
+    /// invalid everywhere, and removing their rows from these three stores touches
+    /// nothing else — the same shape of operation as `Group.purgeMember(_:)`, which is
+    /// likewise ungated for the same reason.
+    ///
+    /// Every surviving row in all three stores is also re-sealed with a fresh nonce,
+    /// same content — mirrors `GlobalShardConfig`'s unconditional resave and
+    /// `Group.refreshCiphertext()`. Without this, a raw-DB examiner comparing two
+    /// snapshots across a deletion would see exactly which rows disappeared and find
+    /// every surviving row byte-for-byte identical — cleanly separating "touched by
+    /// this purge" from "untouched," a diff-based tell distinct from (and cheaper to
+    /// close than) the owner-identity encryption this store already has. Rows that
+    /// fail to decrypt are left untouched, same as before — not deleted, not re-sealed.
+    ///
+    /// Derives the shard-custody key once and reuses it across all three steps below,
+    /// rather than once per step.
+    func purgeCustody(for identifier: String) throws {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
-        let existing = try self.modelContext.fetch(FetchDescriptor<GlobalShardConfig>())
-        for row in existing { self.modelContext.delete(row) }
-        let rowID    = UUID()
-        let combined = try self.sealRow(payload, using: custodyKey, id: rowID)
-        self.modelContext.insert(GlobalShardConfig(id: rowID, encryptedPayload: combined))
+
+        // 1. CustodyShard — shards this device holds on behalf of the deleted owner.
+        for decoded in try self.decryptAllCustodyShards(using: custodyKey) {
+            if decoded.payload.ownerContactIdentifier == identifier {
+                self.modelContext.delete(decoded.row)
+            } else {
+                decoded.row.encryptedPayload = try self.sealRow(decoded.payload, using: custodyKey, id: decoded.row.id)
+            }
+        }
+
+        // 2. PendingShardDistribute — shards queued to be sent to the deleted contact.
+        let distributeRows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
+        for row in distributeRows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id)
+            else { continue }
+            if payload.contactIdentifier == identifier {
+                self.modelContext.delete(row)
+            } else {
+                row.encryptedPayload = try self.sealRow(payload, using: custodyKey, id: row.id)
+            }
+        }
+
+        // 3. PotentiallyLostShard — watch rows for the deleted contact.
+        let lostRows = try self.modelContext.fetch(FetchDescriptor<PotentiallyLostShard>())
+        for row in lostRows {
+            guard
+                let payload = try? self.openRow(row.encryptedPayload, as: PotentiallyLostShard.Payload.self, using: custodyKey, id: row.id)
+            else { continue }
+            if payload.contactIdentifier == identifier {
+                self.modelContext.delete(row)
+            } else {
+                row.encryptedPayload = try self.sealRow(payload, using: custodyKey, id: row.id)
+            }
+        }
+
         try self.modelContext.save()
     }
 
@@ -466,6 +524,13 @@ final class ShardCustodyManager {
         guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
             throw CustodyError.keyDerivationFailed
         }
+        return try self.decryptAllCustodyShards(using: custodyKey)
+    }
+
+    /// Same as `decryptAllCustodyShards()` but reuses an already-derived key —
+    /// for callers (like `purgeCustody(for:)`) that need it alongside other steps
+    /// sharing the same derivation.
+    private func decryptAllCustodyShards(using custodyKey: SymmetricKey) throws -> [DecodedCustodyShard] {
         let rows = try self.modelContext.fetch(FetchDescriptor<CustodyShard>())
         var out  = [DecodedCustodyShard]()
         out.reserveCapacity(rows.count)
