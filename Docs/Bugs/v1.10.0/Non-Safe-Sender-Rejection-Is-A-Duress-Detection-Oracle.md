@@ -1,6 +1,6 @@
 # Rejecting a known contact's bundle under duress is itself a duress-detection oracle
 
-**Status:** open, unscoped — the core oracle (both the active-tester and passive-receipt variants below) has no fix. A 2026-08-07 scoping pass verified the "wording parity" open question below is already satisfied by the shipped code and closed one adjacent gap found while verifying it — see "2026-08-07 — Wording parity verified..." near the bottom for what changed and what didn't. Found while scoping shard-custody items 4–5 (`Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md`) — surfaced when checking whether a coercer-controlled second device sending a real shard could be used to detect duress mode. Turned out to be broader than shards: this applies to every inbound bundle type gated by `passSecurityControl`, and it isn't something a decoy/fabrication mechanism of any kind can fix, because it's a live protocol-behavior difference, not a display or content problem. A "allow-and-confine" mitigation for contacts added during duress was explored (see bottom section) — closes only half the oracle, and surfaces its own new prerequisites (a second, exact-match visibility model for contacts; a related pre-existing contact-leak gap; an unrelated `handleReplace` ownership-check fix) — not implemented.
+**Status:** open, fully scoped, not yet implemented. Final design as of 2026-08-08 (see "Final design: `passSecurityControl` removed entirely" near the bottom): the rejection-based oracle closes completely and unconditionally — `passSecurityControl`'s restriction-gated rejection is removed for every contact, not special-cased by type, and `onDuress`'s unconditional discard of queued files (C2) is brought in line to match. The active-tester variant (duress-origin or existing-contact) closes with zero residual risk, since the coercer is always the author of what gets decrypted back to them. What remains is narrower and different in kind: a deliberately accepted, timing-bounded **content-confidentiality** risk for the passive variant only (a real, unaware third party's message rendering on screen during a coercion window) — not a detection oracle, since there's no longer any sender-dependent rejection signal to detect. `originDepth` (floor semantics) narrows from an accept/reject mechanism to a pure display-visibility one, keeping duress-origin contacts out of the real depth-0 view. The `handleReplace` ownership-check fix (`ShardCustody+Manager.swift:148`) is now a hard prerequisite, not an optional cleanup, since restriction no longer gates shard-mutation reachability for anyone. A 2026-08-07 pass verified the "wording parity" open question below is already satisfied by the shipped code and closed one adjacent gap found while verifying it — see "2026-08-07 — Wording parity verified..." near the bottom. Found while scoping shard-custody items 4–5 (`Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md`) — surfaced when checking whether a coercer-controlled second device sending a real shard could be used to detect duress mode.
 
 ## The mechanism
 
@@ -148,3 +148,91 @@ Whether a single field could do both jobs was raised directly, and checked again
 4. New test suite mirroring `GlobalTrusteeDepthTests.swift`: creation-time stamping, backfill idempotency, activation/deactivation preservation, and the two behavioral cases that matter most — a contact created at depth 1 is visible only at depth 1, and a contact created at depth 0 with an adjusted ceiling (the `isSensitive_atDepth1_...` scenario) is completely unaffected.
 
 Not yet implemented — still blocked on the same open items in "Net assessment" above, plus the unresolved two-fields question.
+
+## 2026-08-08 — Scoping pass on the core oracle: two findings narrow the live surface, a fix proposed but not implemented
+
+Prompted by returning to scope the core oracle itself (not the allow-and-confine mitigation above, which only ever addressed half of it). Two things were checked directly against shipped code rather than reasoned about abstractly, and both narrow what's actually still live.
+
+**Finding 1 — the locked-then-duress-unlock trigger is already fully silent, resolving the "(or its absence)" hedge in the passive-variant section above.** `onDuress` (`OccultaApp.swift:354-358`) clears `pendingFileData` with no dialog and no processing:
+```swift
+onDuress: {
+    self.pendingFileData = nil
+    self.contactManager.syncShareIndex()
+    self.appScreen.pinDidSucceed()
+}
+```
+`processInboundFile`'s own doc comment confirms it: *"Never called from `onDuress` — that path discards."* So a file queued while the phone was locked, then cleared by a coerced duress-PIN unlock, already produces zero observable difference between "nothing was ever sent" and "a known-but-restricted sender's file was dropped." **This half of the passive-receipt variant was already closed by C2's existing design** — it just hadn't been confirmed against the code before now, and the doc's original wording left it as an open possibility rather than a settled one.
+
+**Finding 2 — both failure categories already share one error case, not just matching wording.** A genuinely-unknown sender (`identifyOwner` finds no fingerprint match) and a known-but-restricted sender (`passSecurityControl` throwing) both resolve to `ContactManager.Errors.noPublicKeyToEncryptWith`, caught by a single `catch` clause in `processInboundFile` (`OccultaApp.swift:535-537`). No new branch is needed to tell them apart for a fix — they're already unified before that catch runs.
+
+**What's actually still live, after both findings:** only the case where the app is already unlocked at a duress depth when a file arrives via `onOpenURL` → `processInboundFile` directly — covers both the active-tester probe (line 27 above) and a passive message arriving while the coercer is watching an already-unlocked screen (the other half of the passive variant, line 36 above).
+
+**Proposed fix — not yet implemented.** Suppress the alert for `noPublicKeyToEncryptWith` specifically when `self.security.isRestricted`, matching the behavior `onDuress` already ships for the sibling locked-path trigger:
+```swift
+} catch ContactManager.Errors.noPublicKeyToEncryptWith {
+    if !self.security.isRestricted {
+        self.errorMessage = "Could not find this file's owner's public key. It is either corrupted and you need to update the app and try again or the message was not addressed to you."
+        self.showError = true
+    }
+    // Restricted: stay silent, matching onDuress's already-shipped behavior for
+    // the locked-path equivalent of this exact failure.
+}
+```
+Not "silent-drop everywhere" (already rejected 2026-08-07 above) — silent only for the one error case that can only fire while restricted; depth-0 behavior is byte-for-byte unchanged. Since `passSecurityControl` gates every bundle type through this single entry point, one change covers messages, identity-challenge traffic, and shard/custody operations alike.
+
+This revisits the 2026-08-07 "keep the alert surfaced everywhere" decision above, on grounds that decision didn't have in view: an equivalent silent-on-restricted behavior is already shipped and accepted for the locked-path trigger, so extending it to the live-unlocked trigger is consistency with existing, accepted precedent, not a new UX regression class.
+
+**What this would close:** the definitive on-screen artifact for the live-unlocked trigger of both remaining variants — a coercer forcing a probe, or watching a passive message arrive, at a duress depth would see nothing, identical to nothing having been sent.
+
+**What this would not close, and why — see residual-risk discussion.** Real depth-0 mode still never produces this specific silence; only duress depths do. Open question #2 from the original scoping ("statistically indistinguishable, not just textually identical") remains fully open and is now the entire residual gap, not one of several. Not yet decided whether to pursue that or accept this as the residual limit — see conversation record for the discussion.
+
+## 2026-08-08 — `originDepth` revised: floor semantics, not exact-match; sensitivity is a no-op for duress-origin contacts
+
+Revisits the "allow-and-confine" design above (the "The new field: `originDepth`" section) after walking through a concrete scenario: a contact added while already at duress depth 1, later marked sensitive, then the operator activates another nested Secure Mode layer and moves to depth 2. Two problems with the original sketch surfaced from that walk-through, both now resolved:
+
+**Problem 1 — exact-match breaks on the exact scenario `originDepth` exists to handle.** The original design used `origin == depth`. A contact created at depth 1 would already fail that check at depth 2 — rejected, reproducing the same on-screen tell this mechanism was built to remove, the moment the operator goes one layer deeper than where the contact was created. **Fixed: floor semantics instead of exact-match** — `depth >= origin` — visible/processable at its origin depth and everything nested deeper than it, hidden only shallower (depth 0, and anything above its origin). Depth 0 is always excluded since `origin > 0` by construction for any duress-created contact, so the core confinement goal (never leak to the real view) holds under floor semantics exactly as it did under exact-match.
+
+**Problem 2 — silence is also a tell.** A parallel proposal to fix the live-unlocked oracle by suppressing the rejection alert (see the section above) was explicitly rejected in favor of this mechanism instead, on the reasoning that an app going silent when it should be working normally is itself anomalous — genuinely processing the bundle is better cover than faking normalcy through silence, because it isn't faked.
+
+**Resolved: does sensitivity classification still apply on top of the `originDepth` floor?** Considered composing the two — `origin` sets a floor, `visibleThroughDepth` still sets a ceiling on top of it, so marking a duress-origin contact "sensitive" would cap its visibility at deeper layers exactly like it does for any other contact. Walked through against the same depth-1-then-depth-2 scenario: under composition, marking the contact sensitive while at depth 1 stamps `visibleThroughDepth = 1`, and the contact is rejected again at depth 2 — silence or an explicit dialog either way, both already rejected as tells. **Decided: no composition. For a duress-origin contact (`originDepth > 0`), sensitivity classification (`visibleThroughDepth`) has no effect on accept/reject or display, full stop — the floor is the only check that runs.** There is nothing real behind a duress-origin contact for a coercer to leak by keeping it fully operational at every depth from its creation onward; restricting it later serves no protective purpose and only reintroduces the tell. Scope confirmed narrow and deliberate: this applies **only** to contacts with `originDepth > 0`. Real, pre-existing contacts — sensitive or not — are completely unaffected; `passSecurityControl`/`isSafeContact` keep rejecting them under duress exactly as today. Extending always-accept to real sensitive contacts was considered and explicitly rejected — it would mean actual sensitive content gets decrypted while restricted, the exact outcome C1 exists to prevent, and reopens a risk this doc already reasoned was worse than the oracle itself.
+
+Corrected design for `Manager.Security.isVisible(_:atDepth:)`:
+```swift
+static func isVisible(_ contact: Contact.Profile, atDepth depth: Int) -> Bool {
+    if let origin = decodedOriginDepth(contact), origin > 0 {
+        return depth >= origin   // floor only — sensitivity classification never applies here
+    }
+    // ...existing, untouched ceiling logic for contacts without a duress origin
+}
+```
+`isSafeContact`/`passSecurityControl` still need no changes — both already call through `isVisible`.
+
+**Bonus, confirmed:** floor semantics also close the "closely related, pre-existing gap" flagged earlier in this doc (a duress-added contact leaking into the real depth-0 view) as a side effect — `0 >= origin` is false whenever `origin > 0`, so no separate fix is needed for that gap once this lands.
+
+**Open, not yet decided:** since "Mark sensitive" becomes inert for a duress-origin contact, should that control be hidden/disabled in the UI for such a contact, or left present but silently doing nothing? Leaving it visible-but-inert risks a different, smaller confusion (a toggle that appears to do something and doesn't); hiding it is an extra UI conditional. Minor compared to the rest of this design, not blocking it, but worth a decision before implementation.
+
+**Residual, explicitly accepted, not a gap in this design:** a coercer sophisticated enough to understand the classification model and deliberately test the depth-1-mark-sensitive-then-depth-2 sequence *would* have hit a rejection under the composed design — but that path no longer exists at all now that sensitivity is a no-op for these contacts, so this concern from the prior turn's discussion is resolved by the no-composition decision, not merely accepted as residual.
+
+**Scope reminder, since superseded — see the final design below.** The line originally here said this only closed half of C3, leaving the "existing contact" and passive-receipt variants untouched. That's no longer the boundary of this design — see the next section for why, and for the actual remaining scope.
+
+## 2026-08-08 — Final design: `passSecurityControl` removed entirely, not special-cased per contact type
+
+Extends the `originDepth` design above to its logical conclusion, reached by working through who actually learns something new in each remaining variant of C3.
+
+**The active-tester variant — both flavors, duress-origin *and* existing-contact — closes completely, with zero residual risk, not a probabilistic one.** A coercer running this test is, by construction, the author of the probe message: either it's a duress-origin contact they created themselves, or it's an existing contact whose identity they control and are composing from directly. Either way, decrypting and displaying that message back to them reveals **nothing they don't already know** — there's no information asymmetry to protect in the first place. This isn't "the window is short so they probably won't notice"; there is no exposure at all, at any window length, because the content is theirs.
+
+**That reframes what "accept the short window" is actually for: only the passive variant** — a genuine, unaware third-party contact's real message arriving while a duress depth is active and the coercer happens to be watching. This is the one case with real information asymmetry: content the coercer doesn't already know, and a receipt-time reveal (`OccultaApp.swift:530`, `openedFileContents` bound straight to `.sheet(item:)`) that displays it immediately, unconditionally, the moment decryption succeeds. Here, "coercion windows like border checks are usually short" is doing real, deliberately risk-accepting work — this is the one place C1's absolute "never decrypted while restricted" guarantee is being traded for a timing-based one, and that trade is explicit and deliberate, not incidental.
+
+**Given that, the design is: remove `passSecurityControl`'s `isRestricted`-gated rejection entirely, for every contact — real, sensitive, duress-origin, existing, whoever.** No sender that resolves to a known fingerprint is ever rejected differently because of restriction state, at any depth. What's left of the original rejection path is only the case that was never part of the oracle to begin with — a genuinely unrecognized sender (`identifyOwner` finds no fingerprint match at all) — which fails identically regardless of depth and always has, so it carries no depth-dependent signal.
+
+**Consequence: `originDepth` stops being an accept/reject mechanism and becomes purely a display-visibility one.** With nothing left to reject, its only remaining job is keeping a duress-origin contact out of the real depth-0 view (and any depth shallower than its origin) when browsing the contact list or message history — the floor semantics and no-composition-with-sensitivity decisions above are unchanged, just narrower in purpose now.
+
+**C2 changes to match, for consistency, not because it independently needed to.** `onDuress` (`OccultaApp.swift:354-358`) currently discards `pendingFileData` unconditionally rather than processing it — the one remaining place where duress state still produces different behavior from normal unlock. Decided: bring it in line — drain and call `processInboundFile` the same way regardless of which PIN just succeeded, matching `onAuthenticated`'s existing behavior. The locked-then-unlock trigger and the already-unlocked trigger now behave identically.
+
+**Net effect on the rejection-based detection oracle: fully closed, not partially.** There is no longer any scenario where a fingerprint-matched, known sender's bundle is accepted at depth 0 and rejected at a duress depth — the condition C3 depended on doesn't exist anymore. What remains is a narrower, different kind of risk — not a detection oracle (proving duress mode exists), but a **content-confidentiality** risk specific to the passive variant: a real, sensitive contact's genuinely new message can render on screen during a coercion window, once, at the moment it arrives.
+
+**Implementation detail to get right, not yet resolved:** the immediate receipt-time reveal (`openedFileContents`) should be unconditional now, but the *stored* message/thread afterward should still respect the contact's normal depth-visibility classification for any *later* browsing — this is a one-time reveal at the moment of arrival, not a permanent reclassification of that thread as visible-at-this-depth going forward. Needs to be deliberate at implementation time so a coercer doesn't gain standing access to the thread in the message list after the initial popup closes.
+
+**`handleReplace`'s missing ownership check (flagged earlier as a prerequisite for the duress-origin case alone) is now a hard blocker for the whole design, not a narrower one.** With `passSecurityControl` gone entirely, *any* known contact — not just duress-origin ones — can reach shard-mutation code paths under restriction. `ShardCustody+Manager.swift:148`'s `handleReplace` deletes by `oldID` alone with no check that the replacing sender owns the shard being replaced. This must land before or alongside this change, not after.
+
+**Scope, final:** this closes the entire rejection-based oracle (both variants, unconditionally) and narrows the remaining risk to a single, deliberately accepted, timing-bounded content-exposure case — a real sensitive contact's new message during the passive variant. The `handleReplace` fix and the `originDepth` migration plan scoped earlier both still apply, now motivated by the full design rather than half of it.
