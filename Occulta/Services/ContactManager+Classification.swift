@@ -261,6 +261,14 @@ extension ContactManager {
             JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
         ).combined
 
+        // Write the originDepth sentinel directly, not restored from the blob — a
+        // duress-origin contact is exempt from blob-sealing entirely (activateSecureMode's
+        // Step 4 short-circuit), so anything reaching this function has originDepth == 0
+        // by construction. There is no captured value to restore here.
+        restored.originDepth = try AES.GCM.seal(
+            JSONEncoder().encode(0), using: stagedKey, authenticating: aad
+        ).combined
+
         if let attrs = record.signedAttributes, !attrs.isEmpty {
             restored.signedAttributes = try AES.GCM.seal(
                 attrs, using: stagedKey, authenticating: aad

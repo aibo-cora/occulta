@@ -437,6 +437,28 @@ extension Manager {
                 var safeProfiles:  [Contact.Profile]   = []
 
                 for profile in allProfiles {
+                    // Decode this contact's duress-origin floor first — a duress-origin
+                    // contact (originDepth > 0) is exempt from the ceiling classification
+                    // below entirely. It must never be sealed into the blob when a deeper
+                    // layer activates: floor semantics (Contact+Model.swift's isVisible)
+                    // keep it live and processable at every depth from its origin downward,
+                    // the opposite of ceiling-classified real contacts, which get sealed
+                    // away once a layer matches their ceiling exactly. Absent/undecryptable
+                    // → 0 (not duress-origin), same fail-safe default as everywhere else.
+                    let originDepth: Int = {
+                        guard let data = profile.originDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return 0 }
+                        return value
+                    }()
+                    if originDepth > 0 {
+                        // Always stays live, re-encrypted under the staged key in Step 8 —
+                        // never blob-sealed, regardless of visibleThroughDepth.
+                        safeProfiles.append(profile)
+                        continue
+                    }
+
                     // Decode the contact's visibility ceiling.
                     // nil = legacy pre-activation value; treat as Int.max (safe at all depths).
                     let contactDepth: Int = {
@@ -482,14 +504,17 @@ extension Manager {
                     // Not sealed in this blob. Step 8 still re-encrypts under the staged key.
                 }
 
-                // ── Step 5: Migrate nil visibleThroughDepth / globalTrusteeDepth (should
-                // be a no-op — creation and the backfill migration already keep both
-                // fields non-nil) ────────────────────────────────────────────────────
+                // ── Step 5: Migrate nil visibleThroughDepth / globalTrusteeDepth /
+                // originDepth (should be a no-op — creation and the backfill migrations
+                // already keep all three fields non-nil) ───────────────────────────────
                 for profile in safeProfiles where profile.visibleThroughDepth == nil {
                     profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
                 }
                 for profile in safeProfiles where profile.globalTrusteeDepth == nil {
                     profile.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+                }
+                for profile in safeProfiles where profile.originDepth == nil {
+                    profile.originDepth = try JSONEncoder().encode(0).encrypt()
                 }
 
                 // ── Step 6: Push blob ────────────────────────────────────────────────
@@ -763,6 +788,20 @@ extension Manager {
                         else { return -1 }
                         return value
                     }()
+                    // Same preserve-real-value treatment for the duress-origin stamp —
+                    // undecryptable or absent → 0 (not duress-origin), never silently
+                    // dropped. A currently-live duress-origin contact reaches this loop
+                    // (it's in the DB, not blob-sealed — see activation's Step 4 exemption)
+                    // and its floor must survive deactivation exactly like a real contact's
+                    // ceiling does, or it would fall back to ceiling-based classification
+                    // afterward and could start rejecting bundles again.
+                    let originDepth: Int = {
+                        guard let data = profile.originDepth,
+                              let plain = data.decrypt(),
+                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                        else { return 0 }
+                        return value
+                    }()
 
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
                     try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
@@ -778,6 +817,10 @@ extension Manager {
                     // Same non-nil invariant applies to the global-trustee stamp.
                     profile.globalTrusteeDepth = try AES.GCM.seal(
                         JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+                    ).combined
+                    // Same non-nil invariant applies to the duress-origin stamp.
+                    profile.originDepth = try AES.GCM.seal(
+                        JSONEncoder().encode(originDepth), using: stagedKey, authenticating: aad
                     ).combined
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.

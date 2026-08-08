@@ -130,6 +130,14 @@ struct OccultaApp: App {
         }
 
         do {
+            try DatabaseMigration.migrateOriginDepthBackfill(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("originDepth backfill error: \(error)")
+            #endif
+        }
+
+        do {
             try DatabaseMigration.migrateGlobalShardConfigToPerContact(
                 modelContext: context, shardCustodyManager: self.shardCustodyManager
             )

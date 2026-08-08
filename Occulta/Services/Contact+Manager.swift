@@ -208,6 +208,10 @@ class ContactManager {
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
             newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            // originDepth is always encrypted, never nil — currentDepth directly, no
+            // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
+            // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
+            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -391,6 +395,10 @@ class ContactManager {
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
             newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            // originDepth is always encrypted, never nil — currentDepth directly, no
+            // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
+            // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
+            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {

@@ -108,6 +108,32 @@ struct DatabaseMigration {
         try modelContext.save()
     }
 
+    /// One-time backfill for contacts predating the `originDepth` field — every
+    /// pre-existing contact starts nil after the lightweight schema migration adds the
+    /// column. Nil is not a valid steady state for this field (same invariant as
+    /// `visibleThroughDepth`/`globalTrusteeDepth`); backfills to encrypted 0.
+    ///
+    /// 0 is the only safe default: there is no historical record of what depth any
+    /// existing contact was actually added at, and 0 ("not duress-origin, defer to the
+    /// existing ceiling") guarantees no existing contact is ever retroactively confined
+    /// to a wrong guessed depth.
+    ///
+    /// Idempotent: the predicate only matches remaining nil rows.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateOriginDepthBackfill(modelContext: ModelContext) throws {
+        let descriptor = FetchDescriptor<Contact.Profile>(
+            predicate: #Predicate { $0.originDepth == nil }
+        )
+        let contacts = try modelContext.fetch(descriptor)
+        guard !contacts.isEmpty else { return }
+
+        for contact in contacts {
+            contact.originDepth = try JSONEncoder().encode(0).encrypt()
+        }
+        try modelContext.save()
+    }
+
     /// One-time consolidation onto a single trustee mechanism: reads any existing
     /// `GlobalShardConfig.trusteeIDs` (the old depth-0-only global trustee list) and
     /// stamps `globalTrusteeDepth = encrypt(0)` on each of those contacts, then wipes
