@@ -60,7 +60,7 @@ Three requirements follow:
 
 ### D-03 · The card travels with every request
 
-Not stored-and-referenced; transmitted each time, alongside the certificate. Three consequences:
+Transmitted each time, alongside the certificate — never referenced by digest alone. The payer also retains the last one received (D-04), but that is a fallback: freshness is a property of transmission, not of storage. Three consequences:
 
 - **Freshness is automatic.** "I closed that account" propagates with the next payment. No revocation broadcast, no delivery guarantee needed for the benign case (see [Revocation](#revocation)).
 - **Each artifact is self-contained.** The recipient verifies the certificate against the identity key pinned at the UWB exchange, then the card against the payment key the certificate carries. No dependency on local state. Same property that made the org graph's artifacts independently verifiable (`Organizational Identity Graph/FINDINGS.md` D-10).
@@ -70,17 +70,29 @@ Not stored-and-referenced; transmitted each time, alongside the certificate. Thr
 
 **Transport is manual.** F-02 (`Organizational Identity Graph/FINDINGS.md`) stands here: there is no automatic delivery channel post-pairing, and every peer-to-peer bundle goes through `ActivityView.swift`'s share sheet. Org Graph D-14 exempted *relying-party-directed* artifacts; cards are peer-to-peer and are the case D-14 left in scope. See [Adoption](#adoption-and-viability) for what that costs and where.
 
-### D-04 · The recipient stores two baselines, not a card
+### D-04 · The recipient stores the signed card in full, plus one locally-observed index
 
-The original single record `{digest, first-seen, last-seen, masked tail}` cannot express multiple cards per contact, has no version field despite D-01 calling cards "versioned," and couples the age signal to card identity. Split it:
+**Ruled 2026-08-09 (Q-06): the tripwire wins over storage minimization.** The original design stored `{digest, first-seen, last-seen, masked tail}` and explicitly *not* the card, on PII grounds. That is reversed. Two tables:
 
 ```
-DestinationBaseline  (contactID, destinationDigest) → firstSeenAt, lastSeenAt, maskedTail
-CardLineage          (contactID, cardID)            → highestVersionSeen, destinationDigest
+StoredCard           (contactID, cardID)            → latest signed SignedAttribute blob, receivedAt
+DestinationBaseline  (contactID, destinationDigest) → firstSeenAt, lastSeenAt
 ```
+
+`DestinationBaseline` holds the only thing not derivable from a card: **local observation.** Version, destination, masked tail and the card's own `createdAt` all come from the stored blob, so no third table is needed — this is simpler than the minimal design it replaces, not more complex.
+
+Storing the signed artifact rather than extracted fields buys three things, and the first is a security property:
+
+- **It closes baseline poisoning.** A stored plain destination can be edited by an attacker with an unlocked payer device, pre-seeding a row so a later attacker card shows no change. A stored *signed card* cannot be forged — the attacker would need the payee's payment key. The residual reduces to row *deletion*, which fails safe: the next card reads as first-seen and fires the age signal (D-06).
+- **It fixes the diff.** With only a masked tail stored, an attacker can pick a destination whose last four digits match — trivial for a vanity-generated crypto address. The digest comparison still fires, but the user reads *"···4471 → ···4471, changed today"* and concludes it is a glitch. The tripwire technically works while being defeated in practice. Full destinations make the diff show what actually changed.
+- **It survives transport suppression.** An attacker who owns the channel can drop the bundle and send plain instructions instead. A payer holding the last good signed card can still pay the known destination without the attacker-controlled channel supplying anything.
+
+**D-03 is unchanged: the card still travels with every request.** Storage is a fallback and a memory, not a replacement — freshness depends on transmission. What storage removes is the payer's *dependency* on that transmission.
 
 - **First-seen belongs to the destination, not the card.** *"Have I paid this account before, and since when"* is the question D-06 actually asks. A new card lineage aimed at a known destination inherits its age — which is what makes the age signal immune to card churn and to the per-device lineages D-09 introduces.
-- **Version and rollback belong to the lineage**, scoped per device.
+- **Version and rollback are checked against `StoredCard`**, scoped per device.
+
+**Cost, accepted deliberately:** full counterparty destinations at rest (Q-03). Mitigated by machinery the [Forensic cleanliness](#forensic-cleanliness) section already requires — encrypted DB, non-nil depth from creation, cascade delete — and by the fact that the app already holds full destinations for the owner's own cards (D-12). The exposure grows; the class does not.
 
 **Version is a hard check, not a display field.** Four rules:
 
@@ -255,7 +267,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 - **Transport suppression.** The attacker owns the channel and drops the bundle. Mitigated by D-13, not eliminated.
 - **Replay against a payer who never saw the newer card.** No diff, and age reads as reassuring. Bounded only by D-11's request expiry.
 - **Clipboard / address-substitution malware on the payer's device** — see the surface rule below.
-- **Baseline poisoning on an unlocked payer device.** Pre-seed a row so a later attacker card shows no change. Exotic — requires knowing the future destination — but it is the one attack that defeats the tripwire silently.
+- **Baseline row deletion on an unlocked payer device.** Poisoning is closed by D-04 (a stored row is a signed card and cannot be forged); deletion remains possible and fails safe — the next card reads as first-seen and fires the age signal.
 - **Passcode-path signing.** D-09's `.userPresence` means a coercer who knows the passcode can sign. Deliberate trade against `.biometryCurrentSet`'s re-enrolment invalidation.
 - **First card from a contact**, where no baseline exists by construction. D-13 is the mitigation.
 
@@ -289,9 +301,9 @@ Distinct from a coercer *using* the key on a device: an attacker holding key mat
 
 D-08 originally claimed the design defends clipboard-hijacking malware *"because the recipient's app compares against a signed card rather than trusting a pasted string."* Occulta is not in the paste path. The real control is the payer visually comparing against their **bank's** confirmation screen, which only works if the full destination is on screen at that moment.
 
-If masking applied everywhere, the payer would compare four digits — worthless against a vanity-generated crypto address, and 1-in-10,000 against an attacker who chooses the collision.
+If masking applied everywhere, the payer would compare four digits — worthless against a vanity-generated crypto address, and 1-in-10,000 against an attacker who chooses the collision. The same collision also degrades the diff itself, which is part of why D-04 now stores full destinations rather than tails.
 
-**Rule: the card travels with every request (D-03), so the full destination is available in transit at payment time. Masking applies to stored baselines and history views, never to the payment screen.** Backwards, and the only defence against paste-swap is gone.
+**Rule: masking is a display choice, never a storage one.** The full destination is available both in transit (D-03) and at rest (D-04), and the payment screen must show it in full. Masking applies to history and list views only. Backwards, and the only defence against paste-swap is gone.
 
 ---
 
@@ -299,7 +311,7 @@ If masking applied everywhere, the payer would compare four digits — worthless
 
 `Presence Verification/SPEC.md` §7 refuses persistence deliberately — *"no verification history is written anywhere by default"* — and states that a history feature *"would need Travel Mode integration before it could exist at all."*
 
-D-04's baselines **are** a history feature. **Secure Mode integration is therefore a precondition of this design, not a follow-up.** On seizure a row set discloses who this person pays, on which rail, since when, how recently, and — via masked tail plus destination digest — plausibly which account. Org Graph F-07's "affiliation-in-a-file" argument applies unchanged.
+D-04's stored cards and baselines **are** a history feature. **Secure Mode integration is therefore a precondition of this design, not a follow-up.** On seizure a row set discloses who this person pays, on which rail, since when, how recently, and — after Q-06's ruling — **the account numbers themselves**, in full, for every counterparty. Org Graph F-07's "affiliation-in-a-file" argument applies unchanged and with more to find.
 
 Requirements, inherited rather than re-derived from `Occulta/Features/SecureMode/forensic-trace-avoidance.md`:
 
@@ -390,9 +402,11 @@ A digest over bank details is brute-forceable: account and routing numbers carry
 - **Crypto addresses:** genuinely protective (2¹⁶⁰), and public anyway.
 - **Bank details:** treat the digest as PII; it belongs in the encrypted local DB with everything else.
 
-**The stored `maskedTail` sharpens this** — four known digits cut an already-weak preimage search further. It is part of the same at-rest exposure, not purely a display improvement.
+**After Q-06's ruling the entropy argument is moot** — the destination is stored in full, so there is nothing to brute-force. It is retained above because it explains why the digest was never the protection it appeared to be, which is part of why the ruling went the way it did.
 
-The real exposure is a coerced or compromised *unlocked* device, where a digest does not help either. The genuine gain is **masked display** (subject to the surface rule), a reduction in harm rather than an elimination. Consider deniable-partition handling (`#6`), the same recommendation `Organizational Identity Graph/FINDINGS.md` F-07 made for org credentials.
+**Q-06's ruling enlarges this, deliberately.** D-04 now stores full counterparty destinations, not digests and tails, so the at-rest exposure is real rather than theoretical and the digest's brute-force cost stops being the interesting question. What remains true is that the original reasoning already conceded the point: the real exposure was always a coerced or compromised *unlocked* device, where a digest never helped.
+
+Which makes deniable-partition handling (`#6`) a firmer recommendation than "consider" — the same conclusion `Organizational Identity Graph/FINDINGS.md` F-07 reached for org credentials, now on a larger payload. Masked display survives as a harm reduction in list and history views (surface rule), not as a storage strategy.
 
 ### Q-04 · Competitive timing on bank rails
 
@@ -406,15 +420,13 @@ The convention is live in code with a fixed five-section template — *Key owner
 
 **This is roughly half a day of extraction and it currently blocks two Near-term features.** Not deferred any further.
 
-### Q-06 · Storage minimization versus forgery detection — needs an explicit ruling
+### Q-06 · Storage minimization versus forgery detection — **ruled 2026-08-09: the tripwire wins**
 
-D-04 justifies minimal storage on PII grounds. Three arguments have since accumulated on the other side:
+The original D-04 justified minimal storage on PII grounds. Against that: the full destination must be displayed at payment time anyway; the baseline is the only surviving defence under key compromise, precisely because it is not cryptographic; and not storing the card leaves the payer dependent on a transport the attacker may control.
 
-1. The full destination must be displayed at payment time anyway (masking surface rule).
-2. The baseline is the **only** surviving defence under key compromise, precisely because it is not cryptographic (threat model).
-3. Not storing the card forces a full re-send on every payment, over a manual transport (D-03).
+Storing less is better against seizure; storing more is better against forgery. **Ruled in favour of forgery detection.** Seizure exposure is already mitigated by Secure Mode's depth machinery, which is a precondition of this feature regardless; nothing else mitigates forgery.
 
-Storing less is better against seizure; storing more is better against forgery. The doc currently reasons about only the first, so the answer is settled by whichever section a reader lands on. **Recommended ruling: the tripwire wins** — seizure exposure is already mitigated by Secure Mode's depth machinery, while nothing else mitigates forgery — but it must be decided, not defaulted.
+Two consequences beyond the storage shape, both recorded in D-04: storing the *signed* card rather than extracted fields closes baseline poisoning, and full destinations make the diff legible against a chosen masked-tail collision. The ruling made the design smaller — two tables instead of three — which is a reasonable signal it was the right way round.
 
 ### Q-07 · This makes Multi-Device R1 a dependency, and R1 is deprioritized
 
@@ -484,7 +496,7 @@ Previously recorded as "closed." It is four cases.
 
 - Write `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` (Q-05). Blocks this and Multi-Device R0. Extract from the in-code blocks.
 - Specify the two digests, per-rail normalization table, and length-prefixed layouts (D-02, D-10).
-- Rule on Q-06 (storage minimization versus forgery detection) — it changes D-04's record shape.
+- ~~Rule on Q-06~~ — ruled 2026-08-09 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
 - Raise Q-07 with whoever owns the roadmap — R1's priority was set assuming no dependents.
@@ -519,7 +531,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-01 | Session 2 D-06 (as amended by Session 3 D-13); **biometric claim corrected, gap review** |
 | D-02 | Session 2 D-06 (digest binding); **split into two digests, gap review** |
 | D-03 | Session 3 D-11; **rotation asymmetry and transport reality added** |
-| D-04 | Session 3 D-12, D-13; **split into two tables, version rules added** |
+| D-04 | Session 3 D-12, D-13; **reversed by Q-06 ruling — stores the signed card in full plus a locally-observed index** |
 | D-05 | Session 2 D-07; **overclaim corrected against `#26`'s own wording** |
 | D-06 | Session 2 D-08; **age source corrected to local observation** |
 | D-07 | Session 2 D-10 (scoping half) |
