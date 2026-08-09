@@ -17,7 +17,7 @@ The family-facing side is a separate dataset and must not be conflated with the 
 
 Sources: [IC3 2025 Annual Report](https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf), [NAR on IC3 real-estate figures](https://www.nar.realtor/magazine/real-estate-news/online-real-estate-fraud-climbed-to-275m-in-2025-fbi-says), [FTC press release, Aug 2025](https://www.ftc.gov/news-events/news/press-releases/2025/08/ftc-data-show-more-four-fold-increase-reports-impersonation-scammers-stealing-tens-even-hundreds), [FTC report to Congress, Dec 2025](https://www.ftc.gov/news-events/news/press-releases/2025/12/ftc-issues-annual-report-congress-agencys-actions-protect-older-adults). Verified 2026-08-10.
 
-> **Corrected 2026-08-10.** The inherited text attributed the whole $2.4B to voice-clone grandparent scams and presented it alongside 2025 IC3 data. It is total 60+ fraud losses across all categories, for 2024. The *"up from ~$173M"* real-estate comparison was also carried from `#26` and remains unverified — drop it or source it before use.
+> **Corrected 2026-08-10.** The inherited text attributed the whole $2.4B to voice-clone grandparent scams and presented it alongside 2025 IC3 data. It is total 60+ fraud losses across all categories, for 2024. An *"up from ~$173M"* real-estate comparison was also carried from `#26`; it could not be sourced and has been dropped here and at both upstream sites.
 
 The attack is always the same shape: **redirect funds to an account the attacker controls**, usually via a last-minute "our bank details have changed."
 
@@ -715,7 +715,7 @@ Previously recorded as "closed." It is four cases.
 
 **Positioning:**
 
-- ~~Cite the loss figures~~ — done 2026-08-10; IC3 figures confirmed exactly, FTC figure corrected (it is total 60+ fraud for 2024, not grandparent scams). The *"up from ~$173M"* real-estate comparison is still unsourced: drop it or source it.
+- ~~Cite the loss figures~~ — done 2026-08-10; IC3 figures confirmed exactly, FTC figure corrected (it is total 60+ fraud for 2024, not grandparent scams), unsourced ~$173M comparison dropped here and upstream.
 - **Never pair the FTC elder figure with the grandparent-scam framing in copy.** It measures all 60+ fraud; the subtype this feature addresses is not separately quantified anywhere, so no number should be attached to it.
 - Verify Q-04 (bank verification-of-payee timing) before positioning work.
 - Carry D-07's scoping limit and the copy rules into any positioning material; route through the language-review path.
