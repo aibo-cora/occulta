@@ -431,7 +431,7 @@ Three properties already in the design, none of which the coercer can defeat:
 
 **Required: stamp the owner's card store with the depth it was authored at, and on return to depth 0 prompt to re-issue, flagging which contacts have not yet received the new version.** That flag is the only thing standing between a coerced signature and an indefinite window.
 
-### Q-03 · Third-party PII at rest — partial mitigation, not a solution
+### Q-03 · PII at rest — **answered 2026-08-09**
 
 A digest over bank details is brute-forceable: account and routing numbers carry roughly 2⁴⁰–2⁵⁰ real-world entropy, and salting does not help because the salt must be stored alongside.
 
@@ -440,9 +440,23 @@ A digest over bank details is brute-forceable: account and routing numbers carry
 
 **After Q-06's ruling the entropy argument is moot** — the destination is stored in full, so there is nothing to brute-force. It is retained above because it explains why the digest was never the protection it appeared to be, which is part of why the ruling went the way it did.
 
-**Q-06's ruling enlarges this, deliberately.** D-04 now stores full counterparty destinations, not digests and tails, so the at-rest exposure is real rather than theoretical and the digest's brute-force cost stops being the interesting question. What remains true is that the original reasoning already conceded the point: the real exposure was always a coerced or compromised *unlocked* device, where a digest never helped.
+**Q-06's ruling enlarges this, deliberately.** D-04 now stores full counterparty destinations, not digests and tails, so the at-rest exposure is real rather than theoretical and the digest's brute-force cost stops being the interesting question. What remains true is that the original reasoning already conceded the point: the real exposure was always a coerced or compromised *unlocked* device, where a digest never helped. Masked display survives as harm reduction in list and history views (surface rule), not as a storage strategy.
 
-Which makes deniable-partition handling (`#6`) a firmer recommendation than "consider" — the same conclusion `Organizational Identity Graph/FINDINGS.md` F-07 reached for org credentials, now on a larger payload. Masked display survives as a harm reduction in list and history views (surface rule), not as a storage strategy.
+**What is stored:** the owner's own cards (full destinations, signed), `StoredCard` for counterparties (same), `DestinationBaseline`, and the consumed-`requestID` store. Encryption at rest, non-nil depth from creation, contact-classification inheritance (Q-01) and cascade delete are settled in [Forensic cleanliness](#forensic-cleanliness) and are not re-argued here. Four decisions remain.
+
+**1 · Sealing key: dedicated, created at first launch.** Follow `deriveShardCustodyKey()`'s independence from both the DB canonical key and the vault key — compromise of either must not yield payment destinations — but **not** its lazy creation. `Key+Manager.swift:783-799` mints the shard custody key on `errSecItemNotFound`, so that key's existence discloses that shard custody has been used. `forensic-trace-avoidance.md` B5 rates this class High and settles it the other way: create at first launch, so existence says nothing about use. Free, and it closes the question permanently.
+
+**2 · The owner's cards go in a dedicated store, not the Vault.** The Vault looks like the obvious home — sensitive values, categories, depth handling, biometric gate — and it is the wrong one. D-03 sends the card with *every request*, so vault residence means a vault unlock per payment, and `.biometryCurrentSet` would lock the operator out of their own payment details on any biometric re-enrolment. That is precisely the failure mode D-09 rejected when choosing `.userPresence`, and the same reasoning yields the same answer: dedicated store, sealed under the payment-card key, depth-stamped (Q-01).
+
+**3 · Deniability: integrate with Secure Mode. `#6` is a later strengthening, not the requirement.** The earlier text recommended `#6` (Plausibly Deniable Vault Partitions), which is Phase 2 and unbuilt. The shipped depth machinery is what this feature must integrate with, and it is already a precondition. `#6` would add hidden-volume indistinguishability on top; nothing here is blocked on it.
+
+**4 · Superseded `DestinationBaseline` rows need a retention policy.** Kept indefinitely they accumulate a complete record of every account every counterparty has ever used — a financial history that outlives every transaction and that nothing in the design prunes. Discarding them loses the *"you have paid this account before"* signal when a counterparty switches back, which is genuinely useful.
+
+Keep them, and treat them as the most seizure-exposed rows in the feature: depth-scoped, cascade-deleted, plus a user-facing **"forget payment history for this contact."** That last item matters because these are the only rows a user would ever think to clear, and nothing currently lets them.
+
+**The floor, as a non-claim:** a coerced unlock at depth 0 with real contacts visible exposes all of it. No key separation or storage shape raises that floor — it is the same floor every feature in this app has, and this question should stop implying a storage decision could change it.
+
+Consistent with `Organizational Identity Graph/FINDINGS.md` F-07's conclusion for org credentials, on a larger payload.
 
 ### Q-04 · Competitive timing on bank rails — **answered 2026-08-09**
 
@@ -559,7 +573,8 @@ Previously recorded as "closed." It is four cases.
 
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
-- The owner-side card store (D-12), which holds full destinations in the clear, stamped with its authoring depth (Q-01).
+- The owner-side card store (D-12) — dedicated, not a Vault entry (Q-03), sealed under a payment-card key created at first launch, stamped with its authoring depth (Q-01).
+- Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
 - `StoredCard` and `DestinationBaseline` must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them through the card store.
 - Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask.
 - Post-duress re-issue prompt, flagging contacts who have not received the superseding card version (Q-01).
@@ -596,7 +611,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-09 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-09** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
 | Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
-| Q-03 | Session 2 Q-07, as rewritten by Session 3 D-14; `maskedTail` added |
+| Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-09** — dedicated key at first launch, dedicated store, Secure Mode not `#6`, baseline retention |
 | Q-04, Q-05 | Unchanged / sharpened |
 | Q-06 – Q-09 | Gap review, 2026-08-09 |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
