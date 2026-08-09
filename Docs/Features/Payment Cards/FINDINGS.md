@@ -428,15 +428,19 @@ Storing less is better against seizure; storing more is better against forgery. 
 
 Two consequences beyond the storage shape, both recorded in D-04: storing the *signed* card rather than extracted fields closes baseline poisoning, and full destinations make the diff legible against a chosen masked-tail collision. The ruling made the design smaller — two tables instead of three — which is a reasonable signal it was the right way round.
 
-### Q-07 · This makes Multi-Device R1 a dependency, and R1 is deprioritized
+### Q-07 · Key-change handling — card-local, **not** a Multi-Device dependency
 
-The viability section previously said gating is *"internal, not external"* with no dependencies. That is no longer accurate.
+**Corrected 2026-08-09.** An earlier draft of this question claimed Multi-Device R1 (the `deviceID` concurrent-key model) was a prerequisite. It is not. D-09's certificate carries its own `deviceID` in the signed payload, so this feature keys `highestCertVersionSeen` on `(contactID, certDeviceID)` in **its own** table. The only thing card verification needs from `Contact.Profile` is the pinned identity public key, which today's single-slot model supplies. Cards work correctly in every scenario the app currently supports.
 
-`Multi-Device Contacts/FINDINGS.md:176` documents a live defect: pairing a second device with an existing contact **silently overwrites** the first device's key. The concurrent-key data model that fixes it is designed but explicitly **not built**, and R1 was moved to *"opportunistic/low-priority"* after the trade-off pass.
+What is real:
 
-Cards inherit that defect directly — a payee who upgrades their phone silently invalidates every card they signed (D-03). So R1's *defect fix* stops being opportunistic the moment cards are scoped. R1's deprioritization was decided on the assumption that nothing depended on it; that assumption needs revisiting by whoever owns the roadmap.
+- **The silent-overwrite defect is inherited, not created.** `Multi-Device Contacts/FINDINGS.md:176` documents that pairing a second device with an existing contact overwrites the first device's key. That scenario is already broken — the payee's first device also stops receiving messages. Cards make the *consequence* worse, not the defect more likely.
+- **The payee-replaces-phone case is unaddressed, and R1 does not fix it.** That is key *rotation*, not concurrent keys (D-03's asymmetry). Re-pairing mints a fresh key and every card that payee signed stops verifying. The fix is signed key rotation — the projected "Contact Migration Protocol" — not the `deviceID` column.
+- **Forward coupling, not a gate.** When multi-device does ship, D-09's per-device certificates need several identity keys simultaneously verifiable. That is a note for whoever builds R1; it does not block this feature.
 
-**Related hazard:** Multi-Device Q-07 found that `processExpectedShards` treats a sender-key fingerprint mismatch as key rotation and hands shards back — a heuristic that cannot distinguish "rotated" from "second device." Card verification must not reuse that pattern. A card that fails to verify is unverifiable, full stop; never resolved by inferring rotation.
+**What this feature must build, and can build alone:** when a contact's pinned identity key changes, invalidate every stored card for that contact **loudly and at once**, rather than letting them fail one at a time as unverifiable artifacts. D-14's fail-closed rule applied to a key change. Entirely card-local.
+
+**Unrelated hazard worth carrying:** Multi-Device's own Q-07 found that `processExpectedShards` treats a sender-key fingerprint mismatch as key rotation and hands shards back — a heuristic that cannot distinguish "rotated" from "second device." Card verification must never reuse that pattern. A card that fails to verify is unverifiable, full stop; never resolved by inferring rotation.
 
 ### Q-08 · Confirmation receipt — phase 2, and worth more than "optional later"
 
@@ -478,7 +482,7 @@ Previously recorded as "closed." It is four cases.
 
 **Technical viability: high.** Zero new cryptography — domain-separated signing under an existing family (D-12), structured payloads, existing bundle transport, and the card UI concept already present in `#26` rule (1). D-09 adds one SE key and a certificate, which is house-pattern work.
 
-**Not dependency-free.** Q-07 (Multi-Device R1's defect fix) and Q-05 (the review checklist) both gate this. The earlier claim that *"gating is internal, not external"* remains true — no other vendor's roadmap is involved — but internal is not the same as absent.
+**Gating is internal, and shallower than one draft of this doc claimed.** Q-05 (the review checklist) is the one real gate. Q-07 turned out not to be a Multi-Device dependency at all — cards work on today's contact-key model, and the key-change handling they need is card-local. No other vendor's roadmap is involved, and no other feature blocks this one.
 
 **Transport friction is worst where the doc is most optimistic.** For real estate, one share-sheet action against a $300K wire is irrelevant. For the family case it is an elderly parent receiving a file attachment and knowing to open it in Occulta — the demographic `#27` describes as never navigating challenge/attestation vocabulary. The Share Extension plan (`Occulta/Features/ShareExtension/`) is the realistic mitigation and should be treated as a dependency for that audience.
 
@@ -499,7 +503,7 @@ Previously recorded as "closed." It is four cases.
 - ~~Rule on Q-06~~ — ruled 2026-08-09 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
-- Raise Q-07 with whoever owns the roadmap — R1's priority was set assuming no dependents.
+- Build the loud key-change invalidation (Q-07) inside this feature. No Multi-Device dependency; R1's priority stands as set.
 
 **Design:**
 
