@@ -236,6 +236,8 @@ This is the strongest deployment of the design and it does three jobs at once:
 
 It also reframes cold start: the install and the card exchange are the same event, not two. The real-estate wedge makes this natural — you meet the title officer at the start of the transaction, which is exactly when the card should be exchanged.
 
+**The ceremony is also where the sensitivity prompt belongs** (Q-01, step 3). A contact created at depth 0 defaults to visible at every duress depth, so the moment a counterparty becomes payment-relevant is the moment to ask whether they should be hidden in restricted view.
+
 ### D-14 · Failure paths: does the app vouch for these bytes?
 
 One dividing rule, and it is what makes the copy discipline in [Positioning](#positioning-and-copy-discipline) enforceable in UI rather than aspirational.
@@ -270,6 +272,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 - **Baseline row deletion on an unlocked payer device.** Poisoning is closed by D-04 (a stored row is a signed card and cannot be forged); deletion remains possible and fails safe — the next card reads as first-seen and fires the age signal.
 - **Passcode-path signing.** D-09's `.userPresence` means a coercer who knows the passcode can sign. Deliberate trade against `.biometryCurrentSet`'s re-enrolment invalidation.
 - **First card from a contact**, where no baseline exists by construction. D-13 is the mitigation.
+- **A duress-signed card outranks what hidden contacts hold, and cannot be recalled.** Q-01 accepts this deliberately — the alternative is a duress-detection oracle. Bounded by `expiresAt` and by re-issuance reaching contacts, never eliminated.
 
 ### If the identity key itself is recovered
 
@@ -318,6 +321,7 @@ Requirements, inherited rather than re-derived from `Occulta/Features/SecureMode
 - **A non-nil depth field from creation** on every new model here. S6 (`visibleThroughDepth`) and S9 (`globalTrusteeDepth`) both landed on this rule so that presence-versus-absence of the field is never itself a tell. The shard work reached it by retrofit and records the cost.
 - **`PRAGMA secure_delete`** (S2) and **`.completeFileProtection` re-applied on every save** (S3/S4).
 - **S8's accepted-gap reasoning for row counts** applies verbatim to card rows.
+- **Contact classification inheritance.** `StoredCard` and `DestinationBaseline` are contact-keyed and must filter off `isVisible(atDepth:)`, or hiding a contact leaks them through the card store — their existence *and* their bank details. See Q-01 step 3.
 - **Cascade delete on contact removal**, and Secure Mode purge behaviour, specified up front. `Docs/Bugs/v1.10.0/Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md` is a long-running instance of exactly this class — contact-keyed SwiftData models with no purge path — and names a second (`Message.Draft`). A surviving baseline row for a deleted contact is a record of a financial relationship the user believes they erased.
 - **The consumed-`requestID` store** (D-11) inherits the same treatment. It is less exposed because entries self-expire, which is worth stating rather than assuming.
 - **Temp files now carry bank details.** SPEC §7 accepts `.occ` files in `temporaryDirectory`, sized for a challenge nonce. The same path now carries full payment destinations; cleanup timing and the acceptance reasoning both need re-examining against the new content.
@@ -387,14 +391,45 @@ Route positioning material through the same path `Docs/Audit/LanguageRiskReview2
 
 ## Open questions
 
-### Q-01 · Duress-signed cards — narrowed, still load-bearing
+### Q-01 · Duress-signed cards — **answered 2026-08-09**
 
-Someone coerced into signing a card pointing at an attacker's account defeats the construction. Two findings changed its shape:
+**Ruling: duress-signed cards are permitted by design. The feature behaves identically under coercion.** The answer is not prevention — prevention is unachievable and attempting it is a bug — but four separate properties: *don't detect, don't degrade, hide the targets, bound the damage.*
 
-- **Worse than stated:** D-01's correction means that until D-09 ships, a coercer with an unlocked phone signs *without any gate at all*. With D-09 and `.userPresence`, a coercer who knows the passcode still can.
-- **Better than stated:** the attacker cannot act *silently*. D-06's local-observation age and D-04's destination diff both fire, and neither can be forged remotely. The residual is the first card from a contact (mitigated by D-13) and a payer who proceeds past a loud warning.
+#### 1. Don't detect
 
-Still deserves a real answer rather than deferral to the duress cluster.
+Nothing in this feature may attempt to infer that the operator is under coercion, and nothing may branch on such an inference. `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md` is the standing precedent for why: a behaviour that differs under duress hands the coercer a detector.
+
+#### 2. Don't degrade
+
+Card authoring, signing, and sending work exactly as they do at depth 0. No refusal, no extra confirmation, no reduced limits, no silent failure.
+
+This is the house position, not a preference. `Contact+Model.swift:105-113` makes the identical argument for `originDepth`, choosing floor semantics over exact-match specifically so a duress-born contact does not *"start rejecting bundles again the moment depth passes N, reproducing the exact duress-detection tell this field exists to remove."* A payment feature that declined to sign under coercion would rebuild that tell, and a coercer who cannot get a card signed learns there is a depth above the one they are standing in.
+
+#### 3. Hide the targets
+
+The protection is the shipped contact-classification mechanism, not a new one. A coercer can obtain a signed card; what they cannot obtain is the list of people worth sending it to, because `isVisible(atDepth:)` filters recipient selection exactly as it filters everything else.
+
+**The gap that makes this fail in practice:** contacts created at depth 0 default to `Int.max` — visible at *every* duress depth (`Contact+Manager.swift:205-207`). Hiding happens only if the user actively classified the contact as sensitive in a separate pass. For payment cards the timing is exactly wrong: D-13 puts card exchange at the UWB ceremony, which is the moment the contact is created wide open, and a newly-paired counterparty is the highest-value target the user has.
+
+**Required: prompt for classification at card exchange.** Not a generic classification nag — a specific prompt at the ceremony, *"you've exchanged payment details with X; hide X in restricted view?"*, tying the decision to the moment the stakes become concrete. Shown only at depth 0, so it is not itself a tell.
+
+**Three things must inherit classification or the hiding leaks:**
+
+- `StoredCard` and `DestinationBaseline` are contact-keyed. Unfiltered, they disclose both a hidden contact's existence and their bank details. The shard work already solved this shape — real shards from safe contacts get correct ceiling-based visibility off the existing classification — so inherit it deliberately rather than assuming it.
+- The owner's own card store needs a depth stamp. At a duress depth the coercer otherwise sees the operator's full account list, and the presence of a crypto card is disclosure in itself.
+- Row counts, per `forensic-trace-avoidance.md` S8.
+
+#### 4. Bound the damage
+
+Three properties already in the design, none of which the coercer can defeat:
+
+- **A duress card cannot be quiet.** It must change the destination digest and bump the version, so it always renders as a loud diff (threat model).
+- **Its age cannot be forged.** D-06 reads locally-observed `firstSeenAt`, not the signed `createdAt`.
+- **It expires.** The mandatory `expiresAt` ([Revocation](#revocation)) bounds the window without requiring any channel.
+
+**The residual, stated plainly: a duress-signed card cannot be recalled.** Coerced into signing version 7 while the hidden contacts hold version 6, the operator can later author version 8 — but only contacts who *receive* it are protected, and D-04's own version rule will accept v7 as newer from anyone who never saw v8. This is revocation case 4 in a different costume, and it has the same answer: supersede and outlive, never retract.
+
+**Required: stamp the owner's card store with the depth it was authored at, and on return to depth 0 prompt to re-issue, flagging which contacts have not yet received the new version.** That flag is the only thing standing between a coerced signature and an indefinite window.
 
 ### Q-03 · Third-party PII at rest — partial mitigation, not a solution
 
@@ -524,8 +559,10 @@ Previously recorded as "closed." It is four cases.
 
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
-- The owner-side card store (D-12), which holds full destinations in the clear.
-- Answer Q-01 (duress) properly rather than deferring to the duress cluster.
+- The owner-side card store (D-12), which holds full destinations in the clear, stamped with its authoring depth (Q-01).
+- `StoredCard` and `DestinationBaseline` must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them through the card store.
+- Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask.
+- Post-duress re-issue prompt, flagging contacts who have not received the superseding card version (Q-01).
 
 **Positioning:**
 
@@ -557,7 +594,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-08 | Session 2 D-10 (prior art half); **CoP framing withdrawn** |
 | D-09 – D-14 | Gap review, 2026-08-09 |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-09 |
-| Q-01 | Session 2 Q-05; narrowed both directions |
+| Q-01 | Session 2 Q-05; **answered 2026-08-09** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
 | Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
 | Q-03 | Session 2 Q-07, as rewritten by Session 3 D-14; `maskedTail` added |
 | Q-04, Q-05 | Unchanged / sharpened |
