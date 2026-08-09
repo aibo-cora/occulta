@@ -341,7 +341,8 @@ Requirements, inherited rather than re-derived from `Occulta/Features/SecureMode
 | | Coverage | Gap |
 |---|---|---|
 | UK Confirmation of Payee | Bank-run, name-to-account | Participating UK banks only; no crypto |
-| US | — | No equivalent shipping |
+| EU Verification of Payee | Mandated, name/ID-to-IBAN, SCT **and** SCT Inst | Euro-area only until Jul 2027; euro rails only; warning, not a block; mule accounts in a matching name |
+| US Fed Payee Name Verification | FI-facing, rail-agnostic, inference over 12 months of transaction history | Optional, not mandated; no consumer-visible guarantee; a risk signal rather than a registry match |
 | Title/escrow industry | Verbal codes, callbacks, insurance | Leakable, socially engineerable, post-hoc |
 | Crypto wallet address books | Local convenience | Unsigned, trust-on-first-use, no binding to a verified human |
 
@@ -408,9 +409,23 @@ A digest over bank details is brute-forceable: account and routing numbers carry
 
 Which makes deniable-partition handling (`#6`) a firmer recommendation than "consider" — the same conclusion `Organizational Identity Graph/FINDINGS.md` F-07 reached for org credentials, now on a larger payload. Masked display survives as a harm reduction in list and history views (surface rule), not as a storage strategy.
 
-### Q-04 · Competitive timing on bank rails
+### Q-04 · Competitive timing on bank rails — **answered 2026-08-09**
 
-EU regulation has been pushing verification-of-payee onto SEPA transfers. If banks solve this for bank rails, the differentiated slice narrows toward crypto, cross-border, and non-bank rails. **Not verified against current regulation** — check before this informs positioning.
+The question assumed a future event. It already happened, and it lands elsewhere than expected.
+
+**EU — live since 9 October 2025.** Verification of Payee is mandatory for euro-area PSPs under Regulation (EU) 2024/886 (Instant Payments Regulation), covering **both** standard SEPA Credit Transfers and SCT Inst, not instant alone. It matches the IBAN against the payee name or company identifier at initiation. Non-euro-area EU PSPs have until 9 July 2027.
+
+**It does not reach this feature's loss pool.** The IC3 figures driving the priority ruling are US; VoP is euro-denominated SEPA. The strongest wedge — US title and escrow — is entirely outside its scope, as is every crypto rail.
+
+**US — moved, but far less.** The Fed added **Payee Name Verification** to FedDetect Notification Services in late 2025. It is optional rather than mandated, reaches institutions on FedLine Direct/Command rather than consumers, and works by *"initially leveraging 12 months of historical transaction data"* — an inference-based risk signal, not an authoritative registry match. FedNow is exploring real-time enablement.
+
+**Net effect on positioning: it sharpens the story rather than narrowing it.** VoP *is* name-to-account matching, which D-08 establishes Occulta cannot do. The two are complementary and fail differently — VoP is defeated by a mule account opened in a matching name; this design is defeated by a coerced signature. A regulated incumbent occupying the name-matching axis removes the temptation to claim it.
+
+**It also validates D-05's corrected framing.** Even the mandated, bank-integrated control ends at a warning the payer may click through. The behavioural residual is where the state of the art stops, not a weakness peculiar to a serverless design — and positioning may say so.
+
+**Where the slice genuinely narrows:** euro-area bank-to-bank transfers, against a naive attacker supplying their own name and IBAN. Everything else — US rails, crypto, non-euro EU until July 2027, mule accounts in a matching name — is untouched.
+
+Sources: [Crédit Agricole CIB](https://www.ca-cib.com/en/news/securing-sepa-payments-verification-payee-service-becomes-mandatory-october-2025), [PwC Legal](https://legal.pwc.de/en/news/articles/verification-of-payee-requirements-vop-under-the-eus-instant-payments-regulation-ipr), [ECB](https://www.ecb.europa.eu/paym/retail/instant_payments/html/instant_payments_regulation.en.html), [Federal Reserve Financial Services](https://www.frbservices.org/financial-services/multiservice-solutions/payee-name-verification). Retrieved 2026-08-09.
 
 ### Q-05 · `CRYPTO_REVIEW_CHECKLIST` — **closed 2026-08-09**
 
