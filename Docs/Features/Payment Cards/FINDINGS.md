@@ -276,6 +276,65 @@ N never materializes. A card update costs **zero** signatures — it bumps the v
 
 **What is given up:** broadcasting a card to a counterparty without a signing action. D-13 already puts that at a ceremony, so nothing real is lost. `#26` reuse survives intact — the owner never re-enters banking details, which is what that promise was about.
 
+### D-16 · Cards are acknowledged on receipt — version, never timestamp
+
+On verifying and pinning a card, the payer signs a short acknowledgement: `(cardID, version)` bound to the payee's fingerprint, under the payer's payment key.
+
+**Transmitted is not received, and the design currently conflates them.** D-03's send is fire-and-forget over F-02's share sheet, so a payee knows only that they shared something. Closing that gap does two jobs:
+
+- **Transport suppression becomes visible.** An attacker who controls the channel drops the bundle and sends plain instructions instead; today neither party can tell. With acknowledgement, the payee sees nothing come back and the natural response is an out-of-band call. A threat-model residual moves from unclosed to detectable.
+- **Version propagation becomes knowable.** Q-01's post-duress requirement — flag which contacts have not received the superseding version — is otherwise guesswork from the sender's local record of what they *sent*. Acknowledgement makes it evidence, in precisely the case Q-01 accepts as unrecallable.
+
+**No fine-grained timestamp, and this is not negotiable.** An acknowledgement carrying *when* is a read receipt — the *"who checked whom, when"* class `Presence Verification/SPEC.md` §7 refuses to persist — and in a coercive household, a controlling family member learning when someone opened the app is a real harm to exactly this feature's audience. The payee needs *"Bob is on v8."* They never need *"Bob opened the app at 14:23."*
+
+The payee retains the highest acknowledged version per contact, so a replayed old acknowledgement degrades to stale information rather than anything exploitable.
+
+**Cost splits by flow:** free at a UWB ceremony, where the channel is already live and which D-13 makes the primary path; a manual send back for remote updates, landing on the payer — often the less engaged party.
+
+### D-17 · The diff challenge is a notification, not an authorization gate
+
+When a received card's destination differs from the pinned baseline, the payer may send the payee a challenge: *"a card bearing your signature, with details that do not match what I hold, is in play."*
+
+**It adds no cryptographic strength, and the name invites the opposite reading.** Challenge and response run between the same two keys — a coercer who can sign the card can sign the response. Nothing about this gates anything.
+
+What it adds is real regardless: today the diff is purely local to the payer, and the payee never learns their card was questioned. For a payee who was coerced and has since regained control, this is the **only live-attack signal anywhere in the design**.
+
+**User-initiated, never automatic.** A device that emits a signal on every diff is a device that phones home. One tap on *"ask them about this"* is the out-of-band confirmation the design already instructs users to perform, made easier rather than automated.
+
+Nothing about a challenge persists on either side.
+
+---
+
+## Lifecycle
+
+The doc above specifies artifacts; this specifies transitions. Kind matters as much as name — **local** touches nothing outside the device, **outbound/inbound** crosses a trust boundary, **derived** is computed from state rather than received.
+
+| Event | Side | Kind | Fires |
+|---|---|---|---|
+| `cardAuthored` | payee | local | content created or revised; version assigned |
+| `cardSigned(recipient)` | payee | local | lazily, at send (D-15) |
+| `cardTransmitted(recipient)` | payee | outbound | fire-and-forget; proves nothing |
+| `cardAcknowledged(recipient, version)` | payee | inbound | the only proof of arrival (D-16) |
+| `certificatePinned(contact)` | payer | inbound | first verification against the UWB-pinned identity (D-09) |
+| `cardReceived(contact, cardID, version)` | payer | inbound | sets `firstSeenAt` on a new destination, updates `lastSeenAt`, runs D-04's version rules |
+| `cardRejected(reason)` | payer | inbound | D-14's fail-closed set — bad signature, rollback, fork, wrong recipient binding, unknown rail |
+| `destinationChanged(from, to)` | payer | **derived** | the tripwire |
+| `requestReceived` | payer | inbound | expiry and one-shot checks (D-11) |
+| `requestConsumed` | payer | local | `requestID` retained until its own expiry |
+| `diffChallengeSent` / `diffChallengeReceived` | both | user-initiated | D-17 |
+| `contactKeyChanged` → `cardsInvalidated(contact)` | payer | derived | loudly and at once (Q-07) |
+| `depthReturnedToZero` → `reIssuePrompt` | payee | local | Q-01's post-duress flow, driven by acknowledged versions |
+| `cardExpired` | both | derived | from `expiresAt` |
+| `paymentRecorded` | payer | outbound | **phase 2** (Q-08) |
+
+### Events specify transitions; they are not rows
+
+Persisting this sequence would build a complete payment audit trail — who paid whom, when, how often — on a device whose adjacent feature refuses to write verification history at all (`Presence Verification/SPEC.md` §7), and would undo most of Q-03.
+
+**Only derived state persists**, and it is already settled: `StoredCard`, `DestinationBaseline` (first- and last-seen, the minimum that supports age and diff), consumed `requestID`s until their own expiry, and highest-acknowledged-version per contact (D-16). Everything else in the table above is transient by construction — including every challenge.
+
+Two rows carry more weight than their description suggests. **`cardAcknowledged` is what turns Q-01's post-duress flag from guesswork into evidence.** And **`destinationChanged` is marked derived on purpose**: the tripwire is computed locally from state rather than received from anyone, which is exactly why it survives full key compromise (see below).
+
 ---
 
 ## Threat model
@@ -297,7 +356,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 ### Residual
 
 - **The attacker simply does not use Occulta.** Plain email, "our details changed," no artifacts. This is the actual BEC attack; only the payer's policy touches it. It is the primary residual, not a footnote.
-- **Transport suppression.** The attacker owns the channel and drops the bundle. Mitigated by D-13, not eliminated.
+- **Transport suppression.** The attacker owns the channel and drops the bundle. **Detectable** via D-16 — the payee sees no acknowledgement — and mitigated by D-13, but not prevented: detection depends on the payee noticing an absence.
 - **Replay against a payer who never saw the newer card.** No diff, and age reads as reassuring. Bounded only by D-11's request expiry.
 - **Clipboard / address-substitution malware on the payer's device** — see the surface rule below.
 - **Baseline row deletion on an unlocked payer device.** Poisoning is closed by D-04 (a stored row is a signed card and cannot be forged); deletion remains possible and fails safe — the next card reads as first-seen and fires the age signal.
@@ -549,13 +608,25 @@ What is real:
 
 **Unrelated hazard worth carrying:** Multi-Device's own Q-07 found that `processExpectedShards` treats a sender-key fingerprint mismatch as key rotation and hands shards back — a heuristic that cannot distinguish "rotated" from "second device." Card verification must never reuse that pattern. A card that fails to verify is unverifiable, full stop; never resolved by inferring rotation.
 
-### Q-08 · Confirmation receipt — phase 2, and worth more than "optional later"
+### Q-08 · Receipts — **answered 2026-08-09, and the question was two questions**
+
+`#26` records one receipt, after payment. There are two distinct artifacts here and they were being conflated.
+
+**Card-delivery acknowledgement → first release (D-16).** *"I hold your card, version 8."* Free in the ceremony flow, closes transport suppression, and supplies the evidence Q-01's post-duress re-issue flag needs. It carries no timestamp, so it retains nothing and does not pull `#23` into scope.
+
+**Payment receipt → phase 2**, as `#26` had it, for the reasons below. Two categories rather than one artifact with a mode: different trigger, different content, and the `SignedAttribute` family already discriminates by category.
+
+The distinction that decides the split: a version acknowledgement is *state*, superseded by the next one. A payment record is *history*, valuable precisely because it is retained — which is what makes it verified long after authoring, and therefore the trigger for Q-09.
+
+#### The payment receipt, for whenever phase 2 arrives
 
 `#26` records it as optional. It creates a **detection window inside the recall window**: the payer signs what they actually did — self-reported, so a deceived payer faithfully reports the attacker's account — and the payee knows instantly that `···8823` is not theirs. Misdirection that would otherwise surface days later surfaces in minutes, and wire recall plus the IC3 kill-chain both work best inside 24–72 hours against a loss category that is 86% unrecoverable.
 
 Self-reporting suffices because the artifact is authored by the party who may be deceived and checked by the party who knows the truth.
 
 Shape: a `.paymentReceipt` category binding `requestID` and `cardDigest`, signed by the payer's payment key. Two consequences: a receipt store is a record of payments made and inherits the forensic requirements; and **retained receipts are the trigger that pulls `#23` into scope**, since they are verified long after authoring (see below).
+
+Recommendation stands: keep it out of the first release, but the rationale above is why it is worth more than "optional later" when it comes.
 
 ### Q-09 · `#23` (hybrid PQ) is excluded — recorded so the exclusion is visible
 
@@ -621,7 +692,8 @@ Previously recorded as "closed." It is four cases.
 - Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
 - `StoredCard` and `DestinationBaseline` must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them through the card store.
 - Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask.
-- Post-duress re-issue prompt, flagging contacts who have not received the superseding card version (Q-01).
+- Post-duress re-issue prompt, flagging contacts who have not received the superseding card version — driven by D-16's acknowledged versions, not by a local record of what was sent (Q-01).
+- Delivery acknowledgement (D-16) and the user-initiated diff challenge (D-17), neither of which persists anything beyond highest-acknowledged-version per contact.
 
 **Positioning:**
 
@@ -653,6 +725,8 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-08 | Session 2 D-10 (prior art half); **CoP framing withdrawn** |
 | D-09 – D-14 | Gap review, 2026-08-09 |
 | D-15 | Gap review, 2026-08-09 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
+| D-16, D-17 | Gap review, 2026-08-09 — delivery acknowledgement and diff challenge |
+| Lifecycle | Gap review, 2026-08-09 — event model as specification, explicitly not as storage |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-09 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-09** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
 | Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
