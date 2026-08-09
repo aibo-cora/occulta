@@ -479,6 +479,16 @@ Payment details (account/routing, IBAN, crypto address) become a first-class sig
 **iOS constraint:** iOS 16+, zero new primitives. Work is the structured payload type, the pinned-card UX, and the diff flow. Optional later: a signed "wire executed to account ending 1234, $X, [time]" confirmation receipt reusing the #24 pattern.
 
 > **Ruling (July 10, 2026):** Strongest candidate of this pass. Largest documented dollar losses of any addressable category; the industry's own best practice is a weaker analog of the shipped protocol; hands the Expansion A wedge a concrete artifact adoptable bottom-up (one cautious title office can adopt unilaterally for its clients). Attack surface minimal — signatures over non-secret structured data, new prefix only; run CRYPTO_REVIEW_CHECKLIST §4. Low-medium lift. **Priority: Near-term (pairs with Presence Verification as an anti-impersonation release narrative).**
+>
+> **Addendum (August 9, 2026) — pre-authored cards + signed requests; decouples this feature's core value from #15.** A design pass ([Presence Verification/FINDINGS.md](Presence%20Verification/FINDINGS.md), Design Session 2) extends rule (1)'s verified card into a **pre-authored, reusable, versioned** artifact the owner maintains ahead of time, composed with a separate short-lived signed *request* ("I am asking you for $5,000"). Both SE-signed under their own domain prefixes, both biometric-gated by construction.
+>
+> **The finding that matters: the card constrains the destination, which is worth more than proving the ask.** Redirecting funds to an attacker-controlled account is the objective of essentially every payment scam, and a pinned card makes redirection require a fresh signature from the real person. Against a *fully deceived* victim who believes the entire pretext, funds can still only reach the counterparty's real account — recoverable, and not under the attacker's control. The family/vendor policy becomes "money only goes to a card you already have," a fixed constraint rather than a judgment call under pressure.
+>
+> **Load-bearing protocol requirement:** the request payload must bind a **digest of the specific card it references**. Without it, a legitimately signed request and an attacker-supplied card can be mixed and matched and the construction fails.
+>
+> **Pre-authoring also makes card age a first-class signal.** The BEC playbook is a last-minute change of banking details; "unchanged since March" versus "created four minutes ago" is the defense, and it only exists because cards predate the transaction. Surface age and change history at payment time with SPEC.md §5's security-critical-screen discipline.
+>
+> **Sequencing consequence:** rule (3) above currently pairs with a live #15 presence check and therefore inherits #15's delay. Substituting the signed request removes that dependency — **this feature can deliver its core anti-BEC value without #15**, which the "pairs with Presence Verification" framing in the ruling above no longer requires. **Scoping limit to carry into any positioning:** this protects payments to physically-met counterparties; payments to strangers (fake invoices, romance, investment scams) are outside the closed loop entirely, as are gift-card rails.
 
 ---
 

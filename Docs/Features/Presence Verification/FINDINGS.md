@@ -107,3 +107,102 @@ Independently of that decision, `#27`'s Second Opinion component should be unshe
 - Unshelve `#27`'s Second Opinion component independently of `#15`.
 - If pursued: scope Q-02 (constrained action-string vocabulary) and Q-03 (replay/expiry) alongside `#26`, not separately — same primitive, same release.
 - Cross-reference `Organizational Identity Graph/FINDINGS.md` D-15, which reached the same principle from the enterprise side.
+
+---
+
+## Design Session 2 — Pre-Authored Payment Cards and Request Binding (2026-08-09)
+
+**Question raised:** run the design pass Session 1 called for, and evaluate a proposal alongside it — banking/wallet details held in **pre-authored, biometrically signed cards** that the owner maintains ahead of time and attaches to a request, so that card and request are independently verifiable.
+
+**Headline finding: the card is the stronger half.** Session 1's intent signature proves *who asked*. The card constrains *where value can go*. The second is worth more, because redirecting funds to an account the attacker controls is the objective of essentially every payment scam — and a pinned card makes redirection require a new signature from the real person, which is exactly the thing an attacker cannot obtain.
+
+### D-06 · The composition — long-lived card, ephemeral request, and the request MUST bind the card
+
+Two artifacts with different lifetimes, both SE-signed under their own domain prefixes, both biometric-gated by construction (SE key use already requires a biometric gate — this is not a new property to build):
+
+| | Card | Request |
+|---|---|---|
+| Content | "Value reaching me goes to account/IBAN/wallet ···4471" | "I am asking you for $5,000" |
+| Lifetime | Long-lived, versioned, maintained by the owner | One-shot, expiring |
+| Signed | Once at authoring, re-signed only on change | Per event |
+| Security value | Constrains destination | Proves the ask |
+
+**Protocol requirement, load-bearing:** the request payload must include a **digest of the specific card it references**. Without that binding, a legitimately signed request and an attacker-supplied card can be mixed and matched, and the whole construction fails. A signed request must mean "send $X to the account in card ⟨digest⟩, which I also signed" — one statement, not two independently relayable ones.
+
+This split also resolves the freshness tension cleanly: the card is old on purpose (age is the signal, D-08), and freshness comes from the request's own expiry, not from re-signing the card.
+
+### D-07 · The card constrains the destination — this materially answers Q-01
+
+Session 1's residual (Q-01) was that the scam adapts to *"I can't sign, I lost my phone,"* leaving the defense resting on a family holding a policy line. Cards narrow that considerably.
+
+Consider the grandparent scam with cards deployed. The recipient's app holds one card for their child, pinned, unchanged for eight months. The request must reference it. The attacker cannot produce a new card without the real child's key. So even against a **fully deceived** victim who believes every word of the pretext, the money can only travel to the child's actual bank account — recoverable, and not under the attacker's control.
+
+**The scam's economics collapse.** Total loss becomes "funds are sitting in your kid's account."
+
+That is a different and much better security posture than "refuse unsigned requests," and it is easier for a family to hold, because the rule constrains a *destination* that is already fixed rather than requiring judgment in the moment. The policy becomes **"money only ever goes to a card you already have"** — no assessment of the caller's story required.
+
+**Honest limits.** Gift cards, wire-to-stranger, and cash-app-to-new-recipient scams route outside the card system entirely, so the behavioral rule still has to cover them ("never gift cards, never a destination without a card"). And the whole construction only protects payments to counterparties you have physically met — see D-10.
+
+### D-08 · Card age is a first-class security signal, not incidental metadata
+
+The BEC playbook is a **last-minute change** of banking details. `#26` already answers this with loud signed-change diffing. Pre-authoring strengthens it into something sharper: a card carries a visible history.
+
+- *"This card has been unchanged since March"* — strong signal.
+- *"This card was created four minutes ago"* — the thing that should stop a transaction cold.
+
+The UI should surface card age and change history at the moment of payment, with the same care SPEC.md §5 gives the approval screen. A newly created or recently changed card is not invalid — people do change banks — but it must be visually distinct from a settled one, and the burden of confirming a change out-of-band belongs at that moment.
+
+### D-09 · Relationship to `#26` — a real extension, not a duplicate
+
+`#26` already specifies payment details as a signed artifact rendered as *"a pinned, immutable verified card"* with signed-change diffing. The card concept is genuinely already there. What this proposal adds:
+
+1. **Pre-authoring** — cards exist before any transaction, rather than being sent per-transaction.
+2. **Reuse** — one card attaches to many requests; no re-entry of banking details.
+3. **Composition with a signed request** — replacing `#26`'s rule (3), which currently pairs with a live `#15` presence check and therefore inherits `#15`'s delay.
+4. **Age as an explicit security property** (D-08), implicit in `#26`'s diffing but not first-class.
+
+Item 3 is the important one for this doc: **it lets `#26` deliver its anti-BEC value without `#15`.** `#26` is already Near-term priority, so the marginal lift is small if scoped into the same release.
+
+### D-10 · Prior art and honest scoping
+
+This is, in effect, **serverless Confirmation of Payee** — the UK bank-run scheme that matches payee name to account before a transfer — extended to crypto rails and requiring no bank participation. Naming the analogue is useful for positioning and keeps the claim proportionate.
+
+The differentiator is real: no bank in the loop, works across any rail including wallet addresses, and it defends the clipboard-hijacking attack class (address substitution malware) because the recipient's app compares against a **pinned card** rather than trusting a pasted string. That connects to Expansion I's smart-wallet work.
+
+**The scoping limit that must not be glossed:** this protects payments to people you have physically met. A large share of real fraud loss is payments to *strangers* — fake invoices, romance, investment scams — which the closed loop cannot reach at all. The addressable slice is known-counterparty payments: `#26`'s real-estate and vendor cases, and the family case. That is a substantial and well-documented slice, but it is a slice.
+
+---
+
+### Session 1's open questions, revisited
+
+- **Q-01 (behavioral residual)** — materially improved by D-07, not eliminated. The policy shifts from "refuse unsigned requests" (requires in-the-moment judgment) to "funds only to an existing card" (a fixed constraint). Gift-card and stranger-payment channels remain outside it.
+- **Q-02 (action-string wording)** — largely resolved. With a card reference carrying the destination, the request payload becomes structured — amount, card digest, optional reason — rather than free text. The ambiguity attack ("$5,000 transfer between you and Mom") is much harder to express when the direction is implied by whose card is bound.
+- **Q-03 (replay/expiry)** — resolved by the split in D-06: requests are one-shot and expiring; cards are long-lived and versioned. Two different mechanisms for two different lifetimes, rather than one compromise.
+
+### New open questions
+
+**Q-04 · Card revocation has no reliable delivery path.** An owner closes an account and signs a replacement card — but delivery runs on the same manual share-sheet transport as everything else (verified 2026-08-09, `Organizational Identity Graph/FINDINGS.md` F-02). A counterparty who never receives it will pay to a dead account. Not a *security* failure — funds do not reach an attacker — but an operational one, and it needs an explicit answer rather than discovery in production. The unconditional-reattachment pattern from `Multi-Device Contacts/FINDINGS.md` Design Session 10 is the obvious precedent.
+
+**Q-05 · Duress-signed cards.** Someone coerced into signing a card pointing at an attacker's account defeats the construction entirely. The duress cluster applies as it does everywhere, and D-08's age signal is the partial mitigation (a brand-new card at payment time is exactly the flag). Whether anything stronger is warranted here is undecided.
+
+**Q-06 · Multiple cards per contact.** Checking, savings, a crypto wallet — the request must specify which, and the selection UI is a place where a rushed user makes mistakes. Unscoped.
+
+**Q-07 · Third-party PII at rest.** Holding a counterparty's card means holding their banking details on your device. `#26` already has this property for received instructions, and the local DB is encrypted, but the exposure is real under a compromised or coerced device, and it is *someone else's* data with no control on their side. Consider deniable-partition handling (`#6`), the same recommendation F-07 made for org credentials.
+
+---
+
+### Recommendation
+
+**Pursue this, and sequence it inside `#26` rather than as a separate feature.** The card half stands on its own merits, materially improves Session 1's weakest point, requires no new cryptography, and lets an already-Near-term feature deliver its core anti-BEC value without waiting on `#15`.
+
+The intent-signature half (Session 1) is worth keeping in the same release, but it is now clearly the junior partner: it proves who asked, while the card constrains where value goes, and only the second survives a fully deceived victim.
+
+Q-01's product decision from Session 1 still stands, but it is a smaller decision than it was — the policy a family must hold is now concrete and destination-bound rather than a judgment call under pressure.
+
+### Action items
+
+- Scope the card/request split into `#26` directly; note the extension in the Master doc's `#26` entry rather than leaving it only here.
+- Specify the request→card digest binding (D-06) as a hard protocol requirement before any implementation — the construction fails without it.
+- Design the card-age and change-history surface (D-08) with SPEC.md §5's "security-critical screen" discipline.
+- Answer Q-04 (revocation delivery) using the unconditional-reattachment precedent.
+- Carry the D-10 scoping limit into any positioning material: this protects payments to physically-met counterparties, not payments to strangers.
