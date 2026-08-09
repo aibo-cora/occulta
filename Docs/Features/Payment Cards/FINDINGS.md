@@ -412,13 +412,13 @@ Which makes deniable-partition handling (`#6`) a firmer recommendation than "con
 
 EU regulation has been pushing verification-of-payee onto SEPA transfers. If banks solve this for bank rails, the differentiated slice narrows toward crypto, cross-border, and non-bank rails. **Not verified against current regulation** — check before this informs positioning.
 
-### Q-05 · `CRYPTO_REVIEW_CHECKLIST` does not exist, and gates two Near-term features
+### Q-05 · `CRYPTO_REVIEW_CHECKLIST` — **closed 2026-08-09**
 
-`#26`'s ruling requires `CRYPTO_REVIEW_CHECKLIST §4`. The canonical document at `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` does not exist. It is referenced by `README.md:144` as an instruction to **external contributors**, by four master-doc rulings citing specific sections, and by `Multi-Device Contacts/ROADMAP.md` as the R0 gate — where `FINDINGS.md:319` states *"nothing in this plan ships before it's created and run."*
+`#26`'s ruling requires `CRYPTO_REVIEW_CHECKLIST §4`, and the canonical document did not exist — while being cited by `README.md:144` as an instruction to **external contributors**, by four master-doc rulings, and by `Multi-Device Contacts/ROADMAP.md` as the R0 gate, where `FINDINGS.md:319` states *"nothing in this plan ships before it's created and run."*
 
-The convention is live in code with a fixed five-section template — *Key ownership map · Consumption events · Multi-party trace · Security property verification · Layer boundary check* (`ShamirSecretSharing.swift:9-48`, `Key+Manager.swift:615`) — and `ShamirSecretSharing.swift:42` cites "Checklist item 4.6," so the blocks descend from a fuller numbered document.
+Written: [`Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md`](../../Audit/CRYPTO_REVIEW_CHECKLIST.md), extracted from the two live in-code exemplars (`ShamirSecretSharing.swift:9-48`, `Key+Manager.swift:615-644`) and preserving their five-section template and the §4 sub-numbering the code already cites.
 
-**This is roughly half a day of extraction and it currently blocks two Near-term features.** Not deferred any further.
+**Sections this feature must answer specifically:** §4.3 for the new categories and payload layouts (D-02, D-10, D-12), §4.5 for D-09's `.userPresence` key and the binding certificate, §1 for justifying a second signing key at all, and §4.7 for the non-claims already listed in the threat model.
 
 ### Q-06 · Storage minimization versus forgery detection — **ruled 2026-08-09: the tripwire wins**
 
