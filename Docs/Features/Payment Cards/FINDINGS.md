@@ -444,9 +444,19 @@ A digest over bank details is brute-forceable: account and routing numbers carry
 
 **What is stored:** the owner's own cards (full destinations, signed), `StoredCard` for counterparties (same), `DestinationBaseline`, and the consumed-`requestID` store. Encryption at rest, non-nil depth from creation, contact-classification inheritance (Q-01) and cascade delete are settled in [Forensic cleanliness](#forensic-cleanliness) and are not re-argued here. Four decisions remain.
 
-**1 · Sealing key: dedicated, created at first launch.** Follow `deriveShardCustodyKey()`'s independence from both the DB canonical key and the vault key — compromise of either must not yield payment destinations — but **not** its lazy creation. `Key+Manager.swift:783-799` mints the shard custody key on `errSecItemNotFound`, so that key's existence discloses that shard custody has been used. `forensic-trace-avoidance.md` B5 rates this class High and settles it the other way: create at first launch, so existence says nothing about use. Free, and it closes the question permanently.
+**1 · Cards live in the Vault, under the vault key. No dedicated store, no dedicated sealing key.**
 
-**2 · The owner's cards go in a dedicated store, not the Vault.** The Vault looks like the obvious home — sensitive values, categories, depth handling, biometric gate — and it is the wrong one. D-03 sends the card with *every request*, so vault residence means a vault unlock per payment, and `.biometryCurrentSet` would lock the operator out of their own payment details on any biometric re-enrolment. That is precisely the failure mode D-09 rejected when choosing `.userPresence`, and the same reasoning yields the same answer: dedicated store, sealed under the payment-card key, depth-stamped (Q-01).
+An earlier draft of this answer argued the opposite on two grounds, both wrong. *"A vault unlock per payment"* — the vault session is scoped by a pre-evaluated `LAContext` held in memory (`Vault+Manager.swift:46`), so it is one unlock per session, not per operation. *"`.biometryCurrentSet` locks the operator out"* — the vault key is `[.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]`, and the passcode branch survives biometric re-enrolment.
+
+The decisive argument runs the other way, and is the same one D-12 used for `SignedAttribute`: **do not build a parallel mechanism that has to re-earn Secure Mode's guarantees by hand.** Vault residence inherits rotation-on-activation (S1's cryptographic erasure), backup participation, and the re-encryption path. A dedicated store re-implements all three, with three chances to get them wrong.
+
+**And it fixes a default.** `VaultEntry.visibleThroughDepth` is **exact-match, not a ceiling** (`Vault+Model.swift:188`) — *"visible only at exactly depth N."* A card authored at depth 0 is therefore invisible at every duress depth by construction, with no classification step. Contacts default to `Int.max` (visible everywhere), which is the gap Q-01 has to cover with a prompt; vault entries default the right way round.
+
+**No dedicated sealing key.** The one argument for separation was backup scope — keeping payment destinations out of exported vault backups. It does not survive: vault backups are encrypted and user-initiated, and cards *should* be restored, because a lost baseline is a lost tripwire history, which after Q-06 is the last line of defence. Compartmentalization buys nothing else, since both keys are SE-derived and fall to the same coerced unlock.
+
+**Unchanged:** D-09's *signing* key stays separate. That key exists because the identity key has no gate and cannot acquire one; nothing here touches that reasoning.
+
+**Noted, not fixed:** `Key+Manager.swift:783-799` mints the shard custody key lazily on `errSecItemNotFound`, so that key's existence discloses that shard custody has been used — in tension with `forensic-trace-avoidance.md` B5 (*"SE key created at first launch, not at activation"*, rated High). Pre-existing and out of scope here; recorded so it is not copied.
 
 **3 · Deniability: integrate with Secure Mode. `#6` is a later strengthening, not the requirement.** The earlier text recommended `#6` (Plausibly Deniable Vault Partitions), which is Phase 2 and unbuilt. The shipped depth machinery is what this feature must integrate with, and it is already a precondition. `#6` would add hidden-volume indistinguishability on top; nothing here is blocked on it.
 
@@ -573,7 +583,7 @@ Previously recorded as "closed." It is four cases.
 
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
-- The owner-side card store (D-12) — dedicated, not a Vault entry (Q-03), sealed under a payment-card key created at first launch, stamped with its authoring depth (Q-01).
+- The owner-side card store (D-12) — Vault entries under the vault key (Q-03), inheriting exact-match depth, rotation-on-activation, backup, and re-encryption.
 - Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
 - `StoredCard` and `DestinationBaseline` must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them through the card store.
 - Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask.
@@ -611,7 +621,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-09 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-09** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
 | Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
-| Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-09** — dedicated key at first launch, dedicated store, Secure Mode not `#6`, baseline retention |
+| Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-09** — Vault residence under the vault key, no dedicated store or sealing key, Secure Mode not `#6`, baseline retention |
 | Q-04, Q-05 | Unchanged / sharpened |
 | Q-06 – Q-09 | Gap review, 2026-08-09 |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
