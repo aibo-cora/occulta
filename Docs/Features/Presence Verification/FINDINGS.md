@@ -131,6 +131,8 @@ Two artifacts with different lifetimes, both SE-signed under their own domain pr
 
 This split also resolves the freshness tension cleanly: the card is old on purpose (age is the signal, D-08), and freshness comes from the request's own expiry, not from re-signing the card.
 
+> **Storage model superseded by Design Session 3 (2026-08-09) — D-13.** The two-artifact split and the digest binding stand. What changes is where the card *lives*: it is long-lived at the owner, transmitted with every request, and retained by the recipient only as a baseline record (`{digest, first-seen, last-seen, masked tail}`) rather than as a stored card. Defensive behaviour is unchanged; Q-04 closes as a side effect.
+
 ### D-07 · The card constrains the destination — this materially answers Q-01
 
 Session 1's residual (Q-01) was that the scam adapts to *"I can't sign, I lost my phone,"* leaving the defense resting on a family holding a policy line. Cards narrow that considerably.
@@ -181,13 +183,13 @@ The differentiator is real: no bank in the loop, works across any rail including
 
 ### New open questions
 
-**Q-04 · Card revocation has no reliable delivery path.** An owner closes an account and signs a replacement card — but delivery runs on the same manual share-sheet transport as everything else (verified 2026-08-09, `Organizational Identity Graph/FINDINGS.md` F-02). A counterparty who never receives it will pay to a dead account. Not a *security* failure — funds do not reach an attacker — but an operational one, and it needs an explicit answer rather than discovery in production. The unconditional-reattachment pattern from `Multi-Device Contacts/FINDINGS.md` Design Session 10 is the obvious precedent.
+**Q-04 · Card revocation has no reliable delivery path. — CLOSED by Design Session 3 (D-11).** *The card now travels with every request, so there is no stale-card state to repair and no revocation to deliver. Original text kept for the reasoning trail.* An owner closes an account and signs a replacement card — but delivery runs on the same manual share-sheet transport as everything else (verified 2026-08-09, `Organizational Identity Graph/FINDINGS.md` F-02). A counterparty who never receives it will pay to a dead account. Not a *security* failure — funds do not reach an attacker — but an operational one, and it needs an explicit answer rather than discovery in production. The unconditional-reattachment pattern from `Multi-Device Contacts/FINDINGS.md` Design Session 10 is the obvious precedent.
 
 **Q-05 · Duress-signed cards.** Someone coerced into signing a card pointing at an attacker's account defeats the construction entirely. The duress cluster applies as it does everywhere, and D-08's age signal is the partial mitigation (a brand-new card at payment time is exactly the flag). Whether anything stronger is warranted here is undecided.
 
 **Q-06 · Multiple cards per contact.** Checking, savings, a crypto wallet — the request must specify which, and the selection UI is a place where a rushed user makes mistakes. Unscoped.
 
-**Q-07 · Third-party PII at rest.** Holding a counterparty's card means holding their banking details on your device. `#26` already has this property for received instructions, and the local DB is encrypted, but the exposure is real under a compromised or coerced device, and it is *someone else's* data with no control on their side. Consider deniable-partition handling (`#6`), the same recommendation F-07 made for org credentials.
+**Q-07 · Third-party PII at rest. — REWRITTEN by Design Session 3 (D-14), not closed.** *Full cards are no longer stored; only `{digest, first-seen, last-seen, masked tail}` is. But a digest over bank details is brute-forceable (~2⁴⁰–2⁵⁰ real-world entropy), so it remains PII for bank rails and is genuinely protective only for crypto addresses. The real gain is masked display, not storage elimination. Original framing below.* Holding a counterparty's card means holding their banking details on your device. `#26` already has this property for received instructions, and the local DB is encrypted, but the exposure is real under a compromised or coerced device, and it is *someone else's* data with no control on their side. Consider deniable-partition handling (`#6`), the same recommendation F-07 made for org credentials.
 
 ---
 
@@ -206,3 +208,64 @@ Q-01's product decision from Session 1 still stands, but it is a smaller decisio
 - Design the card-age and change-history surface (D-08) with SPEC.md §5's "security-critical screen" discipline.
 - Answer Q-04 (revocation delivery) using the unconditional-reattachment precedent.
 - Carry the D-10 scoping limit into any positioning material: this protects payments to physically-met counterparties, not payments to strangers.
+
+---
+
+## Design Session 3 — Card Transport: Send Every Time, Store a Baseline (2026-08-09)
+
+**Question raised:** should the counterparty's card be held on the recipient's device at all, or sent fresh with every request?
+
+**Answer: send it every time — and keep a minimal comparison baseline.** The transport instinct is right and closes a real open problem. Dropping storage *entirely* would remove the primary BEC defense, so the two are complements rather than alternatives.
+
+### D-11 · Sending the card with every request — adopted
+
+Three properties, all of them wins:
+
+- **Freshness is automatic.** Every request carries current details, so "I closed that account" propagates with the next payment rather than needing a separate revocation broadcast over the manual share-sheet transport. This closes Q-04 (see below) without new mechanism.
+- **Each request is self-contained.** The recipient verifies the card's signature against the identity key they already pinned at the UWB exchange — no dependency on what they happen to hold locally. Same property that made the org graph's artifacts independently verifiable (`Organizational Identity Graph/FINDINGS.md` D-10).
+- **Survives recipient device loss or reinstall.** A counterparty who re-pairs is immediately functional; nothing needs re-sending out of band.
+
+### D-12 · Storage-free removes change detection, which *is* the BEC defense
+
+`#26`'s rule (2) — *"changes must be signed by the same key, and the UI diffs loudly (⚠ account number changed from the instructions received June 3)"* — requires remembering a previous value. With nothing stored, there is nothing to compare against.
+
+The BEC playbook is precisely a **last-minute change of banking details**. A design where every request arrives fresh and unremarkable renders that change invisible: the attack becomes indistinguishable from normal operation. This is not a degradation at the margin; it removes the specific control the feature exists to provide.
+
+Two further losses follow:
+
+- **Card age (D-08) disappears.** "Unchanged since March" versus "created four minutes ago" is a memory-dependent signal.
+- **D-07's strongest claim weakens.** The "fully deceived victim cannot lose the money" property assumed a pinned destination. If the counterparty is themselves coerced into signing a fresh card (Q-05), a stored baseline raises a loud diff; with no baseline, the attacker's card arrives looking entirely ordinary.
+
+### D-13 · Resolution — authoritative content in transit, tripwire at rest (supersedes D-06's storage model)
+
+- **The card in the request is the authoritative content.** It carries the destination, it is verified per request, and it is what the payment acts on.
+- **The stored record is a tripwire, not a dependency.** Persist only `{digest, first-seen, last-seen, masked tail}` — never the full details.
+
+That baseline is sufficient for all three defensive behaviours: change detection (digest comparison), age (first-seen), and a diff the user can act on — *"account ending ···4471 → ending ···8823, changed today."* Masking the displayed value arguably improves the diff over `#26`'s original framing, since a stale full account number on screen is itself something a confused user might act on.
+
+Q-04's revocation problem then resolves as a side effect rather than a mechanism: sign a replacement card, the next request carries it, the recipient sees a loud diff. No broadcast, no delivery guarantee needed.
+
+### D-14 · The digest's privacy benefit is partial, and must be described as such
+
+A stored digest is weaker protection than it appears for bank rails. Account and routing numbers carry low entropy — very roughly 2⁴⁰–2⁵⁰ once real-world structure is accounted for (a few tens of thousands of valid ABA routing numbers, account numbers typically 8–12 digits) — so an attacker holding the device can brute-force a digest back to the account. Salting does not help, because the salt must be stored alongside it.
+
+- **Crypto addresses:** the digest is genuinely protective (2¹⁶⁰), and the addresses are public anyway.
+- **Bank details:** treat the digest as PII regardless. It belongs in the encrypted local DB with everything else.
+
+This reframes Q-07 rather than solving it. The card was always going to live in an encrypted database; the real exposure was a coerced or compromised *unlocked* device, and a digest does not help there either. The genuine improvement is the **masked display** — casual inspection shows `···4471` rather than full details. That is a reduction in harm, not an elimination, and Q-07 should say so rather than implying the digest closes it.
+
+---
+
+### Session 2's open questions, revisited
+
+- **Q-04 (revocation delivery) — closed.** Dissolved by D-11: the current card always travels with the request, so there is no stale-card state to repair and no broadcast to deliver.
+- **Q-05 (duress-signed cards) — unchanged, and now more clearly load-bearing.** The stored baseline is the only thing that flags an attacker's freshly-signed card, which makes D-13's tripwire the mitigation rather than an optimisation.
+- **Q-06 (multi-card selection) — partially simplified.** Selection moves to the sender at send time, on the device of the person who knows which account they want, rather than the recipient choosing among stored cards. The rushed-user risk shifts rather than vanishing.
+- **Q-07 (third-party PII at rest) — rewritten, not closed.** See D-14. Reduced to masked display plus a brute-forceable digest for bank rails; genuinely protective for crypto rails.
+
+### Action items
+
+- Update D-06's composition table: the card is long-lived *at the owner*, transmitted per request, and retained by the recipient only as a baseline record.
+- Specify the baseline record shape `{digest, first-seen, last-seen, masked tail}` alongside the request→card digest binding when this is scoped into `#26`.
+- Q-07 in Session 2 should be read through D-14 — the digest is a partial mitigation, not a solution.
+- Diff and age surfaces (D-08, D-13) remain a security-critical screen per SPEC.md §5 discipline.
