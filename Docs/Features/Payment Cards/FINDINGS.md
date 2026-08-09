@@ -25,9 +25,10 @@ The industry's own best practice is a verbal code agreed with your title company
 |---|---|---|---|
 | Content | "This payment key is mine" | "Value reaching me goes to account ···4471" | "I am asking you for $5,000" |
 | Signed by | Identity key (SE) | Payment key (SE) | Payment key (SE) |
-| Authored | Once per device | Once, ahead of time | Per event |
+| Authored | Once per device | Content once, ahead of time; signed per recipient at send (D-15) | Per event |
 | Lifetime | Long-lived, versioned | Long-lived, versioned, expiring | One-shot, expiring |
 | Held by | Owner; sent with every request | Owner; sent with every request (D-03) | Transient |
+| Bound to | The signing device | The recipient (D-15) | The payer (D-11) |
 | Security role | Roots the payment key in the pinned identity | **Constrains the destination** | Proves the ask |
 
 **Correction (2026-08-09).** The original D-01 asserted both artifacts were *"biometric-gated by construction (SE key use already requires a biometric gate — not a new property to build)."* **This was false.** The identity key is created with `[.privateKeyUsage]` only (`Key+Manager.swift:94-97`) and `signData` calls `SecKeyCreateSignature` with no `LAContext` and no prompt (`Key+Manager.swift:315-322`). Identity-key signing is **silent on an unlocked device**. Only the vault key carries `.biometryCurrentSet + .devicePasscode` (`Key+Manager.swift:655`); `shardCustody` is explicitly *"no biometric flag"* (`Key+Manager.swift:749`).
@@ -162,6 +163,7 @@ where `value` carries the card's own canonical, length-prefixed layout:
 ```
 cardID(36) ∥ version(UInt32 BE) ∥ rail(1) ∥ LP(destination tuple…)
           ∥ LP(label) ∥ LP(payeeName) ∥ LP(institution) ∥ currency(3, ISO-4217; 0x000000 = any)
+  ∥ LP(recipientKeyFingerprint)                                    ← D-15
 ```
 
 Per-rail destination tuples, in fixed field order:
@@ -246,6 +248,34 @@ One dividing rule, and it is what makes the copy discipline in [Positioning](#po
 
 **Verified but flagged → render, flag prominently.** New destination, recently changed, expired card, currency mismatch. Per SPEC §5 discipline.
 
+### D-15 · Cards are recipient-bound, and signed lazily at send
+
+The card's signing payload carries `LP(recipientKeyFingerprint)`, exactly as D-11's request does.
+
+**Why: it makes depth filtering a hard gate on both artifacts instead of one.** D-11's payer binding already protects requests against manual transport — the binding is inside the signed bytes, so moving the `.occ` file by share sheet or email cannot retarget it, and minting a request for a hidden contact is impossible because the app has no fingerprint to bind. Cards had no equivalent: being unaddressed is what made them reusable, and it meant a coerced card delivered through any channel verified for anyone holding the payee's pinned key.
+
+With binding, a card coerced at a duress depth is usable only against contacts the coercer could select — by construction, the ones classified non-sensitive. **This closes Q-01's outranking residual for every hidden contact.**
+
+**It does not cost what it appears to.** The obvious objection is N signatures per card version, and for a title office with 200 clients that reads as F-02's arithmetic all over again. It dissolves under lazy signing:
+
+- The **content** is authored once and lives in the Vault unsigned, with a version.
+- The **signature** is minted at send time, when the recipient is already known and a presence evaluation is already happening for the request.
+- Cache `{recipientFingerprint → signature}` beside the content; mint on first send to a given payer, reuse after, invalidate the whole set on a version bump.
+
+N never materializes. A card update costs **zero** signatures — it bumps the version and propagates lazily through D-03, which is already how freshness works. The send-side arithmetic is unchanged, because nothing here requires a proactive broadcast.
+
+**Details that matter:**
+
+- **Version stays global to the content**, not per-recipient. "This is the fifth revision of my card" is meaningful across counterparties and keeps D-04's rollback rules uniform. A counterparty added later receiving v5 as their first card is harmless — they have no baseline, so it reads as first-seen.
+- **`cardDigest` now differs per recipient**, since the fingerprint is inside the signed payload. That is correct: a request to Alice binds Alice's card digest.
+- **`destinationDigest` is unaffected**, and must stay that way. It covers the rail tuple only (D-02, D-10). Folding the recipient into it would give two payers different digests for the same account and break the tripwire — a trap worth naming, since both digests now live in the same payload.
+- **The certificate stays unbound.** It states that a payment key belongs to an identity key; that is harmless to anyone who sees it, and binding it would add signatures for no gain.
+- **The request keeps its own payer binding**, now partly redundant — a request referencing a card bound to someone else fails anyway. Kept deliberately, so the request remains independently meaningful rather than deriving its security from another artifact.
+
+**Pre-implementation check:** whether SE signing batches under a single pre-evaluated `LAContext` or costs one prompt per signature. Lazy signing keeps this to two signatures per send in the normal case, so it is no longer load-bearing — but `Master Feature & Expansion Analysis.md` §18 flags it as unestablished, and it decides whether any future bulk re-issue flow is viable at all. Cheap to settle; settle it.
+
+**What is given up:** broadcasting a card to a counterparty without a signing action. D-13 already puts that at a ceremony, so nothing real is lost. `#26` reuse survives intact — the owner never re-enters banking details, which is what that promise was about.
+
 ---
 
 ## Threat model
@@ -256,6 +286,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 
 - **Forged certificate, card or request** — needs SE-held keys. Hardware-excluded.
 - **Mix-and-match** (genuine request + attacker's card) — D-02's `cardDigest` binding.
+- **Retargeting a coerced artifact by moving the file.** Both card (D-15) and request (D-11) bind their counterparty inside the signed bytes, so share-sheet, email or AirDrop delivery to a different contact fails verification. Recipient selection is a hard gate on artifact creation, not a UI convenience.
 - **Backdated card faking age** — D-06 reads locally-observed `firstSeenAt`.
 - **Silent duress card.** A coerced card *must* change the destination digest and bump the version, so it always renders as a loud diff, and it cannot forge age. **A duress attacker cannot make a change quiet.** Q-01's exposure narrows to two cases: the first card from a contact (mitigated by D-13), and a payer who sees the diff and proceeds anyway.
 - **Rollback to an older signed card** — D-04's `version < stored` refusal, *provided* the payer has seen the newer one.
@@ -272,7 +303,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 - **Baseline row deletion on an unlocked payer device.** Poisoning is closed by D-04 (a stored row is a signed card and cannot be forged); deletion remains possible and fails safe — the next card reads as first-seen and fires the age signal.
 - **Passcode-path signing.** D-09's `.userPresence` means a coercer who knows the passcode can sign. Deliberate trade against `.biometryCurrentSet`'s re-enrolment invalidation.
 - **First card from a contact**, where no baseline exists by construction. D-13 is the mitigation.
-- **A duress-signed card outranks what hidden contacts hold, and cannot be recalled.** Q-01 accepts this deliberately — the alternative is a duress-detection oracle. Bounded by `expiresAt` and by re-issuance reaching contacts, never eliminated.
+- **A duress-signed card outranks what a *visible* contact holds, and cannot be recalled.** Q-01 accepts this deliberately — the alternative is a duress-detection oracle. D-15's recipient binding confines it to contacts the coercer could select; `expiresAt` and re-issuance bound it in time. Never eliminated.
 
 ### If the identity key itself is recovered
 
@@ -427,7 +458,9 @@ Three properties already in the design, none of which the coercer can defeat:
 - **Its age cannot be forged.** D-06 reads locally-observed `firstSeenAt`, not the signed `createdAt`.
 - **It expires.** The mandatory `expiresAt` ([Revocation](#revocation)) bounds the window without requiring any channel.
 
-**The residual, stated plainly: a duress-signed card cannot be recalled.** Coerced into signing version 7 while the hidden contacts hold version 6, the operator can later author version 8 — but only contacts who *receive* it are protected, and D-04's own version rule will accept v7 as newer from anyone who never saw v8. This is revocation case 4 in a different costume, and it has the same answer: supersede and outlive, never retract.
+**The residual, narrowed by D-15 and stated plainly.** A duress-signed card still cannot be recalled: coerced into signing version 7, the operator can later author version 8, but only contacts who *receive* it are protected, and D-04's version rule accepts v7 as newer from anyone who never saw v8. Supersede and outlive, never retract — revocation case 4 in a different costume.
+
+**What D-15 removes:** because the card now binds a recipient, a coerced card is only usable against contacts the coercer could *select* — those visible at the coercion depth. Hidden contacts are unreachable by a coerced card, not merely unlikely to be reached. The residual is therefore bounded to the contact set the operator deliberately classified as non-sensitive, which is the trade this whole answer is built on. Manual transport of the `.occ` file does not widen it, because the binding is inside the signed bytes.
 
 **Required: stamp the owner's card store with the depth it was authored at, and on return to depth 0 prompt to re-issue, flagging which contacts have not yet received the new version.** That flag is the only thing standing between a coerced signature and an indefinite window.
 
@@ -577,6 +610,7 @@ Previously recorded as "closed." It is four cases.
 - ~~Rule on Q-06~~ — ruled 2026-08-09 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
+- Settle whether SE signing batches under one pre-evaluated `LAContext` (D-15) — not load-bearing under lazy signing, but it decides whether any bulk re-issue flow is possible. `Master Feature & Expansion Analysis.md` §18 flags it as unestablished.
 - Build the loud key-change invalidation (Q-07) inside this feature. No Multi-Device dependency; R1's priority stands as set.
 
 **Design:**
@@ -618,6 +652,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-07 | Session 2 D-10 (scoping half) |
 | D-08 | Session 2 D-10 (prior art half); **CoP framing withdrawn** |
 | D-09 – D-14 | Gap review, 2026-08-09 |
+| D-15 | Gap review, 2026-08-09 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-09 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-09** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
 | Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
