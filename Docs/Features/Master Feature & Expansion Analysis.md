@@ -392,6 +392,8 @@ Dual-signature format for artifacts whose validity must outlive ECDSA's quantum 
 **iOS constraint:** Gated on SDK verification of SE ML-DSA support. ML-DSA-87 signatures run ~4.6 KB — irrelevant for documents, but worth noting against #21's padding buckets if ever used on the wire. New domain prefixes only, per IDENTITY_CHALLENGE_PROTOCOL's domain-separation mandate — never modify existing signing paths.
 
 > **Ruling (July 2026):** Software ML-DSA key compromise still can't forge anything (needs the SE) — worst case equals today's status quo. Run CRYPTO_REVIEW_CHECKLIST §4 on cross-protocol separation for every new prefix. Medium lift, gated on SDK support. **Priority: Mid-term.**
+>
+> **Addendum (August 9, 2026) — scope limit: this defends quantum, not SE extraction.** The ruling above establishes that software ML-DSA compromise alone can't forge. The converse is not stated and matters: the ML-DSA private key is held *"wrapped under the hybrid local DB key,"* which is itself SE-derived (`Key+Manager.swift:468`) — so **SE key extraction unwraps the ML-DSA half too.** Hybrid signatures put the second lock's key inside the first lock. That is fine against the threat this feature is for (Shor breaks P-256 from the public key; AES-256 survives Grover), but it means `#23` adds *zero* defence against a hardware SE compromise. Anything relying on `#23` for SE-extraction resistance is relying on the wrong control — the surviving defences there are locally-observed state and physical presence, not signatures. Raised while scoping Verified Payment Cards; see [Payment Cards/FINDINGS.md](Payment%20Cards/FINDINGS.md) threat model, "If the identity key itself is recovered."
 
 ---
 

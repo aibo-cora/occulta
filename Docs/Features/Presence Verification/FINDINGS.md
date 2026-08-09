@@ -66,7 +66,9 @@ The extension is to carry that pattern to non-payment requests (a request for mo
 
 ---
 
-## Open Questions (Unresolved)
+## Open Questions
+
+Q-01 is unresolved. Q-02 and Q-03 were answered on 2026-08-09 by the payment-cards design pass, which had to specify the request artifact concretely; both are kept here with their answers rather than deleted, since they belong to this construction and not only to payments.
 
 ### Q-01 · The "I lost my phone" adaptation — the real residual, and it is behavioral
 
@@ -78,15 +80,19 @@ This is the same class of defense as the verbal safe word that `#15`'s §1 posit
 
 Whether that trade is acceptable is the question this whole session turns on, and it is a product decision, not a protocol one.
 
-### Q-02 · Action-string wording is security-critical and unspecified
+### Q-02 · Action-string wording is security-critical and unspecified — **answered 2026-08-09**
 
 The security argument in D-02 collapses entirely if the signed statement is ambiguous about **direction and beneficiary**. "$5,000 transfer between you and Mom" is signable under a plausible pretext ("your mother is sending you money, sign to receive"). "I am asking Mom for $5,000, to be sent to account ···4471" is not.
 
-This needs the same treatment SPEC.md §5 already gives the approval screen (*"the security-critical screen"*) — a specified, constrained vocabulary, not free text supplied by the requesting app. Unresolved.
+This needs the same treatment SPEC.md §5 already gives the approval screen (*"the security-critical screen"*) — a specified, constrained vocabulary, not free text supplied by the requesting app.
 
-### Q-03 · Replay and expiry semantics
+**Answered by [Payment Cards/FINDINGS.md](../Payment%20Cards/FINDINGS.md) D-11, by deleting the field.** No action string travels at all: the request carries structured data (amount, currency, card digest, payer fingerprint), and the *verifying* device generates the sentence from its own localized template. Direction and beneficiary become unambiguous by construction rather than by discipline, nothing localizes on the wire, and nothing can impersonate app chrome. An optional free-text note may still travel under SPEC.md §5's existing `contextNote` rules, carrying context and never security meaning.
 
-A signed request must be one-shot and expiring, or a legitimate request from last year becomes a replayable artifact. SPEC.md §3.4's existing nonce-store and window constants are the obvious precedent, but the timescales differ — an asynchronous request may legitimately sit unread for hours, unlike a 120 s presence window. Not designed.
+### Q-03 · Replay and expiry semantics — **answered 2026-08-09**
+
+A signed request must be one-shot and expiring, or a legitimate request from last year becomes a replayable artifact. SPEC.md §3.4's existing nonce-store and window constants are the obvious precedent, but the timescales differ — an asynchronous request may legitimately sit unread for hours, unlike a 120 s presence window.
+
+**Answered by [Payment Cards/FINDINGS.md](../Payment%20Cards/FINDINGS.md) D-11.** `expiresAt` inside the signed payload, inheriting `SignedAttribute`'s tamper-proofing; default window ~72 hours, author-adjustable within a cap; one-shot via a consumed-`requestID` store retained until each entry's own expiry, then dropped. The window has an upper bound the original question did not identify: it is the only control bounding replay of a stale card+request pair against a payer who never received the newer card.
 
 ---
 
@@ -105,7 +111,7 @@ Independently of that decision, `#27`'s Second Opinion component should be unshe
 - Answer Q-01 as a product decision before any protocol work: is a policy-dependent, honestly-described defense acceptable here?
 - Master doc `#15` addendum: correct the claim that `#27` is *"built entirely on top of this primitive"* (D-04) — two of its three components are not.
 - Unshelve `#27`'s Second Opinion component independently of `#15`.
-- If pursued: scope Q-02 (constrained action-string vocabulary) and Q-03 (replay/expiry) alongside `#26`, not separately — same primitive, same release.
+- ~~If pursued: scope Q-02 (constrained action-string vocabulary) and Q-03 (replay/expiry) alongside `#26`, not separately~~ — done 2026-08-09; both are specified in [Payment Cards/FINDINGS.md](../Payment%20Cards/FINDINGS.md) D-11, scoped into `#26` as recommended.
 - Cross-reference `Organizational Identity Graph/FINDINGS.md` D-15, which reached the same principle from the enterprise side.
 
 ---
@@ -114,7 +120,7 @@ Independently of that decision, `#27`'s Second Opinion component should be unshe
 
 Design Sessions 2–3 (2026-08-09) applied D-01's construction to payments — pre-authored signed cards carrying a destination, composed with the signed request, plus their transport and storage model. That work outgrew this doc and now lives in **[Payment Cards/FINDINGS.md](../Payment%20Cards/FINDINGS.md)**, scoped as an extension of `#26`.
 
-What remains here is what concerns `#15` and `#27` specifically: the intent-vs-circumstance construction (D-01, D-02), its scope limit (D-03), the `#27` dependency correction (D-04), the `#26` relationship (D-05), and the three open questions above.
+What remains here is what concerns `#15` and `#27` specifically: the intent-vs-circumstance construction (D-01, D-02), its scope limit (D-03), the `#27` dependency correction (D-04), the `#26` relationship (D-05), and the open questions above — of which only Q-01, the behavioural residual, is still unanswered.
 
 Two conclusions from that work matter to this doc:
 
