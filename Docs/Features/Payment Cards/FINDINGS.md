@@ -272,7 +272,16 @@ N never materializes. A card update costs **zero** signatures — it bumps the v
 - **The certificate stays unbound.** It states that a payment key belongs to an identity key; that is harmless to anyone who sees it, and binding it would add signatures for no gain.
 - **The request keeps its own payer binding**, now partly redundant — a request referencing a card bound to someone else fails anyway. Kept deliberately, so the request remains independently meaningful rather than deriving its security from another artifact.
 
-**Pre-implementation check:** whether SE signing batches under a single pre-evaluated `LAContext` or costs one prompt per signature. Lazy signing keeps this to two signatures per send in the normal case, so it is no longer load-bearing — but `Master Feature & Expansion Analysis.md` §18 flags it as unestablished, and it decides whether any future bulk re-issue flow is viable at all. Cheap to settle; settle it.
+**Multi-recipient delivery already exists, with a precedent of exactly this shape.** `CryptoManager.seal(sealedPayload:groupID:recipients:)` produces one shared outer ciphertext plus N per-recipient wrapped envelopes, and `OccultaBundle.RecipientPayload` (`OccultaBundle.swift:550`) carries **per-recipient distinct content** — `prekeyBatch`, `shardOperations`, `custodyManifest`, `expectedShards`. Shard distribution is the working instance: `prepareShards` signs N distinct artifacts, one per trustee, delivered in one bundle. Recipient-bound cards are that pattern with a new payload type.
+
+**Requirement inherited:** every per-recipient field in `RecipientPayload` is tier-padded to fixed size with filler beyond the real count — `shardOperations` carries `.unsupported` entries, and `custodyManifestCount` exists because a zero count is otherwise ambiguous between "attempted and found nothing" and "never attempted." A card field must do the same: always present, tier-padded, with an explicit attempted-signal where absence is meaningful. Otherwise the presence or size of a card in a bundle leaks who is transacting — the `#21` traffic-shape concern the rest of the envelope already handles.
+
+**Pre-implementation check — SE signing under one `LAContext`.** Partially settled, 2026-08-09.
+
+- *Established:* the vault stores one pre-evaluated `LAContext` for a session (`Vault+Manager.swift:163`) and reuses it across many SE operations, with `Key+Manager.swift:638` stating the intent — *"pre-evaluated once per session; passed to SE to avoid per-op prompts."* A shipping pattern.
+- *Not established:* nothing in the repo exercises a `.userPresence`-protected **signing** key with a reused context, because no such key exists. The apparent precedent — `prepareShards` signing N shards — prompts zero times, since the identity key carries no biometric flag at all (D-01's correction). Cannot be verified off-device; `TestKeyManager` bypasses the SE by design.
+- *The detail that decides it:* the context is supplied via `kSecUseAuthenticationContext` when **retrieving** the key, and the returned `SecKey` handle carries the authorization — this is what `retrieveVaultPrivateKey(context:)` does. But `signData` calls `retrievePrivateKey()` **per signature** (`Key+Manager.swift:316`), which for a gated key is where each prompt lands. **The payment path must retrieve the authorized handle once per session and sign K times against it.** Written that way batching should hold; written like `signData` does today it will prompt K times.
+- *Test, on device:* create a `.userPresence` key, evaluate one `LAContext` with `.deviceOwnerAuthentication`, retrieve once with that context, sign K times against the handle, count prompts. Bounded by the vault's inactivity timer either way, and no `touchIDAuthenticationAllowableReuseDuration` is configured anywhere, so there is no cross-context window to fall back on.
 
 **What is given up:** broadcasting a card to a counterparty without a signing action. D-13 already puts that at a ceremony, so nothing real is lost. `#26` reuse survives intact — the owner never re-enters banking details, which is what that promise was about.
 
@@ -681,7 +690,8 @@ Previously recorded as "closed." It is four cases.
 - ~~Rule on Q-06~~ — ruled 2026-08-09 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
-- Settle whether SE signing batches under one pre-evaluated `LAContext` (D-15) — not load-bearing under lazy signing, but it decides whether any bulk re-issue flow is possible. `Master Feature & Expansion Analysis.md` §18 flags it as unestablished.
+- Run D-15's on-device `LAContext` batching test, and build the payment signing path to retrieve the authorized `SecKey` **once per session** rather than per signature as `signData` does today — that choice, not the SE, is what decides whether K signatures cost one prompt or K.
+- Tier-pad the card field in `RecipientPayload` to match `shardOperations` (D-15), including an explicit attempted-signal — otherwise a card's presence or size in a bundle leaks who is transacting.
 - Build the loud key-change invalidation (Q-07) inside this feature. No Multi-Device dependency; R1's priority stands as set.
 
 **Design:**
