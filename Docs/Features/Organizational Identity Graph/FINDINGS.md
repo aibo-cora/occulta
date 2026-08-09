@@ -195,6 +195,8 @@ Roster rotation requires K signatures from the *current* roster. Initial pinning
 
 This also puts abuse containment where the blast radius actually is: no single compromised or coerced admin can enroll anyone.
 
+> **Scope corrected by Design Session 4 (2026-08-09) — D-11.** The roster itself stands as designed. What does not: applying K-of-N to *every* attestation. That conflates roster changes (org-wide blast radius, K-of-N warranted) with individual enrollment or recovery (one-account blast radius, 1-of-N sufficient). Over-applying the threshold multiplies scheduling friction without proportionate security gain, and a control that gets routed around provides none. See D-11 for the per-event-class thresholds.
+
 ### D-06 · Flat graph, scoped population — Q-01 is dissolved, not solved
 
 **Refuse to build delegation.** Depth-1 only: every enrollment ceremony involves a root-roster holder, physically. No transitive vouching, no delegation depth or fan-out caps, no K-of-2 mitigations to evaluate. Q-01's entire question space disappears rather than being answered.
@@ -277,3 +279,135 @@ Gating discipline is unchanged — no SPEC.md yet. But the gate is no longer Q-0
 - Master doc Expansion A: fold in D-07's sharper separability argument — co-location removes the relay channel — which is a stronger claim than the August 9 addendum currently makes, and pairs with Session 2's correction that the separable half was non-differentiating.
 - Expansion H cross-reference (Q-02) is no longer on the critical path under this design; leave it with H rather than tracking it here.
 - No implementation-plan work until D-08 verifies.
+
+---
+
+## Design Session 4 — Friction Audit: K-of-N Scope, Event Frequency, Degraded Mode (2026-08-09)
+
+**Question raised:** is a physical K-of-N ceremony not an enormous amount of friction to reset a credential?
+
+**Answer: yes, and Session 3 applied more of it than its own security model requires.** One genuine design error (D-11), one wrong assumption underneath the friction estimate (D-12), one property of D-06 that was doing uncredited work (D-13), and one operational failure mode neither Session 3 nor the review caught (Q-04).
+
+### D-11 · K-of-N governs the roster, not every event — corrects D-05
+
+D-05 introduced the K-of-N pinned roster to close F-01 (root continuity): no single admin's lost or coerced device can brick the org or unilaterally enroll an attacker. That reasoning holds **for its actual scope**. D-05 then let K-of-N govern every attestation, which silently conflates events with very different blast radii:
+
+| Event | Threshold | Rationale |
+|---|---|---|
+| Roster change (add/remove a roster member) | **K-of-N** | Blast radius is the whole org; this is the case F-01 exists for |
+| Individual enrollment or recovery | **1-of-N** | Blast radius is one account |
+| Top-tier step-up (wire above policy threshold, production root) | **K-of-N** | By org policy, not protocol requirement |
+
+Requiring two roster holders physically present for a routine recovery buys very little over one and multiplies scheduling cost by exactly the amount that makes an org route around the control. **A control that gets bypassed provides no security** — over-applying the threshold is a security regression, not conservative design.
+
+Verification impact is small: the relying party's check becomes "≥1 roster signature for enrollment/recovery, ≥K for roster updates and policy-flagged step-ups." A threshold parameter on the same verification path (D-08), not a second mechanism.
+
+### D-12 · This is not a password reset — the frequency assumption underneath the friction estimate was wrong
+
+Reasoning about friction from helpdesk password-reset volume anchors on the wrong world. Under D-04 the daily credential is a passkey; the recovery event is not "I forgot my password" but "I lost the device holding my credential."
+
+Password-reset tickets are voluminous *because passwords are forgettable* — a driver absent from a passkey-first stack. Device loss runs on a multi-year cadence. For a population scoped per D-06, expected ceremony volume is single digits per year, not the ticket-queue figures the word "reset" evokes.
+
+Stated explicitly because the friction objection is the first thing any pilot org will raise, and answering it on the wrong frequency model concedes an argument that doesn't need conceding.
+
+### D-13 · Population scoping is a friction control, not only an architectural one — refines D-06
+
+D-06 narrows enrollment to high-privilege accounts to keep the graph depth-1 and dissolve Q-01. It does a second job not credited there: **it is also what makes the friction survivable.**
+
+At ~12 accounts that can move money and ~50 with production access, a handful of in-person events per year is negligible against the downside — the MGM helpdesk-reset incident ran to roughly $100M in reported cost. At full headcount the identical mechanism is indefensible. Same design, opposite verdict, determined entirely by scope. Scope is therefore a **load-bearing product parameter**, presented to a pilot org as a requirement rather than a preference.
+
+**Adjacent claim, flagged as unvalidated:** many orgs reportedly already require in-person reset for privileged accounts, where the standing complaint is that "a technician checked a badge" is unverifiable and doesn't survive audit. If true, this design adds *provenance to friction already being paid* rather than adding friction — which would substantially change the pitch. It is convenient enough to be worth distrusting; validate against a real org before it enters any positioning material.
+
+### Q-04 · Degraded mode when geography doesn't cooperate — open, must be answered before a pilot
+
+No roster holder is reachable: the account holder is travelling, remote, or between offices when the device is lost. As designed, recovery cannot complete until physical co-location happens — potentially a week or more of lost privileged access.
+
+Two candidate answers, neither evaluated:
+
+- **Time-boxed lower-assurance credential** with reduced privileges, converting to full assurance at the next in-person opportunity. This reintroduces a remote issuance path — precisely what this design exists to remove — so it requires its own threat analysis before being taken seriously, not a convenience carve-out.
+- **Privileged access stays suspended** until in-person recovery. Defensible for this population ("no production root from a hotel on a borrowed laptop" is the control working as intended), and free to implement — but only if stated as deliberate policy up front.
+
+**Recommendation:** default to suspension, state it during onboarding, and treat any lower-assurance path as a separate design pass carrying its own threat model. Left open rather than decided because it is a policy question for a pilot org, not a protocol question. It must be answered *before* a pilot, not discovered by a stranded engineer mid-incident — this is the kind of gap that kills a pilot when it surfaces late.
+
+### Action items
+
+- D-05: annotate the K-of-N scope correction (done, same date).
+- D-08 verification: include the per-event-class threshold (≥1 vs ≥K) in the hook-surface check — it affects what the integration must express.
+- Validate D-13's in-person-reset claim against a real org before it enters positioning.
+- Q-04 must be answered before any pilot commitment; default to suspension absent a reason to do otherwise.
+
+---
+
+## Design Session 5 — User Flows, Transport Reconsidered, Competitive Read (2026-08-09)
+
+**Question raised:** what does the end-user flow actually look like, what alternatives exist, and who is better at defending against social engineering today?
+
+Writing the flows out concretely — they had not been recorded anywhere — surfaced two findings that change the shape of the feature, and the competitive pass produced one uncomfortable answer worth recording before any positioning work.
+
+### Reference · The four flows
+
+**Flow A — Enrollment.** Actors: employee (E), roster holder (R), relying party (RP).
+
+1. E is added to a privileged group; the IdP marks the account as requiring Occulta-gated enrollment and issues a request ID.
+2. E and R meet physically (onboarding or a scheduled slot).
+3. UWB exchange at ≤25 cm — the shipped key-exchange ceremony, unchanged.
+4. R's device displays the action string ("Enroll credential for e.smith@corp — production access"); biometric confirm, SE signs.
+5. E's device displays the same string; biometric confirm, SE signs.
+6. Artifact (request ID, action string, timestamp, E's pubkey, both signatures) uploaded to the org's enrollment page.
+7. RP verifies roster-signature chain, outstanding request ID, timestamp freshness, employee signature. Passkey registration proceeds.
+
+**Flow B — Recovery (the helpdesk-attack case).** As A, except: the helpdesk opens the reset request but **cannot complete it** (no technician override — see Q-05); E arrives with a new device and a fresh SE identity key, the old one being unrecoverable by design; the ceremony re-establishes the key against R.
+
+**Flow C — Step-up.** The portal generates a request naming the action ("Approve wire $250,000 to ACME Corp, acct ···4471"); approvers confirm on their own devices against that exact string; the portal verifies before releasing funds. Threshold per D-11.
+
+**Flow D — Roster change.** K-of-N, in person, rare. Governs the pinned roster itself.
+
+### D-14 · The share-sheet transport objection does not apply to RP-directed artifacts — refines F-02
+
+F-02 established that Occulta has no automatic delivery channel post-pairing: every bundle reaching another *Occulta user* goes through a manual `UIActivityViewController` share sheet (verified against current code, 2026-08-09). That finding correctly killed D-01's standing-credential model, where the root must repeatedly push refreshed attestations to every employee.
+
+It does **not** transfer to this architecture, for three reasons: the artifact's destination is a *server*, not an Occulta peer; it is not secret, so an ordinary TLS upload to the org's own portal is sufficient; and the user is already at a computer completing onboarding or recovery when it is produced. A one-time file upload at a moment the user is already transacting is not meaningful friction, and it requires no network code in Occulta — the zero-server invariant is untouched, since the server is the RP's and sits outside the trust boundary.
+
+Recorded explicitly so F-02 is not later cited as a blanket transport objection to this design. F-02 stands as written for peer-to-peer delivery; it is out of scope here.
+
+### D-15 · Step-up is remote-capable; enrollment and recovery are not — content binding substitutes for presence
+
+D-07 argued co-location removes the relay channel that blocked `#15`. True, and it applies to Flows A, B, and D. **It is not required for Flow C**, and the reason generalizes into a clean rule:
+
+- **Enrollment and recovery establish a new key.** There is no content to bind against — the assurance sought is "this key belongs to this person," which only physical presence can supply. Co-location required.
+- **Step-up authorizes a described action against an already-established key.** The artifact names exactly what is being approved, so the assurance travels in the payload. Co-location unnecessary.
+
+This is why the relay attack that downgraded `#15` doesn't reach Flow C: a presence challenge is contentless, so relaying it succeeds. Relaying a content-bound approval means the genuine approver reads "approve wire $250,000 to ACME" and declines if they didn't initiate it. Same logic as `#26` (Verified Payment Instructions).
+
+**Residual, stated plainly:** content binding does not defend against an authorized approver being *deceived* into approving a transfer they believe is legitimate. That is authority abuse, and no cryptographic construction addresses it.
+
+**Sequencing implication worth weighing:** Flow C may be the better first wedge than Flow B. It is remote-capable (no scheduling friction), content-bound (immune to the relay attack), maps onto `#26` which already sits at Priority 1 on the consumer roadmap, and defends the Arup-class deepfake scenario that motivated this expansion's June wedge. Flow B carries the more compelling story but all of the geography problems (Q-04).
+
+### Q-05 · Does any real IdP support a genuine no-override policy? — verify alongside D-08
+
+Flow B's entire value rests on the helpdesk technician being *unable* to complete a reset without the artifact. If the IdP retains a break-glass override — and most do, deliberately, because lockout is an operational catastrophe — then the attacker's path is to social-engineer the override rather than the reset, and the guarantee is void.
+
+This is a deployment-configuration question, not a protocol question, but it gates the feature exactly as hard as D-08 does. Fold it into the same verification pass: can Okta/Entra express "for this account set, this reset path has no administrative override," and what does the org do when that policy strands someone (Q-04)?
+
+### Competitive read
+
+**The primary alternative is not a competitor product — it is pre-registered backup FIDO2 keys.** Issue privileged users two hardware keys, keep one in a safe. There is then no reset flow to attack at all. Roughly $50/user, no vendor, no ceremony, no integration, and it is what most competent security teams already reach for. It handles the large majority of this threat at a fraction of the complexity.
+
+Occulta wins only the residual: both keys lost, a key sitting in a departed employee's drawer, or an org needing the recovery event itself to be **provable to an auditor** rather than merely logged. Real, defensible, and small. This comparison belongs in any honest positioning material; omitting it would not survive first contact with a competent security team.
+
+**Purpose-built incumbents:** Nametag and HYPR Affirm (both already named in the Master doc's June 2026 addendum) do helpdesk identity verification today, and critically they work **remotely** — which this design structurally cannot. Their cost is precisely what Occulta's audience objects to: government-ID and biometric upload to a cloud vendor. Okta Identity Threat Protection and Entra Verified ID are the incumbents' native answers, bundled into stacks orgs already own. Process controls — manager approval over a pre-registered channel, callback to a known number, mandatory 24–72h delay with account-holder notification — are cheap, unglamorous, and effective against smash-and-grab attempts.
+
+**Honest ranking for helpdesk social engineering specifically:** (1) backup keys plus a no-reset policy, which eliminates the surface rather than defending it; (2) Nametag/HYPR, purpose-built and remote-capable; (3) process controls, partial and nearly free; (4) Occulta — strongest cryptographic property for the events it covers, no remote path, deliberately narrow scope, unbuilt.
+
+**Broader picture:** phishing is already solved by passkeys and Occulta adds nothing there; BEC/wire fraud is where Occulta is genuinely differentiated (D-15, `#26`); deepfake executive fraud is a strong fit with no iOS equivalent shipping (Google's Fake Call Detection is Android/RCS-only); insider threat is unaddressed here and largely across the field.
+
+**Synthesis:** the best answer to social engineering is to deploy phishing-resistant auth everywhere and remove the reset path entirely. Occulta is a specialist tool for the last mile of that — where a reset genuinely must occur and must be provable. Defensible and honest, but not a category-leading position, and positioning must not imply otherwise.
+
+**Vintage caveat:** this read draws on the Master doc's May–July 2026 competitive passes plus general knowledge, not a fresh vendor scan. Refresh Nametag/HYPR product and deployment status before any of it reaches external material.
+
+### Action items
+
+- Fold Q-05 into the D-08 verification pass — same conversation with the same IdP surfaces.
+- Weigh D-15's sequencing implication: Flow C (step-up) as first wedge rather than Flow B (recovery), given it is remote-capable and already adjacent to `#26`.
+- Refresh the Nametag/HYPR competitive read before positioning work.
+- Master doc Expansion A: consider adding the backup-FIDO2-key comparison — it is the alternative any evaluator raises first, and its absence would read as an oversight.
