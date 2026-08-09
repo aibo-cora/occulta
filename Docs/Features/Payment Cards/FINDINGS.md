@@ -1,15 +1,23 @@
 # Verified Payment Cards — Design Findings
 
 **Status:** Exploratory — no SPEC.md yet. Scoped as an extension of Consumer Feature `#26` (Verified Payment Instructions, `Master Feature & Expansion Analysis.md` §26), which is **Near-term** priority.
-**Origin:** Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2–3, which reached this design while looking for a construction of `#15` that the relay attack does not reach. Extended 2026-08-09 by a gap review that settled the key architecture, the payload layouts, the storage model, and the threat model; see [Provenance](#provenance).
+**Origin:** Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2–3, which reached this design while looking for a construction of `#15` that the relay attack does not reach. Extended 2026-08-10 by a gap review that settled the key architecture, the payload layouts, the storage model, and the threat model; see [Provenance](#provenance).
 
 ---
 
 ## Problem
 
-Business Email Compromise and payment-redirection fraud are the largest documented loss pool adjacent to this app: **$3.05B in BEC losses across 24,768 complaints** (FBI IC3 2025), **$275.1M in real-estate wire fraud alone** (up from ~$173M), with 86% of BEC losses moving by wire/ACH and effectively unrecoverable. The family-facing variant — voice-clone "grandparent" scams — accounts for a further **$2.4B in reported FTC losses for adults 60+**.
+Business Email Compromise and payment-redirection fraud are the largest documented loss pool adjacent to this app. From the **FBI IC3 2025 Internet Crime Report** (published 2026; 1,008,597 complaints, $20.877B total losses):
 
-> **[UNCITED]** These figures are carried from `#26` without sources. They are load-bearing for the priority ruling and for all positioning material, and the docs are discoverable (`Docs/Audit/LanguageRiskReview2026-08-01/`). Add report edition, URL, and retrieval date before any of this reaches public copy.
+- **BEC: $3,046,598,558 across 24,768 complaints** — the **#2 crime type by losses**, up from $2.77B the prior year, averaging ~$123K per complaint.
+- **Real-estate fraud: $275.1M across 12,368 complaints.**
+- **86% of BEC losses moved by wire transfer or ACH**, and are effectively unrecoverable.
+
+The family-facing side is a separate dataset and must not be conflated with the above. The **FTC's December 2025 report to Congress** records **$2.4B in total fraud losses reported by adults 60+ for 2024**, up roughly fourfold from ~$600M in 2020 — driven principally by investment, romance and impersonation scams. **Voice-clone "grandparent" scams are one impersonation subtype and are not separately quantified in that figure.** The FTC further estimates the true annual cost at **$10.1B–$81.5B** once underreporting is accounted for, so the reported number is a floor.
+
+Sources: [IC3 2025 Annual Report](https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf), [NAR on IC3 real-estate figures](https://www.nar.realtor/magazine/real-estate-news/online-real-estate-fraud-climbed-to-275m-in-2025-fbi-says), [FTC press release, Aug 2025](https://www.ftc.gov/news-events/news/press-releases/2025/08/ftc-data-show-more-four-fold-increase-reports-impersonation-scammers-stealing-tens-even-hundreds), [FTC report to Congress, Dec 2025](https://www.ftc.gov/news-events/news/press-releases/2025/12/ftc-issues-annual-report-congress-agencys-actions-protect-older-adults). Verified 2026-08-10.
+
+> **Corrected 2026-08-10.** The inherited text attributed the whole $2.4B to voice-clone grandparent scams and presented it alongside 2025 IC3 data. It is total 60+ fraud losses across all categories, for 2024. The *"up from ~$173M"* real-estate comparison was also carried from `#26` and remains unverified — drop it or source it before use.
 
 The attack is always the same shape: **redirect funds to an account the attacker controls**, usually via a last-minute "our bank details have changed."
 
@@ -31,7 +39,7 @@ The industry's own best practice is a verbal code agreed with your title company
 | Bound to | The signing device | The recipient (D-15) | The payer (D-11) |
 | Security role | Roots the payment key in the pinned identity | **Constrains the destination** | Proves the ask |
 
-**Correction (2026-08-09).** The original D-01 asserted both artifacts were *"biometric-gated by construction (SE key use already requires a biometric gate — not a new property to build)."* **This was false.** The identity key is created with `[.privateKeyUsage]` only (`Key+Manager.swift:94-97`) and `signData` calls `SecKeyCreateSignature` with no `LAContext` and no prompt (`Key+Manager.swift:315-322`). Identity-key signing is **silent on an unlocked device**. Only the vault key carries `.biometryCurrentSet + .devicePasscode` (`Key+Manager.swift:655`); `shardCustody` is explicitly *"no biometric flag"* (`Key+Manager.swift:749`).
+**Correction (2026-08-10).** The original D-01 asserted both artifacts were *"biometric-gated by construction (SE key use already requires a biometric gate — not a new property to build)."* **This was false.** The identity key is created with `[.privateKeyUsage]` only (`Key+Manager.swift:94-97`) and `signData` calls `SecKeyCreateSignature` with no `LAContext` and no prompt (`Key+Manager.swift:315-322`). Identity-key signing is **silent on an unlocked device**. Only the vault key carries `.biometryCurrentSet + .devicePasscode` (`Key+Manager.swift:655`); `shardCustody` is explicitly *"no biometric flag"* (`Key+Manager.swift:749`).
 
 The gate is a new property, and D-09 builds it. Until then, Q-01's duress exposure is worse than previously stated: a coercer holding an unlocked phone does not need to compel a biometric — they open the app and sign.
 
@@ -73,7 +81,7 @@ Transmitted each time, alongside the certificate — never referenced by digest 
 
 ### D-04 · The recipient stores the signed card in full, plus one locally-observed index
 
-**Ruled 2026-08-09 (Q-06): the tripwire wins over storage minimization.** The original design stored `{digest, first-seen, last-seen, masked tail}` and explicitly *not* the card, on PII grounds. That is reversed. Two tables:
+**Ruled 2026-08-10 (Q-06): the tripwire wins over storage minimization.** The original design stored `{digest, first-seen, last-seen, masked tail}` and explicitly *not* the card, on PII grounds. That is reversed. Two tables:
 
 ```
 StoredCard           (contactID, cardID)            → latest signed SignedAttribute blob, receivedAt
@@ -118,7 +126,7 @@ This is the standout property, and it is rare. Almost every anti-fraud control f
 
 Consider the grandparent scam with cards deployed. The payer's app holds a destination baseline for their child, unchanged for eight months. The request must reference a card the child signed, and the attacker cannot produce one.
 
-**Corrected framing (2026-08-09).** The original text read *"funds can only travel to the child's actual bank account."* That is the copy D-07 prohibits: Occulta never moves money, and the payer types the destination into their own bank. `#26`'s own wording is the correct one — the attacker's destination *"cannot even be **represented** as verified."*
+**Corrected framing (2026-08-10).** The original text read *"funds can only travel to the child's actual bank account."* That is the copy D-07 prohibits: Occulta never moves money, and the payer types the destination into their own bank. `#26`'s own wording is the correct one — the attacker's destination *"cannot even be **represented** as verified."*
 
 > So even against a victim who believes every word of the pretext, the attacker's destination cannot be represented as verified: the app shows an unsigned instruction to an account it has never seen, beside a card unchanged for eight months. What the victim does next is still theirs — but the decision has become **"ignore a plain warning," not "detect a lie."**
 
@@ -276,7 +284,7 @@ N never materializes. A card update costs **zero** signatures — it bumps the v
 
 **Requirement inherited:** every per-recipient field in `RecipientPayload` is tier-padded to fixed size with filler beyond the real count — `shardOperations` carries `.unsupported` entries, and `custodyManifestCount` exists because a zero count is otherwise ambiguous between "attempted and found nothing" and "never attempted." A card field must do the same: always present, tier-padded, with an explicit attempted-signal where absence is meaningful. Otherwise the presence or size of a card in a bundle leaks who is transacting — the `#21` traffic-shape concern the rest of the envelope already handles.
 
-**Pre-implementation check — SE signing under one `LAContext`.** Partially settled, 2026-08-09.
+**Pre-implementation check — SE signing under one `LAContext`.** Partially settled, 2026-08-10.
 
 - *Established:* the vault stores one pre-evaluated `LAContext` for a session (`Vault+Manager.swift:163`) and reuses it across many SE operations, with `Key+Manager.swift:638` stating the intent — *"pre-evaluated once per session; passed to SE to avoid per-op prompts."* A shipping pattern.
 - *Not established:* nothing in the repo exercises a `.userPresence`-protected **signing** key with a reused context, because no such key exists. The apparent precedent — `prepareShards` signing N shards — prompts zero times, since the identity key carries no biometric flag at all (D-01's correction). Cannot be verified off-device; `TestKeyManager` bypasses the SE by design.
@@ -490,7 +498,7 @@ Route positioning material through the same path `Docs/Audit/LanguageRiskReview2
 
 ## Open questions
 
-### Q-01 · Duress-signed cards — **answered 2026-08-09**
+### Q-01 · Duress-signed cards — **answered 2026-08-10**
 
 **Ruling: duress-signed cards are permitted by design. The feature behaves identically under coercion.** The answer is not prevention — prevention is unachievable and attempting it is a bug — but four separate properties: *don't detect, don't degrade, hide the targets, bound the damage.*
 
@@ -532,7 +540,7 @@ Three properties already in the design, none of which the coercer can defeat:
 
 **Required: stamp the owner's card store with the depth it was authored at, and on return to depth 0 prompt to re-issue, flagging which contacts have not yet received the new version.** That flag is the only thing standing between a coerced signature and an indefinite window.
 
-### Q-03 · PII at rest — **answered 2026-08-09**
+### Q-03 · PII at rest — **answered 2026-08-10**
 
 A digest over bank details is brute-forceable: account and routing numbers carry roughly 2⁴⁰–2⁵⁰ real-world entropy, and salting does not help because the salt must be stored alongside.
 
@@ -569,7 +577,7 @@ Keep them, and treat them as the most seizure-exposed rows in the feature: depth
 
 Consistent with `Organizational Identity Graph/FINDINGS.md` F-07's conclusion for org credentials, on a larger payload.
 
-### Q-04 · Competitive timing on bank rails — **answered 2026-08-09**
+### Q-04 · Competitive timing on bank rails — **answered 2026-08-10**
 
 The question assumed a future event. It already happened, and it lands elsewhere than expected.
 
@@ -585,9 +593,9 @@ The question assumed a future event. It already happened, and it lands elsewhere
 
 **Where the slice genuinely narrows:** euro-area bank-to-bank transfers, against a naive attacker supplying their own name and IBAN. Everything else — US rails, crypto, non-euro EU until July 2027, mule accounts in a matching name — is untouched.
 
-Sources: [Crédit Agricole CIB](https://www.ca-cib.com/en/news/securing-sepa-payments-verification-payee-service-becomes-mandatory-october-2025), [PwC Legal](https://legal.pwc.de/en/news/articles/verification-of-payee-requirements-vop-under-the-eus-instant-payments-regulation-ipr), [ECB](https://www.ecb.europa.eu/paym/retail/instant_payments/html/instant_payments_regulation.en.html), [Federal Reserve Financial Services](https://www.frbservices.org/financial-services/multiservice-solutions/payee-name-verification). Retrieved 2026-08-09.
+Sources: [Crédit Agricole CIB](https://www.ca-cib.com/en/news/securing-sepa-payments-verification-payee-service-becomes-mandatory-october-2025), [PwC Legal](https://legal.pwc.de/en/news/articles/verification-of-payee-requirements-vop-under-the-eus-instant-payments-regulation-ipr), [ECB](https://www.ecb.europa.eu/paym/retail/instant_payments/html/instant_payments_regulation.en.html), [Federal Reserve Financial Services](https://www.frbservices.org/financial-services/multiservice-solutions/payee-name-verification). Retrieved 2026-08-10.
 
-### Q-05 · `CRYPTO_REVIEW_CHECKLIST` — **closed 2026-08-09**
+### Q-05 · `CRYPTO_REVIEW_CHECKLIST` — **closed 2026-08-10**
 
 `#26`'s ruling requires `CRYPTO_REVIEW_CHECKLIST §4`, and the canonical document did not exist — while being cited by `README.md:144` as an instruction to **external contributors**, by four master-doc rulings, and by `Multi-Device Contacts/ROADMAP.md` as the R0 gate, where `FINDINGS.md:319` states *"nothing in this plan ships before it's created and run."*
 
@@ -595,7 +603,7 @@ Written: [`Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md`](../../Audit/CRYPTO_REVIEW_CHE
 
 **Sections this feature must answer specifically:** §4.3 for the new categories and payload layouts (D-02, D-10, D-12), §4.5 for D-09's `.userPresence` key and the binding certificate, §1 for justifying a second signing key at all, and §4.7 for the non-claims already listed in the threat model.
 
-### Q-06 · Storage minimization versus forgery detection — **ruled 2026-08-09: the tripwire wins**
+### Q-06 · Storage minimization versus forgery detection — **ruled 2026-08-10: the tripwire wins**
 
 The original D-04 justified minimal storage on PII grounds. Against that: the full destination must be displayed at payment time anyway; the baseline is the only surviving defence under key compromise, precisely because it is not cryptographic; and not storing the card leaves the payer dependent on a transport the attacker may control.
 
@@ -605,7 +613,7 @@ Two consequences beyond the storage shape, both recorded in D-04: storing the *s
 
 ### Q-07 · Key-change handling — card-local, **not** a Multi-Device dependency
 
-**Corrected 2026-08-09.** An earlier draft of this question claimed Multi-Device R1 (the `deviceID` concurrent-key model) was a prerequisite. It is not. D-09's certificate carries its own `deviceID` in the signed payload, so this feature keys `highestCertVersionSeen` on `(contactID, certDeviceID)` in **its own** table. The only thing card verification needs from `Contact.Profile` is the pinned identity public key, which today's single-slot model supplies. Cards work correctly in every scenario the app currently supports.
+**Corrected 2026-08-10.** An earlier draft of this question claimed Multi-Device R1 (the `deviceID` concurrent-key model) was a prerequisite. It is not. D-09's certificate carries its own `deviceID` in the signed payload, so this feature keys `highestCertVersionSeen` on `(contactID, certDeviceID)` in **its own** table. The only thing card verification needs from `Contact.Profile` is the pinned identity public key, which today's single-slot model supplies. Cards work correctly in every scenario the app currently supports.
 
 What is real:
 
@@ -617,7 +625,7 @@ What is real:
 
 **Unrelated hazard worth carrying:** Multi-Device's own Q-07 found that `processExpectedShards` treats a sender-key fingerprint mismatch as key rotation and hands shards back — a heuristic that cannot distinguish "rotated" from "second device." Card verification must never reuse that pattern. A card that fails to verify is unverifiable, full stop; never resolved by inferring rotation.
 
-### Q-08 · Receipts — **answered 2026-08-09, and the question was two questions**
+### Q-08 · Receipts — **answered 2026-08-10, and the question was two questions**
 
 `#26` records one receipt, after payment. There are two distinct artifacts here and they were being conflated.
 
@@ -687,7 +695,7 @@ Previously recorded as "closed." It is four cases.
 
 - Write `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` (Q-05). Blocks this and Multi-Device R0. Extract from the in-code blocks.
 - Specify the two digests, per-rail normalization table, and length-prefixed layouts (D-02, D-10).
-- ~~Rule on Q-06~~ — ruled 2026-08-09 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
+- ~~Rule on Q-06~~ — ruled 2026-08-10 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
 - Run D-15's on-device `LAContext` batching test, and build the payment signing path to retrieve the authorized `SecKey` **once per session** rather than per signature as `signData` does today — that choice, not the SE, is what decides whether K signatures cost one prompt or K.
@@ -707,7 +715,8 @@ Previously recorded as "closed." It is four cases.
 
 **Positioning:**
 
-- Cite the loss figures with edition and retrieval date.
+- ~~Cite the loss figures~~ — done 2026-08-10; IC3 figures confirmed exactly, FTC figure corrected (it is total 60+ fraud for 2024, not grandparent scams). The *"up from ~$173M"* real-estate comparison is still unsourced: drop it or source it.
+- **Never pair the FTC elder figure with the grandparent-scam framing in copy.** It measures all 60+ fraud; the subtype this feature addresses is not separately quantified anywhere, so no number should be attached to it.
 - Verify Q-04 (bank verification-of-payee timing) before positioning work.
 - Carry D-07's scoping limit and the copy rules into any positioning material; route through the language-review path.
 
@@ -721,7 +730,7 @@ Previously recorded as "closed." It is four cases.
 
 ## Provenance
 
-Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2 and 3; items renumbered for readability. Extended the same day by a gap review (this doc's D-09–D-14, the threat model, forensic cleanliness, positioning, and Q-06–Q-09).
+Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2 and 3; items renumbered for readability. Extended 2026-08-10 by a gap review (this doc's D-09–D-17, the lifecycle, the threat model, forensic cleanliness, positioning, and Q-06–Q-09).
 
 | This doc | Original |
 |---|---|
@@ -733,16 +742,16 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-06 | Session 2 D-08; **age source corrected to local observation** |
 | D-07 | Session 2 D-10 (scoping half) |
 | D-08 | Session 2 D-10 (prior art half); **CoP framing withdrawn** |
-| D-09 – D-14 | Gap review, 2026-08-09 |
-| D-15 | Gap review, 2026-08-09 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
-| D-16, D-17 | Gap review, 2026-08-09 — delivery acknowledgement and diff challenge |
-| Lifecycle | Gap review, 2026-08-09 — event model as specification, explicitly not as storage |
-| Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-09 |
-| Q-01 | Session 2 Q-05; **answered 2026-08-09** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
+| D-09 – D-14 | Gap review, 2026-08-10 |
+| D-15 | Gap review, 2026-08-10 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
+| D-16, D-17 | Gap review, 2026-08-10 — delivery acknowledgement and diff challenge |
+| Lifecycle | Gap review, 2026-08-10 — event model as specification, explicitly not as storage |
+| Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-10 |
+| Q-01 | Session 2 Q-05; **answered 2026-08-10** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
 | Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
-| Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-09** — Vault residence under the vault key, no dedicated store or sealing key, Secure Mode not `#6`, baseline retention |
+| Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-10** — Vault residence under the vault key, no dedicated store or sealing key, Secure Mode not `#6`, baseline retention |
 | Q-04, Q-05 | Unchanged / sharpened |
-| Q-06 – Q-09 | Gap review, 2026-08-09 |
+| Q-06 – Q-09 | Gap review, 2026-08-10 |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
 
 Retained in `Presence Verification/FINDINGS.md` because they concern `#15`/`#27` rather than payments: Session 1 D-01–D-05 (the intent-vs-circumstance construction), D-04 (the `#27` dependency correction), and Q-01 (the behavioural residual). **Q-02 and Q-03 of that doc are answered here by D-11** and should be cross-referenced from it.
