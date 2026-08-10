@@ -69,7 +69,17 @@ Three requirements follow:
 
 ### D-03 · The card travels with every request
 
-Transmitted each time, alongside the certificate — never referenced by digest alone. The payer also retains the last one received (D-04), but that is a fallback: freshness is a property of transmission, not of storage. Three consequences:
+Transmitted each time, alongside the certificate — never referenced by digest alone. The payer also retains the last one received (D-04), but that is a fallback: freshness is a property of transmission, not of storage.
+
+**Three delivery contexts, all permitted:**
+
+1. **At the UWB ceremony, card alone.** D-13's recommendation — a recommendation about *when*, not a restriction on *how*.
+2. **In a regular bundle alongside a request.** The main path, and what makes freshness automatic.
+3. **In a regular bundle, standalone, remotely.** A card update carrying no ask.
+
+Context 3 is not optional: **Q-01's post-duress re-issue depends on it.** Reaching only the contacts who happen to be transacting would leave everyone else holding the coerced version — precisely the people the re-issue exists for. Traffic shape is already covered, because a card field in `RecipientPayload` must be always-present and tier-padded (D-15), so a card-only bundle is indistinguishable from any other.
+
+Three consequences:
 
 - **Freshness is automatic.** "I closed that account" propagates with the next payment. No revocation broadcast, no delivery guarantee needed for the benign case (see [Revocation](#revocation)).
 - **Each artifact is self-contained.** The recipient verifies the certificate against the identity key pinned at the UWB exchange, then the card against the payment key the certificate carries. No dependency on local state. Same property that made the org graph's artifacts independently verifiable (`Organizational Identity Graph/FINDINGS.md` D-10).
@@ -140,6 +150,12 @@ The BEC playbook is definitionally a last-minute change. Pre-authoring turns tha
 
 - *"This destination has been unchanged since March"* — strong.
 - *"This destination was first seen four minutes ago"* — should stop a transaction cold.
+
+**Age is framed relative to the relationship, never absolutely.** Absolute age can simply be waited out: a card delivered standalone (D-03, context 3) ages quietly in a context with no payment pressure, so by the time a request arrives *"first seen today"* has become *"first seen last week"* and reads as ordinary. The comparison that matters is against how long the counterparty has been known:
+
+> You have known this contact since March. You have only paid this account since last week.
+
+A destination younger than the relationship stays visibly young for as long as that remains true, which is what removes the attacker's option to wait.
 
 **Age must be driven by `firstSeenAt`, never by the card's signed `createdAt`.** The signed timestamp is whatever the signing device claimed. A coercer with the owner's unlocked phone — Q-01's exact scenario — produces a freshly-signed card bearing a `createdAt` of eight months ago, and every signature verifies. `firstSeenAt` is written by the payer's own device on receipt and cannot be influenced remotely at all.
 
@@ -387,6 +403,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 - **Baseline row deletion on an unlocked payer device.** Poisoning is closed by D-04 (a stored row is a signed card and cannot be forged); deletion remains possible and fails safe — the next card reads as first-seen and fires the age signal.
 - **The consumed-`requestID` store is local, so one-shot is per-device and per-install.** A reinstall clears it, and each of a payer's devices keeps its own once multi-device lands — so within the ~72 h window the same request can be presented again and read as fresh. Not a double-payment, since Occulta moves no money; but *"pay me $5,000"* appearing twice and reading as legitimate both times is the class of confusion this feature exists to prevent. Bounded only by the request window, which is the argument for keeping that window short.
 - **Clock rollback on the payer's device** re-opens an expired request whose store entry has already been dropped. Needs an unlocked device, which affords worse attacks — recorded because expiry-based replay protection is only ever as good as the clock behind it.
+- **Pre-positioning a destination.** A coerced card delivered standalone (D-03, context 3) fires its diff at a moment with no payment pressure, where it is easily dismissed as *"they changed banks."* By the time a request arrives, the destination is established rather than new. Not silent — the diff did fire — but it fired when the user had least reason to care. Mitigated by D-06's relationship-relative age framing, which keeps a destination younger than the relationship visibly young no matter how long the attacker waits; not eliminated, since a payer who dismissed the first warning may dismiss the second.
 - **Passcode-path signing.** D-09's `.userPresence` means a coercer who knows the passcode can sign. Deliberate trade against `.biometryCurrentSet`'s re-enrolment invalidation.
 - **First card from a contact**, where no baseline exists by construction. D-13 is the mitigation.
 - **A duress-signed card outranks what a *visible* contact holds, and cannot be recalled.** Q-01 accepts this deliberately — the alternative is a duress-detection oracle. D-15's recipient binding confines it to contacts the coercer could select; `expiresAt` and re-issuance bound it in time. Never eliminated.
@@ -736,6 +753,7 @@ Previously recorded as "closed." It is four cases.
 
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
 - **The diff must be contact-wide, not per-lineage (Q-02).** Load-bearing, not cosmetic: a per-lineage diff makes minting a new `cardID` the coercer's cheapest move, and invalidates the "a duress card cannot be quiet" claim in both D-05 and the threat model.
+- **Age must render relative to the relationship, not absolutely (D-06).** Absolute age can be waited out by pre-positioning a card standalone; relationship-relative age cannot.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
 - The owner-side card store (D-12) — Vault entries under the vault key (Q-03), inheriting exact-match depth, rotation-on-activation, backup, and re-encryption.
 - Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
