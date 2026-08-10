@@ -837,13 +837,35 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 **Gating is internal, and shallower than one draft of this doc claimed.** Q-05 (the review checklist) is the one real gate. Q-07 turned out not to be a Multi-Device dependency at all — cards work on today's contact-key model, and the key-change handling they need is card-local. No other vendor's roadmap is involved, and no other feature blocks this one.
 
-**Transport friction is worst where the doc is most optimistic.** For real estate, one share-sheet action against a $300K wire is irrelevant. For the family case it is an elderly parent receiving a file attachment and knowing to open it in Occulta — the demographic `#27` describes as never navigating challenge/attestation vocabulary. The Share Extension plan (`Occulta/Features/ShareExtension/`) is the realistic mitigation and should be treated as a dependency for that audience.
+**Transport friction is inversely proportional to how well the wedge works.** For crypto counterparties and real estate it is negligible — one share-sheet action, against a permanent loss or a $300K wire. For the family case it is an elderly parent receiving a file attachment and knowing to open it in Occulta, the demographic `#27` describes as never navigating challenge/attestation vocabulary. The Share Extension plan (`Occulta/Features/ShareExtension/`) is the realistic mitigation and is a dependency for that audience specifically — which is one reason the wedge ranking puts family last rather than second.
 
-**Audience: the most mainstream-reaching item on the roadmap.** This is the feature that reaches people who would never install a privacy app — a home buyer installing because their title company asked, an adult child installing to protect a parent. `#27`'s install loop is physically verified by construction, since every install requires a UWB ceremony with someone already in the network.
+**Audience ceiling is mainstream; the entry point is not.** This is ultimately the feature that reaches people who would never install a privacy app — a home buyer installing because their title company asked, an adult child protecting a parent. But that is the ceiling, not the first cohort. The wedge ranking below sequences a technical entry ahead of the mainstream one, deliberately. `#27`'s install loop stays physically verified by construction, since every install requires a UWB ceremony with someone already in the network.
 
 **The risk is concentrated in one place: two-sided cold start.** Nothing about the design is uncertain; whether a title office can get clients to install an app mid-transaction is. `#26`'s ruling notes that *"one cautious title office can adopt unilaterally for its clients"* — that unilateral adoption is the thing to test before scaling investment. D-13 narrows it usefully: the install and the card exchange are one event.
 
-**Strongest wedge: real-estate/title.** Transaction value ($300K+) justifies friction, the parties already meet in person, and the loss is catastrophic and uninsured. Family case second, carrying `#27`'s viral loop — while noting it is the case the manual transport serves worst.
+### Wedge ranking (revised 2026-08-10 — crypto leads)
+
+**1 · Crypto payments between people who know each other.** The lead wedge. Four things line up that line up nowhere else:
+
+- **No incumbent at all.** VoP, CoP and the Fed service are bank rails. Exchange whitelists exist but not for self-custody, and none bind an address to a physically-met person.
+- **Losses are permanent.** Wire has a 24–72 h recall window and the IC3 kill-chain; crypto has neither. The recoverability argument that D-05 leans on is strongest here.
+- **The transport friction is least painful here.** F-02's manual share sheet is the thing that serves the family case worst — and crypto-literate counterparties handle files and share sheets without assistance. The lead wedge is the one the transport actually fits.
+- **`chainID` inside the signed destination is genuinely novel** (D-10), and wrong-chain sends are a leading cause of permanent loss.
+
+The competitive trend reinforces it: Q-04 established that verification-of-payee is closing on bank rails and does not touch crypto on any published timeline. The differentiated slice narrows toward crypto over time, so leading there is running with the trend rather than against it.
+
+**2 · Real-estate/title.** Biggest addressable dollar figure ($275.1M across 12,368 complaints), transaction value justifies friction, and the parties already meet in person so the ceremony is natural. Demoted from first because commercial wire-fraud services already sell here **with insurance**, and the honest differentiator against them — catching the *change* over weeks, and no vendor holding closing data — is real but subtle to argue against a policy that pays out. Institutional sales cycle on top.
+
+**3 · Small business paying recurring vendors.** Recurring payments mean the age signal accrues into something strong, the parties have usually met, and small firms have none of the dual-authorisation and positive-pay controls larger ones do.
+
+**4 · Family.** No product exists at all and it carries `#27`'s viral loop, so the reach ceiling is here. Ranked fourth because the manual transport serves it worst (an elderly parent receiving a file attachment) and the policy dependency is most acute — the *"I can't sign, my phone is gone"* adaptation is unsolved.
+
+**Not a wedge: cross-border freelance and remote contracting.** *(Corrected 2026-08-10 — listed as a use case in the first draft of this section, in error.)* VoP genuinely does not reach it, but the parties have generally never met physically, so there is no ceremony and no card. It fails D-07's own constraint. Occasional fits exist — a former colleague, a conference kickoff — but the general case is outside the closed loop, and it belongs with the exclusions below rather than the opportunities above.
+
+### Two scoping consequences of leading with crypto
+
+- **`.crypto` becomes the first-class rail** and needs to be complete at ship: CAIP-2 chain identifiers, the accepted-asset list promoted from optional, and hard-reject on mismatch (D-10). `.ukFPS` and arguably `.achUS` can follow later.
+- **The masking surface rule rises in priority.** It matters most exactly here, because vanity address generation makes a matching displayed tail cheap — so "full destination on the payment screen, masking only in history" is a ship blocker for the lead wedge, not a refinement.
 
 ### What this does that nothing else does
 
@@ -859,11 +881,9 @@ Cards answer a different question: **"is this the same account I have been payin
 **2 · An adult child protecting a parent.** No product exists here at all. Today the only defence is a safe word — leakable, forgettable. With cards exchanged at the last family visit, the parent's app already holds the daughter's account since March, and a voice clone cannot produce a signed card.
 *Counter:* the scam adapts to *"I can't sign, my phone is gone"* — `Presence Verification/FINDINGS.md` Q-01, unsolved. This converts a cryptographic problem into a behavioural one; it does not remove it.
 
-**3 · Cross-border freelance and contractor payments.** VoP is euro-area only until July 2027, CoP is UK banks, the Fed service is US institutions. Someone in Lisbon paying a developer in Buenos Aires has nothing, and no published timeline closes that.
+**3 · Small business paying recurring vendors.** BEC's core target. Large firms have dual authorisation and positive pay; small ones have an accounting package with a payee record anyone can edit. A vendor card exchanged at a site visit means a "we've changed banks" email cannot be represented as verified.
 
-**4 · Small business paying recurring vendors.** BEC's core target. Large firms have dual authorisation and positive pay; small ones have an accounting package with a payee record anyone can edit. A vendor card exchanged at a site visit means a "we've changed banks" email cannot be represented as verified.
-
-**5 · US residential real estate.** The headline wedge, and the one with a real incumbent. Commercial wire-fraud services already sell to title companies **with insurance**, which this does not have. The honest differentiator is narrower than the wedge framing implies: cards catch the *change* across weeks, and involve no vendor holding a database of who is buying which house. Worth something to some buyers; not obviously worth more than an insured product a title company can purchase today.
+**4 · US residential real estate.** Second wedge, and the one with a real incumbent. Commercial wire-fraud services already sell to title companies **with insurance**, which this does not have. The honest differentiator is narrower than the wedge framing implies: cards catch the *change* across weeks, and involve no vendor holding a database of who is buying which house. Worth something to some buyers; not obviously worth more than an insured product a title company can purchase today.
 
 ### Who would not use this
 
@@ -871,6 +891,7 @@ Cards answer a different question: **"is this the same account I have been payin
 - **Anyone unwilling to install an app and meet in person**, on both sides, before any money moves.
 - **Anyone who wants recourse** — no insurance, no chargeback, no vendor to sue.
 - **Anyone whose counterparty changes phones** — every card they signed stops verifying (D-03).
+- **Remote-only relationships**, including most cross-border freelance and contracting. No physical meeting means no ceremony and no card, whatever the payment rail. VoP does not reach these either; neither does this.
 
 ### The addressable pool is smaller than the documented one
 
