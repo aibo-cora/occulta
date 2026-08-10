@@ -21,6 +21,8 @@ Sources: [IC3 2025 Annual Report](https://www.ic3.gov/AnnualReport/Reports/2025_
 
 The attack is always the same shape: **redirect funds to an account the attacker controls**, usually via a last-minute "our bank details have changed."
 
+**These figures are the documented pool, not the addressable one.** D-07 puts payments to strangers permanently outside the closed loop, and much of BEC is vendor-impersonation between parties who have never physically met. See [Adoption](#adoption-and-viability) for the reconciliation, and the copy rule that follows from it.
+
 The industry's own best practice is a verbal code agreed with your title company at the start of a transaction — leakable, forgettable, and socially engineerable. `#26` established the cryptographic replacement. This doc extends it.
 
 ---
@@ -843,6 +845,41 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 **Strongest wedge: real-estate/title.** Transaction value ($300K+) justifies friction, the parties already meet in person, and the loss is catastrophic and uninsured. Family case second, carrying `#27`'s viral loop — while noting it is the case the manual transport serves worst.
 
+### What this does that nothing else does
+
+Every shipping control answers **"does this account belong to this name?"** — EU VoP, UK CoP, the Fed's Payee Name Verification, and the identity checks sold by wire-fraud vendors.
+
+Cards answer a different question: **"is this the same account I have been paying since March?"** Banks answer it poorly because they do not know a user's history with a counterparty; per-transaction vendor services do not answer it at all. Yet the last-minute change *is* the playbook — the attack is the change, not the name. Everything below is a variation on that one difference.
+
+### Use cases, with their honest counter
+
+**1 · Crypto payments between people who know each other.** The strongest fit, and the only one with no incumbent whatsoever. Today: copy-paste an address and eyeball four characters. Clipboard-hijacking is live and common, and wrong-chain sends are a leading cause of permanent loss. Exchange whitelists exist but not for self-custody, and none bind an address to a physically-met person. D-10 puts `chainID` inside the signed destination, so a re-pointed chain is a hard reject. VoP, CoP and the Fed service touch none of this — it is outside bank rails entirely.
+*Counter:* crypto-native users already run test transactions and keep address books; the gain is binding to a person, not to a label they typed.
+
+**2 · An adult child protecting a parent.** No product exists here at all. Today the only defence is a safe word — leakable, forgettable. With cards exchanged at the last family visit, the parent's app already holds the daughter's account since March, and a voice clone cannot produce a signed card.
+*Counter:* the scam adapts to *"I can't sign, my phone is gone"* — `Presence Verification/FINDINGS.md` Q-01, unsolved. This converts a cryptographic problem into a behavioural one; it does not remove it.
+
+**3 · Cross-border freelance and contractor payments.** VoP is euro-area only until July 2027, CoP is UK banks, the Fed service is US institutions. Someone in Lisbon paying a developer in Buenos Aires has nothing, and no published timeline closes that.
+
+**4 · Small business paying recurring vendors.** BEC's core target. Large firms have dual authorisation and positive pay; small ones have an accounting package with a payee record anyone can edit. A vendor card exchanged at a site visit means a "we've changed banks" email cannot be represented as verified.
+
+**5 · US residential real estate.** The headline wedge, and the one with a real incumbent. Commercial wire-fraud services already sell to title companies **with insurance**, which this does not have. The honest differentiator is narrower than the wedge framing implies: cards catch the *change* across weeks, and involve no vendor holding a database of who is buying which house. Worth something to some buyers; not obviously worth more than an insured product a title company can purchase today.
+
+### Who would not use this
+
+- **Anyone paying a stranger** — romance, investment, and fake-invoice fraud from vendors never met are permanently outside (D-07).
+- **Anyone unwilling to install an app and meet in person**, on both sides, before any money moves.
+- **Anyone who wants recourse** — no insurance, no chargeback, no vendor to sue.
+- **Anyone whose counterparty changes phones** — every card they signed stops verifying (D-03).
+
+### The addressable pool is smaller than the documented one
+
+The Problem section anchors on **$3.05B in BEC losses**; D-07 excludes payments to strangers. Those two facts sit sections apart and are never reconciled here.
+
+A large share of BEC is vendor-impersonation where the parties have a *business* relationship but have never physically met — outside the closed loop exactly as a romance scam is. So the addressable slice is **real-estate wire fraud ($275.1M across 12,368 complaints), plus the fraction of BEC involving physically-met counterparties, plus the family case — which has no dollar figure at all**, because grandparent scams are not separately quantified in any public dataset (see the Problem section's correction).
+
+That is not an argument against the feature. It is an argument that **$3.05B must never appear adjacent to a claim about what this addresses** — the same discipline [Positioning](#positioning-and-copy-discipline) already applies to the FTC elder figure, for the same reason.
+
 ---
 
 ## Action items
@@ -884,6 +921,7 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 - ~~Cite the loss figures~~ — done 2026-08-10; IC3 figures confirmed exactly, FTC figure corrected (it is total 60+ fraud for 2024, not grandparent scams), unsourced ~$173M comparison dropped here and upstream.
 - **Never pair the FTC elder figure with the grandparent-scam framing in copy.** It measures all 60+ fraud; the subtype this feature addresses is not separately quantified anywhere, so no number should be attached to it.
+- **Never pair the $3.05B BEC figure with a claim about what this addresses.** D-07 excludes payments to strangers, and much of BEC is vendor-impersonation between parties who never met physically. The addressable slice is smaller than the documented pool — see [Adoption](#adoption-and-viability). Same rule, same reason as the FTC figure above.
 - ~~Verify Q-04 (bank verification-of-payee timing)~~ — done 2026-08-10; EU VoP has been mandatory since 9 October 2025 and does not reach the US loss pool this feature is scoped against. See Q-04.
 - Carry D-07's scoping limit and the copy rules into any positioning material; route through the language-review path.
 
