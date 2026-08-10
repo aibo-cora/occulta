@@ -129,6 +129,8 @@ Storing the signed artifact rather than extracted fields buys three things, and 
 
 The last rule is the point. Without it a replayed older-but-validly-signed card renders as an ambiguous *"···4471 → ···8823, changed today"* that the user resolves by guessing direction. With it, rollback is a rejection rather than a judgement call.
 
+**A fifth rule, from D-14:** a version jumping implausibly far above `stored` is **rejected**, not accepted. `version` is signer-chosen, so a coerced `UInt32.max` would otherwise make the fourth rule permanently refuse every legitimate successor for that lineage.
+
 **Version does not close replay on its own.** A payer who never saw the newer card matches the replayed old one exactly, sees no diff, and reads its age as *old and stable* — the reassuring case. Only the request's expiry (D-11) bounds that.
 
 **Storage cannot be dropped entirely.** `#26` rule (2) — *"changes must be signed by the same key, and the UI diffs loudly"* — requires remembering a previous value. With nothing stored, a last-minute account switch is indistinguishable from normal operation, which is precisely the attack. See Q-03 and Q-06: the case for storing *more* than this has since strengthened three separate ways.
@@ -246,7 +248,7 @@ Direction and beneficiary are unambiguous by construction rather than by discipl
 
 An **optional** free-text note may travel under SPEC §5's existing `contextNote` rules. It carries context, never security meaning.
 
-**PV Q-03 answered:** `expiresAt` inside the signed payload, inheriting `SignedAttribute`'s tamper-proofing (`SignedAttribute.swift:22-25`). Default window **~72 hours**, author-adjustable within a cap — the 120 s presence window does not transfer, since a wire request legitimately sits unread over a weekend, but the window must stay short enough to bound D-04's replay residual. **One-shot** via a consumed-`requestID` store retained until each entry's own `expiresAt`, then dropped.
+**PV Q-03 answered:** `expiresAt` inside the signed payload, inheriting `SignedAttribute`'s tamper-proofing (`SignedAttribute.swift:22-25`). Default window **~72 hours**, author-adjustable up to a maximum the **verifier** enforces — see D-14, since a cap the author applies is no cap under coercion. The 120 s presence window does not transfer, as a wire request legitimately sits unread over a weekend, but the window must stay short enough to bound D-04's replay residual. **One-shot** via a consumed-`requestID` store retained until each entry's own `expiresAt`, then dropped.
 
 **No separate nonce field. `requestID` is the nonce**, and a second unique value would be redundant. But the construction differs from the precedent it is often compared to, and three of its properties are requirements rather than incidental facts:
 
@@ -296,6 +298,13 @@ One dividing rule, and it is what makes the copy discipline in [Positioning](#po
 **Unverifiable → not a card.** Bad signature, unpinned key, failed or rolled-back certificate, version rollback, forked lineage, unknown rail. The destination **must never render in copyable form**. A warning badge over a copyable account number is how a rushed user copies it anyway.
 
 **Verified but flagged → render, flag prominently.** New destination, recently changed, expired card, currency mismatch. Per SPEC §5 discipline.
+
+**Signed but out of bounds → not a card.** *(Added 2026-08-10 by the standing-check walk.)* Every numeric field in every artifact is chosen by the signer, so a valid signature says nothing about whether the value is sane. The verifier enforces the bounds; author-side limits are UI, not security, because the author may be under coercion.
+
+- **`expiresAt` beyond the maximum window → reject.** Card and request both carry a signer-chosen expiry, and the entire expiry story — Q-01's "bound the damage," [Revocation](#revocation)'s "supersede and outlive," D-11's replay window — assumes expiry actually arrives. A coerced card carrying `expiresAt` in the year 2200 never expires. D-11's *"author-adjustable within a cap"* placed the cap on the wrong side.
+- **`version` jumping implausibly far → reject.** `version` is a signer-chosen `UInt32`. A coerced card at `UInt32.max` **permanently blocks supersession of that lineage**: the owner's legitimate next version is refused forever by D-04's `version < stored` rule, and Q-01's whole mitigation is superseding. An escape exists — mint a new `cardID`, which Q-02's contact-wide diff renders correctly — but the lineage stays poisoned, so cap the increment rather than relying on the escape.
+
+Both belong to the same family as Q-02, D-06 and D-09's `deviceID`, one level down: those asked *who chooses the identifier*, these ask *who chooses the number*.
 
 ### D-15 · Cards are recipient-bound, and signed lazily at send
 
@@ -830,7 +839,8 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 - Distribute cards as **N separate bundles, not one group bundle** (D-15, checklist §3), and re-scope Q-01's post-duress re-issue as N manual sends.
 - Specify the two digests, per-rail normalization table, and length-prefixed layouts (D-02, D-10).
 - ~~Rule on Q-06~~ — ruled 2026-08-10 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
-- Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
+- ~~Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists~~ — done 2026-08-10; §4.3 found the certificate had no domain prefix at all. `destinationDigest`'s third domain string is recorded in the threat model and the checklist run.
+- **Enforce verifier-side bounds on signer-chosen numerics (D-14):** maximum `expiresAt` window on card and request, and a ceiling on `version` jumps. Both are load-bearing — unbounded expiry defeats every "bounds the damage" claim, and an unbounded version can permanently block supersession of a lineage.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
 - Run D-15's on-device `LAContext` batching test, and build the payment signing path to retrieve the authorized `SecKey` **once per session** rather than per signature as `signData` does today — that choice, not the SE, is what decides whether K signatures cost one prompt or K.
 - Tier-pad the card field in `RecipientPayload` to match `shardOperations` (D-15), including an explicit attempted-signal — otherwise a card's presence or size in a bundle leaks who is transacting.
@@ -841,7 +851,9 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
 - **The diff must be contact-wide, not per-lineage (Q-02).** Load-bearing, not cosmetic: a per-lineage diff makes minting a new `cardID` the coercer's cheapest move, and invalidates the "a duress card cannot be quiet" claim in both D-05 and the threat model.
 - **Age must render relative to the relationship, not absolutely (D-06).** Absolute age can be waited out by pre-positioning a card standalone; relationship-relative age cannot.
-- **Standing check before SPEC: for every monotonic counter, comparison scope and "first seen" — ask who chooses the identifier it is keyed by.** Three findings in this doc are the same mistake at different sites: Q-02's per-lineage diff (attacker mints a new `cardID`), D-06's absolute age (attacker waits), and D-09's per-`deviceID` certificate version (attacker mints a new `deviceID`). Each control was correct in the case it was designed for and void in the adjacent case the attacker gets to pick. Every remaining scope in the design should be walked against this question before any of it becomes a SPEC.
+- ~~**Standing check before SPEC**~~ — **walked 2026-08-10.** For every monotonic counter, comparison scope and "first seen," ask who chooses the identifier it is keyed by. Three findings were the same mistake at different sites: Q-02's per-lineage diff (attacker mints a new `cardID`), D-06's absolute age (attacker waits), D-09's per-`deviceID` certificate version (attacker mints a new `deviceID`).
+
+  The walk found two more, one level down — *who chooses the **number***: signer-chosen `expiresAt` with no verifier-enforced maximum, and signer-chosen `version` with no ceiling, the latter able to block supersession of a lineage permanently. Both now in D-14. Remaining scopes checked clean: `destinationDigest` (content-derived, and a new destination *should* read as new), `requestID` (a new one is a new request, not a replay), `contactID` (minted locally at pairing), acknowledged version (already advisory per D-16).
 - Surface a previously unseen `deviceID` for a known contact as prominently as a new destination (D-09).
 - Consider flagging cross-contact destination reuse (D-04) — free to compute, and one drop account serving several victims is a standard BEC pattern.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
@@ -856,13 +868,13 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 - ~~Cite the loss figures~~ — done 2026-08-10; IC3 figures confirmed exactly, FTC figure corrected (it is total 60+ fraud for 2024, not grandparent scams), unsourced ~$173M comparison dropped here and upstream.
 - **Never pair the FTC elder figure with the grandparent-scam framing in copy.** It measures all 60+ fraud; the subtype this feature addresses is not separately quantified anywhere, so no number should be attached to it.
-- Verify Q-04 (bank verification-of-payee timing) before positioning work.
+- ~~Verify Q-04 (bank verification-of-payee timing)~~ — done 2026-08-10; EU VoP has been mandatory since 9 October 2025 and does not reach the US loss pool this feature is scoped against. See Q-04.
 - Carry D-07's scoping limit and the copy rules into any positioning material; route through the language-review path.
 
 **Elsewhere in the repo:**
 
-- Record `#23`'s SE-extraction limitation in its own ruling (threat model), where someone scoping `#23` will see it.
-- Cross-reference this doc from `Presence Verification/FINDINGS.md` Q-02 and Q-03, which D-11 answers.
+- ~~Record `#23`'s SE-extraction limitation in its own ruling~~ — done 2026-08-10, as an addendum to `#23` in the master doc.
+- ~~Cross-reference this doc from `Presence Verification/FINDINGS.md` Q-02 and Q-03~~ — done 2026-08-10; both marked answered there, with the substance inline so that doc still stands alone.
 - Scope into `#26` rather than as a separate feature.
 
 ---
@@ -884,6 +896,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-09 – D-14 | Gap review, 2026-08-10 |
 | D-15 | Gap review, 2026-08-10 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
 | D-16, D-17 | Gap review, 2026-08-10 — delivery acknowledgement and diff challenge |
+| Standing-check walk | 2026-08-10 — every scope and signer-chosen field walked against "who picks this?" Found unbounded `expiresAt` and unbounded `version` (D-14); the latter can permanently block supersession of a lineage. Remaining scopes checked clean |
 | Checklist run | 2026-08-10 — `CRYPTO_REVIEW_CHECKLIST` §1–§5 against the design. **Gate not passed.** Nine findings: certificate had no domain prefix at all (§4.3, the most serious); acknowledgement had no category or layout; payer-side sealing key never decided; request consumption ordering unspecified; card distribution in one group bundle discloses the recipient count to unrelated counterparties (§3), making the post-duress re-issue N manual sends; card-only bundles consume prekeys in bulk; second long-term public key on the wire; sentence generation risks a §5 boundary violation; `TestKeyManager` needs the payment key |
 | Security review | 2026-08-10 — eight findings against the completed design. Voided the per-`deviceID` certificate version scoping (D-09) and with it revocation case 2; added certificate expiry; corrected certificate delivery from "every request" to "every card"; added the payment public key to `StoredCard`; barred card strings from the generated sentence (D-11); made acknowledgements advisory (D-16); split the Defeated entry on forged certificates from forged cards; recorded cross-contact destination reuse as an unused detection |
 | Lifecycle | Gap review, 2026-08-10 — event model as specification, explicitly not as storage |
