@@ -177,7 +177,9 @@ Surface age and change history at the moment of payment, with the discipline `Pr
 The reason for a second one is D-01's correction: the identity key has no biometric gate and cannot acquire one (access control is fixed at creation; changing it means regenerating the identity key and re-pairing every contact). A dedicated key is the only option that makes *"an attacker holding your unlocked phone cannot silently repoint your money"* a hardware property rather than a code path.
 
 - **Policy is `.userPresence`, not `.biometryCurrentSet`.** The stronger flag invalidates the key whenever the user adds a fingerprint or re-enrols Face ID, forcing every card to be re-authored and every payer to see version bumps. The passcode fallback is a real residual and is listed as such in the threat model rather than pretended away.
-- **Certificate:** `sign_identityKey(payment_pubKey ∥ deviceID ∥ version ∥ createdAt ∥ expiresAt)`, travelling **with every card** — not "with every request." Two of D-03's three delivery contexts carry no request, and a card without its certificate is unverifiable, so tying the certificate to requests breaks the ceremony path, which is the primary one. The payer verifies it against the identity key pinned at UWB, then verifies card and request against the payment key it carries.
+- **Certificate:** `sign_identityKey("occulta-payment-cert-v1" ∥ LP(payment_pubKey) ∥ LP(deviceID) ∥ version(UInt32 BE) ∥ createdAt(8) ∥ expiresAt(8))`, travelling **with every card** — not "with every request."
+
+  **The domain prefix is mandatory and was missing.** *(Added by `CRYPTO_REVIEW_CHECKLIST` §4.3 run, 2026-08-10.)* The certificate is a **fourth signing format**, outside the `SignedAttribute` family, signed by the **identity key** — the same key that signs `occulta-identity-challenge-v1` and `occulta-signed-attribute-v2`. As originally written it carried no prefix and no category, so nothing separated it from either. No collision is reachable today only because an x963 public key begins `0x04` while the challenge prefix begins `0x6F` — luck, not construction, and precisely the criticism D-02 levels at bare concatenation. §4.3 admits no exception: a new artifact type takes a versioned prefix or a category inside an existing family. Length-prefix the variable-length fields for the same reason. Two of D-03's three delivery contexts carry no request, and a card without its certificate is unverifiable, so tying the certificate to requests breaks the ceremony path, which is the primary one. The payer verifies it against the identity key pinned at UWB, then verifies card and request against the payment key it carries.
 - **The certificate expires.** *(Added by security review, 2026-08-10.)* Cards and requests both carry `expiresAt`; the certificate originally did not, leaving a compromised payment key valid forever, since retiring it requires a superseding certificate and delivery is revocation case 4 — the open one. Card expiry bounds each artifact but not the key: the attacker simply signs fresh cards. Same reasoning that made card expiry mandatory — bounds staleness with no channel required, fails closed on abandonment.
 - **Per-device by construction.** SE keys are non-extractable, so each authoring device has its own payment key and its own certificate signed by *that device's* identity key. This stays on the right side of the standing no-vouching rule: `cert_B` only verifies for a payer who pinned `identity_B`, which only happens through a physical ceremony with device B. The certificate scopes a purpose key *within* a device; it never extends trust across one.
 - **Certificate version is global per contact, NOT per `(contactID, deviceID)`.** *(Corrected by security review, 2026-08-10 — the original per-device scoping was void.)* `deviceID` is a field the signer chooses; nothing binds it to a real device. Scoping the counter by it means anyone who can sign a certificate bypasses monotonicity entirely by incrementing `deviceID` instead of `version` — a fresh `deviceID` has no stored version, so it is first-seen and accepted. That would leave [Revocation](#revocation) case 2 claiming a superseding certificate retires a compromised payment key when nothing forces the attacker back into the same partition.
@@ -253,6 +255,9 @@ An **optional** free-text note may travel under SPEC §5's existing `contextNote
 1. **`requestID` must be CSPRNG-generated and must remain inside the signed payload.** Swift's `UUID()` draws from a CSPRNG on Apple platforms, and D-11's layout signs it — but both are requirements, and relaxing either silently defeats the consumed-store, since a mutable ID can be rewritten to look unseen.
 2. **Replay protection is expiry-bounded, therefore clock-dependent.** Dropping a store entry at `expiresAt` is safe only because a replay then fails the expiry check instead — a rolled-back device clock re-opens *both*. Low severity, since it needs the payer's unlocked device, but `IdentityChallenge+Constants.swift` already carries `clockSkewGrace` and `timestampWindow` for this exact class and the request should inherit that thinking rather than rediscover it.
 3. **The store is local**, so it survives neither a reinstall nor a second payer device — see the threat model's residuals.
+4. **Consumption is marked *before* the request is displayed, never after.** *(Added by `CRYPTO_REVIEW_CHECKLIST` §2 run, 2026-08-10, which asks when consumption occurs relative to the operation succeeding.)* Mark-before fails safe: a crash loses the request and the payee re-issues. Mark-after allows replay within the window on a crash loop. Marking must also be idempotent — re-processing the same bundle is a no-op, not an error.
+
+**Layer boundary: verification returns facts, the UI renders the sentence.** *(Added by §5 run.)* The generated sentence needs the local contact record and a localized template. Building it inside verification would give the crypto path SwiftData and localization dependencies, which §5 forbids. Verification emits structured facts — contact identifier, amount, currency, destination, age — and the presentation layer renders them.
 
 **Bind the payer's key fingerprint.** Not for ordinary relay — a re-aimed request still points at the payee's real account, so the attacker gains nothing. The reason is **duress amplification**: coerce one signature aimed at the attacker's account, then broadcast that single card+request pair to every contact the victim has. Without the binding, one compromised signature is worth N victims. With it, one. The cost — asking three people means three signatures and three biometric prompts — is friction in the right direction.
 
@@ -318,6 +323,12 @@ N never materializes. A card update costs **zero** signatures — it bumps the v
 
 **Multi-recipient delivery already exists, with a precedent of exactly this shape.** `CryptoManager.seal(sealedPayload:groupID:recipients:)` produces one shared outer ciphertext plus N per-recipient wrapped envelopes, and `OccultaBundle.RecipientPayload` (`OccultaBundle.swift:550`) carries **per-recipient distinct content** — `prekeyBatch`, `shardOperations`, `custodyManifest`, `expectedShards`. Shard distribution is the working instance: `prepareShards` signs N distinct artifacts, one per trustee, delivered in one bundle. Recipient-bound cards are that pattern with a new payload type.
 
+**But card distribution must send N separate bundles, not one group bundle.** *(Added by `CRYPTO_REVIEW_CHECKLIST` §3 run, 2026-08-10.)* `OccultaBundle.recipients` is an array each recipient scans to find their own envelope, so **its length is visible to every recipient**. That is acceptable for group messaging, where membership is already known — but payment counterparties are not a group and have no relationship to each other. One bundle to 200 contacts tells each of them that the payee has 200 payment counterparties.
+
+The consequence lands on the post-duress re-issue (Q-01): it is **N separate manual sends**, not one. F-02's arithmetic returns through a door this decision thought it had closed. Per-recipient signing still scales; per-recipient *delivery* does not.
+
+Also from §2: a card-only bundle consumes a prekey like any other, so a bulk re-issue drains N prekeys and can push contacts into long-term ECDH fallback, losing forward secrecy on those sends. The fallback is designed behaviour, but the re-issue flow is the one place it fires in bulk.
+
 **Requirement inherited:** every per-recipient field in `RecipientPayload` is tier-padded to fixed size with filler beyond the real count — `shardOperations` carries `.unsupported` entries, and `custodyManifestCount` exists because a zero count is otherwise ambiguous between "attempted and found nothing" and "never attempted." A card field must do the same: always present, tier-padded, with an explicit attempted-signal where absence is meaningful. Otherwise the presence or size of a card in a bundle leaks who is transacting — the `#21` traffic-shape concern the rest of the envelope already handles.
 
 **Pre-implementation check — SE signing under one `LAContext`.** Partially settled, 2026-08-10.
@@ -331,7 +342,11 @@ N never materializes. A card update costs **zero** signatures — it bumps the v
 
 ### D-16 · Cards are acknowledged on receipt — version, never timestamp
 
-On verifying and pinning a card, the payer signs a short acknowledgement: `(cardID, version)` bound to the payee's fingerprint, under the payer's payment key.
+On verifying and pinning a card, the payer signs a short acknowledgement under their payment key. **Category `.paymentAck`, with a specified layout** — *(added by `CRYPTO_REVIEW_CHECKLIST` §4.3 run, 2026-08-10; the original described the content in prose only, leaving it with no category and therefore, under D-12's own reasoning, no domain separation)*:
+
+```
+value: cardID(36) ∥ version(UInt32 BE) ∥ LP(payeeKeyFingerprint)
+```
 
 **Transmitted is not received, and the design currently conflates them.** D-03's send is fire-and-forget over F-02's share sheet, so a payee knows only that they shared something. Closing that gap does two jobs:
 
@@ -456,6 +471,52 @@ D-08 originally claimed the design defends clipboard-hijacking malware *"because
 If masking applied everywhere, the payer would compare four digits — worthless against a vanity-generated crypto address, and 1-in-10,000 against an attacker who chooses the collision. The same collision also degrades the diff itself, which is part of why D-04 now stores full destinations rather than tails.
 
 **Rule: masking is a display choice, never a storage one.** The full destination is available both in transit (D-03) and at rest (D-04), and the payment screen must show it in full. Masking applies to history and list views only. Backwards, and the only defence against paste-swap is gone.
+
+---
+
+## `CRYPTO_REVIEW_CHECKLIST` run — design stage, 2026-08-10
+
+Run against [`Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md`](../../Audit/CRYPTO_REVIEW_CHECKLIST.md). Design-stage, so §2 and §5 are partly answerable only at implementation; those are marked rather than skipped. Findings are recorded at their decisions above; what follows is the material that lives nowhere else.
+
+**Gate: NOT PASSED.** Four items block implementation — the certificate prefix (D-09), the acknowledgement category and layout (D-16), the payer-side sealing key (Q-03), and consumption ordering (D-11). The first three were introduced by this run; all four now have written answers except the sealing key, which is a decision still owed.
+
+### §1 · Key ownership map
+
+| Key | Custody | Access control | Role |
+|---|---|---|---|
+| Identity | SE, `master.key.privacy.turtles.are.cute` | `[.privateKeyUsage]` — **no gate** | Signs certificates |
+| Payment (new) | SE, new tag | `.userPresence` | Signs cards, requests, acknowledgements |
+| Vault | SE, `vault.key.occulta.v1` | `.biometryCurrentSet .or .devicePasscode` | Seals the owner's cards at rest |
+| Payer-side models | **undecided** — see Q-03 | — | Seals `StoredCard`, baselines, the two stores |
+
+**Key material shared between contacts: No.** Cards carry no secret material; nothing here is a key-distribution path. The payment public key is a *second* long-term P-256 public key on the wire — no change to §4.4's analysis, since if P-256 falls both fall, but recorded rather than discovered later.
+
+### §2 · Consumption events
+
+**Zeroing: N/A** — no path here holds key bytes. The only consumption event is `requestID` (D-11, ordering now specified). Prekeys are consumed indirectly by ordinary bundle transport, including card-only bundles (D-15).
+
+### §3 · Multi-party trace
+
+*Payee Yura, card v5 → IBAN X; payers Bob, Carol, Dave.*
+
+- Yura signs `card_B`, `card_C`, `card_D` — distinct bytes, since the recipient fingerprint is in the payload (D-15), therefore distinct signatures.
+- Bob holding `card_C` cannot use it: the binding check rejects. He learns Carol's public-key **fingerprint** and nothing else.
+- No recipient learns another exists — **provided cards are distributed as N separate bundles** (D-15). In one group bundle, `OccultaBundle.recipients`'s length discloses the count to all of them.
+- Below-threshold cases and duplicate-index checks: N/A, no threshold scheme.
+
+### §4 · Security property verification
+
+- **4.1 Property.** *A payer cannot be shown, as verified, a payment destination that the pinned counterparty did not sign for that specific payer.*
+- **4.2 Attacker bound.** Computational — ECDSA P-256. Not information-theoretic.
+- **4.3 Domain separation.** New categories inside `SignedAttribute` for card, request, ack (D-12, D-16); a new versioned prefix for the certificate, which is outside that family (D-09); a third, non-signing domain string for `destinationDigest`; length-prefixing throughout (D-02).
+- **4.4 Harvest-now.** Excluded from `#23` per Q-09 — cards are verified contemporaneously, not decades later.
+- **4.5 Access control.** Flags quoted in the table above. The `LAContext` batching behaviour is open and requires an on-device test (D-15).
+- **4.6 Prekey public keys.** None published or stored by this design. Consumed only via ordinary bundle transport — see §2.
+- **4.7 Not achieved.** No payment execution, no name-to-account verification, no counterparty honesty, no confirmation the wire matched the request, no defence against a compromised OS. See [Explicit non-claims](#explicit-non-claims).
+
+### §5 · Layer boundary check
+
+Verification takes bytes and returns structured facts; the presentation layer renders the sentence (D-11). SE access stays in `Key+Manager`. **`TestKeyManager` must be extended for the payment key** — without it no card-signing path is unit-testable, which collides with CLAUDE.md's requirement of unit tests for all implementations.
 
 ---
 
@@ -627,6 +688,12 @@ The decisive argument runs the other way, and is the same one D-12 used for `Sig
 
 **Unchanged:** D-09's *signing* key stays separate. That key exists because the identity key has no gate and cannot acquire one; nothing here touches that reasoning.
 
+**Still open — the payer-side models.** *(Raised by `CRYPTO_REVIEW_CHECKLIST` §1 run, 2026-08-10.)* The above settles the **owner's** cards. `StoredCard`, `DestinationBaseline`, the consumed-`requestID` store and the acknowledged-version store were never assigned a sealing key; D-12 points at `deriveShardCustodyKey()` as "the right precedent," which is a pointer, not a decision.
+
+It is not cosmetic. Sealed under the **vault key**, receiving and verifying a payment request requires a vault unlock — friction on the receiving side that nothing in this doc has weighed. Sealed under the **local DB key**, the tripwire data is readable whenever the app is, which is weaker at rest but keeps verification independent of vault state. A third option is the shard-custody pattern: an SE-derived key independent of both.
+
+Undecided, and it blocks implementation of D-04.
+
 **Noted, not fixed:** `Key+Manager.swift:783-799` mints the shard custody key lazily on `errSecItemNotFound`, so that key's existence discloses that shard custody has been used — in tension with `forensic-trace-avoidance.md` B5 (*"SE key created at first launch, not at activation"*, rated High). Pre-existing and out of scope here; recorded so it is not copied.
 
 **3 · Deniability: integrate with Secure Mode. `#6` is a later strengthening, not the requirement.** The earlier text recommended `#6` (Plausibly Deniable Vault Partitions), which is Phase 2 and unbuilt. The shipped depth machinery is what this feature must integrate with, and it is already a precondition. `#6` would add hidden-volume indistinguishability on top; nothing here is blocked on it.
@@ -757,7 +824,10 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 **Before any implementation:**
 
-- Write `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` (Q-05). Blocks this and Multi-Device R0. Extract from the in-code blocks.
+- ~~Write `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` (Q-05)~~ — written 2026-08-10, and **run against this design; the gate did not pass.** Four blockers, three of which the run itself found: certificate domain prefix (D-09), acknowledgement category and layout (D-16), payer-side sealing key (Q-03, still undecided), request consumption ordering (D-11).
+- **Decide the payer-side sealing key (Q-03, checklist §1) — blocks D-04.** Vault key means a vault unlock to receive a payment; local DB key means the tripwire is readable whenever the app is; the shard-custody pattern is a third option.
+- Extend `TestKeyManager` for the payment key (checklist §5), or no card-signing path is unit-testable — which CLAUDE.md does not permit.
+- Distribute cards as **N separate bundles, not one group bundle** (D-15, checklist §3), and re-scope Q-01's post-duress re-issue as N manual sends.
 - Specify the two digests, per-rail normalization table, and length-prefixed layouts (D-02, D-10).
 - ~~Rule on Q-06~~ — ruled 2026-08-10 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists, including the third domain string for `destinationDigest`.
@@ -814,6 +884,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-09 – D-14 | Gap review, 2026-08-10 |
 | D-15 | Gap review, 2026-08-10 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
 | D-16, D-17 | Gap review, 2026-08-10 — delivery acknowledgement and diff challenge |
+| Checklist run | 2026-08-10 — `CRYPTO_REVIEW_CHECKLIST` §1–§5 against the design. **Gate not passed.** Nine findings: certificate had no domain prefix at all (§4.3, the most serious); acknowledgement had no category or layout; payer-side sealing key never decided; request consumption ordering unspecified; card distribution in one group bundle discloses the recipient count to unrelated counterparties (§3), making the post-duress re-issue N manual sends; card-only bundles consume prekeys in bulk; second long-term public key on the wire; sentence generation risks a §5 boundary violation; `TestKeyManager` needs the payment key |
 | Security review | 2026-08-10 — eight findings against the completed design. Voided the per-`deviceID` certificate version scoping (D-09) and with it revocation case 2; added certificate expiry; corrected certificate delivery from "every request" to "every card"; added the payment public key to `StoredCard`; barred card strings from the generated sentence (D-11); made acknowledgements advisory (D-16); split the Defeated entry on forged certificates from forged cards; recorded cross-contact destination reuse as an unused detection |
 | Lifecycle | Gap review, 2026-08-10 — event model as specification, explicitly not as storage |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-10 |
