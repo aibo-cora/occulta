@@ -94,12 +94,20 @@ Three consequences:
 **Ruled 2026-08-10 (Q-06): the tripwire wins over storage minimization.** The original design stored `{digest, first-seen, last-seen, masked tail}` and explicitly *not* the card, on PII grounds. That is reversed. Two tables:
 
 ```
-StoredCard           (contactID, cardID)            → latest signed SignedAttribute blob, receivedAt,
-                                                      payment public key it verified under
-DestinationBaseline  (contactID, destinationDigest) → firstSeenAt, lastSeenAt
+Contact.Profile.signedAttributes   filtered to .paymentCard  → the latest card per cardID
+DestinationBaseline  (contactID, destinationDigest)          → firstSeenAt, lastSeenAt
+PinnedCertificate    (contactID, version)                    → the signed certificate
+consumed requestIDs  → until each entry's own expiresAt
+acknowledgedVersion  (contactID)                             → highest acknowledged (D-16)
 ```
 
-**The payment public key is stored with the card.** *(Added by security review, 2026-08-10.)* Re-verifying a stored card requires the key from the certificate that was current when it arrived. Keeping only the latest certificate means a legitimate certificate rotation silently strands every previously stored card as unverifiable — which under D-14 means "not a card," for reasons the payer cannot distinguish from an attack.
+**There is no `StoredCard` model.** *(Corrected 2026-08-10 when the sealing key was decided.)* D-12 said *"the baselines are their own models — the payer verifies the card and discards it,"* which Q-06 reversed without anyone updating it. Since the payer now retains the signed card, and `Contact.Profile.signedAttributes` is precisely a per-contact store of `SignedAttribute`s, a received card belongs there under category `.paymentCard`. That inherits classification, re-encryption, the layer store and cascade-on-contact-delete rather than re-earning them.
+
+`highestVersionSeen` needs no field either — the retained card *is* the highest version seen.
+
+**Certificates are retained, not per-card key copies.** *(Replaces the security review's "store the payment public key with the card.")* Re-verifying a stored card needs the key from the certificate current when it arrived, so keeping only the latest certificate strands every earlier card on a legitimate rotation. Retaining the certificates themselves is better than copying a public key onto every card — one payment key signs many cards — and the same history serves D-09's requirement to surface a previously unseen `deviceID`.
+
+**Sealing key: the local DB canonical key — the same key as the rest of the contact record.** See Q-03.
 
 `DestinationBaseline` holds the only thing not derivable from a card: **local observation.** Version, destination, masked tail and the card's own `createdAt` all come from the stored blob, so no third table is needed — this is simpler than the minimal design it replaces, not more complex.
 
@@ -112,7 +120,7 @@ Storing the signed artifact rather than extracted fields buys three things, and 
 **D-03 is unchanged: the card still travels with every request.** Storage is a fallback and a memory, not a replacement — freshness depends on transmission. What storage removes is the payer's *dependency* on that transmission.
 
 - **First-seen belongs to the destination, not the card.** *"Have I paid this account before, and since when"* is the question D-06 actually asks. A new card lineage aimed at a known destination inherits its age — which is what makes the age signal immune to card churn and to the per-device lineages D-09 introduces.
-- **Version and rollback are checked against `StoredCard`**, scoped per device.
+- **Version and rollback are checked against the retained card**, scoped per device.
 
 **Cost, accepted deliberately:** full counterparty destinations at rest (Q-03). Mitigated by machinery the [Forensic cleanliness](#forensic-cleanliness) section already requires — encrypted DB, non-nil depth from creation, cascade delete — and by the fact that the app already holds full destinations for the owner's own cards (D-12). The exposure grows; the class does not.
 
@@ -274,7 +282,7 @@ The stronger argument is infrastructure: `signedAttributes` is already wired int
 Three items follow:
 
 - **The owner's own cards need a home.** `signedAttributes` hangs off `Contact.Profile` and holds *other people's* attributes; there is no self-profile (searched `isSelf`, `selfProfile`, `selfContact` — no matches). The shard flow is the model: `SignedAttribute` is the artifact, with separate models for owner-side holding (`PendingShardDistribute`) and recipient-side state (`CustodyShard`). Cards need the same, and the owner's store holds **full destinations in the clear** — a larger at-rest exposure than the baselines Q-03 reasons about, on the device of the person being protected.
-- **The baselines are their own models.** D-04's tables are not `SignedAttribute`s; the payer verifies the card and discards it. `CustodyShard`'s sealing under `deriveShardCustodyKey()` — an SE-derived key independent of both the DB canonical key and the vault key — is the right precedent.
+- ~~**The baselines are their own models.** D-04's tables are not `SignedAttribute`s; the payer verifies the card and discards it.~~ **Superseded 2026-08-10.** Q-06 reversed the discard, so the received card *is* a retained `SignedAttribute` and belongs in `signedAttributes` under `.paymentCard`. The remaining models — `DestinationBaseline`, `PinnedCertificate`, and the two stores — are their own, under the **local DB canonical key** (Q-03), not the shard-custody pattern this bullet originally pointed at.
 - **[WIRE COMPAT] Adding a category can break a contact's whole attribute set.** `Category` has no custom `init(from:)`, so an unknown raw value throws — fine in isolation, and the fail-closed behaviour D-10 wants. But `signedAttributes` decodes as an *array*: one `.paymentCard` reaching a build that predates it can fail the entire array decode, taking that contact's medical, emergency and shard attributes with it. `SignedAttribute.swift:27-30` notes v1→v2 needed no migration *only because SSS had not shipped*. Cards will ship. Needs either a lenient per-element decode or a stated minimum-version gate before the first card is sent.
 
 ### D-13 · Exchange cards at the UWB ceremony, before any transaction exists
@@ -410,7 +418,7 @@ The doc above specifies artifacts; this specifies transitions. Kind matters as m
 
 Persisting this sequence would build a complete payment audit trail — who paid whom, when, how often — on a device whose adjacent feature refuses to write verification history at all (`Presence Verification/SPEC.md` §7), and would undo most of Q-03.
 
-**Only derived state persists**, and it is already settled: `StoredCard`, `DestinationBaseline` (first- and last-seen, the minimum that supports age and diff), consumed `requestID`s until their own expiry, and highest-acknowledged-version per contact (D-16). Everything else in the table above is transient by construction — including every challenge.
+**Only derived state persists**, and it is already settled: the retained card in `signedAttributes`, `DestinationBaseline` (first- and last-seen, the minimum that supports age and diff), `PinnedCertificate`, consumed `requestID`s until their own expiry, and highest-acknowledged-version per contact (D-16). Everything else in the table above is transient by construction — including every challenge.
 
 Two rows carry more weight than their description suggests. **`cardAcknowledged` is what turns Q-01's post-duress flag from guesswork into evidence.** And **`destinationChanged` is marked derived on purpose**: the tripwire is computed locally from state rather than received from anyone, which is exactly why it survives full key compromise (see below).
 
@@ -487,7 +495,9 @@ If masking applied everywhere, the payer would compare four digits — worthless
 
 Run against [`Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md`](../../Audit/CRYPTO_REVIEW_CHECKLIST.md). Design-stage, so §2 and §5 are partly answerable only at implementation; those are marked rather than skipped. Findings are recorded at their decisions above; what follows is the material that lives nowhere else.
 
-**Gate: NOT PASSED.** Four items block implementation — the certificate prefix (D-09), the acknowledgement category and layout (D-16), the payer-side sealing key (Q-03), and consumption ordering (D-11). The first three were introduced by this run; all four now have written answers except the sealing key, which is a decision still owed.
+**Gate: all four blockers now answered (2026-08-10).** The run raised four — certificate prefix (D-09), acknowledgement category and layout (D-16), payer-side sealing key (Q-03), consumption ordering (D-11) — and the last of them, the sealing key, was decided the same day. Three of the four were introduced by this run rather than found by the two reviews before it.
+
+**The gate is not "passed" until it is re-run against the corrected design and against real code**, per the checklist's own rule that the block ships in the same change as the code it describes. What is recorded here is a design-stage run whose findings have all been answered.
 
 ### §1 · Key ownership map
 
@@ -496,7 +506,7 @@ Run against [`Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md`](../../Audit/CRYPTO_REVIEW_
 | Identity | SE, `master.key.privacy.turtles.are.cute` | `[.privateKeyUsage]` — **no gate** | Signs certificates |
 | Payment (new) | SE, new tag | `.userPresence` | Signs cards, requests, acknowledgements |
 | Vault | SE, `vault.key.occulta.v1` | `.biometryCurrentSet .or .devicePasscode` | Seals the owner's cards at rest |
-| Payer-side models | **undecided** — see Q-03 | — | Seals `StoredCard`, baselines, the two stores |
+| Local DB canonical | SE-derived hybrid, `Tags.localDB` | Device-unlock level | Seals retained cards, baselines, certificates, the two stores (Q-03) |
 
 **Key material shared between contacts: No.** Cards carry no secret material; nothing here is a key-distribution path. The payment public key is a *second* long-term P-256 public key on the wire — no change to §4.4's analysis, since if P-256 falls both fall, but recorded rather than discovered later.
 
@@ -540,7 +550,7 @@ Requirements, inherited rather than re-derived from `Occulta/Features/SecureMode
 - **A non-nil depth field from creation** on every new model here. S6 (`visibleThroughDepth`) and S9 (`globalTrusteeDepth`) both landed on this rule so that presence-versus-absence of the field is never itself a tell. The shard work reached it by retrofit and records the cost.
 - **`PRAGMA secure_delete`** (S2) and **`.completeFileProtection` re-applied on every save** (S3/S4).
 - **S8's accepted-gap reasoning for row counts** applies verbatim to card rows.
-- **Contact classification inheritance.** `StoredCard` and `DestinationBaseline` are contact-keyed and must filter off `isVisible(atDepth:)`, or hiding a contact leaks them through the card store — their existence *and* their bank details. See Q-01 step 3.
+- **Contact classification inheritance.** `DestinationBaseline`, `PinnedCertificate` and the two stores are contact-keyed and must filter off `isVisible(atDepth:)`, or hiding a contact leaks them — their existence *and* their bank details. Retained cards get this for free by living in `signedAttributes` (Q-03). See Q-01 step 3.
 - **Cascade delete on contact removal**, and Secure Mode purge behaviour, specified up front. `Docs/Bugs/v1.10.0/Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md` is a long-running instance of exactly this class — contact-keyed SwiftData models with no purge path — and names a second (`Message.Draft`). A surviving baseline row for a deleted contact is a record of a financial relationship the user believes they erased.
 - **The consumed-`requestID` store** (D-11) inherits the same treatment. It is less exposed because entries self-expire, which is worth stating rather than assuming.
 - **Temp files now carry bank details.** SPEC §7 accepts `.occ` files in `temporaryDirectory`, sized for a challenge nonce. The same path now carries full payment destinations; cleanup timing and the acceptance reasoning both need re-examining against the new content.
@@ -634,7 +644,7 @@ The protection is the shipped contact-classification mechanism, not a new one. A
 
 **Three things must inherit classification or the hiding leaks:**
 
-- `StoredCard` and `DestinationBaseline` are contact-keyed. Unfiltered, they disclose both a hidden contact's existence and their bank details. The shard work already solved this shape — real shards from safe contacts get correct ceiling-based visibility off the existing classification — so inherit it deliberately rather than assuming it.
+- `DestinationBaseline`, `PinnedCertificate` and the two stores are contact-keyed. Unfiltered, they disclose both a hidden contact's existence and their bank details. The shard work already solved this shape — real shards from safe contacts get correct ceiling-based visibility off the existing classification — so inherit it deliberately rather than assuming it. Retained cards get it for free from `signedAttributes` (Q-03).
 - The owner's own card store needs a depth stamp. At a duress depth the coercer otherwise sees the operator's full account list, and the presence of a crypto card is disclosure in itself.
 - Row counts, per `forensic-trace-avoidance.md` S8.
 
@@ -656,7 +666,7 @@ Three properties already in the design, none of which the coercer can defeat:
 
 Previously closed on the data model alone. That was the easy half.
 
-**Settled, and unchanged:** N cards per contact are representable — `StoredCard` is keyed `(contactID, cardID)`, `DestinationBaseline` independently by `(contactID, destinationDigest)`. The **sender selects** which card a request references (D-11 binds exactly one `cardDigest`), so the choice is made by the person who knows which account they want, on their own device; the payer is never asked to choose between a counterparty's accounts. Each card carries a `label` for that selection (D-10) — signed, display-only, under SPEC §5's impersonation rule. Per-recipient signing scales by D-15's lazy minting, so N cards × M counterparties never materializes.
+**Settled, and unchanged:** N cards per contact are representable — retained cards live in `signedAttributes` keyed by their own `cardID`, `DestinationBaseline` independently by `(contactID, destinationDigest)`. The **sender selects** which card a request references (D-11 binds exactly one `cardDigest`), so the choice is made by the person who knows which account they want, on their own device; the payer is never asked to choose between a counterparty's accounts. Each card carries a `label` for that selection (D-10) — signed, display-only, under SPEC §5's impersonation rule. Per-recipient signing scales by D-15's lazy minting, so N cards × M counterparties never materializes.
 
 **What was missed: there are three states, and a per-lineage diff collapses two of them.**
 
@@ -683,7 +693,7 @@ A digest over bank details is brute-forceable: account and routing numbers carry
 
 **Q-06's ruling enlarges this, deliberately.** D-04 now stores full counterparty destinations, not digests and tails, so the at-rest exposure is real rather than theoretical and the digest's brute-force cost stops being the interesting question. What remains true is that the original reasoning already conceded the point: the real exposure was always a coerced or compromised *unlocked* device, where a digest never helped. Masked display survives as harm reduction in list and history views (surface rule), not as a storage strategy.
 
-**What is stored:** the owner's own cards (full destinations, signed), `StoredCard` for counterparties (same), `DestinationBaseline`, and the consumed-`requestID` store. Encryption at rest, non-nil depth from creation, contact-classification inheritance (Q-01) and cascade delete are settled in [Forensic cleanliness](#forensic-cleanliness) and are not re-argued here. Four decisions remain.
+**What is stored:** the owner's own cards (full destinations, signed), counterparties' retained cards in `signedAttributes` (same), `DestinationBaseline`, `PinnedCertificate`, and the two stores. Encryption at rest, non-nil depth from creation, contact-classification inheritance (Q-01) and cascade delete are settled in [Forensic cleanliness](#forensic-cleanliness) and are not re-argued here. Four decisions remain.
 
 **1 · Cards live in the Vault, under the vault key. No dedicated store, no dedicated sealing key.**
 
@@ -697,11 +707,17 @@ The decisive argument runs the other way, and is the same one D-12 used for `Sig
 
 **Unchanged:** D-09's *signing* key stays separate. That key exists because the identity key has no gate and cannot acquire one; nothing here touches that reasoning.
 
-**Still open — the payer-side models.** *(Raised by `CRYPTO_REVIEW_CHECKLIST` §1 run, 2026-08-10.)* The above settles the **owner's** cards. `StoredCard`, `DestinationBaseline`, the consumed-`requestID` store and the acknowledged-version store were never assigned a sealing key; D-12 points at `deriveShardCustodyKey()` as "the right precedent," which is a pointer, not a decision.
+**The payer-side models: the local DB canonical key.** *(Raised by `CRYPTO_REVIEW_CHECKLIST` §1, decided 2026-08-10 — the last of the four gate blockers.)* The above settles the **owner's** cards; this settles what the payer holds.
 
-It is not cosmetic. Sealed under the **vault key**, receiving and verifying a payment request requires a vault unlock — friction on the receiving side that nothing in this doc has weighed. Sealed under the **local DB key**, the tripwire data is readable whenever the app is, which is weaker at rest but keeps verification independent of vault state. A third option is the shard-custody pattern: an SE-derived key independent of both.
+**Not the vault key, and the reason is specific to this data.** Under it, receiving a request means unlocking before the app can read `DestinationBaseline` — so declining the unlock renders the attacker-supplied request **without its age and diff**. The signed content arrives either way; only the warning is gated. That inverts D-14 exactly: the part the app vouches for becomes optional while the part it does not stays visible. Failing closed instead makes viewing any incoming payment a biometric event, and friction here pushes people around the feature rather than through it.
 
-Undecided, and it blocks implementation of D-04.
+**Not a dedicated key either.** `CustodyShard` is sealed independently because it holds material *on behalf of others*. This is mine — data received from a contact, about that contact, held for my own protection. A dedicated key would mean re-earning rotation-on-activation, classification filtering and the re-encryption path by hand, which is the third time that argument has come up and the third time it loses.
+
+**So: the same key as the rest of the contact record.** `signedAttributes` already holds SE-signed sensitive attributes under it, with re-encryption (`Contact+Model+Reencrypt.swift:45`) and staged-key restore during classification (`ContactManager+Classification.swift:272`). A contact's payment card protected differently from their signed medical attribute would be an inconsistency with nothing behind it.
+
+**The split is coherent:** the Vault holds *my secrets* — my own destinations, authored by me, gated because signing and sending them is the sensitive act. The contact record holds *what I know about others*. The owner's cards and the payer's retained cards land on opposite sides of a distinction the app already draws.
+
+Consequence for D-04: cards collapse into `signedAttributes` and `StoredCard` disappears. Two wrinkles accepted — `signedAttributes` is a single encrypted blob holding a serialized array, so every read decodes all of that contact's attributes (fine at this N, and D-12's wire-compat item already covers the array-decode hazard); and certificate retention becomes its own small model rather than a field copied onto every card.
 
 **Noted, not fixed:** `Key+Manager.swift:783-799` mints the shard custody key lazily on `errSecItemNotFound`, so that key's existence discloses that shard custody has been used — in tension with `forensic-trace-avoidance.md` B5 (*"SE key created at first launch, not at activation"*, rated High). Pre-existing and out of scope here; recorded so it is not copied.
 
@@ -834,7 +850,7 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 **Before any implementation:**
 
 - ~~Write `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` (Q-05)~~ — written 2026-08-10, and **run against this design; the gate did not pass.** Four blockers, three of which the run itself found: certificate domain prefix (D-09), acknowledgement category and layout (D-16), payer-side sealing key (Q-03, still undecided), request consumption ordering (D-11).
-- **Decide the payer-side sealing key (Q-03, checklist §1) — blocks D-04.** Vault key means a vault unlock to receive a payment; local DB key means the tripwire is readable whenever the app is; the shard-custody pattern is a third option.
+- ~~Decide the payer-side sealing key (Q-03, checklist §1)~~ — decided 2026-08-10: **the local DB canonical key**, the same key as the rest of the contact record. Not the vault key, because gating the tripwire behind an unlock would render attacker-supplied requests without their warnings. Consequence: cards collapse into `signedAttributes` and `StoredCard` disappears (D-04, D-12).
 - Extend `TestKeyManager` for the payment key (checklist §5), or no card-signing path is unit-testable — which CLAUDE.md does not permit.
 - Distribute cards as **N separate bundles, not one group bundle** (D-15, checklist §3), and re-scope Q-01's post-duress re-issue as N manual sends.
 - Specify the two digests, per-rail normalization table, and length-prefixed layouts (D-02, D-10).
@@ -859,7 +875,7 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
 - The owner-side card store (D-12) — Vault entries under the vault key (Q-03), inheriting exact-match depth, rotation-on-activation, backup, and re-encryption.
 - Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
-- `StoredCard` and `DestinationBaseline` must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them through the card store.
+- `DestinationBaseline`, `PinnedCertificate` and the two stores must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them. Retained cards inherit it for free by living in `signedAttributes`.
 - Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask.
 - Post-duress re-issue prompt, flagging contacts who have not received the superseding card version — driven by D-16's acknowledged versions, not by a local record of what was sent (Q-01).
 - Delivery acknowledgement (D-16) and the user-initiated diff challenge (D-17), neither of which persists anything beyond highest-acknowledged-version per contact.
@@ -898,7 +914,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-16, D-17 | Gap review, 2026-08-10 — delivery acknowledgement and diff challenge |
 | Standing-check walk | 2026-08-10 — every scope and signer-chosen field walked against "who picks this?" Found unbounded `expiresAt` and unbounded `version` (D-14); the latter can permanently block supersession of a lineage. Remaining scopes checked clean |
 | Checklist run | 2026-08-10 — `CRYPTO_REVIEW_CHECKLIST` §1–§5 against the design. **Gate not passed.** Nine findings: certificate had no domain prefix at all (§4.3, the most serious); acknowledgement had no category or layout; payer-side sealing key never decided; request consumption ordering unspecified; card distribution in one group bundle discloses the recipient count to unrelated counterparties (§3), making the post-duress re-issue N manual sends; card-only bundles consume prekeys in bulk; second long-term public key on the wire; sentence generation risks a §5 boundary violation; `TestKeyManager` needs the payment key |
-| Security review | 2026-08-10 — eight findings against the completed design. Voided the per-`deviceID` certificate version scoping (D-09) and with it revocation case 2; added certificate expiry; corrected certificate delivery from "every request" to "every card"; added the payment public key to `StoredCard`; barred card strings from the generated sentence (D-11); made acknowledgements advisory (D-16); split the Defeated entry on forged certificates from forged cards; recorded cross-contact destination reuse as an unused detection |
+| Security review | 2026-08-10 — eight findings against the completed design. Voided the per-`deviceID` certificate version scoping (D-09) and with it revocation case 2; added certificate expiry; corrected certificate delivery from "every request" to "every card"; added the payment public key to `StoredCard` (superseded the same day by certificate retention, once `StoredCard` itself dissolved); barred card strings from the generated sentence (D-11); made acknowledgements advisory (D-16); split the Defeated entry on forged certificates from forged cards; recorded cross-contact destination reuse as an unused detection |
 | Lifecycle | Gap review, 2026-08-10 — event model as specification, explicitly not as storage |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-10 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-10** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
