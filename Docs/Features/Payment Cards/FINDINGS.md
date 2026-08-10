@@ -94,9 +94,12 @@ Three consequences:
 **Ruled 2026-08-10 (Q-06): the tripwire wins over storage minimization.** The original design stored `{digest, first-seen, last-seen, masked tail}` and explicitly *not* the card, on PII grounds. That is reversed. Two tables:
 
 ```
-StoredCard           (contactID, cardID)            → latest signed SignedAttribute blob, receivedAt
+StoredCard           (contactID, cardID)            → latest signed SignedAttribute blob, receivedAt,
+                                                      payment public key it verified under
 DestinationBaseline  (contactID, destinationDigest) → firstSeenAt, lastSeenAt
 ```
+
+**The payment public key is stored with the card.** *(Added by security review, 2026-08-10.)* Re-verifying a stored card requires the key from the certificate that was current when it arrived. Keeping only the latest certificate means a legitimate certificate rotation silently strands every previously stored card as unverifiable — which under D-14 means "not a card," for reasons the payer cannot distinguish from an attack.
 
 `DestinationBaseline` holds the only thing not derivable from a card: **local observation.** Version, destination, masked tail and the card's own `createdAt` all come from the stored blob, so no third table is needed — this is simpler than the minimal design it replaces, not more complex.
 
@@ -112,6 +115,8 @@ Storing the signed artifact rather than extracted fields buys three things, and 
 - **Version and rollback are checked against `StoredCard`**, scoped per device.
 
 **Cost, accepted deliberately:** full counterparty destinations at rest (Q-03). Mitigated by machinery the [Forensic cleanliness](#forensic-cleanliness) section already requires — encrypted DB, non-nil depth from creation, cascade delete — and by the fact that the app already holds full destinations for the owner's own cards (D-12). The exposure grows; the class does not.
+
+**Cross-contact destination reuse is detectable and currently unused.** *(Added by security review, 2026-08-10.)* The baseline is keyed `(contactID, destinationDigest)`, so if two contacts present the **same** destination nothing notices — yet one drop account serving multiple victims is a standard BEC pattern, and the digests are already sitting there to compare. Legitimate collisions exist (two people at one firm, one escrow account), so it is a flag rather than a rejection, and all the data is local so it creates no new exposure. An available detection the design is not taking.
 
 **Version is a hard check, not a display field.** Four rules:
 
@@ -172,9 +177,14 @@ Surface age and change history at the moment of payment, with the discipline `Pr
 The reason for a second one is D-01's correction: the identity key has no biometric gate and cannot acquire one (access control is fixed at creation; changing it means regenerating the identity key and re-pairing every contact). A dedicated key is the only option that makes *"an attacker holding your unlocked phone cannot silently repoint your money"* a hardware property rather than a code path.
 
 - **Policy is `.userPresence`, not `.biometryCurrentSet`.** The stronger flag invalidates the key whenever the user adds a fingerprint or re-enrols Face ID, forcing every card to be re-authored and every payer to see version bumps. The passcode fallback is a real residual and is listed as such in the threat model rather than pretended away.
-- **Certificate:** `sign_identityKey(payment_pubKey ∥ deviceID ∥ version ∥ createdAt)`, travelling with every request. The payer verifies it against the identity key pinned at UWB, then verifies card and request against the payment key it carries.
+- **Certificate:** `sign_identityKey(payment_pubKey ∥ deviceID ∥ version ∥ createdAt ∥ expiresAt)`, travelling **with every card** — not "with every request." Two of D-03's three delivery contexts carry no request, and a card without its certificate is unverifiable, so tying the certificate to requests breaks the ceremony path, which is the primary one. The payer verifies it against the identity key pinned at UWB, then verifies card and request against the payment key it carries.
+- **The certificate expires.** *(Added by security review, 2026-08-10.)* Cards and requests both carry `expiresAt`; the certificate originally did not, leaving a compromised payment key valid forever, since retiring it requires a superseding certificate and delivery is revocation case 4 — the open one. Card expiry bounds each artifact but not the key: the attacker simply signs fresh cards. Same reasoning that made card expiry mandatory — bounds staleness with no channel required, fails closed on abandonment.
 - **Per-device by construction.** SE keys are non-extractable, so each authoring device has its own payment key and its own certificate signed by *that device's* identity key. This stays on the right side of the standing no-vouching rule: `cert_B` only verifies for a payer who pinned `identity_B`, which only happens through a physical ceremony with device B. The certificate scopes a purpose key *within* a device; it never extends trust across one.
-- **Certificate versioning reuses D-04's rules.** Store `highestCertVersionSeen` per `(contactID, deviceID)`; reject anything lower. This is what creates a compromise-revocation path that did not previously exist — see [Revocation](#revocation) case 2.
+- **Certificate version is global per contact, NOT per `(contactID, deviceID)`.** *(Corrected by security review, 2026-08-10 — the original per-device scoping was void.)* `deviceID` is a field the signer chooses; nothing binds it to a real device. Scoping the counter by it means anyone who can sign a certificate bypasses monotonicity entirely by incrementing `deviceID` instead of `version` — a fresh `deviceID` has no stored version, so it is first-seen and accepted. That would leave [Revocation](#revocation) case 2 claiming a superseding certificate retires a compromised payment key when nothing forces the attacker back into the same partition.
+
+  Store `highestCertVersionSeen` per **`contactID`**; reject anything lower regardless of the `deviceID` claimed. A genuinely new device must then still exceed the highest version that contact has ever presented, and minting a fresh `deviceID` buys nothing. This is the same ruling D-15 reached for card version — global to the signer, not to an attacker-choosable partition.
+
+  **A previously unseen `deviceID` for a known contact must surface as prominently as a new destination.** Today it would appear silently.
 
 ### D-10 · Card schema — destination is a rail-tagged tuple
 
@@ -229,6 +239,8 @@ requestID(36) ∥ cardDigest(32) ∥ amount(UInt64 BE, minor units) ∥ currency
 > **Yura** is asking you to send **$5,000** to their account ending **···4471** — a destination you've had since March.
 
 Direction and beneficiary are unambiguous by construction rather than by discipline. Nothing can be worded ambiguously, nothing localizes on the wire, and nothing can impersonate app chrome. The age clause renders from the local `DestinationBaseline`, so the reassuring half of the sentence is the half an attacker cannot influence.
+
+**The name comes from the payer's own contact record, never from the card.** *(Added by security review, 2026-08-10.)* SPEC §5 already settles this — *"display name comes from the responder's own contact record (decrypted locally), never from the payload."* D-10 applies the impersonation rule to `payeeName` and friends as *displayed fields*, but the generated sentence is app copy, and rendering a card-supplied string inside it is precisely the impersonation that rule exists to prevent. **The sentence is built from local contact data plus structured numbers only — no string from the card ever enters it.**
 
 An **optional** free-text note may travel under SPEC §5's existing `contextNote` rules. It carries context, never security meaning.
 
@@ -330,6 +342,8 @@ On verifying and pinning a card, the payer signs a short acknowledgement: `(card
 
 The payee retains the highest acknowledged version per contact, so a replayed old acknowledgement degrades to stale information rather than anything exploitable.
 
+**Acknowledgements are advisory and must never suppress a re-issue.** *(Added by security review, 2026-08-10.)* The ack carries no expiry and no freshness — deliberately, since a timestamp would make it a read receipt. That means an attacker who captured Bob's v8 ack can replay it after Bob reinstalls: the payee reads *"Bob has v8,"* skips re-issuing, and Bob's fresh install holds no baseline at all. That attacks Q-01's mitigation in exactly the scenario Q-01 exists for. So the re-issue prompt always permits re-sending to any contact, and an acknowledgement may inform the ordering of that list but must never remove anyone from it.
+
 **Cost splits by flow:** free at a UWB ceremony, where the channel is already live and which D-13 makes the primary path; a manual send back for remote updates, landing on the payer — often the less engaged party.
 
 ### D-17 · The diff challenge is a notification, not an authorization gate
@@ -384,7 +398,8 @@ Written in `Presence Verification/SPEC.md` §6's form.
 
 ### Defeated
 
-- **Forged certificate, card or request** — needs SE-held keys. Hardware-excluded.
+- **Forged card or request** — needs the SE-held payment key, and its use is gated (D-09). Hardware-excluded against key *extraction*; gated against key *use*.
+- **Forged certificate** — needs the SE-held identity key. Hardware-excluded against extraction, but **not gated against use**: the identity key is `[.privateKeyUsage]` only (D-01's correction), so certificate minting is silent on an unlocked device. Distinguished from the line above deliberately, since that distinction is the entire reason D-09 exists.
 - **Mix-and-match** (genuine request + attacker's card) — D-02's `cardDigest` binding.
 - **Retargeting a coerced artifact by moving the file.** Both card (D-15) and request (D-11) bind their counterparty inside the signed bytes, so share-sheet, email or AirDrop delivery to a different contact fails verification. Recipient selection is a hard gate on artifact creation, not a UI convenience.
 - **Backdated card faking age** — D-06 reads locally-observed `firstSeenAt`.
@@ -708,7 +723,9 @@ Previously recorded as "closed." It is four cases.
 
 **1. Benign — the owner closes an account. Closed by D-03.** Sign a new version, the next request carries it, the payer sees a diff. No transport needed, nothing to broadcast.
 
-**2. Payment key compromised. Closed by D-09.** The identity key signs a superseding certificate at a higher version; anything lower is rejected. Retires a compromised payment key without touching the identity key and without re-pairing. This case had no answer before D-09.
+**2. Payment key compromised. Closed by D-09 — and only because certificate version is global per contact.** The identity key signs a superseding certificate at a higher version; anything lower is rejected. Retires a compromised payment key without touching the identity key and without re-pairing. This case had no answer before D-09.
+
+Under the original per-`(contactID, deviceID)` scoping the closure was illusory: `deviceID` is signer-chosen, so an attacker increments that instead of `version` and the counter resets. Corrected in D-09 by the 2026-08-10 security review; genuinely closed only with the global scoping in place.
 
 **3. Identity key compromised. Cannot be closed — and revocation is the wrong frame.** Every mechanism is authorised by the key the attacker holds. The compensating control is the tripwire: the attacker can act, but not silently (threat model).
 
@@ -754,6 +771,9 @@ Previously recorded as "closed." It is four cases.
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
 - **The diff must be contact-wide, not per-lineage (Q-02).** Load-bearing, not cosmetic: a per-lineage diff makes minting a new `cardID` the coercer's cheapest move, and invalidates the "a duress card cannot be quiet" claim in both D-05 and the threat model.
 - **Age must render relative to the relationship, not absolutely (D-06).** Absolute age can be waited out by pre-positioning a card standalone; relationship-relative age cannot.
+- **Standing check before SPEC: for every monotonic counter, comparison scope and "first seen" — ask who chooses the identifier it is keyed by.** Three findings in this doc are the same mistake at different sites: Q-02's per-lineage diff (attacker mints a new `cardID`), D-06's absolute age (attacker waits), and D-09's per-`deviceID` certificate version (attacker mints a new `deviceID`). Each control was correct in the case it was designed for and void in the adjacent case the attacker gets to pick. Every remaining scope in the design should be walked against this question before any of it becomes a SPEC.
+- Surface a previously unseen `deviceID` for a known contact as prominently as a new destination (D-09).
+- Consider flagging cross-contact destination reuse (D-04) — free to compute, and one drop account serving several victims is a standard BEC pattern.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
 - The owner-side card store (D-12) — Vault entries under the vault key (Q-03), inheriting exact-match depth, rotation-on-activation, backup, and re-encryption.
 - Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
@@ -794,6 +814,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | D-09 – D-14 | Gap review, 2026-08-10 |
 | D-15 | Gap review, 2026-08-10 — recipient-bound cards, lazily signed; closes Q-01's residual for hidden contacts |
 | D-16, D-17 | Gap review, 2026-08-10 — delivery acknowledgement and diff challenge |
+| Security review | 2026-08-10 — eight findings against the completed design. Voided the per-`deviceID` certificate version scoping (D-09) and with it revocation case 2; added certificate expiry; corrected certificate delivery from "every request" to "every card"; added the payment public key to `StoredCard`; barred card strings from the generated sentence (D-11); made acknowledgements advisory (D-16); split the Defeated entry on forged certificates from forged cards; recorded cross-contact destination reuse as an unused detection |
 | Lifecycle | Gap review, 2026-08-10 — event model as specification, explicitly not as storage |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-10 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-10** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
