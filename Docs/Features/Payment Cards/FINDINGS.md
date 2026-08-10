@@ -335,7 +335,7 @@ The doc above specifies artifacts; this specifies transitions. Kind matters as m
 | `certificatePinned(contact)` | payer | inbound | first verification against the UWB-pinned identity (D-09) |
 | `cardReceived(contact, cardID, version)` | payer | inbound | sets `firstSeenAt` on a new destination, updates `lastSeenAt`, runs D-04's version rules |
 | `cardRejected(reason)` | payer | inbound | D-14's fail-closed set — bad signature, rollback, fork, wrong recipient binding, unknown rail |
-| `destinationChanged(from, to)` | payer | **derived** | the tripwire |
+| `destinationChanged(from, to)` | payer | **derived** | the tripwire — computed against **all** destinations known for the contact, not one lineage (Q-02) |
 | `requestReceived` | payer | inbound | expiry and one-shot checks (D-11) |
 | `requestConsumed` | payer | local | `requestID` retained until its own expiry |
 | `diffChallengeSent` / `diffChallengeReceived` | both | user-initiated | D-17 |
@@ -364,7 +364,7 @@ Written in `Presence Verification/SPEC.md` §6's form.
 - **Mix-and-match** (genuine request + attacker's card) — D-02's `cardDigest` binding.
 - **Retargeting a coerced artifact by moving the file.** Both card (D-15) and request (D-11) bind their counterparty inside the signed bytes, so share-sheet, email or AirDrop delivery to a different contact fails verification. Recipient selection is a hard gate on artifact creation, not a UI convenience.
 - **Backdated card faking age** — D-06 reads locally-observed `firstSeenAt`.
-- **Silent duress card.** A coerced card *must* change the destination digest and bump the version, so it always renders as a loud diff, and it cannot forge age. **A duress attacker cannot make a change quiet.** Q-01's exposure narrows to two cases: the first card from a contact (mitigated by D-13), and a payer who sees the diff and proceeds anyway.
+- **Silent duress card — *conditional on Q-02's cross-card diff being built*.** A coerced *revision* must change the destination digest and bump the version, so it renders as a loud diff, and it cannot forge age. But a coerced signer can mint a **new `cardID`** instead, which has no lineage and therefore no revision diff — under a per-lineage diff it degrades to "new destination," the weaker warning. The claim *"a duress attacker cannot make a change quiet"* holds **only** when the diff is computed against every destination known for that contact (Q-02). Built that way, minting and revising are equally loud and the attacker gains nothing by choosing either.
 - **Rollback to an older signed card** — D-04's `version < stored` refusal, *provided* the payer has seen the newer one.
 - **Duress amplification across contacts** — D-11's payer-fingerprint binding.
 - **Unknown-rail downgrade** — D-10's fail-closed rendering makes this denial of service, not bypass.
@@ -530,7 +530,7 @@ The protection is the shipped contact-classification mechanism, not a new one. A
 
 Three properties already in the design, none of which the coercer can defeat:
 
-- **A duress card cannot be quiet.** It must change the destination digest and bump the version, so it always renders as a loud diff (threat model).
+- **A duress card cannot be quiet — provided the diff is contact-wide (Q-02).** A coerced revision always renders as a loud diff. A coerced *new* `cardID` has no lineage to diff against, so under a per-lineage comparison it degrades to the weaker "new destination" warning, and minting becomes the coercer's cheaper move. Q-02's cross-card diff is what makes this property true rather than aspirational.
 - **Its age cannot be forged.** D-06 reads locally-observed `firstSeenAt`, not the signed `createdAt`.
 - **It expires.** The mandatory `expiresAt` ([Revocation](#revocation)) bounds the window without requiring any channel.
 
@@ -539,6 +539,26 @@ Three properties already in the design, none of which the coercer can defeat:
 **What D-15 removes:** because the card now binds a recipient, a coerced card is only usable against contacts the coercer could *select* — those visible at the coercion depth. Hidden contacts are unreachable by a coerced card, not merely unlikely to be reached. The residual is therefore bounded to the contact set the operator deliberately classified as non-sensitive, which is the trade this whole answer is built on. Manual transport of the `.occ` file does not widen it, because the binding is inside the signed bytes.
 
 **Required: stamp the owner's card store with the depth it was authored at, and on return to depth 0 prompt to re-issue, flagging which contacts have not yet received the new version.** That flag is the only thing standing between a coerced signature and an indefinite window.
+
+### Q-02 · Multiple cards per contact — **reopened and answered 2026-08-10**
+
+Previously closed on the data model alone. That was the easy half.
+
+**Settled, and unchanged:** N cards per contact are representable — `StoredCard` is keyed `(contactID, cardID)`, `DestinationBaseline` independently by `(contactID, destinationDigest)`. The **sender selects** which card a request references (D-11 binds exactly one `cardDigest`), so the choice is made by the person who knows which account they want, on their own device; the payer is never asked to choose between a counterparty's accounts. Each card carries a `label` for that selection (D-10) — signed, display-only, under SPEC §5's impersonation rule. Per-recipient signing scales by D-15's lazy minting, so N cards × M counterparties never materializes.
+
+**What was missed: there are three states, and a per-lineage diff collapses two of them.**
+
+| State | Comparison available | Rendered today |
+|---|---|---|
+| First card ever from this contact | none | "new destination" — correct, D-13 mitigates |
+| **New `cardID` from a contact you already hold cards for** | **yes, across cards** | "new destination" — **wrong, understates it** |
+| Revision of a known `cardID` | yes, within lineage | the loud diff |
+
+**Ruling: the diff is computed against every destination known for that contact, not against the referenced card's own lineage.** The payer already holds a `DestinationBaseline` row per known destination, so the stronger statement is always available:
+
+> You have paid this contact at ···4471 since March. This request uses a different account, ···8823, first seen today.
+
+**Why this is a security fix and not UI polish.** Under a per-lineage diff, a coerced signer is strictly better off **minting a new `cardID`** than revising an existing one — a new lineage has nothing to diff against, so it produces the weaker of the two warnings. Every claim in this doc that a duress card "cannot be quiet," including D-05's framing and the threat model's Defeated entry, implicitly assumed revision. Contact-wide diffing removes the attacker's choice: minting and revising are equally loud, so there is no cheaper move.
 
 ### Q-03 · PII at rest — **answered 2026-08-10**
 
@@ -705,6 +725,7 @@ Previously recorded as "closed." It is four cases.
 **Design:**
 
 - Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
+- **The diff must be contact-wide, not per-lineage (Q-02).** Load-bearing, not cosmetic: a per-lineage diff makes minting a new `cardID` the coercer's cheapest move, and invalidates the "a duress card cannot be quiet" claim in both D-05 and the threat model.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
 - The owner-side card store (D-12) — Vault entries under the vault key (Q-03), inheriting exact-match depth, rotation-on-activation, backup, and re-encryption.
 - Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
@@ -748,7 +769,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Lifecycle | Gap review, 2026-08-10 — event model as specification, explicitly not as storage |
 | Threat model, Forensic cleanliness, Positioning | Gap review, 2026-08-10 |
 | Q-01 | Session 2 Q-05; **answered 2026-08-10** — duress cards permitted by design; don't detect, don't degrade, hide the targets, bound the damage |
-| Q-02 (multiple cards) | Session 2 Q-06 — **closed** by D-04's `cardID` keying and destination-scoped age |
+| Q-02 (multiple cards) | Session 2 Q-06 — closed on the data model, then **reopened and answered 2026-08-10**: the diff must be contact-wide, or minting a new `cardID` becomes the coercer's cheapest move |
 | Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-10** — Vault residence under the vault key, no dedicated store or sealing key, Secure Mode not `#6`, baseline retention |
 | Q-04, Q-05 | Unchanged / sharpened |
 | Q-06 – Q-09 | Gap review, 2026-08-10 |
