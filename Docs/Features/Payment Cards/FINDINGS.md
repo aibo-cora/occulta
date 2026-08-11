@@ -222,7 +222,7 @@ Per-rail destination tuples, in fixed field order:
 | `.wireUS` | routingABA + accountNumber + bankName + **reference** |
 | `.iban` | IBAN + BIC? + **reference** |
 | `.ukFPS` | sortCode(6) + accountNumber(8) |
-| `.crypto` | chainID (CAIP-2) + address + acceptedAssets? |
+| `.crypto` | chainID (CAIP-2) + address + acceptedAssets? — see Q-10 on optional proof-of-control |
 
 **The tuple is what `destinationDigest` covers — all of it.** Digesting only "the account number" leaves a coerced routing-number change undetected (account numbers are not globally unique), and omitting `chainID` lets a card be re-pointed at a chain where funds are unrecoverable. Use CAIP-2 rather than a homegrown chain enum; the failure mode of the latter is exactly the ambiguity this section removes.
 
@@ -809,6 +809,42 @@ Affirmative arguments for exclusion: `#23` itself flags ML-DSA-87's ~4.6 KB *"if
 
 **Do not build a forward-compatibility slot.** The versioned domain prefix is already the house's wire-evolution mechanism. Record instead that a future v3 is a real migration *because cards will have shipped* — `SignedAttribute.swift:27-30` got away with v1→v2 only because SSS had not.
 
+### Q-10 · Could a public ledger validate cards? — **answered 2026-08-10: no, and the reason is the forensic mandate**
+
+Recorded because the question is a natural one to ask of a design that already touches crypto rails, and because the gaps it would address are real rather than imaginary.
+
+**What a ledger would genuinely fix:**
+
+- **Revocation case 4** — proactive retraction has no channel. A ledger is a broadcast that does not require reaching each counterparty. The strongest case by far.
+- **Transport suppression** — a payer reading a ledger independently bypasses a channel the attacker controls.
+- **A canonical latest version**, closing "replay against a payer who never saw the newer card."
+- **First-card TOFU** — *"this key has been publishing since 2024"* supplies age with no prior relationship.
+- **Compromise detection**, certificate-transparency style: a victim could see that their key signed something they never authorised.
+
+**Why it is disqualified, and it is not purity.**
+
+Publishing is **permanent, global, undeletable proof that this user uses Occulta, timestamped.** That one fact defeats Secure Mode for anyone who ever publishes. Everything in `forensic-trace-avoidance.md` — S1's cryptographic erasure, the depth layers, S8's accepted row-count gap, B5's key-at-first-launch — exists to make activation undetectable *given physical device access*. A ledger entry is detectable without the device at all, forever, and no depth model retracts it.
+
+Publishing digests is worse rather than safer: Q-03 puts a destination digest at roughly 2⁴⁰–2⁵⁰ real-world entropy, so a public ledger of destination digests publishes brute-forceable bank details to the world, with timing and update patterns on top.
+
+Two further disqualifiers. It needs network code this app does not have, and `#I` already draws that line — *"Occulta carries zero network code for this — broadcasting is the wallet app's job, outside Occulta's trust boundary."* And it does not touch the **primary** residual, which is an attacker who sends plain email and no artifacts at all.
+
+**The roadmap already answers those gaps without a network.** `#19` (pre-signed guardian revocation certificates, K-of-N release) is revocation broadcast done socially rather than technically. `#22` and `#27`'s Second Opinion are compromise detection done by asking another contact. Both weaker than a ledger; both leave no permanent public record — which is the trade this project makes everywhere else.
+
+**What the question actually points at is the keypair, not the chain.**
+
+A crypto destination has a private key behind it, so a card could carry a **second signature from the destination address's own key over the `cardID`** — asserting *"I control this address,"* verified entirely offline, no ledger involved.
+
+That matters because it is the **crypto analogue of Confirmation of Payee**, which D-08 concedes this design cannot do for bank rails. For banks, Occulta cannot check that an account belongs to the named party. For crypto it can check that the payee holds the key to the address they are pointing at — upgrading the lead wedge's claim from *"signed by someone you met"* to *"…and they demonstrably control it."*
+
+**Limits, which are why it is not in v1:**
+
+- **Does not stop duress or mule accounts.** A coercer pointing at their own address controls it and can sign; so can an attacker who owns a mule address.
+- **Exchange deposit addresses cannot sign** — no user-held key, and they are common — so it must be optional.
+- **Optional signals are weak signals.** If absence is normal, absence says nothing. It only earns its keep if the UI distinguishes proven from unproven control *and* users come to prefer the former: a slow behavioural gain, not a control.
+
+**Ruling: no ledger, ever, on forensic grounds. Proof-of-control recorded as a considered option for the `.crypto` rail, deferred past v1** — the exchange-deposit case forces it to be optional, and optional undercuts most of the value.
+
 ---
 
 ## Revocation
@@ -981,6 +1017,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-10** — Vault residence under the vault key, no dedicated store or sealing key, Secure Mode not `#6`, baseline retention |
 | Q-04, Q-05 | Unchanged / sharpened |
 | Q-06 – Q-09 | Gap review, 2026-08-10 |
+| Q-10 | 2026-08-10 — public ledger rejected on forensic grounds (publishing is permanent, global proof of Occulta use, which no depth model retracts); proof-of-control over a crypto destination recorded as a deferred option, since it needs no ledger at all |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
 
 Retained in `Presence Verification/FINDINGS.md` because they concern `#15`/`#27` rather than payments: Session 1 D-01–D-05 (the intent-vs-circumstance construction), D-04 (the `#27` dependency correction), and Q-01 (the behavioural residual). **Q-02 and Q-03 of that doc are answered here by D-11** and should be cross-referenced from it.
