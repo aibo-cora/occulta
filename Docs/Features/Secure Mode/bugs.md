@@ -2481,3 +2481,197 @@ launch-time performance/stability risk to close immediately.
   eagerly — e.g. a lighter migration that only touches groups actually missing padding (accepting
   the narrower "which specific groups changed" tell that the full-touch design was avoiding), or
   spreading the sweep across many launches instead of one.
+
+---
+
+## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
+
+**Status:** Open (Confirmed by code trace + field report). Not fixed.
+
+**Target:** v1.11.0
+
+### Severity: Critical — unrecoverable user data loss, plus a forensic tell
+
+### Reported symptom
+
+Device had 3 groups (2 empty, 1 containing 2 contacts classified sensitive). After activating
+Secure Mode and re-entering with the **normal** PIN — i.e. at depth 0, the real layer, not under
+duress — the Groups tab shows no group rows at all, only the footer label:
+
+> `3 groups · encrypted at rest`
+
+### Observed vs expected
+
+| | Expected at depth 0 | Observed |
+|---|---|---|
+| Group rows | All 3 listed by name | None |
+| Footer count | `3 groups` | `3 groups` |
+| Group membership | Real-layer members visible | Unreachable |
+| Recovery by deactivating Secure Mode | Groups return | Groups do **not** return |
+
+The footer and the list disagree because they are computed from different things.
+`ContactsListV2.sortedGroups` is **not** depth-filtered — it returns all 3 stored `Group` rows, so
+`sorted.count` is 3 and the footer prints "3 groups"
+([ContactsListV2.swift:86](Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift:86)). Each row,
+however, is gated on a successful decrypt:
+
+```swift
+ForEach(sorted) { group in
+    if let groupID = group.readID() {   // ContactsListV2.swift:77
+        NavigationLink(value: groupID) { GroupRowV2(group: group) }
+    }
+}
+```
+
+`readID()` returns `nil` for every group, so `ForEach` emits zero rows. The count label is the only
+surviving evidence that the groups exist. This is a precise match for the reported symptom, and it
+explains why *all three* groups vanished including the two empty ones — the failure has nothing to
+do with membership or with the sensitivity of the 2 contacts in the third group.
+
+### Root Cause
+
+`Group` stores every field under the **hybrid local DB key**: `encryptedID`, `encryptedName`,
+`encryptedCreatedAt` via the bare `Data.encrypt()`/`.decrypt()` helpers
+([Crypto+Manager.swift:53](Occulta/Services/Crypto+Manager.swift:53)), and all member slots
+(`realMemberSlots`, `duressMemberSlots`, `deeperMemberSlots` — up to 32 depths × 32 slots) via
+`Manager.Key().createHybridLocalEncryptionKey()`
+([Group+Model.swift:162](Occulta/Data Models/Group+Model.swift:162)).
+
+`activateSecureMode` rotates that key. Step 8 re-encrypts everything it knows about under the
+staged key, and the enumeration is exhaustive — and does not include `Group`:
+
+- `Contact.Profile` — `reencryptAllFields` / `reencryptKeyRecords`
+  ([Manager+Security.swift:543-546](Occulta/Features/SecureMode/Manager+Security.swift:543))
+- `VaultEntry.visibleThroughDepth`
+  ([Manager+Security.swift:560](Occulta/Features/SecureMode/Manager+Security.swift:560))
+- `Message.Draft` — `reKeyOrPurgeAll`
+  ([Manager+Security.swift:577](Occulta/Features/SecureMode/Manager+Security.swift:577))
+
+Step 9 then commits the staged key, and Step 11 calls `deleteSupersededLocalDBArtefacts()`
+([Manager+Security.swift:604](Occulta/Features/SecureMode/Manager+Security.swift:604)), which
+deletes **both** halves of the pre-rotation hybrid key — the superseded Secure Enclave private key
+and its Keychain random component
+([Key+Manager.swift:1112](Occulta/Services/Key+Manager.swift:1112)).
+
+Every `Group` row is therefore left sealed under a key that no longer exists anywhere on the
+device. Grep confirms the omission is total — there is no `Group` re-encryption anywhere in the
+codebase. The only two `FetchDescriptor<Group>` sites inside `Manager+Security.swift` (lines 574
+and 1130) merely *read* group IDs to feed `Message.Draft` purging; neither writes a group.
+
+### Why this is permanent, and why deactivation does not fix it
+
+`deactivateSecureMode` is a mirror of activation and has the identical omission: it re-encrypts
+`Contact.Profile` ([:806](Occulta/Features/SecureMode/Manager+Security.swift:806)), restores blob
+contacts ([:837](Occulta/Features/SecureMode/Manager+Security.swift:837)), re-encrypts
+`VaultEntry.visibleThroughDepth` ([:853](Occulta/Features/SecureMode/Manager+Security.swift:853)),
+then commits and deletes superseded artefacts
+([:889](Occulta/Features/SecureMode/Manager+Security.swift:889)). `Group` is absent there too.
+
+Deactivation also stages a **new** key rather than restoring the pre-activation one, so "reverse
+rotation" is only reverse in the sense of unwinding the blob — it does not resurrect the deleted
+key material. There is no recovery path: the ciphertext is intact in SQLite and cryptographically
+unrecoverable. Group names, IDs, creation dates, and all real- and duress-layer membership for
+every group created before the first activation are gone.
+
+### The dead rows cannot be deleted through the UI
+
+Every entry point to a group resolves it by `readID()`:
+
+- `ContactsListV2.swift:77` — the `NavigationLink` (list has no `.onDelete`)
+- `GroupDetailV3.swift:37` and `Group+FormV3.swift:45` — detail/edit lookups
+- `ContactManager.group(withID:)`
+  ([Contact+Manager+Groups.swift:96](Occulta/Services/Contact+Manager+Groups.swift:96)), which
+  backs `deleteGroup(id:)` and so silently no-ops for an undecryptable group
+
+Delete is only reachable from `Group.FormV3(mode: .edit(...))`, which is only reachable from
+`GroupDetailV3`, which is only reachable from the `readID()`-gated `NavigationLink`. The user is
+left with an un-openable, un-deletable, permanent "3 groups" label. Any fix must therefore include
+a purge path for already-orphaned rows, not just the missing re-key.
+
+### Secondary cascades
+
+1. **Group drafts get purged on the next duress entry.** `purgeDraftsNotSafeAtCurrentDepth`
+   ([Manager+Security.swift:1129](Occulta/Features/SecureMode/Manager+Security.swift:1129))
+   builds `allGroupIdentifiers` from `readID()`, which now yields an empty set. In
+   `Message.Draft.reKeyOrPurgeAll`, a draft survives only if its recipient is in
+   `allGroupIdentifiers` or `safeContactIdentifiers`
+   ([Message+Draft.swift:245](Occulta/Data Models/Message+Draft.swift:245)) — so every
+   group-addressed draft is deleted.
+2. **Membership is overwritten with empty slots on the next classification or contact deletion.**
+   `cleanUpGroupDuressMembership`
+   ([ContactManager+Classification.swift:208](Occulta/Services/ContactManager+Classification.swift:208))
+   and `ContactManager`'s delete path
+   ([Contact+Manager.swift:495](Occulta/Services/Contact+Manager.swift:495)) call
+   `refreshCiphertext` / `purgeMember`, which re-source each depth's plaintext from
+   `members(atDepth:usingKey:)`. That now returns `[]` for every depth, so
+   `reencryptAllDepths` writes 32 depths of pure random filler under the **new** key — destroying
+   the original ciphertext at the raw-SQLite level as well, which forecloses even a
+   theoretical forensic recovery.
+3. **Group messaging is dead.** `Crypto+Manager+GroupEncrypt` cannot resolve a group ID or its
+   members, so no group bundle can be composed for any pre-existing group.
+
+### Forensic-trace violation
+
+Beyond the data loss, this is a tell that Secure Mode was used. A raw-SQLite examiner holding the
+current canonical local DB key (i.e. anyone who has coerced the device open at any depth) sees
+every `Contact.Profile`, `VaultEntry`, and `Message.Draft` decrypt cleanly while every `Group` row
+fails authentication under the same key. Ciphertext that no live key can open, sitting alongside
+ciphertext that opens fine, is direct evidence that a key rotation occurred — and in this app the
+only thing that rotates the local DB key is Secure Mode activation. The whole design goal is that
+an examiner cannot tell activation ever happened. Cascade 2 above eventually erases this specific
+tell by overwriting the rows with new-key filler, but only after an unrelated classification or
+contact deletion happens to run.
+
+### Fix sketch (not implemented)
+
+1. Add a two-key re-encryption method to `Group` — e.g.
+   `reencrypt(from oldKey: SymmetricKey, to newKey: SymmetricKey, aad: Data)` — that reads via the
+   existing `members(atDepth:usingKey:)` and writes via `encryptedSlots(for:using:)`, and also
+   re-seals `encryptedID` / `encryptedName` / `encryptedCreatedAt`. Both helpers already take an
+   explicit key, so this costs **two** key derivations per rotation, not two per slot — important
+   given Bug 74's finding that per-call `createHybridLocalEncryptionKey()` round trips to the SE
+   are what caused the launch watchdog kill.
+2. Call it over `FetchDescriptor<Group>()` in activation Step 8 (before
+   `commitStagedLocalDBKey()`, alongside the contact loop) and in the matching deactivation step,
+   then `save()` so the writes reach the WAL before commit — the same ordering invariant already
+   documented at [Manager+Security.swift:547](Occulta/Features/SecureMode/Manager+Security.swift:547).
+3. Add a one-time repair pass that hard-deletes `Group` rows whose `readID()` fails, so users
+   already in this state can clear the phantom count and recreate their groups. Must respect Bug
+   74's constraint: no eager full-ciphertext sweep at launch. A failed `readID()` is a single
+   decrypt per group, which is cheap enough.
+4. Audit the schema for any other model sealed under the rotating key and missing from both
+   rotation paths. `AppLayerConfig` is the open question — see below.
+
+### Related, unverified: `AppLayerConfig` may have the same gap
+
+`AppLayerConfig+Model.swift` seals `sealedBlobSlots`, `layerSequenceNumbers`, `pinEnabledPerDepth`,
+`persistedDepth`, `coercerBaseDepth`, `lockoutCountEncrypted`, and `lockoutAnchorUptimeEncrypted`
+with the same bare `.encrypt()`/`.decrypt()` local DB key helpers, and none of them are
+re-encrypted during rotation either. Activation only rewrites the specific fields it touches after
+the commit — the code comment at
+[Manager+Security.swift:636](Occulta/Features/SecureMode/Manager+Security.swift:636) ("All config
+writes use the new canonical DB key (post-commit)") shows the ordering was considered for those,
+but says nothing about fields written by an *earlier* activation or by PIN setup.
+
+Not traced end-to-end here, so recorded as a question rather than a finding. Specifically worth
+checking:
+
+- Does `pinEnabledPerDepth`, written at PIN setup before the first rotation, survive activation —
+  and what does `readPINEnabled(at:)` returning `nil` do to the gate? (cf. Bugs 50, 51)
+- Do the lockout counter/anchor survive, or does activation silently reset lockout state?
+  (cf. Bug 70)
+- On a **second-layer** activation, `sealedBlobSlots[0]` and `layerSequenceNumbers[0]` were
+  written before that rotation. The final deactivation back to depth 0 reads `blobDepth = depth - 1`
+  ([Manager+Security.swift:717](Occulta/Features/SecureMode/Manager+Security.swift:717)) — if blob 0's
+  metadata is stranded, the real layer's sealed sensitive contacts may be unrecoverable. This
+  would be Critical if confirmed and should be traced before the Bug 75 fix lands.
+
+### Test gap
+
+No test covers group survival across a rotation. `OccultaTests/SecureMode/SecureModeActivationTests.swift`
+never mentions `Group`, and `OccultaTests/Groups/*` never activates Secure Mode. Regression
+coverage should assert that after activate (and after deactivate) a group's name, ID, and
+depth-0 and depth-1 membership all still read back correctly. Note these tests need a physical
+device: `Group` calls `Manager.Key()` directly rather than through an injectable
+`KeyManagerProtocol`, so `TestKeyManager` cannot bypass the Secure Enclave — follow the
+`secureEnclaveAvailable()` guard pattern already used in `GroupModelTests.swift`.

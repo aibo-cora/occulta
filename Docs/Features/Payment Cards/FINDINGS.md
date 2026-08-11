@@ -222,7 +222,7 @@ Per-rail destination tuples, in fixed field order:
 | `.wireUS` | routingABA + accountNumber + bankName + **reference** |
 | `.iban` | IBAN + BIC? + **reference** |
 | `.ukFPS` | sortCode(6) + accountNumber(8) |
-| `.crypto` | chainID (CAIP-2) + address + acceptedAssets? — see Q-10 on optional proof-of-control |
+| `.crypto` | chainID (CAIP-2) + address + acceptedAssets? — address entered by wallet signature, not typed (Q-10) |
 
 **The tuple is what `destinationDigest` covers — all of it.** Digesting only "the account number" leaves a coerced routing-number change undetected (account numbers are not globally unique), and omitting `chainID` lets a card be re-pointed at a chain where funds are unrecoverable. Use CAIP-2 rather than a homegrown chain enum; the failure mode of the latter is exactly the ambiguity this section removes.
 
@@ -833,17 +833,74 @@ Two further disqualifiers. It needs network code this app does not have, and `#I
 
 **What the question actually points at is the keypair, not the chain.**
 
-A crypto destination has a private key behind it, so a card could carry a **second signature from the destination address's own key over the `cardID`** — asserting *"I control this address,"* verified entirely offline, no ledger involved.
+#### The mechanism
 
-That matters because it is the **crypto analogue of Confirmation of Payee**, which D-08 concedes this design cannot do for bank rails. For banks, Occulta cannot check that an account belongs to the named party. For crypto it can check that the payee holds the key to the address they are pointing at — upgrading the lead wedge's claim from *"signed by someone you met"* to *"…and they demonstrably control it."*
+A crypto address *is* a public key, or a hash of one, and whoever controls it holds the matching private key. That key signs arbitrary strings — an ordinary `personal_sign`.
 
-**Limits, which are why it is not in v1:**
+The load-bearing property is that **an ECDSA signature is recoverable**: from the message plus the 65-byte signature you compute the public key that produced it, and from that the address. On EVM chains that is `ecrecover`, and it is why Ethereum signatures carry 65 bytes rather than 64 — the extra byte is the recovery id.
 
-- **Does not stop duress or mule accounts.** A coercer pointing at their own address controls it and can sign; so can an attacker who owns a mule address.
-- **Exchange deposit addresses cannot sign** — no user-held key, and they are common — so it must be optional.
-- **Optional signals are weak signals.** If absence is normal, absence says nothing. It only earns its keep if the UI distinguishes proven from unproven control *and* users come to prefer the former: a slow behavioural gain, not a control.
+So the signature does not *validate* a typed address. It **independently produces one**:
 
-**Ruling: no ledger, ever, on forensic grounds. Proof-of-control recorded as a considered option for the `.crypto` rail, deferred past v1** — the exchange-deposit case forces it to be optional, and optional undercuts most of the value.
+1. Occulta generates `cardID` and displays `occulta-card-control-v1:⟨cardID⟩`.
+2. The payee signs that string in their wallet and pastes the signature back.
+3. Occulta recovers the public key, derives the address, and **that is the destination** — whatever wallet signed.
+
+**Which means the payee never types an address.** Once it is recoverable, the signature *is* the address entry, and typos become impossible by construction rather than caught afterwards.
+
+**`cardID` is in the signed string** because Occulta generates it fresh at that moment, so the signature cannot be lifted from another card or supplied in advance by someone who does not yet know the value.
+
+#### The case it changes
+
+A contractor is told, by a spoofed email from his hosting provider, *"your new receiving address is `0xBBB`."* He believes it.
+
+*Today:* he authors card v6 with `0xBBB` and signs it with his payment key. Every control passes — validly signed by the key his clients pinned in person, version increments correctly, and the diff fires reading exactly like a legitimate wallet migration, because from the app's view it is one. A cautious client phones him. He confirms. They pay `0xBBB`.
+
+*With signature-derived entry:* Occulta asks him to sign with the wallet he wants paid at. He signs with the only wallet he has, and the card says `0xAAA`. **There is no field for `0xBBB` to go into.** The deception finds nothing to act on.
+
+It bites only if the attacker gets him to *import* their wallet, at which point he genuinely holds the key — a wallet-compromise attack, out of scope for the same reason duress is.
+
+#### Per-rail mechanics differ
+
+- **EVM** — `personal_sign` (EIP-191); address recovered via `ecrecover`.
+- **Solana** — ed25519 signatures are not recoverable, but the address *is* the public key, so verify directly against it.
+- **Sui / Aptos** — addresses are hashes of public keys, so the card carries pubkey + signature; verify, hash, compare.
+
+A `.crypto` specification detail, not one rule.
+
+#### What cannot sign — broader than exchanges
+
+| Destination | Can sign |
+|---|---|
+| MetaMask / Rainbow / hardware wallet | **Yes** |
+| `#I` smart-wallet key held by Occulta | **Yes, and free** |
+| EOA delegated via EIP-7702 | **Yes** — the underlying keypair survives |
+| Exchange deposit address | No — the custodian holds the key |
+| Safe / ERC-4337 contract account | No — **no keypair exists at that address** |
+
+Smart-contract accounts are the exclusion that matters more than exchanges: a Safe or a 4337 account is a *contract*, not a keypair, so there is nothing to recover. EIP-1271 verifies contract signatures but requires an on-chain call — network, which this same question rules out.
+
+#### Population, as of 2026-08
+
+**MetaMask ~30M monthly actives** against 100M+ lifetime installs, the largest self-custodial wallet ([Blockworks](https://blockworks.co/news/metamask-monthly-active-users-blockaid), [CoinLaw](https://coinlaw.io/metamask-wallet-statistics/)). Rainbow is low millions; Phantom and Trust Wallet are substantial in their own ecosystems; hardware wallets are small by count and large by balance.
+
+**Safe secures $100B+** — but that is *value*, not accounts: few addresses, enormous balances ([Eco](https://eco.com/support/en/articles/15254042-safe-wallet-deep-dive-2026-multisig-and-smart-accounts)). **40M+ ERC-4337 accounts deployed** across Ethereum and L2s, though *deployed* is a weak proxy for *receiving payments* — many are auto-provisioned gaming and consumer accounts with negligible balances. **EIP-7702 cuts the other way**, keeping the EOA keypair while adding smart-account behaviour, and hybrid setups are reported as the practical default for many users.
+
+*All vendor-self-reported and unaudited. Orders of magnitude, not measurements.*
+
+**The split is by recipient type, not a flat fraction** — and the important part: **D-07's physical-meeting precondition already selects for the signable population.** You meet a contractor, a freelancer, a friend, all of whom hold self-custody EOAs. You do not meet a DAO treasury. The two constraints align rather than compound.
+
+#### What it still does not reach
+
+**Anything where the adversary holds the destination key.** A coercer pointing at their own address signs for it; so does an attacker owning a mule address; so does a complicit payee. This establishes that the payee was not *mistaken* about their own address — never whose interests that address serves.
+
+And **legitimate third-party payments** — *"pay my subcontractor directly"* — have a destination the payee genuinely does not control.
+
+#### Ruling
+
+**No ledger, ever, on forensic grounds.** For proof-of-control, split what was one item into two:
+
+- **Signature-derived address entry — in scope for v1**, as the default authoring path for `.crypto`, with manual entry retained as a deliberately marked fallback for custodial and contract destinations. It is entirely payee-side, needs no payer-side verification and no protocol change, and it delivers both the typo elimination and the phishing case above. Caveat recorded honestly: a phished payee could still choose the manual fallback, so this is friction in the right direction rather than a block.
+- **Carrying the signature for payer-side verification — deferred.** This is the half that runs into optionality: Safe and exchange destinations cannot produce it, so absence stays unremarkable, and it needs per-rail verification logic. Revisit when `#I` ships, since a destination backed by a P-256 key Occulta already holds signs for free and cannot be mistyped at all.
 
 ---
 
@@ -900,7 +957,7 @@ The competitive trend reinforces it: Q-04 established that verification-of-payee
 
 ### Two scoping consequences of leading with crypto
 
-- **`.crypto` becomes the first-class rail** and needs to be complete at ship: CAIP-2 chain identifiers, the accepted-asset list promoted from optional, and hard-reject on mismatch (D-10). `.ukFPS` and arguably `.achUS` can follow later.
+- **`.crypto` becomes the first-class rail** and needs to be complete at ship: CAIP-2 chain identifiers, the accepted-asset list promoted from optional, hard-reject on mismatch (D-10), and **signature-derived address entry** rather than a text field (Q-10). `.ukFPS` and arguably `.achUS` can follow later.
 - **The masking surface rule rises in priority.** It matters most exactly here, because vanity address generation makes a matching displayed tail cheap — so "full destination on the payment screen, masking only in history" is a ship blocker for the lead wedge, not a refinement.
 
 ### What this does that nothing else does
@@ -1017,7 +1074,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Q-03 | Session 2 Q-07, rewritten by Session 3 D-14; **answered 2026-08-10** — Vault residence under the vault key, no dedicated store or sealing key, Secure Mode not `#6`, baseline retention |
 | Q-04, Q-05 | Unchanged / sharpened |
 | Q-06 – Q-09 | Gap review, 2026-08-10 |
-| Q-10 | 2026-08-10 — public ledger rejected on forensic grounds (publishing is permanent, global proof of Occulta use, which no depth model retracts); proof-of-control over a crypto destination recorded as a deferred option, since it needs no ledger at all |
+| Q-10 | 2026-08-10 — public ledger rejected on forensic grounds (publishing is permanent, global proof of Occulta use, which no depth model retracts). Extended 2026-08-11 after the mechanism was questioned: signature recovery means the destination is *derived from* the signature rather than compared against a typed value, so signature-derived address entry enters v1 scope while payer-side verification stays deferred. Exclusion set corrected — Safe and ERC-4337 accounts have no keypair at all, a broader gap than exchange addresses; EIP-7702 preserves it. Wallet population figures added |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
 
 Retained in `Presence Verification/FINDINGS.md` because they concern `#15`/`#27` rather than payments: Session 1 D-01–D-05 (the intent-vs-circumstance construction), D-04 (the `#27` dependency correction), and Q-01 (the behavioural residual). **Q-02 and Q-03 of that doc are answered here by D-11** and should be cross-referenced from it.
