@@ -31,6 +31,13 @@ import Foundation
 import CryptoKit
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on CI runners, which
+/// have no Secure Enclave.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 private func canonicalKey() -> SymmetricKey? {
@@ -94,7 +101,9 @@ struct EncryptedFieldTripwireTests {
         #expect(storedPropertyNames(of: makeProbeProfile()) == expected, "\(tripwireGuidance)")
     }
 
-    @Test("Group has no unreviewed stored properties")
+    // Needs a Secure Enclave only because constructing a `Group` seals its fields; the
+    // Profile and AppLayerConfig tripwires below have no such dependency and run everywhere.
+    @Test("Group has no unreviewed stored properties", .enabled(if: secureEnclaveAvailable()))
     func groupPropertiesReviewed() throws {
         let expected: Set<String> = [
             "encryptedID", "encryptedName", "encryptedCreatedAt",
@@ -123,7 +132,9 @@ struct EncryptedFieldTripwireTests {
 
 // MARK: - Behavioural
 
-@Suite("Encrypted field coverage — survives rotation")
+/// `reencryptAllFields` decrypts through `Manager.Key()` internally, so the behavioural
+/// half needs a Secure Enclave. The tripwires above do not, and keep running everywhere.
+@Suite("Encrypted field coverage — survives rotation", .enabled(if: secureEnclaveAvailable()))
 struct EncryptedFieldRotationTests {
 
     /// Every encrypted field on a profile must be readable after a rotation. This is the

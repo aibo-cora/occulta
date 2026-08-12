@@ -22,6 +22,13 @@ import Foundation
 import CryptoKit
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on CI runners, which
+/// have no Secure Enclave.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 private func canonicalKey() -> SymmetricKey? {
@@ -30,7 +37,12 @@ private func canonicalKey() -> SymmetricKey? {
 
 // MARK: - Tests
 
-@Suite("Bug 75 — Group survives key rotation")
+/// `Group`'s crypto goes through `Manager.Key()` directly rather than an injectable key
+/// manager, so these cannot run without a Secure Enclave — on a GitHub runner they would
+/// otherwise hard-fail on the first `#require`. Skipped there instead, matching the
+/// `⚠︎ Skipping — SE unavailable` convention the rest of the suite uses, and reported as
+/// skipped rather than silently passing.
+@Suite("Bug 75 — Group survives key rotation", .enabled(if: secureEnclaveAvailable()))
 struct GroupKeyRotationTests {
 
     /// The core regression: everything a group holds must be readable under the new key

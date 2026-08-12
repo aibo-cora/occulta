@@ -51,30 +51,36 @@ private func makeProfile() -> Contact.Profile {
     )
 }
 
-private func seal(_ version: OccultaBundle.Version) throws -> Data? {
+/// An in-memory crypto stack. Everything here is exercised through an injected key manager
+/// rather than `Manager.Key()`, so these run on a GitHub runner with no Secure Enclave —
+/// `updateMaxVersion`, `resolveTargetVersion` and `hasReadableBundleVersion` all take the
+/// crypto to use, so nothing needs the real one.
+@MainActor
+private func makeTestCrypto() -> Manager.Crypto {
+    Manager.Crypto(keyManager: TestKeyManager())
+}
+
+@MainActor
+private func seal(_ version: OccultaBundle.Version, using crypto: Manager.Crypto) throws -> Data? {
     guard let byte = version.wireByte else { return nil }
-    return try Data([byte]).encrypt()
+    return try crypto.encrypt(data: Data([byte]))
 }
 
 @Suite("Bug 80 — bundle version is a high-water mark")
 @MainActor
 struct BundleVersionHighWaterMarkTests {
 
-    private func canonicalKeyAvailable() -> Bool {
-        (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-    }
-
     @Test("A higher claim raises the recorded tier")
     func higherClaimRaises() throws {
-        try #require(canonicalKeyAvailable())
+        let crypto  = makeTestCrypto()
         let manager = try makeManager()
         let profile = makeProfile()
-        profile.maxBundleVersion = try seal(.groupCapable)
+        profile.maxBundleVersion = try seal(.groupCapable, using: crypto)
         try manager.insertProfile(profile)
 
-        try manager.updateMaxVersion(from: "1.10.0", for: profile, using: Manager.Crypto())
+        try manager.updateMaxVersion(from: "1.10.0", for: profile, using: crypto)
 
-        #expect(ContactManager.resolveTargetVersion(for: profile, using: Manager.Crypto())
+        #expect(ContactManager.resolveTargetVersion(for: profile, using: crypto)
             .isAtLeast(.senderSignatureCapable))
     }
 
@@ -82,15 +88,15 @@ struct BundleVersionHighWaterMarkTests {
     /// or the next unsigned bundle from the same attacker walks through the gate.
     @Test("A lower claim does not lower the recorded tier")
     func lowerClaimIsIgnored() throws {
-        try #require(canonicalKeyAvailable())
+        let crypto  = makeTestCrypto()
         let manager = try makeManager()
         let profile = makeProfile()
-        profile.maxBundleVersion = try seal(.senderSignatureCapable)
+        profile.maxBundleVersion = try seal(.senderSignatureCapable, using: crypto)
         try manager.insertProfile(profile)
 
-        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: Manager.Crypto())
+        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: crypto)
 
-        #expect(ContactManager.resolveTargetVersion(for: profile, using: Manager.Crypto())
+        #expect(ContactManager.resolveTargetVersion(for: profile, using: crypto)
             .isAtLeast(.senderSignatureCapable), "tier must not fall")
     }
 
@@ -98,7 +104,7 @@ struct BundleVersionHighWaterMarkTests {
     /// convert "cannot prove incapable" into a recorded "incapable".
     @Test("A low claim cannot clear a stranded marker")
     func lowClaimCannotClearStrandedMarker() throws {
-        try #require(canonicalKeyAvailable())
+        let crypto  = makeTestCrypto()
         let manager = try makeManager()
         let profile = makeProfile()
         // Sealed under a key nobody holds — the post-rotation state.
@@ -106,40 +112,40 @@ struct BundleVersionHighWaterMarkTests {
         let stranded = profile.maxBundleVersion
         try manager.insertProfile(profile)
 
-        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: Manager.Crypto())
+        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: crypto)
 
         #expect(profile.maxBundleVersion == stranded, "stranded marker must survive a low claim")
-        #expect(!ContactManager.hasReadableBundleVersion(profile))
+        #expect(!ContactManager.hasReadableBundleVersion(profile, using: crypto))
     }
 
     /// Healing: a stranded contact who is genuinely current re-establishes a readable tier.
     @Test("A top-tier claim heals a stranded marker")
     func topTierClaimHealsStrandedMarker() throws {
-        try #require(canonicalKeyAvailable())
+        let crypto  = makeTestCrypto()
         let manager = try makeManager()
         let profile = makeProfile()
         profile.maxBundleVersion = try Data([0x07]).encrypt(using: SymmetricKey(size: .bits256))
         try manager.insertProfile(profile)
 
-        try manager.updateMaxVersion(from: "1.10.0", for: profile, using: Manager.Crypto())
+        try manager.updateMaxVersion(from: "1.10.0", for: profile, using: crypto)
 
-        #expect(ContactManager.hasReadableBundleVersion(profile))
-        #expect(ContactManager.resolveTargetVersion(for: profile, using: Manager.Crypto())
+        #expect(ContactManager.hasReadableBundleVersion(profile, using: crypto))
+        #expect(ContactManager.resolveTargetVersion(for: profile, using: crypto)
             .isAtLeast(.senderSignatureCapable))
     }
 
     @Test("A first sighting records the claimed tier")
     func firstSightingRecords() throws {
-        try #require(canonicalKeyAvailable())
+        let crypto  = makeTestCrypto()
         let manager = try makeManager()
         let profile = makeProfile()
         profile.maxBundleVersion = nil
         try manager.insertProfile(profile)
 
-        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: Manager.Crypto())
+        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: crypto)
 
-        #expect(ContactManager.hasReadableBundleVersion(profile))
-        #expect(!ContactManager.resolveTargetVersion(for: profile, using: Manager.Crypto())
+        #expect(ContactManager.hasReadableBundleVersion(profile, using: crypto))
+        #expect(!ContactManager.resolveTargetVersion(for: profile, using: crypto)
             .isAtLeast(.senderSignatureCapable))
     }
 }

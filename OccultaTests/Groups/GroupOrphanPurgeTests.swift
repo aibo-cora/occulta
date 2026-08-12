@@ -23,6 +23,13 @@ import SwiftData
 import CryptoKit
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on CI runners, which
+/// have no Secure Enclave.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 private func canonicalKey() -> SymmetricKey? {
@@ -57,7 +64,8 @@ private func strand(_ group: Group, from key: SymmetricKey) throws {
 
 // MARK: - Tests
 
-@Suite("Bug 75 — orphaned group purge")
+/// Requires a Secure Enclave: `createGroup` seals through `Manager.Key()` directly.
+@Suite("Bug 75 — orphaned group purge", .enabled(if: secureEnclaveAvailable()))
 @MainActor
 struct GroupOrphanPurgeTests {
 
