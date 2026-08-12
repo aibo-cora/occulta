@@ -265,7 +265,7 @@ private func openBundle(
         #expect(pm.retrievePrivateKey(for: jakeKeys[2]) != nil)
     }
 
-    @Test func deleteAllKeys_isContactScoped() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deleteAllKeys_isContactScoped() throws {
         let c1 = cid() + ".c1"
         let c2 = cid() + ".c2"
         defer { pm.deleteAllKeys(for: c2) }
