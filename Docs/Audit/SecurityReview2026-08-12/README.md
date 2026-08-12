@@ -22,7 +22,7 @@ Two further findings are in this release's own new code:
 
 Nothing in the non-Secure-Mode part of the release (entitlements, `Info.plist`, `DraftStore`, CI) introduced a vulnerability; two of those changes are net security improvements, noted at the end.
 
-**Fix priority:** Finding 2 is a one-line change and should land before this release merges. Finding 1 needs a release-note/operational decision rather than a code fix, plus an optional hardening change. Finding 3 is cosmetic-adjacent but cheap.
+**Fix priority:** Findings 2 and 3 are fixed (2026-08-12), tracked as Bugs 78 and 79. Finding 1 is the only one still open, and it needs an operational decision rather than a code fix — its cause is already fixed and its existing damage is unrecoverable — plus an optional fail-closed hardening change.
 
 ---
 
@@ -68,7 +68,7 @@ The consequence is exactly what the `2026-07-24` review warned about in the find
 
 - **File:** `Occulta/Features/SecureMode/Manager+Security.swift:567` (activation), `:912` (deactivation)
 - **Confidence:** 9/10 — control flow read directly; no `else`, no guard, unconditional fall-through to commit.
-- **Status:** 🔴 **Open. Introduced by this release.**
+- **Status:** ✅ **FIXED 2026-08-12** — both sites now `guard … else { throw SecurityError.keyDerivationFailed }`, with regression coverage driving a nil key through a real activation and deactivation. Tracked as Bug 78.
 
 **Description.** Both rotation paths wrap the draft, group, and `AppLayerConfig` re-encryption in:
 
@@ -92,7 +92,7 @@ with no `else`. If derivation returns `nil`, all three passes are skipped and ex
 
 - **File:** `Occulta/Features/SecureMode/Manager+Security.swift:1224` (`migrateBlobMetadataKeyIfNeeded`)
 - **Confidence:** 8/10 — behaviour is unambiguous; impact is genuinely small.
-- **Status:** 🔴 **Open. Introduced by this release.**
+- **Status:** ✅ **FIXED 2026-08-12** — `checkpointStore()` moved outside the conditional. Tracked as Bug 79.
 
 **Description.** The blob-metadata migration checkpoints only when it moved something:
 
@@ -126,9 +126,9 @@ if moved {
 
 | # | Severity | Finding | Status | Effort |
 |---|----------|---------|--------|--------|
-| 2 | 🟡 MEDIUM | Rotation commits despite skipped re-key passes | Open | One line × 2 sites — **land before merge** |
+| 2 | 🟡 MEDIUM | Rotation commits despite skipped re-key passes | ✅ Fixed 2026-08-12 (Bug 78) | — |
 | 1 | 🔴 HIGH | Stranded `maxBundleVersion` disables signature enforcement | Cause fixed; existing state unfixable | Release note; optional fail-closed hardening |
-| 3 | 🔵 LOW | Conditional checkpoint | Open | One line |
+| 3 | 🔵 LOW | Conditional checkpoint | ✅ Fixed 2026-08-12 (Bug 79) | — |
 
 ---
 

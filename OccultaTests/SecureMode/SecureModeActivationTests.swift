@@ -1112,3 +1112,59 @@ private struct TestError: Error, CustomStringConvertible {
     let description: String
     init(_ message: String) { self.description = message }
 }
+
+// MARK: - Bug 78 — rotation must abort, not skip, when the old key is unavailable
+
+@MainActor
+@Suite("Secure Mode — rotation aborts on unavailable key", .serialized)
+struct SecureModeRotationKeyGuardTests {
+
+    /// Regression for Bug 78. The re-encryption passes for drafts, `Group` and
+    /// `AppLayerConfig` used to sit inside `if let oldKey = …` with no `else`, so a nil key
+    /// skipped all three and control fell through to `commitStagedLocalDBKey()` and
+    /// `deleteSupersededLocalDBArtefacts()` — leaving groups and the config sealed under a key
+    /// that had just been destroyed. That is Bugs 75 and 76, reached through their own fix.
+    ///
+    /// The failure was silent, so the only thing that pins it is asserting the throw.
+    @Test func activation_abortsWhenHybridKeyUnavailable() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        c.keyManager.simulatesHybridKeyUnavailable = true
+
+        await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
+            try await c.security.activateSecureMode(
+                confirmingEntryPIN: "111111", duressPIN: "999999",
+                contactManager: c.contacts, vaultManager: c.vault
+            )
+        }
+
+        // Must not have reached the commit: Secure Mode stays off, so the superseded key was
+        // never deleted and everything sealed under it is still readable.
+        #expect(!c.security.isSecureModeActive)
+    }
+
+    /// Same guard on the way out. Deactivation deletes the superseded key exactly as
+    /// activation does, so skipping its re-encryption pass strands the same rows.
+    @Test func deactivation_abortsWhenHybridKeyUnavailable() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        try #require(c.security.isSecureModeActive)
+
+        c.keyManager.simulatesHybridKeyUnavailable = true
+
+        await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
+            try await c.security.deactivateSecureMode(
+                confirmingEntryPIN: "111111",
+                contactManager: c.contacts, vaultManager: c.vault
+            )
+        }
+
+        // Still active — the rotation aborted before its point of no return.
+        #expect(c.security.isSecureModeActive)
+    }
+}

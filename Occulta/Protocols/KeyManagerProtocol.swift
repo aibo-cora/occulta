@@ -208,8 +208,19 @@ final class TestKeyManager: KeyManagerProtocol {
         )
     }
 
+    /// Fault injection: when true, `createHybridLocalEncryptionKey()` returns nil, standing in
+    /// for a Secure Enclave or Keychain that is momentarily unavailable.
+    ///
+    /// Exists for Bug 78's regression test. That bug was a rotation that skipped its
+    /// re-encryption passes on a nil key and then committed and deleted the superseded key
+    /// anyway — silently, with no error. The only way to test the guard that now aborts it is
+    /// to be able to produce the nil.
+    var simulatesHybridKeyUnavailable = false
+
     /// v2 — hybrid PQ-reinforced local key.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
+        if self.simulatesHybridKeyUnavailable { return nil }
+
         guard
             let seComponent = self.deriveRawECDH(
                 privateKey: self.localDBPrivateKey,

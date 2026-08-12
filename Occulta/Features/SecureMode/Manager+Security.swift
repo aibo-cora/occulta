@@ -564,40 +564,49 @@ extension Manager {
                 // preserve-and-rekey precedent above, not a blanket wipe. Must run
                 // before Step 9 commits the staged key: `oldKey` has to still be the
                 // active canonical key to decrypt existing draft ciphertext.
-                if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
-                    let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
-                    let allGroupIdentifiers = Set(groups.compactMap { $0.readID()?.uuidString })
-                    try Message.Draft.reKeyOrPurgeAll(
-                        safeContactIdentifiers: Set(safeProfiles.map(\.identifier)),
-                        allGroupIdentifiers:    allGroupIdentifiers,
-                        oldKey:  oldKey,
-                        newKey:  stagedKey,
-                        in:      contactManager.modelContext
-                    )
-
-                    // Re-key groups (Bug 75). Order is load-bearing: this must run AFTER the
-                    // draft pass above, never before. `readID()` decrypts with the canonical
-                    // key, which is still `oldKey` until Step 9 — so re-keying groups first
-                    // would leave every group unreadable to `readID()`, collapse
-                    // `allGroupIdentifiers` to the empty set, and make `reKeyOrPurgeAll`
-                    // delete every group-addressed draft as an unknown recipient.
-                    //
-                    // Reuses the `oldKey` already derived for the drafts rather than deriving
-                    // per group — the Bug 74 constraint. Groups whose ID no longer decrypts
-                    // are skipped inside `reencrypt`; they are orphans from a rotation that
-                    // predates this call and cannot be recovered here.
-                    for group in groups {
-                        try group.reencrypt(from: oldKey, to: stagedKey)
-                    }
-                    try contactManager.modelContext.save()
-
-                    // Re-key AppLayerConfig's local-DB-key fields (Bug 76). Blob slots and
-                    // sequence numbers are deliberately not in here — they moved to the SE
-                    // key, which does not rotate. The post-commit writes below use `blobKey`
-                    // for exactly that reason.
-                    try config.reencrypt(from: oldKey, to: stagedKey)
-                    try self.modelContext.save()
+                // Abort rather than skip (Bug 78). This was an `if let` when it covered only
+                // the draft pass, where skipping is survivable because drafts regenerate. It
+                // now also carries groups and AppLayerConfig, which do not: falling through
+                // to Step 9's commit and Step 11's delete without having re-keyed them leaves
+                // both sealed under a key that no longer exists — Bugs 75 and 76 exactly,
+                // reached through the code that fixes them. Same rule `Group.requireKey()`
+                // states: abort the whole pass rather than proceed with a missing key.
+                guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
+                    throw SecurityError.keyDerivationFailed
                 }
+
+                let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
+                let allGroupIdentifiers = Set(groups.compactMap { $0.readID()?.uuidString })
+                try Message.Draft.reKeyOrPurgeAll(
+                    safeContactIdentifiers: Set(safeProfiles.map(\.identifier)),
+                    allGroupIdentifiers:    allGroupIdentifiers,
+                    oldKey:  oldKey,
+                    newKey:  stagedKey,
+                    in:      contactManager.modelContext
+                )
+
+                // Re-key groups (Bug 75). Order is load-bearing: this must run AFTER the
+                // draft pass above, never before. `readID()` decrypts with the canonical
+                // key, which is still `oldKey` until Step 9 — so re-keying groups first
+                // would leave every group unreadable to `readID()`, collapse
+                // `allGroupIdentifiers` to the empty set, and make `reKeyOrPurgeAll`
+                // delete every group-addressed draft as an unknown recipient.
+                //
+                // Reuses the `oldKey` already derived for the drafts rather than deriving
+                // per group — the Bug 74 constraint. Groups whose ID no longer decrypts
+                // are skipped inside `reencrypt`; they are orphans from a rotation that
+                // predates this call and cannot be recovered here.
+                for group in groups {
+                    try group.reencrypt(from: oldKey, to: stagedKey)
+                }
+                try contactManager.modelContext.save()
+
+                // Re-key AppLayerConfig's local-DB-key fields (Bug 76). Blob slots and
+                // sequence numbers are deliberately not in here — they moved to the SE
+                // key, which does not rotate. The post-commit writes below use `blobKey`
+                // for exactly that reason.
+                try config.reencrypt(from: oldKey, to: stagedKey)
+                try self.modelContext.save()
 
                 // ── Step 9: Commit staged key → point of no return ───────────────────
                 //
@@ -909,20 +918,26 @@ extension Manager {
                 // same reason to derive once and reuse applies (Bug 74). Runs before the
                 // Step 7 commit so `oldKey` is still canonical and the writes land in the WAL
                 // ahead of the checkpoint.
-                if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
-                    let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
-                    for group in groups {
-                        try group.reencrypt(from: oldKey, to: stagedKey)
-                    }
-                    if !groups.isEmpty {
-                        try contactManager.modelContext.save()
-                    }
-
-                    // Same AppLayerConfig re-key as activation — deactivation rotates the
-                    // local DB key too, so omitting it would strand the row on the way out.
-                    try config.reencrypt(from: oldKey, to: stagedKey)
-                    try self.modelContext.save()
+                // Abort rather than skip — see the matching guard in `activateSecureMode`
+                // (Bug 78). Deactivation deletes the superseded key just as activation does,
+                // so skipping this pass and committing anyway strands groups and the config
+                // on the way out of Secure Mode exactly as it would on the way in.
+                guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
+                    throw SecurityError.keyDerivationFailed
                 }
+
+                let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
+                for group in groups {
+                    try group.reencrypt(from: oldKey, to: stagedKey)
+                }
+                if !groups.isEmpty {
+                    try contactManager.modelContext.save()
+                }
+
+                // Same AppLayerConfig re-key as activation — deactivation rotates the
+                // local DB key too, so omitting it would strand the row on the way out.
+                try config.reencrypt(from: oldKey, to: stagedKey)
+                try self.modelContext.save()
 
                 // ── Step 7: Commit staged key (hard point of no return) ───────────────
                 //
@@ -1233,8 +1248,12 @@ extension Manager {
             )
             if moved {
                 try? self.modelContext.save()
-                self.checkpointStore()
             }
+            // Unconditional, per `checkpointStore()`'s own rule (Bug 79): a checkpoint that
+            // fired only when something moved would make checkpoint timing itself the signal
+            // for "this install still had pre-migration blob metadata". The `save()` above
+            // stays conditional — there is genuinely nothing to write when nothing moved.
+            self.checkpointStore()
         }
 
         func checkpointStore() {

@@ -3150,9 +3150,15 @@ safe.
 
 ## Bug 78 — Rotation commits and deletes the superseded key even when the re-encryption passes were skipped
 
-**Status:** Open. Introduced by the Bug 75/76 fixes on `release/v1.10.2`.
+**Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 75/76 fixes on the same branch.
 
-**Target:** v1.10.2 — should land before the release merges.
+Both sites now `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`. Regression
+coverage in `SecureModeActivationTests.swift` (`SecureModeRotationKeyGuardTests`) drives the nil
+through a real activation and a real deactivation via a new `TestKeyManager
+.simulatesHybridKeyUnavailable` fault-injection hook, asserting both throw and that Secure Mode
+state is unchanged — i.e. neither reached its commit. Full `OccultaTests` target green.
+
+**Target:** v1.10.2
 
 ### Severity: Medium — silent, permanent data loss; recreates Bugs 75 and 76
 
@@ -3206,7 +3212,9 @@ Worth a regression test, though it needs an injectable key manager at those call
 
 ## Bug 79 — Blob-metadata migration checkpoints conditionally, against the stated differential-signal rule
 
-**Status:** Open. Introduced by the Bug 76 fix on `release/v1.10.2`.
+**Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 76 fix on the same branch.
+
+`checkpointStore()` moved outside the `if moved` branch; the `save()` stays conditional.
 
 **Target:** v1.10.2
 
