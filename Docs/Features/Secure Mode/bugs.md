@@ -3024,3 +3024,91 @@ Still missing, and only coverable once the re-key work lands: a test that activa
 asserts `readBlobSlot(at: 0)` still decrypts. That is the assertion that would have caught the
 root cause rather than its symptom — the helper above only refuses to act on stranded metadata, it
 does not stop the stranding. `SecureModeActivationTests.swift` covers single activations only.
+
+---
+
+## Bug 77 — `maxBundleVersion` and `deletionToken` missing from `reencryptAllFields`
+
+**Status:** Fixed on `release/v1.11.0`, not committed/pushed.
+
+**Target:** v1.11.0
+
+### Severity: Medium — silent capability loss; the `deletionToken` half was a latent High
+
+Field-reported immediately after Bug 75's fix landed: contacts that had been group members
+could no longer be added to a recreated group, with the UI saying they needed to update the app
+or send a message. Their apps were current.
+
+### Root cause
+
+`Contact.Profile.maxBundleVersion` holds one encrypted byte — the highest wire format that
+contact's app can decode — sealed under the local DB key. It was in neither `reencryptAllFields`
+nor `reencryptKeyRecords`, so every rotation stranded it and Step 11 deleted the key.
+
+`resolveTargetVersion` then fails the decrypt and falls back to `.v3fs`, which predates group
+support (1.9.0), so `isGroupEligible` returns false. And because the field is non-nil — stranded
+ciphertext, not absent — `groupIneligibilityReason` reports `.versionTooOld` ("they need to
+update") rather than `.versionUnknown`. The check reads the field's presence correctly and its
+contents not at all.
+
+Not limited to groups: `resolveTargetVersion` also selects the wire format for sending, so
+affected contacts silently receive `.v3fs` bundles — the backward-compatible floor. Messaging
+keeps working; newer capabilities are lost on that path.
+
+The blob is no backstop — `LayerContact` does not carry this field either.
+
+This is the exact fragility recorded under Bug 76's "What is *not* broken" section one day
+earlier. The class was described; nobody checked whether an instance already existed.
+
+### `deletionToken` — the more dangerous half
+
+Also absent from `reencryptAllFields`, and initially assessed as harmless because only its
+nil/non-nil status is read. Adding it naively would have been destructive: the shared
+`reencrypt(data:to:aad:)` helper clears unreadable fields to nil, and `fetchAllContacts` filters
+on `deletionToken == nil`. Every contact soft-deleted before this field was covered carries a
+stranded token, so a nil-on-failure re-key would have **un-deleted all of them** on the next
+rotation.
+
+Fixed with a new `reencryptPreserving(data:to:aad:)` helper that returns the original bytes when
+they cannot be read — the `reencrypt(string:)` convention — for fields whose presence carries
+meaning independently of their content.
+
+`maxBundleVersion` deliberately keeps nil-on-failure: nil reads as "version unknown", which
+surfaces as "send me a message", which is both accurate and the actual remedy.
+
+### Recovery
+
+No code needed for affected installs. `maxBundleVersion` is repopulated whenever a bundle is
+received from that contact, under whatever key is current — so one message from each affected
+contact restores group eligibility. Already-stranded values cannot be recovered any other way.
+
+### Prevention
+
+`EncryptedFieldCoverageTests.swift` adds two complementary guards:
+
+- **Tripwires** — the set of stored property names on `Contact.Profile`, `Group` and
+  `AppLayerConfig` must equal an explicit list. Adding any property fails the test with guidance
+  on which re-encryption path to update and whether clearing on failure is safe. It cannot decide
+  whether a new field needs re-keying; it forces the decision to be made, which is exactly what
+  did not happen here. Verified to actually fail on a mismatch, not merely to pass.
+- **Behavioural** — every encrypted field is populated, rotated, and asserted readable
+  afterwards, plus the two `deletionToken` regressions (stranded stays non-nil, nil stays nil)
+  and `maxBundleVersion` clearing to nil.
+
+Note on mechanism: `Mirror` on a SwiftData `@Model` does enumerate every stored property, but
+erases all types to `_SwiftDataNoType`. Filtering by "is this a `Data?`" is impossible, so the
+tripwire keys on names and needs the human decision.
+
+### The durable fix, not done here
+
+Rotation only needs a field list because fields are sealed directly under the rotating key.
+Envelope encryption — a per-row key sealed under the local DB key, with all fields encrypted
+under the row key — removes the requirement entirely: rotation re-seals one wrapped key per row
+and new fields are covered automatically, forever. It would also drop rotation from
+O(rows × fields) to O(rows), the same cost problem behind Bug 74, and would isolate a compromised
+row key to a single contact.
+
+Not attempted here: it is invasive surgery on the most security-critical path, and its one-time
+migration re-encrypts every field of every row — precisely the workload Bug 74 showed this
+codebase handles badly. Worth its own design pass. The tests above are what make deferring it
+safe.

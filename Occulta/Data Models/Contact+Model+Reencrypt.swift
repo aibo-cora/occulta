@@ -47,6 +47,22 @@ extension Contact.Profile {
         self.globalTrusteeDepth      = try reencrypt(data: self.globalTrusteeDepth,      to: newKey, aad: aad)
         self.originDepth             = try reencrypt(data: self.originDepth,             to: newKey, aad: aad)
 
+        // Stranded before this line existed, which is what made contacts stop being
+        // group-eligible after an activation: `resolveTargetVersion` could no longer read the
+        // byte, fell back to `.v3fs` (pre-1.9.0, no group support), and
+        // `groupIneligibilityReason` reported `.versionTooOld` — "they need to update" — about
+        // contacts whose apps were current. Clearing to nil on an unreadable value is the right
+        // outcome here: nil means "version unknown", which surfaces as "send me a message", and
+        // receiving any bundle from that contact repopulates it.
+        self.maxBundleVersion        = try reencrypt(data: self.maxBundleVersion,        to: newKey, aad: aad)
+
+        // Preserving, NOT the nil-on-failure helper above. Only this field's nil/non-nil status
+        // is meaningful — content is a fixed sentinel — and `fetchAllContacts` filters on
+        // `deletionToken == nil`. Clearing an unreadable token would therefore un-delete the
+        // contact: every row soft-deleted before this field was re-keyed carries a stranded
+        // token, and they would all silently reappear on the next rotation.
+        self.deletionToken           = try reencryptPreserving(data: self.deletionToken,  to: newKey, aad: aad)
+
         // ── Relationship fields ──────────────────────────────────────────────────
         for phone in (self.phoneNumbers ?? []) {
             phone.label = try reencrypt(string: phone.label, to: newKey, aad: aad)
@@ -116,5 +132,18 @@ extension Contact.Profile {
     private func reencrypt(data: Data?, to newKey: SymmetricKey, aad: Data) throws -> Data? {
         guard let data, let plain = data.decrypt() else { return nil }
         return try AES.GCM.seal(plain, using: newKey, authenticating: aad).combined
+    }
+
+    /// Re-encrypt a raw Data ciphertext, returning the original bytes unchanged when they
+    /// cannot be read — the `reencrypt(string:to:aad:)` convention rather than the
+    /// `reencrypt(data:to:aad:)` one.
+    ///
+    /// For fields whose *presence* carries meaning independently of their content, where
+    /// clearing an unreadable value would change behaviour rather than just lose a value.
+    /// `deletionToken` is the case that motivated this: nil there means "not deleted".
+    private func reencryptPreserving(data: Data?, to newKey: SymmetricKey, aad: Data) throws -> Data? {
+        guard let data else { return nil }
+        guard let plain = data.decrypt() else { return data }
+        return try AES.GCM.seal(plain, using: newKey, authenticating: aad).combined ?? data
     }
 }
