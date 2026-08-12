@@ -73,13 +73,44 @@ Run through every item before tagging a release. Each item is binary — check i
 
 ## 8. Testing Gate
 
-- [ ] `xcodebuild test` passes with zero failures on simulator
-- [ ] Forward secrecy tests (`OccultaTests/Forward+Secrecy/`) all pass, including prekey exhaustion and fallback paths
+**A green CI run does not satisfy this section.** GitHub-hosted macOS runners are VMs with no
+Secure Enclave, so roughly 146 tests — including every prekey-isolation guard — skip there. CI
+verifies the parts of the app that do not touch key material; this gate covers the parts that do.
+That split is why the gate has to be run by a human on real hardware before a release is tagged.
+
+- [ ] Full suite run **on a Mac with a working Secure Enclave** — bare metal, not a VM or CI
+      runner. A Simulator on Apple Silicon is sufficient; a physical iPhone is not required:
+
+      xcodebuild test -scheme OccultaTests \
+        -destination 'platform=iOS Simulator,name=<device>' \
+        -parallel-testing-enabled NO
+
+- [ ] **Zero failures, and zero skips.** Record both counts below. A non-zero skip count means the
+      host lacked an Enclave and the run does not count — it is the same blind spot as CI, not a
+      pass. Verify with `secureEnclaveAvailable()` returning true rather than assuming.
+- [ ] Forward secrecy tests (`OccultaTests/Forward+Secrecy/`) all pass, including prekey
+      exhaustion, fallback, and pool-isolation paths
+- [ ] `tempPrekey_wrongContactID_returnsNil` passes — the regression guard for the 2026-07-24
+      audit's cross-contact impersonation finding. Called out by name because it was committed
+      eight days before the change that broke it, went unnoticed for months, and has never
+      executed in CI
 - [ ] Identity challenge tests cover all three phases and the replay/timestamp rejection cases
-- [ ] No test uses the real Secure Enclave (`TestKeyManager` only in unit tests)
+- [ ] Secure Mode key-rotation guards pass (`GroupKeyRotationTests`, `AppLayerConfigRotationTests`,
+      `EncryptedFieldCoverageTests`) — the tripwires fail on any new encrypted model property that
+      has not been added to a re-encryption path
+
+### Why this is a manual gate rather than automation
+
+Running these in CI needs a runner with real Enclave access, which means a self-hosted runner. On a
+public repository that lets a fork PR execute code on that machine — one holding Enclave access,
+for a project whose threat model is coercion. Judged not worth it at current release cadence; see
+`Docs/Audit/SecurityReview2026-08-12/README.md` for the full weighing. Revisit if cadence rises or
+the contributor set grows beyond people with commit access.
 
 ---
 
 **Signed off by:** ___________________  
 **Release version:** ___________________  
-**Date:** ___________________
+**Date:** ___________________  
+**Full-suite result:** _______ passed / _______ skipped (skipped must be 0)  
+**Host used:** ___________________ (must have a working Secure Enclave)

@@ -71,7 +71,20 @@ This is a native Xcode project with no external package manager (no CocoaPods, S
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)
 - **Test all:** Cmd+U in Xcode, or via CLI:
 
-**Requirements:** iOS 16.0+, Xcode 16+. Physical device needed for Secure Enclave and NearbyInteraction; unit tests use `TestKeyManager` to bypass SE.
+**Requirements:** iOS 16.0+, Xcode 16+. Physical device needed for NearbyInteraction.
+
+**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; roughly
+146 others need a real Enclave, because `Group`'s crypto and `reencryptAllFields` go through
+`Manager.Key()` directly with no injection seam. Those carry
+`.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
+notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
+have Enclave access and runs the full suite.
+
+So **a green CI run is not a passing test suite**: it verifies the parts that do not touch key
+material. Before tagging a release, run the full suite locally on a host with an Enclave and
+confirm the skip count is zero — see the Testing Gate in `Docs/Audit/SECURITY_CHECKLIST.md`. When
+adding a test that needs real key material, prefer injecting a key manager over gating it; gate it
+only where no seam exists.
 
 ## Architecture
 
