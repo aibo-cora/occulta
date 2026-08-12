@@ -1452,7 +1452,26 @@ extension ContactManager {
     ) -> BundleVersionState {
         guard let encoded = contact.maxBundleVersion else { return .unrecorded }
         guard let raw = decrypt(encoded), let byte = raw.first else { return .unreadable }
-        return .readable(WireHandle.byteToVersion(byte) ?? .v3fs)
+        if let known = WireHandle.byteToVersion(byte) { return .readable(known) }
+
+        // A byte we cannot map is either newer than this build or junk, and the two must not
+        // be treated alike. Mapping both to `.v3fs` — as this did until 2026-08-12 — reads
+        // "newer than I understand" as "older than everything", which fails *open* on the
+        // signature gate in `openGroup`: a contact whose build post-dates ours is recorded as
+        // unable to sign, so an unsigned forward-secret bundle from them is accepted.
+        //
+        // Above the highest byte we know means a newer build, so assume our own top tier. That
+        // is right for every consumer, not just the gate: the send paths pick our newest format
+        // for them, and group eligibility says yes — both correct for a contact ahead of us. It
+        // also gives the `updateMaxVersion` high-water mark a real floor, so a later low claim
+        // cannot walk the tier back down.
+        //
+        // Below it, an unmappable byte is legacy or corrupt, not future, and stays at the floor.
+        // `WireHandle.byteToVersion` deliberately keeps returning nil for both — only the
+        // interpretation lives here.
+        return .readable(byte > OccultaBundle.Version.highestKnownWireByte
+                         ? OccultaBundle.Version.mostCapable
+                         : .v3fs)
     }
 
     static func bundleVersionState(for contact: Contact.Profile, using crypto: Manager.Crypto) -> BundleVersionState {

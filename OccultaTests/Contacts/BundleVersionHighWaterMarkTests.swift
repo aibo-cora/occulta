@@ -136,6 +136,49 @@ struct BundleVersionHighWaterMarkTests {
             .isAtLeast(.senderSignatureCapable))
     }
 
+    /// A byte from a build newer than this one must read as capable, not as ancient. Mapping
+    /// it to `.v3fs` failed the signature gate open: the contact was recorded as unable to
+    /// sign, so an unsigned forward-secret bundle from them would have been accepted.
+    @Test("A byte newer than this build reads as capable")
+    func unknownFutureByteIsCapable() throws {
+        let crypto  = makeTestCrypto()
+        let profile = makeProfile()
+        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x08]))
+
+        #expect(ContactManager.hasReadableBundleVersion(profile, using: crypto))
+        #expect(ContactManager.resolveTargetVersion(for: profile, using: crypto)
+            .isAtLeast(.senderSignatureCapable))
+    }
+
+    /// An unmappable byte *below* the known range is legacy or corrupt rather than future and
+    /// must stay at the floor — the fix must not turn every bad byte into "capable".
+    @Test("An unmappable byte below the known range stays at the floor")
+    func unknownLowByteStaysAtFloor() throws {
+        let crypto  = makeTestCrypto()
+        let profile = makeProfile()
+        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x02]))
+
+        #expect(ContactManager.hasReadableBundleVersion(profile, using: crypto))
+        #expect(!ContactManager.resolveTargetVersion(for: profile, using: crypto)
+            .isAtLeast(.senderSignatureCapable))
+    }
+
+    /// Consequence of the same fix: a future byte now gives the high-water mark a real floor,
+    /// so a later low claim cannot walk the tier back down.
+    @Test("A low claim cannot lower a future-byte tier")
+    func lowClaimCannotLowerFutureByte() throws {
+        let crypto  = makeTestCrypto()
+        let manager = try makeManager()
+        let profile = makeProfile()
+        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x08]))
+        try manager.insertProfile(profile)
+
+        try manager.updateMaxVersion(from: "1.9.0", for: profile, using: crypto)
+
+        #expect(ContactManager.resolveTargetVersion(for: profile, using: crypto)
+            .isAtLeast(.senderSignatureCapable), "tier must not fall")
+    }
+
     @Test("A first sighting records the claimed tier")
     func firstSightingRecords() throws {
         let crypto  = makeTestCrypto()

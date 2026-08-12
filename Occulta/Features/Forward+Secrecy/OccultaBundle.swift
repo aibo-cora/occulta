@@ -181,6 +181,14 @@ struct OccultaBundle: Codable {
             .v3fs,              // 0.0.0+  — per-contact prekeys, floor/fallback tier
         ]
 
+        /// The most capable tier this build understands. `known` is descending, so this
+        /// tracks automatically when a tier is added above the current top.
+        static var mostCapable: Version { Self.known.first ?? .v3fs }
+
+        /// The highest wire byte this build can map to a tier. A recorded byte above this
+        /// came from a build newer than ours — see `ContactManager.bundleVersionState`.
+        static var highestKnownWireByte: UInt8 { Self.known.compactMap(\.wireByte).max() ?? 0 }
+
         /// The highest capability level a contact running `appVersion` can handle.
         static func max(forAppVersion appVersion: String) -> Version {
             Self.known.first {
