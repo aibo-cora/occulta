@@ -169,7 +169,9 @@ final class ShardCustodyManager {
         self.modelContext.insert(CustodyShard(id: rowID, encryptedPayload: combined))
 
         let allShards = try self.decryptAllCustodyShards()
-        for decoded in allShards where decoded.payload.signedAttribute.id == oldID {
+        for decoded in allShards
+            where decoded.payload.signedAttribute.id == oldID
+               && decoded.payload.ownerContactIdentifier == senderIdentifier {
             self.modelContext.delete(decoded.row)
         }
         try self.deleteMismatchShards(for: senderIdentifier, newFingerprint: newFP)

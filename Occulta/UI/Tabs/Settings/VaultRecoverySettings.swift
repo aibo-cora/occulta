@@ -33,6 +33,7 @@ struct VaultRecoverySettings: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Vault Recovery")
         .navigationBarTitleDisplayMode(.large)
+        .scrollIndicators(.hidden)
     }
 
     // MARK: - BEK

@@ -36,7 +36,7 @@ extension ContactManager {
             predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
         )
         guard let contact = try? self.modelContext.fetch(descriptor).first else { return false }
-        return Manager.Security.isVisible(contact, atDepth: self.security.currentDepth)
+        return contact.isVisible(atDepth: self.security.currentDepth)
     }
 
     /// Returns true if the contact is marked a global trustee at the current depth
@@ -58,18 +58,46 @@ extension ContactManager {
     /// Identifiers of every contact marked a global trustee at the current depth.
     /// Restricted to displayable contacts, matching the filter every other
     /// trustee-facing list already applies (Gap 2 items 1-2).
+    ///
+    /// Derives the local-DB key once and reuses it across every contact, instead of
+    /// once per contact per field — the dominant cost here is the Keychain/Secure
+    /// Enclave round trip inside key derivation, not the AES operation itself, and the
+    /// derived key is identical on every call until the local-DB key is rotated.
     func globalTrusteeIdentifiers() -> Set<String> {
+        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        return self.globalTrusteeIdentifiers(usingKey: key)
+    }
+
+    /// Same as `globalTrusteeIdentifiers()` but decrypts with an already-derived key
+    /// instead of deriving one internally. For callers already holding a key for the
+    /// same pass (e.g. a screen that also needs `mlkemEligibleContacts(usingKey:)`).
+    func globalTrusteeIdentifiers(usingKey key: SymmetricKey) -> Set<String> {
         let depth = self.security.currentDepth
         let contacts = (try? self.fetchAllContacts()) ?? []
-        return Set(contacts.compactMap { contact -> String? in
-            guard self.security.isDisplayable(contact),
-                  let data  = contact.globalTrusteeDepth,
-                  let plain = data.decrypt(),
-                  let value = try? JSONDecoder().decode(Int.self, from: plain),
-                  value == depth
-            else { return nil }
-            return contact.identifier
+        return Set(contacts.compactMap { contact in
+            (contact.isVisible(atDepth: depth, usingKey: key)
+                && contact.isGlobalTrustee(atDepth: depth, usingKey: key))
+                ? contact.identifier : nil
         })
+    }
+
+    /// Contacts with a verified ML-KEM key, visible at the current depth. Derives the
+    /// local-DB key once and reuses it across every contact — same reasoning as
+    /// `globalTrusteeIdentifiers()`.
+    func mlkemEligibleContacts() -> [Contact.Profile] {
+        guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+        return self.mlkemEligibleContacts(usingKey: key)
+    }
+
+    /// Same as `mlkemEligibleContacts()` but decrypts with an already-derived key
+    /// instead of deriving one internally. For callers already holding a key for the
+    /// same pass (e.g. a screen that also needs `globalTrusteeIdentifiers(usingKey:)`).
+    func mlkemEligibleContacts(usingKey key: SymmetricKey) -> [Contact.Profile] {
+        let depth = self.security.currentDepth
+        let contacts = (try? self.fetchAllContacts()) ?? []
+        return contacts
+            .filter { $0.isVisible(atDepth: depth, usingKey: key) }
+            .filter { $0.contactPublicKeys?.last(where: { $0.expiredOn == nil })?.quantumKeyMaterialEncrypted != nil }
     }
 
     // MARK: - Writes
@@ -87,7 +115,7 @@ extension ContactManager {
         let depth    = self.security.currentDepth
         var hiddenIdentifiers: Set<String> = []
         for contact in contacts {
-            guard self.security.isDisplayable(contact) else { continue }
+            guard contact.isVisible(atDepth: depth) else { continue }
             let depthValue = safeIDs.contains(contact.identifier) ? Int.max : depth
             contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
             if depthValue != Int.max { hiddenIdentifiers.insert(contact.identifier) }
@@ -143,7 +171,7 @@ extension ContactManager {
         let contacts = try self.fetchAllContacts()
         let depth    = self.security.currentDepth
         for contact in contacts {
-            guard self.security.isDisplayable(contact) else { continue }
+            guard contact.isVisible(atDepth: depth) else { continue }
             let value = selectedIDs.contains(contact.identifier) ? depth : -1
             contact.globalTrusteeDepth = try JSONEncoder().encode(value).encrypt()
         }
@@ -231,6 +259,14 @@ extension ContactManager {
         let trusteeDepth = record.globalTrusteeDepth ?? -1
         restored.globalTrusteeDepth = try AES.GCM.seal(
             JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+        ).combined
+
+        // Write the originDepth sentinel directly, not restored from the blob — a
+        // duress-origin contact is exempt from blob-sealing entirely (activateSecureMode's
+        // Step 4 short-circuit), so anything reaching this function has originDepth == 0
+        // by construction. There is no captured value to restore here.
+        restored.originDepth = try AES.GCM.seal(
+            JSONEncoder().encode(0), using: stagedKey, authenticating: aad
         ).combined
 
         if let attrs = record.signedAttributes, !attrs.isEmpty {

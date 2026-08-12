@@ -213,6 +213,15 @@ extension String {
             return ""
         }
     }
+
+    /// Decrypts using an already-derived key instead of deriving one fresh.
+    /// Swallows failure to "", matching `decrypt()`'s convention.
+    func decrypt(using key: SymmetricKey) -> String {
+        guard let data      = Data(base64Encoded: self),
+              let decrypted = data.decrypt(using: key)
+        else { return "" }
+        return String(data: decrypted, encoding: .utf8) ?? ""
+    }
 }
 
 extension Data {

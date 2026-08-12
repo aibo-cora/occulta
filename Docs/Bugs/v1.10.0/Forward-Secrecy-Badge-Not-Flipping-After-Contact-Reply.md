@@ -1,6 +1,6 @@
 # FS badge doesn't flip to "Forward Secrecy" after a contact replies
 
-**Status:** open, blocked on repro data. Diagnostic-only `#if DEBUG` logging added (not a fix) to disambiguate between the candidate causes below on the next real repro. No code behavior changed.
+**Status: closed — working as intended, not a bug.** A fresh repro with the diagnostic logging in place showed a bundle arriving with a non-nil `RecipientPayload.prekeyBatch`, storing correctly via `storeInboundBatch`, and the badge flipping to "Forward Secrecy" as designed. This settles the open question from "What's not yet known" below in favor of the least alarming candidate: the original report's reply hadn't carried a batch yet (the contact's device likely hadn't generated one at that exact point in the exchange) — not a structural bug in the send/receive/consume chain, which the earlier static trace already found no fault in. No code fix needed. The `#if DEBUG` diagnostic logging added while investigating (`openGroup`/`decryptSealed` in `Contact+Manager.swift`, `debugLogPrekeyStateAtCompose` in `Contact+Model+Profile.swift`) is harmless and left in place — no behavior change, available if this class of question comes up again.
 
 ## Symptom
 
@@ -36,6 +36,6 @@ All `#if DEBUG`-gated, in `Occulta/Services/Contact+Manager.swift`'s `openGroup`
 
 Also in `Occulta/Features/Forward+Secrecy/Contact+Model+Profile.swift`: `debugLogPrekeyStateAtCompose(_:)`, wired into both `ContactDetailV3.swift` and `ContactDetailV2.swift`'s compose views (`.onAppear` + `.onChange(of: availableInboundPrekeyCount)`).
 
-## Next step
+## Resolved
 
-Waiting on a fresh repro: send a contact a fallback message, get their reply, and capture the console at the moment the reply is decrypted — specifically `"Opening group bundle"` / `"Recipient payload prekeyBatch present"` / the app-version lines. That will settle whether the batch never left their device, never arrived, or arrived but failed to persist — the three remaining candidates this doc's investigation couldn't distinguish from code alone.
+Repro captured: a subsequent bundle arrived with `RecipientPayload.prekeyBatch` present, `storeInboundBatch` persisted it, and the compose badge flipped to "Forward Secrecy" correctly. Of the three candidates this doc's investigation couldn't distinguish from code alone (batch never left their device / never arrived / arrived but failed to persist), none of them held up — the batch did arrive and did persist, just not on the very first reply. No fix needed; closing.

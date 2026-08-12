@@ -96,7 +96,8 @@ private func insertContact(
     identifier: String,
     in container: ModelContainer,
     visibleThroughDepth: Data? = nil,
-    globalTrusteeDepth: Data? = nil
+    globalTrusteeDepth: Data? = nil,
+    originDepth: Data? = nil
 ) throws {
     let ctx = ModelContext(container)
     let profile = Contact.Profile(
@@ -111,6 +112,7 @@ private func insertContact(
     )
     profile.visibleThroughDepth = visibleThroughDepth
     profile.globalTrusteeDepth  = globalTrusteeDepth
+    profile.originDepth         = originDepth
     ctx.insert(profile)
     try ctx.save()
 }
@@ -990,6 +992,116 @@ struct GlobalTrusteeDepthPreservationTests {
         #expect(restored != nil, "contact row must survive the blob round trip")
         #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == 0,
                 "a blob-bound contact's real global-trustee designation must be restored, not lost or reset to -1")
+    }
+}
+
+// MARK: - originDepth preservation
+
+@MainActor
+@Suite("Secure Mode — originDepth preservation", .serialized)
+struct OriginDepthPreservationTests {
+
+    /// A real contact's originDepth (the 0 sentinel) must survive deactivation —
+    /// never flattened to a stray non-zero value or nil. Same workaround as the
+    /// globalTrusteeDepth suite above: inserted AFTER activation, right before the
+    /// deactivation this test targets.
+    @Test func realContact_zeroSentinel_preservedAcrossDeactivate() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(
+            identifier: id, in: c.container,
+            visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt(),
+            originDepth:         try JSONEncoder().encode(0).encrypt()
+        )
+
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "111111",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedStagedDepth(from: restored?.originDepth, keyManager: c.keyManager) == 0,
+                "a real contact's origin sentinel must survive deactivation unchanged")
+    }
+
+    /// A never-stamped contact must decode to the 0 sentinel after deactivation, not
+    /// literal nil — same non-nil invariant as visibleThroughDepth/globalTrusteeDepth (S6).
+    @Test func neverStamped_isZeroSentinelNotNilAfterDeactivation() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "contact-\(UUID().uuidString)"
+        try insertContact(identifier: id, in: c.container, originDepth: nil)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "111111",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedStagedDepth(from: restored?.originDepth, keyManager: c.keyManager) == 0,
+                "a never-stamped contact must decode to 0 after deactivation, not literal nil")
+    }
+
+    /// The core behavior this whole field exists for: a duress-origin contact must
+    /// never be sealed into the activation blob, even when its visibleThroughDepth
+    /// ceiling would otherwise mark it sensitive for this exact activation. Mirrors
+    /// SecureModeClassificationTests' sensitiveContact_appearsInBlob, but stamped
+    /// originDepth > 0 on top of an otherwise-sensitive ceiling — the origin floor
+    /// must take priority and keep it live.
+    @Test func duressOriginContact_neverSealedIntoBlob_evenWithASensitiveCeiling() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "contact-\(UUID().uuidString)"
+        // Ceiling 0 alone would make this "sensitive for this layer" and blob-seal it
+        // (see sensitiveContact_appearsInBlob) — originDepth > 0 must override that.
+        try insertContact(
+            identifier: id, in: c.container,
+            visibleThroughDepth: try JSONEncoder().encode(0).encrypt(),
+            originDepth:         try JSONEncoder().encode(1).encrypt()
+        )
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let payload           = try readActivationPayload(from: c)
+        let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
+        #expect(!identifiersInBlob.contains(id),
+                "a duress-origin contact must never be sealed into the blob, regardless of its visibleThroughDepth ceiling")
+
+        // Still live in the DB (re-encrypted under the staged key in Step 8), not a
+        // sealed-away shell.
+        let stillLive = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(stillLive != nil, "the contact row must remain live, not be removed from the DB")
     }
 }
 
