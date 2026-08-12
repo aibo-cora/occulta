@@ -2528,17 +2528,17 @@ launch-time performance/stability risk to close immediately.
 
 ## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
 
-**Status:** Open — cause fixed, existing damage not yet repaired.
+**Status:** Fixed on `release/v1.10.2` (commit 182920b), not pushed.
 
-- **Root cause:** fixed on `release/v1.11.0`. `Group.reencrypt(from:to:)` re-keys every field
-  (ID, name, created-at, and all 32 depths of member slots), called from both rotation paths —
-  activation Step 8 after the draft pass, and a new deactivation Step 6b. 6 tests in
-  `GroupKeyRotationTests.swift`, full `OccultaTests` target green. Not committed/pushed.
+- **Root cause:** `Group.reencrypt(from:to:)` re-keys every field (ID, name, created-at, and all
+  32 depths of member slots), called from both rotation paths — activation Step 8 after the draft
+  pass, and a new deactivation Step 6b. 6 tests in `GroupKeyRotationTests.swift`, full
+  `OccultaTests` target green.
 - **Existing orphaned rows:** repaired. `ContactManager.purgeUnreadableGroups(using:)` deletes
   rows whose ID no longer decrypts, called from `RootView`'s `.task` at depth 0 only. Silent by
   design. 4 tests in `GroupOrphanPurgeTests.swift`.
 
-**Target:** v1.11.0
+**Target:** v1.10.2
 
 ### Severity: Critical — unrecoverable user data loss, plus a forensic tell
 
@@ -2745,7 +2745,7 @@ device: `Group` calls `Manager.Key()` directly rather than through an injectable
 
 ## Bug 76 — `AppLayerConfig` fields are never re-keyed during rotation; Bug 46's blob-slot exclusion silently stops protecting the real layer
 
-**Status:** Fixed on `release/v1.11.0`, not committed/pushed. Split out of Bug 75's audit item.
+**Status:** Fixed on `release/v1.10.2` (commit 182920b), not pushed. Split out of Bug 75's audit item.
 
 - **Blob metadata** (`sealedBlobSlots`, `layerSequenceNumbers`) now lives on a key derived from
   the non-rotating SE Secure Mode key — `AppLayerConfig.blobMetadataKey(from:)`, HKDF
@@ -2765,7 +2765,7 @@ device: `Group` calls `Manager.Key()` directly rather than through an injectable
 - **Defect 1 (blob-slot exclusion):** downgraded to Low and **not** given behavioural changes — see
   the impact correction below. Two attempts to "fix" it were made and reverted (fail-closed throw,
   then a silent-dismiss catch arm); both were worse than the behaviour they replaced. What remains
-  on `release/v1.11.0` is `Manager.Security.protectedBlobSlots(config:depth:)`, a deduplication of
+  on `release/v1.10.2` is `Manager.Security.protectedBlobSlots(config:depth:)`, a deduplication of
   the expression that previously existed verbatim at two call sites, with the skip-unreadable
   behaviour unchanged and now documented and pinned by tests in `ProtectedBlobSlotTests.swift`.
   Full `OccultaTests` target green. Not committed/pushed.
@@ -2779,7 +2779,7 @@ rotation machinery that must stay correct indefinitely, and costs nothing in exp
 strictly less sensitive than the blob it points at, already under that same key. The remaining six
 fields stay on the local DB key and get re-keyed alongside `Group` (Bug 75).
 
-**Target:** v1.11.0
+**Target:** v1.10.2
 
 ### Severity: Medium — no permanent data loss; blob redundancy and gate-down state are lost. See "What is *not* broken".
 
@@ -3029,9 +3029,9 @@ does not stop the stranding. `SecureModeActivationTests.swift` covers single act
 
 ## Bug 77 — `maxBundleVersion` and `deletionToken` missing from `reencryptAllFields`
 
-**Status:** Fixed on `release/v1.11.0`, not committed/pushed.
+**Status:** Fixed on `release/v1.10.2` (commit d356eb8), not pushed.
 
-**Target:** v1.11.0
+**Target:** v1.10.2
 
 ### Severity: Medium — silent capability loss; the `deletionToken` half was a latent High
 
