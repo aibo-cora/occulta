@@ -23,12 +23,6 @@ import CryptoKit
 import SwiftData
 @testable import Occulta
 
-/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
-/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
-/// rather than silently passing, so the size of the untested surface stays visible.
-private func secureEnclaveAvailable() -> Bool {
-    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
-}
 
 
 @MainActor
@@ -78,7 +72,7 @@ private func seal(_ version: OccultaBundle.Version, using crypto: Manager.Crypto
 @MainActor
 struct BundleVersionHighWaterMarkTests {
 
-    @Test("A higher claim raises the recorded tier", .enabled(if: secureEnclaveAvailable()))
+    @Test("A higher claim raises the recorded tier")
     func higherClaimRaises() throws {
         let crypto  = makeTestCrypto()
         let manager = try makeManager()
@@ -94,7 +88,7 @@ struct BundleVersionHighWaterMarkTests {
 
     /// The downgrade path. A signed bundle claiming an old build must not lower the tier,
     /// or the next unsigned bundle from the same attacker walks through the gate.
-    @Test("A lower claim does not lower the recorded tier", .enabled(if: secureEnclaveAvailable()))
+    @Test("A lower claim does not lower the recorded tier")
     func lowerClaimIsIgnored() throws {
         let crypto  = makeTestCrypto()
         let manager = try makeManager()
@@ -110,7 +104,7 @@ struct BundleVersionHighWaterMarkTests {
 
     /// A stranded marker is treated as the top tier, so a low claim cannot clear it and
     /// convert "cannot prove incapable" into a recorded "incapable".
-    @Test("A low claim cannot clear a stranded marker", .enabled(if: secureEnclaveAvailable()))
+    @Test("A low claim cannot clear a stranded marker")
     func lowClaimCannotClearStrandedMarker() throws {
         let crypto  = makeTestCrypto()
         let manager = try makeManager()
@@ -127,7 +121,7 @@ struct BundleVersionHighWaterMarkTests {
     }
 
     /// Healing: a stranded contact who is genuinely current re-establishes a readable tier.
-    @Test("A top-tier claim heals a stranded marker", .enabled(if: secureEnclaveAvailable()))
+    @Test("A top-tier claim heals a stranded marker")
     func topTierClaimHealsStrandedMarker() throws {
         let crypto  = makeTestCrypto()
         let manager = try makeManager()
@@ -142,7 +136,7 @@ struct BundleVersionHighWaterMarkTests {
             .isAtLeast(.senderSignatureCapable))
     }
 
-    @Test("A first sighting records the claimed tier", .enabled(if: secureEnclaveAvailable()))
+    @Test("A first sighting records the claimed tier")
     func firstSightingRecords() throws {
         let crypto  = makeTestCrypto()
         let manager = try makeManager()
