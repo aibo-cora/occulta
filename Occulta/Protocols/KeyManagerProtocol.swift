@@ -105,8 +105,19 @@ protocol KeyManagerProtocol {
 
 // MARK: - TestKeyManager
 
+#if DEBUG
 /// In-memory P-256 key manager for unit tests.
 /// No Secure Enclave — safe to run in the test process.
+///
+/// `#if DEBUG` because this is a fully working key manager that bypasses the Secure Enclave,
+/// and it was previously compiled into the shipped binary. Not exploitable — reaching it needs
+/// code execution, at which point the process is already lost — but a security product should
+/// not ship an Enclave bypass, complete with a switch that forces key derivation to fail, as
+/// dead weight in its release build.
+///
+/// Consequence: the test target must build against a configuration where DEBUG is defined,
+/// which is how it is already run. The two SwiftUI previews that construct this are gated the
+/// same way.
 @MainActor
 final class TestKeyManager: KeyManagerProtocol {
     private let identityPrivateKey: SecKey
@@ -633,3 +644,4 @@ extension TestKeyManager {
         return Data(bytes)
     }
 }
+#endif
