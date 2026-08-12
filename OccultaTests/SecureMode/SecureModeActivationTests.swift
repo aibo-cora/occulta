@@ -1130,6 +1130,11 @@ struct SecureModeRotationKeyGuardTests {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
+        // A contact whose Data fields would be nil-ed by `reencryptAllFields` if the rotation
+        // were allowed to start without a usable key.
+        let ceiling = Data([0xC0, 0xFF, 0xEE])
+        try insertContact(identifier: "victim", in: c.container, visibleThroughDepth: ceiling)
+
         c.keyManager.simulatesHybridKeyUnavailable = true
 
         await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
@@ -1142,6 +1147,17 @@ struct SecureModeRotationKeyGuardTests {
         // Must not have reached the commit: Secure Mode stays off, so the superseded key was
         // never deleted and everything sealed under it is still readable.
         #expect(!c.security.isSecureModeActive)
+
+        // And must not have reached Step 8 either. The guard originally sat *after*
+        // `reencryptAllFields` had run over every contact and saved, so aborting still cost
+        // every contact its `Data` fields — `reencrypt(data:)` returns nil for anything it
+        // cannot decrypt, and rolling the staged key back does not restore them. Losing
+        // `visibleThroughDepth` drops the Secure Mode visibility ceiling for the whole address
+        // book, so this asserts the failure is genuinely inert.
+        let survivor = try #require(
+            try fetchAllProfiles(from: c.container).first { $0.identifier == "victim" }
+        )
+        #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
     }
 
     /// Same guard on the way out. Deactivation deletes the superseded key exactly as
@@ -1155,6 +1171,9 @@ struct SecureModeRotationKeyGuardTests {
         )
         try #require(c.security.isSecureModeActive)
 
+        let ceiling = Data([0xC0, 0xFF, 0xEE])
+        try insertContact(identifier: "victim", in: c.container, visibleThroughDepth: ceiling)
+
         c.keyManager.simulatesHybridKeyUnavailable = true
 
         await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
@@ -1166,5 +1185,11 @@ struct SecureModeRotationKeyGuardTests {
 
         // Still active — the rotation aborted before its point of no return.
         #expect(c.security.isSecureModeActive)
+
+        // Same inertness requirement as activation: nothing re-encrypted, nothing saved.
+        let survivor = try #require(
+            try fetchAllProfiles(from: c.container).first { $0.identifier == "victim" }
+        )
+        #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
     }
 }

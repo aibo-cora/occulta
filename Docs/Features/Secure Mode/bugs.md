@@ -3208,13 +3208,27 @@ Blast radius is every group plus the entire `AppLayerConfig` row.
 
 ### Fix
 
-Replace both with `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`. Both
-sites already sit inside the `do`/`catch` that calls `rollbackStagedLocalDBKey()`, so aborting is
-clean and leaves the canonical key intact and every row readable. One line each.
+Both sites now `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`.
 
-Worth a regression test, though it needs an injectable key manager at those call sites — they use
-`self.keyManager`, so `TestKeyManager` can be extended with a mode that returns nil for
-`createHybridLocalEncryptionKey()`.
+**Placement was the substance of the fix, and the first attempt got it wrong.** The guard initially
+replaced the `if let` where it stood, inside Step 8's draft/group/config pass — which is after
+`reencryptAllFields` has run over every contact and `modelContext.save()` has committed the result.
+`reencrypt(data:)` returns nil for anything it cannot decrypt (deliberate: callers reinitialise on
+next use), so on the very failure this guard exists to catch, every contact had already lost
+`visibleThroughDepth`, `globalTrusteeDepth`, `originDepth`, `signedAttributes`,
+`forwardSecrecyEncrypted` and both image fields — written to disk, and not restored by rolling the
+staged key back. Losing `visibleThroughDepth` alone drops the Secure Mode visibility ceiling for
+the entire address book. The guard prevented groups and `AppLayerConfig` from being stranded while
+the contacts were already gone.
+
+The derivation now happens before Step 1's PIN check in both functions, ahead of any staging,
+blob push or row mutation, so the failure is genuinely inert: nothing to roll back, nothing
+touched. It has no dependency on the intervening steps, so it moves freely.
+
+`SecureModeRotationKeyGuardTests` covers both paths, and asserts the inertness directly — a contact
+inserted with a known `visibleThroughDepth` must still hold it after the aborted rotation. That
+assertion fails under the original placement, which is what makes it a regression test rather than
+a restatement. `TestKeyManager.simulatesHybridKeyUnavailable` supplies the nil.
 
 ---
 

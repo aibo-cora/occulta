@@ -70,7 +70,7 @@ The consequence is exactly what the `2026-07-24` review warned about in the find
 
 - **File:** `Occulta/Features/SecureMode/Manager+Security.swift:567` (activation), `:912` (deactivation)
 - **Confidence:** 9/10 — control flow read directly; no `else`, no guard, unconditional fall-through to commit.
-- **Status:** ✅ **FIXED 2026-08-12** — both sites now `guard … else { throw SecurityError.keyDerivationFailed }`, with regression coverage driving a nil key through a real activation and deactivation. Tracked as Bug 78.
+- **Status:** ✅ **FIXED 2026-08-12** — both sites now guard and throw, with the derivation hoisted ahead of Step 1's PIN check so the abort happens before any row is mutated. The first cut placed the guard where the `if let` had been, which still let `reencryptAllFields` nil every contact's `Data` fields and save them first; see Bug 78 for that correction. Regression coverage drives a nil key through a real activation and deactivation and asserts contacts are untouched.
 
 **Description.** Both rotation paths wrap the draft, group, and `AppLayerConfig` re-encryption in:
 

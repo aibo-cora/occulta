@@ -373,6 +373,24 @@ extension Manager {
                 throw SecurityError.keyDerivationFailed
             }
 
+            // Derived here, before anything is staged, written or mutated (Bug 78).
+            //
+            // This guard first lived down at Step 8's draft/group/config pass, which was too
+            // late to be worth much: by then `reencryptAllFields` had already run over every
+            // contact and `modelContext.save()` had committed the result. Its `reencrypt(data:)`
+            // helper returns nil for anything it cannot decrypt — deliberately, so callers
+            // reinitialise — so a key outage nils `visibleThroughDepth`, `globalTrusteeDepth`,
+            // `originDepth`, `signedAttributes`, `forwardSecrecyEncrypted` and both image fields
+            // on every contact, writes that to disk, and only then hits the guard. Rolling back
+            // the staged key does not bring those back. Losing `visibleThroughDepth` alone drops
+            // the Secure Mode visibility ceiling for the whole address book.
+            //
+            // Deriving up front makes the failure inert: nothing is staged, so there is nothing
+            // to roll back, and no row has been touched.
+            guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
+                throw SecurityError.keyDerivationFailed
+            }
+
             // Confirm entry PIN against the normal verifier at the current depth.
             guard depth < config.sealedNormalVerifiers.count,
                   PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
@@ -564,17 +582,11 @@ extension Manager {
                 // preserve-and-rekey precedent above, not a blanket wipe. Must run
                 // before Step 9 commits the staged key: `oldKey` has to still be the
                 // active canonical key to decrypt existing draft ciphertext.
-                // Abort rather than skip (Bug 78). This was an `if let` when it covered only
-                // the draft pass, where skipping is survivable because drafts regenerate. It
-                // now also carries groups and AppLayerConfig, which do not: falling through
-                // to Step 9's commit and Step 11's delete without having re-keyed them leaves
-                // both sealed under a key that no longer exists — Bugs 75 and 76 exactly,
-                // reached through the code that fixes them. Same rule `Group.requireKey()`
-                // states: abort the whole pass rather than proceed with a missing key.
-                guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
-                    throw SecurityError.keyDerivationFailed
-                }
-
+                // `oldKey` was derived before Step 1's PIN check — see the guard there for why
+                // it cannot be derived here. Skipping this pass on a missing key (which an
+                // `if let` used to do) would leave groups and AppLayerConfig sealed under a key
+                // Step 11 then deletes: Bugs 75 and 76 exactly, reached through the code that
+                // fixes them.
                 let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
                 let allGroupIdentifiers = Set(groups.compactMap { $0.readID()?.uuidString })
                 try Message.Draft.reKeyOrPurgeAll(
@@ -721,6 +733,16 @@ extension Manager {
             guard let seKey = try self.keyManager.deriveSecureModeKey() else {
                 throw SecurityError.keyDerivationFailed
             }
+
+            // Derived up front for the same reason as in `activateSecureMode` (Bug 78):
+            // deactivation runs the identical re-encrypt-then-save-then-commit sequence, so a
+            // guard placed after Step 4 would fire only once every contact's `Data` fields had
+            // already been nil-ed and written. Nothing here has been staged or mutated yet, so
+            // failing at this point costs nothing.
+            guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
+                throw SecurityError.keyDerivationFailed
+            }
+
             // Confirm PIN against the normal verifier at the current depth.
             // depth 0 → sealedNormalVerifiers[0] (master PIN).
             // depth 1 → sealedNormalVerifiers[1] (routing alias = duress PIN).
@@ -918,14 +940,10 @@ extension Manager {
                 // same reason to derive once and reuse applies (Bug 74). Runs before the
                 // Step 7 commit so `oldKey` is still canonical and the writes land in the WAL
                 // ahead of the checkpoint.
-                // Abort rather than skip — see the matching guard in `activateSecureMode`
-                // (Bug 78). Deactivation deletes the superseded key just as activation does,
-                // so skipping this pass and committing anyway strands groups and the config
-                // on the way out of Secure Mode exactly as it would on the way in.
-                guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
-                    throw SecurityError.keyDerivationFailed
-                }
-
+                // `oldKey` was derived before Step 1's PIN check — see the guard there.
+                // Deactivation deletes the superseded key just as activation does, so skipping
+                // this pass and committing anyway strands groups and the config on the way out
+                // of Secure Mode exactly as it would on the way in.
                 let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
                 for group in groups {
                     try group.reencrypt(from: oldKey, to: stagedKey)
