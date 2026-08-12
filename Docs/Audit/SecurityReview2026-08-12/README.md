@@ -209,14 +209,41 @@ precede any staging, blob push or row mutation.
 One behavioural note: a key-derivation failure now throws before PIN verification, so error
 ordering changed. Not an oracle — the outcome does not vary with the PIN.
 
-## Test flakiness worth watching
+## Test flakiness — diagnosed and fixed
 
-`GroupShardGatingTests/mixedGroupSendsToAllWithUniformSlotSize` failed once in four consecutive
-full-suite runs, taking 28s in the failing run against 1–2s normally, and passes reliably in
-isolation. That profile points at Secure Enclave contention under full-suite load rather than a
-logic fault, and the changes in this pass reduce SE work rather than adding it.
+`GroupShardGatingTests/mixedGroupSendsToAllWithUniformSlotSize` failed about one full-suite run in
+three or four. It was **not** timing or contention, and not parallelism: it reproduced with
+`-parallel-testing-enabled NO`, which is what CI uses, so CI would have hit it too.
 
-It matters more than it used to: until the CI change in this release, `xcpretty` parsed this suite
-as zero tests and a trailing `|| true` discarded `xcodebuild`'s exit status, so **no** test failure
-could ever fail a build. Now that failures are actually reported, a one-in-four flake will start
-failing builds. Worth a dedicated look before that becomes noise people learn to ignore.
+The assertion was `abs(delta) <= 8` on the byte-length difference between two recipients'
+`wrappedPayload`. Measured over 40 encodes of that exact fixture, the signed delta ranged
+**[-10, +8]** — so the bound sat *inside* the distribution rather than outside it. Widened to 24,
+which clears the measured range with headroom and stays far below anything that would indicate
+real shard content leaking through slot size, since a real leak scales with the content rather
+than with a few bytes of encoding jitter. Four consecutive serial full-suite runs clean afterwards.
+
+### A security question this raised, and its answer
+
+`ShardPadding`'s stated property is that "a group recipient's ciphertext length must not reveal
+whether they carry real shard content", and the padding equalises entry *counts* rather than
+bytes. Filler operations carry a **fixed 72-byte random** signature while real ones carry
+DER-encoded ECDSA P-256, which is 70–72 bytes and never longer. That is a plausible mechanism for
+a one-directional size bias — and the test could not have detected one, because `abs()` measures
+magnitude while the property is about *correlation* with eligibility. A consistent 5-byte bias
+would pass any magnitude bound.
+
+Measured rather than assumed: across the same 40 samples the signed delta was **17 negative, 18
+positive, 5 zero**. Symmetric, no eligibility bias. The DER length variance is evidently absorbed
+before it reaches the payload boundary. **The padding scheme holds; no finding.**
+
+Recorded because the reasoning looked sound enough to act on and was wrong, and because the test
+that guards this property still only bounds magnitude. A standing statistical assertion would be
+slow and flaky in its own right, so the measurement is captured in the test's comment instead.
+
+### Why this mattered more than a normal flake
+
+Until this release's CI change, `xcpretty` parsed this suite as zero tests and a trailing
+`|| true` discarded `xcodebuild`'s exit status, so **no** test failure could fail a build. This
+flake was almost certainly firing in CI already and being silently discarded. Now that failures are
+reported, it would have started failing builds immediately — the first impression of the new CI
+being a test that fails a third of the time for no visible reason.
