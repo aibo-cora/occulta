@@ -1428,13 +1428,48 @@ extension ContactManager {
 
     /// Resolve the wire format version to use when sending to a contact.
     /// Reads the encrypted `maxBundleVersion` byte and maps it back to a `Version`.
+    /// The three distinguishable states of `Contact.Profile.maxBundleVersion`.
+    ///
+    /// `resolveTargetVersion` flattens `.unrecorded` and `.unreadable` into `.v3fs`, which is
+    /// right for send-path callers — they want a tier, not its provenance. The signature gate
+    /// in `openGroup`, the high-water mark in `updateMaxVersion`, and the group-eligibility
+    /// message all need the distinction; Bug 80 existed because it was not available to them.
+    enum BundleVersionState {
+        /// No bundle has ever been received from this contact.
+        case unrecorded
+        /// A tier was recorded and still decrypts.
+        case readable(OccultaBundle.Version)
+        /// A tier was recorded but was stranded by a key rotation and cannot be read.
+        case unreadable
+    }
+
+    /// One decrypt, all three answers. Every caller below is built on this so that asking
+    /// "which tier?" and "was it readable?" costs a single Secure Enclave round trip rather
+    /// than one each — `Manager.Crypto` re-derives the hybrid key on every `decrypt` call.
+    private static func bundleVersionState(
+        for contact: Contact.Profile,
+        decrypting decrypt: (Data) -> Data?
+    ) -> BundleVersionState {
+        guard let encoded = contact.maxBundleVersion else { return .unrecorded }
+        guard let raw = decrypt(encoded), let byte = raw.first else { return .unreadable }
+        return .readable(WireHandle.byteToVersion(byte) ?? .v3fs)
+    }
+
+    static func bundleVersionState(for contact: Contact.Profile, using crypto: Manager.Crypto) -> BundleVersionState {
+        Self.bundleVersionState(for: contact) { try? crypto.decrypt(data: $0) }
+    }
+
+    /// Key-taking variant, for callers classifying many contacts in one pass — derive once,
+    /// pass the same key to every call. Mirrors `Contact.Profile.isVisible(atDepth:usingKey:)`.
+    static func bundleVersionState(for contact: Contact.Profile, using key: SymmetricKey) -> BundleVersionState {
+        Self.bundleVersionState(for: contact) { $0.decrypt(using: key) }
+    }
+
     static func resolveTargetVersion(for contact: Contact.Profile, using crypto: Manager.Crypto) -> OccultaBundle.Version {
-        guard
-            let enc  = contact.maxBundleVersion,
-            let raw  = try? crypto.decrypt(data: enc),
-            let byte = raw.first
-        else { return .v3fs }
-        return WireHandle.byteToVersion(byte) ?? .v3fs
+        guard case .readable(let version) = Self.bundleVersionState(for: contact, using: crypto) else {
+            return .v3fs
+        }
+        return version
     }
 
     private func verifyConsistency(for bundle: OccultaBundle) throws {
@@ -1642,11 +1677,12 @@ extension ContactManager {
         let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
         guard let byte = maxVersion.wireByte else { return }
 
-        let stranded = sender.maxBundleVersion != nil
-            && !Self.hasReadableBundleVersion(sender, using: cryptoOps)
-        let floor: OccultaBundle.Version = stranded
-            ? .senderSignatureCapable
-            : Self.resolveTargetVersion(for: sender, using: cryptoOps)
+        let floor: OccultaBundle.Version
+        switch Self.bundleVersionState(for: sender, using: cryptoOps) {
+        case .unreadable:            floor = .senderSignatureCapable
+        case .readable(let current): floor = current
+        case .unrecorded:            floor = .v3fs
+        }
 
         guard maxVersion.isAtLeast(floor) else { return }
 
@@ -1764,12 +1800,13 @@ extension ContactManager {
         // binding an FS-mode bundle to the sender's identity.
         let isFSMode = recipientMode == .forwardSecret || recipientMode == .forwardSecretNoPQ
         if isFSMode, recipientPayload.senderEphemeralSignature == nil {
-            let recorded = Self.resolveTargetVersion(for: sender, using: cryptoOps)
-            let stranded = sender.maxBundleVersion != nil
-                && !Self.hasReadableBundleVersion(sender, using: cryptoOps)
-
-            guard !recorded.isAtLeast(.senderSignatureCapable), !stranded else {
+            switch Self.bundleVersionState(for: sender, using: cryptoOps) {
+            case .readable(let version) where version.isAtLeast(.senderSignatureCapable):
                 throw GroupDecryptError.missingSenderEphemeralSignature
+            case .unreadable:
+                throw GroupDecryptError.missingSenderEphemeralSignature
+            case .readable, .unrecorded:
+                break
             }
         }
 

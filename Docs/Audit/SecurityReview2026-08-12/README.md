@@ -141,3 +141,82 @@ if moved {
 **On Finding 1's scope.** It is not introduced by this release and would normally fall outside a diff review. It is included because this release is what surfaced it — the group-eligibility symptom reported by a user (Bug 77) traced back to the same stranded field — and because it silently nullifies a remediation from the previous audit. Excluding it on a scope technicality would have buried the most serious item found.
 
 **On self-review.** Findings 2 and 3 are defects in code written during the same session that produced this release. They are recorded at the severity they warrant rather than softened; Finding 2 in particular reproduces the bug class the release exists to fix, through a path the author added.
+
+---
+
+# Second Pass — 2026-08-12, after remediation
+
+Scope: the six commits that fixed the findings above (`9183b8c`…`0607366`). All of that code was
+written during the same session, so this pass is a self-review of the fixes rather than of the
+release as originally proposed.
+
+## 🔴 Fixed — Secure Enclave round trips moved into a SwiftUI view body
+
+`Group+FormV3.ineligibleHeader` is a computed property consumed from the view body, so SwiftUI
+re-evaluates it on every render. The `hasReadableBundleVersion` calls added in `079c2f7` therefore
+ran up to `2N` times per render for N ineligible contacts, plus one per row — and `Manager.Crypto`
+re-derives the hybrid local DB key on **every** `decrypt` call, with no caching. Before that
+change these were `maxBundleVersion == nil`, a pure property read with no crypto at all.
+
+This is the exact cost profile behind Bug 74's `0x8BADF00D` launch watchdog kill, which also
+established that backgrounding does not help because the Secure Enclave is a single serial
+resource.
+
+**Fixed** by computing the partition once, under one derived key, and storing the
+"recorded, readable, and too old" set alongside it. The header is now O(1) and the row label is a
+set membership test; neither touches crypto.
+
+## 🟡 Fixed — repeated derivations for the same field
+
+`computeEligibility` cost roughly four derivations per contact: two inside `isVisible(atDepth:)`
+and one for each of two complementary `resolveTargetVersion` filters asking the same question
+twice. `openGroup`'s gate and `updateMaxVersion` each cost two, both decrypting `maxBundleVersion`
+to answer "which tier?" and "was it readable?" separately.
+
+**Fixed** by introducing `ContactManager.BundleVersionState` — `.unrecorded` / `.readable(tier)` /
+`.unreadable` — which answers all three questions from one decrypt, with a key-taking variant for
+callers classifying many contacts in one pass. `resolveTargetVersion` and
+`hasReadableBundleVersion` are now thin wrappers over it, so no call site changed behaviour. The
+partition went from ~4N derivations to 1; the gate and the high-water mark from 2 each to 1.
+
+## 🟡 Open — an unrecognised version byte fails open
+
+`resolveTargetVersion` maps a byte that decrypts cleanly but is not a known tier to `.v3fs`
+(`byteToVersion(byte) ?? .v3fs`), so the state is `.readable(.v3fs)` — not capable, and the
+signature gate accepts an unsigned bundle. Reachable only by running a future build that records a
+byte ≥ 0x08 and then returning to 1.10.2; `updateMaxVersion` never writes an unknown byte, so it is
+not attacker-controllable. Left as-is because changing the fallback also changes group eligibility
+and has existing test coverage asserting the current mapping. "Newer than I understand" should
+logically be the most capable case, not the least.
+
+## ⚪ Open — `TestKeyManager` ships in the release binary
+
+`Occulta/Protocols/KeyManagerProtocol.swift` has no `#if DEBUG` anywhere. A fully functional
+in-memory key manager that bypasses the Secure Enclave is compiled into the shipped app, and this
+release added `simulatesHybridKeyUnavailable` to it — a switch forcing key derivation to return
+nil. Not exploitable: reaching it requires code execution, at which point the process is already
+lost. Recorded as hygiene. Gating it is not a one-liner, since the SwiftUI previews in
+`ContactClassification.swift` and `SecureModeSetupFlow.swift` instantiate it.
+
+## Verified, not changed
+
+The two new pieces of security logic were re-derived against the `Version.known` rank ordering
+rather than trusted from their tests: the high-water mark behaves correctly across all five
+transitions (never-seen, lower claim, higher claim, stranded + low, stranded + top), and the gate
+throws exactly when the sender is known-capable or stranded. The hoisted rotation guards now
+precede any staging, blob push or row mutation.
+
+One behavioural note: a key-derivation failure now throws before PIN verification, so error
+ordering changed. Not an oracle — the outcome does not vary with the PIN.
+
+## Test flakiness worth watching
+
+`GroupShardGatingTests/mixedGroupSendsToAllWithUniformSlotSize` failed once in four consecutive
+full-suite runs, taking 28s in the failing run against 1–2s normally, and passes reliably in
+isolation. That profile points at Secure Enclave contention under full-suite load rather than a
+logic fault, and the changes in this pass reduce SE work rather than adding it.
+
+It matters more than it used to: until the CI change in this release, `xcpretty` parsed this suite
+as zero tests and a trailing `|| true` discarded `xcodebuild`'s exit status, so **no** test failure
+could ever fail a build. Now that failures are actually reported, a one-in-four flake will start
+failing builds. Worth a dedicated look before that becomes noise people learn to ignore.

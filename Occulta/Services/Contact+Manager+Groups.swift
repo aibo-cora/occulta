@@ -135,8 +135,8 @@ extension ContactManager {
         _ contact: Contact.Profile,
         using crypto: Manager.Crypto = Manager.Crypto()
     ) -> Bool {
-        guard let encoded = contact.maxBundleVersion else { return false }
-        return (try? crypto.decrypt(data: encoded)) != nil
+        guard case .readable = Self.bundleVersionState(for: contact, using: crypto) else { return false }
+        return true
     }
 
     /// Returns why a contact cannot be added to a group, or nil if eligible.

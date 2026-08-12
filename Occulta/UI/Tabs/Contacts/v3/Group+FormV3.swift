@@ -16,12 +16,15 @@ extension Group {
 
         let formMode: FormMode
         let onDelete: (() -> Void)?
-        private let crypto = Manager.Crypto()
 
         @State private var name                = ""
         @State private var selectedIdentifiers = Set<String>()
         @State private var eligible:   [Contact.Profile] = []
         @State private var ineligible: [Contact.Profile] = []
+        /// Identifiers within `ineligible` whose version is recorded, readable and simply too
+        /// old — i.e. the ones "update Occulta" actually applies to. Computed once alongside
+        /// the partition so the header and rows never call into crypto during a render.
+        @State private var ineligibleNeedsUpdate = Set<String>()
         @State private var showSaveError  = false
         @State private var saveErrorText  = ""
 
@@ -52,10 +55,10 @@ extension Group {
 
 
         private var ineligibleHeader: String {
-            // Readability, not nil-ness: a version stranded by a key rotation is present but
-            // unreadable, and counting it as "old" tells the user to update a current app.
-            let hasOld     = self.ineligible.contains { ContactManager.hasReadableBundleVersion($0) }
-            let hasUnknown = self.ineligible.contains { !ContactManager.hasReadableBundleVersion($0) }
+            // Read from the precomputed partition — this is evaluated on every body render.
+            let hasOld     = !self.ineligibleNeedsUpdate.isEmpty
+            let hasUnknown = self.ineligible.count > self.ineligibleNeedsUpdate.count
+            
             if hasUnknown && hasOld {
                 return "These contacts need a newer version of Occulta or haven't messaged you yet."
             }
@@ -202,7 +205,7 @@ extension Group {
             let givenName  = contact.givenName.decrypt()
             let familyName = contact.familyName.decrypt()
             let fullName   = [givenName, familyName].filter { !$0.isEmpty }.joined(separator: " ")
-            let subLabel   = ContactManager.hasReadableBundleVersion(contact)
+            let subLabel   = self.ineligibleNeedsUpdate.contains(contact.identifier)
                 ? "Needs to update Occulta"
                 : "No bundle received yet"
 
@@ -231,10 +234,61 @@ extension Group {
 
         // MARK: - Actions
 
+        /// Partitions the contact list in one pass, under a single derived key.
+        ///
+        /// `Manager.Crypto` re-derives the hybrid local DB key on every `decrypt` call — no
+        /// caching — so each of these checks is a Secure Enclave plus Keychain round trip. The
+        /// previous shape cost roughly four per contact: two inside `isVisible(atDepth:)` for
+        /// `originDepth` and `visibleThroughDepth`, then one for each of the two
+        /// `resolveTargetVersion` filters, which asked the same question twice to build
+        /// complementary lists. This runs at `.onAppear` and again on every `@Query` change,
+        /// so on a few hundred contacts that was several hundred round trips per invocation —
+        /// the cost profile that produced Bug 74's launch watchdog kill.
+        ///
+        /// Deriving once and passing the key down makes it one, total. `isVisible` and
+        /// `bundleVersionState` both provide key-taking variants for exactly this caller.
+        ///
+        /// A `Set` difference would also remove the duplicate pass, but `contacts` arrives
+        /// sorted by `Contact.Profile.descriptor` and set iteration order is not stable, so
+        /// both lists would render in arbitrary order and could reshuffle between renders. A
+        /// single pass into two arrays keeps the order and needs no `Hashable` contract.
+        ///
+        /// `needsUpdate` is captured here rather than recomputed in the view: the header and
+        /// row label are evaluated on every body render, and calling into crypto from there
+        /// puts Secure Enclave work on the main actor during typing and scrolling.
         private func computeEligibility() {
-            let displayable = self.contacts.filter { $0.isVisible(atDepth: self.security.currentDepth) }
-            self.eligible   = displayable.filter {  ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups }
-            self.ineligible = displayable.filter { !ContactManager.resolveTargetVersion(for: $0, using: self.crypto).supportsGroups }
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else {
+                // Matches the previous behaviour: without a key `isVisible` treats every
+                // contact as hidden, so the lists were empty in this case before too.
+                self.eligible = []
+                self.ineligible = []
+                self.ineligibleNeedsUpdate = []
+                return
+            }
+
+            let depth = self.security.currentDepth
+            var eligible:    [Contact.Profile] = []
+            var ineligible:  [Contact.Profile] = []
+            var needsUpdate: Set<String>       = []
+
+            for contact in self.contacts where contact.isVisible(atDepth: depth, usingKey: key) {
+                switch ContactManager.bundleVersionState(for: contact, using: key) {
+                case .readable(let version) where version.supportsGroups:
+                    eligible.append(contact)
+                case .readable:
+                    // Recorded, readable, and too old — the only case that warrants "update".
+                    ineligible.append(contact)
+                    needsUpdate.insert(contact.identifier)
+                case .unrecorded, .unreadable:
+                    // Never heard from, or stranded by a key rotation. Either way their
+                    // version is unknown to us, and telling them to update would be wrong.
+                    ineligible.append(contact)
+                }
+            }
+
+            self.eligible              = eligible
+            self.ineligible            = ineligible
+            self.ineligibleNeedsUpdate = needsUpdate
         }
 
         private func saveGroup() {
