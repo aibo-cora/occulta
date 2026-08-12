@@ -1911,7 +1911,8 @@ Each successful probe creates a new layer and transitions `state` to `.normal` (
 
 **Applied:** A dedicated `catch` arm for `pinCollision` was added in `SummaryView`, identical to the `invalidStateTransition` arm. Every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. The signal is removed.
 
-**Not yet resolved — three remaining gaps:**
+**Not yet resolved — three remaining gaps, plus Gap 1a (a side effect of Gap 1's own fix, noted
+later while tracing Bug 76):**
 
 ---
 
@@ -1922,6 +1923,47 @@ A real activation writes extensively: all contact rows are re-encrypted (new cip
 A forensic examiner comparing filesystem and DB state before and after a "successful" activation attempt can distinguish collision from success without decryption: file modification timestamps, WAL presence, and blob store contents all differ. The UI is indistinguishable; the disk is not.
 
 **Applied:** on `pinCollision`, `pushDummyBlobSlot` writes a random-noise `LayerPayload` (empty contacts, random sequence number) to a non-excluded slot before the throw. `push()` pads all payloads to `slotPlaintextSize` before encrypting, so the ciphertext is the same fixed size as a real activation blob — indistinguishable by byte count. The contact DB and AppLayerConfig remain unmodified (no re-encryption, no new verifier), but the blob store — the most externally observable artefact — now shows a write on every collision.
+
+##### Gap 1a — the dummy push trades a no-key tell for a with-key one
+
+Noted while tracing Bug 76; not previously recorded here. The Gap 1 fix works as intended against
+the threat model it targets, but it is a trade rather than a pure win, and the trade should be
+explicit.
+
+`pushDummyBlobSlot` records its slot index nowhere — no `writeBlobSlot` call accompanies it. The
+dummy is therefore a permanent **orphan**: a real, decodable payload in the store that no
+`sealedBlobSlots` entry points at. Consequences split by what the examiner holds:
+
+- **Without keys — no tell, as designed.** Every `push` re-seals all 32 slots with fresh nonces
+  and every slot is the same fixed ciphertext size, so a before/after diff shows all 32 changed
+  whatever happened. The file is `.completeFileProtection` and `isExcludedFromBackup`, same as the
+  DB. This is exactly the tell Gap 1 set out to close, and it is closed.
+
+- **With the SE Secure Mode key — a new, faint signal.** That key never rotates, so an examiner who
+  can derive it (compelled device, or code execution while unlocked) opens all 32 slots. Real
+  payloads decode as `LayerPayload`; filler does not. Dummies decode with `contacts: []`, so
+  counting empty payloads yields a rough count of **how many PIN collisions occurred** — that is,
+  how many times someone proposed a PIN matching an existing verifier. That is adjacent to the very
+  oracle this bug is about: it does not identify *which* PIN collided, but it does reveal that
+  probing happened and roughly how much.
+
+  Not conclusive on its own — a genuine activation where nothing was classified sensitive also
+  produces `contacts: []` — so it is suggestive rather than proof.
+
+Dummies accumulate for the life of the Secure Mode session. `push` decrypts all slots and re-seals
+anything that decodes, so it actively carries them forward; they clear only when randomly
+overwritten by a later activation's slot draw (~1 in 30 per activation) or wiped wholesale by
+`rewrite()` at full deactivation, force-recovery, or the periodic rewrite once Secure Mode is off.
+
+**Judgement:** probably an acceptable trade — the no-key threat model (filesystem image, seized
+device, backup extraction) is far broader than the with-key one, which already implies an unlocked
+device where the DB's own residual gap ([Manager+Security.swift:615-620](Occulta/Features/SecureMode/Manager+Security.swift:615))
+exposes the contacts anyway. Recorded because it was implicit, not because it needs reversing.
+
+**Cheap partial mitigation, if wanted:** Bug 76's proposed change to `push` — re-seal referenced
+payloads, substitute fresh random for unreferenced ones — would clear accumulated dummies as a
+side effect, capping the count at one per Secure Mode session rather than one per collision. It
+does not remove the signal, only bounds it.
 
 ---
 
@@ -2486,7 +2528,15 @@ launch-time performance/stability risk to close immediately.
 
 ## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
 
-**Status:** Open (Confirmed by code trace + field report). Not fixed.
+**Status:** Open — cause fixed, existing damage not yet repaired.
+
+- **Root cause:** fixed on `release/v1.11.0`. `Group.reencrypt(from:to:)` re-keys every field
+  (ID, name, created-at, and all 32 depths of member slots), called from both rotation paths —
+  activation Step 8 after the draft pass, and a new deactivation Step 6b. 6 tests in
+  `GroupKeyRotationTests.swift`, full `OccultaTests` target green. Not committed/pushed.
+- **Existing orphaned rows:** repaired. `ContactManager.purgeUnreadableGroups(using:)` deletes
+  rows whose ID no longer decrypts, called from `RootView`'s `.task` at depth 0 only. Silent by
+  design. 4 tests in `GroupOrphanPurgeTests.swift`.
 
 **Target:** v1.11.0
 
@@ -2624,47 +2674,62 @@ contact deletion happens to run.
 
 ### Fix sketch (not implemented)
 
-1. Add a two-key re-encryption method to `Group` — e.g.
-   `reencrypt(from oldKey: SymmetricKey, to newKey: SymmetricKey, aad: Data)` — that reads via the
-   existing `members(atDepth:usingKey:)` and writes via `encryptedSlots(for:using:)`, and also
-   re-seals `encryptedID` / `encryptedName` / `encryptedCreatedAt`. Both helpers already take an
-   explicit key, so this costs **two** key derivations per rotation, not two per slot — important
-   given Bug 74's finding that per-call `createHybridLocalEncryptionKey()` round trips to the SE
-   are what caused the launch watchdog kill.
-2. Call it over `FetchDescriptor<Group>()` in activation Step 8 (before
-   `commitStagedLocalDBKey()`, alongside the contact loop) and in the matching deactivation step,
-   then `save()` so the writes reach the WAL before commit — the same ordering invariant already
-   documented at [Manager+Security.swift:547](Occulta/Features/SecureMode/Manager+Security.swift:547).
-3. Add a one-time repair pass that hard-deletes `Group` rows whose `readID()` fails, so users
-   already in this state can clear the phantom count and recreate their groups. Must respect Bug
-   74's constraint: no eager full-ciphertext sweep at launch. A failed `readID()` is a single
-   decrypt per group, which is cheap enough.
+1. ~~Add a two-key re-encryption method to `Group`.~~ **Done** — `reencrypt(from:to:)`. Member
+   slots route through the existing `reencryptAllDepths(usingKey:content:)`, whose `content`
+   closure reads with the old key while the writes seal with the new one; that is safe because
+   each depth's plaintext is read before that depth's slots are reassigned, the property
+   `refreshCiphertext(usingKey:)` already relies on. No AAD change was needed —
+   `encrypt(using:)`/`decrypt(using:)` use the same `EncryptionScheme.v2_hybridPQ.aad` as the bare
+   variants, so re-sealed fields stay readable through `readName()`/`readID()`. Costs the two
+   derivations the caller already holds, not two per slot (the Bug 74 constraint).
+
+   An already-orphaned group is left byte-identical rather than re-sealed: it holds nothing
+   recoverable, and rewriting it would make a dead row look freshly edited. Its ciphertext then
+   stays static while live groups' changes — but an orphan is already the row that fails to
+   decrypt under the current key, so this exposes nothing new.
+2. ~~Call it from both rotation paths.~~ **Done** — activation Step 8 and a new deactivation
+   Step 6b, both before `commitStagedLocalDBKey()` with a `save()` so writes reach the WAL.
+
+   **Ordering in activation is load-bearing.** The group pass must run *after*
+   `Message.Draft.reKeyOrPurgeAll`, never before. `readID()` decrypts with the canonical key,
+   which is still the old key until Step 9 — so re-keying groups first would make `readID()` fail
+   for every group, collapse `allGroupIdentifiers` to the empty set, and cause the draft pass to
+   delete every group-addressed draft as an unknown recipient. That is cascade 1 below, triggered
+   by the fix for the bug that causes it.
+3. ~~Add a repair pass that hard-deletes `Group` rows whose `readID()` fails.~~ **Done** —
+   `ContactManager.purgeUnreadableGroups(using:)`, called from `RootView`'s `.task`.
+
+   Deleting is safe because the loss is provable, not merely current: the hybrid key needs both
+   an SE private key and a Keychain random component, Step 11 destroys both, and the SE half is
+   non-exportable — no backup on any device can restore it. So no repair path can ever exist and
+   these rows are permanently unopenable, unmessageable, and undeletable through the UI.
+   Removing them also closes the forensic tell of undecryptable rows sitting beside decryptable
+   ones.
+
+   Three design points worth keeping:
+   - **The key is a parameter, not derived inside.** A nil key would make every row look
+     stranded and empty the table; requiring it makes that unrepresentable rather than guarded,
+     and the call site is where a failed derivation stops the sweep.
+   - **No completion flag.** A `UserDefaults` key with any honest name would advertise that the
+     app has an orphan concept, which points at key rotation, which points at Secure Mode. The
+     sweep runs every launch instead — one decrypt per group, finding nothing once clean, and no
+     named artefact left behind.
+   - **Depth 0 only**, matching `cleanUpGroupDuressMembership`'s reasoning, so row deletions are
+     never written to the WAL during a coerced session. Followed by an unconditional
+     `checkpointStore()` so checkpoint timing does not itself become the signal.
+
+   Silent, per product decision — the user already perceives these groups as missing, and any
+   explanation would have to gesture at Secure Mode. Drafts addressed to a purged group are
+   deliberately left alone; `reKeyOrPurgeAll` drops them at the next rotation anyway.
 4. Audit the schema for any other model sealed under the rotating key and missing from both
    rotation paths. `AppLayerConfig` is the open question — see below.
 
-### Related, unverified: `AppLayerConfig` may have the same gap
+### Related: `AppLayerConfig` has the same gap
 
-`AppLayerConfig+Model.swift` seals `sealedBlobSlots`, `layerSequenceNumbers`, `pinEnabledPerDepth`,
-`persistedDepth`, `coercerBaseDepth`, `lockoutCountEncrypted`, and `lockoutAnchorUptimeEncrypted`
-with the same bare `.encrypt()`/`.decrypt()` local DB key helpers, and none of them are
-re-encrypted during rotation either. Activation only rewrites the specific fields it touches after
-the commit — the code comment at
-[Manager+Security.swift:636](Occulta/Features/SecureMode/Manager+Security.swift:636) ("All config
-writes use the new canonical DB key (post-commit)") shows the ordering was considered for those,
-but says nothing about fields written by an *earlier* activation or by PIN setup.
-
-Not traced end-to-end here, so recorded as a question rather than a finding. Specifically worth
-checking:
-
-- Does `pinEnabledPerDepth`, written at PIN setup before the first rotation, survive activation —
-  and what does `readPINEnabled(at:)` returning `nil` do to the gate? (cf. Bugs 50, 51)
-- Do the lockout counter/anchor survive, or does activation silently reset lockout state?
-  (cf. Bug 70)
-- On a **second-layer** activation, `sealedBlobSlots[0]` and `layerSequenceNumbers[0]` were
-  written before that rotation. The final deactivation back to depth 0 reads `blobDepth = depth - 1`
-  ([Manager+Security.swift:717](Occulta/Features/SecureMode/Manager+Security.swift:717)) — if blob 0's
-  metadata is stranded, the real layer's sealed sensitive contacts may be unrecoverable. This
-  would be Critical if confirmed and should be traced before the Bug 75 fix lands.
+`AppLayerConfig+Model.swift` seals eight fields with the same bare `.encrypt()`/`.decrypt()` local
+DB key helpers, and none of them are re-encrypted during rotation either. Traced in full and split
+out as **Bug 76** — the outcome is different enough from this bug to warrant its own entry: no
+permanent data loss, but the Bug 46 blob-slot exclusion guarantee is silently voided.
 
 ### Test gap
 
@@ -2675,3 +2740,287 @@ depth-0 and depth-1 membership all still read back correctly. Note these tests n
 device: `Group` calls `Manager.Key()` directly rather than through an injectable
 `KeyManagerProtocol`, so `TestKeyManager` cannot bypass the Secure Enclave — follow the
 `secureEnclaveAvailable()` guard pattern already used in `GroupModelTests.swift`.
+
+---
+
+## Bug 76 — `AppLayerConfig` fields are never re-keyed during rotation; Bug 46's blob-slot exclusion silently stops protecting the real layer
+
+**Status:** Fixed on `release/v1.11.0`, not committed/pushed. Split out of Bug 75's audit item.
+
+- **Blob metadata** (`sealedBlobSlots`, `layerSequenceNumbers`) now lives on a key derived from
+  the non-rotating SE Secure Mode key — `AppLayerConfig.blobMetadataKey(from:)`, HKDF
+  domain-separated from the layer store's own key. Rotation can no longer strand it, which
+  removes Defects 1 and 2 by construction rather than by maintaining rotation machinery.
+  `migrateBlobMetadata(fromLocalDBKey:toBlobKey:)` moves entries from the old scheme, driven from
+  `Manager.Security.migrateBlobMetadataKeyIfNeeded()` at launch — without it a currently-reachable
+  blob would be read as absent and silently orphaned.
+- **The other six fields** (`persistedDepth`, `pinEnabled`, `pinEnabledPerDepth`,
+  `coercerBaseDepth`, and the two lockout fields) stay on the local DB key and are re-keyed by
+  `AppLayerConfig.reencrypt(from:to:)`, called from both rotation paths alongside `Group`. That
+  closes Defect 3.
+- 10 tests across `AppLayerConfigRotationTests.swift` and `BlobMetadataMigrationTests`, plus the
+  6 exclusion tests in `ProtectedBlobSlotTests.swift` — now fully deterministic, since the key is
+  an explicit parameter and no Secure Enclave is involved. Full `OccultaTests` target green.
+
+- **Defect 1 (blob-slot exclusion):** downgraded to Low and **not** given behavioural changes — see
+  the impact correction below. Two attempts to "fix" it were made and reverted (fail-closed throw,
+  then a silent-dismiss catch arm); both were worse than the behaviour they replaced. What remains
+  on `release/v1.11.0` is `Manager.Security.protectedBlobSlots(config:depth:)`, a deduplication of
+  the expression that previously existed verbatim at two call sites, with the skip-unreadable
+  behaviour unchanged and now documented and pinned by tests in `ProtectedBlobSlotTests.swift`.
+  Full `OccultaTests` target green. Not committed/pushed.
+- **Defects 2 and 3, and the root cause:** open. Awaiting the re-key work below.
+
+**Decision taken:** blob metadata (`sealedBlobSlots`, `layerSequenceNumbers`) will move under the
+**SE Secure Mode key** — the non-rotating key that already protects the verifiers — rather than
+being re-keyed on every rotation. This removes Defects 1 and 2 by construction instead of adding
+rotation machinery that must stay correct indefinitely, and costs nothing in exposure: the blob
+*contents* are already sealed under `layerStore.deriveKey(from: seKey)`, so a slot index is
+strictly less sensitive than the blob it points at, already under that same key. The remaining six
+fields stay on the local DB key and get re-keyed alongside `Group` (Bug 75).
+
+**Target:** v1.11.0
+
+### Severity: Medium — no permanent data loss; blob redundancy and gate-down state are lost. See "What is *not* broken".
+
+### Summary
+
+`AppLayerConfig` seals eight fields under the rotating hybrid local DB key, and — exactly like
+`Group` (Bug 75) — none of them are re-encrypted when `activateSecureMode` /
+`deactivateSecureMode` rotate that key. Unlike Bug 75 the consequences are not catastrophic,
+because every affected read has a fail-safe fallback and because the fields activation actually
+depends on are rewritten post-commit. But two real defects fall out, one of them silently voiding
+a guarantee an earlier bug was filed to establish.
+
+### Field inventory
+
+Under the rotating local DB key (bare `.encrypt()` / `.decrypt()`):
+
+| Field | Rewritten post-commit by activation? |
+|---|---|
+| `sealedBlobSlots[depth]` | Yes — [:649](Occulta/Features/SecureMode/Manager+Security.swift:649) |
+| `sealedBlobSlots[j ≠ depth]` | **No** |
+| `layerSequenceNumbers[depth]` | Yes — [:650](Occulta/Features/SecureMode/Manager+Security.swift:650) |
+| `layerSequenceNumbers[j ≠ depth]` | **No** |
+| `coercerBaseDepth` | Only when `depth > 0` — [:665](Occulta/Features/SecureMode/Manager+Security.swift:665) |
+| `persistedDepth` | **No** |
+| `pinEnabledPerDepth[*]` | **No** |
+| `lockoutCountEncrypted`, `lockoutAnchorUptimeEncrypted` | **No** |
+
+**Not affected:** `sealedNormalVerifier(s)` and `sealedDuressVerifier(s)` are sealed by
+`PINManager` under the dedicated SE Secure Mode key, which never rotates. PIN entry and layer
+routing therefore keep working across any number of rotations — Secure Mode is not bricked by this.
+
+`persistedDepth` and `pinEnabledPerDepth` are written *only* by `setState`
+([:253](Occulta/Features/SecureMode/Manager+Security.swift:253)), and `activateSecureMode` never
+calls `setState` — confirmed by grep, its only callers are the two deactivation paths and PIN
+setup/disable. So both fields are stranded by every activation until some later `setState` runs.
+
+### Defect 1 — Bug 46's exclusion guarantee is silently void (Low — see the impact correction)
+
+Activation picks a blob slot at [:416-419](Occulta/Features/SecureMode/Manager+Security.swift:416):
+
+```swift
+let excludedSlots: Set<Int> = depth == 0
+    ? []
+    : Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
+let slotIndex = self.layerStore.randomSlot(excluding: excludedSlots)
+```
+
+The stated invariant, three lines above it in the source, is that "the real layer (depth 0) and
+the first duress layer (depth 1) are permanently excluded from all writes — they must never be
+overwritten." That is Bug 46's fix.
+
+The exclusion set is built by *decrypting* the stored slot indices, and this runs at line 416 —
+before `createStagedLocalDBKey()` at line 426 — so it uses whatever the current canonical key is.
+Walk two activations:
+
+1. Activation at depth 0 rotates K0 → K1, then writes `sealedBlobSlots[0]` under **K1**.
+2. Activation at depth 1 reads `readBlobSlot(at: 0)` under K1 — still fine, so slot 0 is correctly
+   excluded. It then rotates K1 → K2 and writes `sealedBlobSlots[1]` under **K2**.
+   `sealedBlobSlots[0]` is now stranded under K1, which Step 11 deleted.
+3. Activation at depth 2 reads `readBlobSlot(at: 0)` under K2 → **nil**. `compactMap` silently
+   drops it. `excludedSlots` contains only slot 1.
+
+`randomSlot(excluding:)` then draws uniformly from the 31 remaining slots
+([SecureMode+LayerStore.swift:236](Occulta/Features/SecureMode/SecureMode+LayerStore.swift:236)),
+so it selects the real layer's blob slot with probability ~1/31, and `layerStore.push` overwrites
+it. The depth-0 blob — the sealed copy of the real user's sensitive contacts — is destroyed, with
+no error and no user-visible signal.
+
+`compactMap` is what makes this silent: a decrypt failure and "no layer configured at this depth"
+are the same nil, so the code cannot tell a stranded entry from an empty one.
+
+#### Impact correction — this is not an independent defect
+
+The mechanism above is real, but the harm was overstated when this entry was first written, and
+the correction collapses Defect 1 into Defect 2.
+
+The trigger for the narrowed exclusion set is `readBlobSlot(at: 0)` returning nil. That is the
+*same call* `deactivateSecureMode` uses to locate the depth-0 blob to pop
+([:722](Occulta/Features/SecureMode/Manager+Security.swift:722), with `blobDepth = max(0, depth-1)`).
+And a stranded index never becomes readable again: the only writer is `writeBlobSlot(_:at:)` at
+the activating depth, a depth-0 activation is blocked while Secure Mode is active
+([:365](Occulta/Features/SecureMode/Manager+Security.swift:365)), and `clearBlobSlot` writes
+random filler. Once nil, always nil.
+
+So on exactly the configs where slot 0 drops out of the exclusion set, the depth-0 blob is
+**already unreachable** — Defect 2. Overwriting it destroys a payload no code path can pop. Both
+"defects" are one harm counted twice: the metadata is stranded, so the blob is orphaned.
+
+And the orphaned blob is redundant even when reachable, for the reasons in "What is *not* broken"
+below — the sensitive contacts it holds stay in the DB, re-keyed by every rotation and never
+hard-deleted.
+
+Residual value of protecting the slot is therefore thin but not zero: a `LayerPayload` carries its
+own `slotIndex` and `sequenceNumber`, so a content scan of the store could recover an orphaned
+blob without the stored index. That matters only if the DB copy is *also* damaged (which
+`reencryptAllFields` can do — it clears fields it cannot decrypt) and only if such a repair path is
+ever built. Not enough to justify failing an activation over. Severity dropped from High to Low.
+
+`pushDummyBlobSlot` has an identical copy of this expression at
+[:1405-1408](Occulta/Features/SecureMode/Manager+Security.swift:1405), so the PIN-collision path
+can overwrite the real layer's blob the same way.
+
+### Defect 2 — the final deactivation cannot pop the depth-0 blob (Medium)
+
+`deactivateSecureMode` computes `blobDepth = max(0, depth - 1)` and reads the pop metadata at
+[:722-723](Occulta/Features/SecureMode/Manager+Security.swift:722), before staging its own key —
+so again under the current canonical key. After any second activation, index 0 is stranded, both
+reads return nil, and control falls to the `else` at
+[:732](Occulta/Features/SecureMode/Manager+Security.swift:732), which substitutes an empty payload.
+Step 5's `restoreContact` loop then iterates over nothing.
+
+The comment on that branch reads "No slot metadata — pre-upgrade install or config corruption",
+which is now also silently covering the ordinary case of "this install activated a second layer."
+
+### What is *not* broken (correcting the initial hypothesis)
+
+Bug 75's audit note guessed this would leave the real layer's sensitive contacts unrecoverable.
+Traced through, it does not:
+
+- Sensitive contacts are never hard-deleted from the DB
+  ([:606](Occulta/Features/SecureMode/Manager+Security.swift:606)).
+- Every rotation re-keys **all** profiles including sensitive shells, while the old key is still
+  canonical ([:543-546](Occulta/Features/SecureMode/Manager+Security.swift:543),
+  [:806-807](Occulta/Features/SecureMode/Manager+Security.swift:806)), so the DB copy rides
+  through any number of rotations intact.
+
+  **This is a derived property, not a design invariant — do not build on it without checking.**
+  It holds only because `reencryptAllFields` enumerates every encrypted field on the profile, and
+  it was *false* for the first five days this mechanism existed. Until `70e1f77` (2026-05-31,
+  "Centralise key-rotation re-encryption in Contact.Profile instance methods"), activation Step 8
+  re-encrypted only `visibleThroughDepth`, `signedAttributes`, and key records; text fields were
+  left under the old canonical key and were genuinely unreadable once Step 11 deleted it. That is
+  what `a6adf74` ("Fix deactivation crash on sensitive shells") was fixing, and why
+  `restoreContact` exists at all — back then the blob really was the only surviving copy of a
+  sensitive contact's text fields.
+
+  The live risk this leaves: a new encrypted field added to `Contact.Profile` but not added to
+  `reencryptAllFields` strands silently on the next rotation — no error, since that method nils
+  fields it cannot decrypt by design. The blob is not a backstop for it either, because
+  `LayerContact` carries its own fixed field list that would need the same update. Two lists to
+  keep in sync, nothing enforcing it, and both `globalTrusteeDepth` (`78c15f6`) and `originDepth`
+  (`d0d75b5`) were added to `reencryptAllFields` only after the fact. A test asserting that every
+  `Data?` property on `Contact.Profile` survives a rotation would close this.
+- Deactivation Step 4 preserves each contact's real `visibleThroughDepth` independently of the
+  blob ([:814](Occulta/Features/SecureMode/Manager+Security.swift:814)), and `restoreContact`
+  would have written the same value it already holds.
+
+So the DB copy is the primary and the blob is redundant here. What Defect 2 actually costs is the
+redundancy: `reencryptAllFields` clears any field it cannot decrypt to nil by design
+([Contact+Model+Reencrypt.swift:22](Occulta/Data Models/Contact+Model+Reencrypt.swift:22)), and the
+blob is the only fallback when that happens. Defect 1 is the one that destroys data outright.
+
+Two further fields were checked and found harmless:
+
+- **Lockout counters.** Stranded → `readLockoutCount()` → 0 and `readLockoutAnchorUptime()` → nil
+  ("not locked out"). But activation calls `resetCounters()`
+  ([:670](Occulta/Features/SecureMode/Manager+Security.swift:670)) regardless, which is the
+  intended behaviour. No impact, and unrelated to Bug 70 (backup restore).
+- **`coercerBaseDepth`.** Rewritten post-commit whenever `depth > 0` — which is the entire Bug 47
+  coercer flow — and reset to 0 by deactivation
+  ([:931](Occulta/Features/SecureMode/Manager+Security.swift:931)). Reaching a stale read needs an
+  activation at depth 0 with a non-zero `coercerBaseDepth` live, which the state guards at
+  [:360-367](Occulta/Features/SecureMode/Manager+Security.swift:360) make unreachable.
+
+### Defect 3 — a lowered PIN gate does not survive an activation (Medium, fails safe)
+
+With `persistedDepth` and `pinEnabledPerDepth` stranded, `Manager.Security.init()` reads
+`readPersistedDepth()` → 0 and `readPinEnabled(at: 0)` → true (both documented fallbacks). At
+[:244-245](Occulta/Features/SecureMode/Manager+Security.swift:244):
+
+```swift
+self.pinEnabled = config.readPinEnabled(at: persistedDepth)
+if !self.pinEnabled { self.currentDepth = persistedDepth }
+```
+
+`pinEnabled` is true, so the depth-restore branch never fires, the PIN gate presents, and
+`verify()` + `applyVerifyState()` re-establish the correct depth from the PIN scan. **This fails
+safe — it is not a Bug 50 regression**, and the real layer is not exposed.
+
+The cost is behavioural: a user who lowered the PIN gate under coercion via
+`disablePIN(at:confirmingPIN:)` finds the gate back up after the next activation, because the
+`false` they wrote is now unreadable. In the coercion scenario that feature exists to serve, a gate
+that silently re-arms is a tell.
+
+### Fix sketch (not implemented)
+
+1. Re-key `AppLayerConfig` alongside `Group` in both rotation paths (Bug 75, fix step 2). The eight
+   fields are small and fixed-size — two 32-entry arrays plus six scalars — so a
+   decrypt-with-old/re-seal-with-new pass costs one key derivation, nothing like the Bug 74
+   workload. Do it before `commitStagedLocalDBKey()` and `save()` so the writes reach the WAL,
+   same ordering invariant as everything else in Step 8.
+2. **Do not make activation fail on an unreadable slot index.** Two attempts were made here and
+   both were reverted; recorded so they are not tried a third time.
+
+   *Attempt 1 — throw on an unreadable depth-0 index.* Added without checking where the error
+   surfaces: `SecureModeSetupFlow` routes it into the generic `catch`, which sets
+   `activationFailed` and shows the "Activation Failed" alert — precisely the arm Bugs 24 and 62
+   exist to keep errors out of. `protectedBlobSlots` returns empty at depth 0, so that alert is
+   *unreachable* on a device where Secure Mode has never been activated; its appearance proves
+   depth ≥ 1. Unlike a `pinCollision` it is not probabilistic — on an affected config it fires on
+   every activation attempt at depth ≥ 2 and a coercer can reproduce it at will. Not a PIN oracle
+   (the condition depends on config state, not the candidate PIN), but a reproducible
+   High-severity forensic tell traded for a Low-severity data risk.
+
+   *Attempt 2 — keep the throw, add a silent-dismiss `catch` arm* matching `invalidStateTransition`
+   and `pinCollision`. Removes the alert, but leaves activation silently no-opping: a user adding a
+   third layer believes a decoy layer exists when it does not — dangerous in this threat model —
+   and the refused path writes nothing to disk, which is Bug 62's Gap 1 in full.
+
+   *Reverted to skip-unreadable-and-proceed*, which is what the original `compactMap` did. Per the
+   impact correction above, a stranded index means the blob is already unreachable, so excluding
+   its slot protects nothing while refusing to activate costs the user a real decoy layer. The
+   helper is retained for the deduplication and to carry the rationale, and the behaviour is now
+   pinned by tests.
+3. **Exclusion should be content-based, not index-based.** Deriving the protected set from stored
+   slot *indices* is what couples it to the rotating DB key at all. The layer key is already in
+   hand at activation (`layerStore.deriveKey(from: seKey)`), so the store can be asked directly
+   which slots hold a real payload.
+
+   Checked, with one correction to the obvious approach: "does the slot authenticate" does **not**
+   discriminate — `writeNoOpFile` and `push` seal filler with `sealRandom(using: layerKey)`, so
+   all 32 slots authenticate under the layer key. What discriminates is JSON-decodability, which
+   `decodeSlot` already relies on: a real payload decodes as a `LayerPayload`, uniform random
+   filler does not.
+
+   Open questions before adopting: this would exclude *every* occupied slot including the
+   expendable depth-2+ blobs Bug 46 deliberately leaves writable (a pool-size cost, and a
+   behaviour change), and dummy blobs pushed by `pushDummyBlobSlot` decode as valid payloads and
+   would accumulate exclusions.
+4. ~~Deduplicate the exclusion expression.~~ **Done** — one definition, called from
+   `activateSecureMode` and `pushDummyBlobSlot`.
+
+### Test gap
+
+`ProtectedBlobSlotTests.swift` covers the exclusion helper directly: depth 0 returns empty;
+unreadable entries are skipped rather than raised as an error (pinning the behaviour against a
+third attempt to make activation fail here); a readable slot is still excluded when its neighbour
+is not; both slots are excluded when both are readable; depth-2+ slots stay in the pool.
+Simulator-safe, with the round-trip cases skipped where key derivation is unavailable.
+
+Still missing, and only coverable once the re-key work lands: a test that activates **twice** and
+asserts `readBlobSlot(at: 0)` still decrypts. That is the assertion that would have caught the
+root cause rather than its symptom — the helper above only refuses to act on stranded metadata, it
+does not stop the stranding. `SecureModeActivationTests.swift` covers single activations only.

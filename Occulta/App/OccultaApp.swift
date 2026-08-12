@@ -230,7 +230,38 @@ private struct RootView: View {
             // No transitions between phases — content must never flash through states.
             .animation(.none, value: self.appScreen.phase)
             // Wire security to AppScreen once, on first appearance.
-            .task { self.appScreen.wire(security: self.security) }
+            .task {
+                self.appScreen.wire(security: self.security)
+
+                // Clear Group rows stranded by a pre-`Group.reencrypt` key rotation (Bug 75).
+                //
+                // Depth 0 only, matching `cleanUpGroupDuressMembership`'s reasoning: it is the
+                // one depth that cannot be under coercion, and there is no urgency worth
+                // writing row deletions to the WAL during a coerced session.
+                //
+                // Runs every launch rather than behind a one-time completion flag. A
+                // UserDefaults key with any honest name would advertise that the app has an
+                // orphan concept — which points at key rotation, which points at Secure Mode.
+                // Sweeping costs one decrypt per group and finds nothing once clean, so the
+                // flag would buy nothing and leave a named artefact behind.
+                //
+                // Not in `OccultaApp.init()`: launch-time crypto work there is what caused
+                // Bug 74's watchdog kill. This is one decrypt per group rather than that
+                // migration's ~1024 per group, but the placement rule stands.
+                // The key is derived here and passed in: `purgeUnreadableGroups` judges every
+                // row against it, so a failed derivation must stop the sweep entirely rather
+                // than reach it as a nil that would condemn the whole table.
+                if self.security.currentDepth == 0,
+                   let key = try? Manager.Key().createHybridLocalEncryptionKey() {
+                    try? self.contactManager.purgeUnreadableGroups(using: key)
+                }
+
+                // Move blob metadata onto the non-rotating SE-derived key (Bug 76). Runs at
+                // every depth, unlike the purge above: it writes no delete records, and a
+                // still-unmigrated entry would be read as absent by the very next activation —
+                // which can happen at a duress depth — silently orphaning a live blob.
+                self.security.migrateBlobMetadataKeyIfNeeded()
+            }
             // onOpenURL must be on the outermost container so it fires in all phases.
             .onOpenURL { url in self.handleOpenURL(url) }
             .alert("Error", isPresented: self.$showError) {

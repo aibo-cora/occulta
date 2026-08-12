@@ -3,6 +3,7 @@
 //  Occulta
 //
 
+import CryptoKit
 import SwiftData
 import Foundation
 
@@ -61,6 +62,52 @@ extension ContactManager {
         try group.removeMember(memberIdentifier, atDepth: depth)
 
         try self.modelContext.save()
+    }
+
+    // MARK: Orphan repair
+
+    /// Deletes `Group` rows whose identifier no longer decrypts under the canonical local DB
+    /// key — rows stranded by a Secure Mode key rotation that predates `Group.reencrypt`
+    /// (Bug 75). Silent by design: the user already perceives these groups as missing, and
+    /// any explanation would have to gesture at Secure Mode.
+    ///
+    /// **Why deleting is safe.** The stranded ciphertext is not merely unreadable now, it is
+    /// unreadable forever. The hybrid key needs both an SE private key and a Keychain random
+    /// component; activation's Step 11 destroys both, and the SE half is non-exportable by
+    /// construction — no backup, on this device or any other, can bring it back. So no repair
+    /// path can ever exist, and these rows are provably dead: unopenable, unmessageable, and
+    /// undeletable through the UI, since every path there resolves a group via `readID()`.
+    /// Removing them also closes a forensic tell — undecryptable rows sitting beside
+    /// decryptable ones are visible evidence that a key rotation happened.
+    ///
+    /// **`key` is a parameter, not derived here, and that is deliberate.** If derivation
+    /// failed and this treated a nil key as "inspect anyway", every group would look stranded
+    /// and the whole table would be deleted. Requiring the key makes that state
+    /// unrepresentable rather than merely guarded: there is no way to run this without one.
+    /// The caller is responsible for supplying a genuinely derived canonical key — pass
+    /// anything else and every row will be judged stranded, which is the honest consequence
+    /// of the key being wrong. Once a real key is in hand, AES-GCM does not fail transiently,
+    /// so a decryption failure under it means the row genuinely is stranded.
+    ///
+    /// Costs one decrypt per group, not one per slot: nothing here touches member slots, so
+    /// Bug 74's Secure Enclave round-trip ceiling is nowhere near.
+    ///
+    /// Callers must gate on depth 0. See the call site in `OccultaApp`.
+    func purgeUnreadableGroups(using key: SymmetricKey) throws {
+        var removed = false
+        for group in try self.modelContext.fetch(FetchDescriptor<Group>())
+        where group.encryptedID?.decrypt(using: key) == nil {
+            self.modelContext.delete(group)
+            removed = true
+        }
+        if removed {
+            try self.modelContext.save()
+        }
+
+        // Unconditional, exactly as `checkpointStore()` documents: a checkpoint that fired
+        // only when something was deleted would make checkpoint timing itself the signal for
+        // "this device had stranded groups."
+        self.security.checkpointStore()
     }
 
     // MARK: Eligibility

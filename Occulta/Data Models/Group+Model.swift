@@ -256,6 +256,56 @@ final class Group {
         }
     }
 
+    /// Re-encrypts every field on this group from `oldKey` to `newKey` — the group
+    /// counterpart of `Contact.Profile.reencryptAllFields(to:aad:)`, and the reason a
+    /// group survives a Secure Mode key rotation at all.
+    ///
+    /// Must be called while `oldKey` is still the canonical local DB key, i.e. before
+    /// `commitStagedLocalDBKey()`. Without this, every `Group` row stays sealed under a key
+    /// that Step 11 then deletes, and the group becomes permanently unreadable: no name, no
+    /// ID, no membership at any depth, and — because every UI path resolves a group through
+    /// `readID()` — not even deletable. That was Bug 75.
+    ///
+    /// Costs exactly the two derivations the caller already holds: member slots go through
+    /// `reencryptAllDepths(usingKey:content:)`, whose `content` closure reads with `oldKey`
+    /// while the writes seal with `newKey`. That ordering is safe because each depth's
+    /// plaintext is read before that depth's slots are reassigned — the same property
+    /// `refreshCiphertext(usingKey:)` already depends on. No per-slot key derivation, so
+    /// none of Bug 74's Secure Enclave round-trip cost applies.
+    ///
+    /// An already-orphaned group (ID will not decrypt under `oldKey` — stranded by a
+    /// rotation that predates this method) is left completely untouched rather than
+    /// re-sealed with garbage plaintext. It carries no recoverable content, and rewriting it
+    /// would only make a dead row look freshly edited. Such rows are removed by the
+    /// orphan-purge pass instead. This does mean an orphan's ciphertext stays static while
+    /// every live group's changes — but an orphan is already distinguishable to anyone
+    /// holding the current key (it is the row that does not decrypt), so this reveals
+    /// nothing that was not already visible.
+    func reencrypt(from oldKey: SymmetricKey, to newKey: SymmetricKey) throws {
+        guard let idPlain = self.encryptedID?.decrypt(using: oldKey) else { return }
+
+        guard let newID = try idPlain.encrypt(using: newKey) else {
+            throw GroupError.encryptionFailed
+        }
+        self.encryptedID = newID
+
+        // Name and timestamp are re-sealed only when they decrypt. A group whose ID reads
+        // but whose name does not is already damaged; nil-ing the field here would discard
+        // ciphertext that a future repair pass could still want.
+        if let plain = self.encryptedName?.decrypt(using: oldKey),
+           let resealed = try plain.encrypt(using: newKey) {
+            self.encryptedName = resealed
+        }
+        if let plain = self.encryptedCreatedAt?.decrypt(using: oldKey),
+           let resealed = try plain.encrypt(using: newKey) {
+            self.encryptedCreatedAt = resealed
+        }
+
+        try self.reencryptAllDepths(usingKey: newKey) { depth in
+            self.members(atDepth: depth, usingKey: oldKey)
+        }
+    }
+
     /// Shared engine behind `purgeMembersFromDuressDepths(_:)`, `refreshCiphertext()`,
     /// and `purgeMember(_:)`: re-encrypts every depth with fresh nonces, sourcing each
     /// depth's plaintext from `content`. A database diff always shows every depth's
