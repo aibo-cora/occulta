@@ -3266,10 +3266,10 @@ nothing to write when nothing moved.
 
 ## Bug 80 — Sender-signature enforcement stays disabled on installs whose `maxBundleVersion` was stranded
 
-**Status:** Open. Residual of Bug 77 — that entry's code fix stops new damage; this one is what the
-existing damage leaves behind, and no code change can undo it.
+**Status:** Fixed on `release/v1.10.2` (gate fails closed, capability tier is now a high-water
+mark). One operational item remains — see "Still open" at the end.
 
-**Target:** undecided — needs a product/operational decision, see below.
+**Target:** v1.10.2
 
 ### Severity: High — an authentication check is silently off on every affected install
 
@@ -3295,20 +3295,48 @@ happened: the hybrid key needs a Secure Enclave half that was deleted and is non
 Enforcement returns per contact only when that contact next sends a bundle, which rewrites the
 field under the current key.
 
-### Two workstreams, neither started
+### Fixed 2026-08-12 — two changes, both required
 
-**1. Operational — how are affected users told?**
+The original assessment here said no code change could undo this. That conflated *recovering the
+lost version* (genuinely impossible) with *stopping the loss from disabling the gate* (entirely
+possible). Only the first is unrecoverable.
+
+**1. The gate fails closed on a stranded marker.** `openGroup` now distinguishes the three states
+rather than letting `resolveTargetVersion` collapse two of them. Absence still accepts — a contact
+we have genuinely never heard from cannot be assumed capable, and rejecting would break first
+contact. Present-but-unreadable now rejects, because it means the sender's incapability cannot be
+established and this check is the only identity binding FS mode has.
+
+**2. The capability tier is a high-water mark.** Found while implementing (1), and without it (1)
+is bypassable in two messages. `appVersion` arrives in the sealed payload, authenticated only by a
+session key that in FS mode carries no sender identity — so whoever can build one FS bundle also
+chooses this value. `updateMaxVersion` overwrote unconditionally, so an attacker could send a
+signed bundle claiming an old build to lower the recorded tier, then send an unsigned one and walk
+through the gate. The tier now only ever rises.
+
+A stranded marker is treated as the top tier for that comparison too, not as unknown — otherwise
+any low claim clears it and converts "cannot prove incapable" into a recorded "incapable",
+reopening the gate by another route. The two rules are deliberately consistent so they cannot
+disagree.
+
+**Interop cost, accepted:** a contact who is genuinely pre-1.10.0 *and* whose marker was stranded
+stays gated until they update. Their unsigned bundles are rejected. This is the trade named below
+and it is now taken rather than deferred.
+
+Coverage in `OccultaTests/Contacts/BundleVersionHighWaterMarkTests.swift` — raise, refuse to lower,
+low claim cannot clear a stranded marker, top-tier claim heals one, first sighting records.
+
+### Still open — the operational half
+
+**How are affected users told?**
 Exchanging one message per contact restores enforcement, and is the same action that restores group
 eligibility. Open question: is a release note sufficient for a silently-disabled authentication
 check, or does this warrant something in-app? An in-app prompt has its own cost here — anything
 that names Secure Mode is a forensic tell, so the wording would have to carry the message without
 referencing the feature.
 
-**2. Hardening — should the gate fail closed?**
-`resolveTargetVersion` collapses "never seen this contact" (`nil`) and "value present but
-undecryptable" into the same `.v3fs`, so a *lost* capability marker is indistinguishable from one
-that never existed. Failing closed on the latter would stop a lost marker from silently weakening
-authentication.
+**Superseded — the hardening is done.** What follows is kept as the record of how it was
+unblocked, because the conflict was self-inflicted and worth not repeating.
 
 **Unblocked 2026-08-12.** This previously conflicted with Bug 77's fix, which cleared
 undecryptable values to `nil` and so destroyed the evidence the distinction depends on — and would

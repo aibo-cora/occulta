@@ -1616,10 +1616,40 @@ extension ContactManager {
         }
     }
 
-    private func updateMaxVersion(from appVersion: String?, for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws {
+    /// Records the sender's capability tier as a **high-water mark** — it may rise, never fall.
+    ///
+    /// `appVersion` comes from the sealed payload, so it is authenticated only by the session
+    /// key. In FS mode that key carries no sender identity (finding #8,
+    /// SecurityReview2026-07-24), so whoever can build an FS bundle can also choose this value.
+    /// Overwriting unconditionally — as this did until 2026-08-12 — made the
+    /// `senderEphemeralSignature` gate in `openGroup` bypassable in two messages: claim an old
+    /// `appVersion` in a signed bundle to lower the recorded tier, then send an unsigned one
+    /// and watch the gate skip. Capability reflects an installed build and only moves upward in
+    /// practice, so refusing to lower it costs nothing real and closes that path.
+    ///
+    /// A **stranded** marker (present, unreadable) is treated as the top tier rather than as
+    /// unknown. `resolveTargetVersion` would report `.v3fs` for it, which any claim clears —
+    /// letting an attacker convert "we cannot prove they are incapable" into a recorded "they
+    /// are incapable" and reopen the gate. The cost is that a genuinely pre-1.10.0 contact
+    /// whose marker was stranded stays gated until they update; that is the same interop trade
+    /// the fail-closed check in `openGroup` makes, kept consistent here so the two cannot
+    /// disagree.
+    /// Not `private` so the high-water-mark rule can be unit tested directly; it is the
+    /// security-relevant half of this function and asserting it through a full bundle round
+    /// trip would test the transport more than the rule.
+    func updateMaxVersion(from appVersion: String?, for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws {
         guard let appVersion else { return }
         let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
         guard let byte = maxVersion.wireByte else { return }
+
+        let stranded = sender.maxBundleVersion != nil
+            && !Self.hasReadableBundleVersion(sender, using: cryptoOps)
+        let floor: OccultaBundle.Version = stranded
+            ? .senderSignatureCapable
+            : Self.resolveTargetVersion(for: sender, using: cryptoOps)
+
+        guard maxVersion.isAtLeast(floor) else { return }
+
         sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
     }
 
@@ -1722,10 +1752,25 @@ extension ContactManager {
         // for that mode, verified inside findAndOpenRecipientSlot if present. Require it
         // only once this contact has previously demonstrated (via appVersion) that their
         // build produces one; older contacts can't, so their absence is accepted as before.
+        //
+        // Fails closed on a stranded marker (Bug 80). `resolveTargetVersion` reports `.v3fs`
+        // both when a contact has never been seen and when their recorded version was
+        // stranded by a pre-1.10.2 key rotation — and `.v3fs` is not
+        // `senderSignatureCapable`, so a stranded marker silently skipped this check on
+        // every install that had ever activated Secure Mode. Absence still accepts (a contact
+        // we have genuinely never heard from cannot be assumed capable, and rejecting would
+        // break first contact); unreadable-but-present now rejects, because it means we
+        // cannot establish that the sender is incapable, and this check is the only thing
+        // binding an FS-mode bundle to the sender's identity.
         let isFSMode = recipientMode == .forwardSecret || recipientMode == .forwardSecretNoPQ
-        if isFSMode, recipientPayload.senderEphemeralSignature == nil,
-           Self.resolveTargetVersion(for: sender, using: cryptoOps).isAtLeast(.senderSignatureCapable) {
-            throw GroupDecryptError.missingSenderEphemeralSignature
+        if isFSMode, recipientPayload.senderEphemeralSignature == nil {
+            let recorded = Self.resolveTargetVersion(for: sender, using: cryptoOps)
+            let stranded = sender.maxBundleVersion != nil
+                && !Self.hasReadableBundleVersion(sender, using: cryptoOps)
+
+            guard !recorded.isAtLeast(.senderSignatureCapable), !stranded else {
+                throw GroupDecryptError.missingSenderEphemeralSignature
+            }
         }
 
         // ── 4. Prekey management ─────────────────────────────────────────

@@ -35,7 +35,7 @@ Nothing in the non-Secure-Mode part of the release (entitlements, `Info.plist`, 
 - **File:** `Occulta/Services/Contact+Manager.swift:1727` (the enforcement gate), `:1431` (`resolveTargetVersion`, the fail-open fallback)
 - **Also implicated:** `Occulta/Data Models/Contact+Model+Reencrypt.swift` (the field's absence from `reencryptAllFields`, fixed in this release), `Occulta/Features/SecureMode/Manager+Security.swift` Step 11 (`deleteSupersededLocalDBArtefacts`)
 - **Confidence:** 9/10 — gate, fallback, and capability tier each read directly; the precondition is confirmed present on a real device (the reporting user's install).
-- **Status:** 🟠 **Open — tracked as Bug 80.** Cause fixed in this release; existing state is unrecoverable, so what remains is an operational decision plus an optional hardening change.
+- **Status:** ✅ **FIXED 2026-08-12 — Bug 80.** The gate now fails closed on a stranded marker, and the capability tier it reads is a high-water mark so it cannot be lowered by a bundle claiming an old build. The lost version values remain unrecoverable; what that costs is an interop trade, not the bypass. One operational item (how affected users are told) is still open.
 
 **Description.** `openGroup` rejects a forward-secret bundle that carries no `senderEphemeralSignature` only when the sender is known to be capable of producing one:
 
@@ -129,7 +129,7 @@ if moved {
 | # | Severity | Finding | Status | Effort |
 |---|----------|---------|--------|--------|
 | 2 | 🟡 MEDIUM | Rotation commits despite skipped re-key passes | ✅ Fixed 2026-08-12 (Bug 78) | — |
-| 1 | 🔴 HIGH | Stranded `maxBundleVersion` disables signature enforcement | 🟠 Open — **Bug 80** | Operational decision; optional fail-closed hardening |
+| 1 | 🔴 HIGH | Stranded `maxBundleVersion` disables signature enforcement | ✅ Fixed 2026-08-12 (Bug 80) | Operational note still outstanding |
 | 3 | 🔵 LOW | Conditional checkpoint | ✅ Fixed 2026-08-12 (Bug 79) | — |
 
 ---
