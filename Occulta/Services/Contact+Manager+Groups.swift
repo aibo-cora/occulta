@@ -120,13 +120,33 @@ extension ContactManager {
         return Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups
     }
 
+    /// Whether this contact's recorded bundle version is still readable on this device.
+    ///
+    /// The single source of truth for "do we actually know this contact's version", replacing
+    /// three separate `maxBundleVersion == nil` checks that all got the answer wrong the same
+    /// way. A field stranded by a pre-1.10.2 key rotation is non-nil but undecryptable, so a
+    /// nil check reports "we know their version and it is old" about a contact whose version is
+    /// simply lost — which is how a current app came to be told it needed updating.
+    ///
+    /// Deliberately distinct from `resolveTargetVersion`, which collapses "never seen" and
+    /// "stranded" into `.v3fs`. Keeping that distinction available is what Bug 80's fix depends
+    /// on; see `reencryptAllFields`'s note on why the value is preserved rather than cleared.
+    static func hasReadableBundleVersion(
+        _ contact: Contact.Profile,
+        using crypto: Manager.Crypto = Manager.Crypto()
+    ) -> Bool {
+        guard let encoded = contact.maxBundleVersion else { return false }
+        return (try? crypto.decrypt(data: encoded)) != nil
+    }
+
     /// Returns why a contact cannot be added to a group, or nil if eligible.
     /// Returns nil if the contact is not found.
     func groupIneligibilityReason(for identifier: String, crypto: Manager.Crypto = Manager.Crypto()) throws -> IneligibilityReason? {
         guard let contact = try self.fetchContact(by: identifier) else { return nil }
         guard !Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups else { return nil }
-        
-        return contact.maxBundleVersion == nil ? .versionUnknown : .versionTooOld
+
+        // Unreadable counts as unknown, not as old — see `hasReadableBundleVersion`.
+        return Self.hasReadableBundleVersion(contact, using: crypto) ? .versionTooOld : .versionUnknown
     }
 
     // MARK: Test support

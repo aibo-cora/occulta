@@ -206,20 +206,46 @@ struct EncryptedFieldRotationTests {
         #expect(profile.deletionToken == nil)
     }
 
-    /// An unreadable `maxBundleVersion` clears to nil, which reads as "version unknown" and
-    /// surfaces as "send me a message" — accurate and actionable, unlike the stranded
-    /// non-nil state that reported "they need to update" about a current app.
-    @Test("An unreadable maxBundleVersion clears to nil")
-    func strandedMaxBundleVersionClears() throws {
+    /// An unreadable `maxBundleVersion` must be **preserved**, not cleared (Bug 80).
+    ///
+    /// This asserted the opposite until 2026-08-12. Clearing looked right — nil reads as
+    /// "version unknown", which produces the accurate "send me a message" instead of the false
+    /// "they need to update". But this field also gates a receive-side authentication check,
+    /// and that gate can only be repaired if "present but unreadable" stays distinguishable
+    /// from "never seen". Clearing collapses the two permanently, for exactly the installs that
+    /// have the vulnerability. The message is fixed at the reading site instead.
+    @Test("An unreadable maxBundleVersion is preserved, not cleared")
+    func strandedMaxBundleVersionPreserved() throws {
         _ = try #require(canonicalKey())
         let profile = makeProbeProfile()
         profile.maxBundleVersion = try Data([0x07]).encrypt(using: SymmetricKey(size: .bits256))
+        let stranded = profile.maxBundleVersion
 
         try profile.reencryptAllFields(
             to: SymmetricKey(size: .bits256), aad: EncryptionScheme.v2_hybridPQ.aad
         )
 
-        #expect(profile.maxBundleVersion == nil)
+        #expect(profile.maxBundleVersion != nil)
+        #expect(profile.maxBundleVersion == stranded)
+    }
+
+    /// The distinction Bug 80's fix depends on, asserted directly: three states, three answers.
+    @Test("hasReadableBundleVersion separates stranded from never-seen")
+    func readabilitySeparatesStrandedFromAbsent() throws {
+        _ = try #require(canonicalKey())
+
+        let neverSeen = makeProbeProfile()
+        neverSeen.maxBundleVersion = nil
+        #expect(!ContactManager.hasReadableBundleVersion(neverSeen))
+
+        let stranded = makeProbeProfile()
+        stranded.maxBundleVersion = try Data([0x07]).encrypt(using: SymmetricKey(size: .bits256))
+        #expect(!ContactManager.hasReadableBundleVersion(stranded))
+        #expect(stranded.maxBundleVersion != nil, "stranded must stay distinguishable from absent")
+
+        let known = makeProbeProfile()
+        known.maxBundleVersion = try Data([0x07]).encrypt()
+        #expect(ContactManager.hasReadableBundleVersion(known))
     }
 }
 

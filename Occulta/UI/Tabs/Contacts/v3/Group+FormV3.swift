@@ -52,8 +52,10 @@ extension Group {
 
 
         private var ineligibleHeader: String {
-            let hasUnknown = self.ineligible.contains { $0.maxBundleVersion == nil }
-            let hasOld     = self.ineligible.contains { $0.maxBundleVersion != nil }
+            // Readability, not nil-ness: a version stranded by a key rotation is present but
+            // unreadable, and counting it as "old" tells the user to update a current app.
+            let hasOld     = self.ineligible.contains { ContactManager.hasReadableBundleVersion($0) }
+            let hasUnknown = self.ineligible.contains { !ContactManager.hasReadableBundleVersion($0) }
             if hasUnknown && hasOld {
                 return "These contacts need a newer version of Occulta or haven't messaged you yet."
             }
@@ -200,9 +202,9 @@ extension Group {
             let givenName  = contact.givenName.decrypt()
             let familyName = contact.familyName.decrypt()
             let fullName   = [givenName, familyName].filter { !$0.isEmpty }.joined(separator: " ")
-            let subLabel   = contact.maxBundleVersion == nil
-                ? "No bundle received yet"
-                : "Needs to update Occulta"
+            let subLabel   = ContactManager.hasReadableBundleVersion(contact)
+                ? "Needs to update Occulta"
+                : "No bundle received yet"
 
             HStack(spacing: 12) {
                 ZStack {

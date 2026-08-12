@@ -47,14 +47,23 @@ extension Contact.Profile {
         self.globalTrusteeDepth      = try reencrypt(data: self.globalTrusteeDepth,      to: newKey, aad: aad)
         self.originDepth             = try reencrypt(data: self.originDepth,             to: newKey, aad: aad)
 
-        // Stranded before this line existed, which is what made contacts stop being
-        // group-eligible after an activation: `resolveTargetVersion` could no longer read the
-        // byte, fell back to `.v3fs` (pre-1.9.0, no group support), and
-        // `groupIneligibilityReason` reported `.versionTooOld` — "they need to update" — about
-        // contacts whose apps were current. Clearing to nil on an unreadable value is the right
-        // outcome here: nil means "version unknown", which surfaces as "send me a message", and
-        // receiving any bundle from that contact repopulates it.
-        self.maxBundleVersion        = try reencrypt(data: self.maxBundleVersion,        to: newKey, aad: aad)
+        // Preserving, NOT the nil-on-failure helper — and the reason is security, not data.
+        //
+        // This field gates a receive-side authentication check: an unsigned forward-secret
+        // bundle is rejected only when `resolveTargetVersion` says the sender can sign
+        // (`Contact+Manager.swift:1727`). A value that will not decrypt currently reads as
+        // `.v3fs`, which is not `senderSignatureCapable`, so the check is skipped — Bug 80.
+        //
+        // Fixing that needs "present but unreadable" to stay distinguishable from "never seen".
+        // Clearing to nil here — which an earlier version of this line did — collapses the two
+        // and destroys the only evidence that distinction rests on, permanently, for exactly
+        // the installs that have the vulnerability. Preserving the stranded ciphertext keeps
+        // the option open.
+        //
+        // The misleading "they need to update" message this used to produce is fixed at the
+        // reading site instead (`ContactManager.hasReadableBundleVersion`), which is where it
+        // always belonged.
+        self.maxBundleVersion        = try reencryptPreserving(data: self.maxBundleVersion, to: newKey, aad: aad)
 
         // Preserving, NOT the nil-on-failure helper above. Only this field's nil/non-nil status
         // is meaningful — content is a fixed sentinel — and `fetchAllContacts` filters on

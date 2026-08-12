@@ -3107,8 +3107,15 @@ Fixed with a new `reencryptPreserving(data:to:aad:)` helper that returns the ori
 they cannot be read — the `reencrypt(string:)` convention — for fields whose presence carries
 meaning independently of their content.
 
-`maxBundleVersion` deliberately keeps nil-on-failure: nil reads as "version unknown", which
-surfaces as "send me a message", which is both accurate and the actual remedy.
+`maxBundleVersion` **also** uses the preserving helper, as of 2026-08-12. It originally used
+nil-on-failure, on the reasoning that nil reads as "version unknown" and produces the accurate
+"send me a message" instead of the false "they need to update". That was the right message reached
+the wrong way: this field also gates a receive-side authentication check (Bug 80), and repairing
+that gate requires "present but unreadable" to stay distinguishable from "never seen". Clearing
+collapses the two permanently, for exactly the installs that have the vulnerability. The message
+is now fixed at the reading site — `ContactManager.hasReadableBundleVersion` — which replaced
+three separate `maxBundleVersion == nil` checks (eligibility reason plus two in `Group+FormV3`)
+that all got the answer wrong the same way.
 
 ### Recovery
 
@@ -3303,16 +3310,20 @@ undecryptable" into the same `.v3fs`, so a *lost* capability marker is indisting
 that never existed. Failing closed on the latter would stop a lost marker from silently weakening
 authentication.
 
-**This conflicts with Bug 77's own fix and the conflict has to be resolved first.** That fix clears
-undecryptable values to `nil` — correct for the group-eligibility message, since `nil` reads as
-"version unknown" and surfaces the accurate "send me a message". But it destroys the very evidence
-the fail-closed distinction depends on. Options: keep a separate marker for "was known, now lost";
-use the preserving helper here and accept a less accurate eligibility message; or decide the
-eligibility UX outweighs the hardening. Not obvious — hence undecided rather than assigned.
+**Unblocked 2026-08-12.** This previously conflicted with Bug 77's fix, which cleared
+undecryptable values to `nil` and so destroyed the evidence the distinction depends on — and would
+have done so on the next rotation of every affected install, making this permanently unfixable for
+exactly the population that has the vulnerability. That conflict turned out to be self-inflicted:
+the clearing existed only to make the group-eligibility message read correctly, and that message
+belongs at the reading site. `maxBundleVersion` now uses the preserving helper, and
+`ContactManager.hasReadableBundleVersion` supplies the three states everywhere they are read. The
+evidence survives; the hardening is now a decision rather than an impossibility.
 
 ### Why this is not simply "fix it"
 
 Failing closed on a genuinely-unknown version would reject bundles from any contact who has never
-sent one, breaking first contact. The distinction that matters is narrow, and this release removed
-the ability to make it. That is the decision to take, and it should be taken deliberately rather
+sent one, breaking first contact. Only the narrow "was known, now stranded" case can be failed
+closed — and doing so still rejects legitimate unsigned bundles from any contact who is genuinely
+pre-1.10.0 *and* whose marker was stranded, until they update. That interop cost against restoring
+an authentication check is a product decision, which is why this is recorded rather than applied. That is the decision to take, and it should be taken deliberately rather
 than folded into a patch.
