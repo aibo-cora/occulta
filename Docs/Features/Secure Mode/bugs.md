@@ -3087,9 +3087,10 @@ So the remediation applied on 2026-08-01 for that review's finding has been iner
 that ever activated Secure Mode. Fixing the cause here does not restore it: stranded values are
 unrecoverable, and enforcement stays off per contact until that contact sends a bundle.
 
-Two follow-ups, tracked in `Docs/Audit/SecurityReview2026-08-12/README.md`: whether affected users
-need something more active than a release note, and whether `resolveTargetVersion` should fail
-closed. The second conflicts with the fix in this entry — clearing undecryptable values to nil is
+**The residual is tracked as Bug 80, which is still open** — this entry's *cause* is fixed, its
+consequences are not. Two follow-ups there: whether affected users need something more active than
+a release note, and whether `resolveTargetVersion` should fail closed. The second conflicts with
+the fix in this entry — clearing undecryptable values to nil is
 right for the group-eligibility message and wrong for the gate, because it destroys the evidence
 distinguishing "never seen this contact" from "capability marker lost".
 
@@ -3253,3 +3254,65 @@ inconsistency that erodes an invariant by precedent rather than by any single in
 
 Move `checkpointStore()` outside the `if moved` branch. The `save()` can stay conditional; there is
 nothing to write when nothing moved.
+
+---
+
+## Bug 80 — Sender-signature enforcement stays disabled on installs whose `maxBundleVersion` was stranded
+
+**Status:** Open. Residual of Bug 77 — that entry's code fix stops new damage; this one is what the
+existing damage leaves behind, and no code change can undo it.
+
+**Target:** undecided — needs a product/operational decision, see below.
+
+### Severity: High — an authentication check is silently off on every affected install
+
+Filed 2026-08-12 so this survives past the session that found it. Bug 77 reads *Fixed*, which is
+true of its cause and misleading about its consequences; without this entry the residual is
+recorded only in `Docs/Audit/SecurityReview2026-08-12/README.md` (finding 1).
+
+### What is still wrong
+
+`openGroup` rejects an unsigned forward-secret bundle only when the sender is known capable of
+signing (`Contact+Manager.swift:1727`), and that capability is read from
+`Contact.Profile.maxBundleVersion`. Where that field was stranded by a pre-1.10.2 key rotation,
+`resolveTargetVersion` returns `.v3fs`, `.v3fs` is not `senderSignatureCapable`, the check is
+skipped, and the bundle is accepted.
+
+Per the `2026-07-24` review, that signature is the only thing binding an FS-mode bundle to the
+sender's long-term identity — the session key never involves it. So on every install that ever
+activated Secure Mode, the remediation applied on 2026-08-01 for that review's finding #2 is inert
+for every contact.
+
+Bug 77 adds the field to `reencryptAllFields`, so this cannot recur. It cannot repair what already
+happened: the hybrid key needs a Secure Enclave half that was deleted and is non-exportable.
+Enforcement returns per contact only when that contact next sends a bundle, which rewrites the
+field under the current key.
+
+### Two workstreams, neither started
+
+**1. Operational — how are affected users told?**
+Exchanging one message per contact restores enforcement, and is the same action that restores group
+eligibility. Open question: is a release note sufficient for a silently-disabled authentication
+check, or does this warrant something in-app? An in-app prompt has its own cost here — anything
+that names Secure Mode is a forensic tell, so the wording would have to carry the message without
+referencing the feature.
+
+**2. Hardening — should the gate fail closed?**
+`resolveTargetVersion` collapses "never seen this contact" (`nil`) and "value present but
+undecryptable" into the same `.v3fs`, so a *lost* capability marker is indistinguishable from one
+that never existed. Failing closed on the latter would stop a lost marker from silently weakening
+authentication.
+
+**This conflicts with Bug 77's own fix and the conflict has to be resolved first.** That fix clears
+undecryptable values to `nil` — correct for the group-eligibility message, since `nil` reads as
+"version unknown" and surfaces the accurate "send me a message". But it destroys the very evidence
+the fail-closed distinction depends on. Options: keep a separate marker for "was known, now lost";
+use the preserving helper here and accept a less accurate eligibility message; or decide the
+eligibility UX outweighs the hardening. Not obvious — hence undecided rather than assigned.
+
+### Why this is not simply "fix it"
+
+Failing closed on a genuinely-unknown version would reject bundles from any contact who has never
+sent one, breaking first contact. The distinction that matters is narrow, and this release removed
+the ability to make it. That is the decision to take, and it should be taken deliberately rather
+than folded into a patch.
