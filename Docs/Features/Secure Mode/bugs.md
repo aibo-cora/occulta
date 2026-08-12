@@ -2528,7 +2528,7 @@ launch-time performance/stability risk to close immediately.
 
 ## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
 
-**Status:** Fixed on `release/v1.10.2` (commit 182920b), not pushed.
+**Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed.
 
 - **Root cause:** `Group.reencrypt(from:to:)` re-keys every field (ID, name, created-at, and all
   32 depths of member slots), called from both rotation paths — activation Step 8 after the draft
@@ -2745,7 +2745,7 @@ device: `Group` calls `Manager.Key()` directly rather than through an injectable
 
 ## Bug 76 — `AppLayerConfig` fields are never re-keyed during rotation; Bug 46's blob-slot exclusion silently stops protecting the real layer
 
-**Status:** Fixed on `release/v1.10.2` (commit 182920b), not pushed. Split out of Bug 75's audit item.
+**Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed. Split out of Bug 75's audit item.
 
 - **Blob metadata** (`sealedBlobSlots`, `layerSequenceNumbers`) now lives on a key derived from
   the non-rotating SE Secure Mode key — `AppLayerConfig.blobMetadataKey(from:)`, HKDF
@@ -3029,11 +3029,16 @@ does not stop the stranding. `SecureModeActivationTests.swift` covers single act
 
 ## Bug 77 — `maxBundleVersion` and `deletionToken` missing from `reencryptAllFields`
 
-**Status:** Fixed on `release/v1.10.2` (commit d356eb8), not pushed.
+**Status:** Fixed on `release/v1.10.2` (commit d356eb8), pushed.
 
 **Target:** v1.10.2
 
-### Severity: Medium — silent capability loss; the `deletionToken` half was a latent High
+### Severity: High — silently disabled an authentication gate; the `deletionToken` half was a latent High
+
+*Raised from Medium on 2026-08-12.* The original assessment ("silent capability loss") described
+only the reported symptom — group ineligibility and downgraded send format. Reviewing this release
+(`Docs/Audit/SecurityReview2026-08-12/README.md`, finding 1) showed the same stranded field also
+switches off sender-ephemeral-signature enforcement. See "Security consequence" below.
 
 Field-reported immediately after Bug 75's fix landed: contacts that had been group members
 could no longer be added to a recreated group, with the UI saying they needed to update the app
@@ -3059,6 +3064,34 @@ The blob is no backstop — `LayerContact` does not carry this field either.
 
 This is the exact fragility recorded under Bug 76's "What is *not* broken" section one day
 earlier. The class was described; nobody checked whether an instance already existed.
+
+### Security consequence — enforcement of sender signatures is switched off
+
+Found while reviewing this release, after the entry above was first written. `maxBundleVersion`
+is not only a capability hint for sending; it is the gate on a **receive-side authentication
+check** (`Contact+Manager.swift:1727`):
+
+```swift
+if isFSMode, recipientPayload.senderEphemeralSignature == nil,
+   Self.resolveTargetVersion(for: sender, using: cryptoOps).isAtLeast(.senderSignatureCapable) {
+    throw GroupDecryptError.missingSenderEphemeralSignature
+}
+```
+
+A stranded field means `.v3fs`, `.v3fs` is not `senderSignatureCapable`, the branch is skipped,
+and an unsigned forward-secret bundle is **accepted**. Per the `2026-07-24` review, that signature
+is the only thing binding an FS-mode bundle to the sender's long-term identity — the session key
+never involves it.
+
+So the remediation applied on 2026-08-01 for that review's finding has been inert on every install
+that ever activated Secure Mode. Fixing the cause here does not restore it: stranded values are
+unrecoverable, and enforcement stays off per contact until that contact sends a bundle.
+
+Two follow-ups, tracked in `Docs/Audit/SecurityReview2026-08-12/README.md`: whether affected users
+need something more active than a release note, and whether `resolveTargetVersion` should fail
+closed. The second conflicts with the fix in this entry — clearing undecryptable values to nil is
+right for the group-eligibility message and wrong for the gate, because it destroys the evidence
+distinguishing "never seen this contact" from "capability marker lost".
 
 ### `deletionToken` — the more dangerous half
 
@@ -3112,3 +3145,103 @@ Not attempted here: it is invasive surgery on the most security-critical path, a
 migration re-encrypts every field of every row — precisely the workload Bug 74 showed this
 codebase handles badly. Worth its own design pass. The tests above are what make deferring it
 safe.
+
+---
+
+## Bug 78 — Rotation commits and deletes the superseded key even when the re-encryption passes were skipped
+
+**Status:** Open. Introduced by the Bug 75/76 fixes on `release/v1.10.2`.
+
+**Target:** v1.10.2 — should land before the release merges.
+
+### Severity: Medium — silent, permanent data loss; recreates Bugs 75 and 76
+
+Found by the review of this release (`Docs/Audit/SecurityReview2026-08-12/README.md`, finding 2).
+
+### Root cause
+
+Both rotation paths wrap the draft, `Group` and `AppLayerConfig` re-encryption in a conditional
+binding with no `else` — `Manager+Security.swift:567` (activation) and `:912` (deactivation):
+
+```swift
+if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
+    // drafts, groups, config re-keyed here
+}
+```
+
+If derivation returns nil, all three passes are skipped and control falls straight through to
+`commitStagedLocalDBKey()` and then `deleteSupersededLocalDBArtefacts()`. Groups and the layer
+config are left sealed under a key that is then destroyed.
+
+That is precisely Bugs 75 and 76 — reached through the code written to fix them.
+
+### Why this slipped in
+
+The `if let` is older than the fix: it originally wrapped only `Message.Draft.reKeyOrPurgeAll`,
+where skipping is survivable because drafts are regenerable. The Bug 75/76 work extended the same
+block to cover groups and config, which are not, without revisiting the binding.
+
+The codebase already states the correct rule elsewhere. `Group.requireKey()` throws
+`GroupError.keyUnavailable` for this exact situation, documented as: *"Must abort the whole pass
+rather than proceed with a missing key — silently skipping the mandatory ciphertext refresh would
+itself be a forensic tell."*
+
+### Impact
+
+Not attacker-triggered. Any condition making the Secure Enclave or Keychain briefly unavailable
+mid-activation causes the rotation to commit regardless, with no error and no user-visible signal.
+Blast radius is every group plus the entire `AppLayerConfig` row.
+
+### Fix
+
+Replace both with `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`. Both
+sites already sit inside the `do`/`catch` that calls `rollbackStagedLocalDBKey()`, so aborting is
+clean and leaves the canonical key intact and every row readable. One line each.
+
+Worth a regression test, though it needs an injectable key manager at those call sites — they use
+`self.keyManager`, so `TestKeyManager` can be extended with a mode that returns nil for
+`createHybridLocalEncryptionKey()`.
+
+---
+
+## Bug 79 — Blob-metadata migration checkpoints conditionally, against the stated differential-signal rule
+
+**Status:** Open. Introduced by the Bug 76 fix on `release/v1.10.2`.
+
+**Target:** v1.10.2
+
+### Severity: Low — forensic-trace inconsistency
+
+Found by the review of this release (`Docs/Audit/SecurityReview2026-08-12/README.md`, finding 3).
+
+### Root cause
+
+`Manager.Security.migrateBlobMetadataKeyIfNeeded()` (`Manager+Security.swift:1224`) checkpoints
+only when it actually moved an entry:
+
+```swift
+if moved {
+    try? self.modelContext.save()
+    self.checkpointStore()
+}
+```
+
+`checkpointStore()`'s own documentation requires the opposite: *"Must run unconditionally, every
+call, not only when a purge actually happened — a checkpoint that only fires when something was
+purged would turn checkpoint timing itself into the exact kind of differential signal this exists
+to remove."*
+
+`ContactManager.purgeUnreadableGroups(using:)`, added in the same release, follows that rule. This
+does not.
+
+### Impact
+
+Small. The migration runs at most once per install, and the config-row write it accompanies is a
+louder signal than checkpoint timing. Recorded because forensic-trace cleanliness is a stated
+project invariant and this contradicts a rule cited elsewhere in the same changeset — the kind of
+inconsistency that erodes an invariant by precedent rather than by any single instance.
+
+### Fix
+
+Move `checkpointStore()` outside the `if moved` branch. The `save()` can stay conditional; there is
+nothing to write when nothing moved.
