@@ -213,7 +213,7 @@ private func readActivationPayload(from c: ActivationComponents) throws -> Layer
 @Suite("Secure Mode — Blob lifecycle", .serialized)
 struct SecureModeBlobLifecycleTests {
 
-    @Test func activation_writesBlob() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_writesBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         #expect(!c.backend.exists, "blob should not exist before activation")
@@ -226,7 +226,7 @@ struct SecureModeBlobLifecycleTests {
         #expect(c.backend.exists, "blob must be written during activation")
     }
 
-    @Test func activation_blobReadableWithCorrectKey() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobReadableWithCorrectKey() async throws {
         // Verifies push/pop are symmetric end-to-end using TestKeyManager's
         // SecureMode key — entirely SE-independent (no Manager.Key involvement).
         let c = try makeComponents()
@@ -241,7 +241,7 @@ struct SecureModeBlobLifecycleTests {
         _ = payload  // structure is valid; contact content depends on SE availability
     }
 
-    @Test func deactivation_blobStillReadableDuringDeactivation() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_blobStillReadableDuringDeactivation() async throws {
         // The deactivation sequence pops the blob to restore sensitive contacts.
         // If pop throws, it falls back to an empty payload — verify it doesn't throw.
         let c = try makeComponents()
@@ -259,7 +259,7 @@ struct SecureModeBlobLifecycleTests {
         #expect(!c.security.isSecureModeActive)
     }
 
-    @Test func activation_blobIsCorrectSize() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobIsCorrectSize() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
@@ -278,7 +278,7 @@ struct SecureModeBlobLifecycleTests {
 @Suite("Secure Mode — Contact classification in blob", .serialized)
 struct SecureModeClassificationTests {
 
-    @Test func sensitiveContact_appearsInBlob() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_appearsInBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -299,7 +299,7 @@ struct SecureModeClassificationTests {
                 "sensitive contact must be sealed in the blob during activation")
     }
 
-    @Test func safeContact_doesNotAppearInBlob() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func safeContact_doesNotAppearInBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -326,7 +326,7 @@ struct SecureModeClassificationTests {
                 "sensitive contact must be in the blob")
     }
 
-    @Test func sensitiveContact_restoredByIdentifier_afterDeactivation() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_restoredByIdentifier_afterDeactivation() async throws {
         // Verifies the deactivation blob-restore path rewrites the contact row.
         // Identifier equality is SE-independent (identifier field is not encrypted).
         let c = try makeComponents()
@@ -472,7 +472,7 @@ struct SecureModeWALPersistenceTests {
     /// This test is SE-independent: it sets `visibleThroughDepth` to a raw byte
     /// sentinel in the test body (no Manager.Crypto involvement) and verifies that
     /// nil — not the sentinel — is visible to a fresh context after deactivation.
-    @Test func deactivation_nilVisibilityField_persistedToWAL() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_nilVisibilityField_persistedToWAL() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -569,7 +569,7 @@ struct SecureModeWALPersistenceTests {
 
     // MARK: Round-trip identity
 
-    @Test func roundTrip_contactRowCount_preserved() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func roundTrip_contactRowCount_preserved() async throws {
         // A complete activate → deactivate cycle must not gain or lose contact rows.
         let c = try makeComponents()
         try c.security.configurePIN("111111")
@@ -595,7 +595,7 @@ struct SecureModeWALPersistenceTests {
                 "activate → deactivate must not change the number of contact rows")
     }
 
-    @Test func multipleRoundTrips_doNotAccumulateRows() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func multipleRoundTrips_doNotAccumulateRows() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -1126,7 +1126,7 @@ struct SecureModeRotationKeyGuardTests {
     /// that had just been destroyed. That is Bugs 75 and 76, reached through their own fix.
     ///
     /// The failure was silent, so the only thing that pins it is asserting the throw.
-    @Test func activation_abortsWhenHybridKeyUnavailable() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_abortsWhenHybridKeyUnavailable() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -1162,7 +1162,7 @@ struct SecureModeRotationKeyGuardTests {
 
     /// Same guard on the way out. Deactivation deletes the superseded key exactly as
     /// activation does, so skipping its re-encryption pass strands the same rows.
-    @Test func deactivation_abortsWhenHybridKeyUnavailable() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_abortsWhenHybridKeyUnavailable() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(

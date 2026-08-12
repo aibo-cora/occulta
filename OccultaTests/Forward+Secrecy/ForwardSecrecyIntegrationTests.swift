@@ -29,6 +29,14 @@ import SwiftData
 
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Shared helpers
 
 private func inMemoryKeyPair() -> (privateKey: SecKey, publicKey: Data) {
@@ -92,7 +100,7 @@ private func openBundle(
     let pm     = Manager.PrekeyManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
-    @Test func roundtrip_singleMessage() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func roundtrip_singleMessage() throws {
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
 
@@ -126,7 +134,7 @@ private func openBundle(
         #expect(result?.message == message)
     }
 
-    @Test func roundtrip_fiveSequentialMessages_eachKeyConsumed() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func roundtrip_fiveSequentialMessages_eachKeyConsumed() throws {
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
 
@@ -153,7 +161,7 @@ private func openBundle(
         }
     }
 
-    @Test func roundtrip_batchPreservedInsidePayload() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func roundtrip_batchPreservedInsidePayload() throws {
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
 
@@ -195,7 +203,7 @@ private func openBundle(
     let pm     = Manager.PrekeyManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
-    @Test func consumedKey_cannotDecryptAgain_nocrash() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func consumedKey_cannotDecryptAgain_nocrash() throws {
         // ⚠️ CRASH CANDIDATE: consumed key must return nil, not crash.
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
@@ -239,7 +247,7 @@ private func openBundle(
     let pm     = Manager.PrekeyManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
-    @Test func bobPool_isIsolatedFromJakePool() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func bobPool_isIsolatedFromJakePool() throws {
         let bobCID  = cid() + ".bob"
         let jakeCID = cid() + ".jake"
         defer { pm.deleteAllKeys(for: bobCID); pm.deleteAllKeys(for: jakeCID) }
@@ -271,7 +279,7 @@ private func openBundle(
         for k in k2 { #expect(pm.retrievePrivateKey(for: k) != nil, "c2 pool untouched") }
     }
 
-    @Test func tempPrekey_wrongContactID_returnsNil() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func tempPrekey_wrongContactID_returnsNil() throws {
         // Verifies contactID scoping prevents cross-contact injection.
         let realCID  = cid() + ".real"
         let fakeCID  = cid() + ".fake"
@@ -297,7 +305,7 @@ private func openBundle(
 
     /// Alice drains all of Bob's prekeys. The next encrypt has no prekey available
     /// (contactPrekey == nil) → fallback bundle → fallback detected → new batch generated.
-    @Test func exhaustion_afterDrainingAllKeys_nextEncryptProducesFallback() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_afterDrainingAllKeys_nextEncryptProducesFallback() throws {
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
 
@@ -347,7 +355,7 @@ private func openBundle(
 
     /// When a fallback is detected and no pending batch exists,
     /// a new batch is generated and stored as pending.
-    @Test func exhaustion_fallbackDetected_newBatchGenerated() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_fallbackDetected_newBatchGenerated() throws {
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
 
@@ -364,7 +372,7 @@ private func openBundle(
 
     /// The pending batch must be the same on every encryptBundle call until
     /// proof of receipt clears it. Simulated here by loading the batch N times.
-    @Test func exhaustion_pendingBatch_sameOnEveryLoad() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_pendingBatch_sameOnEveryLoad() throws {
         let container = try {
             let schema = Schema([Contact.Profile.self, Contact.Profile.Key.self])
             return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
@@ -402,7 +410,7 @@ private func openBundle(
     }
 
     /// clearPendingBatch fires when FS receipt arrives (consume() succeeded).
-    @Test func exhaustion_pendingBatchCleared_onFSReceipt() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_pendingBatchCleared_onFSReceipt() throws {
         let container = try {
             let schema = Schema([Contact.Profile.self, Contact.Profile.Key.self])
             return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
@@ -432,7 +440,7 @@ private func openBundle(
     }
 
     /// hasPendingBatch guard: second fallback must not overwrite existing pending batch.
-    @Test func exhaustion_hasPendingBatch_blocksSecondGeneration() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func exhaustion_hasPendingBatch_blocksSecondGeneration() throws {
         let container = try {
             let schema = Schema([Contact.Profile.self, Contact.Profile.Key.self])
             return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
@@ -483,7 +491,7 @@ private func openBundle(
     let pm     = Manager.PrekeyManager()
     let crypto = Manager.Crypto(keyManager: TestKeyManager())
 
-    @Test func tamper_prekeyID_throwsOnOpen() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func tamper_prekeyID_throwsOnOpen() throws {
         let contactID = cid()
         defer { pm.deleteAllKeys(for: contactID) }
 

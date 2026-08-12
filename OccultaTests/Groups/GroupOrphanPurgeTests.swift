@@ -69,7 +69,7 @@ private func strand(_ group: Group, from key: SymmetricKey) throws {
 @MainActor
 struct GroupOrphanPurgeTests {
 
-    @Test("A stranded group is removed and a healthy one is kept")
+    @Test("A stranded group is removed and a healthy one is kept", .enabled(if: secureEnclaveAvailable()))
     func removesOnlyStrandedGroups() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()
@@ -94,7 +94,7 @@ struct GroupOrphanPurgeTests {
     /// against a key that encrypted none of them, every row is stranded and every row goes.
     /// This is why the key is a required parameter and why the call site refuses to run the
     /// sweep at all when derivation fails — there is no in-function guard to test.
-    @Test("All groups stranded — every row goes, none left behind")
+    @Test("All groups stranded — every row goes, none left behind", .enabled(if: secureEnclaveAvailable()))
     func removesAllWhenAllStranded() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()
@@ -108,7 +108,7 @@ struct GroupOrphanPurgeTests {
         #expect(try manager.allGroups().isEmpty)
     }
 
-    @Test("An empty store is a no-op")
+    @Test("An empty store is a no-op", .enabled(if: secureEnclaveAvailable()))
     func emptyStoreIsNoOp() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()
@@ -118,7 +118,7 @@ struct GroupOrphanPurgeTests {
         #expect(try manager.allGroups().isEmpty)
     }
 
-    @Test("Repeated sweeps are idempotent and leave healthy groups alone")
+    @Test("Repeated sweeps are idempotent and leave healthy groups alone", .enabled(if: secureEnclaveAvailable()))
     func idempotent() throws {
         let key     = try #require(canonicalKey())
         let manager = try makeManager()

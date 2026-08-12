@@ -47,7 +47,7 @@ struct GroupKeyRotationTests {
 
     /// The core regression: everything a group holds must be readable under the new key
     /// and unreadable under the old one, exactly as a contact's fields are.
-    @Test("Name, ID and membership survive a rotation")
+    @Test("Name, ID and membership survive a rotation", .enabled(if: secureEnclaveAvailable()))
     func groupSurvivesRotation() throws {
         let oldKey = try #require(canonicalKey())
         let group  = try Group(name: "Climbing Club")
@@ -77,7 +77,7 @@ struct GroupKeyRotationTests {
 
     /// Bug 73 gave depths 2+ their own independent membership. A rotation must carry every
     /// depth across, not just the two that predate `deeperMemberSlots`.
-    @Test("Independent membership at deeper duress depths survives")
+    @Test("Independent membership at deeper duress depths survives", .enabled(if: secureEnclaveAvailable()))
     func deeperDepthsSurvive() throws {
         let oldKey = try #require(canonicalKey())
         let group  = try Group(name: "Layers")
@@ -99,7 +99,7 @@ struct GroupKeyRotationTests {
 
     /// Every depth's slot array must be rewritten, so a raw-DB diff cannot single out which
     /// depth held content. Same invariant `reencryptAllDepths` enforces for its other callers.
-    @Test("Every depth's ciphertext changes, and slot geometry is preserved")
+    @Test("Every depth's ciphertext changes, and slot geometry is preserved", .enabled(if: secureEnclaveAvailable()))
     func allDepthsRewrittenAndPadded() throws {
         let oldKey = try #require(canonicalKey())
         let group  = try Group(name: "Geometry")
@@ -131,7 +131,7 @@ struct GroupKeyRotationTests {
 
     /// An already-orphaned group carries nothing recoverable. Re-sealing it would only make
     /// a dead row look freshly edited, so it is left byte-identical and purged separately.
-    @Test("An already-orphaned group is left untouched")
+    @Test("An already-orphaned group is left untouched", .enabled(if: secureEnclaveAvailable()))
     func orphanedGroupUntouched() throws {
         let oldKey = try #require(canonicalKey())
         let group  = try Group(name: "Orphan")
@@ -155,7 +155,7 @@ struct GroupKeyRotationTests {
     }
 
     /// Two rotations back to back — the multi-layer case that strands metadata in Bug 76.
-    @Test("A group survives consecutive rotations")
+    @Test("A group survives consecutive rotations", .enabled(if: secureEnclaveAvailable()))
     func groupSurvivesConsecutiveRotations() throws {
         let oldKey = try #require(canonicalKey())
         let group  = try Group(name: "Chain")

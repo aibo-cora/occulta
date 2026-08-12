@@ -21,6 +21,14 @@ import Foundation
 import SwiftData
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Fake clock
 
 /// Controllable LockoutClock for tests. `now` and `systemUptime` are independently
@@ -65,7 +73,7 @@ struct LockoutAntiRollbackTests {
     /// The exact reported bug, reproduced: 6 wrong PINs trigger a 60s lockout: rolling
     /// the wall clock forward past that 60s window — WITHOUT any real time or uptime
     /// elapsing — must not clear it. This is the attack the fix exists to close.
-    @Test func rollingClockForward_doesNotClearLockout() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func rollingClockForward_doesNotClearLockout() throws {
         let clock    = FakeLockoutClock()
         let security = try makeSecurity(clock: clock)
         try security.configurePIN("123456")
@@ -89,7 +97,7 @@ struct LockoutAntiRollbackTests {
     /// Control case: if real uptime actually advances past the required delay — no
     /// rollback, no reboot — the lockout must still clear normally. Confirms the fix
     /// isn't just "never unlock."
-    @Test func sufficientUptimeElapsed_clearsLockout() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func sufficientUptimeElapsed_clearsLockout() throws {
         let clock    = FakeLockoutClock()
         let security = try makeSecurity(clock: clock)
         try security.configurePIN("123456")
@@ -105,7 +113,7 @@ struct LockoutAntiRollbackTests {
     /// The second attack: reboot the device (uptime resets toward 0) instead of
     /// changing the clock. Must not clear the lockout either — a reboot re-anchors
     /// and the same delay is owed again, not credited as elapsed time.
-    @Test func simulatedReboot_doesNotClearLockout() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func simulatedReboot_doesNotClearLockout() throws {
         let clock    = FakeLockoutClock(systemUptime: 10_000)
         let security = try makeSecurity(clock: clock)
         try security.configurePIN("123456")
@@ -124,7 +132,7 @@ struct LockoutAntiRollbackTests {
     /// After a simulated reboot re-anchors, the lockout must still eventually clear
     /// once the full delay has genuinely elapsed from the NEW anchor — the fix must
     /// not turn a reboot into a permanent lock.
-    @Test func simulatedReboot_thenSufficientUptimeElapsed_clearsLockout() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func simulatedReboot_thenSufficientUptimeElapsed_clearsLockout() throws {
         let clock    = FakeLockoutClock(systemUptime: 10_000)
         let security = try makeSecurity(clock: clock)
         try security.configurePIN("123456")
@@ -143,7 +151,7 @@ struct LockoutAntiRollbackTests {
     /// The read-only display helper PINEntry uses must reflect the same "still locked"
     /// state after a simulated reboot as the real gate does — without needing to call
     /// verify() first, since PINEntry reads this on `.onAppear`, before any PIN is typed.
-    @Test func lockoutExpiry_reflectsRebootWithoutClearing() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func lockoutExpiry_reflectsRebootWithoutClearing() throws {
         let clock    = FakeLockoutClock(systemUptime: 10_000)
         let security = try makeSecurity(clock: clock)
         try security.configurePIN("123456")

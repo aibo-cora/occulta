@@ -103,7 +103,7 @@ struct EncryptedFieldTripwireTests {
 
     // Needs a Secure Enclave only because constructing a `Group` seals its fields; the
     // Profile and AppLayerConfig tripwires below have no such dependency and run everywhere.
-    @Test("Group has no unreviewed stored properties", .enabled(if: secureEnclaveAvailable()))
+    @Test("Group has no unreviewed stored properties", .enabled(if: secureEnclaveAvailable()), .enabled(if: secureEnclaveAvailable()))
     func groupPropertiesReviewed() throws {
         let expected: Set<String> = [
             "encryptedID", "encryptedName", "encryptedCreatedAt",
@@ -139,7 +139,7 @@ struct EncryptedFieldRotationTests {
 
     /// Every encrypted field on a profile must be readable after a rotation. This is the
     /// test that would have caught `maxBundleVersion` directly.
-    @Test("Every encrypted Contact.Profile field survives a rotation")
+    @Test("Every encrypted Contact.Profile field survives a rotation", .enabled(if: secureEnclaveAvailable()))
     func profileFieldsSurvive() throws {
         _ = try #require(canonicalKey())
         let aad     = EncryptionScheme.v2_hybridPQ.aad
@@ -185,7 +185,7 @@ struct EncryptedFieldRotationTests {
     /// The regression that motivated the preserving helper. A token stranded by an earlier
     /// rotation must stay non-nil, or `fetchAllContacts` starts returning contacts the user
     /// deleted.
-    @Test("An unreadable deletionToken is preserved, not cleared")
+    @Test("An unreadable deletionToken is preserved, not cleared", .enabled(if: secureEnclaveAvailable()))
     func strandedDeletionTokenPreserved() throws {
         _ = try #require(canonicalKey())
         let aad     = EncryptionScheme.v2_hybridPQ.aad
@@ -204,7 +204,7 @@ struct EncryptedFieldRotationTests {
 
     /// A contact that was never soft-deleted must stay that way — the preserving helper
     /// must not fabricate a token out of nil.
-    @Test("A nil deletionToken stays nil")
+    @Test("A nil deletionToken stays nil", .enabled(if: secureEnclaveAvailable()))
     func nilDeletionTokenStaysNil() throws {
         _ = try #require(canonicalKey())
         let profile = makeProbeProfile()
@@ -225,7 +225,7 @@ struct EncryptedFieldRotationTests {
     /// and that gate can only be repaired if "present but unreadable" stays distinguishable
     /// from "never seen". Clearing collapses the two permanently, for exactly the installs that
     /// have the vulnerability. The message is fixed at the reading site instead.
-    @Test("An unreadable maxBundleVersion is preserved, not cleared")
+    @Test("An unreadable maxBundleVersion is preserved, not cleared", .enabled(if: secureEnclaveAvailable()))
     func strandedMaxBundleVersionPreserved() throws {
         _ = try #require(canonicalKey())
         let profile = makeProbeProfile()
@@ -241,7 +241,7 @@ struct EncryptedFieldRotationTests {
     }
 
     /// The distinction Bug 80's fix depends on, asserted directly: three states, three answers.
-    @Test("hasReadableBundleVersion separates stranded from never-seen")
+    @Test("hasReadableBundleVersion separates stranded from never-seen", .enabled(if: secureEnclaveAvailable()))
     func readabilitySeparatesStrandedFromAbsent() throws {
         _ = try #require(canonicalKey())
 

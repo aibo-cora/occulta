@@ -23,6 +23,14 @@ import CryptoKit
 import SwiftData
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 @MainActor
@@ -268,7 +276,7 @@ private enum TestSetupError: Error { case seUnavailable }
 @Suite("openGroup / decryptSealed — receiver strips shard content on fallback slot")
 @MainActor struct ReceiverShardFallbackTests {
 
-    @Test("openGroup drops per-recipient shard content when this recipient's own slot used fallback, regardless of what the sender sent")
+    @Test("openGroup drops per-recipient shard content when this recipient's own slot used fallback, regardless of what the sender sent", .enabled(if: secureEnclaveAvailable()))
     func openGroupStripsOnFallbackSlot() throws {
         let cm       = try makeContactManager()
         let senderKM = TestKeyManager()
@@ -299,7 +307,7 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(result.recipientExpectedShards  == nil, "expected shards must be dropped when this recipient's slot used the fallback path")
     }
 
-    @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback")
+    @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback", .enabled(if: secureEnclaveAvailable()))
     func decryptSealedStripsOnFallback() throws {
         let cm       = try makeContactManager()
         let senderKM = TestKeyManager()
