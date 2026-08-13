@@ -207,6 +207,23 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       is that no signature minted by a current build can be replayed into a future bare-signing
       context. `signData`'s documentation carries the rule for whoever adds the next site.
 
+      **Known cost, filed as Bug 83.** The tier comes from a high-water marker that rises and
+      never falls, so a contact who downgrades below 1.10.2 keeps receiving prefixed signatures
+      their build cannot verify, with no way for either side to correct it. This is the first
+      tier that changes what we put on the wire rather than which features we enable, and
+      monotonicity — correct for the signature *requirement*, since a low claim must not switch
+      it off — is wrong for the prefix *choice*, where being walked down would only mean signing
+      bare. Accepted for 1.10.2 on likelihood: the App Store offers no downgrade path.
+
+      **The gate covers one of two inbound paths.** `senderEphemeralSignature` lives on
+      `RecipientPayload`, so the non-group format has no field for it and `decryptSealed`
+      applies no equivalent check. Not a bypass — the prekey store and the identity key sit
+      behind identical access control, so anyone able to construct a legacy forward-secret
+      bundle can equally sign a group one — but the asymmetry is real and the routing site now
+      says so. Note also that the format reflects the *sender's view of the recipient*: a
+      current build sends the non-group format to anyone it resolves below `.groupCapable`, so
+      no receiver-side check may infer sender capability from the format it arrived in.
+
 - [ ] Messages already in flight survive a contact key re-exchange
       — **FAIL. Filed as Bug 82**, pre-existing rather than introduced by this release.
       `resolveSenderPublicKey` (`Contact+Manager.swift:1633`) returns only the newest unexpired

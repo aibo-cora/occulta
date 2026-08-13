@@ -1708,6 +1708,24 @@ extension ContactManager {
         let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
         guard let byte = maxVersion.wireByte else { return }
 
+        // The floor is what makes this a high-water mark: a claim below it is ignored, so a
+        // contact's recorded tier can rise but never fall.
+        //
+        // `.unreadable` pinning the floor at `.senderSignatureCapable` is Bug 81's mechanism,
+        // and it is easy to read as unrelated. A stranded marker means we cannot know whether
+        // this contact signs, so `openGroup`'s gate rejects their unsigned FS bundles; letting a
+        // *claimed* low version overwrite the stranded marker would reopen Bug 80, since an
+        // attacker could then claim 1.9.0 to switch the requirement off. The consequence is that
+        // a genuine 1.9.x contact can never clear this floor, so their marker stays stranded and
+        // they stay blocked — permanently, and with no action available to either side until
+        // they reach 1.10.0. That is one decision, not two: the thing that keeps Bug 80 closed
+        // is the same thing that keeps Bug 81 open.
+        //
+        // Pinned to the tier the gate keys off, deliberately, not to the newest tier. Raising it
+        // as tiers are added would widen Bug 81 to every version below the new top.
+        //
+        // See also Bug 83: monotonicity is safe for capability decisions but not for decisions
+        // that change what we put on the wire.
         let floor: OccultaBundle.Version
         switch Self.bundleVersionState(for: sender, using: cryptoOps) {
         case .unreadable:            floor = .senderSignatureCapable

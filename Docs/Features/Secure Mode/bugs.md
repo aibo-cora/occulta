@@ -3619,3 +3619,65 @@ currently ignores it:
   re-exchange case, and is safe to accept.
 
 Today `resolveSenderPublicKey` treats the two identically by looking at neither.
+
+---
+
+## Bug 83 — A contact who downgrades below 1.10.2 permanently stops receiving our forward-secret group messages
+
+**Status:** **Open — accepted for v1.10.2.** Introduced by this release, alongside the
+`.prefixedSenderSignatureCapable` tier (§3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`). Filed
+2026-08-13. Deferred on likelihood, not on cost: the App Store does not offer downgrades, so
+this needs TestFlight or a device restore onto an older build.
+
+**Target:** post-1.10.2.
+
+### What happens
+
+1.10.2 signs `senderEphemeralSignature` over a domain-separated payload for recipients at
+`.prefixedSenderSignatureCapable`, and over the bare ephemeral public key for everyone below.
+The tier comes from `Contact.Profile.maxBundleVersion`, which is a **high-water mark**:
+`updateMaxVersion` writes only when the claimed tier clears the recorded one
+(`Contact+Manager.swift:1718`), so the marker rises and never falls.
+
+If a contact recorded at `0x08` moves back to 1.10.0 or 1.10.1, nothing walks that marker down —
+their subsequent bundles claim 1.10.0, `.senderSignatureCapable.isAtLeast(.prefixedSenderSignatureCapable)`
+is false, and the write is skipped. We keep prefixing. Their build verifies only the bare form,
+so every forward-secret slot we seal for them fails with `senderEphemeralSignatureMismatch`.
+
+### It is intermittent rather than flat, which is worse to diagnose
+
+Only FS-mode slots carry a real signature; fallback slots carry random filler and are never
+checked. So the failure tracks our stock of *their* prekeys: we pop one per send until the batch
+of `PrekeyManager.defaultBatchSize` (15) is exhausted, then fall back to long-term ECDH, which
+arrives normally. That fallback message prompts them to issue a fresh batch, we go forward-secret
+again, and the cycle repeats.
+
+The observable pattern is roughly fifteen lost messages, then one that lands, then fifteen more —
+not a clean outage, and from their side indistinguishable from an unreliable transport.
+
+### Why this class of mistake is new
+
+The high-water mark was safe while it only gated **capabilities** — send groups, send shard
+content, require a signature. Over-estimating a contact there was either harmless or fail-closed,
+and under-estimating was the only direction that cost anything, which is exactly what the
+monotonicity was protecting against (see Bug 80: a low claim must not walk the tier down and
+disable the signature requirement).
+
+This tier is the first one that changes **what bytes we sign**. Over-estimating is now a
+delivery failure rather than a conservative default, and monotonicity makes it permanent.
+
+### Remedy
+
+Key the prefix decision off the contact's **last claimed** version rather than the high-water
+mark, and leave the signature *requirement* on the high-water mark where it belongs.
+
+The asymmetry is the point: a downgrade attack on the *requirement* reopens Bug 80, so that must
+never be walked down. A downgrade on the *prefix choice* only means we sign bare — which is what
+every 1.10.0 and 1.10.1 build already does and what our own receivers still accept — so it costs
+nothing to let it fall. Storing last-claimed alongside the high-water mark is one more encrypted
+field on `Contact.Profile`, and both would need adding to `reencryptAllFields` (see Bug 77 for
+what happens when a field is missed there).
+
+Cheaper alternative if the extra field is unwelcome: drop the tier entirely and prefix
+unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare arm in
+`verifySenderEphemeralSignature` at the same time. That is the end state either way.

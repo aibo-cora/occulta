@@ -661,10 +661,25 @@ private struct RootView: View {
                 }
                 let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
 
+                // ⚠️ The envelope's presence reflects the **sender's view of us**, not the
+                // sender's own capability. `encryptBundle` picks the format from
+                // `resolveTargetVersion(for: recipient)`, so a current build sends the
+                // *non-group* format to anyone it resolves below `.groupCapable` — including
+                // every contact whose marker it has stranded, which is the whole Bug 77/80
+                // population. A non-group bundle therefore says nothing about how old the
+                // sender is, and no check here may infer that it does.
+                //
+                // Consequence worth knowing: `openGroup`'s sender-signature gate has no
+                // counterpart on the branch below, because `senderEphemeralSignature` lives on
+                // `RecipientPayload` and the non-group format has no such field. That asymmetry
+                // grants nothing today — the prekey store and the identity key sit behind
+                // identical access control (`.privateKeyUsage`, device-unlocked, no biometric),
+                // so anyone able to build a legacy FS bundle can equally sign a group one — but
+                // do not read the gate as covering both paths.
                 if bundle.group != nil {
-                    // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
-                    // use this path. Shard-only bundles signal "no basket" via an
-                    // empty message field.
+                    // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
+                    // (messages, shards, custody ops) use this path. Shard-only bundles signal
+                    // "no basket" via an empty message field.
                     let (sealed, ownerID, _, recipShardOps, recipManifest, recipExpected) =
                         try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version
