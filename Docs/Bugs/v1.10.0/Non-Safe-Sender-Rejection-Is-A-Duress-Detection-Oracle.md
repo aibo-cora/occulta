@@ -2,6 +2,23 @@
 
 **Status: fixed** — the full design is implemented (`d0d75b5`, `314cf18`, `b1f9045`, `2958593`), with one gap found and fixed by a subsequent security review (`4da8531`) and one accepted, bounded residual documented (see "Security review" near the bottom). No bundle is ever rejected for restriction state anymore, for any contact, real or duress-origin, existing or newly-paired, on either unlock path (already-unlocked live receipt or queued-while-locked drain via C2). The rejection-based detection oracle — both the active-tester and passive-receipt variants as originally scoped — is closed. The active-tester variant closes with zero residual risk: the coercer is always the author of what gets decrypted back to them, so there's no information asymmetry to protect. What remains is narrower and different in kind, and was a deliberate, explicit trade, not an oversight: a timing-bounded **content-confidentiality** risk for the passive variant only (a real, unaware third party's message rendering on screen during a coercion window) — see "Final design" near the bottom for that residual-risk discussion. Not a detection oracle in the original sense, since there's no longer any sender-dependent rejection signal for a coercer to read. Separately, `originDepth`'s own backfill for contacts predating this release has a bounded, accepted residual — see "Security review" near the bottom. A 2026-08-07 pass verified the "wording parity" open question below is already satisfied by the shipped code and closed one adjacent gap found while verifying it — see "2026-08-07 — Wording parity verified..." near the bottom. Found while scoping shard-custody items 4–5 (`Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md`) — surfaced when checking whether a coercer-controlled second device sending a real shard could be used to detect duress mode.
 
+## Note for anyone auditing `isSafeContact` (added 2026-08-13)
+
+`ContactManager.isSafeContact` still exists, still has tests asserting its semantics, and has
+**zero production call sites**. That is the intended end state of this fix, not a regression — it
+was the helper `passSecurityControl` was built on, and `passSecurityControl` is what had to go.
+
+Recording it because the shape is misleading: a well-tested helper with no callers reads as
+something that got dropped by accident, and the obvious "fix" is to call it again from the inbound
+path. That would restore the oracle described below. A doc comment on the function now says so and
+points here.
+
+Not to be confused with UI-side visibility filtering, which is untouched and correct —
+`ContactsListV2`, `GroupDetailV3`, `Vault+Tab` and `ContactClassification` all filter on
+`isVisible(atDepth:)`. What this fix removed is rejecting *inbound bundles* on restriction state.
+
+---
+
 ## The mechanism
 
 `passSecurityControl` (`OccultaApp.swift:733`):

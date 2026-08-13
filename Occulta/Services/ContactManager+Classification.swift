@@ -31,6 +31,28 @@ extension ContactManager {
 
     /// Returns true if the contact is visible at the current depth.
     /// Unknown contacts return false — conservative default.
+    ///
+    /// **Intentionally has no production callers. Do not wire it back into the inbound path.**
+    ///
+    /// It used to back `passSecurityControl` in `OccultaApp`, which rejected any inbound bundle
+    /// from a contact not visible at the current depth. That rejection was itself a
+    /// duress-detection oracle: it is reachable *only* when `isRestricted == true`, so a coercer
+    /// who sends a probe from an identity they know is paired with the device learns whether
+    /// Secure Mode is active — one probe is close to conclusive, two remove essentially all
+    /// doubt. Removed in `b1f9045` ("no bundle is ever rejected for restriction state"), with
+    /// `2958593` making the queued-file drain behave identically on a duress unlock so the two
+    /// paths could not differ either. Full reasoning, including the content-confidentiality cost
+    /// that was accepted in exchange, is in
+    /// `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
+    ///
+    /// Kept, with its tests, because the semantics are still the right definition of "visible to
+    /// me right now" and a future caller may legitimately need them — but any use that can
+    /// produce a *sender-dependent, restriction-gated* observable reopens that oracle. Read the
+    /// doc before adding one.
+    ///
+    /// Note this is not the same as UI-side visibility filtering, which is alive and correct:
+    /// `ContactsListV2`, `GroupDetailV3`, `Vault+Tab` and `ContactClassification` all filter on
+    /// `isVisible(atDepth:)`. What was removed is rejecting *inbound bundles* on that basis.
     func isSafeContact(_ identifier: String) -> Bool {
         let descriptor = FetchDescriptor<Contact.Profile>(
             predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
