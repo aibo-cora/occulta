@@ -42,9 +42,16 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — single construction site, `Crypto+Manager+KeyDerivation.swift:47`, covering both
       `.longTermFallback` and `.longTermNoPQ`. The identity-challenge bundle does the same
       (`IdentityChallenge+Manager.swift:422`).
-- [ ] `OccultaBundle` version field matches the actual secrecy mode used
-      — partially verified: the group path pairs `.v4` with `mode: .group` consistently
-      (`Crypto+Manager+GroupEncrypt.swift:151,154,172`). The 1:1 paths were not walked.
+- [x] `OccultaBundle` version field matches the actual secrecy mode used
+      — enforced cryptographically rather than by assertion: version and `SecrecyContext` are
+      both bound into the AAD (`computeAdditionalAuthentication(version:secrecy:)`), so any
+      mismatch fails authentication at the receiver instead of producing a wrong-but-openable
+      bundle. The codebase has already met this the hard way — the comment at
+      `Contact+Manager.swift:1028` records that passing a capability case rather than `.v4`
+      embeds its own raw value in the AAD while the receiver reconstructs `v4`, and the result
+      is an authentication failure. Group path pairs `.v4` with `mode: .group`
+      (`Crypto+Manager+GroupEncrypt.swift:151, 154, 172`); the 1:1 paths derive mode and
+      version from the same `targetVersion` resolution (`:1033`, `:1040`).
 
 ## 2. Key Management
 
@@ -56,9 +63,43 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       (`app.layer.key.occulta.v1`). No tag serves two roles.
 - [ ] Prekey private keys are deleted from SE immediately after a successful `open()` — no
       deferred cleanup
-- [ ] Prekey exhaustion falls back to long-term ECDH (not plaintext) and still piggybacks a
+      — **FAIL on the group path, introduced by this release.** The 1:1 path is correct:
+      `open` at `Contact+Manager.swift:1574`, `consume(prekey:)` at `:1581`, nothing between
+      them that can throw. The group path opens the recipient slot at `:1795` and consumes at
+      `:1841`, and this release inserted the sender-ephemeral-signature gate at `:1822` in
+      between — a gate whose whole purpose is to `throw`. A bundle that opens successfully and
+      then fails that check leaves the prekey alive in the Secure Enclave.
+
+      To reach it an attacker needs prekey material we issued, which is the same bar as the
+      finding the gate was added to close, so this is not open to arbitrary third parties. What
+      it costs is the forward-secrecy property the consume exists to provide: an attacker who
+      can deliver `.occ` files can hold a prekey open indefinitely, and every message ever
+      sealed to it stays decryptable if the device is later seized. Normal traffic is
+      unaffected — a capable sender always signs, so the gate does not fire.
+
+      Fix is an ordering decision rather than a one-liner, which is why it is reported and not
+      applied: consuming before the check means a rejected forgery also runs
+      `clearPendingBatch()`, letting an attacker manipulate batch state. Consuming the prekey
+      before the gate while leaving the batch bookkeeping after it separates the two correctly.
+- [x] Prekey exhaustion falls back to long-term ECDH (not plaintext) and still piggybacks a
       fresh batch in the payload
-- [ ] Soft-deleted contact key records leave no recoverable private key material in SE
+      — with `contactPrekey == nil` the outbound path still seals, taking `.longTermFallback` /
+      `.longTermNoPQ` (`Crypto+Manager+KeyDerivation.swift:46`); nothing is ever sent in the
+      clear. The pending batch is loaded independently of whether a prekey was popped
+      (`Contact+Manager.swift:1051`) and rides the bundle either way. Precision on "fresh":
+      batches are generated on the *receive* side, when a message arrives and no batch is
+      pending (`:1587`, `:1844`) — not at the moment of send-side exhaustion. Shard content is
+      dropped rather than downgraded when no prekey is available (`:1073`), so shard material
+      never travels without forward secrecy.
+- [x] Soft-deleted contact key records leave no recoverable private key material in SE
+      — the row is soft-deleted (`deletionToken` set, `Contact+Manager.swift:484`) but the key
+      material is hard-deleted: `PrekeyManager.deleteAllKeys(for:)` at `:486` enumerates SE keys
+      and deletes every one tagged `prekey.<contactID>.`. ML-KEM leaves no per-contact residue
+      to clean — `SecureEnclave.MLKEM1024.PrivateKey` is held as an in-memory handle for the
+      duration of the exchange and never persisted under a tag (`PQProvider.swift:95`); what is
+      stored is the pair of 32-byte shared secrets, encrypted. Caveat: `deleteAllKeys(for:)`
+      returns silently if `SecItemCopyMatching` fails, so deletion is best-effort with no
+      retry and no signal.
 - [ ] ~~`PortingManager` migration does not re-use or export SE private keys across devices~~
       — **STALE: no such type.** `PortingManager` does not exist anywhere in the repository.
       The property it was guarding still holds by construction — the only
@@ -83,7 +124,30 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       `sendCiphertext` call, with `guard self.exchangeStatus == nil` ensuring the protocol
       starts exactly once.
 - [ ] MCSession peer identity is validated before accepting key exchange data
-- [ ] `QuantumKeyMaterial` is stored encrypted (not in plaintext) in SwiftData
+      — **FAIL as written; the property is provided elsewhere.** There is no peer
+      authentication at the MultipeerConnectivity layer: the session is built with
+      `securityIdentity: nil` (`Exchange+Manager.swift:148`), every invitation is accepted
+      unconditionally (`invitationHandler(true, …)`, `:767`), the browser invites every peer
+      that is not us (`:755`), and no `session(_:didReceiveCertificate:fromPeer:)` is
+      implemented — which means MC auto-accepts all certificates. `encryptionPreference:
+      .required` encrypts the link but authenticates nobody.
+
+      What actually gates key exchange is physical: a peer's discovery token must arrive over
+      MC *and* that token must range at ≤ 0.25 m before any identity is sent (`:638`), with
+      `guard self.exchangeStatus == nil` allowing the protocol to start exactly once. The
+      residual risk is a race — two devices both inside 25 cm, and the attacker's ranging lands
+      first. The designed answer to that is the diceware confirmation: both sides derive words
+      from the completed shared secret and compare them out of band
+      (`KeyExchange.swift:236`), which no attacker-in-the-middle can match.
+
+      Reword the item to name the control that exists — proximity plus out-of-band word
+      comparison — or implement `didReceiveCertificate`. As written it asserts a check that is
+      not there.
+- [x] `QuantumKeyMaterial` is stored encrypted (not in plaintext) in SwiftData
+      — JSON-encoded, then through `cryptoManager.encrypt` (hybrid local DB key + AAD) before
+      it reaches the model (`Contact+Manager.swift:548–565`). That is the only write site
+      besides the rotation path, which reseals rather than storing anew
+      (`Contact+Model+Reencrypt.swift:118`).
 - [x] Identity challenge nonces are single-use — `OutstandingChallengeStore` entry deleted
       immediately after `verifyResponse`
       — `store.remove(nonce:)` on every exit from the verify path
@@ -91,15 +155,37 @@ not an oversight. `file:line` references are to the commit named in the sign-off
 - [x] Identity challenge timestamp window is enforced (replay outside the window is rejected)
       — `guard age < IdentityChallenge.timestampStaleThreshold` (`:243`).
 - [ ] ECDSA signature domain separation prefix is stable and applied at every signing call site
-      — the prefix exists and is stable (`SignedAttribute.swift:13`,
-      `"occulta-signed-attribute-v2"`); "at every signing call site" was not swept.
+      — **FAIL: three sites of four.** Prefixed and stable: identity challenge
+      (`"occulta-identity-challenge-v1"`, `IdentityChallenge+Crypto.swift:93`) and both vault
+      attribute sites (`"occulta-signed-attribute-v2"`, `SignedAttribute.swift:134`, used by
+      `Vault+Manager+Backup.swift:341` and `Vault+Manager+Shards.swift:95`).
+
+      Not prefixed: `senderEphemeralSignature` signs the bare ephemeral public key —
+      `signData(secrecyContext.ephemeralPublicKey)`, `Crypto+Manager+GroupEncrypt.swift:207`.
+      The same long-term identity key therefore signs both domain-tagged payloads and a raw
+      65-byte X9.63 point. No confusion is reachable today, because that point always begins
+      `0x04` and is exactly 65 bytes while both prefixes begin with ASCII `o` — the byte spaces
+      do not overlap. But that is a property of the encodings, not a separation anyone
+      designed, and it is the only thing standing between these two uses of one key. Give the
+      ephemeral signature its own prefix.
 - [x] `buildOwnedBasket` returns `nil` (no basket shown) when an `identityChallenge` envelope
       is present — no double-display
       — `OccultaApp.swift:673–681`.
 
 ## 4. Data at Rest
 
-- [ ] All contact fields are encrypted before SwiftData storage — no plaintext PII written to disk
+- [x] All contact fields are encrypted before SwiftData storage — no plaintext PII written to disk
+      — the `String` properties on `Contact.Profile` hold base64 of AES-GCM ciphertext, not
+      text: every field goes through `crypto.encrypt(...)?.base64EncodedString()` on the way in
+      (`Contact+Manager.swift:244–338`) and `String.decrypt()` on the way out
+      (`Crypto+Manager.swift:202`). `identifier` included — it is encrypted once in the
+      never-before-persisted branch (`:367`) and every later lookup compares the stored
+      ciphertext as an opaque string. Non-PII plaintext that remains: `encryptionScheme` (an
+      `Int` tag) and the relationship keys.
+
+      One fail-open worth closing: `:367` ends `?? rawIdentifier`, so if key derivation fails
+      at contact creation the raw UUID is stored in the clear. Same shape as the `?? ""`
+      fallbacks on the other fields, where the consequence is only a lost value.
 - [x] Shared container files use `.completeFileProtection`
       — `inbound/<uuid>.occ` written with `options: .completeFileProtection`
       (`ShareViewController.swift:474`); `pending/<sessionID>/` gets `URLFileProtection.complete`
@@ -286,7 +372,11 @@ sign-off block, not against project settings alone.
       Recommended: drop the three package product dependencies and the package reference, then
       re-archive and confirm the bundles are gone. Not done here — removing a dependency is a
       release-scope decision.
-- [ ] Xcode and macOS SDK versions are up to date for the release build
+- [x] Xcode and macOS SDK versions are up to date for the release build
+      — Xcode 26.2 (17C52), iOS SDK 26.2, macOS 26.5.2. `SWIFT_VERSION = 5.0` (language mode,
+      not toolchain). `IPHONEOS_DEPLOYMENT_TARGET = 18.6` uniformly across all ten
+      configurations — note CLAUDE.md still says iOS 16.0+, which is stale by two major
+      versions and worth correcting, though nothing depends on it.
 
 ## 8. Testing Gate
 
@@ -348,16 +438,26 @@ the contributor set grows beyond people with commit access.
 1. ~~Internal design docs ship inside the app bundle~~ — **fixed**, verified against a fresh
    archive. See §6.
 2. ~~`manifest.enc` written before its protection class is set~~ — **fixed**. See §4.2.
-3. **Unused swift-crypto dependency ships vendored BoringSSL** (§7.1, §7.2) — **accepted for
+3. **Prekey survives a rejected group bundle** (§2.2) — **new, and this release caused it.** The
+   sender-signature gate added at `Contact+Manager.swift:1822` sits between opening the recipient
+   slot and consuming the prekey, so a bundle that opens and is then rejected leaves the prekey
+   live in the Enclave. The highest-severity item found in this pass, and the only open one that
+   is a defect rather than a wording problem. Needs an ordering decision — see §2.2.
+4. **Unused swift-crypto dependency ships vendored BoringSSL** (§7.1, §7.2) — **accepted for
    1.10.2.** The package is not load-bearing and removing it would delete five resource bundles
    from the shipping app, but pulling a dependency is not a release-week change. The crypto
    actually in use is Apple-framework-only, so the property the checklist cares about holds;
    what ships is dead weight, not a weakness. Revisit before the next tag.
-4. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
-   §5.1, §6.2, §8's skip rule. CLAUDE.md's "no external package manager" line too.
+5. **`senderEphemeralSignature` has no domain-separation prefix** (§3.6) — the only one of four
+   signing sites without one, and it shares the long-term identity key with the three that have
+   it. Not reachable today; the encodings happen not to overlap. Give it a prefix.
+6. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
+   §3.2, §5.1, §6.2, §8's skip rule. CLAUDE.md's "no external package manager" line, and its
+   "iOS 16.0+" — the deployment target is 18.6.
 
-Unverified, and honestly so: §2.2, §2.3, §2.4, §3.2, §3.3, §3.6 (partially), §4.1, §7.3, and
-§1.7's 1:1 paths.
+Every item now carries a result. Two smaller things recorded in place rather than raised here:
+`deleteAllKeys(for:)` is best-effort with no signal on failure (§2.4), and contact-identifier
+encryption falls open to the raw UUID if key derivation fails (§4.1).
 
 ---
 
