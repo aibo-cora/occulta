@@ -42,7 +42,10 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 20
         run: |
-          # pipefail so the step fails on xcodebuild's status, not the formatter's.
+          # pipefail so a test failure fails the step: without it the step takes
+          # xcbeautify's status and a red suite reports green. It makes xcbeautify's
+          # own status fail the step too, which is intended — if the formatter cannot
+          # run, the JUnit report below is missing and the results are unreadable.
           set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \

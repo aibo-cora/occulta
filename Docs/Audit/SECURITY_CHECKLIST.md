@@ -85,6 +85,12 @@ That split is why the gate has to be run by a human on real hardware before a re
         -destination 'platform=iOS Simulator,name=<device>' \
         -parallel-testing-enabled NO
 
+      Leave the configuration at the scheme default. `TestKeyManager` is compiled under
+      `#if DEBUG` — it is a working Secure Enclave bypass, complete with a switch that forces
+      key derivation to fail, and it has no business in a shipped binary. Much of the suite
+      constructs it directly, so `-configuration Release` does not compile the test target at
+      all. That is a compile error, not a test failure, and it is expected.
+
 - [ ] **Zero failures, and zero skips.** Record both counts below. A non-zero skip count means the
       host lacked an Enclave and the run does not count — it is the same blind spot as CI, not a
       pass. Verify with `secureEnclaveAvailable()` returning true rather than assuming.
