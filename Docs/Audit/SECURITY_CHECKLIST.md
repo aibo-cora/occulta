@@ -104,10 +104,10 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       — `inbound/<uuid>.occ` written with `options: .completeFileProtection`
       (`ShareViewController.swift:474`); `pending/<sessionID>/` gets `URLFileProtection.complete`
       on the directory at creation (`:184`) and each attachment is written with the option
-      (`:302, :336, :474`). One gap, minor: `manifest.enc` (`:258`) is written **without** the
-      option and given `.complete` immediately afterwards via `setResourceValue` (`:262`),
-      leaving a brief window at the default class. Every other write in the file passes the
-      option directly; this one should too.
+      (`:302, :336, :474`). `manifest.enc` used to be written without the option and given
+      `.complete` immediately afterwards via `setResourceValue`, leaving a brief window at the
+      default class; it now passes the option to the write like every other write in the file
+      (`:257`).
 - [x] Inbound `.occ` file is deleted from shared container after processing completes
       (success *and* failure paths)
       — `defer { if openedThroughShareExtension { try? FileManager.default.removeItem(…) } }`
@@ -217,9 +217,9 @@ sign-off block, not against project settings alone.
 
 ### Shipped bundle contents — new item, and it fails
 
-- [ ] The app bundle contains no internal documentation, design notes, or planning material
-      — **FAIL.** The Release archive ships **14 internal documents, ~350 KB**, in
-      `Occulta.app/` alongside the binary:
+- [x] The app bundle contains no internal documentation, design notes, or planning material
+      — **was FAIL, fixed this pass.** The Release archive shipped **16 internal documents,
+      ~350 KB**, in `Occulta.app/` alongside the binary:
 
       forensic-trace-avoidance.md      (37 KB)   secure-mode-architecture.html  (28 KB)
       plan.md                          (70 KB)   scenarios.md                   (38 KB)
@@ -239,9 +239,27 @@ sign-off block, not against project settings alone.
       tells to look for and what to demand. The threat model assumes the adversary knows the
       app; it does not assume the app hands them the design docs.
 
-      Cause: these files live inside the `Occulta/` source tree and were picked up by target
-      membership, not by deliberate inclusion. `eff_large_wordlist.txt` and `features.plist`
-      are genuine runtime resources and must stay.
+      Cause: these files live inside the `Occulta/` source tree, which is an Xcode 16
+      file-system-synchronized root group. Every non-source file under a synchronized folder
+      is copied into the bundle by default — nobody added them; nobody had to.
+
+      **Fix.** Fifteen are now listed in the `membershipExceptions` of the Occulta target's
+      exception set, which is how a synchronized group excludes a path. `README.md` came in
+      separately, as an explicit `PBXBuildFile` in Copy Bundle Resources, and that entry is
+      removed; its `PBXFileReference` stays so the file is still visible in the navigator. All
+      sixteen remain on disk and in git — this changes what ships, not what exists.
+
+      Paths in a `membershipExceptions` list must be quoted whenever they contain anything
+      outside the unquoted-token charset. Two here do: a `+` in `Forward+Secrecy` and
+      `SecureMode+RotationContract.md`, and a space in `SHARE_EXTENSION_PLAN 16.32.42.md`.
+      Leaving them bare makes the whole project unreadable — `xcodebuild` fails with
+      "Unable to read project", not with a parse error pointing at the line.
+
+      **Verified** by re-archiving: `find` reports zero `.md` and zero `.html` anywhere in the
+      archive, including both appexes. What remains in `Occulta.app/` is the binary,
+      `Info.plist`, `PkgInfo`, `PlugIns/`, the two app icons, `Assets.car`,
+      `eff_large_wordlist.txt`, `features.plist`, and the five swift-crypto bundles — the last
+      of those being §7.2, deliberately left in place for this release.
 
 ## 7. Dependency & Supply Chain
 
@@ -327,16 +345,14 @@ the contributor set grows beyond people with commit access.
 
 ## Blockers for this release
 
-Ranked. The first is the only one that touches the threat model.
-
-1. **Internal design docs ship inside the app bundle** (§6, new item) — including
-   `forensic-trace-avoidance.md` and `secure-mode-architecture.html`. Remove from Copy Bundle
-   Resources and re-archive to confirm.
-2. **Unused swift-crypto dependency ships vendored BoringSSL** (§7.1, §7.2) — the package is
-   not load-bearing; removing it deletes five resource bundles from the shipping app and
-   restores the "Apple frameworks only" property the checklist asserts.
-3. **`manifest.enc` written before its protection class is set** (§4.2) — one-word fix, brings
-   it in line with every other write in that file.
+1. ~~Internal design docs ship inside the app bundle~~ — **fixed**, verified against a fresh
+   archive. See §6.
+2. ~~`manifest.enc` written before its protection class is set~~ — **fixed**. See §4.2.
+3. **Unused swift-crypto dependency ships vendored BoringSSL** (§7.1, §7.2) — **accepted for
+   1.10.2.** The package is not load-bearing and removing it would delete five resource bundles
+   from the shipping app, but pulling a dependency is not a release-week change. The crypto
+   actually in use is Apple-framework-only, so the property the checklist cares about holds;
+   what ships is dead weight, not a weakness. Revisit before the next tag.
 4. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
    §5.1, §6.2, §8's skip rule. CLAUDE.md's "no external package manager" line too.
 

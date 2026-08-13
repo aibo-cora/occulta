@@ -255,14 +255,12 @@ class ShareViewController: UIViewController {
             manifestData = Data()
 
             let manifestURL = sessionDir.appendingPathComponent("manifest.enc")
-            try encryptedManifest.write(to: manifestURL)
 
-            // Explicit file protection — same copyItem caveat applies to any file
-            // created in the shared container.
-            try (manifestURL as NSURL).setResourceValue(
-                URLFileProtection.complete,
-                forKey: .fileProtectionKey
-            )
+            // Protection class applied by the write itself, as every other write in this
+            // file does. Setting it afterwards via `setResourceValue` — which is what this
+            // used to do — leaves the manifest at the default class for the window between
+            // the two calls.
+            try encryptedManifest.write(to: manifestURL, options: .completeFileProtection)
 
             self.openContainingApp(sessionID: sessionID)
         } catch {
