@@ -444,8 +444,8 @@ That split is why the gate has to be run by a human on real hardware before a re
       constructs it directly, so `-configuration Release` does not compile the test target at
       all. That is a compile error, not a test failure, and it is expected.
 
-- [x] **Zero failures.** 716 Swift Testing tests across 162 suites, plus 36 XCTest cases —
-      746 passed, 0 failed, 6 skipped. Run serially (`-parallel-testing-enabled NO`).
+- [x] **Zero failures.** 728 Swift Testing tests across 164 suites, plus 36 XCTest cases —
+      758 passed, 0 failed, 6 skipped. Run serially (`-parallel-testing-enabled NO`).
 - [ ] **Zero skips**, excluding `KeychainMigrationSETests`
       — **the item is unachievable as originally written, and the exclusion is the fix.**
       6 tests skipped, all in `KeychainMigrationSETests`, which throws `XCTSkip` from
@@ -500,9 +500,9 @@ the contributor set grows beyond people with commit access.
    from the shipping app, but pulling a dependency is not a release-week change. The crypto
    actually in use is Apple-framework-only, so the property the checklist cares about holds;
    what ships is dead weight, not a weakness. Revisit before the next tag.
-5. **`senderEphemeralSignature` has no domain-separation prefix** (§3.6) — the only one of four
-   signing sites without one, and it shares the long-term identity key with the three that have
-   it. Not reachable today; the encodings happen not to overlap. Give it a prefix.
+5. ~~`senderEphemeralSignature` has no domain-separation prefix~~ — **fixed**, behind the
+   `.prefixedSenderSignatureCapable` tier so 1.10.0/1.10.1 recipients keep receiving messages.
+   The bare verification arm is transitional; remove it once those versions are gone. See §3.6.
 6. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
    §3.2, §5.1, §6.2, §8's skip rule. CLAUDE.md's "no external package manager" line, and its
    "iOS 16.0+" — the deployment target is 18.6.
@@ -516,6 +516,7 @@ encryption falls open to the raw UUID if key derivation fails (§4.1).
 **Signed off by:** ___________________
 **Release version:** 1.10.2
 **Date:** 2026-08-13
-**Full-suite result:** 746 passed / 0 failed / 6 skipped (all `KeychainMigrationSETests` — see §8)
+**Full-suite result:** 758 passed / 0 failed / 6 skipped — 728 Swift Testing tests in 164
+suites plus 36 XCTest cases; all skips are `KeychainMigrationSETests` (see §8)
 **Host used:** Apple Silicon, iPhone 17 Pro Simulator, bare metal (Secure Enclave available)
 **Archive inspected:** Release, `generic/platform=iOS`, `CODE_SIGNING_ALLOWED=NO`
