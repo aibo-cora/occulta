@@ -59,6 +59,22 @@ protocol KeyManagerProtocol {
     ///
     /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
     ///
+    /// ⚠️ **`data` must begin with a domain-separation prefix.** This key also signs
+    /// identity challenges (`"occulta-identity-challenge-v1"`) and vault attributes
+    /// (`"occulta-signed-attribute-v2"`), and a signature carries no record of which context
+    /// produced it — only the bytes decide. Two sites that can produce identical bytes are two
+    /// sites whose signatures are interchangeable.
+    ///
+    /// One caller predates this rule and does not follow it: `wrapRecipient` signs a bare
+    /// 65-byte ephemeral public key for `senderEphemeralSignature`. It is safe today only
+    /// because it is the sole unprefixed site — an X9.63 point starts `0x04` and both prefixes
+    /// start with ASCII `o`, so nothing currently collides with it. That safety is one call
+    /// site deep. **Do not add a second site that signs a bare public key** — this app handles
+    /// 65-byte P-256 points everywhere (identity keys, prekey publics, peer material), so
+    /// signing one for any new purpose would make its signature indistinguishable from a
+    /// sender-ephemeral signature, in both directions. Prefixing `wrapRecipient` is the real
+    /// fix and is a wire-format change; see §3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`.
+    ///
     /// - Returns: DER-encoded ECDSA signature.
     func signData(_ data: Data) throws -> Data
 

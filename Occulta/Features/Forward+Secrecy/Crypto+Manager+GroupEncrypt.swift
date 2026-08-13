@@ -234,6 +234,18 @@ extension Manager.Crypto {
     /// can be a byte or two shorter when `r`/`s` don't need their padding byte — the
     /// same residual size variance already accepted elsewhere for DER signatures in
     /// this codebase (see `GroupShardGatingTests`).
+    ///
+    /// ⚠️ That variance is not actually residual here, and the reason is load-bearing:
+    /// `RecipientPayload` is JSON-encoded, `JSONEncoder` emits `Data` as base64, and 70, 71
+    /// and 72 bytes all base64 to exactly 96 characters — they share a 24-group boundary. So
+    /// FS and fallback slots come out byte-identical in size, not merely close, and a
+    /// mixed-mode group send leaks nothing through `wrappedPayload` length.
+    ///
+    /// The uniformity therefore comes from base64 grouping, not from this length. If
+    /// `RecipientPayload` ever moves off `JSONEncoder` — this codebase already has a binary
+    /// encoder in `WireHandle`, used for v4 baskets — the 70/71/72 spread becomes directly
+    /// observable and this filler stops doing its job. Pad to the real signature's length at
+    /// that point, or keep the encoding.
     private static func randomEphemeralSignatureFiller() -> Data {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<72).map { _ in UInt8.random(in: 0...255, using: &rng) })
