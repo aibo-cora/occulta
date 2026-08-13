@@ -3380,12 +3380,46 @@ than folded into a patch.
 
 ## Bug 81 — Bug 80's fail-closed gate permanently blocks pre-1.10.0 contacts, with no healing path
 
-**Status:** Open. Regression introduced by Bug 80's fix on `release/v1.10.2`. Reported from the
-field within a day: a message from a contact running 1.9.0 failed to open with
-`GroupDecryptError: 7` (`missingSenderEphemeralSignature`, index 7 of that enum).
+**Status:** **Accepted limitation for v1.10.2 — shipping as-is, decided 2026-08-13.** Remedies
+below are deferred, not rejected. Regression introduced by Bug 80's fix; found during development,
+not in the field — a message from a contact running 1.9.0 failed to open with
+`GroupDecryptError: 7` (`missingSenderEphemeralSignature`, index 7 of that enum) on a dev build.
 
-**Target:** undecided — the remedies are cheap, but which to take depends on how many real contacts
-are pre-1.10.0, which is a product question. See "If backward compatibility wins" below.
+**Target:** post-1.10.2, if the affected population turns out to matter.
+
+### The decision, and why it is defensible
+
+Ship the fail-closed gate. Contacts on **1.9.0 ≤ version < 1.10.0** cannot have their forward-secret
+group bundles opened by a recipient whose marker was stranded, until they update.
+
+What makes that acceptable rather than reckless:
+
+- **It closes something live.** On 1.10.0 and 1.10.1 — in the field right now — anyone who ever
+  activated Secure Mode has sender-signature enforcement silently disabled for *every* contact.
+  That is Bug 80's actual vulnerability, and this release is what closes it. Not shipping costs more
+  than shipping.
+- **The blast radius is a one-minor-version band, not "old clients".** Below 1.9.0 there is no group
+  envelope, so those sends route through `decryptSealed` and are never gated. From 1.10.0 the sender
+  signs. Only 1.9.x is both group-enveloped and unable to sign.
+- **It is already per-contact.** The gate fires only on an unsigned FS-mode bundle. A recipient
+  whose contacts are all on 1.10.0+ never sees a rejection — the gate is invisible to them. No
+  additional scoping work was needed to achieve that.
+- **Fallback-mode sends are unaffected.** `.longTermFallback` / `.longTermNoPQ` bundles are not
+  gated, so a 1.9.x contact whose prekeys are exhausted still gets through.
+- **The failure is now legible.** Affected messages say "Ask this contact to update Occulta" rather
+  than surfacing an opaque error code (`f7c41f1`).
+
+### What was considered and not taken
+
+A per-contact exemption for genuinely-old builds was explored and does not work by inference: it
+requires distinguishing "this contact is old" from "this bundle is forged", and every signal
+available at gate time is attacker-controlled — the bundle's own `appVersion` claim most obviously,
+since an attacker forging an unsigned bundle simply claims 1.9.0. The marker that would settle it is
+exactly what Bug 77 destroyed. Any inference-based exemption is fail-open wearing a per-contact
+wrapper.
+
+An exemption grounded in an *authenticated act* does work, which is what Remedy 2 below is. Deferred
+rather than dismissed.
 
 ### Severity: High — blocks legitimate messages, silently and permanently
 
