@@ -142,6 +142,20 @@ extension Manager.Crypto {
     /// doesn't prove who sent the message for that mode (see finding #8,
     /// SecurityReview2026-07-24) — this signature is the actual binding. Mirrors
     /// `SignedAttribute.verify(against:)`'s verification pattern.
+    ///
+    /// Accepts **both** forms: the domain-separated payload that 1.10.2+ senders produce for
+    /// recipients they know can verify it, and the bare ephemeral public key that 1.10.0 and
+    /// 1.10.1 senders produce, and that 1.10.2 senders still produce for older recipients.
+    /// Accepting both is what makes the prefix deployable at all — a receiver cannot know which
+    /// form a given sender chose without trusting the very field the signature exists to
+    /// authenticate.
+    ///
+    /// The prefixed form is tried first so the common case costs one verification once the
+    /// network has moved on. Trying both is not a downgrade: an attacker gains nothing by
+    /// presenting a bare-form signature, because a bare-form signature over this ephemeral key
+    /// is exactly what a legitimate 1.10.0-era sender would have produced. **The bare arm is
+    /// transitional and should be removed once 1.10.0/1.10.1 are out of circulation** — until
+    /// then the domain separation constrains what new senders emit, not what receivers accept.
     func verifySenderEphemeralSignature(_ signature: Data, ephemeralPublicKey: Data, senderPublicKey: Data) -> Bool {
         guard senderPublicKey.count == 65 else { return false }
         let attrs: [String: Any] = [
@@ -152,9 +166,16 @@ extension Manager.Crypto {
         var error: Unmanaged<CFError>?
         guard let pubKey = SecKeyCreateWithData(senderPublicKey as CFData, attrs as CFDictionary, &error)
         else { return false }
-        return SecKeyVerifySignature(
-            pubKey, .ecdsaSignatureMessageX962SHA256,
-            ephemeralPublicKey as CFData, signature as CFData, &error
-        )
+
+        func verify(_ signed: Data) -> Bool {
+            var err: Unmanaged<CFError>?
+            return SecKeyVerifySignature(
+                pubKey, .ecdsaSignatureMessageX962SHA256,
+                signed as CFData, signature as CFData, &err
+            )
+        }
+
+        return verify(Self.ephemeralSignaturePayload(ephemeralPublicKey))
+            || verify(ephemeralPublicKey)
     }
 }

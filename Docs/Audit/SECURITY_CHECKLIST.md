@@ -189,20 +189,30 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       (`IdentityChallenge+Manager.swift:331, 347, 373, 384`), rejection paths included.
 - [x] Identity challenge timestamp window is enforced (replay outside the window is rejected)
       — `guard age < IdentityChallenge.timestampStaleThreshold` (`:243`).
-- [ ] ECDSA signature domain separation prefix is stable and applied at every signing call site
-      — **FAIL: three sites of four.** Prefixed and stable: identity challenge
-      (`"occulta-identity-challenge-v1"`, `IdentityChallenge+Crypto.swift:93`) and both vault
-      attribute sites (`"occulta-signed-attribute-v2"`, `SignedAttribute.swift:134`, used by
-      `Vault+Manager+Backup.swift:341` and `Vault+Manager+Shards.swift:95`).
+- [x] ECDSA signature domain separation prefix is stable and applied at every signing call site
+      — **was FAIL on one site of four, fixed this pass.** Prefixed and stable: identity
+      challenge (`"occulta-identity-challenge-v1"`, `IdentityChallenge+Crypto.swift:93`) and
+      both vault attribute sites (`"occulta-signed-attribute-v2"`, `SignedAttribute.swift:134`).
+      `senderEphemeralSignature` signed the bare ephemeral public key, so one identity key
+      signed both domain-tagged payloads and a raw 65-byte X9.63 point. Nothing collided —
+      the point begins `0x04`, both prefixes begin with ASCII `o` — but the collision space was
+      exactly "65-byte P-256 public key", a shape this app handles everywhere, and the safety
+      was one call site deep.
 
-      Not prefixed: `senderEphemeralSignature` signs the bare ephemeral public key —
-      `signData(secrecyContext.ephemeralPublicKey)`, `Crypto+Manager+GroupEncrypt.swift:207`.
-      The same long-term identity key therefore signs both domain-tagged payloads and a raw
-      65-byte X9.63 point. No confusion is reachable today, because that point always begins
-      `0x04` and is exactly 65 bytes while both prefixes begin with ASCII `o` — the byte spaces
-      do not overlap. But that is a property of the encodings, not a separation anyone
-      designed, and it is the only thing standing between these two uses of one key. Give the
-      ephemeral signature its own prefix.
+      Now `"occulta-sender-ephemeral-v1" ‖ ephemeralPublicKey`, **gated on a capability tier**
+      rather than applied unconditionally. Changing what we sign changes what receivers verify
+      against, and 1.10.0/1.10.1 verify the bare form — prefixing for them would reject our
+      messages outright, in the one direction no patch can reach. So senders prefix only for
+      recipients at `.prefixedSenderSignatureCapable` (1.10.2+, marker byte 0x08), resolved per
+      recipient because a group's members can be on different builds.
+
+      Receivers accept both forms, and must, for as long as 1.10.0/1.10.1 senders exist. That
+      means the separation currently constrains what new senders emit, not what receivers
+      accept — **the bare arm in `verifySenderEphemeralSignature` is transitional and should be
+      removed once those versions are out of circulation.** Until then the property this buys
+      is that no signature minted by a current build can be replayed into a future bare-signing
+      context. `signData`'s documentation carries the rule for whoever adds the next site.
+
 - [x] `buildOwnedBasket` returns `nil` (no basket shown) when an `identityChallenge` envelope
       is present — no double-display
       — `OccultaApp.swift:673–681`.

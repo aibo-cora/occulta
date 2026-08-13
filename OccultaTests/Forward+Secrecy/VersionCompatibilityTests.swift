@@ -89,9 +89,15 @@ struct VersionCapabilityTests {
     // a newer capability tier must not silently lose an older, unrelated capability
     // check just because that check's case list wasn't updated.
     @Test func max_senderSignatureCapableRange_returnsSenderSignatureCapable() {
+        // The range is now closed at the top: 1.10.2 opened
+        // `.prefixedSenderSignatureCapable` above it.
         #expect(OccultaBundle.Version.max(forAppVersion: "1.10.0") == .senderSignatureCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "1.10.1") == .senderSignatureCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .senderSignatureCapable)
+        // Anything far enough ahead lands on whatever the newest tier happens to be. Asserting
+        // the specific case here is what made this test need editing when a tier was added;
+        // asserting the property does not.
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .mostCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0").isAtLeast(.senderSignatureCapable))
     }
 
     @Test func wireByte_senderSignatureCapable_is0x07() {

@@ -1089,7 +1089,8 @@ extension ContactManager {
                     publicKey:       recipientMaterial,
                     quantumMaterial: quantumMaterial,
                     contactPrekey:   contactPrekey,
-                    pendingBatch:    outboundBatch
+                    pendingBatch:    outboundBatch,
+                    prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
                 )]
             )
             let encodedBundle = try bundle.encoded(version: .v4)
@@ -1148,6 +1149,9 @@ private struct PendingGroupRecipient {
     /// the empty arrays above carry no meaning and must not be sent as a real
     /// "zero" signal.
     let shardMetadataAttempted: Bool
+    /// Whether this member's build verifies the domain-separated ephemeral signature.
+    /// Resolved per member, since a group's members can be on different builds.
+    let prefixesEphemeralSignature: Bool
 }
 
 extension ContactManager {
@@ -1231,8 +1235,8 @@ extension ContactManager {
             // one was, in 1.10.0. Every contact on 1.10.0+ resolves to `.senderSignatureCapable`
             // and failed this check, so shard operations, custody manifests and expected-shard
             // lists were silently dropped for exactly the contacts most likely to support them.
-            let memberIsShardCapable = Self.resolveTargetVersion(for: contact, using: cryptoOps)
-                .isAtLeast(.groupShardCapable)
+            let memberVersion = Self.resolveTargetVersion(for: contact, using: cryptoOps)
+            let memberIsShardCapable = memberVersion.isAtLeast(.groupShardCapable)
             let canReceiveShardContent = memberIsShardCapable && quantumMaterial != nil && contactPrekey != nil
 
             var realOps: [OccultaBundle.ShardOperation] = []
@@ -1274,7 +1278,8 @@ extension ContactManager {
                 realShardOperations:    realOps,
                 realCustodyManifest:    realManifest,
                 realExpectedShards:     realExpected,
-                shardMetadataAttempted: metadataAttempted
+                shardMetadataAttempted: metadataAttempted,
+                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
             )
         }
 
@@ -1297,7 +1302,8 @@ extension ContactManager {
                 custodyManifestCount:   manifestCount,
                 expectedShards:         paddedExpected,
                 expectedShardsCount:    expectedCount,
-                shardMetadataAttempted: p.shardMetadataAttempted
+                shardMetadataAttempted: p.shardMetadataAttempted,
+                prefixesEphemeralSignature: p.prefixesEphemeralSignature
             )
         }
 

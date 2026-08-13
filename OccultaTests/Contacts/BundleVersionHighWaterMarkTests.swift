@@ -143,7 +143,7 @@ struct BundleVersionHighWaterMarkTests {
     func unknownFutureByteIsCapable() throws {
         let crypto  = makeTestCrypto()
         let profile = makeProfile()
-        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x08]))
+        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x09]))
 
         #expect(ContactManager.hasReadableBundleVersion(profile, using: crypto))
         #expect(ContactManager.resolveTargetVersion(for: profile, using: crypto)
@@ -170,7 +170,7 @@ struct BundleVersionHighWaterMarkTests {
         let crypto  = makeTestCrypto()
         let manager = try makeManager()
         let profile = makeProfile()
-        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x08]))
+        profile.maxBundleVersion = try crypto.encrypt(data: Data([0x09]))
         try manager.insertProfile(profile)
 
         try manager.updateMaxVersion(from: "1.9.0", for: profile, using: crypto)
