@@ -214,8 +214,17 @@ private struct RootView: View {
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
     /// Raw encrypted `.occ` bytes queued while the app is locked.
-    /// Held without any processing until the PIN depth is known.
-    /// Cleared by onAuthenticated (process) or onDuress (discard).
+    /// Held without any processing until a PIN unlocks the app.
+    ///
+    /// Drained by the shared `.onChange(of: appScreen.phase)` handler on **any** unlock, normal
+    /// or duress alike. `onDuress` used to discard this instead — that discard was the last place
+    /// duress state produced observably different behaviour from a normal unlock, which made it
+    /// part of the detection oracle in
+    /// `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, and it was
+    /// removed in `2958593`.
+    ///
+    /// So reaching `processInboundFile` does **not** imply depth 0. Anything downstream that needs
+    /// depth safety has to establish it for itself rather than inferring it from this path.
     @State private var pendingFileData: Data?
     // Error feedback
     @State private var showError = false
@@ -540,9 +549,9 @@ private struct RootView: View {
                     return
                 }
 
-                // Secure Mode gate: if the app is locked, queue raw bytes
-                // without any processing. PIN entry determines depth; onAuthenticated
-                // processes the data, onDuress discards it.
+                // Secure Mode gate: if the app is locked, queue raw bytes without any
+                // processing. Both unlock paths then drain it identically — see
+                // `pendingFileData`; a duress unlock no longer discards it.
                 if self.appScreen.phase != .unlocked {
                     self.pendingFileData = data
                     return
