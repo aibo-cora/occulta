@@ -3283,6 +3283,12 @@ nothing to write when nothing moved.
 **Status:** Fixed on `release/v1.10.2` (gate fails closed, capability tier is now a high-water
 mark). One operational item remains — see "Still open" at the end.
 
+**⚠ The fix has a regression: see Bug 81.** The interop cost recorded below as "stays gated until
+they update" is stated too mildly. Both paths that would let a pre-1.10.0 contact heal their marker
+are closed — one by the gate running before `updateMaxVersion`, the other by the high-water mark
+floor added here — so such a contact is blocked permanently rather than temporarily. Reported from
+the field within a day of this landing.
+
 **Target:** v1.10.2
 
 ### Severity: High — an authentication check is silently off on every affected install
@@ -3369,3 +3375,111 @@ closed — and doing so still rejects legitimate unsigned bundles from any conta
 pre-1.10.0 *and* whose marker was stranded, until they update. That interop cost against restoring
 an authentication check is a product decision, which is why this is recorded rather than applied. That is the decision to take, and it should be taken deliberately rather
 than folded into a patch.
+
+---
+
+## Bug 81 — Bug 80's fail-closed gate permanently blocks pre-1.10.0 contacts, with no healing path
+
+**Status:** Open. Regression introduced by Bug 80's fix on `release/v1.10.2`. Reported from the
+field within a day: a message from a contact running 1.9.0 failed to open with
+`GroupDecryptError: 7` (`missingSenderEphemeralSignature`, index 7 of that enum).
+
+**Target:** undecided — the remedies are cheap, but which to take depends on how many real contacts
+are pre-1.10.0, which is a product question. See "If backward compatibility wins" below.
+
+### Severity: High — blocks legitimate messages, silently and permanently
+
+### What happens
+
+Three conditions, each individually expected:
+
+1. The recipient activated Secure Mode before 1.10.2, so **every** contact's `maxBundleVersion` is
+   stranded (Bug 77).
+2. The sender is genuinely on 1.9.0 and therefore cannot produce a `senderEphemeralSignature` —
+   that shipped in 1.10.0.
+3. Bug 80's gate treats a stranded marker as "cannot prove they are incapable" and rejects
+   unsigned FS-mode bundles.
+
+The gate does exactly what it was designed to do. The problem is what happens next.
+
+### Both healing paths are closed, which Bug 80's write-up did not say
+
+Bug 80 records this cost as a contact who "stays gated until they update", implying ordinary use
+eventually repairs it. It does not.
+
+**Group path — closed by ordering.** The gate is at `Contact+Manager.swift:1727`;
+`updateMaxVersion` is at `:1760`. The throw happens first, so a group bundle can never record the
+sender's version. The state that causes the rejection is the state the rejection prevents fixing.
+
+**Single-recipient path — closed by the high-water mark.** `updateMaxVersion` treats a stranded
+marker as `.senderSignatureCapable` for the floor. A 1.9.0 contact claims `.groupCapable`, which
+fails `isAtLeast`, so the write is skipped and the marker stays stranded. That floor was added
+deliberately — to stop an attacker clearing a stranded marker with a low claim — without noticing
+it also blocks the legitimate case.
+
+Net: a pre-1.10.0 contact with a stranded marker is **permanently** blocked from group messaging.
+Nothing the recipient can do repairs it. The only escape is the sender upgrading to 1.10.0+, at
+which point they clear the floor and sign anyway.
+
+### What can be authenticated, which is what any fix must rest on
+
+| Channel | Proves sender identity | Carries `appVersion` |
+|---|---|---|
+| FS-mode bundle | No — session key never involves the long-term key | Yes, but unauthenticated |
+| `.longTermFallback` / `.longTermNoPQ` bundle | **Yes** — long-term key is in the ECDH | **Yes, authenticated** |
+| Identity challenge | **Yes** (ECDSA verify, `IdentityChallenge+Manager.swift:377`) | No |
+
+### Remedy 1 — accept a version claim carried in an identity-binding mode
+
+Allow a stranded marker to be *lowered* by a claim arriving in `.longTermFallback` or
+`.longTermNoPQ`. Producing one requires the sender's long-term private key, so the claim is
+authenticated — exactly the property whose absence justifies distrusting FS-mode claims. Needs the
+recipient mode plumbed into `updateMaxVersion`.
+
+Free and automatic, but opportunistic: fallback mode occurs only when prekeys are exhausted or
+unavailable, so it heals on no predictable schedule.
+
+### Remedy 2 — reset the marker on a passed identity challenge
+
+The challenge authenticates the contact but carries no version, so the right tier cannot be set
+from it. It can, however, clear the stranded marker to `.unrecorded`. That restores first-contact
+semantics: the gate accepts the next bundle, `updateMaxVersion` records the real tier (floor for
+`.unrecorded` is `.v3fs`, so `.groupCapable` writes cleanly), and the contact works permanently
+thereafter.
+
+This is the reliable path — user-initiated, on demand, and it maps onto the existing trust-check
+UX. Cost is a one-message window in which an unsigned bundle from that contact is accepted,
+immediately after cryptographically verifying them. A reasoned trust decision rather than a hole.
+
+Remedies 1 and 2 are complementary: automatic where fallback happens to occur, on demand where it
+does not. Neither weakens the gate, because both require proof of the long-term key.
+
+### Rejected — blanket amnesty for existing stranded markers on upgrade
+
+The tempting move: since rotation now re-keys the field, no *new* stranding can occur, so every
+stranded marker is a historical artifact of our own bug rather than anything an attacker created.
+Therefore treat them all as `.unrecorded` at upgrade and restore compatibility in one step.
+
+The premise is true and the conclusion does not follow. The attacker never needed to create
+stranded markers — they exploit whichever ones exist. Amnesty restores the accept-unsigned state
+for every pre-existing contact simultaneously, which is precisely the vulnerability Bug 80 closed.
+It is fail-open with extra steps, and it reads as principled in a commit message. Recorded here
+because it is the intuitive idea and it is wrong.
+
+### If backward compatibility wins
+
+The honest alternative is to fail open for stranded markers again and surface an "unverified
+sender" indicator on affected messages. That restores every pre-1.10.0 contact immediately and
+keeps the user informed rather than protected.
+
+Whether that is right depends on how many real contacts are pre-1.10.0 — unknown here. If it is
+most of them, a gate that blocks real messages to close an attack that still requires prekey
+material issued to the impersonated contact may be the wrong trade for now. That is a product
+decision, not a security one, and it should be taken with the population figure in hand.
+
+### Regardless of which remedy is chosen
+
+The failure is currently opaque: `GroupDecryptError: 7` in a log, with no user-facing explanation.
+It should say what the group-eligibility screen already says — that this contact needs to update
+Occulta, or can be verified to restore messaging. A silent, permanent message failure is worse
+than the vulnerability it is guarding against, because the user cannot even see it happening.

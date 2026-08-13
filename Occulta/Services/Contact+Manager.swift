@@ -1818,6 +1818,7 @@ extension ContactManager {
         // cannot establish that the sender is incapable, and this check is the only thing
         // binding an FS-mode bundle to the sender's identity.
         let isFSMode = recipientMode == .forwardSecret || recipientMode == .forwardSecretNoPQ
+        
         if isFSMode, recipientPayload.senderEphemeralSignature == nil {
             switch Self.bundleVersionState(for: sender, using: cryptoOps) {
             case .readable(let version) where version.isAtLeast(.senderSignatureCapable):
