@@ -84,7 +84,7 @@ This is the same underlying tension already identified from the opposite directi
 
 - ~~**Silent drop instead of a surfaced error?**~~ **Decided 2026-08-07: no — keep the surfaced alert in all cases.** See "Wording parity verified" below: the two failure categories already produce identical, surfaced error text, and that was judged sufficient cover for a single observation. Silent-drop-everywhere was considered and rejected as a broader behavior change (legitimate users lose feedback for ordinary misdirected/corrupted files at real depth 0 too) than this pass's scope called for.
 - ~~**Is there any way to make the two failure categories statistically indistinguishable**, not just textually identical? E.g., could real depth-0 mode be made to occasionally reject a known contact's message for unrelated legitimate reasons at a similar rate, so a duress-depth rejection isn't categorically anomalous?~~ **Superseded 2026-08-13 — the mechanism this asks about no longer exists.** It presumes a depth-conditional *rejection*, and `passSecurityControl`'s removal deleted the only one. A full inbound-path trace found no depth-correlated rejection anywhere. It also found that the live residual is a different shape entirely — a *presence* signal, not a failure signal — which needs a different question. See "2026-08-13 — Full inbound-path trace" at the bottom.
-- **How much of this can actually be closed, versus accepted as a residual limit** on what this app's threat model can defend against (an adversary with physical control who can force live protocol tests, as opposed to only inspecting data at rest)? Worth an explicit decision rather than leaving it implicitly unresolved. Still open.
+- ~~**How much of this can actually be closed, versus accepted as a residual limit** on what this app's threat model can defend against (an adversary with physical control who can force live protocol tests, as opposed to only inspecting data at rest)?~~ **Answered 2026-08-13 for the surviving case: residual limit, structurally.** The rejection oracle was fixable because rejection was one choice among several; the presence oracle that replaced it is not, and an out-of-band transport names the sender before the app is involved. Decision and full option analysis in "2026-08-13 — Full inbound-path trace" at the bottom. The general form of the question — other mechanisms, other surfaces — stays open.
 
 No fix to the core oracle is scoped here — this needs a decision on direction before any implementation is attempted.
 
@@ -333,20 +333,72 @@ is also strictly easier to exploit than the oracle this document was opened abou
 either a coercer-controlled device or a pattern observed over time, whereas this needs one
 inbound message and a glance at two screens.
 
-### The live question, restated
+### Decision, 2026-08-13 — accepted as a documented limitation, flow unchanged
 
 Open question #2 asked how to make two failure categories statistically indistinguishable. There
-are no longer two failure categories. The question that actually remains:
+are no longer two failure categories. The candidate that replaced it — have the read sheet resolve
+sender identity through the same visibility filter the contact list uses, showing `Contact.Info`'s
+"Anonymous" fallback for a hidden sender — was proposed, examined, and **rejected**. Two reasons,
+the second decisive.
 
-> Should the read sheet resolve sender identity through the same visibility filter the contact
-> list uses — showing `Contact.Info`'s existing "Anonymous" fallback for a sender hidden at the
-> current depth?
+**1. "Anonymous" is the same tell wearing a different label.** That fallback fires only when no
+contact matches the identifier, and `identifyOwner` requires a match to succeed — so it is
+currently unreachable on this path at any depth. Adding the filter would make it reachable *only*
+at a duress depth. The signal moves from "this name is not in my contact list" to "the word
+Anonymous is on screen"; it does not go away.
 
-Small change, and the cost is real and falls on the legitimate user: at a duress depth they would
-also lose the sender's identity, in precisely the situation where knowing who is trying to reach
-them may matter most. At depth 0 nothing changes.
+**2. The identity was already disclosed by the transport, before Occulta ran.** Bundles arrive out
+of band — through a messaging app, AirDrop, email, whatever the two parties chose. That channel is
+outside this app's control and has already mapped the sender to a name, handle or nickname on the
+delivery screen. Anyone holding the phone saw who sent the file before tapping it. In-app
+anonymisation therefore conceals nothing an observer does not already have; it is theatre that
+costs the legitimate user the sender's identity in exchange for no confidentiality.
 
-Not decided, and deliberately not implemented here — the trade is a product judgement about what
-the duress view owes its real owner, not a straightforward security win. Open question #3 ("how
-much can be closed versus accepted as a residual limit") is the right frame for it and remains
-open; this trace narrows what that decision is actually about.
+### Why no other option closes it either
+
+The exposure follows from an invariant, not an implementation choice. Key exchange is
+proximity-only, so:
+
+> **openable ⟹ the sender is a known contact**
+
+The duress view's purpose is to hide some known contacts. A message from one of them forces an
+inconsistency that has to surface somewhere:
+
+| Handling | What still leaks |
+|---|---|
+| Render the real name | Sender absent from the contact list — the presence oracle |
+| Render "Anonymous" | A string unreachable at depth 0 — same oracle, and see (2) above |
+| Reject with an error | The original `passSecurityControl` oracle this document opened on |
+| Silently queue until depth 0 | "Nothing happens on tap" is itself only reachable under duress |
+| Render a fabricated identity | Still absent from the list, and now the app is lying to its owner |
+
+Closing it would require depth 0 to produce the same observable — messages from contacts not in
+the list, or files that sometimes do nothing when tapped. That contradicts the invariant above: the
+app has no concept of a stranger, because it cannot decrypt anything from one.
+
+Silent queueing deserves a note as the least-bad of the alternatives, since it also satisfies C1
+properly — visibility can be checked after `identifyOwner` and before decryption, so sensitive
+content is never decrypted under duress — and a coercer-paired contact would not trigger it, since
+a contact created at depth N gets `ceiling = N` and `originDepth = N` and is visible there. It is
+still a depth-conditional difference in observable behaviour, so it trades a strong signal for a
+weaker one rather than removing it. Not adopted; recorded so the next person evaluating it has the
+analysis rather than the idea alone.
+
+### What was decided
+
+**The flow is left exactly as it is.** A message from a contact hidden at the current depth opens
+and displays with the sender's name, as it does today. This is an accepted, documented limitation,
+not an oversight and not a deferred fix.
+
+This answers open question #3 ("how much can actually be closed, versus accepted as a residual
+limit") for this specific case: it is a residual limit, and structurally so. The rejection oracle
+was fixable because rejection was one implementation choice among several. This is not — it falls
+out of proximity-only key exchange plus per-depth contact hiding, compounded by an out-of-band
+transport that names the sender before the app is involved.
+
+Two things remain true and worth keeping in view. The exposure needs a real third party to send
+during the coercion window, which is timing-bounded and not adversary-controlled. And *content*
+confidentiality is separable from the identity leak — checking visibility before decrypting would
+keep the message body unread even where "a message arrived, from someone" is inferable. That option
+is not taken here, since the flow is unchanged, but it remains available and is a different
+question from this one.
