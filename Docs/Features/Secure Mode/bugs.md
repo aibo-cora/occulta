@@ -3517,3 +3517,93 @@ The failure is currently opaque: `GroupDecryptError: 7` in a log, with no user-f
 It should say what the group-eligibility screen already says — that this contact needs to update
 Occulta, or can be verified to restore messaging. A silent, permanent message failure is worse
 than the vulnerability it is guarding against, because the user cannot even see it happening.
+
+---
+
+## Bug 82 — A contact key re-exchange makes every in-flight message from that contact permanently undecryptable
+
+**Status:** **Open — not fixed in v1.10.2.** Found 2026-08-13 while scoping the §2.2 prekey
+finding in `Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback-mode half has been
+there for as long as `resolveSenderPublicKey` has, and the signature half arrived with 1.10.0.
+Not introduced by this release.
+
+**Target:** post-1.10.2.
+
+### What happens
+
+`ContactManager.resolveSenderPublicKey` resolves a sender to exactly one key:
+
+```swift
+sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+```
+
+`Contact+Manager.swift:1633`. The newest non-expired record, and nothing else.
+
+The model keeps the rest. `saveKey` **appends** a new `Contact.Profile.Key` when a contact
+re-exchanges (`:565`) and emits `contactKeyRotated` when the fingerprint actually changed
+(`:574`). Nothing deletes the superseded record, and `expiredOn` is written only by
+`reset(identity:)` (`:588`). So the full history is sitting in the store, and this line never
+looks at it.
+
+Any message sealed **before** the re-exchange was built against the old key. After the
+re-exchange we resolve the new one, and every check that depends on the sender's identity
+compares against a key that did not exist when the message was made.
+
+### Why it costs more than a signature failure
+
+That single value feeds three separate consumers on the inbound path, and all three break:
+
+| Consumer | Where | Failure |
+|---|---|---|
+| Fallback-mode wrapping key — `ECDH(ourLongTermPriv, theirLongTermPub)` | `deriveInboundKey` → `deriveSessionKey(using:quantumMaterial:)` | Key cannot be derived, the slot never opens, `recipientSlotNotFound` |
+| `verifySenderEphemeralSignature` | `Crypto+Manager+GroupDecrypt.swift:105` | `senderEphemeralSignatureMismatch` |
+| `senderProof` HMAC over the sender's public key | `Contact+Manager.swift:1856` | `senderProofMismatch` |
+
+So this is not only "forward-secret messages fail to verify". **Fallback-mode messages become
+undecryptable outright**, because the sender's identity key is load-bearing in that mode's key
+derivation. The 1:1 path resolves the sender the same way (`:1565`) and fails identically.
+
+There is no healing path. The resolution never widens, so re-opening the same file fails the
+same way forever. The messages are lost, not delayed.
+
+### Severity
+
+Availability, not confidentiality — nothing is exposed, and a forged bundle is no more likely to
+be accepted than before. But the loss is silent and permanent, and it lands on ordinary use: a
+contact reinstalling the app and re-exchanging keys is a normal thing to do, not an edge case.
+
+### Interaction with the §2.2 prekey finding
+
+The forward-secret half of this is one of the three throw sites that currently leave a prekey
+unconsumed, and it is the **only** one reachable without an attacker. That matters for how §2.2
+gets fixed: any remedy there that consumes the prekey on rejection would, in this scenario, also
+destroy the prekey a legitimate message was sealed to — turning a lost message into a lost
+message *and* a burned key. Fixing this first confines that cost to genuinely forged bundles.
+
+### Remedy
+
+Resolve a candidate **set** rather than a single key. Try the current key first, exactly as
+today, and walk back through the older records only when it fails — the common path keeps its
+present cost, and the extra work happens only where the code currently gives up. Whichever
+candidate succeeds must then be used for the rest of the bundle: the key that opened the slot
+has to be the same key `senderProof` is checked against, or the mismatch just moves.
+
+Bound the candidate count. `findAndOpenRecipientSlot` already loops over recipient slots, so
+adding candidates makes fallback mode O(slots × keys) trial decryptions, and Bug 74 is the
+standing reminder that Secure Enclave round trips have a ceiling.
+
+### The tradeoff this makes, which is the real decision
+
+Accepting signatures from superseded keys weakens rotation as a **revocation** mechanism. If a
+contact rotates precisely because their old key was compromised, anyone holding that old key can
+keep impersonating them for as long as we accept it.
+
+Both properties are available, because the model already encodes the difference and the code
+currently ignores it:
+
+- A key explicitly expired through `reset(identity:)` carries a timestamp in `expiredOn`. **Never
+  accept it** — that keeps `reset` a real revocation lever.
+- A key merely *superseded* — a newer record appended, no expiry written — is the ordinary
+  re-exchange case, and is safe to accept.
+
+Today `resolveSenderPublicKey` treats the two identically by looking at neither.

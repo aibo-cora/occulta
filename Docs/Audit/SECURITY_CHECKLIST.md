@@ -96,7 +96,8 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       is exposed by anyone choosing to trigger this.
 
       The case that does cost something is ordinary, not adversarial: **sender key rotation with
-      a message in flight.** `resolveSenderPublicKey` returns only the current unexpired record
+      a message in flight** — now filed separately as **Bug 82**, because the lost message is a
+      defect in its own right and the prekey is the second casualty rather than the first. `resolveSenderPublicKey` returns only the current unexpired record
       (`:1633`), and a re-exchange appends a new key and expires the old (`:589`). A legitimate
       forward-secret message sealed before that rotation carries a signature over the old key,
       fails verification at site 1, and is rejected — leaving a real ciphertext that a
@@ -213,6 +214,17 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       is that no signature minted by a current build can be replayed into a future bare-signing
       context. `signData`'s documentation carries the rule for whoever adds the next site.
 
+- [ ] Messages already in flight survive a contact key re-exchange
+      — **FAIL. Filed as Bug 82**, pre-existing rather than introduced by this release.
+      `resolveSenderPublicKey` (`Contact+Manager.swift:1633`) returns only the newest unexpired
+      key record, while the model retains the whole history — `saveKey` appends on re-exchange
+      and only `reset(identity:)` ever writes `expiredOn`. Three inbound consumers depend on
+      that value: the fallback-mode wrapping key, `verifySenderEphemeralSignature`, and the
+      `senderProof` HMAC. All three compare against a key that did not exist when the message
+      was sealed, so fallback-mode messages become undecryptable outright and forward-secret
+      ones fail verification. Silent, permanent, and triggered by something ordinary — a
+      contact reinstalling and re-exchanging. New item; the checklist did not previously assert
+      this anywhere.
 - [x] `buildOwnedBasket` returns `nil` (no basket shown) when an `identityChallenge` envelope
       is present — no double-display
       — `OccultaApp.swift:673–681`.
@@ -503,7 +515,11 @@ the contributor set grows beyond people with commit access.
 5. ~~`senderEphemeralSignature` has no domain-separation prefix~~ — **fixed**, behind the
    `.prefixedSenderSignatureCapable` tier so 1.10.0/1.10.1 recipients keep receiving messages.
    The bare verification arm is transitional; remove it once those versions are gone. See §3.6.
-6. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
+6. **In-flight messages do not survive a contact key re-exchange** (§3, Bug 82) — pre-existing,
+   availability rather than confidentiality, and worth fixing before §2.2 rather than after: it
+   is the only trigger of §2.2's rejection path that needs no attacker, so closing it confines
+   any consume-on-rejection remedy to genuinely forged bundles.
+7. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
    §3.2, §5.1, §6.2, §8's skip rule. CLAUDE.md's "no external package manager" line, and its
    "iOS 16.0+" — the deployment target is 18.6.
 
