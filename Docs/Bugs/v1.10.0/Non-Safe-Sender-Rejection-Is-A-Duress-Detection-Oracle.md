@@ -83,7 +83,7 @@ This is the same underlying tension already identified from the opposite directi
 ## Open questions — not yet decided
 
 - ~~**Silent drop instead of a surfaced error?**~~ **Decided 2026-08-07: no — keep the surfaced alert in all cases.** See "Wording parity verified" below: the two failure categories already produce identical, surfaced error text, and that was judged sufficient cover for a single observation. Silent-drop-everywhere was considered and rejected as a broader behavior change (legitimate users lose feedback for ordinary misdirected/corrupted files at real depth 0 too) than this pass's scope called for.
-- **Is there any way to make the two failure categories statistically indistinguishable**, not just textually identical? E.g., could real depth-0 mode be made to occasionally reject a known contact's message for unrelated legitimate reasons at a similar rate, so a duress-depth rejection isn't categorically anomalous? Untested, and may not be achievable without cost elsewhere. **Still fully open** — this is now the primary residual gap for the passive-receipt variant above: identical wording defeats a single observation, not a pattern noticed over extended physical control (one contact's messages consistently failing while others' don't).
+- ~~**Is there any way to make the two failure categories statistically indistinguishable**, not just textually identical? E.g., could real depth-0 mode be made to occasionally reject a known contact's message for unrelated legitimate reasons at a similar rate, so a duress-depth rejection isn't categorically anomalous?~~ **Superseded 2026-08-13 — the mechanism this asks about no longer exists.** It presumes a depth-conditional *rejection*, and `passSecurityControl`'s removal deleted the only one. A full inbound-path trace found no depth-correlated rejection anywhere. It also found that the live residual is a different shape entirely — a *presence* signal, not a failure signal — which needs a different question. See "2026-08-13 — Full inbound-path trace" at the bottom.
 - **How much of this can actually be closed, versus accepted as a residual limit** on what this app's threat model can defend against (an adversary with physical control who can force live protocol tests, as opposed to only inspecting data at rest)? Worth an explicit decision rather than leaving it implicitly unresolved. Still open.
 
 No fix to the core oracle is scoped here — this needs a decision on direction before any implementation is attempted.
@@ -277,3 +277,76 @@ Extends the `originDepth` design above to its logical conclusion, reached by wor
 **`handleReplace`'s missing ownership check (flagged earlier as a prerequisite for the duress-origin case alone) is now a hard blocker for the whole design, not a narrower one.** With `passSecurityControl` gone entirely, *any* known contact — not just duress-origin ones — can reach shard-mutation code paths under restriction. `ShardCustody+Manager.swift:148`'s `handleReplace` deletes by `oldID` alone with no check that the replacing sender owns the shard being replaced. This must land before or alongside this change, not after.
 
 **Scope, final:** this closes the entire rejection-based oracle (both variants, unconditionally) and narrows the remaining risk to a single, deliberately accepted, timing-bounded content-exposure case — a real sensitive contact's new message during the passive variant. The `handleReplace` fix and the `originDepth` migration plan scoped earlier both still apply, now motivated by the full design rather than half of it.
+
+---
+
+## 2026-08-13 — Full inbound-path trace: the rejection oracle is gone, a presence oracle is not
+
+Prompted by noticing that Open question #2 presumes a depth-conditional rejection, while
+`passSecurityControl` — the only thing that produced one — was deleted in `b1f9045`. The question
+had not been revisited after its own fix landed, so it was unclear whether anything still leaked
+that way. Traced every branch reachable from an inbound `.occ` file, from receipt to display.
+
+### Result 1 — no depth-correlated rejection survives
+
+| Stage | Depth-dependent? |
+|---|---|
+| `processInboundFile` error branches | No — every branch is bundle-shape or crypto failure |
+| `buildOwnedBasket` | No depth or restriction check anywhere; branches on group vs 1:1, identity-challenge, shard ops, empty message |
+| `identifyOwner` | No — `fetchAllContacts()` filters on `deletionToken` only, so a hidden contact still matches as sender |
+| `ShardCustodyManager.handleInbound` | No depth references in the file |
+| `IdentityChallenge` inbound handlers | Same — none |
+| Message persistence | Not persisted; inbound messages render transiently and are never written as `Contact.Message` |
+
+Nothing on this path fails, or succeeds, differently because of the current depth. The
+rejection-based oracle is closed in fact, not just in intent — which is what the status line at the
+top already claimed, now verified rather than asserted.
+
+### Result 2 — a presence oracle survives, and it is a different shape
+
+The read sheet renders `Contact.Info(identifier: owner)`
+(`ComposableMessage.swift:209`), which resolves the sender's name through a `@Query` filtered on
+identifier alone. No visibility filter; `Contact.Profile.descriptor` is not depth-aware either. And
+per Result 1, `identifyOwner` happily matches a contact hidden at the current depth.
+
+Put together:
+
+- **At depth 0**, every message that opens is from a contact present in the list. A contact hidden
+  at depth 0 cannot be the sender of an openable message, because hiding is a ceiling and 0 is the
+  floor.
+- **At a duress depth**, a message can open and display **with the sender's real name** while that
+  contact is absent from the contact list.
+
+"A message from someone who is not in my contacts" is an outcome reachable **only** at a duress
+depth. A coercer holding the phone reads the name off the sheet and checks the list. No probe, no
+force-pairing, no repeated sampling.
+
+### Why this is worse than the residual currently recorded
+
+The status line describes what remains as "a timing-bounded content-confidentiality risk … a real,
+unaware third party's message rendering on screen during a coercion window", and characterises it
+as "not a detection oracle in the original sense".
+
+The content leaking is indeed the accepted trade. The **name rendering while the contact does not
+appear in the list** is a detection signal sitting on top of it, and it was not separated out. It
+is also strictly easier to exploit than the oracle this document was opened about: that one needed
+either a coercer-controlled device or a pattern observed over time, whereas this needs one
+inbound message and a glance at two screens.
+
+### The live question, restated
+
+Open question #2 asked how to make two failure categories statistically indistinguishable. There
+are no longer two failure categories. The question that actually remains:
+
+> Should the read sheet resolve sender identity through the same visibility filter the contact
+> list uses — showing `Contact.Info`'s existing "Anonymous" fallback for a sender hidden at the
+> current depth?
+
+Small change, and the cost is real and falls on the legitimate user: at a duress depth they would
+also lose the sender's identity, in precisely the situation where knowing who is trying to reach
+them may matter most. At depth 0 nothing changes.
+
+Not decided, and deliberately not implemented here — the trade is a product judgement about what
+the duress view owes its real owner, not a straightforward security win. Open question #3 ("how
+much can be closed versus accepted as a residual limit") is the right frame for it and remains
+open; this trace narrows what that decision is actually about.
