@@ -8,7 +8,10 @@ import CryptoKit
 
 // MARK: - Group decrypt errors
 
-enum GroupDecryptError: Error {
+/// `Equatable` is explicit rather than implicit: Swift synthesises it for enums with no
+/// associated values, and adding `senderID` to two cases silently removed it — breaking the
+/// `#expect(throws:)` assertions in `GroupDecryptTests` that compare error values.
+enum GroupDecryptError: Error, Equatable {
     case noGroupEnvelope
     case recipientSlotNotFound
     /// The `senderProof` inside the decrypted payload does not match
@@ -32,7 +35,18 @@ enum GroupDecryptError: Error {
     /// A FS-mode recipient's signature is missing, but the sender has previously
     /// demonstrated (via `appVersion`) that their build produces one — so its absence
     /// here means it was stripped, not that the sender can't produce it.
+    /// FS-mode bundle carried no `senderEphemeralSignature` from a sender this device has
+    /// recorded as *able* to produce one. That is a forgery signal, not a compatibility
+    /// problem: their build signs, and this bundle did not. Kept distinct from the case below
+    /// so the UI can say something true about each — see `processInboundFile`.
     case missingSenderEphemeralSignature
+    /// FS-mode bundle carried no `senderEphemeralSignature` and this device cannot establish
+    /// whether the sender's build can produce one — their recorded capability was stranded by
+    /// a pre-1.10.2 key rotation (Bug 77). Rejected because incapability cannot be proven, but
+    /// the overwhelmingly likely cause is an older contact rather than an attack, so it is kept
+    /// distinct from the case above. Conflating the two would tell a genuine impersonation
+    /// victim to go ask their friend to update. See Bug 81.
+    case senderSignatureCapabilityUnknown
 }
 
 // MARK: - Group-decrypt crypto helpers

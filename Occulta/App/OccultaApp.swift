@@ -581,6 +581,18 @@ private struct RootView: View {
                 OccultaBundle.BundleError.unsupportedMode {
             self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
             self.showError = true
+        } catch GroupDecryptError.senderSignatureCapabilityUnknown {
+            // Almost certainly an older contact rather than an attack — see Bug 81. Their build
+            // predates sender signatures, and this device can no longer read the record that
+            // would prove it, so the message is refused.
+            self.errorMessage = "Couldn't open this message. Ask this contact to update Occulta."
+            self.showError = true
+        } catch GroupDecryptError.missingSenderEphemeralSignature {
+            // Deliberately not the "ask them to update" wording: this sender is recorded as able
+            // to sign and did not, which is a forgery signal. Telling the user to ask for an app
+            // update here would train them to read a real impersonation attempt as housekeeping.
+            self.errorMessage = "This message could not be verified as coming from this contact, so it wasn't opened."
+            self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true

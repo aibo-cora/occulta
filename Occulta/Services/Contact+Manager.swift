@@ -1822,9 +1822,12 @@ extension ContactManager {
         if isFSMode, recipientPayload.senderEphemeralSignature == nil {
             switch Self.bundleVersionState(for: sender, using: cryptoOps) {
             case .readable(let version) where version.isAtLeast(.senderSignatureCapable):
+                // Known to sign, and did not — treat as a forgery signal.
                 throw GroupDecryptError.missingSenderEphemeralSignature
             case .unreadable:
-                throw GroupDecryptError.missingSenderEphemeralSignature
+                // Capability unknowable (stranded marker). Same rejection, different cause, and
+                // the caller needs to be able to tell them apart to say anything useful.
+                throw GroupDecryptError.senderSignatureCapabilityUnknown
             case .readable, .unrecorded:
                 break
             }
