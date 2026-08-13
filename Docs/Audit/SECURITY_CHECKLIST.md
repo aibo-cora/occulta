@@ -324,8 +324,9 @@ sign-off block, not against project settings alone.
 - [x] `features.plist` flags are set to their intended release values
       — `signature: false`, `useComposableMessage: true`,
       `useMultipleRecipientMessageFormat: true`, plus `secureMode: true` and
-      `enableShamirShardSharing: true`. **Confirm `signature: false` is intended for this
-      release** — it is the one flag whose value is not self-evidently the shipping one.
+      `enableShamirShardSharing: true`. `signature: false` confirmed as the intended shipping
+      value for 1.10.2 (2026-08-13) — it is the one flag whose value is not self-evident from
+      the code, so it is recorded rather than re-derived at each release.
 - [x] Entitlements contain only the capabilities actually used — no stale or over-broad entries
       — both `Occulta.entitlements` and `ShareExtension.entitlements` contain exactly one key,
       `com.apple.security.application-groups`. The `aps-environment` entries that appear in
