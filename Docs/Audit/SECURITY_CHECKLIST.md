@@ -63,24 +63,59 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       (`app.layer.key.occulta.v1`). No tag serves two roles.
 - [ ] Prekey private keys are deleted from SE immediately after a successful `open()` — no
       deferred cleanup
-      — **FAIL on the group path, introduced by this release.** The 1:1 path is correct:
-      `open` at `Contact+Manager.swift:1574`, `consume(prekey:)` at `:1581`, nothing between
-      them that can throw. The group path opens the recipient slot at `:1795` and consumes at
-      `:1841`, and this release inserted the sender-ephemeral-signature gate at `:1822` in
-      between — a gate whose whole purpose is to `throw`. A bundle that opens successfully and
-      then fails that check leaves the prekey alive in the Secure Enclave.
+      — **FAIL on the group path.** The 1:1 path is correct: `open` at
+      `Contact+Manager.swift:1574`, `consume(prekey:)` at `:1581`, nothing between them that can
+      throw. On the group path there are **three** throw sites between the prekey being used and
+      the prekey being deleted, and each leaves it alive in the Enclave:
 
-      To reach it an attacker needs prekey material we issued, which is the same bar as the
-      finding the gate was added to close, so this is not open to arbitrary third parties. What
-      it costs is the forward-secrecy property the consume exists to provide: an attacker who
-      can deliver `.occ` files can hold a prekey open indefinitely, and every message ever
-      sealed to it stays decryptable if the device is later seized. Normal traffic is
-      unaffected — a capable sender always signs, so the gate does not fire.
+      | # | Throw | Where | Added by 1.10.2? |
+      |---|-------|-------|------------------|
+      | 1 | `senderEphemeralSignatureMismatch` | `Crypto+Manager+GroupDecrypt.swift:105` — **inside** `findAndOpenRecipientSlot` | No |
+      | 2 | `missingSenderEphemeralSignature`  | `Contact+Manager.swift:1826` | Yes |
+      | 3 | `senderSignatureCapabilityUnknown` | `Contact+Manager.swift:1830` | Yes |
 
-      Fix is an ordering decision rather than a one-liner, which is why it is reported and not
-      applied: consuming before the check means a rejected forgery also runs
-      `clearPendingBatch()`, letting an attacker manipulate batch state. Consuming the prekey
-      before the gate while leaving the batch bookkeeping after it separates the two correctly.
+      Site 1 predates this release — it arrived with the 2026-07-24 remediation — so the release
+      widened an existing gap rather than opening it.
+
+      **Site 1 is why this is not a reordering fix.** It throws inside a callee that computes
+      `consumable` as a local and drops it on the way out. Nothing rearranged within `openGroup`
+      can reach it. Covering all three means changing `findAndOpenRecipientSlot`'s contract:
+      consume inside it, return the consumable alongside the error, or hoist verification into
+      the caller.
+
+      **What it cannot do.** `deriveInboundKey` has no side effects — it retrieves the private
+      key and derives, nothing more — so a throw leaves the model untouched and the Enclave key
+      intact. There is no half-written state to repair. All three throws also land before the
+      batch bookkeeping at `:1843`, so no `generateAndStoreFreshBatch`, no pool growth, and
+      nothing an attacker can pump. The bug cannot be used to consume or exhaust prekeys, only
+      to keep one alive.
+
+      **What it costs, stated precisely.** Not "every message sealed to that prekey becomes
+      readable" — for an attacker-triggered rejection the only thing that opened is the
+      attacker's own forged bundle, whose content they already know, so no legitimate plaintext
+      is exposed by anyone choosing to trigger this.
+
+      The case that does cost something is ordinary, not adversarial: **sender key rotation with
+      a message in flight.** `resolveSenderPublicKey` returns only the current unexpired record
+      (`:1633`), and a re-exchange appends a new key and expires the old (`:589`). A legitimate
+      forward-secret message sealed before that rotation carries a signature over the old key,
+      fails verification at site 1, and is rejected — leaving a real ciphertext that a
+      still-live prekey opens. That message is both undeliverable and stripped of its forward
+      secrecy, and a device seized afterwards yields it. No attacker involved.
+
+      **A second defect in the same item, independent of ordering — fixed.** `consume` returns
+      1/0 and both production call sites discarded it (`:1581`, `:1841`), so a failed
+      `SecItemDelete` at what the function's own doc calls "the exact moment forward secrecy is
+      established" passed unnoticed on the **success** path. The tests asserted on that return
+      (`PrekeyManagerTests.swift:166`) where production did not. The status is now inspected
+      inside `consume` itself, which covers both call sites without duplicating the check.
+
+      It remains best-effort in release, deliberately: the message is already decrypted by then,
+      so throwing would discard legitimate content to report something the user cannot act on,
+      and a distinct user-visible error would add a surface for no gain. Nor is there anything
+      to retry — the failure modes are an unavailable keychain, which an immediate second call
+      will not fix, and `errSecItemNotFound`, which means the key is already gone.
+
 - [x] Prekey exhaustion falls back to long-term ECDH (not plaintext) and still piggybacks a
       fresh batch in the payload
       — with `contactPrekey == nil` the outbound path still seals, taking `.longTermFallback` /
@@ -438,11 +473,17 @@ the contributor set grows beyond people with commit access.
 1. ~~Internal design docs ship inside the app bundle~~ — **fixed**, verified against a fresh
    archive. See §6.
 2. ~~`manifest.enc` written before its protection class is set~~ — **fixed**. See §4.2.
-3. **Prekey survives a rejected group bundle** (§2.2) — **new, and this release caused it.** The
-   sender-signature gate added at `Contact+Manager.swift:1822` sits between opening the recipient
-   slot and consuming the prekey, so a bundle that opens and is then rejected leaves the prekey
-   live in the Enclave. The highest-severity item found in this pass, and the only open one that
-   is a defect rather than a wording problem. Needs an ordering decision — see §2.2.
+3. **Prekey survives a rejected group bundle** (§2.2) — the highest-severity item found in this
+   pass, and the only open one that is a defect rather than a wording problem. Three throw sites
+   sit between the prekey being used and being deleted; this release added two of them, and the
+   third has been there since the 2026-07-24 remediation. Not an ordering fix — the oldest site
+   throws inside `findAndOpenRecipientSlot`, which drops the consumable on the way out, so
+   covering it means changing that function's contract.
+
+   Worst realistic case is not an attack: a contact rotates keys with a message in flight, the
+   signature no longer verifies against the current record, and a legitimate ciphertext is left
+   both undeliverable and openable by a prekey that should have been destroyed. The unchecked
+   `consume` result, a separate defect under the same item, is fixed.
 4. **Unused swift-crypto dependency ships vendored BoringSSL** (§7.1, §7.2) — **accepted for
    1.10.2.** The package is not load-bearing and removing it would delete five resource bundles
    from the shipping app, but pulling a dependency is not a release-week change. The crypto
