@@ -92,7 +92,15 @@ extension ContactManager {
     /// Costs one decrypt per group, not one per slot: nothing here touches member slots, so
     /// Bug 74's Secure Enclave round-trip ceiling is nowhere near.
     ///
-    /// Callers must gate on depth 0. See the call site in `OccultaApp`.
+    /// Callers must gate on a **known** depth 0 — an authenticated one, not merely a
+    /// not-yet-established one. See the call site in `OccultaApp`.
+    ///
+    /// Deliberately does **not** checkpoint. It used to, unconditionally, which was right while
+    /// it ran on every launch. Now that the deletion is gated on depth, a checkpoint inside here
+    /// would only ever fire at depth 0 — making checkpoint timing itself a depth signal, the
+    /// exact failure `checkpointStore()`'s own documentation warns about. The caller checkpoints
+    /// unconditionally instead, so the two decisions stay independent and both stay visible at
+    /// the call site.
     func purgeUnreadableGroups(using key: SymmetricKey) throws {
         var removed = false
         for group in try self.modelContext.fetch(FetchDescriptor<Group>())
@@ -103,11 +111,6 @@ extension ContactManager {
         if removed {
             try self.modelContext.save()
         }
-
-        // Unconditional, exactly as `checkpointStore()` documents: a checkpoint that fired
-        // only when something was deleted would make checkpoint timing itself the signal for
-        // "this device had stranded groups."
-        self.security.checkpointStore()
     }
 
     // MARK: Eligibility

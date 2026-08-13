@@ -244,26 +244,19 @@ private struct RootView: View {
 
                 // Clear Group rows stranded by a pre-`Group.reencrypt` key rotation (Bug 75).
                 //
-                // Depth 0 only, matching `cleanUpGroupDuressMembership`'s reasoning: it is the
-                // one depth that cannot be under coercion, and there is no urgency worth
-                // writing row deletions to the WAL during a coerced session.
-                //
-                // Runs every launch rather than behind a one-time completion flag. A
-                // UserDefaults key with any honest name would advertise that the app has an
-                // orphan concept — which points at key rotation, which points at Secure Mode.
-                // Sweeping costs one decrypt per group and finds nothing once clean, so the
-                // flag would buy nothing and leave a named artefact behind.
-                //
-                // Not in `OccultaApp.init()`: launch-time crypto work there is what caused
-                // Bug 74's watchdog kill. This is one decrypt per group rather than that
-                // migration's ~1024 per group, but the placement rule stands.
-                // The key is derived here and passed in: `purgeUnreadableGroups` judges every
-                // row against it, so a failed derivation must stop the sweep entirely rather
-                // than reach it as a nil that would condemn the whole table.
-                if self.security.currentDepth == 0,
-                   let key = try? Manager.Key().createHybridLocalEncryptionKey() {
-                    try? self.contactManager.purgeUnreadableGroups(using: key)
-                }
+                // Sweep orphaned groups only once a depth is actually known — see
+                // `purgeOrphanedGroupsIfAtRealDepth()`. With a PIN gate configured, `wire()`
+                // above has just set the phase to `.pinRequired`, so this call is a no-op and
+                // the `.onChange` handler below does the work once a PIN has been entered.
+                // Without a gate, `wire()` went straight to `.unlocked` and this call is what
+                // covers that case. Both may fire; the sweep is idempotent.
+                self.purgeOrphanedGroupsIfAtRealDepth()
+
+                // Unconditional, at every depth and on every launch, and deliberately not
+                // folded into the purge above: a checkpoint that fired only at depth 0 would
+                // make checkpoint timing itself a depth signal — the failure
+                // `checkpointStore()`'s own documentation exists to prevent.
+                self.security.checkpointStore()
 
                 // Move blob metadata onto the non-rotating SE-derived key (Bug 76). Runs at
                 // every depth, unlike the purge above: it writes no delete records, and a
@@ -335,6 +328,15 @@ private struct RootView: View {
             // normal one introduces no new signal.
             .onChange(of: self.appScreen.phase) { _, newPhase in
                 guard newPhase == .unlocked else { return }
+                // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
+                // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
+                self.purgeOrphanedGroupsIfAtRealDepth()
+
+                // Flushes the purge's delete records out of the WAL (`secure_delete` zeroes
+                // them on the way), and runs on **every** unlock at every depth even though
+                // only a depth-0 unlock can have deleted anything — a checkpoint that followed
+                // the deletion would otherwise announce it.
+                self.security.checkpointStore()
                 if let data = self.pendingFileData {
                     self.pendingFileData = nil
                     Task { await self.processInboundFile(data) }
@@ -606,6 +608,33 @@ private struct RootView: View {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
         }
+    }
+
+    /// Clears `Group` rows stranded by a pre-1.10.2 key rotation (Bug 75), but only once the
+    /// current depth is genuinely established and is 0.
+    ///
+    /// The distinction matters and the first version of this got it wrong. `currentDepth` is
+    /// declared `= 0` and is only populated from `persistedDepth` when the PIN gate is down
+    /// (`Manager+Security.swift:245`), so with a PIN configured it reads 0 at launch no matter
+    /// which PIN is about to be entered. Gating on the value alone therefore meant "nobody has
+    /// authenticated yet", not "the real user is here" — and a launch under coercion would run
+    /// the sweep, writing row deletions before the duress PIN was entered. Requiring
+    /// `.unlocked` as well is what makes the depth reading trustworthy.
+    ///
+    /// Safe to call from both the launch task and the unlock transition: the sweep is
+    /// idempotent, and finds nothing once clean.
+    ///
+    /// The key is derived here and passed in. `purgeUnreadableGroups` judges every row against
+    /// it, so a failed derivation must stop the sweep rather than reach it as a nil that would
+    /// condemn the whole table.
+    @MainActor
+    private func purgeOrphanedGroupsIfAtRealDepth() {
+        guard self.appScreen.phase == .unlocked,
+              self.security.currentDepth == 0,
+              let key = try? Manager.Key().createHybridLocalEncryptionKey()
+        else { return }
+
+        try? self.contactManager.purgeUnreadableGroups(using: key)
     }
 
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
