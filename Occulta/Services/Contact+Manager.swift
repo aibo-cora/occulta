@@ -1226,7 +1226,13 @@ extension ContactManager {
 
             let pendingBatch = try contact.loadPendingBatch()
 
-            let memberIsShardCapable = Self.resolveTargetVersion(for: contact, using: cryptoOps) == .groupShardCapable
+            // `isAtLeast`, not `==`. Equality asks "is this contact exactly at the shard tier",
+            // which stops being the right question the moment a tier is added above it — and
+            // one was, in 1.10.0. Every contact on 1.10.0+ resolves to `.senderSignatureCapable`
+            // and failed this check, so shard operations, custody manifests and expected-shard
+            // lists were silently dropped for exactly the contacts most likely to support them.
+            let memberIsShardCapable = Self.resolveTargetVersion(for: contact, using: cryptoOps)
+                .isAtLeast(.groupShardCapable)
             let canReceiveShardContent = memberIsShardCapable && quantumMaterial != nil && contactPrekey != nil
 
             var realOps: [OccultaBundle.ShardOperation] = []
