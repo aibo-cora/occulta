@@ -1845,12 +1845,18 @@ extension ContactManager {
             }
         }
 
-        // ── 4. Prekey management ─────────────────────────────────────────
+        // ── 4. Prekey bookkeeping ────────────────────────────────────────
+        // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
+        // the slot opens, so that a rejection between there and here cannot leave it alive in
+        // the Enclave (§2.2). `consumable` reports what was consumed; what remains for this
+        // block is the model-side bookkeeping, which deliberately stays behind the gates above
+        // so a rejected bundle cannot drive it.
         #if DEBUG
-        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumable: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
         #endif
-        if let consumable {
-            prekeyManager.consume(prekey: consumable)
+        if consumable != nil {
+            // They used one of our prekeys, which is cryptographic proof they received the
+            // batch we have been attaching to every outbound message.
             try sender.clearPendingBatch()
         } else if !sender.hasPendingBatch {
             try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)

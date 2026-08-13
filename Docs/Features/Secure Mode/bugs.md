@@ -3522,12 +3522,24 @@ than the vulnerability it is guarding against, because the user cannot even see 
 
 ## Bug 82 — A contact key re-exchange makes every in-flight message from that contact permanently undecryptable
 
-**Status:** **Open — not fixed in v1.10.2.** Found 2026-08-13 while scoping the §2.2 prekey
-finding in `Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback-mode half has been
-there for as long as `resolveSenderPublicKey` has, and the signature half arrived with 1.10.0.
-Not introduced by this release.
+**Status:** **Accepted for v1.10.2 — shipping as-is, decided 2026-08-13.** Deferred on
+likelihood: a contact re-exchanging keys *while a message from them is in flight* is a narrow
+window, and the loss is availability rather than confidentiality. Not rejected — the remedy
+below stands, and the tradeoff it carries still needs deciding rather than defaulting.
+
+Found 2026-08-13 while scoping the §2.2 prekey finding in
+`Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback-mode half has been there for as
+long as `resolveSenderPublicKey` has, and the signature half arrived with 1.10.0. Not introduced
+by this release.
 
 **Target:** post-1.10.2.
+
+**Consequence of deferring, given §2.2 is being fixed by consuming at open:** when this does
+occur, the in-flight message is lost *and* its prekey is destroyed rather than left alive. That
+is the strictly safer of the two failures — the message was already unrecoverable, and burning
+the key removes the forward-secrecy exposure that §2.2 was about — but it is worth stating
+plainly, because it means fixing §2.2 first makes this bug's blast radius slightly larger and
+its forward-secrecy consequence smaller.
 
 ### What happens
 
