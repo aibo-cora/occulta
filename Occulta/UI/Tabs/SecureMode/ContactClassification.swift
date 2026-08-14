@@ -218,6 +218,8 @@ private struct ClassificationRow: View {
 
 // MARK: - Preview
 
+#if DEBUG
+// Gated with `TestKeyManager`, which is `#if DEBUG` — see KeyManagerProtocol.swift.
 #Preview {
     let container = try! ModelContainer(
         for: Schema([Contact.Profile.self, AppLayerConfig.self,
@@ -232,3 +234,4 @@ private struct ClassificationRow: View {
     .modelContainer(container)
     .environment(Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
 }
+#endif

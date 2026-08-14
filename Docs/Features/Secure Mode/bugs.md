@@ -1911,7 +1911,8 @@ Each successful probe creates a new layer and transitions `state` to `.normal` (
 
 **Applied:** A dedicated `catch` arm for `pinCollision` was added in `SummaryView`, identical to the `invalidStateTransition` arm. Every activation attempt — collision, `invalidStateTransition`, or genuine success — now ends with the sheet dismissing without incident. The signal is removed.
 
-**Not yet resolved — three remaining gaps:**
+**Not yet resolved — three remaining gaps, plus Gap 1a (a side effect of Gap 1's own fix, noted
+later while tracing Bug 76):**
 
 ---
 
@@ -1922,6 +1923,47 @@ A real activation writes extensively: all contact rows are re-encrypted (new cip
 A forensic examiner comparing filesystem and DB state before and after a "successful" activation attempt can distinguish collision from success without decryption: file modification timestamps, WAL presence, and blob store contents all differ. The UI is indistinguishable; the disk is not.
 
 **Applied:** on `pinCollision`, `pushDummyBlobSlot` writes a random-noise `LayerPayload` (empty contacts, random sequence number) to a non-excluded slot before the throw. `push()` pads all payloads to `slotPlaintextSize` before encrypting, so the ciphertext is the same fixed size as a real activation blob — indistinguishable by byte count. The contact DB and AppLayerConfig remain unmodified (no re-encryption, no new verifier), but the blob store — the most externally observable artefact — now shows a write on every collision.
+
+##### Gap 1a — the dummy push trades a no-key tell for a with-key one
+
+Noted while tracing Bug 76; not previously recorded here. The Gap 1 fix works as intended against
+the threat model it targets, but it is a trade rather than a pure win, and the trade should be
+explicit.
+
+`pushDummyBlobSlot` records its slot index nowhere — no `writeBlobSlot` call accompanies it. The
+dummy is therefore a permanent **orphan**: a real, decodable payload in the store that no
+`sealedBlobSlots` entry points at. Consequences split by what the examiner holds:
+
+- **Without keys — no tell, as designed.** Every `push` re-seals all 32 slots with fresh nonces
+  and every slot is the same fixed ciphertext size, so a before/after diff shows all 32 changed
+  whatever happened. The file is `.completeFileProtection` and `isExcludedFromBackup`, same as the
+  DB. This is exactly the tell Gap 1 set out to close, and it is closed.
+
+- **With the SE Secure Mode key — a new, faint signal.** That key never rotates, so an examiner who
+  can derive it (compelled device, or code execution while unlocked) opens all 32 slots. Real
+  payloads decode as `LayerPayload`; filler does not. Dummies decode with `contacts: []`, so
+  counting empty payloads yields a rough count of **how many PIN collisions occurred** — that is,
+  how many times someone proposed a PIN matching an existing verifier. That is adjacent to the very
+  oracle this bug is about: it does not identify *which* PIN collided, but it does reveal that
+  probing happened and roughly how much.
+
+  Not conclusive on its own — a genuine activation where nothing was classified sensitive also
+  produces `contacts: []` — so it is suggestive rather than proof.
+
+Dummies accumulate for the life of the Secure Mode session. `push` decrypts all slots and re-seals
+anything that decodes, so it actively carries them forward; they clear only when randomly
+overwritten by a later activation's slot draw (~1 in 30 per activation) or wiped wholesale by
+`rewrite()` at full deactivation, force-recovery, or the periodic rewrite once Secure Mode is off.
+
+**Judgement:** probably an acceptable trade — the no-key threat model (filesystem image, seized
+device, backup extraction) is far broader than the with-key one, which already implies an unlocked
+device where the DB's own residual gap ([Manager+Security.swift:615-620](Occulta/Features/SecureMode/Manager+Security.swift:615))
+exposes the contacts anyway. Recorded because it was implicit, not because it needs reversing.
+
+**Cheap partial mitigation, if wanted:** Bug 76's proposed change to `push` — re-seal referenced
+payloads, substitute fresh random for unreferenced ones — would clear accumulated dummies as a
+side effect, capping the count at one per Secure Mode session rather than one per collision. It
+does not remove the signal, only bounds it.
 
 ---
 
@@ -2481,3 +2523,1226 @@ launch-time performance/stability risk to close immediately.
   eagerly — e.g. a lighter migration that only touches groups actually missing padding (accepting
   the narrower "which specific groups changed" tell that the full-touch design was avoiding), or
   spreading the sweep across many launches instead of one.
+
+---
+
+## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
+
+**Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed.
+
+- **Root cause:** `Group.reencrypt(from:to:)` re-keys every field (ID, name, created-at, and all
+  32 depths of member slots), called from both rotation paths — activation Step 8 after the draft
+  pass, and a new deactivation Step 6b. 6 tests in `GroupKeyRotationTests.swift`, full
+  `OccultaTests` target green.
+- **Existing orphaned rows:** repaired. `ContactManager.purgeUnreadableGroups(using:)` deletes
+  rows whose ID no longer decrypts, called from `RootView`'s `.task` at depth 0 only. Silent by
+  design. 4 tests in `GroupOrphanPurgeTests.swift`.
+
+**Target:** v1.10.2
+
+### Severity: Critical — unrecoverable user data loss, plus a forensic tell
+
+### Reported symptom
+
+Device had 3 groups (2 empty, 1 containing 2 contacts classified sensitive). After activating
+Secure Mode and re-entering with the **normal** PIN — i.e. at depth 0, the real layer, not under
+duress — the Groups tab shows no group rows at all, only the footer label:
+
+> `3 groups · encrypted at rest`
+
+### Observed vs expected
+
+| | Expected at depth 0 | Observed |
+|---|---|---|
+| Group rows | All 3 listed by name | None |
+| Footer count | `3 groups` | `3 groups` |
+| Group membership | Real-layer members visible | Unreachable |
+| Recovery by deactivating Secure Mode | Groups return | Groups do **not** return |
+
+The footer and the list disagree because they are computed from different things.
+`ContactsListV2.sortedGroups` is **not** depth-filtered — it returns all 3 stored `Group` rows, so
+`sorted.count` is 3 and the footer prints "3 groups"
+([ContactsListV2.swift:86](Occulta/UI/Tabs/Contacts/v2/ContactsListV2.swift:86)). Each row,
+however, is gated on a successful decrypt:
+
+```swift
+ForEach(sorted) { group in
+    if let groupID = group.readID() {   // ContactsListV2.swift:77
+        NavigationLink(value: groupID) { GroupRowV2(group: group) }
+    }
+}
+```
+
+`readID()` returns `nil` for every group, so `ForEach` emits zero rows. The count label is the only
+surviving evidence that the groups exist. This is a precise match for the reported symptom, and it
+explains why *all three* groups vanished including the two empty ones — the failure has nothing to
+do with membership or with the sensitivity of the 2 contacts in the third group.
+
+### Root Cause
+
+`Group` stores every field under the **hybrid local DB key**: `encryptedID`, `encryptedName`,
+`encryptedCreatedAt` via the bare `Data.encrypt()`/`.decrypt()` helpers
+([Crypto+Manager.swift:53](Occulta/Services/Crypto+Manager.swift:53)), and all member slots
+(`realMemberSlots`, `duressMemberSlots`, `deeperMemberSlots` — up to 32 depths × 32 slots) via
+`Manager.Key().createHybridLocalEncryptionKey()`
+([Group+Model.swift:162](Occulta/Data Models/Group+Model.swift:162)).
+
+`activateSecureMode` rotates that key. Step 8 re-encrypts everything it knows about under the
+staged key, and the enumeration is exhaustive — and does not include `Group`:
+
+- `Contact.Profile` — `reencryptAllFields` / `reencryptKeyRecords`
+  ([Manager+Security.swift:543-546](Occulta/Features/SecureMode/Manager+Security.swift:543))
+- `VaultEntry.visibleThroughDepth`
+  ([Manager+Security.swift:560](Occulta/Features/SecureMode/Manager+Security.swift:560))
+- `Message.Draft` — `reKeyOrPurgeAll`
+  ([Manager+Security.swift:577](Occulta/Features/SecureMode/Manager+Security.swift:577))
+
+Step 9 then commits the staged key, and Step 11 calls `deleteSupersededLocalDBArtefacts()`
+([Manager+Security.swift:604](Occulta/Features/SecureMode/Manager+Security.swift:604)), which
+deletes **both** halves of the pre-rotation hybrid key — the superseded Secure Enclave private key
+and its Keychain random component
+([Key+Manager.swift:1112](Occulta/Services/Key+Manager.swift:1112)).
+
+Every `Group` row is therefore left sealed under a key that no longer exists anywhere on the
+device. Grep confirms the omission is total — there is no `Group` re-encryption anywhere in the
+codebase. The only two `FetchDescriptor<Group>` sites inside `Manager+Security.swift` (lines 574
+and 1130) merely *read* group IDs to feed `Message.Draft` purging; neither writes a group.
+
+### Why this is permanent, and why deactivation does not fix it
+
+`deactivateSecureMode` is a mirror of activation and has the identical omission: it re-encrypts
+`Contact.Profile` ([:806](Occulta/Features/SecureMode/Manager+Security.swift:806)), restores blob
+contacts ([:837](Occulta/Features/SecureMode/Manager+Security.swift:837)), re-encrypts
+`VaultEntry.visibleThroughDepth` ([:853](Occulta/Features/SecureMode/Manager+Security.swift:853)),
+then commits and deletes superseded artefacts
+([:889](Occulta/Features/SecureMode/Manager+Security.swift:889)). `Group` is absent there too.
+
+Deactivation also stages a **new** key rather than restoring the pre-activation one, so "reverse
+rotation" is only reverse in the sense of unwinding the blob — it does not resurrect the deleted
+key material. There is no recovery path: the ciphertext is intact in SQLite and cryptographically
+unrecoverable. Group names, IDs, creation dates, and all real- and duress-layer membership for
+every group created before the first activation are gone.
+
+### The dead rows cannot be deleted through the UI
+
+Every entry point to a group resolves it by `readID()`:
+
+- `ContactsListV2.swift:77` — the `NavigationLink` (list has no `.onDelete`)
+- `GroupDetailV3.swift:37` and `Group+FormV3.swift:45` — detail/edit lookups
+- `ContactManager.group(withID:)`
+  ([Contact+Manager+Groups.swift:96](Occulta/Services/Contact+Manager+Groups.swift:96)), which
+  backs `deleteGroup(id:)` and so silently no-ops for an undecryptable group
+
+Delete is only reachable from `Group.FormV3(mode: .edit(...))`, which is only reachable from
+`GroupDetailV3`, which is only reachable from the `readID()`-gated `NavigationLink`. The user is
+left with an un-openable, un-deletable, permanent "3 groups" label. Any fix must therefore include
+a purge path for already-orphaned rows, not just the missing re-key.
+
+### Secondary cascades
+
+1. **Group drafts get purged on the next duress entry.** `purgeDraftsNotSafeAtCurrentDepth`
+   ([Manager+Security.swift:1129](Occulta/Features/SecureMode/Manager+Security.swift:1129))
+   builds `allGroupIdentifiers` from `readID()`, which now yields an empty set. In
+   `Message.Draft.reKeyOrPurgeAll`, a draft survives only if its recipient is in
+   `allGroupIdentifiers` or `safeContactIdentifiers`
+   ([Message+Draft.swift:245](Occulta/Data Models/Message+Draft.swift:245)) — so every
+   group-addressed draft is deleted.
+2. **Membership is overwritten with empty slots on the next classification or contact deletion.**
+   `cleanUpGroupDuressMembership`
+   ([ContactManager+Classification.swift:208](Occulta/Services/ContactManager+Classification.swift:208))
+   and `ContactManager`'s delete path
+   ([Contact+Manager.swift:495](Occulta/Services/Contact+Manager.swift:495)) call
+   `refreshCiphertext` / `purgeMember`, which re-source each depth's plaintext from
+   `members(atDepth:usingKey:)`. That now returns `[]` for every depth, so
+   `reencryptAllDepths` writes 32 depths of pure random filler under the **new** key — destroying
+   the original ciphertext at the raw-SQLite level as well, which forecloses even a
+   theoretical forensic recovery.
+3. **Group messaging is dead.** `Crypto+Manager+GroupEncrypt` cannot resolve a group ID or its
+   members, so no group bundle can be composed for any pre-existing group.
+
+### Forensic-trace violation
+
+Beyond the data loss, this is a tell that Secure Mode was used. A raw-SQLite examiner holding the
+current canonical local DB key (i.e. anyone who has coerced the device open at any depth) sees
+every `Contact.Profile`, `VaultEntry`, and `Message.Draft` decrypt cleanly while every `Group` row
+fails authentication under the same key. Ciphertext that no live key can open, sitting alongside
+ciphertext that opens fine, is direct evidence that a key rotation occurred — and in this app the
+only thing that rotates the local DB key is Secure Mode activation. The whole design goal is that
+an examiner cannot tell activation ever happened. Cascade 2 above eventually erases this specific
+tell by overwriting the rows with new-key filler, but only after an unrelated classification or
+contact deletion happens to run.
+
+### Fix sketch (not implemented)
+
+1. ~~Add a two-key re-encryption method to `Group`.~~ **Done** — `reencrypt(from:to:)`. Member
+   slots route through the existing `reencryptAllDepths(usingKey:content:)`, whose `content`
+   closure reads with the old key while the writes seal with the new one; that is safe because
+   each depth's plaintext is read before that depth's slots are reassigned, the property
+   `refreshCiphertext(usingKey:)` already relies on. No AAD change was needed —
+   `encrypt(using:)`/`decrypt(using:)` use the same `EncryptionScheme.v2_hybridPQ.aad` as the bare
+   variants, so re-sealed fields stay readable through `readName()`/`readID()`. Costs the two
+   derivations the caller already holds, not two per slot (the Bug 74 constraint).
+
+   An already-orphaned group is left byte-identical rather than re-sealed: it holds nothing
+   recoverable, and rewriting it would make a dead row look freshly edited. Its ciphertext then
+   stays static while live groups' changes — but an orphan is already the row that fails to
+   decrypt under the current key, so this exposes nothing new.
+2. ~~Call it from both rotation paths.~~ **Done** — activation Step 8 and a new deactivation
+   Step 6b, both before `commitStagedLocalDBKey()` with a `save()` so writes reach the WAL.
+
+   **Ordering in activation is load-bearing.** The group pass must run *after*
+   `Message.Draft.reKeyOrPurgeAll`, never before. `readID()` decrypts with the canonical key,
+   which is still the old key until Step 9 — so re-keying groups first would make `readID()` fail
+   for every group, collapse `allGroupIdentifiers` to the empty set, and cause the draft pass to
+   delete every group-addressed draft as an unknown recipient. That is cascade 1 below, triggered
+   by the fix for the bug that causes it.
+3. ~~Add a repair pass that hard-deletes `Group` rows whose `readID()` fails.~~ **Done** —
+   `ContactManager.purgeUnreadableGroups(using:)`, called from `RootView`'s `.task`.
+
+   Deleting is safe because the loss is provable, not merely current: the hybrid key needs both
+   an SE private key and a Keychain random component, Step 11 destroys both, and the SE half is
+   non-exportable — no backup on any device can restore it. So no repair path can ever exist and
+   these rows are permanently unopenable, unmessageable, and undeletable through the UI.
+   Removing them also closes the forensic tell of undecryptable rows sitting beside decryptable
+   ones.
+
+   Three design points worth keeping:
+   - **The key is a parameter, not derived inside.** A nil key would make every row look
+     stranded and empty the table; requiring it makes that unrepresentable rather than guarded,
+     and the call site is where a failed derivation stops the sweep.
+   - **No completion flag.** A `UserDefaults` key with any honest name would advertise that the
+     app has an orphan concept, which points at key rotation, which points at Secure Mode. The
+     sweep runs every launch instead — one decrypt per group, finding nothing once clean, and no
+     named artefact left behind.
+   - **Depth 0 only**, matching `cleanUpGroupDuressMembership`'s reasoning, so row deletions are
+     never written to the WAL during a coerced session. Followed by an unconditional
+     `checkpointStore()` so checkpoint timing does not itself become the signal.
+
+   Silent, per product decision — the user already perceives these groups as missing, and any
+   explanation would have to gesture at Secure Mode. Drafts addressed to a purged group are
+   deliberately left alone; `reKeyOrPurgeAll` drops them at the next rotation anyway.
+4. Audit the schema for any other model sealed under the rotating key and missing from both
+   rotation paths. `AppLayerConfig` is the open question — see below.
+
+### Related: `AppLayerConfig` has the same gap
+
+`AppLayerConfig+Model.swift` seals eight fields with the same bare `.encrypt()`/`.decrypt()` local
+DB key helpers, and none of them are re-encrypted during rotation either. Traced in full and split
+out as **Bug 76** — the outcome is different enough from this bug to warrant its own entry: no
+permanent data loss, but the Bug 46 blob-slot exclusion guarantee is silently voided.
+
+### Test gap
+
+No test covers group survival across a rotation. `OccultaTests/SecureMode/SecureModeActivationTests.swift`
+never mentions `Group`, and `OccultaTests/Groups/*` never activates Secure Mode. Regression
+coverage should assert that after activate (and after deactivate) a group's name, ID, and
+depth-0 and depth-1 membership all still read back correctly. Note these tests need a physical
+device: `Group` calls `Manager.Key()` directly rather than through an injectable
+`KeyManagerProtocol`, so `TestKeyManager` cannot bypass the Secure Enclave — follow the
+`secureEnclaveAvailable()` guard pattern already used in `GroupModelTests.swift`.
+
+---
+
+## Bug 76 — `AppLayerConfig` fields are never re-keyed during rotation; Bug 46's blob-slot exclusion silently stops protecting the real layer
+
+**Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed. Split out of Bug 75's audit item.
+
+- **Blob metadata** (`sealedBlobSlots`, `layerSequenceNumbers`) now lives on a key derived from
+  the non-rotating SE Secure Mode key — `AppLayerConfig.blobMetadataKey(from:)`, HKDF
+  domain-separated from the layer store's own key. Rotation can no longer strand it, which
+  removes Defects 1 and 2 by construction rather than by maintaining rotation machinery.
+  `migrateBlobMetadata(fromLocalDBKey:toBlobKey:)` moves entries from the old scheme, driven from
+  `Manager.Security.migrateBlobMetadataKeyIfNeeded()` at launch — without it a currently-reachable
+  blob would be read as absent and silently orphaned.
+- **The other six fields** (`persistedDepth`, `pinEnabled`, `pinEnabledPerDepth`,
+  `coercerBaseDepth`, and the two lockout fields) stay on the local DB key and are re-keyed by
+  `AppLayerConfig.reencrypt(from:to:)`, called from both rotation paths alongside `Group`. That
+  closes Defect 3.
+- 10 tests across `AppLayerConfigRotationTests.swift` and `BlobMetadataMigrationTests`, plus the
+  6 exclusion tests in `ProtectedBlobSlotTests.swift` — now fully deterministic, since the key is
+  an explicit parameter and no Secure Enclave is involved. Full `OccultaTests` target green.
+
+- **Defect 1 (blob-slot exclusion):** downgraded to Low and **not** given behavioural changes — see
+  the impact correction below. Two attempts to "fix" it were made and reverted (fail-closed throw,
+  then a silent-dismiss catch arm); both were worse than the behaviour they replaced. What remains
+  on `release/v1.10.2` is `Manager.Security.protectedBlobSlots(config:depth:)`, a deduplication of
+  the expression that previously existed verbatim at two call sites, with the skip-unreadable
+  behaviour unchanged and now documented and pinned by tests in `ProtectedBlobSlotTests.swift`.
+  Full `OccultaTests` target green. Not committed/pushed.
+- **Defects 2 and 3, and the root cause:** open. Awaiting the re-key work below.
+
+**Decision taken:** blob metadata (`sealedBlobSlots`, `layerSequenceNumbers`) will move under the
+**SE Secure Mode key** — the non-rotating key that already protects the verifiers — rather than
+being re-keyed on every rotation. This removes Defects 1 and 2 by construction instead of adding
+rotation machinery that must stay correct indefinitely, and costs nothing in exposure: the blob
+*contents* are already sealed under `layerStore.deriveKey(from: seKey)`, so a slot index is
+strictly less sensitive than the blob it points at, already under that same key. The remaining six
+fields stay on the local DB key and get re-keyed alongside `Group` (Bug 75).
+
+**Target:** v1.10.2
+
+### Severity: Medium — no permanent data loss; blob redundancy and gate-down state are lost. See "What is *not* broken".
+
+### Summary
+
+`AppLayerConfig` seals eight fields under the rotating hybrid local DB key, and — exactly like
+`Group` (Bug 75) — none of them are re-encrypted when `activateSecureMode` /
+`deactivateSecureMode` rotate that key. Unlike Bug 75 the consequences are not catastrophic,
+because every affected read has a fail-safe fallback and because the fields activation actually
+depends on are rewritten post-commit. But two real defects fall out, one of them silently voiding
+a guarantee an earlier bug was filed to establish.
+
+### Field inventory
+
+Under the rotating local DB key (bare `.encrypt()` / `.decrypt()`):
+
+| Field | Rewritten post-commit by activation? |
+|---|---|
+| `sealedBlobSlots[depth]` | Yes — [:649](Occulta/Features/SecureMode/Manager+Security.swift:649) |
+| `sealedBlobSlots[j ≠ depth]` | **No** |
+| `layerSequenceNumbers[depth]` | Yes — [:650](Occulta/Features/SecureMode/Manager+Security.swift:650) |
+| `layerSequenceNumbers[j ≠ depth]` | **No** |
+| `coercerBaseDepth` | Only when `depth > 0` — [:665](Occulta/Features/SecureMode/Manager+Security.swift:665) |
+| `persistedDepth` | **No** |
+| `pinEnabledPerDepth[*]` | **No** |
+| `lockoutCountEncrypted`, `lockoutAnchorUptimeEncrypted` | **No** |
+
+**Not affected:** `sealedNormalVerifier(s)` and `sealedDuressVerifier(s)` are sealed by
+`PINManager` under the dedicated SE Secure Mode key, which never rotates. PIN entry and layer
+routing therefore keep working across any number of rotations — Secure Mode is not bricked by this.
+
+`persistedDepth` and `pinEnabledPerDepth` are written *only* by `setState`
+([:253](Occulta/Features/SecureMode/Manager+Security.swift:253)), and `activateSecureMode` never
+calls `setState` — confirmed by grep, its only callers are the two deactivation paths and PIN
+setup/disable. So both fields are stranded by every activation until some later `setState` runs.
+
+### Defect 1 — Bug 46's exclusion guarantee is silently void (Low — see the impact correction)
+
+Activation picks a blob slot at [:416-419](Occulta/Features/SecureMode/Manager+Security.swift:416):
+
+```swift
+let excludedSlots: Set<Int> = depth == 0
+    ? []
+    : Set((0..<min(depth, 2)).compactMap { config.readBlobSlot(at: $0) })
+let slotIndex = self.layerStore.randomSlot(excluding: excludedSlots)
+```
+
+The stated invariant, three lines above it in the source, is that "the real layer (depth 0) and
+the first duress layer (depth 1) are permanently excluded from all writes — they must never be
+overwritten." That is Bug 46's fix.
+
+The exclusion set is built by *decrypting* the stored slot indices, and this runs at line 416 —
+before `createStagedLocalDBKey()` at line 426 — so it uses whatever the current canonical key is.
+Walk two activations:
+
+1. Activation at depth 0 rotates K0 → K1, then writes `sealedBlobSlots[0]` under **K1**.
+2. Activation at depth 1 reads `readBlobSlot(at: 0)` under K1 — still fine, so slot 0 is correctly
+   excluded. It then rotates K1 → K2 and writes `sealedBlobSlots[1]` under **K2**.
+   `sealedBlobSlots[0]` is now stranded under K1, which Step 11 deleted.
+3. Activation at depth 2 reads `readBlobSlot(at: 0)` under K2 → **nil**. `compactMap` silently
+   drops it. `excludedSlots` contains only slot 1.
+
+`randomSlot(excluding:)` then draws uniformly from the 31 remaining slots
+([SecureMode+LayerStore.swift:236](Occulta/Features/SecureMode/SecureMode+LayerStore.swift:236)),
+so it selects the real layer's blob slot with probability ~1/31, and `layerStore.push` overwrites
+it. The depth-0 blob — the sealed copy of the real user's sensitive contacts — is destroyed, with
+no error and no user-visible signal.
+
+`compactMap` is what makes this silent: a decrypt failure and "no layer configured at this depth"
+are the same nil, so the code cannot tell a stranded entry from an empty one.
+
+#### Impact correction — this is not an independent defect
+
+The mechanism above is real, but the harm was overstated when this entry was first written, and
+the correction collapses Defect 1 into Defect 2.
+
+The trigger for the narrowed exclusion set is `readBlobSlot(at: 0)` returning nil. That is the
+*same call* `deactivateSecureMode` uses to locate the depth-0 blob to pop
+([:722](Occulta/Features/SecureMode/Manager+Security.swift:722), with `blobDepth = max(0, depth-1)`).
+And a stranded index never becomes readable again: the only writer is `writeBlobSlot(_:at:)` at
+the activating depth, a depth-0 activation is blocked while Secure Mode is active
+([:365](Occulta/Features/SecureMode/Manager+Security.swift:365)), and `clearBlobSlot` writes
+random filler. Once nil, always nil.
+
+So on exactly the configs where slot 0 drops out of the exclusion set, the depth-0 blob is
+**already unreachable** — Defect 2. Overwriting it destroys a payload no code path can pop. Both
+"defects" are one harm counted twice: the metadata is stranded, so the blob is orphaned.
+
+And the orphaned blob is redundant even when reachable, for the reasons in "What is *not* broken"
+below — the sensitive contacts it holds stay in the DB, re-keyed by every rotation and never
+hard-deleted.
+
+Residual value of protecting the slot is therefore thin but not zero: a `LayerPayload` carries its
+own `slotIndex` and `sequenceNumber`, so a content scan of the store could recover an orphaned
+blob without the stored index. That matters only if the DB copy is *also* damaged (which
+`reencryptAllFields` can do — it clears fields it cannot decrypt) and only if such a repair path is
+ever built. Not enough to justify failing an activation over. Severity dropped from High to Low.
+
+`pushDummyBlobSlot` has an identical copy of this expression at
+[:1405-1408](Occulta/Features/SecureMode/Manager+Security.swift:1405), so the PIN-collision path
+can overwrite the real layer's blob the same way.
+
+### Defect 2 — the final deactivation cannot pop the depth-0 blob (Medium)
+
+`deactivateSecureMode` computes `blobDepth = max(0, depth - 1)` and reads the pop metadata at
+[:722-723](Occulta/Features/SecureMode/Manager+Security.swift:722), before staging its own key —
+so again under the current canonical key. After any second activation, index 0 is stranded, both
+reads return nil, and control falls to the `else` at
+[:732](Occulta/Features/SecureMode/Manager+Security.swift:732), which substitutes an empty payload.
+Step 5's `restoreContact` loop then iterates over nothing.
+
+The comment on that branch reads "No slot metadata — pre-upgrade install or config corruption",
+which is now also silently covering the ordinary case of "this install activated a second layer."
+
+### What is *not* broken (correcting the initial hypothesis)
+
+Bug 75's audit note guessed this would leave the real layer's sensitive contacts unrecoverable.
+Traced through, it does not:
+
+- Sensitive contacts are never hard-deleted from the DB
+  ([:606](Occulta/Features/SecureMode/Manager+Security.swift:606)).
+- Every rotation re-keys **all** profiles including sensitive shells, while the old key is still
+  canonical ([:543-546](Occulta/Features/SecureMode/Manager+Security.swift:543),
+  [:806-807](Occulta/Features/SecureMode/Manager+Security.swift:806)), so the DB copy rides
+  through any number of rotations intact.
+
+  **This is a derived property, not a design invariant — do not build on it without checking.**
+  It holds only because `reencryptAllFields` enumerates every encrypted field on the profile, and
+  it was *false* for the first five days this mechanism existed. Until `70e1f77` (2026-05-31,
+  "Centralise key-rotation re-encryption in Contact.Profile instance methods"), activation Step 8
+  re-encrypted only `visibleThroughDepth`, `signedAttributes`, and key records; text fields were
+  left under the old canonical key and were genuinely unreadable once Step 11 deleted it. That is
+  what `a6adf74` ("Fix deactivation crash on sensitive shells") was fixing, and why
+  `restoreContact` exists at all — back then the blob really was the only surviving copy of a
+  sensitive contact's text fields.
+
+  The live risk this leaves: a new encrypted field added to `Contact.Profile` but not added to
+  `reencryptAllFields` strands silently on the next rotation — no error, since that method nils
+  fields it cannot decrypt by design. The blob is not a backstop for it either, because
+  `LayerContact` carries its own fixed field list that would need the same update. Two lists to
+  keep in sync, nothing enforcing it, and both `globalTrusteeDepth` (`78c15f6`) and `originDepth`
+  (`d0d75b5`) were added to `reencryptAllFields` only after the fact. A test asserting that every
+  `Data?` property on `Contact.Profile` survives a rotation would close this.
+- Deactivation Step 4 preserves each contact's real `visibleThroughDepth` independently of the
+  blob ([:814](Occulta/Features/SecureMode/Manager+Security.swift:814)), and `restoreContact`
+  would have written the same value it already holds.
+
+So the DB copy is the primary and the blob is redundant here. What Defect 2 actually costs is the
+redundancy: `reencryptAllFields` clears any field it cannot decrypt to nil by design
+([Contact+Model+Reencrypt.swift:22](Occulta/Data Models/Contact+Model+Reencrypt.swift:22)), and the
+blob is the only fallback when that happens. Defect 1 is the one that destroys data outright.
+
+Two further fields were checked and found harmless:
+
+- **Lockout counters.** Stranded → `readLockoutCount()` → 0 and `readLockoutAnchorUptime()` → nil
+  ("not locked out"). But activation calls `resetCounters()`
+  ([:670](Occulta/Features/SecureMode/Manager+Security.swift:670)) regardless, which is the
+  intended behaviour. No impact, and unrelated to Bug 70 (backup restore).
+- **`coercerBaseDepth`.** Rewritten post-commit whenever `depth > 0` — which is the entire Bug 47
+  coercer flow — and reset to 0 by deactivation
+  ([:931](Occulta/Features/SecureMode/Manager+Security.swift:931)). Reaching a stale read needs an
+  activation at depth 0 with a non-zero `coercerBaseDepth` live, which the state guards at
+  [:360-367](Occulta/Features/SecureMode/Manager+Security.swift:360) make unreachable.
+
+### Defect 3 — a lowered PIN gate does not survive an activation (Medium, fails safe)
+
+With `persistedDepth` and `pinEnabledPerDepth` stranded, `Manager.Security.init()` reads
+`readPersistedDepth()` → 0 and `readPinEnabled(at: 0)` → true (both documented fallbacks). At
+[:244-245](Occulta/Features/SecureMode/Manager+Security.swift:244):
+
+```swift
+self.pinEnabled = config.readPinEnabled(at: persistedDepth)
+if !self.pinEnabled { self.currentDepth = persistedDepth }
+```
+
+`pinEnabled` is true, so the depth-restore branch never fires, the PIN gate presents, and
+`verify()` + `applyVerifyState()` re-establish the correct depth from the PIN scan. **This fails
+safe — it is not a Bug 50 regression**, and the real layer is not exposed.
+
+The cost is behavioural: a user who lowered the PIN gate under coercion via
+`disablePIN(at:confirmingPIN:)` finds the gate back up after the next activation, because the
+`false` they wrote is now unreadable. In the coercion scenario that feature exists to serve, a gate
+that silently re-arms is a tell.
+
+### Fix sketch (not implemented)
+
+1. Re-key `AppLayerConfig` alongside `Group` in both rotation paths (Bug 75, fix step 2). The eight
+   fields are small and fixed-size — two 32-entry arrays plus six scalars — so a
+   decrypt-with-old/re-seal-with-new pass costs one key derivation, nothing like the Bug 74
+   workload. Do it before `commitStagedLocalDBKey()` and `save()` so the writes reach the WAL,
+   same ordering invariant as everything else in Step 8.
+2. **Do not make activation fail on an unreadable slot index.** Two attempts were made here and
+   both were reverted; recorded so they are not tried a third time.
+
+   *Attempt 1 — throw on an unreadable depth-0 index.* Added without checking where the error
+   surfaces: `SecureModeSetupFlow` routes it into the generic `catch`, which sets
+   `activationFailed` and shows the "Activation Failed" alert — precisely the arm Bugs 24 and 62
+   exist to keep errors out of. `protectedBlobSlots` returns empty at depth 0, so that alert is
+   *unreachable* on a device where Secure Mode has never been activated; its appearance proves
+   depth ≥ 1. Unlike a `pinCollision` it is not probabilistic — on an affected config it fires on
+   every activation attempt at depth ≥ 2 and a coercer can reproduce it at will. Not a PIN oracle
+   (the condition depends on config state, not the candidate PIN), but a reproducible
+   High-severity forensic tell traded for a Low-severity data risk.
+
+   *Attempt 2 — keep the throw, add a silent-dismiss `catch` arm* matching `invalidStateTransition`
+   and `pinCollision`. Removes the alert, but leaves activation silently no-opping: a user adding a
+   third layer believes a decoy layer exists when it does not — dangerous in this threat model —
+   and the refused path writes nothing to disk, which is Bug 62's Gap 1 in full.
+
+   *Reverted to skip-unreadable-and-proceed*, which is what the original `compactMap` did. Per the
+   impact correction above, a stranded index means the blob is already unreachable, so excluding
+   its slot protects nothing while refusing to activate costs the user a real decoy layer. The
+   helper is retained for the deduplication and to carry the rationale, and the behaviour is now
+   pinned by tests.
+3. **Exclusion should be content-based, not index-based.** Deriving the protected set from stored
+   slot *indices* is what couples it to the rotating DB key at all. The layer key is already in
+   hand at activation (`layerStore.deriveKey(from: seKey)`), so the store can be asked directly
+   which slots hold a real payload.
+
+   Checked, with one correction to the obvious approach: "does the slot authenticate" does **not**
+   discriminate — `writeNoOpFile` and `push` seal filler with `sealRandom(using: layerKey)`, so
+   all 32 slots authenticate under the layer key. What discriminates is JSON-decodability, which
+   `decodeSlot` already relies on: a real payload decodes as a `LayerPayload`, uniform random
+   filler does not.
+
+   Open questions before adopting: this would exclude *every* occupied slot including the
+   expendable depth-2+ blobs Bug 46 deliberately leaves writable (a pool-size cost, and a
+   behaviour change), and dummy blobs pushed by `pushDummyBlobSlot` decode as valid payloads and
+   would accumulate exclusions.
+4. ~~Deduplicate the exclusion expression.~~ **Done** — one definition, called from
+   `activateSecureMode` and `pushDummyBlobSlot`.
+
+### Test gap
+
+`ProtectedBlobSlotTests.swift` covers the exclusion helper directly: depth 0 returns empty;
+unreadable entries are skipped rather than raised as an error (pinning the behaviour against a
+third attempt to make activation fail here); a readable slot is still excluded when its neighbour
+is not; both slots are excluded when both are readable; depth-2+ slots stay in the pool.
+Simulator-safe, with the round-trip cases skipped where key derivation is unavailable.
+
+Still missing, and only coverable once the re-key work lands: a test that activates **twice** and
+asserts `readBlobSlot(at: 0)` still decrypts. That is the assertion that would have caught the
+root cause rather than its symptom — the helper above only refuses to act on stranded metadata, it
+does not stop the stranding. `SecureModeActivationTests.swift` covers single activations only.
+
+---
+
+## Bug 77 — `maxBundleVersion` and `deletionToken` missing from `reencryptAllFields`
+
+**Status:** Fixed on `release/v1.10.2` (commit d356eb8), pushed.
+
+**Target:** v1.10.2
+
+### Severity: High — silently disabled an authentication gate; the `deletionToken` half was a latent High
+
+*Raised from Medium on 2026-08-12.* The original assessment ("silent capability loss") described
+only the reported symptom — group ineligibility and downgraded send format. Reviewing this release
+(`Docs/Audit/SecurityReview2026-08-12/README.md`, finding 1) showed the same stranded field also
+switches off sender-ephemeral-signature enforcement. See "Security consequence" below.
+
+Field-reported immediately after Bug 75's fix landed: contacts that had been group members
+could no longer be added to a recreated group, with the UI saying they needed to update the app
+or send a message. Their apps were current.
+
+### Root cause
+
+`Contact.Profile.maxBundleVersion` holds one encrypted byte — the highest wire format that
+contact's app can decode — sealed under the local DB key. It was in neither `reencryptAllFields`
+nor `reencryptKeyRecords`, so every rotation stranded it and Step 11 deleted the key.
+
+`resolveTargetVersion` then fails the decrypt and falls back to `.v3fs`, which predates group
+support (1.9.0), so `isGroupEligible` returns false. And because the field is non-nil — stranded
+ciphertext, not absent — `groupIneligibilityReason` reports `.versionTooOld` ("they need to
+update") rather than `.versionUnknown`. The check reads the field's presence correctly and its
+contents not at all.
+
+Not limited to groups: `resolveTargetVersion` also selects the wire format for sending, so
+affected contacts silently receive `.v3fs` bundles — the backward-compatible floor. Messaging
+keeps working; newer capabilities are lost on that path.
+
+The blob is no backstop — `LayerContact` does not carry this field either.
+
+This is the exact fragility recorded under Bug 76's "What is *not* broken" section one day
+earlier. The class was described; nobody checked whether an instance already existed.
+
+### Security consequence — enforcement of sender signatures is switched off
+
+Found while reviewing this release, after the entry above was first written. `maxBundleVersion`
+is not only a capability hint for sending; it is the gate on a **receive-side authentication
+check** (`Contact+Manager.swift:1727`):
+
+```swift
+if isFSMode, recipientPayload.senderEphemeralSignature == nil,
+   Self.resolveTargetVersion(for: sender, using: cryptoOps).isAtLeast(.senderSignatureCapable) {
+    throw GroupDecryptError.missingSenderEphemeralSignature
+}
+```
+
+A stranded field means `.v3fs`, `.v3fs` is not `senderSignatureCapable`, the branch is skipped,
+and an unsigned forward-secret bundle is **accepted**. Per the `2026-07-24` review, that signature
+is the only thing binding an FS-mode bundle to the sender's long-term identity — the session key
+never involves it.
+
+So the remediation applied on 2026-08-01 for that review's finding has been inert on every install
+that ever activated Secure Mode. Fixing the cause here does not restore it: stranded values are
+unrecoverable, and enforcement stays off per contact until that contact sends a bundle.
+
+**The residual is tracked as Bug 80, which is still open** — this entry's *cause* is fixed, its
+consequences are not. Two follow-ups there: whether affected users need something more active than
+a release note, and whether `resolveTargetVersion` should fail closed. The second conflicts with
+the fix in this entry — clearing undecryptable values to nil is
+right for the group-eligibility message and wrong for the gate, because it destroys the evidence
+distinguishing "never seen this contact" from "capability marker lost".
+
+### `deletionToken` — the more dangerous half
+
+Also absent from `reencryptAllFields`, and initially assessed as harmless because only its
+nil/non-nil status is read. Adding it naively would have been destructive: the shared
+`reencrypt(data:to:aad:)` helper clears unreadable fields to nil, and `fetchAllContacts` filters
+on `deletionToken == nil`. Every contact soft-deleted before this field was covered carries a
+stranded token, so a nil-on-failure re-key would have **un-deleted all of them** on the next
+rotation.
+
+Fixed with a new `reencryptPreserving(data:to:aad:)` helper that returns the original bytes when
+they cannot be read — the `reencrypt(string:)` convention — for fields whose presence carries
+meaning independently of their content.
+
+`maxBundleVersion` **also** uses the preserving helper, as of 2026-08-12. It originally used
+nil-on-failure, on the reasoning that nil reads as "version unknown" and produces the accurate
+"send me a message" instead of the false "they need to update". That was the right message reached
+the wrong way: this field also gates a receive-side authentication check (Bug 80), and repairing
+that gate requires "present but unreadable" to stay distinguishable from "never seen". Clearing
+collapses the two permanently, for exactly the installs that have the vulnerability. The message
+is now fixed at the reading site — `ContactManager.hasReadableBundleVersion` — which replaced
+three separate `maxBundleVersion == nil` checks (eligibility reason plus two in `Group+FormV3`)
+that all got the answer wrong the same way.
+
+### Recovery
+
+No code needed for affected installs. `maxBundleVersion` is repopulated whenever a bundle is
+received from that contact, under whatever key is current — so one message from each affected
+contact restores group eligibility. Already-stranded values cannot be recovered any other way.
+
+### Prevention
+
+`EncryptedFieldCoverageTests.swift` adds two complementary guards:
+
+- **Tripwires** — the set of stored property names on `Contact.Profile`, `Group` and
+  `AppLayerConfig` must equal an explicit list. Adding any property fails the test with guidance
+  on which re-encryption path to update and whether clearing on failure is safe. It cannot decide
+  whether a new field needs re-keying; it forces the decision to be made, which is exactly what
+  did not happen here. Verified to actually fail on a mismatch, not merely to pass.
+- **Behavioural** — every encrypted field is populated, rotated, and asserted readable
+  afterwards, plus the two `deletionToken` regressions (stranded stays non-nil, nil stays nil)
+  and `maxBundleVersion` clearing to nil.
+
+Note on mechanism: `Mirror` on a SwiftData `@Model` does enumerate every stored property, but
+erases all types to `_SwiftDataNoType`. Filtering by "is this a `Data?`" is impossible, so the
+tripwire keys on names and needs the human decision.
+
+### The durable fix, not done here
+
+Rotation only needs a field list because fields are sealed directly under the rotating key.
+Envelope encryption — a per-row key sealed under the local DB key, with all fields encrypted
+under the row key — removes the requirement entirely: rotation re-seals one wrapped key per row
+and new fields are covered automatically, forever. It would also drop rotation from
+O(rows × fields) to O(rows), the same cost problem behind Bug 74, and would isolate a compromised
+row key to a single contact.
+
+Not attempted here: it is invasive surgery on the most security-critical path, and its one-time
+migration re-encrypts every field of every row — precisely the workload Bug 74 showed this
+codebase handles badly. Worth its own design pass. The tests above are what make deferring it
+safe.
+
+---
+
+## Bug 78 — Rotation commits and deletes the superseded key even when the re-encryption passes were skipped
+
+**Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 75/76 fixes on the same branch.
+
+Both sites now `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`. Regression
+coverage in `SecureModeActivationTests.swift` (`SecureModeRotationKeyGuardTests`) drives the nil
+through a real activation and a real deactivation via a new `TestKeyManager
+.simulatesHybridKeyUnavailable` fault-injection hook, asserting both throw and that Secure Mode
+state is unchanged — i.e. neither reached its commit. Full `OccultaTests` target green.
+
+**Target:** v1.10.2
+
+### Severity: Medium — silent, permanent data loss; recreates Bugs 75 and 76
+
+Found by the review of this release (`Docs/Audit/SecurityReview2026-08-12/README.md`, finding 2).
+
+### Root cause
+
+Both rotation paths wrap the draft, `Group` and `AppLayerConfig` re-encryption in a conditional
+binding with no `else` — `Manager+Security.swift:567` (activation) and `:912` (deactivation):
+
+```swift
+if let oldKey = try self.keyManager.createHybridLocalEncryptionKey() {
+    // drafts, groups, config re-keyed here
+}
+```
+
+If derivation returns nil, all three passes are skipped and control falls straight through to
+`commitStagedLocalDBKey()` and then `deleteSupersededLocalDBArtefacts()`. Groups and the layer
+config are left sealed under a key that is then destroyed.
+
+That is precisely Bugs 75 and 76 — reached through the code written to fix them.
+
+### Why this slipped in
+
+The `if let` is older than the fix: it originally wrapped only `Message.Draft.reKeyOrPurgeAll`,
+where skipping is survivable because drafts are regenerable. The Bug 75/76 work extended the same
+block to cover groups and config, which are not, without revisiting the binding.
+
+The codebase already states the correct rule elsewhere. `Group.requireKey()` throws
+`GroupError.keyUnavailable` for this exact situation, documented as: *"Must abort the whole pass
+rather than proceed with a missing key — silently skipping the mandatory ciphertext refresh would
+itself be a forensic tell."*
+
+### Impact
+
+Not attacker-triggered. Any condition making the Secure Enclave or Keychain briefly unavailable
+mid-activation causes the rotation to commit regardless, with no error and no user-visible signal.
+Blast radius is every group plus the entire `AppLayerConfig` row.
+
+### Fix
+
+Both sites now `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`.
+
+**Placement was the substance of the fix, and the first attempt got it wrong.** The guard initially
+replaced the `if let` where it stood, inside Step 8's draft/group/config pass — which is after
+`reencryptAllFields` has run over every contact and `modelContext.save()` has committed the result.
+`reencrypt(data:)` returns nil for anything it cannot decrypt (deliberate: callers reinitialise on
+next use), so on the very failure this guard exists to catch, every contact had already lost
+`visibleThroughDepth`, `globalTrusteeDepth`, `originDepth`, `signedAttributes`,
+`forwardSecrecyEncrypted` and both image fields — written to disk, and not restored by rolling the
+staged key back. Losing `visibleThroughDepth` alone drops the Secure Mode visibility ceiling for
+the entire address book. The guard prevented groups and `AppLayerConfig` from being stranded while
+the contacts were already gone.
+
+The derivation now happens before Step 1's PIN check in both functions, ahead of any staging,
+blob push or row mutation, so the failure is genuinely inert: nothing to roll back, nothing
+touched. It has no dependency on the intervening steps, so it moves freely.
+
+`SecureModeRotationKeyGuardTests` covers both paths, and asserts the inertness directly — a contact
+inserted with a known `visibleThroughDepth` must still hold it after the aborted rotation. That
+assertion fails under the original placement, which is what makes it a regression test rather than
+a restatement. `TestKeyManager.simulatesHybridKeyUnavailable` supplies the nil.
+
+---
+
+## Bug 79 — Blob-metadata migration checkpoints conditionally, against the stated differential-signal rule
+
+**Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 76 fix on the same branch.
+
+`checkpointStore()` moved outside the `if moved` branch; the `save()` stays conditional.
+
+**Target:** v1.10.2
+
+### Severity: Low — forensic-trace inconsistency
+
+Found by the review of this release (`Docs/Audit/SecurityReview2026-08-12/README.md`, finding 3).
+
+### Root cause
+
+`Manager.Security.migrateBlobMetadataKeyIfNeeded()` (`Manager+Security.swift:1224`) checkpoints
+only when it actually moved an entry:
+
+```swift
+if moved {
+    try? self.modelContext.save()
+    self.checkpointStore()
+}
+```
+
+`checkpointStore()`'s own documentation requires the opposite: *"Must run unconditionally, every
+call, not only when a purge actually happened — a checkpoint that only fires when something was
+purged would turn checkpoint timing itself into the exact kind of differential signal this exists
+to remove."*
+
+`ContactManager.purgeUnreadableGroups(using:)`, added in the same release, follows that rule. This
+does not.
+
+### Impact
+
+Small. The migration runs at most once per install, and the config-row write it accompanies is a
+louder signal than checkpoint timing. Recorded because forensic-trace cleanliness is a stated
+project invariant and this contradicts a rule cited elsewhere in the same changeset — the kind of
+inconsistency that erodes an invariant by precedent rather than by any single instance.
+
+### Fix
+
+Move `checkpointStore()` outside the `if moved` branch. The `save()` can stay conditional; there is
+nothing to write when nothing moved.
+
+---
+
+## Bug 80 — Sender-signature enforcement stays disabled on installs whose `maxBundleVersion` was stranded
+
+**Status:** Fixed on `release/v1.10.2` (gate fails closed, capability tier is now a high-water
+mark). One operational item remains — see "Still open" at the end.
+
+**⚠ The fix has a regression: see Bug 81.** The interop cost recorded below as "stays gated until
+they update" is stated too mildly. Both paths that would let a pre-1.10.0 contact heal their marker
+are closed — one by the gate running before `updateMaxVersion`, the other by the high-water mark
+floor added here — so such a contact is blocked permanently rather than temporarily. Reported from
+the field within a day of this landing.
+
+**Target:** v1.10.2
+
+### Severity: High — an authentication check is silently off on every affected install
+
+Filed 2026-08-12 so this survives past the session that found it. Bug 77 reads *Fixed*, which is
+true of its cause and misleading about its consequences; without this entry the residual is
+recorded only in `Docs/Audit/SecurityReview2026-08-12/README.md` (finding 1).
+
+### What is still wrong
+
+`openGroup` rejects an unsigned forward-secret bundle only when the sender is known capable of
+signing (`Contact+Manager.swift:1727`), and that capability is read from
+`Contact.Profile.maxBundleVersion`. Where that field was stranded by a pre-1.10.2 key rotation,
+`resolveTargetVersion` returns `.v3fs`, `.v3fs` is not `senderSignatureCapable`, the check is
+skipped, and the bundle is accepted.
+
+Per the `2026-07-24` review, that signature is the only thing binding an FS-mode bundle to the
+sender's long-term identity — the session key never involves it. So on every install that ever
+activated Secure Mode, the remediation applied on 2026-08-01 for that review's finding #2 is inert
+for every contact.
+
+Bug 77 adds the field to `reencryptAllFields`, so this cannot recur. It cannot repair what already
+happened: the hybrid key needs a Secure Enclave half that was deleted and is non-exportable.
+Enforcement returns per contact only when that contact next sends a bundle, which rewrites the
+field under the current key.
+
+### Fixed 2026-08-12 — two changes, both required
+
+The original assessment here said no code change could undo this. That conflated *recovering the
+lost version* (genuinely impossible) with *stopping the loss from disabling the gate* (entirely
+possible). Only the first is unrecoverable.
+
+**1. The gate fails closed on a stranded marker.** `openGroup` now distinguishes the three states
+rather than letting `resolveTargetVersion` collapse two of them. Absence still accepts — a contact
+we have genuinely never heard from cannot be assumed capable, and rejecting would break first
+contact. Present-but-unreadable now rejects, because it means the sender's incapability cannot be
+established and this check is the only identity binding FS mode has.
+
+**2. The capability tier is a high-water mark.** Found while implementing (1), and without it (1)
+is bypassable in two messages. `appVersion` arrives in the sealed payload, authenticated only by a
+session key that in FS mode carries no sender identity — so whoever can build one FS bundle also
+chooses this value. `updateMaxVersion` overwrote unconditionally, so an attacker could send a
+signed bundle claiming an old build to lower the recorded tier, then send an unsigned one and walk
+through the gate. The tier now only ever rises.
+
+A stranded marker is treated as the top tier for that comparison too, not as unknown — otherwise
+any low claim clears it and converts "cannot prove incapable" into a recorded "incapable",
+reopening the gate by another route. The two rules are deliberately consistent so they cannot
+disagree.
+
+**Interop cost, accepted:** a contact who is genuinely pre-1.10.0 *and* whose marker was stranded
+stays gated until they update. Their unsigned bundles are rejected. This is the trade named below
+and it is now taken rather than deferred.
+
+Coverage in `OccultaTests/Contacts/BundleVersionHighWaterMarkTests.swift` — raise, refuse to lower,
+low claim cannot clear a stranded marker, top-tier claim heals one, first sighting records.
+
+### Still open — the operational half
+
+**How are affected users told?**
+Exchanging one message per contact restores enforcement, and is the same action that restores group
+eligibility. Open question: is a release note sufficient for a silently-disabled authentication
+check, or does this warrant something in-app? An in-app prompt has its own cost here — anything
+that names Secure Mode is a forensic tell, so the wording would have to carry the message without
+referencing the feature.
+
+**Superseded — the hardening is done.** What follows is kept as the record of how it was
+unblocked, because the conflict was self-inflicted and worth not repeating.
+
+**Unblocked 2026-08-12.** This previously conflicted with Bug 77's fix, which cleared
+undecryptable values to `nil` and so destroyed the evidence the distinction depends on — and would
+have done so on the next rotation of every affected install, making this permanently unfixable for
+exactly the population that has the vulnerability. That conflict turned out to be self-inflicted:
+the clearing existed only to make the group-eligibility message read correctly, and that message
+belongs at the reading site. `maxBundleVersion` now uses the preserving helper, and
+`ContactManager.hasReadableBundleVersion` supplies the three states everywhere they are read. The
+evidence survives; the hardening is now a decision rather than an impossibility.
+
+### Why this is not simply "fix it"
+
+Failing closed on a genuinely-unknown version would reject bundles from any contact who has never
+sent one, breaking first contact. Only the narrow "was known, now stranded" case can be failed
+closed — and doing so still rejects legitimate unsigned bundles from any contact who is genuinely
+pre-1.10.0 *and* whose marker was stranded, until they update. That interop cost against restoring
+an authentication check is a product decision, which is why this is recorded rather than applied. That is the decision to take, and it should be taken deliberately rather
+than folded into a patch.
+
+---
+
+## Bug 81 — Bug 80's fail-closed gate permanently blocks pre-1.10.0 contacts, with no healing path
+
+**Status:** **Accepted limitation for v1.10.2 — shipping as-is, decided 2026-08-13.** Remedies
+below are deferred, not rejected. Regression introduced by Bug 80's fix; found during development,
+not in the field — a message from a contact running 1.9.0 failed to open with
+`GroupDecryptError: 7` (`missingSenderEphemeralSignature`, index 7 of that enum) on a dev build.
+
+**Target:** post-1.10.2, if the affected population turns out to matter.
+
+### The decision, and why it is defensible
+
+Ship the fail-closed gate. Contacts on **1.9.0 ≤ version < 1.10.0** cannot have their forward-secret
+group bundles opened by a recipient whose marker was stranded, until they update.
+
+What makes that acceptable rather than reckless:
+
+- **It closes something live.** On 1.10.0 and 1.10.1 — in the field right now — anyone who ever
+  activated Secure Mode has sender-signature enforcement silently disabled for *every* contact.
+  That is Bug 80's actual vulnerability, and this release is what closes it. Not shipping costs more
+  than shipping.
+- **The blast radius is a one-minor-version band, not "old clients".** Below 1.9.0 there is no group
+  envelope, so those sends route through `decryptSealed` and are never gated. From 1.10.0 the sender
+  signs. Only 1.9.x is both group-enveloped and unable to sign.
+- **It is already per-contact.** The gate fires only on an unsigned FS-mode bundle. A recipient
+  whose contacts are all on 1.10.0+ never sees a rejection — the gate is invisible to them. No
+  additional scoping work was needed to achieve that.
+- **Fallback-mode sends are unaffected.** `.longTermFallback` / `.longTermNoPQ` bundles are not
+  gated, so a 1.9.x contact whose prekeys are exhausted still gets through.
+- **The failure is now legible.** Affected messages say "Ask this contact to update Occulta" rather
+  than surfacing an opaque error code (`f7c41f1`).
+
+### Amended 2026-08-14 — the legibility argument above is partly reversed
+
+The two rejection cases were given distinct user-visible strings so the UI could "say something
+true about each". That reasoning stands on its own and was not wrong; what it missed is that the
+pair is readable as a duress oracle.
+
+`senderSignatureCapabilityUnknown` fires only on an unreadable marker, which exists only after a
+local DB key rotation predating `maxBundleVersion` joining `reencryptAllFields` — i.e. only on an
+install that used Secure Mode on 1.10.0 or 1.10.1. `missingSenderEphemeralSignature` fires when
+the marker reads fine. So anyone able to deliver one unsigned forward-secret bundle could open the
+file and read off whether this device had ever activated Secure Mode. Deactivating does not clear
+it, because the stranded ciphertext is preserved deliberately (see Bug 80's amendment) — the tell
+outlives the feature it exposes.
+
+Both cases now produce a single string: *"Occulta couldn't confirm this message came from this
+contact, so it wasn't opened."*
+
+**What that costs, since it is not a clear win.** The actionable half of this bug's remedy is
+gone. A user whose contact is genuinely on 1.9.x is no longer told so, and every benign refusal
+now reads as a security event. Alarm fatigue is the mild cost; the sharp one is a user coming to
+distrust a contact who did nothing wrong and withdrawing from a channel that was safe — a real
+harm in this threat model, not a UX complaint.
+
+Partly mitigated by where the advice still lives: the group-eligibility screen continues to say
+"Needs to update Occulta" for exactly these contacts, and that screen is where a user goes to find
+out why someone is unreachable. So the guidance moved rather than vanished — it is no longer
+attached to the moment of failure, which is when it would have been most useful.
+
+**Why this collapses toward the alarming string while the group form collapses toward the
+innocuous one.** The two screens fail differently. On the group form, the alarming option
+contradicts message history visible on the device, which is what makes it readable as a tell.
+Here, the innocuous option tells the victim of an impersonation attempt that their friend needs a
+software update — the attacker's cover story, repeated back by the app. Each side collapses away
+from its own worse outcome, which is why they land on opposite answers to what looks like the same
+question.
+
+**Not closed by this.** `.unrecorded` still accepts an unsigned bundle rather than refusing it, so
+open-versus-refuse is still observable. That distinguishes a contact this device has never heard
+from — not one it is hiding — and such a contact holds no prekey of ours and cannot send
+forward-secret traffic in the first place. No duress state falls out of it.
+
+**Considered and declined, 2026-08-14: restoring the advice inside the single string.** The
+collapse above removed the actionable half on the reasoning that mentioning updates was what
+leaked. That was wrong — the leak was the two cases producing *different* text, and one string can
+carry both meanings. The candidate was:
+
+> "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be
+> using an older version — ask them to update, or verify them another way."
+
+It leaks nothing, is true in both cases, and has a property neither previous wording had: the
+advice is **diagnostic**. Followed in the benign case it ends the problem; followed against a
+forgery it returns "I'm already on the latest version", which is information the user did not have
+and arrives without the app accusing anyone. Both suggested actions also work against a 1.9.x
+contact, since the identity challenge rides on `.v3fs`/`.longTermFallback`.
+
+**Declined anyway, and the reason is the window rather than the wording.** A benign refusal
+requires a sender on 1.9.x *and* a stranded marker on the receiving device. One message from that
+contact once they reach 1.10.0+ repairs the marker permanently, so the affected population drains
+by itself and the residual refusals are then genuine forgeries — where the current security-first
+wording is the correct one and the missing advice costs nothing. Judged not worth changing
+user-facing copy on a release branch for a self-limiting cost.
+
+Revisit only if 1.9.x adoption turns out to be stickier than expected, or if users report
+distrusting contacts over this.
+
+### What was considered and not taken
+
+A per-contact exemption for genuinely-old builds was explored and does not work by inference: it
+requires distinguishing "this contact is old" from "this bundle is forged", and every signal
+available at gate time is attacker-controlled — the bundle's own `appVersion` claim most obviously,
+since an attacker forging an unsigned bundle simply claims 1.9.0. The marker that would settle it is
+exactly what Bug 77 destroyed. Any inference-based exemption is fail-open wearing a per-contact
+wrapper.
+
+An exemption grounded in an *authenticated act* does work, which is what Remedy 2 below is. Deferred
+rather than dismissed.
+
+### Severity: High — blocks legitimate messages, silently and permanently
+
+### What happens
+
+Three conditions, each individually expected:
+
+1. The recipient activated Secure Mode before 1.10.2, so **every** contact's `maxBundleVersion` is
+   stranded (Bug 77).
+2. The sender is genuinely on 1.9.0 and therefore cannot produce a `senderEphemeralSignature` —
+   that shipped in 1.10.0.
+3. Bug 80's gate treats a stranded marker as "cannot prove they are incapable" and rejects
+   unsigned FS-mode bundles.
+
+The gate does exactly what it was designed to do. The problem is what happens next.
+
+### Both healing paths are closed, which Bug 80's write-up did not say
+
+Bug 80 records this cost as a contact who "stays gated until they update", implying ordinary use
+eventually repairs it. It does not.
+
+**Group path — closed by ordering.** The gate is at `Contact+Manager.swift:1727`;
+`updateMaxVersion` is at `:1760`. The throw happens first, so a group bundle can never record the
+sender's version. The state that causes the rejection is the state the rejection prevents fixing.
+
+**Single-recipient path — closed by the high-water mark.** `updateMaxVersion` treats a stranded
+marker as `.senderSignatureCapable` for the floor. A 1.9.0 contact claims `.groupCapable`, which
+fails `isAtLeast`, so the write is skipped and the marker stays stranded. That floor was added
+deliberately — to stop an attacker clearing a stranded marker with a low claim — without noticing
+it also blocks the legitimate case.
+
+Net: a pre-1.10.0 contact with a stranded marker is **permanently** blocked from group messaging.
+Nothing the recipient can do repairs it. The only escape is the sender upgrading to 1.10.0+, at
+which point they clear the floor and sign anyway.
+
+### What can be authenticated, which is what any fix must rest on
+
+| Channel | Proves sender identity | Carries `appVersion` |
+|---|---|---|
+| FS-mode bundle | No — session key never involves the long-term key | Yes, but unauthenticated |
+| `.longTermFallback` / `.longTermNoPQ` bundle | **Yes** — long-term key is in the ECDH | **Yes, authenticated** |
+| Identity challenge | **Yes** (ECDSA verify, `IdentityChallenge+Manager.swift:377`) | No |
+
+### Remedy 1 — accept a version claim carried in an identity-binding mode
+
+Allow a stranded marker to be *lowered* by a claim arriving in `.longTermFallback` or
+`.longTermNoPQ`. Producing one requires the sender's long-term private key, so the claim is
+authenticated — exactly the property whose absence justifies distrusting FS-mode claims. Needs the
+recipient mode plumbed into `updateMaxVersion`.
+
+Free and automatic, but opportunistic: fallback mode occurs only when prekeys are exhausted or
+unavailable, so it heals on no predictable schedule.
+
+### Remedy 2 — reset the marker on a passed identity challenge
+
+The challenge authenticates the contact but carries no version, so the right tier cannot be set
+from it. It can, however, clear the stranded marker to `.unrecorded`. That restores first-contact
+semantics: the gate accepts the next bundle, `updateMaxVersion` records the real tier (floor for
+`.unrecorded` is `.v3fs`, so `.groupCapable` writes cleanly), and the contact works permanently
+thereafter.
+
+This is the reliable path — user-initiated, on demand, and it maps onto the existing trust-check
+UX. Cost is a one-message window in which an unsigned bundle from that contact is accepted,
+immediately after cryptographically verifying them. A reasoned trust decision rather than a hole.
+
+Remedies 1 and 2 are complementary: automatic where fallback happens to occur, on demand where it
+does not. Neither weakens the gate, because both require proof of the long-term key.
+
+### Rejected — blanket amnesty for existing stranded markers on upgrade
+
+The tempting move: since rotation now re-keys the field, no *new* stranding can occur, so every
+stranded marker is a historical artifact of our own bug rather than anything an attacker created.
+Therefore treat them all as `.unrecorded` at upgrade and restore compatibility in one step.
+
+The premise is true and the conclusion does not follow. The attacker never needed to create
+stranded markers — they exploit whichever ones exist. Amnesty restores the accept-unsigned state
+for every pre-existing contact simultaneously, which is precisely the vulnerability Bug 80 closed.
+It is fail-open with extra steps, and it reads as principled in a commit message. Recorded here
+because it is the intuitive idea and it is wrong.
+
+### If backward compatibility wins
+
+The honest alternative is to fail open for stranded markers again and surface an "unverified
+sender" indicator on affected messages. That restores every pre-1.10.0 contact immediately and
+keeps the user informed rather than protected.
+
+Whether that is right depends on how many real contacts are pre-1.10.0 — unknown here. If it is
+most of them, a gate that blocks real messages to close an attack that still requires prekey
+material issued to the impersonated contact may be the wrong trade for now. That is a product
+decision, not a security one, and it should be taken with the population figure in hand.
+
+### Regardless of which remedy is chosen
+
+The failure is currently opaque: `GroupDecryptError: 7` in a log, with no user-facing explanation.
+It should say what the group-eligibility screen already says — that this contact needs to update
+Occulta, or can be verified to restore messaging. A silent, permanent message failure is worse
+than the vulnerability it is guarding against, because the user cannot even see it happening.
+
+---
+
+## Bug 82 — A contact key re-exchange makes every in-flight message from that contact permanently undecryptable
+
+**Status:** **Accepted for v1.10.2 — shipping as-is, decided 2026-08-13.** Deferred on
+likelihood: a contact re-exchanging keys *while a message from them is in flight* is a narrow
+window, and the loss is availability rather than confidentiality. Not rejected — the remedy
+below stands, and the tradeoff it carries still needs deciding rather than defaulting.
+
+Found 2026-08-13 while scoping the §2.2 prekey finding in
+`Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback-mode half has been there for as
+long as `resolveSenderPublicKey` has, and the signature half arrived with 1.10.0. Not introduced
+by this release.
+
+**Target:** post-1.10.2.
+
+**Consequence of deferring, given §2.2 is being fixed by consuming at open:** when this does
+occur, the in-flight message is lost *and* its prekey is destroyed rather than left alive. That
+is the strictly safer of the two failures — the message was already unrecoverable, and burning
+the key removes the forward-secrecy exposure that §2.2 was about — but it is worth stating
+plainly, because it means fixing §2.2 first makes this bug's blast radius slightly larger and
+its forward-secrecy consequence smaller.
+
+### What happens
+
+`ContactManager.resolveSenderPublicKey` resolves a sender to exactly one key:
+
+```swift
+sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
+```
+
+`Contact+Manager.swift:1633`. The newest non-expired record, and nothing else.
+
+The model keeps the rest. `saveKey` **appends** a new `Contact.Profile.Key` when a contact
+re-exchanges (`:565`) and emits `contactKeyRotated` when the fingerprint actually changed
+(`:574`). Nothing deletes the superseded record, and `expiredOn` is written only by
+`reset(identity:)` (`:588`). So the full history is sitting in the store, and this line never
+looks at it.
+
+Any message sealed **before** the re-exchange was built against the old key. After the
+re-exchange we resolve the new one, and every check that depends on the sender's identity
+compares against a key that did not exist when the message was made.
+
+### Why it costs more than a signature failure
+
+That single value feeds three separate consumers on the inbound path, and all three break:
+
+| Consumer | Where | Failure |
+|---|---|---|
+| Fallback-mode wrapping key — `ECDH(ourLongTermPriv, theirLongTermPub)` | `deriveInboundKey` → `deriveSessionKey(using:quantumMaterial:)` | Key cannot be derived, the slot never opens, `recipientSlotNotFound` |
+| `verifySenderEphemeralSignature` | `Crypto+Manager+GroupDecrypt.swift:105` | `senderEphemeralSignatureMismatch` |
+| `senderProof` HMAC over the sender's public key | `Contact+Manager.swift:1856` | `senderProofMismatch` |
+
+So this is not only "forward-secret messages fail to verify". **Fallback-mode messages become
+undecryptable outright**, because the sender's identity key is load-bearing in that mode's key
+derivation. The 1:1 path resolves the sender the same way (`:1565`) and fails identically.
+
+There is no healing path. The resolution never widens, so re-opening the same file fails the
+same way forever. The messages are lost, not delayed.
+
+### Severity
+
+Availability, not confidentiality — nothing is exposed, and a forged bundle is no more likely to
+be accepted than before. But the loss is silent and permanent, and it lands on ordinary use: a
+contact reinstalling the app and re-exchanging keys is a normal thing to do, not an edge case.
+
+### Interaction with the §2.2 prekey finding
+
+The forward-secret half of this is one of the three throw sites that currently leave a prekey
+unconsumed, and it is the **only** one reachable without an attacker. That matters for how §2.2
+gets fixed: any remedy there that consumes the prekey on rejection would, in this scenario, also
+destroy the prekey a legitimate message was sealed to — turning a lost message into a lost
+message *and* a burned key. Fixing this first confines that cost to genuinely forged bundles.
+
+### Remedy
+
+Resolve a candidate **set** rather than a single key. Try the current key first, exactly as
+today, and walk back through the older records only when it fails — the common path keeps its
+present cost, and the extra work happens only where the code currently gives up. Whichever
+candidate succeeds must then be used for the rest of the bundle: the key that opened the slot
+has to be the same key `senderProof` is checked against, or the mismatch just moves.
+
+Bound the candidate count. `findAndOpenRecipientSlot` already loops over recipient slots, so
+adding candidates makes fallback mode O(slots × keys) trial decryptions, and Bug 74 is the
+standing reminder that Secure Enclave round trips have a ceiling.
+
+### The tradeoff this makes, which is the real decision
+
+Accepting signatures from superseded keys weakens rotation as a **revocation** mechanism. If a
+contact rotates precisely because their old key was compromised, anyone holding that old key can
+keep impersonating them for as long as we accept it.
+
+Both properties are available, because the model already encodes the difference and the code
+currently ignores it:
+
+- A key explicitly expired through `reset(identity:)` carries a timestamp in `expiredOn`. **Never
+  accept it** — that keeps `reset` a real revocation lever.
+- A key merely *superseded* — a newer record appended, no expiry written — is the ordinary
+  re-exchange case, and is safe to accept.
+
+Today `resolveSenderPublicKey` treats the two identically by looking at neither.
+
+---
+
+## Bug 83 — A contact who downgrades below 1.10.2 permanently stops receiving our forward-secret group messages
+
+**Status:** **Open — accepted for v1.10.2.** Introduced by this release, alongside the
+`.prefixedSenderSignatureCapable` tier (§3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`). Filed
+2026-08-13. Deferred on likelihood, not on cost: the App Store does not offer downgrades, so
+this needs TestFlight or a device restore onto an older build.
+
+**Target:** post-1.10.2.
+
+### What happens
+
+1.10.2 signs `senderEphemeralSignature` over a domain-separated payload for recipients at
+`.prefixedSenderSignatureCapable`, and over the bare ephemeral public key for everyone below.
+The tier comes from `Contact.Profile.maxBundleVersion`, which is a **high-water mark**:
+`updateMaxVersion` writes only when the claimed tier clears the recorded one
+(`Contact+Manager.swift:1718`), so the marker rises and never falls.
+
+If a contact recorded at `0x08` moves back to 1.10.0 or 1.10.1, nothing walks that marker down —
+their subsequent bundles claim 1.10.0, `.senderSignatureCapable.isAtLeast(.prefixedSenderSignatureCapable)`
+is false, and the write is skipped. We keep prefixing. Their build verifies only the bare form,
+so every forward-secret slot we seal for them fails with `senderEphemeralSignatureMismatch`.
+
+### It is intermittent rather than flat, which is worse to diagnose
+
+Only FS-mode slots carry a real signature; fallback slots carry random filler and are never
+checked. So the failure tracks our stock of *their* prekeys: we pop one per send until the batch
+of `PrekeyManager.defaultBatchSize` (15) is exhausted, then fall back to long-term ECDH, which
+arrives normally. That fallback message prompts them to issue a fresh batch, we go forward-secret
+again, and the cycle repeats.
+
+The observable pattern is roughly fifteen lost messages, then one that lands, then fifteen more —
+not a clean outage, and from their side indistinguishable from an unreliable transport.
+
+### Why this class of mistake is new
+
+The high-water mark was safe while it only gated **capabilities** — send groups, send shard
+content, require a signature. Over-estimating a contact there was either harmless or fail-closed,
+and under-estimating was the only direction that cost anything, which is exactly what the
+monotonicity was protecting against (see Bug 80: a low claim must not walk the tier down and
+disable the signature requirement).
+
+This tier is the first one that changes **what bytes we sign**. Over-estimating is now a
+delivery failure rather than a conservative default, and monotonicity makes it permanent.
+
+### Remedy
+
+Key the prefix decision off the contact's **last claimed** version rather than the high-water
+mark, and leave the signature *requirement* on the high-water mark where it belongs.
+
+The asymmetry is the point: a downgrade attack on the *requirement* reopens Bug 80, so that must
+never be walked down. A downgrade on the *prefix choice* only means we sign bare — which is what
+every 1.10.0 and 1.10.1 build already does and what our own receivers still accept — so it costs
+nothing to let it fall. Storing last-claimed alongside the high-water mark is one more encrypted
+field on `Contact.Profile`, and both would need adding to `reencryptAllFields` (see Bug 77 for
+what happens when a field is missed there).
+
+Cheaper alternative if the extra field is unwelcome: drop the tier entirely and prefix
+unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare arm in
+`verifySenderEphemeralSignature` at the same time. That is the end state either way.

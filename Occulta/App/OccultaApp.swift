@@ -214,8 +214,17 @@ private struct RootView: View {
     /// Container with plaintext message or file.
     @State private var openedFileContents: OwnedBasket?
     /// Raw encrypted `.occ` bytes queued while the app is locked.
-    /// Held without any processing until the PIN depth is known.
-    /// Cleared by onAuthenticated (process) or onDuress (discard).
+    /// Held without any processing until a PIN unlocks the app.
+    ///
+    /// Drained by the shared `.onChange(of: appScreen.phase)` handler on **any** unlock, normal
+    /// or duress alike. `onDuress` used to discard this instead — that discard was the last place
+    /// duress state produced observably different behaviour from a normal unlock, which made it
+    /// part of the detection oracle in
+    /// `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, and it was
+    /// removed in `2958593`.
+    ///
+    /// So reaching `processInboundFile` does **not** imply depth 0. Anything downstream that needs
+    /// depth safety has to establish it for itself rather than inferring it from this path.
     @State private var pendingFileData: Data?
     // Error feedback
     @State private var showError = false
@@ -230,7 +239,31 @@ private struct RootView: View {
             // No transitions between phases — content must never flash through states.
             .animation(.none, value: self.appScreen.phase)
             // Wire security to AppScreen once, on first appearance.
-            .task { self.appScreen.wire(security: self.security) }
+            .task {
+                self.appScreen.wire(security: self.security)
+
+                // Clear Group rows stranded by a pre-`Group.reencrypt` key rotation (Bug 75).
+                //
+                // Sweep orphaned groups only once a depth is actually known — see
+                // `purgeOrphanedGroupsIfAtRealDepth()`. With a PIN gate configured, `wire()`
+                // above has just set the phase to `.pinRequired`, so this call is a no-op and
+                // the `.onChange` handler below does the work once a PIN has been entered.
+                // Without a gate, `wire()` went straight to `.unlocked` and this call is what
+                // covers that case. Both may fire; the sweep is idempotent.
+                self.purgeOrphanedGroupsIfAtRealDepth()
+
+                // Unconditional, at every depth and on every launch, and deliberately not
+                // folded into the purge above: a checkpoint that fired only at depth 0 would
+                // make checkpoint timing itself a depth signal — the failure
+                // `checkpointStore()`'s own documentation exists to prevent.
+                self.security.checkpointStore()
+
+                // Move blob metadata onto the non-rotating SE-derived key (Bug 76). Runs at
+                // every depth, unlike the purge above: it writes no delete records, and a
+                // still-unmigrated entry would be read as absent by the very next activation —
+                // which can happen at a duress depth — silently orphaning a live blob.
+                self.security.migrateBlobMetadataKeyIfNeeded()
+            }
             // onOpenURL must be on the outermost container so it fires in all phases.
             .onOpenURL { url in self.handleOpenURL(url) }
             .alert("Error", isPresented: self.$showError) {
@@ -295,6 +328,15 @@ private struct RootView: View {
             // normal one introduces no new signal.
             .onChange(of: self.appScreen.phase) { _, newPhase in
                 guard newPhase == .unlocked else { return }
+                // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
+                // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
+                self.purgeOrphanedGroupsIfAtRealDepth()
+
+                // Flushes the purge's delete records out of the WAL (`secure_delete` zeroes
+                // them on the way), and runs on **every** unlock at every depth even though
+                // only a depth-0 unlock can have deleted anything — a checkpoint that followed
+                // the deletion would otherwise announce it.
+                self.security.checkpointStore()
                 if let data = self.pendingFileData {
                     self.pendingFileData = nil
                     Task { await self.processInboundFile(data) }
@@ -509,9 +551,9 @@ private struct RootView: View {
                     return
                 }
 
-                // Secure Mode gate: if the app is locked, queue raw bytes
-                // without any processing. PIN entry determines depth; onAuthenticated
-                // processes the data, onDuress discards it.
+                // Secure Mode gate: if the app is locked, queue raw bytes without any
+                // processing. Both unlock paths then drain it identically — see
+                // `pendingFileData`; a duress unlock no longer discards it.
                 if self.appScreen.phase != .unlocked {
                     self.pendingFileData = data
                     return
@@ -550,10 +592,79 @@ private struct RootView: View {
                 OccultaBundle.BundleError.unsupportedMode {
             self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
             self.showError = true
+        // ⚠️ One string for both, and it must stay that way. Splitting them is a duress oracle.
+        //
+        // `senderSignatureCapabilityUnknown` fires only when this device's record of the
+        // sender's version is present but undecryptable, which happens only after a local DB
+        // key rotation that predates `maxBundleVersion` joining `reencryptAllFields` — i.e.
+        // only on an install that activated Secure Mode while running 1.10.0 or 1.10.1.
+        // `missingSenderEphemeralSignature` fires when that record reads fine. So two distinct
+        // strings let anyone who can deliver one unsigned forward-secret bundle read off
+        // whether this device has ever used Secure Mode, by opening the file and looking at the
+        // alert. That is the shape of oracle removed in `b1f9045`, and a deactivation does not
+        // undo it: the stranded ciphertext is preserved on purpose (see Bug 80), so the tell
+        // outlives the feature it reveals.
+        //
+        // **This is not a clear win, and the losses are real.**
+        //
+        // Bug 81 argued for the split and the argument was sound: "ask this contact to update"
+        // is actionable, and the overwhelmingly likely cause of a refusal is a contact still on
+        // 1.9.x rather than an attack. That advice is now gone, and every benign
+        // old-contact refusal reads as a security event. Alarm fatigue is the mild version of
+        // the cost; the sharp version is a user coming to distrust a contact who did nothing
+        // wrong, and withdrawing from a channel that was safe.
+        //
+        // The advice is not gone from the app, only from here: the group-eligibility screen
+        // still says "Needs to update Occulta" for exactly these contacts, which is where a
+        // user goes when they want to know why someone is unreachable.
+        //
+        // Note this resolves *opposite* to the same question on that screen, which collapses
+        // toward the innocuous label rather than the alarming one. Not an inconsistency — the
+        // failure modes differ. There, the alternative contradicts message history the user can
+        // see on the device. Here, the alternative tells the victim of an impersonation attempt
+        // that their friend needs a software update, which is the attacker's cover story
+        // repeated back by the app. So each side collapses away from its own worse outcome.
+        //
+        // What this does not close: `.unrecorded` still accepts an unsigned bundle rather than
+        // refusing it, so open-versus-refuse remains observable. That distinguishes a contact
+        // this device has never heard from, not one it is hiding — and a contact who has never
+        // sent anything holds no prekey of ours and cannot send forward-secret traffic at all.
+        // No duress state is recoverable from it.
+        } catch GroupDecryptError.senderSignatureCapabilityUnknown,
+                GroupDecryptError.missingSenderEphemeralSignature {
+            self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened."
+            self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true
         }
+    }
+
+    /// Clears `Group` rows stranded by a pre-1.10.2 key rotation (Bug 75), but only once the
+    /// current depth is genuinely established and is 0.
+    ///
+    /// The distinction matters and the first version of this got it wrong. `currentDepth` is
+    /// declared `= 0` and is only populated from `persistedDepth` when the PIN gate is down
+    /// (`Manager+Security.swift:245`), so with a PIN configured it reads 0 at launch no matter
+    /// which PIN is about to be entered. Gating on the value alone therefore meant "nobody has
+    /// authenticated yet", not "the real user is here" — and a launch under coercion would run
+    /// the sweep, writing row deletions before the duress PIN was entered. Requiring
+    /// `.unlocked` as well is what makes the depth reading trustworthy.
+    ///
+    /// Safe to call from both the launch task and the unlock transition: the sweep is
+    /// idempotent, and finds nothing once clean.
+    ///
+    /// The key is derived here and passed in. `purgeUnreadableGroups` judges every row against
+    /// it, so a failed derivation must stop the sweep rather than reach it as a nil that would
+    /// condemn the whole table.
+    @MainActor
+    private func purgeOrphanedGroupsIfAtRealDepth() {
+        guard self.appScreen.phase == .unlocked,
+              self.security.currentDepth == 0,
+              let key = try? Manager.Key().createHybridLocalEncryptionKey()
+        else { return }
+
+        try? self.contactManager.purgeUnreadableGroups(using: key)
     }
 
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
@@ -580,10 +691,25 @@ private struct RootView: View {
                 }
                 let knownOwnerID = try self.contactManager.identifyOwner(of: bundle)
 
+                // ⚠️ The envelope's presence reflects the **sender's view of us**, not the
+                // sender's own capability. `encryptBundle` picks the format from
+                // `resolveTargetVersion(for: recipient)`, so a current build sends the
+                // *non-group* format to anyone it resolves below `.groupCapable` — including
+                // every contact whose marker it has stranded, which is the whole Bug 77/80
+                // population. A non-group bundle therefore says nothing about how old the
+                // sender is, and no check here may infer that it does.
+                //
+                // Consequence worth knowing: `openGroup`'s sender-signature gate has no
+                // counterpart on the branch below, because `senderEphemeralSignature` lives on
+                // `RecipientPayload` and the non-group format has no such field. That asymmetry
+                // grants nothing today — the prekey store and the identity key sit behind
+                // identical access control (`.privateKeyUsage`, device-unlocked, no biometric),
+                // so anyone able to build a legacy FS bundle can equally sign a group one — but
+                // do not read the gate as covering both paths.
                 if bundle.group != nil {
-                    // Group bundle — all 1.9.0+ sends (messages, shards, custody ops)
-                    // use this path. Shard-only bundles signal "no basket" via an
-                    // empty message field.
+                    // Group bundle — all sends to a recipient the sender resolves as 1.9.0+
+                    // (messages, shards, custody ops) use this path. Shard-only bundles signal
+                    // "no basket" via an empty message field.
                     let (sealed, ownerID, _, recipShardOps, recipManifest, recipExpected) =
                         try self.contactManager.openGroup(bundle: bundle, ownerID: knownOwnerID)
                     decodedBundleVersion = bundle.version

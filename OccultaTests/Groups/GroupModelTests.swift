@@ -928,7 +928,7 @@ struct GroupStructuralTests {
 
     // MARK: Fail-loud — derivation failure must abort, not silently skip the refresh
 
-    @Test func refreshCiphertext_throwsKeyUnavailable_whenSEUnavailable() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func refreshCiphertext_throwsKeyUnavailable_whenSEUnavailable() throws {
         guard !secureEnclaveAvailable() else { print("⚠︎ Skipping — requires an SE-unavailable environment"); return }
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "NoSE")
@@ -939,7 +939,7 @@ struct GroupStructuralTests {
         }
     }
 
-    @Test func addMember_throwsKeyUnavailable_whenSEUnavailable() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func addMember_throwsKeyUnavailable_whenSEUnavailable() throws {
         guard !secureEnclaveAvailable() else { print("⚠︎ Skipping — requires an SE-unavailable environment"); return }
         let ctx   = ModelContext(try makeContainer())
         let group = try Group(name: "NoSE")

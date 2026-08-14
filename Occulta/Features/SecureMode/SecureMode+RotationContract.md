@@ -21,6 +21,108 @@ These must hold **at all times** between any two successful app launches:
 | I6 | The app group **always** contains a blob — either a real payload (Secure Mode active) or an indistinguishable no-op. This is true regardless of which `LayerStoreBackend` destination is active. An absent app-group blob is a forensic tell. |
 | I7 | `AppLayerConfig` **always** exists from the very first launch. Its presence is not a forensic tell for PIN or Secure Mode usage. Sensitive fields (`sealedNormalVerifier`, `sealedDuressVerifier`) are nil when those features are not configured; the row itself is always there. Never delete the row — reset fields to nil instead. |
 
+| I8 | Every **model** holding a field sealed under the local DB key is re-keyed in **both** `activateSecureMode` and `deactivateSecureMode`. Not one of them. Both. |
+
+---
+
+## Model Coverage
+
+**This section exists because I8 has been broken four times, and every time the same way.**
+
+The rotation stages a new local DB key, re-encrypts, commits, then deletes the superseded key.
+Anything not re-encrypted in between is sealed under a key that no longer exists — permanently,
+because the hybrid key needs a Secure Enclave half that is non-exportable. There is no repair
+pass, on this device or any other.
+
+Every instance failed silently, and that is by design rather than bad luck: `reencryptAllFields`
+nils fields it cannot decrypt, read accessors have safe fallbacks, `compactMap` swallows a nil,
+`if let` swallows a missing key. The system degrades quietly for forensic reasons. That property
+is correct and is exactly what hides this bug class.
+
+| Bug | Model | Missed in |
+|-----|-------|-----------|
+| 75 | `Group` | both paths |
+| 76 | `AppLayerConfig` | both paths |
+| 77 | `Contact.Profile.maxBundleVersion`, `.deletionToken` | the field list |
+| — (2026-08-14) | `Message.Draft` | **deactivation only** — activation had it from the start |
+
+The last one is the important lesson and the reason this section is not just a longer field
+list. The checklist below used to ask *"does this change add an encrypted field to
+`Contact.Profile`?"* — a field-level question about one model. Nobody was asked the model-level
+question, so `Group` and `AppLayerConfig` went unnoticed for as long as they existed. And when
+those two were finally added to both paths, `Message.Draft` — which had been correct in
+activation since the beginning — was not checked against deactivation, because nobody was
+asked *"is every model in **both** paths?"* either.
+
+### Sealed under the rotating local DB key — must be in both paths
+
+| Model | What is sealed | Re-keyed by | Enforcement |
+|---|---|---|---|
+| `Contact.Profile` + `PhoneNumber` / `EmailAddress` / `PostalAddress` / `URLAddress` | every text field, images, `visibleThroughDepth`, `globalTrusteeDepth`, `originDepth`, `signedAttributes`, `forwardSecrecyEncrypted`, `maxBundleVersion`, `deletionToken` | `reencryptAllFields(to:aad:)` | `EncryptedFieldCoverageTests` name tripwire + behavioural rotation test |
+| `Contact.Profile.Key` | `material`, `acquiredAt`, `owner`, `expiredOn`, `quantumKeyMaterialEncrypted` | `reencryptKeyRecords` | `EncryptedFieldCoverageTests` |
+| `Group` | `encryptedID`, `encryptedName`, `encryptedCreatedAt`, all 32 depths of membership | `Group.reencrypt(from:to:)` | `EncryptedFieldCoverageTests` + `GroupKeyRotationTests` |
+| `AppLayerConfig` | `persistedDepth`, `pinEnabled`, `coercerBaseDepth`, `lockoutCountEncrypted`, `lockoutAnchorUptimeEncrypted`, `pinEnabledPerDepth` | `AppLayerConfig.reencrypt(from:to:)` | `EncryptedFieldCoverageTests` + `AppLayerConfigRotationTests` |
+| `Message.Draft` | `encryptedRecipientID`, `encryptedContent` | `Message.Draft.reKeyOrPurgeAll` | `DraftKeyRotationTests` — **no name tripwire**, see below |
+| `VaultEntry` | `visibleThroughDepth` only | inline loop in both paths | `SecureModeActivationTests` |
+
+### Sealed under a key that never rotates — must **not** be added to the rotation
+
+Putting one of these through the rotation is as much a bug as leaving one of the above out: it
+would re-seal under the wrong key and strand the field the other way round.
+
+| Model / field | Key | Why it is not the local DB key |
+|---|---|---|
+| `AppLayerConfig.sealedNormalVerifiers`, `.sealedDuressVerifier` | SE Secure Mode key, via `PINManager` | Why PIN entry kept working across rotations even while everything else on the row did not |
+| `AppLayerConfig.sealedBlobSlots`, `.layerSequenceNumbers` | `AppLayerConfig.blobMetadataKey(from:)`, HKDF from the SE Secure Mode key | Moved there by Bug 76's fix, so no rotation can strand them *by construction* rather than by remembering |
+| Layer store payload | `LayerStore.deriveKey(from:)`, SE Secure Mode key | Must survive the rotation it is taken across |
+| `CustodyShard`, `PendingShardDistribute`, `PendingShardStatusUpdate`, `GlobalShardConfig` | `deriveShardCustodyKey` (SE, `.privateKeyUsage`) | Automatic shard operations run without user approval |
+| `BackupEncryptionKey`, `VaultEntry` label / value | vault key (SE, biometry or passcode) | Deliberately gated on user presence |
+| `ReconstructShard.encryptedPayload` | return-buffer key | Scoped to a reconstruction session |
+| Prekey private keys | SE, per-contact tags | Never leave the Enclave; deleted by `consume`, not re-keyed |
+
+`Contact.Message` is registered in the schema but has no local encryption helpers — its `content`
+is already ciphertext from the bundle path. Verify before assuming, if it is ever used.
+
+### Adding a new encrypted field
+
+1. Decide which key seals it, using the two tables above. If it is anything other than the local
+   DB key, add it to the second table and stop.
+2. Add it to that model's re-key function.
+3. Add its name to the model's list in `EncryptedFieldCoverageTests`, if the model has one. The
+   tripwire fails the build on any stored property it has not been told about, which is what
+   forces this decision to be made rather than skipped.
+4. Decide whether it must survive activation. If so it also needs to be in `LayerContact`, its
+   encoder/decoder, and deactivation's Step 5 restore loop.
+5. Write a behavioural test: populate it, rotate, assert it still reads.
+
+### Adding a new model
+
+1. Everything above, plus:
+2. **Add it to both paths.** Activation's Step 8 and deactivation's Step 6b. A model in one path
+   only is the `Message.Draft` bug.
+3. Add it to `EncryptedFieldCoverageTests` so a future field on it cannot be missed. `Message.Draft`
+   is currently absent from that file — it is covered by behavioural tests only, which catch a
+   missing *call* but not a missing *field*.
+4. Mind the ordering. Anything that resolves an identifier through a decrypt of another model
+   must run before that model is re-keyed. Drafts are re-keyed before groups in both paths for
+   exactly this reason: `Group.readID()` decrypts with the *canonical* key, which is still the
+   old key until the commit, so re-keying groups first would collapse `allGroupIdentifiers` to
+   empty and take `reKeyOrPurgeAll` down its delete branch for every group-addressed draft.
+5. Write the test against the **real** `activateSecureMode` / `deactivateSecureMode`, not against
+   the re-key helper. The helper is rarely the bug; the missing call is. A unit test of
+   `reKeyOrPurgeAll` passed throughout the entire lifetime of the deactivation bug.
+
+### Reviewing a change to either path
+
+Ask the model-level question first, and ask it twice:
+
+- Which models hold something under the rotating key? (the first table)
+- Does **each** appear in `activateSecureMode`?
+- Does **each** appear in `deactivateSecureMode`?
+
+The two functions are separate code paths that happen to do the same thing. A fix applied to one
+is not applied to the other, and nothing in the type system will say so.
+
 ---
 
 ## Key Rotation Sequence (canonical order — do not reorder)
@@ -88,7 +190,13 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
       → Update both `seal()` in activation and the restore loop in deactivation.
 - [ ] Does the change modify `visibleThroughDepth` classification?
       → Verify `isVisible` at depth 0 (normal) and depth .max return correct results.
-- [ ] Run `StagedKeyTests` and `SecureModeActivationTests`.
+- [ ] Does the change add, rename, or remove a **model** sealed under the local DB key?
+      → Walk the Model Coverage tables above. Whatever you do here must also be done in
+         `deactivateSecureMode` — see I8.
+- [ ] Does the change reorder Step 8's passes?
+      → Drafts must be re-keyed before groups. `Group.readID()` uses the canonical key.
+- [ ] Run `StagedKeyTests`, `SecureModeActivationTests`, `GroupKeyRotationTests`,
+      `AppLayerConfigRotationTests`, `DraftKeyRotationTests`, `EncryptedFieldCoverageTests`.
 
 ### Modifying `deactivateSecureMode`
 
@@ -102,7 +210,13 @@ Without an explicit `modelContext.save()` before `commitStagedLocalDBKey()`:
 - [ ] Does the change reorder the final `self.modelContext.save()` relative to
       `commitStagedLocalDBKey()`?
       → The config save must come **after** step 9. Moving it before is invalid.
-- [ ] Run `StagedKeyTests`.
+- [ ] Does Step 6b still re-key **every** model in the first Model Coverage table?
+      → Drafts, groups, config. This checklist previously asked only about `Contact.Profile`,
+         which is how `Message.Draft` stayed missing here while being correct in activation.
+- [ ] Does the change reorder Step 6b's passes?
+      → Drafts before groups, same reason as activation.
+- [ ] Run `StagedKeyTests`, `GroupKeyRotationTests`, `AppLayerConfigRotationTests`,
+      `DraftKeyRotationTests`.
 
 ### Adding a new encrypted field to `Contact.Profile`
 

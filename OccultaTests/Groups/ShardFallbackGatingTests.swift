@@ -23,6 +23,14 @@ import CryptoKit
 import SwiftData
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 @MainActor
@@ -54,6 +62,19 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
     )
 }
 
+/// The synthetic ML-KEM material `makeRecipient(hasQuantumMaterial: true)` stores
+/// on the profile. Both sides of the long-term hybrid derivation are symmetric
+/// (`sorted(ML-KEM secrets)` in the IKM, `XOR(peerPub, ourPub)` as the salt), so a
+/// test holding these same values rederives the recipient's wrapping key exactly
+/// as the recipient device would.
+@MainActor
+private func syntheticQuantumMaterial() -> QuantumKeyMaterial {
+    QuantumKeyMaterial(
+        encapsulatedSecret: Data(count: 32), decapsulatedSecret: Data(count: 32),
+        ourCiphertext: Data(count: 32), peerCiphertext: Data(count: 32)
+    )
+}
+
 /// A contact profile whose public key belongs to a live `TestKeyManager` we keep
 /// around, so the test can decrypt `encryptBundle`'s output exactly as the real
 /// recipient device would. `encryptBundle` always seals via the app's own
@@ -75,11 +96,7 @@ private func makeRecipient(
 
     var encryptedQuantum: Data? = nil
     if hasQuantumMaterial {
-        let quantum = QuantumKeyMaterial(
-            encapsulatedSecret: Data(count: 32), decapsulatedSecret: Data(count: 32),
-            ourCiphertext: Data(count: 32), peerCiphertext: Data(count: 32)
-        )
-        guard let encoded = try? JSONEncoder().encode(quantum) else { return nil }
+        guard let encoded = try? JSONEncoder().encode(syntheticQuantumMaterial()) else { return nil }
         encryptedQuantum = try realCrypto.encrypt(data: encoded)
     }
 
@@ -173,57 +190,48 @@ private enum TestSetupError: Error { case seUnavailable }
 
     @Test("no prekey available: shardOperations, custodyManifest, and expectedShards are all dropped together")
     func fallbackDropsAllThreeShardFields() throws {
-        // isCarryingShard (a real .distribute attribute) requires ML-KEM material
-        // (resolveKeyMaterial(requireQuantum: true)), which forces the hybrid PQ
-        // key-derivation path -- not reproducible end-to-end with TestKeyManager's
-        // synthetic ML-KEM material (see forwardSecretPathPreservesManifestAndExpected
-        // for the same limitation). Proven structurally instead: a bundle carrying
-        // real shardOperations/custodyManifest/expectedShards, sent with no prekey
-        // available, must be exactly as small as the same call with all three fields
-        // omitted entirely -- i.e. nothing from them survived into the ciphertext.
-        //
-        // Two separate ContactManagers (rather than two calls on the same one) so
-        // prekey-batch replenishment side effects from the first call can't drift the
-        // second call's bundle size for reasons unrelated to what's being tested here.
-        let cmWithContent    = try makeContactManager()
-        let cmWithoutContent = try makeContactManager()
-        guard let (_, _) = try makeRecipient(
-            identifier: "bob", contactManager: cmWithContent, capability: .groupCapable,
-            hasPrekey: false, hasQuantumMaterial: true
-        ) else { print("⚠︎ Skipping — SE unavailable"); return }
-        guard let (_, _) = try makeRecipient(
-            identifier: "bob", contactManager: cmWithoutContent, capability: .groupCapable,
+        let cm = try makeContactManager()
+        // A real .distribute attribute sets isCarryingShard, which sends encryptBundle
+        // through resolveKeyMaterial(requireQuantum: true) -- hence the ML-KEM material
+        // on the recipient. That only selects the hybrid variant of the *long-term*
+        // derivation, which is symmetric on both sides, so the bundle stays openable
+        // here with syntheticQuantumMaterial() (unlike the FS path, whose one-time
+        // prekey private half this fixture does not hold -- see
+        // forwardSecretPathPreservesManifestAndExpected).
+        guard let (_, recipientKM) = try makeRecipient(
+            identifier: "bob", contactManager: cm, capability: .groupCapable,
             hasPrekey: false, hasQuantumMaterial: true
         ) else { print("⚠︎ Skipping — SE unavailable"); return }
 
         let op = OccultaBundle.ShardOperation(kind: .distribute, attribute: try makeSignedShardAttr(signer: TestKeyManager()))
 
-        let encodedWithShardContent = try cmWithContent.encryptBundle(
+        let encoded = try cm.encryptBundle(
             basket: Basket(files: []),
             for: "bob",
             shardOperations: [op],
             custodyManifest: [UUID()],
             expectedShards:  [UUID()]
         )
-        let encodedWithoutShardContent = try cmWithoutContent.encryptBundle(
-            basket: Basket(files: []),
-            for: "bob",
-            shardOperations: nil,
-            custodyManifest: nil,
-            expectedShards:  nil
-        )
 
-        // Small residual variance (a couple of bytes) comes from incidental DER/ASN.1
-        // encoding differences elsewhere in the pipeline -- the same accepted residual
-        // GroupShardGatingTests.mixedGroupSendsToAllWithUniformSlotSize documents and
-        // tolerates. A real leak of a dropped UUID (16 bytes) or shard attribute
-        // (~100+ bytes) would blow far past this tolerance, so it still proves nothing
-        // from the three fields survived into the ciphertext.
-        let sizeDelta = abs(encodedWithShardContent.count - encodedWithoutShardContent.count)
-        #expect(
-            sizeDelta <= 8,
-            "shardOperations/custodyManifest/expectedShards must contribute (near-)nothing to the fallback bundle's size (delta: \(sizeDelta))"
+        let bundle = try OccultaBundle.decoded(from: encoded)
+        #expect(bundle.group != nil, "1.9.0+ contact must still use the group-envelope format")
+
+        let senderPub       = try Manager.Key().retrieveIdentity()
+        let recipientCrypto = Manager.Crypto(keyManager: recipientKM)
+        let (recipientPayload, _, mode) = try recipientCrypto.findAndOpenRecipientSlot(
+            in: bundle, blind: bundle.group!.blind,
+            senderContactID: "self", senderPublicKey: senderPub,
+            quantumMaterial: syntheticQuantumMaterial(), prekeyManager: Manager.PrekeyManager()
         )
+        #expect(mode == .longTermFallback, "no prekey available, ML-KEM on file -> hybrid fallback mode")
+
+        let sessionKey  = SymmetricKey(data: recipientPayload.sessionKey)
+        let payloadData = try recipientCrypto.openGroupCiphertext(bundle, using: sessionKey)
+        let sealed      = try WireHandle.decode(payload: payloadData)
+
+        #expect(sealed.shardOperations == nil, "shardOperations must not ride the fallback (non-FS) path")
+        #expect(sealed.custodyManifest == nil, "custodyManifest must not ride the fallback (non-FS) path")
+        #expect(sealed.expectedShards  == nil, "expectedShards must not ride the fallback (non-FS) path")
     }
 
     @Test("prekey available: custodyManifest/expectedShards are NOT stripped (control — fix isn't over-broad)")
@@ -268,7 +276,7 @@ private enum TestSetupError: Error { case seUnavailable }
 @Suite("openGroup / decryptSealed — receiver strips shard content on fallback slot")
 @MainActor struct ReceiverShardFallbackTests {
 
-    @Test("openGroup drops per-recipient shard content when this recipient's own slot used fallback, regardless of what the sender sent")
+    @Test("openGroup drops per-recipient shard content when this recipient's own slot used fallback, regardless of what the sender sent", .enabled(if: secureEnclaveAvailable()))
     func openGroupStripsOnFallbackSlot() throws {
         let cm       = try makeContactManager()
         let senderKM = TestKeyManager()
@@ -299,7 +307,7 @@ private enum TestSetupError: Error { case seUnavailable }
         #expect(result.recipientExpectedShards  == nil, "expected shards must be dropped when this recipient's slot used the fallback path")
     }
 
-    @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback")
+    @Test("decryptSealed drops shard content on the legacy single-recipient path when the bundle used fallback", .enabled(if: secureEnclaveAvailable()))
     func decryptSealedStripsOnFallback() throws {
         let cm       = try makeContactManager()
         let senderKM = TestKeyManager()

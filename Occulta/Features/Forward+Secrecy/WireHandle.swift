@@ -284,20 +284,31 @@ struct WireHandle {
     static func byteToVersion(_ b: UInt8) -> OccultaBundle.Version? { Self._byteToVersion[b] }
     static func byteToMode(_ b: UInt8)    -> OccultaBundle.Mode?    { Self._byteToMode[b] }
 
-    // groupCapable/groupShardCapable/senderSignatureCapable encode to 0x04 on the
-    // wire (same binary layout as v4); 0x05/0x06/0x07 are only written into
-    // Contact.Profile.maxBundleVersion as capability markers.
+    // groupCapable/groupShardCapable/senderSignatureCapable/prefixedSenderSignatureCapable
+    // all encode to 0x04 on the wire (same binary layout as v4); 0x05–0x08 are only written
+    // into Contact.Profile.maxBundleVersion as capability markers.
+    //
+    // ⚠️ These two tables and `Version.wireByte` are three statements of one fact and must be
+    // updated together. Adding a tier to the enum alone leaves its marker byte unmappable on
+    // read, and `bundleVersionState` then classifies it by comparison with
+    // `highestKnownWireByte` — which the new `wireByte` just raised, so the byte lands on the
+    // "not newer than us" side and resolves to `.v3fs`. A contact on the newest build would be
+    // recorded as unable to sign, failing the `openGroup` signature gate open: exactly the
+    // fail-open that comment at `ContactManager.bundleVersionState` exists to prevent.
+    // `PrefixedSignatureTierTests.everyTierRoundTripsThroughItsMarkerByte` pins all three.
     private static let _versionToByte: [OccultaBundle.Version: UInt8] = [
         .v4:                     0x04,
         .groupCapable:           0x04,
         .groupShardCapable:      0x04,
         .senderSignatureCapable: 0x04,
+        .prefixedSenderSignatureCapable: 0x04,
     ]
     private static let _byteToVersion: [UInt8: OccultaBundle.Version] = [
         0x04: .v4,
         0x05: .groupCapable,
         0x06: .groupShardCapable,
         0x07: .senderSignatureCapable,
+        0x08: .prefixedSenderSignatureCapable,
     ]
 
     private static let _modeToByte: [OccultaBundle.Mode: UInt8] = [

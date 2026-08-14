@@ -197,12 +197,13 @@ private func fetchAllVaultEntries(from container: ModelContainer) throws -> [Vau
 @MainActor
 private func readActivationPayload(from c: ActivationComponents) throws -> LayerPayload {
     let config = try c.container.mainContext.fetch(FetchDescriptor<AppLayerConfig>()).first!
-    guard let slotIndex = config.readBlobSlot(at: 0) else {
-        throw TestError("no blob slot stored in config after activation")
-    }
     guard let seKey    = try c.keyManager.deriveSecureModeKey(),
           let layerKey = c.layerStore.deriveKey(from: seKey)
     else { throw TestError("could not derive blob key from TestKeyManager") }
+    // Blob metadata is sealed under the SE-derived key, not the local DB key (Bug 76).
+    guard let slotIndex = config.readBlobSlot(at: 0, using: AppLayerConfig.blobMetadataKey(from: seKey)) else {
+        throw TestError("no blob slot stored in config after activation")
+    }
     return try c.layerStore.readPayload(key: layerKey, slotIndex: slotIndex)
 }
 
@@ -212,7 +213,7 @@ private func readActivationPayload(from c: ActivationComponents) throws -> Layer
 @Suite("Secure Mode — Blob lifecycle", .serialized)
 struct SecureModeBlobLifecycleTests {
 
-    @Test func activation_writesBlob() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_writesBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         #expect(!c.backend.exists, "blob should not exist before activation")
@@ -225,7 +226,7 @@ struct SecureModeBlobLifecycleTests {
         #expect(c.backend.exists, "blob must be written during activation")
     }
 
-    @Test func activation_blobReadableWithCorrectKey() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobReadableWithCorrectKey() async throws {
         // Verifies push/pop are symmetric end-to-end using TestKeyManager's
         // SecureMode key — entirely SE-independent (no Manager.Key involvement).
         let c = try makeComponents()
@@ -240,7 +241,7 @@ struct SecureModeBlobLifecycleTests {
         _ = payload  // structure is valid; contact content depends on SE availability
     }
 
-    @Test func deactivation_blobStillReadableDuringDeactivation() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_blobStillReadableDuringDeactivation() async throws {
         // The deactivation sequence pops the blob to restore sensitive contacts.
         // If pop throws, it falls back to an empty payload — verify it doesn't throw.
         let c = try makeComponents()
@@ -258,7 +259,7 @@ struct SecureModeBlobLifecycleTests {
         #expect(!c.security.isSecureModeActive)
     }
 
-    @Test func activation_blobIsCorrectSize() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobIsCorrectSize() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
@@ -277,7 +278,7 @@ struct SecureModeBlobLifecycleTests {
 @Suite("Secure Mode — Contact classification in blob", .serialized)
 struct SecureModeClassificationTests {
 
-    @Test func sensitiveContact_appearsInBlob() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_appearsInBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -298,7 +299,7 @@ struct SecureModeClassificationTests {
                 "sensitive contact must be sealed in the blob during activation")
     }
 
-    @Test func safeContact_doesNotAppearInBlob() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func safeContact_doesNotAppearInBlob() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -325,7 +326,7 @@ struct SecureModeClassificationTests {
                 "sensitive contact must be in the blob")
     }
 
-    @Test func sensitiveContact_restoredByIdentifier_afterDeactivation() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_restoredByIdentifier_afterDeactivation() async throws {
         // Verifies the deactivation blob-restore path rewrites the contact row.
         // Identifier equality is SE-independent (identifier field is not encrypted).
         let c = try makeComponents()
@@ -471,7 +472,7 @@ struct SecureModeWALPersistenceTests {
     /// This test is SE-independent: it sets `visibleThroughDepth` to a raw byte
     /// sentinel in the test body (no Manager.Crypto involvement) and verifies that
     /// nil — not the sentinel — is visible to a fresh context after deactivation.
-    @Test func deactivation_nilVisibilityField_persistedToWAL() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_nilVisibilityField_persistedToWAL() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -568,7 +569,7 @@ struct SecureModeWALPersistenceTests {
 
     // MARK: Round-trip identity
 
-    @Test func roundTrip_contactRowCount_preserved() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func roundTrip_contactRowCount_preserved() async throws {
         // A complete activate → deactivate cycle must not gain or lose contact rows.
         let c = try makeComponents()
         try c.security.configurePIN("111111")
@@ -594,7 +595,7 @@ struct SecureModeWALPersistenceTests {
                 "activate → deactivate must not change the number of contact rows")
     }
 
-    @Test func multipleRoundTrips_doNotAccumulateRows() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func multipleRoundTrips_doNotAccumulateRows() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 
@@ -1110,4 +1111,85 @@ struct OriginDepthPreservationTests {
 private struct TestError: Error, CustomStringConvertible {
     let description: String
     init(_ message: String) { self.description = message }
+}
+
+// MARK: - Bug 78 — rotation must abort, not skip, when the old key is unavailable
+
+@MainActor
+@Suite("Secure Mode — rotation aborts on unavailable key", .serialized)
+struct SecureModeRotationKeyGuardTests {
+
+    /// Regression for Bug 78. The re-encryption passes for drafts, `Group` and
+    /// `AppLayerConfig` used to sit inside `if let oldKey = …` with no `else`, so a nil key
+    /// skipped all three and control fell through to `commitStagedLocalDBKey()` and
+    /// `deleteSupersededLocalDBArtefacts()` — leaving groups and the config sealed under a key
+    /// that had just been destroyed. That is Bugs 75 and 76, reached through their own fix.
+    ///
+    /// The failure was silent, so the only thing that pins it is asserting the throw.
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_abortsWhenHybridKeyUnavailable() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        // A contact whose Data fields would be nil-ed by `reencryptAllFields` if the rotation
+        // were allowed to start without a usable key.
+        let ceiling = Data([0xC0, 0xFF, 0xEE])
+        try insertContact(identifier: "victim", in: c.container, visibleThroughDepth: ceiling)
+
+        c.keyManager.simulatesHybridKeyUnavailable = true
+
+        await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
+            try await c.security.activateSecureMode(
+                confirmingEntryPIN: "111111", duressPIN: "999999",
+                contactManager: c.contacts, vaultManager: c.vault
+            )
+        }
+
+        // Must not have reached the commit: Secure Mode stays off, so the superseded key was
+        // never deleted and everything sealed under it is still readable.
+        #expect(!c.security.isSecureModeActive)
+
+        // And must not have reached Step 8 either. The guard originally sat *after*
+        // `reencryptAllFields` had run over every contact and saved, so aborting still cost
+        // every contact its `Data` fields — `reencrypt(data:)` returns nil for anything it
+        // cannot decrypt, and rolling the staged key back does not restore them. Losing
+        // `visibleThroughDepth` drops the Secure Mode visibility ceiling for the whole address
+        // book, so this asserts the failure is genuinely inert.
+        let survivor = try #require(
+            try fetchAllProfiles(from: c.container).first { $0.identifier == "victim" }
+        )
+        #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
+    }
+
+    /// Same guard on the way out. Deactivation deletes the superseded key exactly as
+    /// activation does, so skipping its re-encryption pass strands the same rows.
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_abortsWhenHybridKeyUnavailable() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        try #require(c.security.isSecureModeActive)
+
+        let ceiling = Data([0xC0, 0xFF, 0xEE])
+        try insertContact(identifier: "victim", in: c.container, visibleThroughDepth: ceiling)
+
+        c.keyManager.simulatesHybridKeyUnavailable = true
+
+        await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
+            try await c.security.deactivateSecureMode(
+                confirmingEntryPIN: "111111",
+                contactManager: c.contacts, vaultManager: c.vault
+            )
+        }
+
+        // Still active — the rotation aborted before its point of no return.
+        #expect(c.security.isSecureModeActive)
+
+        // Same inertness requirement as activation: nothing re-encrypted, nothing saved.
+        let survivor = try #require(
+            try fetchAllProfiles(from: c.container).first { $0.identifier == "victim" }
+        )
+        #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
+    }
 }

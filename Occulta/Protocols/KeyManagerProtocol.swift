@@ -59,6 +59,22 @@ protocol KeyManagerProtocol {
     ///
     /// ⚠️ DO NOT pre-hash — `.ecdsaSignatureMessageX962SHA256` hashes internally.
     ///
+    /// ⚠️ **`data` must begin with a domain-separation prefix.** This key also signs
+    /// identity challenges (`"occulta-identity-challenge-v1"`) and vault attributes
+    /// (`"occulta-signed-attribute-v2"`), and a signature carries no record of which context
+    /// produced it — only the bytes decide. Two sites that can produce identical bytes are two
+    /// sites whose signatures are interchangeable.
+    ///
+    /// One caller predates this rule and does not follow it: `wrapRecipient` signs a bare
+    /// 65-byte ephemeral public key for `senderEphemeralSignature`. It is safe today only
+    /// because it is the sole unprefixed site — an X9.63 point starts `0x04` and both prefixes
+    /// start with ASCII `o`, so nothing currently collides with it. That safety is one call
+    /// site deep. **Do not add a second site that signs a bare public key** — this app handles
+    /// 65-byte P-256 points everywhere (identity keys, prekey publics, peer material), so
+    /// signing one for any new purpose would make its signature indistinguishable from a
+    /// sender-ephemeral signature, in both directions. Prefixing `wrapRecipient` is the real
+    /// fix and is a wire-format change; see §3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`.
+    ///
     /// - Returns: DER-encoded ECDSA signature.
     func signData(_ data: Data) throws -> Data
 
@@ -105,8 +121,19 @@ protocol KeyManagerProtocol {
 
 // MARK: - TestKeyManager
 
+#if DEBUG
 /// In-memory P-256 key manager for unit tests.
 /// No Secure Enclave — safe to run in the test process.
+///
+/// `#if DEBUG` because this is a fully working key manager that bypasses the Secure Enclave,
+/// and it was previously compiled into the shipped binary. Not exploitable — reaching it needs
+/// code execution, at which point the process is already lost — but a security product should
+/// not ship an Enclave bypass, complete with a switch that forces key derivation to fail, as
+/// dead weight in its release build.
+///
+/// Consequence: the test target must build against a configuration where DEBUG is defined,
+/// which is how it is already run. The two SwiftUI previews that construct this are gated the
+/// same way.
 @MainActor
 final class TestKeyManager: KeyManagerProtocol {
     private let identityPrivateKey: SecKey
@@ -208,8 +235,19 @@ final class TestKeyManager: KeyManagerProtocol {
         )
     }
 
+    /// Fault injection: when true, `createHybridLocalEncryptionKey()` returns nil, standing in
+    /// for a Secure Enclave or Keychain that is momentarily unavailable.
+    ///
+    /// Exists for Bug 78's regression test. That bug was a rotation that skipped its
+    /// re-encryption passes on a nil key and then committed and deleted the superseded key
+    /// anyway — silently, with no error. The only way to test the guard that now aborts it is
+    /// to be able to produce the nil.
+    var simulatesHybridKeyUnavailable = false
+
     /// v2 — hybrid PQ-reinforced local key.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
+        if self.simulatesHybridKeyUnavailable { return nil }
+
         guard
             let seComponent = self.deriveRawECDH(
                 privateKey: self.localDBPrivateKey,
@@ -622,3 +660,4 @@ extension TestKeyManager {
         return Data(bytes)
     }
 }
+#endif

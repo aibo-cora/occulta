@@ -390,6 +390,8 @@ private struct SummaryRow: View {
 
 // MARK: - Preview
 
+#if DEBUG
+// Gated with `TestKeyManager`, which is `#if DEBUG` — see KeyManagerProtocol.swift.
 #Preview {
     let container = try! ModelContainer(
         for: Schema([AppLayerConfig.self, Contact.Profile.self,
@@ -402,3 +404,4 @@ private struct SummaryRow: View {
         .modelContainer(container)
         .environment(Manager.Security(modelContainer: container, keyManager: TestKeyManager()))
 }
+#endif
