@@ -64,6 +64,9 @@ superseded key is deleted:
   • Contact.Profile  → reencryptAllFields / reencryptKeyRecords
   • Group            → Group.reencrypt(from:to:)
   • AppLayerConfig   → AppLayerConfig.reencrypt(from:to:)
+  • Message.Draft    → Message.Draft.reKeyOrPurgeAll
+
+Whichever it is, it must be re-keyed in BOTH activateSecureMode AND deactivateSecureMode. They are separate code paths and nothing links them: drafts were correct in activation from the start and absent from deactivation until 2026-08-14. See Model Coverage in SecureMode+RotationContract.md.
 
 Consider whether clearing it on an unreadable value is safe. If the field's PRESENCE carries \
 meaning (as deletionToken's does), use the preserving helper — nil-ing it changes behaviour \
@@ -111,6 +114,25 @@ struct EncryptedFieldTripwireTests {
         ]
 
         #expect(storedPropertyNames(of: try Group(name: "probe")) == expected, "\(tripwireGuidance)")
+    }
+
+    /// Added after `Message.Draft` was found missing from `deactivateSecureMode` entirely.
+    /// Its fields were never stranded by a *field* omission — the whole model was skipped by
+    /// one of the two rotation paths — so this tripwire would not have caught that bug. It is
+    /// here for the next one: a third field on `Draft` added without a matching change to
+    /// `reKeyOrPurgeAll`, which handles exactly two and would silently carry neither.
+    @Test("Message.Draft has no unreviewed stored properties")
+    func draftPropertiesReviewed() {
+        let expected: Set<String> = [
+            // Plaintext — row identity and the on-disk attachment folder name. Also the AAD
+            // input for both fields below, so it cannot itself be encrypted.
+            "id",
+            // Local DB key — must be covered by Message.Draft.reKeyOrPurgeAll, in both paths.
+            "encryptedRecipientID", "encryptedContent",
+        ]
+
+        let probe = Message.Draft(id: UUID(), encryptedRecipientID: Data(), encryptedContent: Data())
+        #expect(storedPropertyNames(of: probe) == expected, "\(tripwireGuidance)")
     }
 
     @Test("AppLayerConfig has no unreviewed stored properties")
