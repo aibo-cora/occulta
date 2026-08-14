@@ -1,7 +1,7 @@
 # Verified Payment Cards — Design Findings
 
 **Status:** Exploratory — no SPEC.md yet. Scoped as an extension of Consumer Feature `#26` (Verified Payment Instructions, `Master Feature & Expansion Analysis.md` §26), which is **Near-term** priority.
-**Ruling 2026-08-14:** build, but **v0 only, one wedge, and not before the adoption test** — see [Viability ruling](#viability-ruling--2026-08-14) and the v0/deferred split in [Action items](#action-items).
+**Ruling 2026-08-14:** build, but **v0 only, one wedge, and not before gate zero** — see [Viability ruling](#viability-ruling--2026-08-14) and the v0/deferred split in [Action items](#action-items). **Amended the same day: the crypto lead is withdrawn** and v0 is held rather than re-scoped, because the doc had costed the feature against products and never against the free practices people actually use (D-18). Shelving is a live outcome.
 **Origin:** Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2–3, which reached this design while looking for a construction of `#15` that the relay attack does not reach. Extended 2026-08-10 by a gap review that settled the key architecture, the payload layouts, the storage model, and the threat model; see [Provenance](#provenance).
 
 ---
@@ -588,6 +588,27 @@ The genuine differentiator, which the table above states correctly: **a payee de
 
 It also raises the bar against address-substitution malware — subject to the masking surface rule in the threat model — which connects to Expansion I's smart-wallet work.
 
+**This table lists products only.** That omission ran unnoticed through two design sessions and a viability ruling — see D-18, which is the correction.
+
+### D-18 · The substitutes are practices, not products
+
+*Added 2026-08-14, after the doc's own crypto-wedge case was challenged on exactly this ground.*
+
+D-08 finds no incumbent for crypto and the wedge ranking leads on that finding. It is true, and it misled the ranking: **no incumbent product is not the same as no substitute.** What people actually use costs nothing, ships in every wallet, and is already standard practice among precisely the crypto-literate cohort the lead wedge targets.
+
+| Substitute | What it defeats | Cost | What it leaves open |
+|---|---|---|---|
+| Saved recipient / address book — in every major wallet | **Re-entry**: pasting, typos, clipboard hijack, eyeballing four characters | Nothing | The *first* entry. Whatever arrived over an untrusted channel is kept forever under a trusted label |
+| **Scanning the payee's QR in person** | **First entry, at the same trust root this design uses** — physical presence | Nothing | Nothing durable. No record that this address was ever verified, and nothing that speaks when it changes |
+| $1 test transaction | First entry, and any substitution the payer cannot see | One fee, one round trip | Nothing, if receipt is confirmed on a channel the attacker also holds |
+| Phone call to a known number | A claimed change of destination | A minute | Degrades as real-time voice cloning improves — a trend, not yet the norm in a live two-way call |
+
+**The precondition paradox.** D-07 requires that both parties physically met. But a relationship that can support a UWB ceremony is a relationship that already has a phone number and an opportunity to scan a QR code face to face. **The feature's entry condition is the same condition under which the free substitutes already work.** That is structural, not a gap in execution, and it applies to every wedge.
+
+**What survives.** No substitute in the table makes a *later change* to a destination loud, cryptographically, without the payer having to be suspicious on that particular day. The address book silently accepts an edit; the QR scan happened once and left no witness; the test transaction and the phone call both require the payer to already suspect something. That residual is the entire value of the feature.
+
+It is real. It is also much narrower than D-08's table implies, and it is worth most exactly where a destination persists for months and an attacker's whole playbook is to change it — which is **not** the wedge this doc ranked first. See the [ruling amendment](#amendment--the-lead-wedge-is-withdrawn).
+
 ---
 
 ## Positioning and copy discipline
@@ -937,14 +958,16 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 **The risk is concentrated in one place: two-sided cold start.** Nothing about the design is uncertain; whether a title office can get clients to install an app mid-transaction is. `#26`'s ruling notes that *"one cautious title office can adopt unilaterally for its clients"* — that unilateral adoption is the thing to test before scaling investment. D-13 narrows it usefully: the install and the card exchange are one event.
 
-### Wedge ranking (revised 2026-08-10 — crypto leads)
+### Wedge ranking (revised 2026-08-10 — crypto leads; **lead withdrawn 2026-08-14**)
+
+*Kept as written, because the amendment is a correction to it and the reasoning trail is the point. The four pillars below are what the [amendment](#amendment--the-lead-wedge-is-withdrawn) re-scores; the first is measuring the wrong thing and the fourth does not hold at all.*
 
 **1 · Crypto payments between people who know each other.** The lead wedge. Four things line up that line up nowhere else:
 
-- **No incumbent at all.** VoP, CoP and the Fed service are bank rails. Exchange whitelists exist but not for self-custody, and none bind an address to a physically-met person.
+- **No incumbent at all.** VoP, CoP and the Fed service are bank rails. Exchange whitelists exist but not for self-custody, and none bind an address to a physically-met person. *(Still true, and **no longer a reason to lead here** — D-18: the substitutes are practices, not products, and they are free.)*
 - **Losses are permanent.** Wire has a 24–72 h recall window and the IC3 kill-chain; crypto has neither. The recoverability argument that D-05 leans on is strongest here.
 - **The transport friction is least painful here.** F-02's manual share sheet is the thing that serves the family case worst — and crypto-literate counterparties handle files and share sheets without assistance. The lead wedge is the one the transport actually fits.
-- **`chainID` inside the signed destination is genuinely novel** (D-10), and wrong-chain sends are a leading cause of permanent loss.
+- ~~**`chainID` inside the signed destination is genuinely novel** (D-10), and wrong-chain sends are a leading cause of permanent loss.~~ **Withdrawn 2026-08-14.** Both halves are true and they do not compose for this population. The dominant wrong-chain loss is an *exchange deposit* — and exchange addresses have no keypair, so Q-10's mechanism excludes them by construction. Within the set this design does serve — self-custody, EVM — the same key controls the same address across chains, so a wrong-chain send is usually **recoverable**. `chainID` is still correct to sign; it is not a reason to lead here.
 
 The competitive trend reinforces it: Q-04 established that verification-of-payee is closing on bank rails and does not touch crypto on any published timeline. The differentiated slice narrows toward crypto over time, so leading there is running with the trend rather than against it.
 
@@ -957,6 +980,8 @@ The competitive trend reinforces it: Q-04 established that verification-of-payee
 **Not a wedge: cross-border freelance and remote contracting.** *(Corrected 2026-08-10 — listed as a use case in the first draft of this section, in error.)* VoP genuinely does not reach it, but the parties have generally never met physically, so there is no ceremony and no card. It fails D-07's own constraint. Occasional fits exist — a former colleague, a conference kickoff — but the general case is outside the closed loop, and it belongs with the exclusions below rather than the opportunities above.
 
 ### Two scoping consequences of leading with crypto
+
+*Conditional as of 2026-08-14 — the crypto lead is withdrawn (see the [amendment](#amendment--the-lead-wedge-is-withdrawn)). Both consequences still hold **if** gate zero picks `.crypto`; neither is a commitment any more.*
 
 - **`.crypto` becomes the first-class rail** and needs to be complete at ship: CAIP-2 chain identifiers, the accepted-asset list promoted from optional, hard-reject on mismatch (D-10), and **signature-derived address entry** rather than a text field (Q-10). `.ukFPS` and arguably `.achUS` can follow later.
 - **The masking surface rule rises in priority.** It matters most exactly here, because vanity address generation makes a matching displayed tail cheap — so "full destination on the payment screen, masking only in history" is a ship blocker for the lead wedge, not a refinement.
@@ -997,9 +1022,9 @@ That is not an argument against the feature. It is an argument that **$3.05B mus
 
 ### Viability ruling — 2026-08-14
 
-**Build it. Not as specified, and not before the adoption test.**
+**Build it. Not as specified, and not before the adoption test.** — *Amended the same day. The build/shelve call stands; the **wedge** does not. See [Amendment](#amendment--the-lead-wedge-is-withdrawn) below, which is the load-bearing part of this section.*
 
-Three things this section already establishes have only ever been stated separately. They compound, and the compounded version is the honest value estimate.
+Three things this section already establishes have only ever been stated separately. They compound, and the compounded version is the honest value estimate. A fourth was missing entirely.
 
 **1 · The security value is capped by a behavioural policy.** D-07 records that *"only pay to an existing card"* is a policy rather than a guarantee — but that limit never reached the value framing. It belongs here. The ceiling on what cards prevent is user discipline, which is the same ceiling the safe word has. Cards are harder to leak, impossible to forget, and pre-positioned rather than recalled under pressure — genuinely better, and better *in degree*. Not a change of category. Internal expectation should be set at that level, not only the copy.
 
@@ -1007,7 +1032,9 @@ Three things this section already establishes have only ever been stated separat
 
 **3 · The stated differentiator and the lead wedge point at different mechanisms.** *"Is this the same account I have been paying since March?"* is a bank-rails argument. It presumes a destination that persists and an attacker whose move is to change it. Crypto has no bank and no *"our details have changed"* playbook; there the attack is substitution at the moment of paste. Cards beat that, but through a different mechanism — Q-10's signature-derived entry, where **the destination is never a string anyone could substitute**, plus `chainID` binding. Not through the age tripwire.
 
-So the lead wedge's real proposition is *"the destination was never typed, and the chain is signed."* The tripwire rides along nearly free and accrues into the bank-rail cases later. Selling the crypto wedge on the age argument sells it on its weakest mechanism.
+So the lead wedge's real proposition is *"the destination was never typed, and the chain is signed."* The tripwire rides along nearly free and accrues into the bank-rail cases later. Selling the crypto wedge on the age argument sells it on its weakest mechanism. *(This diagnosis holds; the conclusion drawn from it did not — see the amendment. The right inference was that the differentiator points away from crypto, not that crypto needs a different pitch.)*
+
+**4 · The whole doc costed the feature against products and never against practices.** D-08 lists five competitors, all of them products, and finds none for crypto. Free practices — the in-person QR scan above all, then the $1 test and the phone call — never appear anywhere in this document, and they are what the crypto-literate cohort actually uses. D-18 is the correction. Its consequence is the amendment below.
 
 #### What the ruling actually is
 
@@ -1015,15 +1042,36 @@ The one uncertain variable is two-sided cold start — this section says so alre
 
 **"Zero new cryptography" is true and has been read as "small."** It is not small — count the items in [Action items](#action-items). It also invites a financially motivated adversary class into an app that does not currently attract one, and it carries the reliance exposure [Positioning](#positioning-and-copy-discipline) already names, against the audience least able to evaluate the claim.
 
-Hence the v0/deferred split below. **v0 is one wedge — crypto — plus the tripwire, because the tripwire is nearly free once cards exist at all.** Everything whose justification is *"and when this is under attack"* rather than *"and then the payment works"* waits until a second ceremony has happened for real.
+Hence the v0/deferred split below. **v0 is one wedge plus the tripwire, because the tripwire is nearly free once cards exist at all.** Everything whose justification is *"and when this is under attack"* rather than *"and then the payment works"* waits until a second ceremony has happened for real. *(Which wedge, amended below — the split itself is rail-agnostic apart from one item.)*
 
 #### What v0 gives up, explicitly
 
 D-01's correction stands: the identity key carries `[.privateKeyUsage]` only, with no biometric gate. A v0 that signs on it emits cards and requests that any unlocked device can produce without a presence check. That is a real loss, and it is **accepted for v0 rather than papered over** — D-09's dedicated key and certificate are the fix and land with the wedge. Until they do, nothing in copy or in the app may describe card signing as biometrically gated. This is the same false claim D-01 already had to correct once.
 
-#### One demotion, no re-ranking
+#### Amendment — the lead wedge is withdrawn
 
-The wedge order stands. But real estate is the wedge to be most sceptical of, not simply the second one to build. Insured commercial products already sell into title companies, the sales cycle is institutional, and *"we catch the change across weeks"* is a subtle argument to win against a policy that pays out. It ranks second on **pool size**, and pool size is not win rate.
+*Same day, after D-18. This supersedes the "crypto leads" ranking and the earlier "one demotion, no re-ranking" note, which held the order intact.*
+
+Once substitutes are priced in, the wedges have to be scored on two axes rather than one. The ranking above scored only the second.
+
+| Wedge | Value-add over the free substitute | Deliverable |
+|---|---|---|
+| Crypto p2p | **Low** — QR scan in person, $1 test, phone call, all free and all standard practice | **High** — share sheet fits, counterparties are file-literate |
+| Family | High — no product and no reliable practice exists | **Low** — share sheet vs. an elderly parent; the *"I can't sign, my phone is gone"* adaptation is unsolved |
+| Real estate | Medium — insured commercial products already sell here | Medium — institutional sales cycle |
+| Small business ↔ recurring vendor | **High** — this is BEC's core playbook, US has no mandated VoP, and the parties genuinely meet | Medium — a business will install what its bookkeeper mandates, and site visits supply the ceremony |
+
+**No wedge scores well on both.** That is the sharpest objection to this feature, it is sharper than anything else in this document, and the document did not contain it until now.
+
+Two things follow.
+
+**The crypto lead does not survive.** It was ranked first on *"no incumbent,"* and D-18 shows that criterion was measuring the wrong thing. Crypto is the most *deliverable* wedge and the one where the feature adds least — the free substitutes are strongest exactly where the user base is most sophisticated. Ranking it first optimized for the axis that was easiest to see.
+
+**Small business ↔ recurring vendor is where the residual value actually is.** D-18's surviving residual — making a *later change* loud without the payer having to be suspicious that day — needs three conditions together: a destination that persists for months, an attacker whose entire playbook is to change it, and a payer who would otherwise accept the change over email. Crypto p2p meets them weakly, rarely, sometimes. Vendor payments meet all three, by definition. That wedge is currently ranked **third**.
+
+**What this does not settle.** Re-cutting v0 to bank rails right now would repeat the same error in the other direction — picking a wedge from analysis rather than from evidence, which is what produced the crypto lead. So **v0 is held, not re-scoped**, and gate zero gains a prior question (see [Action items](#action-items)). If neither gate-zero question comes back positive, this is a well-designed feature for a problem people already solve for free, and shelving it is the correct outcome rather than a failure.
+
+**Real estate scepticism, retained from the superseded note.** It ranks second on **pool size**, and pool size is not win rate. Insured commercial products already sell into title companies, and *"we catch the change across weeks"* is a subtle argument to win against a policy that pays out.
 
 ---
 
@@ -1041,14 +1089,18 @@ The wedge order stands. But real estate is the wedge to be most sceptical of, no
 
   The walk found two more, one level down — *who chooses the **number***: signer-chosen `expiresAt` with no verifier-enforced maximum, and signer-chosen `version` with no ceiling, the latter able to block supersession of a lineage permanently. Both now in D-14. Remaining scopes checked clean: `destinationDigest` (content-derived, and a new destination *should* read as new), `requestID` (a new one is a new request, not a replay), `contactID` (minted locally at pairing), acknowledged version (already advisory per D-16).
 
-**Gate zero — the adoption test, before any code at all.**
+**Gate zero — two questions, before any code at all.** *(Second question added 2026-08-14 with D-18.)*
 
-Does a counterparty who is not already an Occulta user install it and complete a UWB ceremony *because a payment is at stake* — and then do it again with a second person? That is the only variable in doubt, and **it needs none of this feature to run**: the ceremony ships today. Run it before spending anything below. `#26`'s *"one cautious title office can adopt unilaterally for its clients"* is the same test at the institutional end.
+**0a · Is the residual worth paying for?** D-18 establishes that the in-person QR scan, the $1 test transaction and a phone call are free, standard, and already cover first entry. What cards add is a *later* change made loud. So: would a small business pay for that instead of phoning the vendor? This question comes first, because a negative answer makes 0b irrelevant — and neither question needs a line of code.
 
-**v0 — the crypto wedge:**
+**0b · Will the second side install?** Does a counterparty who is not already an Occulta user install it and complete a UWB ceremony *because a payment is at stake* — and then do it again with a second person? **It needs none of this feature to run**: the ceremony ships today. `#26`'s *"one cautious title office can adopt unilaterally for its clients"* is the same test at the institutional end.
 
-- **`.crypto` complete at ship** — CAIP-2 chain identifiers, the accepted-asset list promoted from optional, hard-reject on mismatch (D-10), and **signature-derived address entry** rather than a text field (Q-10). Per the ruling, this is the lead wedge's actual mechanism; the age tripwire is secondary here and rides along.
-- **Full destination on the payment screen, masking only in history** (masking surface rule). A ship blocker for this wedge rather than a refinement, because vanity address generation makes a matching displayed tail cheap.
+If neither comes back positive, shelve it. That is the correct outcome, not a failure — see the [amendment](#amendment--the-lead-wedge-is-withdrawn).
+
+**v0 — held pending gate zero. Rail-agnostic except where noted:**
+
+- **One rail complete at ship — which rail is now open.** For `.crypto` that means CAIP-2 chain identifiers, the accepted-asset list promoted from optional, hard-reject on mismatch (D-10), and **signature-derived address entry** rather than a text field (Q-10). *Amended 2026-08-14: the crypto lead is withdrawn, so this item no longer presumes `.crypto`. Gate zero picks the rail. The rest of this list does not depend on the answer.*
+- **Full destination on the payment screen, masking only in history** (masking surface rule). A ship blocker rather than a refinement on any rail, and most acute on `.crypto`, where vanity address generation makes a matching displayed tail cheap.
 - Specify the two digests, the per-rail normalization table, and the length-prefixed layouts (D-02, D-10).
 - **Enforce verifier-side bounds on signer-chosen numerics (D-14):** maximum `expiresAt` window on card and request, and a ceiling on `version` jumps. Both are load-bearing — unbounded expiry defeats every "bounds the damage" claim, and an unbounded version can permanently block supersession of a lineage.
 - Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
@@ -1072,7 +1124,7 @@ Does a counterparty who is not already an Occulta user install it and complete a
 - **Post-duress re-issue prompt**, flagging contacts who have not received the superseding card version — driven by D-16's acknowledged versions rather than a local record of what was sent (Q-01). Defers with D-16.
 - **A user-facing "forget payment history for this contact"** for superseded `DestinationBaseline` rows (Q-03). The *purge* behaviour is not deferred — it rides in with Secure Mode integration above. Only the control is.
 - **Cross-contact destination reuse flagging** (D-04) — free to compute, and one drop account serving several victims is a standard BEC pattern. Worth more once there is a population to compute across.
-- **`.ukFPS` and `.achUS` rails**, per the scoping consequence of leading with crypto.
+- **Every rail gate zero does not pick.** Was *"`.ukFPS` and `.achUS`, per the scoping consequence of leading with crypto"*; amended 2026-08-14, since the lead wedge is withdrawn and `.crypto` may itself be the deferred one.
 
 **Positioning:**
 
@@ -1119,6 +1171,7 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Q-06 – Q-09 | Gap review, 2026-08-10 |
 | Q-10 | 2026-08-10 — public ledger rejected on forensic grounds (publishing is permanent, global proof of Occulta use, which no depth model retracts). Extended 2026-08-11 after the mechanism was questioned: signature recovery means the destination is *derived from* the signature rather than compared against a typed value, so signature-derived address entry enters v1 scope while payer-side verification stays deferred. Exclusion set corrected — Safe and ERC-4337 accounts have no keypair at all, a broader gap than exchange addresses; EIP-7702 preserves it. Wallet population figures added |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
+| D-18, ruling amendment | 2026-08-14, later the same day — the ruling's own crypto lead challenged on the ground that wallets already ship saved recipients. D-08 was found to list **products only**; free practices (in-person QR scan, $1 test transaction, phone call) appear nowhere in the doc and are what the target cohort actually uses. Yields the **precondition paradox** — the feature's entry condition is the condition under which the substitutes already work — and leaves one residual: a *later* change made loud without the payer being suspicious that day. Consequences: crypto lead withdrawn, `chainID` pillar withdrawn (dominant wrong-chain loss is an exchange deposit, which Q-10 excludes by construction; within self-custody EVM a wrong-chain send is usually recoverable), wedges re-scored on value-add × deliverability with **no wedge scoring well on both**, small business ↔ recurring vendor identified as where the residual actually lives, v0 held rather than re-scoped, gate zero given a prior question, shelving recorded as a correct outcome |
 | Viability ruling | 2026-08-14 — value assessment against the completed design. No design change; the design is not in doubt. Compounded three limits the doc had only stated separately: the behavioural-policy ceiling (D-07) never reached the value framing; device-replacement decay is a decay function over the whole base, not a user segment; and the stated differentiator (*"same account since March"*) is a bank-rails argument while the lead wedge is crypto, whose real mechanism is Q-10's never-typed destination plus `chainID`. Action items re-cut into gate zero / v0 / deferred, and v0's absent biometric gate accepted explicitly rather than fixed by pulling D-09 forward |
 
 Retained in `Presence Verification/FINDINGS.md` because they concern `#15`/`#27` rather than payments: Session 1 D-01–D-05 (the intent-vs-circumstance construction), D-04 (the `#27` dependency correction), and Q-01 (the behavioural residual). **Q-02 and Q-03 of that doc are answered here by D-11** and should be cross-referenced from it.
