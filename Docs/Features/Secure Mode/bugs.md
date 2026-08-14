@@ -3450,6 +3450,30 @@ open-versus-refuse is still observable. That distinguishes a contact this device
 from — not one it is hiding — and such a contact holds no prekey of ours and cannot send
 forward-secret traffic in the first place. No duress state falls out of it.
 
+**Considered and declined, 2026-08-14: restoring the advice inside the single string.** The
+collapse above removed the actionable half on the reasoning that mentioning updates was what
+leaked. That was wrong — the leak was the two cases producing *different* text, and one string can
+carry both meanings. The candidate was:
+
+> "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be
+> using an older version — ask them to update, or verify them another way."
+
+It leaks nothing, is true in both cases, and has a property neither previous wording had: the
+advice is **diagnostic**. Followed in the benign case it ends the problem; followed against a
+forgery it returns "I'm already on the latest version", which is information the user did not have
+and arrives without the app accusing anyone. Both suggested actions also work against a 1.9.x
+contact, since the identity challenge rides on `.v3fs`/`.longTermFallback`.
+
+**Declined anyway, and the reason is the window rather than the wording.** A benign refusal
+requires a sender on 1.9.x *and* a stranded marker on the receiving device. One message from that
+contact once they reach 1.10.0+ repairs the marker permanently, so the affected population drains
+by itself and the residual refusals are then genuine forgeries — where the current security-first
+wording is the correct one and the missing advice costs nothing. Judged not worth changing
+user-facing copy on a release branch for a self-limiting cost.
+
+Revisit only if 1.9.x adoption turns out to be stickier than expected, or if users report
+distrusting contacts over this.
+
 ### What was considered and not taken
 
 A per-contact exemption for genuinely-old builds was explored and does not work by inference: it
