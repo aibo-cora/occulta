@@ -1,6 +1,7 @@
 # Verified Payment Cards — Design Findings
 
 **Status:** Exploratory — no SPEC.md yet. Scoped as an extension of Consumer Feature `#26` (Verified Payment Instructions, `Master Feature & Expansion Analysis.md` §26), which is **Near-term** priority.
+**Ruling 2026-08-14:** build, but **v0 only, one wedge, and not before the adoption test** — see [Viability ruling](#viability-ruling--2026-08-14) and the v0/deferred split in [Action items](#action-items).
 **Origin:** Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2–3, which reached this design while looking for a construction of `#15` that the relay attack does not reach. Extended 2026-08-10 by a gap review that settled the key architecture, the payload layouts, the storage model, and the threat model; see [Provenance](#provenance).
 
 ---
@@ -926,7 +927,7 @@ Under the original per-`(contactID, deviceID)` scoping the closure was illusory:
 
 ## Adoption and viability
 
-**Technical viability: high.** Zero new cryptography — domain-separated signing under an existing family (D-12), structured payloads, existing bundle transport, and the card UI concept already present in `#26` rule (1). D-09 adds one SE key and a certificate, which is house-pattern work.
+**Technical viability: high.** Zero new cryptography — domain-separated signing under an existing family (D-12), structured payloads, existing bundle transport, and the card UI concept already present in `#26` rule (1). D-09 adds one SE key and a certificate, which is house-pattern work. **"Zero new cryptography" is not the same as "small"** — the [ruling](#viability-ruling--2026-08-14) corrects that reading against the actual item count.
 
 **Gating is internal, and shallower than one draft of this doc claimed.** Q-05 (the review checklist) is the one real gate. Q-07 turned out not to be a Multi-Device dependency at all — cards work on today's contact-key model, and the key-change handling they need is card-local. No other vendor's roadmap is involved, and no other feature blocks this one.
 
@@ -983,7 +984,7 @@ Cards answer a different question: **"is this the same account I have been payin
 - **Anyone paying a stranger** — romance, investment, and fake-invoice fraud from vendors never met are permanently outside (D-07).
 - **Anyone unwilling to install an app and meet in person**, on both sides, before any money moves.
 - **Anyone who wants recourse** — no insurance, no chargeback, no vendor to sue.
-- **Anyone whose counterparty changes phones** — every card they signed stops verifying (D-03).
+- **Anyone whose counterparty changes phones** — every card they signed stops verifying (D-03). *This one is misfiled as a segment; the [ruling](#viability-ruling--2026-08-14) restates it as a decay function over the whole installed base.*
 - **Remote-only relationships**, including most cross-border freelance and contracting. No physical meeting means no ceremony and no card, whatever the payment rail. VoP does not reach these either; neither does this.
 
 ### The addressable pool is smaller than the documented one
@@ -994,42 +995,84 @@ A large share of BEC is vendor-impersonation where the parties have a *business*
 
 That is not an argument against the feature. It is an argument that **$3.05B must never appear adjacent to a claim about what this addresses** — the same discipline [Positioning](#positioning-and-copy-discipline) already applies to the FTC elder figure, for the same reason.
 
+### Viability ruling — 2026-08-14
+
+**Build it. Not as specified, and not before the adoption test.**
+
+Three things this section already establishes have only ever been stated separately. They compound, and the compounded version is the honest value estimate.
+
+**1 · The security value is capped by a behavioural policy.** D-07 records that *"only pay to an existing card"* is a policy rather than a guarantee — but that limit never reached the value framing. It belongs here. The ceiling on what cards prevent is user discipline, which is the same ceiling the safe word has. Cards are harder to leak, impossible to forget, and pre-positioned rather than recalled under pressure — genuinely better, and better *in degree*. Not a change of category. Internal expectation should be set at that level, not only the copy.
+
+**2 · Cards decay, and the decay is not a user segment.** *"Anyone whose counterparty changes phones"* sits in the exclusions above as though it named a cohort to write off. It does not. It is a decay function across the whole installed base, firing once per relationship every time either side replaces a device — on the order of every two to three years, for every pair. Real estate absorbs it, because a transaction closes in weeks. Small business and family are the two cases whose value *comes from* accrued age (D-06), and they are exactly the ones the reset lands on. Q-07's loud invalidation is the correct handling and does not change the economics: every reset costs another physical meeting.
+
+**3 · The stated differentiator and the lead wedge point at different mechanisms.** *"Is this the same account I have been paying since March?"* is a bank-rails argument. It presumes a destination that persists and an attacker whose move is to change it. Crypto has no bank and no *"our details have changed"* playbook; there the attack is substitution at the moment of paste. Cards beat that, but through a different mechanism — Q-10's signature-derived entry, where **the destination is never a string anyone could substitute**, plus `chainID` binding. Not through the age tripwire.
+
+So the lead wedge's real proposition is *"the destination was never typed, and the chain is signed."* The tripwire rides along nearly free and accrues into the bank-rail cases later. Selling the crypto wedge on the age argument sells it on its weakest mechanism.
+
+#### What the ruling actually is
+
+The one uncertain variable is two-sided cold start — this section says so already, and nothing else in the design is in doubt. That variable is testable without most of this document. Building the full design first spends the security-critical engineering (a certificate chain, four security-critical screens, Secure Mode integration across four new models, a padding scheme) before learning whether anyone completes a second ceremony outside a test.
+
+**"Zero new cryptography" is true and has been read as "small."** It is not small — count the items in [Action items](#action-items). It also invites a financially motivated adversary class into an app that does not currently attract one, and it carries the reliance exposure [Positioning](#positioning-and-copy-discipline) already names, against the audience least able to evaluate the claim.
+
+Hence the v0/deferred split below. **v0 is one wedge — crypto — plus the tripwire, because the tripwire is nearly free once cards exist at all.** Everything whose justification is *"and when this is under attack"* rather than *"and then the payment works"* waits until a second ceremony has happened for real.
+
+#### What v0 gives up, explicitly
+
+D-01's correction stands: the identity key carries `[.privateKeyUsage]` only, with no biometric gate. A v0 that signs on it emits cards and requests that any unlocked device can produce without a presence check. That is a real loss, and it is **accepted for v0 rather than papered over** — D-09's dedicated key and certificate are the fix and land with the wedge. Until they do, nothing in copy or in the app may describe card signing as biometrically gated. This is the same false claim D-01 already had to correct once.
+
+#### One demotion, no re-ranking
+
+The wedge order stands. But real estate is the wedge to be most sceptical of, not simply the second one to build. Insured commercial products already sell into title companies, the sales cycle is institutional, and *"we catch the change across weeks"* is a subtle argument to win against a policy that pays out. It ranks second on **pool size**, and pool size is not win rate.
+
 ---
 
 ## Action items
 
-**Before any implementation:**
+*Re-cut 2026-08-14 into v0 and deferred, per the [viability ruling](#viability-ruling--2026-08-14). Nothing has been dropped; the deferred items are deferred, not cancelled.*
+
+**Settled 2026-08-10 — kept as record:**
 
 - ~~Write `Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md` (Q-05)~~ — written 2026-08-10, and **run against this design; the gate did not pass.** Four blockers, three of which the run itself found: certificate domain prefix (D-09), acknowledgement category and layout (D-16), payer-side sealing key (Q-03, still undecided), request consumption ordering (D-11).
 - ~~Decide the payer-side sealing key (Q-03, checklist §1)~~ — decided 2026-08-10: **the local DB canonical key**, the same key as the rest of the contact record. Not the vault key, because gating the tripwire behind an unlock would render attacker-supplied requests without their warnings. Consequence: cards collapse into `signedAttributes` and `StoredCard` disappears (D-04, D-12).
-- Extend `TestKeyManager` for the payment key (checklist §5), or no card-signing path is unit-testable — which CLAUDE.md does not permit.
-- Distribute cards as **N separate bundles, not one group bundle** (D-15, checklist §3), and re-scope Q-01's post-duress re-issue as N manual sends.
-- Specify the two digests, per-rail normalization table, and length-prefixed layouts (D-02, D-10).
 - ~~Rule on Q-06~~ — ruled 2026-08-10 in favour of the tripwire; D-04 rewritten. Carry the consequence into the deniability work (Q-03): the at-rest payload is now full destinations.
 - ~~Confirm D-09's key architecture against `CRYPTO_REVIEW_CHECKLIST §4` once it exists~~ — done 2026-08-10; §4.3 found the certificate had no domain prefix at all. `destinationDigest`'s third domain string is recorded in the threat model and the checklist run.
-- **Enforce verifier-side bounds on signer-chosen numerics (D-14):** maximum `expiresAt` window on card and request, and a ceiling on `version` jumps. Both are load-bearing — unbounded expiry defeats every "bounds the damage" claim, and an unbounded version can permanently block supersession of a lineage.
-- Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
-- Run D-15's on-device `LAContext` batching test, and build the payment signing path to retrieve the authorized `SecKey` **once per session** rather than per signature as `signData` does today — that choice, not the SE, is what decides whether K signatures cost one prompt or K.
-- Tier-pad the card field in `RecipientPayload` to match `shardOperations` (D-15), including an explicit attempted-signal — otherwise a card's presence or size in a bundle leaks who is transacting.
-- Build the loud key-change invalidation (Q-07) inside this feature. No Multi-Device dependency; R1's priority stands as set.
-
-**Design:**
-
-- Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
-- **The diff must be contact-wide, not per-lineage (Q-02).** Load-bearing, not cosmetic: a per-lineage diff makes minting a new `cardID` the coercer's cheapest move, and invalidates the "a duress card cannot be quiet" claim in both D-05 and the threat model.
-- **Age must render relative to the relationship, not absolutely (D-06).** Absolute age can be waited out by pre-positioning a card standalone; relationship-relative age cannot.
 - ~~**Standing check before SPEC**~~ — **walked 2026-08-10.** For every monotonic counter, comparison scope and "first seen," ask who chooses the identifier it is keyed by. Three findings were the same mistake at different sites: Q-02's per-lineage diff (attacker mints a new `cardID`), D-06's absolute age (attacker waits), D-09's per-`deviceID` certificate version (attacker mints a new `deviceID`).
 
   The walk found two more, one level down — *who chooses the **number***: signer-chosen `expiresAt` with no verifier-enforced maximum, and signer-chosen `version` with no ceiling, the latter able to block supersession of a lineage permanently. Both now in D-14. Remaining scopes checked clean: `destinationDigest` (content-derived, and a new destination *should* read as new), `requestID` (a new one is a new request, not a replay), `contactID` (minted locally at pairing), acknowledged version (already advisory per D-16).
-- Surface a previously unseen `deviceID` for a known contact as prominently as a new destination (D-09).
-- Consider flagging cross-contact destination reuse (D-04) — free to compute, and one drop account serving several victims is a standard BEC pattern.
+
+**Gate zero — the adoption test, before any code at all.**
+
+Does a counterparty who is not already an Occulta user install it and complete a UWB ceremony *because a payment is at stake* — and then do it again with a second person? That is the only variable in doubt, and **it needs none of this feature to run**: the ceremony ships today. Run it before spending anything below. `#26`'s *"one cautious title office can adopt unilaterally for its clients"* is the same test at the institutional end.
+
+**v0 — the crypto wedge:**
+
+- **`.crypto` complete at ship** — CAIP-2 chain identifiers, the accepted-asset list promoted from optional, hard-reject on mismatch (D-10), and **signature-derived address entry** rather than a text field (Q-10). Per the ruling, this is the lead wedge's actual mechanism; the age tripwire is secondary here and rides along.
+- **Full destination on the payment screen, masking only in history** (masking surface rule). A ship blocker for this wedge rather than a refinement, because vanity address generation makes a matching displayed tail cheap.
+- Specify the two digests, the per-rail normalization table, and the length-prefixed layouts (D-02, D-10).
+- **Enforce verifier-side bounds on signer-chosen numerics (D-14):** maximum `expiresAt` window on card and request, and a ceiling on `version` jumps. Both are load-bearing — unbounded expiry defeats every "bounds the damage" claim, and an unbounded version can permanently block supersession of a lineage.
+- Resolve D-12's wire-compat item: lenient per-element decode or a minimum-version gate, before the first card is sent.
+- Tier-pad the card field in `RecipientPayload` to match `shardOperations` (D-15), including an explicit attempted-signal — otherwise a card's presence or size in a bundle leaks who is transacting.
+- Build the loud key-change invalidation (Q-07) inside this feature. No Multi-Device dependency; R1's priority stands as set. In v0 this also covers the new-device surface, because without D-09's certificate a new device *is* a new identity key.
+- **v0 ships no multi-recipient card send.** That absence is what makes the D-15 deferral safe: the recipient-count disclosure (checklist §3) cannot arise where there is no multi-send.
+- Keep the card-signing path unit-testable through the existing `TestKeyManager` seam. v0 signs on the identity key, so no new injection point is needed — but the path must not reach `Manager.Key()` directly, or it joins the 260 Enclave-gated tests and stops running on CI.
+- Age, diff, and failure-path surfaces (D-06, D-14) as security-critical screens per `Presence Verification/SPEC.md` §5 discipline.
+- **The diff must be contact-wide, not per-lineage (Q-02).** Load-bearing, not cosmetic: a per-lineage diff makes minting a new `cardID` the coercer's cheapest move, and invalidates the "a duress card cannot be quiet" claim in both D-05 and the threat model.
+- **Age must render relative to the relationship, not absolutely (D-06).** Absolute age can be waited out by pre-positioning a card standalone; relationship-relative age cannot.
 - Secure Mode integration for all new models (Forensic cleanliness) — non-nil depth from creation, cascade delete, purge behaviour. Precondition, not follow-up.
+- `DestinationBaseline` must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them. Retained cards inherit it for free by living in `signedAttributes`.
 - The owner-side card store (D-12) — Vault entries under the vault key (Q-03), inheriting exact-match depth, rotation-on-activation, backup, and re-encryption.
-- Retention policy and a user-facing "forget payment history for this contact" for superseded `DestinationBaseline` rows (Q-03).
-- `DestinationBaseline`, `PinnedCertificate` and the two stores must inherit contact classification off `isVisible(atDepth:)` (Q-01) — otherwise hiding a contact leaks them. Retained cards inherit it for free by living in `signedAttributes`.
-- Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask.
-- Post-duress re-issue prompt, flagging contacts who have not received the superseding card version — driven by D-16's acknowledged versions, not by a local record of what was sent (Q-01).
-- Delivery acknowledgement (D-16) and the user-initiated diff challenge (D-17), neither of which persists anything beyond highest-acknowledged-version per contact.
+- Sensitivity prompt at card exchange (Q-01, D-13) — contacts default to `Int.max`, so the ceremony is the only reliable moment to ask. **This one cannot be retrofitted: v0 or never**, because the ceremony does not come round again.
+
+**Deferred until a second ceremony has happened for real:**
+
+- **D-09's dedicated payment key and certificate.** With it: the `TestKeyManager` extension for the payment key (checklist §5), D-15's on-device `LAContext` batching test and the once-per-session `SecKey` retrieval that decides whether K signatures cost one prompt or K, the `PinnedCertificate` store and its `isVisible(atDepth:)` inheritance, and surfacing a previously unseen `deviceID` as a signal distinct from a key change. **Until this lands there is no biometric gate on card signing** — see the ruling.
+- **D-15 recipient-bound cards**, and the N-separate-bundles distribution that follows (checklist §3), plus the re-scoping of Q-01's post-duress re-issue as N manual sends.
+- **D-16 delivery acknowledgement** and **D-17's user-initiated diff challenge**, neither of which persists anything beyond highest-acknowledged-version per contact.
+- **Post-duress re-issue prompt**, flagging contacts who have not received the superseding card version — driven by D-16's acknowledged versions rather than a local record of what was sent (Q-01). Defers with D-16.
+- **A user-facing "forget payment history for this contact"** for superseded `DestinationBaseline` rows (Q-03). The *purge* behaviour is not deferred — it rides in with Secure Mode integration above. Only the control is.
+- **Cross-contact destination reuse flagging** (D-04) — free to compute, and one drop account serving several victims is a standard BEC pattern. Worth more once there is a population to compute across.
+- **`.ukFPS` and `.achUS` rails**, per the scoping consequence of leading with crypto.
 
 **Positioning:**
 
@@ -1049,7 +1092,7 @@ That is not an argument against the feature. It is an argument that **$3.05B mus
 
 ## Provenance
 
-Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2 and 3; items renumbered for readability. Extended 2026-08-10 by a gap review (this doc's D-09–D-17, the lifecycle, the threat model, forensic cleanliness, positioning, and Q-06–Q-09).
+Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions 2 and 3; items renumbered for readability. Extended 2026-08-10 by a gap review (this doc's D-09–D-17, the lifecycle, the threat model, forensic cleanliness, positioning, and Q-06–Q-09). Ruled on 2026-08-14 — build scope, not design.
 
 | This doc | Original |
 |---|---|
@@ -1076,5 +1119,6 @@ Consolidated 2026-08-09 from `Presence Verification/FINDINGS.md` Design Sessions
 | Q-06 – Q-09 | Gap review, 2026-08-10 |
 | Q-10 | 2026-08-10 — public ledger rejected on forensic grounds (publishing is permanent, global proof of Occulta use, which no depth model retracts). Extended 2026-08-11 after the mechanism was questioned: signature recovery means the destination is *derived from* the signature rather than compared against a typed value, so signature-derived address entry enters v1 scope while payer-side verification stays deferred. Exclusion set corrected — Safe and ERC-4337 accounts have no keypair at all, a broader gap than exchange addresses; EIP-7702 preserves it. Wallet population figures added |
 | Revocation | Session 2 Q-04, closed by Session 3 D-11; **re-scoped to four cases** |
+| Viability ruling | 2026-08-14 — value assessment against the completed design. No design change; the design is not in doubt. Compounded three limits the doc had only stated separately: the behavioural-policy ceiling (D-07) never reached the value framing; device-replacement decay is a decay function over the whole base, not a user segment; and the stated differentiator (*"same account since March"*) is a bank-rails argument while the lead wedge is crypto, whose real mechanism is Q-10's never-typed destination plus `chainID`. Action items re-cut into gate zero / v0 / deferred, and v0's absent biometric gate accepted explicitly rather than fixed by pulling D-09 forward |
 
 Retained in `Presence Verification/FINDINGS.md` because they concern `#15`/`#27` rather than payments: Session 1 D-01–D-05 (the intent-vs-circumstance construction), D-04 (the `#27` dependency correction), and Q-01 (the behavioural residual). **Q-02 and Q-03 of that doc are answered here by D-11** and should be cross-referenced from it.
