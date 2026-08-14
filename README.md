@@ -121,7 +121,7 @@ Android is not supported.
 
 ## Requirements
 
-- iOS 17.0+
+- iOS 18.6+
 - iPhone with U1 or U2 chip (required for UWB key exchange)
 - iOS 26+ for post-quantum hybrid key exchange
 
