@@ -224,6 +224,34 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       current build sends the non-group format to anyone it resolves below `.groupCapable`, so
       no receiver-side check may infer sender capability from the format it arrived in.
 
+      **Invariant: the signature must stay inside the sealed payload — it may never move to
+      `SecrecyContext` or any other cleartext field.** ECDSA permits public-key recovery: `(r, s)`
+      plus the signed message yields a small candidate set of public keys, each testable against
+      the message. Here the signed message is fully reconstructible by a passive observer, because
+      it is `"occulta-sender-ephemeral-v1" ‖ ephemeralPublicKey` (`ephemeralSignaturePayload`,
+      `Crypto+Manager+GroupEncrypt.swift:267`) and `ephemeralPublicKey` is necessarily cleartext —
+      the recipient needs it for ECDH. So a cleartext signature would hand the sender's **identity
+      public key** to anyone holding the `.occ` file: sender linkability across bundles today, and
+      the identity *private* key to a quantum adversary, since Shor recovers `d` from `Q` and needs
+      no signature to do it.
+
+      Placement is correct today — `senderEphemeralSignature` is a field on `RecipientPayload`,
+      which is JSON-encoded and AES-GCM sealed into `wrappedPayload` before it reaches the wire
+      (`Crypto+Manager+GroupEncrypt.swift:244-248`), so only a recipient who can open their own
+      slot ever sees it, and that recipient already holds the sender's identity key from the UWB
+      exchange. The field therefore adds no exposure that did not already exist. The rest of the
+      bundle is deliberately consistent with this: `SecrecyContext.senderFingerprint` is
+      SHA-256(publicKey ‖ 16 random bytes) rather than the key, and `.longTermFallback` sets
+      `ephemeralPublicKey` to empty `Data()` for the same stated reason — keeping the sender's
+      long-term key out of cleartext AAD.
+
+      **The change to guard against is a plausible one:** hoisting the signature into the
+      cleartext header so a receiver can reject forged bundles before unwrapping. That trades a
+      verification shortcut for publication of the sender's identity key to every passive
+      observer. Reject it, or seal whatever replaces it. New paragraph, added 2026-08-14 after the
+      1.10.2 sign-off; the checklist recorded the field's placement (see the inbound-path note
+      above) but never why that placement is load-bearing.
+
 - [ ] Messages already in flight survive a contact key re-exchange
       — **FAIL. Filed as Bug 82**, pre-existing rather than introduced by this release.
       `resolveSenderPublicKey` (`Contact+Manager.swift:1633`) returns only the newest unexpired
