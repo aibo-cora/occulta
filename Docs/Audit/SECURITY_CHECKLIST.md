@@ -449,7 +449,8 @@ sign-off block, not against project settings alone.
 ## 8. Testing Gate
 
 **A green CI run does not satisfy this section.** GitHub-hosted macOS runners are VMs with no
-Secure Enclave, so roughly 146 tests — including every prekey-isolation guard — skip there. CI
+Secure Enclave, so 260 of the suite's 738 tests — including every prekey-isolation guard — skip
+there. CI
 verifies the parts of the app that do not touch key material; this gate covers the parts that do.
 That split is why the gate has to be run by a human on real hardware before a release is tagged.
 
