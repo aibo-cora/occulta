@@ -21,9 +21,12 @@ extension Group {
         @State private var selectedIdentifiers = Set<String>()
         @State private var eligible:   [Contact.Profile] = []
         @State private var ineligible: [Contact.Profile] = []
-        /// Identifiers within `ineligible` whose version is recorded, readable and simply too
-        /// old — i.e. the ones "update Occulta" actually applies to. Computed once alongside
-        /// the partition so the header and rows never call into crypto during a render.
+        /// Identifiers within `ineligible` shown as "needs to update" rather than "no bundle
+        /// received yet". Computed once alongside the partition so the header and rows never
+        /// call into crypto during a render.
+        ///
+        /// Covers both the readable-but-old case and the stranded-marker case. Those are
+        /// different states internally and must not be different here — see `computeEligibility`.
         @State private var ineligibleNeedsUpdate = Set<String>()
         @State private var showSaveError  = false
         @State private var saveErrorText  = ""
@@ -275,13 +278,36 @@ extension Group {
                 switch ContactManager.bundleVersionState(for: contact, using: key) {
                 case .readable(let version) where version.supportsGroups:
                     eligible.append(contact)
-                case .readable:
-                    // Recorded, readable, and too old — the only case that warrants "update".
+
+                // Readable-but-old and stranded are deliberately shown the same way, and the
+                // reason is forensic rather than cosmetic.
+                //
+                // A marker is stranded only by a local DB key rotation that predates
+                // `maxBundleVersion` joining `reencryptAllFields` — i.e. only on installs that
+                // activated Secure Mode while running 1.10.0 or 1.10.1. That rotation missed the
+                // field for *every* contact at once, so on such a device every contact is
+                // ineligible. Labelling them "no bundle received yet" states something the user
+                // can see is false about anyone they are mid-conversation with, and anyone
+                // holding the phone can read that contradiction straight off this screen without
+                // sending anything. That is a duress oracle of exactly the shape
+                // `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`
+                // exists about, and cheaper to use than the one removed there, because it needs
+                // no probe.
+                //
+                // "Needs to update" contradicts nothing observable on the device, and for the
+                // stranded case it is also true in effect: the marker heals only when the
+                // contact sends a bundle claiming 1.10.0 or newer — that is the floor
+                // `updateMaxVersion` applies to an unreadable marker — so a contact who is
+                // genuinely behind does need to update, and one who is not needs only to send
+                // something. Either way the user's next step is the same, and it is the one
+                // this label suggests.
+                case .readable, .unreadable:
                     ineligible.append(contact)
                     needsUpdate.insert(contact.identifier)
-                case .unrecorded, .unreadable:
-                    // Never heard from, or stranded by a key rotation. Either way their
-                    // version is unknown to us, and telling them to update would be wrong.
+
+                // Genuinely never heard from. The only case where "no bundle received yet" is
+                // both accurate and consistent with what the user can see.
+                case .unrecorded:
                     ineligible.append(contact)
                 }
             }

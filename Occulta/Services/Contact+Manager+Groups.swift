@@ -149,6 +149,13 @@ extension ContactManager {
         guard !Self.resolveTargetVersion(for: contact, using: crypto).supportsGroups else { return nil }
 
         // Unreadable counts as unknown, not as old — see `hasReadableBundleVersion`.
+        //
+        // ⚠️ This distinction is safe only because nothing renders it. `Group.FormV3` answers the
+        // same question and deliberately collapses unreadable *into* too-old, because a stranded
+        // marker exists only on installs that used Secure Mode on 1.10.0/1.10.1, and surfacing it
+        // as "no bundle received yet" contradicts message history the user can see — a duress
+        // oracle readable straight off the screen. If you give this enum a UI consumer, collapse
+        // the two the same way first, or render both cases with identical copy.
         return Self.hasReadableBundleVersion(contact, using: crypto) ? .versionTooOld : .versionUnknown
     }
 
