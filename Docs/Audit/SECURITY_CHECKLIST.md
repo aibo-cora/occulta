@@ -441,33 +441,54 @@ sign-off block, not against project settings alone.
       archive, including both appexes. What remains in `Occulta.app/` is the binary,
       `Info.plist`, `PkgInfo`, `PlugIns/`, the two app icons, `Assets.car`,
       `eff_large_wordlist.txt`, `features.plist`, and the five swift-crypto bundles — the last
-      of those being §7.2, deliberately left in place for this release.
+      of those being §7.2, deliberately left in place for this release. (Those five are gone as
+      of `release/v1.11.0`; the sentence records the 1.10.2 archive as inspected. See §7.)
 
 ## 7. Dependency & Supply Chain
 
-- [ ] No third-party dependencies (confirmed: no CocoaPods, SPM, Carthage)
-      — **FAIL.** The project has an SPM dependency: `apple/swift-crypto` (pinned 4.2.0),
-      which pulls `apple/swift-asn1` (1.5.1). Declared at `project.pbxproj:1055`, resolved in
-      `project.xcworkspace/xcshareddata/swiftpm/Package.resolved`. Three products are linked:
-      `Crypto`, `CryptoExtras`, `_CryptoExtras`. CLAUDE.md's "no external package manager"
-      is stale for the same reason.
-- [ ] All crypto uses Apple frameworks only (`CryptoKit`, `Security.framework`) — no vendored
+- [x] No third-party dependencies (confirmed: no CocoaPods, SPM, Carthage)
+      — **was FAIL for 1.10.2, fixed on `release/v1.11.0` (2026-08-14, after the 1.10.2
+      sign-off).** 1.10.2 shipped with an SPM dependency: `apple/swift-crypto` (pinned 4.2.0),
+      pulling `apple/swift-asn1` (1.5.1), with three products linked — `Crypto`, `CryptoExtras`,
+      `_CryptoExtras`. All three product dependencies, the package reference, and
+      `Package.resolved` are now removed; `grep` over `Occulta.xcodeproj/` returns no
+      `XCRemoteSwiftPackageReference`, `XCSwiftPackageProductDependency`, or `packageReferences`.
+      The project has no package dependencies of any kind.
+- [x] All crypto uses Apple frameworks only (`CryptoKit`, `Security.framework`) — no vendored
       crypto code
-      — **FAIL as stated.** Five swift-crypto resource bundles ship inside the app, including
+      — **was FAIL for 1.10.2, fixed on `release/v1.11.0` (2026-08-14).** 1.10.2 shipped five
+      swift-crypto resource bundles inside the app, including
       `swift-crypto_CCryptoBoringSSL.bundle` and `swift-crypto_CryptoBoringWrapper.bundle` —
-      vendored BoringSSL.
+      vendored BoringSSL. The crypto *in use* was already Apple-framework-only, so what failed
+      was the artifact, not the cipher suite.
 
-      **The dependency appears to be dead weight.** `import Crypto` occurs in exactly one file
-      (`Crypto+Manager.swift:14`), next to `import CryptoKit`. Commenting it out and building
-      the app for iOS Simulator **succeeds** — verified this pass, edit reverted. Nothing in
-      the app uses a swift-crypto-only API, and ML-KEM comes from CryptoKit's SE-backed
-      `MLKEM1024`, gated on iOS 26 in `PQProvider.swift`, not from swift-crypto. So the actual
-      crypto in use *is* Apple-framework-only and the item's intent holds; what fails is that
-      an unused third-party package still ships vendored BoringSSL in the shipping binary.
+      **Why nothing depended on it, established before removal.** `import Crypto` occurred in
+      exactly one file (`Crypto+Manager.swift:14`), directly under `import CryptoKit`. On Apple
+      platforms that import is a no-op: swift-crypto's `Crypto` target excludes every BoringSSL
+      dependency via `.when(platforms:)` gates naming only linux/android/windows/wasi/openbsd
+      (`Package.swift:55–74`), and every file under `Sources/Crypto/` compiles to
+      `@_exported import CryptoKit` under `#if CRYPTO_IN_SWIFTPM && !CRYPTO_IN_SWIFTPM_FORCE_BUILD_API`.
+      So `import Crypto` on iOS resolved to `import CryptoKit`, which is why deleting it changes
+      nothing — the symbols in that file (`AES.GCM`, `HKDF`, `SHA256`, `P256`) were CryptoKit's
+      throughout. A repository-wide search found no swift-crypto-only API (`_RSA`, AES-GCM-SIV,
+      PBKDF2, scrypt, ARC, AES.CBC/CTR, ASN1 types) and no module-qualified `Crypto.*` usage; the
+      DER signatures the code handles come from `SecKeyCreateSignature`, not swift-asn1. ML-KEM
+      comes from CryptoKit's SE-backed `MLKEM1024`, gated on iOS 26 in `PQProvider.swift`.
 
-      Recommended: drop the three package product dependencies and the package reference, then
-      re-archive and confirm the bundles are gone. Not done here — removing a dependency is a
-      release-scope decision.
+      **The bundles came from `CryptoExtras`/`_CryptoExtras`, not `Crypto`.** Those two are
+      BoringSSL-backed on every platform, were linked into the app target, and were imported by
+      zero files — pure link-time weight. Removing them required no source change at all;
+      removing `Crypto` cost the one import line.
+
+      **Verified** by re-archiving (Release, `generic/platform=iOS`, `CODE_SIGNING_ALLOWED=NO`):
+      zero `*.bundle` anywhere in the archive (was five), zero paths matching `*crypto*` or
+      `*boring*`, zero BoringSSL symbols under `nm -a` on the app binary, and `otool -L` reporting
+      `/System/Library/Frameworks/CryptoKit.framework/CryptoKit` as the only crypto link.
+      `Occulta.app/` now holds exactly the §6 list minus those five bundles.
+
+      Not re-run for this change: the test suite. No test file imports `Crypto`, and the archive
+      compiles the app and both extensions — but that is reasoning, not a run, and §8 needs an
+      Enclave host regardless.
 - [x] Xcode and macOS SDK versions are up to date for the release build
       — Xcode 26.2 (17C52), iOS SDK 26.2, macOS 26.5.2. `SWIFT_VERSION = 5.0` (language mode,
       not toolchain). `IPHONEOS_DEPLOYMENT_TARGET = 18.6` uniformly across all ten
@@ -538,11 +559,12 @@ the contributor set grows beyond people with commit access.
 3. ~~Prekey survives a rejected group bundle~~ — **fixed.** Consumed at the moment the slot
    opens, covering all three throw sites and any added later. Accepts a known cost: a rejected
    bundle now burns a prekey. See §2.2.
-4. **Unused swift-crypto dependency ships vendored BoringSSL** (§7.1, §7.2) — **accepted for
-   1.10.2.** The package is not load-bearing and removing it would delete five resource bundles
-   from the shipping app, but pulling a dependency is not a release-week change. The crypto
-   actually in use is Apple-framework-only, so the property the checklist cares about holds;
-   what ships is dead weight, not a weakness. Revisit before the next tag.
+4. ~~Unused swift-crypto dependency ships vendored BoringSSL~~ (§7.1, §7.2) — **accepted for
+   1.10.2, then removed on `release/v1.11.0` (2026-08-14), which is the "revisit before the next
+   tag" this item asked for.** All three product dependencies, the package reference, and
+   `Package.resolved` are gone; the one `import Crypto` was an alias for CryptoKit and the
+   BoringSSL bundles came from the two `CryptoExtras` products, which nothing imported. Verified
+   against a fresh archive: zero bundles, zero BoringSSL symbols, CryptoKit the only crypto link.
 5. ~~`senderEphemeralSignature` has no domain-separation prefix~~ — **fixed**, behind the
    `.prefixedSenderSignatureCapable` tier so 1.10.0/1.10.1 recipients keep receiving messages.
    The bare verification arm is transitional; remove it once those versions are gone. See §3.6.
@@ -551,8 +573,9 @@ the contributor set grows beyond people with commit access.
    is the only trigger of §2.2's rejection path that needs no attacker, so closing it confines
    any consume-on-rejection remedy to genuinely forged bundles.
 7. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
-   §3.2, §5.1, §6.2, §8's skip rule. CLAUDE.md's "no external package manager" line, and its
-   "iOS 16.0+" — the deployment target is 18.6.
+   §3.2, §5.1, §6.2, §8's skip rule. The two CLAUDE.md clauses this item also named — "no
+   external package manager" and "iOS 16.0+" — are both gone; neither string is in the file, and
+   its Build & Test section now records the 18.6 target and the removed dependency.
 
 Every item now carries a result. Two smaller things recorded in place rather than raised here:
 `deleteAllKeys(for:)` is best-effort with no signal on failure (§2.4), and contact-identifier
@@ -577,6 +600,12 @@ This attests that every item carries a **recorded result**, not that every item 
 are ticked; the other 10 are stale wordings, accepted limitations, or deferred bugs, each with a
 decision written down. There is no item in the "we did not look" state, which is what the earlier
 version of this block would have been signed over.
+
+**Post-sign-off, 2026-08-14 (`release/v1.11.0`):** §7.1 and §7.2 have since been fixed and ticked,
+so the current count reads 47 of 55. The numbers above are left as the record of what was signed
+for 1.10.2 — which did ship the dependency — rather than backdated. Nothing else in this sign-off
+is affected: the change removes an unused package and touches no crypto path, and it was verified
+against its own fresh archive, not the one named above.
 
 Three conditions of the gate are **not** met, knowingly:
 

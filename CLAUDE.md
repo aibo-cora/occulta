@@ -65,11 +65,16 @@ For multi-step tasks, state a brief plan:
 
 ## Build & Test
 
-A native Xcode project with **one** SPM dependency: `apple/swift-crypto` (pinned 4.2.0, pulling
-`apple/swift-asn1`). No CocoaPods or Carthage. Nothing calls it — `import Crypto` appears in one
-file, the app builds with that import removed, and ML-KEM comes from CryptoKit — but it still
-ships five vendored BoringSSL resource bundles inside the app. Removal is queued; see §7 of
-`Docs/Audit/SECURITY_CHECKLIST.md`. Do not describe this project as dependency-free.
+A native Xcode project with **no** package dependencies — no SPM, CocoaPods, or Carthage. All
+crypto is CryptoKit and Security.framework, ML-KEM included.
+
+The one SPM dependency (`apple/swift-crypto` 4.2.0, pulling `apple/swift-asn1`) was removed on
+`release/v1.11.0`, 2026-08-14. Nothing imported it: on Apple platforms swift-crypto's `Crypto`
+module compiles to nothing but `@_exported import CryptoKit`, so the single `import Crypto` was an
+alias for a framework the file already imported. The five vendored BoringSSL resource bundles came
+from the `CryptoExtras`/`_CryptoExtras` products, which were linked to the app target and imported
+by zero files. A re-archive confirms zero bundles and zero BoringSSL symbols; see §7 of
+`Docs/Audit/SECURITY_CHECKLIST.md`.
 
 - **Open:** `open Occulta.xcodeproj`
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)
