@@ -337,6 +337,16 @@ Occulta registers as an iOS Credential Provider (`ASCredentialProviderExtension`
 **iOS constraint:** iOS 17 floor for third-party passkey provisioning/assertion. User must enable Occulta in Settings → Passwords; `LAContext` biometrics work in-extension; no network entitlement on the extension. Self-attestation only (standard for consumer providers).
 
 > **Ruling (July 2026):** The extension holds no plaintext secrets (SE signs; DB fields decrypt on demand under biometric), has no network entitlement, and no IPC beyond the ASAuthorization API — phishing resistance is inherited from WebAuthn origin binding. Medium-high lift: the extension, RP record model, and Settings UX are real work, though zero new cryptography. **Priority: Mid-term.**
+>
+> **Addendum (August 14, 2026) — the relying-party surface includes smart accounts, folded here from Expansion I.** Passkey smart wallets are ordinary WebAuthn relying parties: the wallet's web app issues the challenge, the authenticator returns an assertion, and the assertion is verified *on-chain* through the P-256 precompile — RIP-7212 on L2s, and EIP-7951 on Ethereum L1 since Fusaka activated 3 December 2025. **An Occulta-provided passkey therefore signs for an ERC-4337 account with no chain-specific code in Occulta at all** — no per-chain payload decoder, no QR transport, nothing beyond the extension this entry already describes. That is why Expansion I was removed rather than kept alongside this one; see its August 14 addendum.
+>
+> **The device-bound argument above is sharper here than against password managers, and should be made in those terms.** A cloud-synced passkey that protects a website login costs an account the relying party can usually help recover. The same synced key in front of a self-custody smart account protects assets directly: no recovery desk, no chargeback, no counterparty. The contrast is also concrete rather than hypothetical — Coinbase Smart Wallet ships passkey signing at over a million accounts, backed by iCloud Keychain by default, so the comparison is against a real product's real default. **And unlike most of this document, there is no closed-loop problem:** the relying party verifies a standard WebAuthn assertion and needs no Occulta, no prior UWB exchange, and no knowledge that Occulta exists.
+>
+> **The same property cuts the other way, and this is a precondition rather than a caveat.** Non-exportability is the selling point and the failure mode: for a login, losing the only passkey is an inconvenience; for a sole-signer smart account it is permanent asset loss. This entry's open problem — RP-record coverage across a user's own devices, `ROADMAP.md` R4 §1 — stops being a UX gap at that point and becomes the whole risk. **Do not ship this surface until either guardian-escrowed recovery of the RP-record vault (R4 §3) covers it, or the product claim is explicitly "a second signer alongside the one you already have, never the sole signer."** Stated up front, as policy, rather than discovered by a user who has lost a phone.
+>
+> **What does not transfer from Expansion I: the display.** A credential provider receives an opaque challenge — for a smart account, a userOp hash — so Occulta cannot render what is being authorized and inherits the same blind-signing weakness as every other passkey wallet. Expansion I's decode-and-display was the one claim this path cannot match, and it died with that entry. No positioning for `#20` may imply otherwise.
+>
+> **Lift unchanged.** Nothing above adds engineering to this entry; it adds an audience, a sharper argument, and one shipping precondition.
 
 ---
 
@@ -626,6 +636,28 @@ With only one category of scenario left after custody's removal, the picker no l
 
 ---
 
+### 30. Hardware-Bound Recovery Guardians for Smart Accounts
+**Added August 14, 2026 (filed on the removal of Expansion I, which carried this as a sub-clause)**
+**Category:** Authentication / Crypto
+**Community demand:** **None found.** The documented complaints about smart-account recovery are that users never configure guardians, that configured guardians are unresponsive, and that seed phrases get lost. Guardian *authenticity* — the thing this addresses — appears nowhere in that list. Recorded as a gap in the evidence, not as a demand signal, and the ruling below is written accordingly.
+**Audience:** Narrow — self-custody holders using ERC-4337 or Safe accounts with a guardian set
+
+A smart account's recovery quorum is drawn from Occulta contacts, each co-signing recovery operations with a **dedicated** SE key — never the identity key, per `CRYPTO_REVIEW_CHECKLIST` §4, since a guardian signs digests chosen elsewhere. On-chain verification is available: RIP-7212 on major L2s and EIP-7951 on Ethereum L1 since Fusaka (3 December 2025) make P-256 signatures cheap to verify, so an SE key can be a guardian signer directly.
+
+**The obvious argument for this does not survive, and should not be used.** Expansion I framed the value as guardians *"actually met in person… rather than addresses configured and hoped-correct."* That is the precondition paradox recorded as D-18 in [Payment Cards/FINDINGS.md](Payment%20Cards/FINDINGS.md), applied to a new object: guardian enrollment is a **one-time event**, so anyone able to run a UWB ceremony with a prospective guardian is standing next to them and can simply read the address off their screen or scan their QR — the free practice the payments pass found the sophisticated cohort already uses. Physical proximity is being spent where a substitute is already available and already recommended.
+
+**What survives is a different property, and it is the one to lead with: no member of the quorum has a remote compromise path.** Argent-style guardians are EOAs or other wallets — seed-phrase-backed, phishable, SIM-swappable, remotely stealable. An Occulta guardian's key is SE-bound and non-exportable, so an attacker cannot obtain the ability to co-sign without physical possession of that guardian's device *and* their biometrics. Since compromising K guardians **is** the attack on any social-recovery scheme, a quorum with no remote path for any member is a categorical difference rather than a degree, and scanning a QR in person does not produce it — that verifies enrollment once and leaves the guardian phishable forever after.
+
+**Why new / overlap declaration:** Distinct from Serverless Social Recovery (#16), which reconstructs Occulta's *own* vault key from SSS shards — a different object, different mechanism, no chain. Distinct from Guardian Revocation Certificates (#19, downgraded), which revokes an Occulta key rather than recovering an external account. Sub-clause of Expansion I, filed separately on that entry's removal (2026-08-14) because it does not depend on the air-gapped signer that entry was built around.
+
+**Mostly not new engineering, if #20 ships first.** With Occulta registered as a credential provider, a guardian's key is already a WebAuthn passkey the account's guardian module can verify through the same precompile path — enrollment becomes "add my Occulta passkey as a guardian signer," with no bespoke Occulta protocol. Absent #20, this needs a dedicated guardian-key type, a way to publish its public key to the owner, and a recovery-coordination flow.
+
+**iOS constraint:** None novel — SE digest signing and basket distribution both ship. The real constraints are outside the app: the wallet's guardian module must accept a P-256 signer, and recovery coordination is out-of-band with no automatic channel, the same transport reality recorded in [Multi-Device Contacts/FINDINGS.md](Multi-Device%20Contacts/FINDINGS.md) Session 10 — every bundle is a manual share sheet.
+
+> **Ruling (August 14, 2026):** **Exploratory, gated on evidence — do not schedule.** The surviving argument is real and non-substitutable, but three things are missing and none is an engineering problem. There is no demand signal for guardian authenticity. The closed loop is wider than most items here: K guardians must each install Occulta, meet the owner, and be reachable at recovery time. And the contract half — a guardian module accepting P-256 signers — is smart-contract work this project should not do and has no business maintaining. **Gate zero, in the pattern set by Payment Cards:** find one self-custody holder who has configured guardians, and ask whether they would have preferred their guardians be unphishable. If that comes back flat, shelving is the correct outcome rather than a failure. If it comes back positive, sequence behind #20, which reduces this to positioning plus an enrollment flow.
+
+---
+
 ## Section 1 Summary Table
 
 | Rank | Feature | Status | Audience | Phase |
@@ -650,6 +682,7 @@ With only one category of scenario left after custody's removal, the picker no l
 | 27 | Anti-Scam Family Circle | **Keep** | Broad | Near-term (with #15) |
 | 28 | Sealed Evidence Journal | **Keep** | Narrow-medium | Phase 2 |
 | 29 | Situational Contact Actions ("Trust Check" Picker) | **Shipped — v1.10.0** | Broad | Shipped |
+| 30 | Hardware-Bound Recovery Guardians | **Exploratory — gated on evidence, not scheduled** | Narrow | Behind #20 if the gate passes |
 | 1 | Wi-Fi Aware Basket Delivery | Removed | — | — |
 | 4 | YubiKey NFC Second Factor | Deferred | — | — |
 | 5 | Contact Compromise Detection | Removed | — | — |
@@ -896,7 +929,7 @@ Occulta as a fully offline hardware-wallet-grade signer for chains that verify s
 >
 > **A caveat on the air gap, for whoever revisits this.** An iPhone running an app that declines to use the network is a *policy* air gap, not a physical one. It competes against Keystone and Ledger, which carry no radio — a weaker position than "hardware-wallet-grade" implies. It also means adding an attacker-supplied-digest signing surface to the same device that holds the contact graph, the vault, and duress state; per-wallet key isolation bounds the asset loss but does not remove that surface.
 >
-> **Disposition.** Removed from the expansion list as written. The device-bound signer argument belongs in `#20`. Physically-verified wallet guardians should be filed as their own item if wanted, with the closed-loop and funded-account costs stated up front rather than discovered later. If anything exploratory is retained, retain the display — *"the signer that will not blind-sign"* is the only defensible product claim left, and it is small.
+> **Disposition.** Removed from the expansion list as written. The device-bound signer argument belongs in `#20`. Physically-verified wallet guardians are filed as **`#30`** (same day), where the enrollment argument this entry made is rejected on the precondition paradox and replaced with the one that survives — a quorum in which no member has a remote compromise path. If anything exploratory is retained, retain the display — *"the signer that will not blind-sign"* is the only defensible product claim left, and it is small.
 
 ---
 
@@ -912,7 +945,7 @@ Occulta as a fully offline hardware-wallet-grade signer for chains that verify s
 | G | Asset Provenance | Downstream of A only | Every market has entrenched incumbents; not standalone |
 | D | Document Signing / Notarization | Removed | — |
 | E | M-of-N Authorization | Removed | — |
-| I | Air-Gapped SE Smart-Wallet Signer | **Removed 2026-08-14** | P-256 verification reached L1 with EIP-7951 (Fusaka, 3 Dec 2025), and the precompile exists to make passkeys work as wallet signers — so its adoption commoditizes this entry rather than enabling it. Survivors: the device-bound argument folds into #20, which subsumes most of the build; physically-verified guardians want their own item. See the August 14 addendum |
+| I | Air-Gapped SE Smart-Wallet Signer | **Removed 2026-08-14** | P-256 verification reached L1 with EIP-7951 (Fusaka, 3 Dec 2025), and the precompile exists to make passkeys work as wallet signers — so its adoption commoditizes this entry rather than enabling it. Survivors: the device-bound argument folds into #20, which subsumes most of the build; physically-verified guardians filed as #30. See the August 14 addendum |
 
 ---
 
@@ -986,7 +1019,7 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 
 | Item | Rationale |
 |------|-----------|
-| Serverless Passkey Provider (#20) | Opens the mainstream password-manager market; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor |
+| Serverless Passkey Provider (#20) | Opens the mainstream password-manager market **and, since 2026-08-14, passkey smart accounts — same extension, no chain-specific code (folded from the removed Expansion I)**; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor. **Shipping precondition for the smart-account surface:** guardian-escrowed RP-record recovery (`ROADMAP.md` R4 §3) must cover it, or it ships as a second signer only — a sole non-exportable signer makes device loss permanent asset loss |
 | Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for the per-device revocation broadcast (#18, narrowed scope) and any future signed artifact; ~~gated on confirming SE ML-DSA support in the target SDK~~ **SDK gate met 2026-08-14 — `SecureEnclave.MLDSA65`/`MLDSA87` ship from iOS 26, so this row no longer belongs under a platform gate. Regated on artifact availability: only #28 and #24 need decades-long unforgeability, and both are unbuilt.** (No longer paired with #19 — downgraded 2026-07-22, no revocation cert remains to sign) |
 
 ### Ongoing — Positioning (no engineering)
