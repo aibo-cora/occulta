@@ -3409,6 +3409,47 @@ What makes that acceptable rather than reckless:
 - **The failure is now legible.** Affected messages say "Ask this contact to update Occulta" rather
   than surfacing an opaque error code (`f7c41f1`).
 
+### Amended 2026-08-14 — the legibility argument above is partly reversed
+
+The two rejection cases were given distinct user-visible strings so the UI could "say something
+true about each". That reasoning stands on its own and was not wrong; what it missed is that the
+pair is readable as a duress oracle.
+
+`senderSignatureCapabilityUnknown` fires only on an unreadable marker, which exists only after a
+local DB key rotation predating `maxBundleVersion` joining `reencryptAllFields` — i.e. only on an
+install that used Secure Mode on 1.10.0 or 1.10.1. `missingSenderEphemeralSignature` fires when
+the marker reads fine. So anyone able to deliver one unsigned forward-secret bundle could open the
+file and read off whether this device had ever activated Secure Mode. Deactivating does not clear
+it, because the stranded ciphertext is preserved deliberately (see Bug 80's amendment) — the tell
+outlives the feature it exposes.
+
+Both cases now produce a single string: *"Occulta couldn't confirm this message came from this
+contact, so it wasn't opened."*
+
+**What that costs, since it is not a clear win.** The actionable half of this bug's remedy is
+gone. A user whose contact is genuinely on 1.9.x is no longer told so, and every benign refusal
+now reads as a security event. Alarm fatigue is the mild cost; the sharp one is a user coming to
+distrust a contact who did nothing wrong and withdrawing from a channel that was safe — a real
+harm in this threat model, not a UX complaint.
+
+Partly mitigated by where the advice still lives: the group-eligibility screen continues to say
+"Needs to update Occulta" for exactly these contacts, and that screen is where a user goes to find
+out why someone is unreachable. So the guidance moved rather than vanished — it is no longer
+attached to the moment of failure, which is when it would have been most useful.
+
+**Why this collapses toward the alarming string while the group form collapses toward the
+innocuous one.** The two screens fail differently. On the group form, the alarming option
+contradicts message history visible on the device, which is what makes it readable as a tell.
+Here, the innocuous option tells the victim of an impersonation attempt that their friend needs a
+software update — the attacker's cover story, repeated back by the app. Each side collapses away
+from its own worse outcome, which is why they land on opposite answers to what looks like the same
+question.
+
+**Not closed by this.** `.unrecorded` still accepts an unsigned bundle rather than refusing it, so
+open-versus-refuse is still observable. That distinguishes a contact this device has never heard
+from — not one it is hiding — and such a contact holds no prekey of ours and cannot send
+forward-secret traffic in the first place. No duress state falls out of it.
+
 ### What was considered and not taken
 
 A per-contact exemption for genuinely-old builds was explored and does not work by inference: it

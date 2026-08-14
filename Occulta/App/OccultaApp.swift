@@ -592,17 +592,47 @@ private struct RootView: View {
                 OccultaBundle.BundleError.unsupportedMode {
             self.errorMessage = "Your contact is using a newer version of Occulta. Update the app to open this message."
             self.showError = true
-        } catch GroupDecryptError.senderSignatureCapabilityUnknown {
-            // Almost certainly an older contact rather than an attack — see Bug 81. Their build
-            // predates sender signatures, and this device can no longer read the record that
-            // would prove it, so the message is refused.
-            self.errorMessage = "Couldn't open this message. Ask this contact to update Occulta."
-            self.showError = true
-        } catch GroupDecryptError.missingSenderEphemeralSignature {
-            // Deliberately not the "ask them to update" wording: this sender is recorded as able
-            // to sign and did not, which is a forgery signal. Telling the user to ask for an app
-            // update here would train them to read a real impersonation attempt as housekeeping.
-            self.errorMessage = "This message could not be verified as coming from this contact, so it wasn't opened."
+        // ⚠️ One string for both, and it must stay that way. Splitting them is a duress oracle.
+        //
+        // `senderSignatureCapabilityUnknown` fires only when this device's record of the
+        // sender's version is present but undecryptable, which happens only after a local DB
+        // key rotation that predates `maxBundleVersion` joining `reencryptAllFields` — i.e.
+        // only on an install that activated Secure Mode while running 1.10.0 or 1.10.1.
+        // `missingSenderEphemeralSignature` fires when that record reads fine. So two distinct
+        // strings let anyone who can deliver one unsigned forward-secret bundle read off
+        // whether this device has ever used Secure Mode, by opening the file and looking at the
+        // alert. That is the shape of oracle removed in `b1f9045`, and a deactivation does not
+        // undo it: the stranded ciphertext is preserved on purpose (see Bug 80), so the tell
+        // outlives the feature it reveals.
+        //
+        // **This is not a clear win, and the losses are real.**
+        //
+        // Bug 81 argued for the split and the argument was sound: "ask this contact to update"
+        // is actionable, and the overwhelmingly likely cause of a refusal is a contact still on
+        // 1.9.x rather than an attack. That advice is now gone, and every benign
+        // old-contact refusal reads as a security event. Alarm fatigue is the mild version of
+        // the cost; the sharp version is a user coming to distrust a contact who did nothing
+        // wrong, and withdrawing from a channel that was safe.
+        //
+        // The advice is not gone from the app, only from here: the group-eligibility screen
+        // still says "Needs to update Occulta" for exactly these contacts, which is where a
+        // user goes when they want to know why someone is unreachable.
+        //
+        // Note this resolves *opposite* to the same question on that screen, which collapses
+        // toward the innocuous label rather than the alarming one. Not an inconsistency — the
+        // failure modes differ. There, the alternative contradicts message history the user can
+        // see on the device. Here, the alternative tells the victim of an impersonation attempt
+        // that their friend needs a software update, which is the attacker's cover story
+        // repeated back by the app. So each side collapses away from its own worse outcome.
+        //
+        // What this does not close: `.unrecorded` still accepts an unsigned bundle rather than
+        // refusing it, so open-versus-refuse remains observable. That distinguishes a contact
+        // this device has never heard from, not one it is hiding — and a contact who has never
+        // sent anything holds no prekey of ours and cannot send forward-secret traffic at all.
+        // No duress state is recoverable from it.
+        } catch GroupDecryptError.senderSignatureCapabilityUnknown,
+                GroupDecryptError.missingSenderEphemeralSignature {
+            self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened."
             self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
