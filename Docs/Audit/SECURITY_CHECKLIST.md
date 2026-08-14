@@ -532,10 +532,39 @@ encryption falls open to the raw UUID if key derivation fails (§4.1).
 
 ---
 
-**Signed off by:** ___________________
-**Release version:** 1.10.2
-**Date:** 2026-08-13
-**Full-suite result:** 758 passed / 0 failed / 6 skipped — 728 Swift Testing tests in 164
-suites plus 36 XCTest cases; all skips are `KeychainMigrationSETests` (see §8)
+**Signed off by:** Yura Filatov — recorded 2026-08-14 on the release owner's instruction
+**Release version:** 1.10.2 (build 3)
+**Date:** 2026-08-14
+**Full-suite result:** 774 passed / 0 failed / 6 skipped — 738 Swift Testing tests in 166
+suites plus 36 XCTest cases; all six skips are `KeychainMigrationSETests` (see §8)
 **Host used:** Apple Silicon, iPhone 17 Pro Simulator, bare metal (Secure Enclave available)
 **Archive inspected:** Release, `generic/platform=iOS`, `CODE_SIGNING_ALLOWED=NO`
+**Verification performed by:** an agent-run pass over this checklist during a working session
+with the release owner, who took each accept/defer decision recorded below. Per-item evidence is
+attached to each item above rather than summarised here.
+
+### Scope of this sign-off — read before relying on it
+
+This attests that every item carries a **recorded result**, not that every item passes. 45 of 55
+are ticked; the other 10 are stale wordings, accepted limitations, or deferred bugs, each with a
+decision written down. There is no item in the "we did not look" state, which is what the earlier
+version of this block would have been signed over.
+
+Three conditions of the gate are **not** met, knowingly:
+
+1. **The signed artifact was never inspected.** The archive above was built with
+   `CODE_SIGNING_ALLOWED=NO`. That is sound for bundle contents and debug symbols — both were
+   checked — but it is not the binary that ships. Re-run the §6 checks against the signed build
+   before submitting.
+2. **§8's "zero skips" is met only under an exclusion.** Six `KeychainMigrationSETests` skip on a
+   compile-time `#if targetEnvironment(simulator)` gate that never consults
+   `secureEnclaveAvailable()`, so they cannot run on any host this gate permits. Any *other* skip
+   invalidates the run.
+3. **No second human read the code.** [PR #73](https://github.com/aibo-cora/occulta/pull/73) is
+   unreviewed. Most of the changeset was written and then reviewed within the same session, which
+   caught real defects — the unconsumed prekey, the stranded drafts, two duress oracles — but is
+   not independent review and should not be recorded as such.
+
+Also relevant to how much the green test number is worth: **260 of 738 tests are Enclave-gated**
+and skip on CI, and ~113 more still use the legacy `print("⚠︎ Skipping"); return` form, which
+reports as *passed*. See CLAUDE.md.
