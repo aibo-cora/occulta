@@ -931,26 +931,47 @@ extension Manager {
                     try vaultManager.modelContext.save()
                 }
 
-                // ── Step 6b: Re-key groups under the staged key (Bug 75) ─────────────
-                // Mirror of activation's group pass. Deactivation rotates the local DB key
-                // exactly like activation does, so omitting this would strand every group on
+                // ── Step 6b: Re-key drafts and groups under the staged key ───────────
+                // Mirror of activation's Step 8 passes. Deactivation rotates the local DB key
+                // exactly like activation does, so omitting any of them strands that model on
                 // the way *out* of Secure Mode just as surely as on the way in.
                 //
-                // Unlike activation there is no draft pass here to order against, but the
-                // same reason to derive once and reuse applies (Bug 74). Runs before the
-                // Step 7 commit so `oldKey` is still canonical and the writes land in the WAL
-                // ahead of the checkpoint.
-                // `oldKey` was derived before Step 1's PIN check — see the guard there.
-                // Deactivation deletes the superseded key just as activation does, so skipping
-                // this pass and committing anyway strands groups and the config on the way out
-                // of Secure Mode exactly as it would on the way in.
+                // `oldKey` was derived before Step 1's PIN check — see the guard there. Runs
+                // before the Step 7 commit so `oldKey` is still canonical and the writes land
+                // in the WAL ahead of the checkpoint. Derived once and reused across every row
+                // rather than per model (Bug 74).
+                //
+                // Order matters and is the same as activation's, for the same reason:
+                // `readID()` decrypts with the *canonical* key, which is still `oldKey` until
+                // Step 7. Re-keying groups first would make every `readID()` fail, collapse
+                // `allGroupIdentifiers` to the empty set, and take `reKeyOrPurgeAll` down its
+                // delete branch for every group-addressed draft.
                 let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
+                let allGroupIdentifiers = Set(groups.compactMap { $0.readID()?.uuidString })
+
+                // Drafts. Absent here until 2026-08-14, which silently destroyed every saved
+                // draft on each deactivation: they stayed sealed under `oldKey`, Step 9 deleted
+                // it, and the next `reKeyOrPurgeAll` took its delete branch for rows it could
+                // no longer open. Found in review of the very changeset that added the group
+                // and config passes above without adding this one.
+                //
+                // The survive set is *every* contact still present, unlike activation's, which
+                // passes only the profiles that stay visible in the new layer. Nothing is
+                // hidden on the way out — Step 5 has just restored the sensitive shells from
+                // the blob — so a draft is purged here only when its recipient genuinely no
+                // longer exists, which is what `reKeyOrPurgeAll` should do with it anyway.
+                try Message.Draft.reKeyOrPurgeAll(
+                    safeContactIdentifiers: Set(try contactManager.fetchAllContacts().map(\.identifier)),
+                    allGroupIdentifiers:    allGroupIdentifiers,
+                    oldKey:  oldKey,
+                    newKey:  stagedKey,
+                    in:      contactManager.modelContext
+                )
+
                 for group in groups {
                     try group.reencrypt(from: oldKey, to: stagedKey)
                 }
-                if !groups.isEmpty {
-                    try contactManager.modelContext.save()
-                }
+                try contactManager.modelContext.save()
 
                 // Same AppLayerConfig re-key as activation — deactivation rotates the
                 // local DB key too, so omitting it would strand the row on the way out.
