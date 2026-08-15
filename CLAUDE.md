@@ -88,13 +88,32 @@ Note the deployment target and the availability gates are different things: ML-K
 classical-only modes exist for everything between 18.6 and that.
 
 **Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; **260
-of 738** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
-go through `Manager.Key()` directly with no injection seam. (Measured 2026-08-14 by counting
-`@Test` declarations gated directly or by their enclosing suite — re-measure rather than trusting
-this number, it has drifted before: it read "roughly 146" while the real figure was 260.) Those carry
+of 742** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
+go through `Manager.Key()` directly with no injection seam. (Gated count measured 2026-08-14 by
+counting `@Test` declarations gated directly or by their enclosing suite; total refreshed
+2026-08-15 — re-measure rather than trusting either, they have drifted before: the gated figure
+read "roughly 146" while the real number was 260.) Those carry
 `.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
 notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
 have Enclave access and runs the full suite.
+
+**With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
+stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
+Simulator *does* create SE keys there — the tempting "just gate it on `secureEnclaveAvailable()`"
+was tried on 2026-08-15 and reverted — but `SecItemUpdate` cannot add `kSecAttrAccessGroup` to an
+SE-protected key in the Simulator, returning `-25303 errSecNoSuchAttr`, and that update is the
+entire subject of the suite. A runtime gate turns six honest skips into two failures announcing
+that the keychain migration strategy is unviable. Enclave availability is not the predicate;
+Simulator keychain fidelity is. So a full local run's pass condition is **exactly 6 skips, all in
+that suite** — any other skip means the host lacked an Enclave.
+
+**Do not construct `Manager.Key` inside a synchronous XCTest `setUpWithError`.** The project builds
+with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so `Manager.Key` is implicitly main-actor-isolated
+and its `deinit` hops executors; releasing one from that context crashes the test process
+(`swift_task_deinitOnExecutorImpl` → malloc "pointer being freed was not allocated"). The failure is
+disguised: xcodebuild relaunches per test and reports a green **"Executed 0 tests"**, so a suite can
+stop running entirely and still look fine. The 23 Swift Testing files that call
+`secureEnclaveAvailable()` are unaffected, reaching it from a task context.
 
 **A separate and worse problem: ~113 tests still skip the old way** — `print("⚠︎ Skipping"); return`
 — which reports as **passed**, not skipped. So the suite's green count overstates what actually

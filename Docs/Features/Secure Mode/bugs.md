@@ -2358,7 +2358,8 @@ who replaces the whole database file with an earlier copy. Fix 1 stands as writt
 
 ## Bug 71 — Layer store file modification timestamp correlates with activation events
 
-**Status:** Open
+**Status:** Open — **mitigation 2 (cadence jitter) implemented 2026-08-15**; mitigation 1
+(opportunistic writes) still open. See "Implementation status" at the bottom.
 
 ### Severity: Low (forensic)
 
@@ -2382,6 +2383,30 @@ Two complementary mitigations:
 **2. Jitter the 24-hour cadence.** Replace the fixed `86_400 s` threshold in `LayerStore.maxAge` with a randomised window (e.g., 18–30 hours) so the maintenance cadence itself is not fingerprintable.
 
 Both mitigations reduce the signal strength; neither eliminates it. The residual risk — a write occurred, time unknown within the jitter window — is acceptable given that the file content is cryptographically opaque.
+
+### Implementation status — 2026-08-15
+
+**Mitigation 2 (jitter) is implemented.** `Manager.LayerStore.maxAge` is now
+`.random(in: 18 * 3_600 ... 30 * 3_600)` instead of a fixed `86_400`
+(`SecureMode+LayerStore.swift`). Covered by `LayerStoreMaintenanceTests` — window bounds,
+in-process stability, and that `maintain()` honours the threshold in both directions.
+
+**One design point worth recording, because the obvious implementation is wrong.** The draw is a
+`static let`, evaluated **once per process**, not per `maintain()` call. `maintain()` runs on every
+foreground, so a fresh draw each time would let the *lowest* draw win — with a handful of calls
+between hour 18 and hour 30, the write lands near the 18 h floor almost every time and the jitter
+window collapses to a point. Per-launch keeps the whole window in play.
+
+**A deterministic derivation was considered and rejected.** Deriving the threshold from the file's
+own mtime would make it stable across calls without any per-process state, which is tidier — but it
+hands the examiner the threshold too, since they hold the mtime. They could then compute exactly when
+the next maintenance write was due and flag anything early as an activation. That defeats the entire
+purpose; the property needed is unpredictability *to the examiner*, not merely variation.
+
+**Mitigation 1 (opportunistic writes) is not implemented**, so the residual is larger than the final
+design intends: writes still cluster around the maintenance cadence rather than being buried in
+general write density. The jitter widens the window an examiner must accept; it does not add cover
+traffic.
 
 ---
 
@@ -3882,3 +3907,105 @@ what happens when a field is missed there).
 Cheaper alternative if the extra field is unwelcome: drop the tier entirely and prefix
 unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare arm in
 `verifySenderEphemeralSignature` at the same time. That is the end state either way.
+
+---
+
+## Bug 84 — Share-extension handoff runs the whole outbound encryption before the PIN, and its transport sheet presents over the PIN gate
+
+**Status:** **Open.** Filed 2026-08-15 from a report against `release/v1.11.0`. Not yet fixed —
+verification only.
+
+### Severity: High
+
+Reported symptom: with the PIN enabled and Secure Mode inactive, encrypting a photo through the
+Share Extension puts the transport-channel sheet **on top of** the PIN entry view. The reporter's
+reading — that the PIN must come first, and arguably before the contact is chosen at all — is
+correct, and the visible z-order is the smaller half of it.
+
+Two independent defects stack here. Either one alone produces a wrong flow.
+
+---
+
+#### Part A — `case "share"` has no lock gate (original omission, not a regression)
+
+`handleOpenURL` treats the two `occulta://` hosts differently:
+
+- `case "inbound"` falls through to the gate at `OccultaApp.swift:557` — while
+  `appScreen.phase != .unlocked` the raw bytes are parked in `pendingFileData` and drained by the
+  `.onChange(of: appScreen.phase)` handler after any unlock.
+- `case "share"` (`OccultaApp.swift:506`) calls `processShareSession(sessionID:)` **immediately,
+  with no phase check**.
+
+So the entire outbound pipeline runs pre-authentication: manifest decrypt, EXIF strip,
+`buildShardOperations`, `encryptBundle`, `.occ` write, and finally `self.shareResult = …`, which
+raises the `UIActivityViewController` sheet.
+
+This is not a read-only path. `encryptBundle` calls `configureForwardSecrecy()`, pops a prekey via
+`popOldestPrekeyData()`, and commits with `try self.modelContext.save()`
+(`Contact+Manager.swift:1041-1053`, `:1090`). Someone holding the device — with iOS unlocked but
+Occulta gated — can burn real-layer prekeys, advance forward-secrecy state, produce an `.occ`
+genuinely signed by the owner's identity key, and send it anywhere the share sheet reaches, without
+ever entering a PIN.
+
+**Under Secure Mode it is worse.** `currentDepth` is only set by `verify()`; with `pinEnabled` true
+it stays 0 until a PIN is entered (`Manager+Security.swift:245` restores `persistedDepth` only when
+the gate is down). A pre-PIN share session therefore encrypts on the **real** layer no matter which
+PIN is entered afterwards, and the prekey/FS mutation it commits is a depth-0 write with no
+authentication behind it.
+
+The recipient list itself is not newly exposed — the picker reads `ShareIndex.sqlite`, which Bugs 6
+and 65 already constrain to the depth-1 view whenever the app is locked.
+
+Never gated: this path dates to `0e4042f`, the commit that introduced the extension.
+
+**Also in this class:** the `.occbak` branch at `OccultaApp.swift:549` calls
+`vaultManager.storePendingRestore(data)` before the same gate.
+
+---
+
+#### Part B — the PIN gate is underlappable again (regression of Bug 1, Incident A)
+
+Bug 1's first fix replaced the `.overlay` with a `.fullScreenCover` precisely so iOS modal
+presentations could not render above the gate. Commit `8b95ee5` ("Refactor screen lifecycle into
+AppScreen — fixes Bug 56") removed that cover and made `PINEntry` an ordinary in-tree branch of
+`phaseContent` (`OccultaApp.swift:396-423`). The comment it deleted stated the invariant that is now
+broken:
+
+> `fullScreenCover` rather than overlay: a UIKit modal presentation stacks above any existing
+> sheets, so it cannot be underlapped by conversation or identity-challenge sheets triggered while
+> locked.
+
+Six root-level presentations hang off the same view that renders `PINEntry` — `openedFileContents`,
+`shareResult`, the three identity-challenge sheets (`OccultaApp.swift:274-322`) — plus the error
+`.alert`. Any of them set while `phase == .pinRequired` presents over the gate. `shareResult` is the
+one Part A reaches today; `processShareSession`'s failure path is the alert equivalent, putting
+"Failed to encrypt shared content" over the PIN screen.
+
+A straight revert is not available: the `fullScreenCover`'s async presentation window is what caused
+Bug 56. The invariant has to be re-established without it.
+
+---
+
+### Why the fix cannot live in the extension
+
+The reporter's stronger proposal — show the PIN *before* the contact picker — is the right ordering,
+but the extension is the wrong process for it. Verifiers live in `AppLayerConfig` inside the main
+SwiftData store, sealed with `Manager.Key`'s local DB key; the lockout counter and wipe threshold
+live there too. `ShareViewController`'s header names the boundary: the extension links no
+`Manager.Key`, `Manager.Crypto`, or `ContactManager`, and carries only `ShareIndexKeyManager`.
+Prompting for a PIN there means duplicating verifier and lockout logic across that boundary — a
+worse trade than the bug.
+
+### Candidate fixes (not yet chosen)
+
+1. **Gate the session, keep the picker where it is.** Queue the share `sessionID` the way
+   `pendingFileData` is queued and drain it on `.unlocked`. Contact choice stays pre-PIN but reads
+   an index Bug 6 already restricts; no crypto, no prekey burn, and no transport sheet until the PIN
+   is in. The drain must run identically at every depth, for the reason `pendingFileData`'s own
+   comment gives.
+2. **Move the picker into the main app.** Extension collects attachments and hands off; the app does
+   PIN → picker → encrypt → transport. This is the reporter's ordering, and it retires
+   `ShareIndex.sqlite` along with the shared root of Bugs 6, 65, 66, 67, 68, and 69. Costs a context
+   switch into Occulta before the recipient is chosen.
+3. **Re-establish the z-order invariant** — required under either of the above. Suppressing the
+   sheet/alert items while `phase != .unlocked` keeps Bug 56 fixed and Bug 1 fixed at the same time.

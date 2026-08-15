@@ -281,6 +281,77 @@ No path was found that changes either value without going through one of these f
 
 ---
 
+## OS-Level Artifacts Outside the Container
+
+Added 2026-08-15. Every other section of this document covers artifacts *this app writes*, where
+key rotation (S1) and file protection (S3) apply. These two are different in kind: iOS writes them,
+they live outside the app container, and **cryptographic erasure cannot reach them** — a full
+deactivation and key rotation leaves both untouched. That makes them the weakest link in the
+document, and they were absent from it until now.
+
+| # | Measure | Severity | Status |
+|---|---------|----------|--------|
+| O1 | Sensitive text inputs excluded from the keyboard's dynamic lexicon | High | ✅ (residual: pre-existing entries) |
+| O2 | Sensitive copies are device-local and expiring | High | ✅ (residual: in-window readability) |
+
+### O1 — Keyboard dynamic lexicon
+
+**Scope:** vault label and content editor (`Vault+NewEntrySheet.swift`), shared contact text row
+(`ContactFormV2.swift`). **Layer:** `UITextInputTraits` via SwiftUI modifiers.
+
+iOS learns words typed into ordinary text inputs and stores them in the keyboard's dynamic lexicon
+at `/private/var/mobile/Library/Keyboard/*-dynamic-text.dat`. That file is outside the app
+container, is not covered by our `.completeFileProtection`, is encrypted under no Occulta key, and
+**survives deactivation and key rotation** — so a seed phrase typed into the vault was recoverable
+from a device image long after S1 had cryptographically erased the vault itself.
+
+**Measure:** `.autocorrectionDisabled()` on all three inputs — which maps to
+`UITextInputTraits.autocorrectionType = .no`, the standard mitigation for this vector (OWASP MASVS
+MSTG-STORAGE-5) — plus `.textInputAutocapitalization(.never)` on the content editor, where
+never-capitalize is also plain correctness, since seed phrases are lowercase.
+
+**Not affected: the PIN.** `PINEntry` is a custom `KeypadButton` grid and never raises the system
+keyboard, so no PIN digit has ever reached the lexicon.
+
+**Distinct from U5c.** That editor already carried `.privacySensitive(true)`, which addresses
+SwiftUI's redaction system — widgets, Lock Screen, Focus summaries. Orthogonal surface. Its presence
+is why this gap survived: the field looked handled.
+
+**Residual — words typed before this shipped are still in the lexicon, and nothing here removes
+them.** The lexicon is per-keyboard, not enumerable by the app, and has no API for selective
+deletion; it ages out only as the user types other things. The only user-side reset is
+Settings → General → Transfer or Reset iPhone → Reset → Reset Keyboard Dictionary, which is itself
+a conspicuous act. **Third-party keyboards are outside this measure entirely** — they receive
+keystrokes in their own process with their own storage, and `autocorrectionType` is advisory to
+them at best.
+
+---
+
+### O2 — System pasteboard and Universal Clipboard
+
+**Scope:** vault entry copy (`Vault+EntryDetail.swift`), signed message copy (`Sign.swift`),
+composed message copy (`ComposableMessage.swift`). **Layer:** `UIPasteboard.general`.
+
+`UIPasteboard.general` persists indefinitely, is readable by any app on the device, and — the part
+that matters most here — **syncs to the user's other Apple devices over Universal Clipboard unless
+`.localOnly` is set**. A decrypted vault entry assigned to `.string` therefore left the device over
+the network, which nothing else in this app does at all.
+
+**Measure:** all three sites go through `UIPasteboard.copySensitive(_:)`
+(`Occulta/Extensions/UIPasteboard.swift`), which sets `.localOnly: true` and a 120 s
+`.expirationDate`. A single entry point rather than three inline fixes, because the failure mode was
+precisely that one site already knew the pattern and the two carrying the more sensitive payloads
+did not.
+
+**Residual — the pasteboard is still readable by every app on the device for those 120 s**, and the
+expiry is enforced by the OS, not by us; a forensic image captured inside the window may contain the
+plaintext. `.localOnly` closes the cross-device hop, not on-device exposure.
+
+**Not a defect: pasting into another app moves plaintext beyond our reach.** That is what the copy
+button is for, and no measure here should try to prevent it.
+
+---
+
 ## Content Gating
 
 Measures that prevent sensitive message content from crossing the lock/depth boundary.
