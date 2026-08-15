@@ -3585,26 +3585,64 @@ than the vulnerability it is guarding against, because the user cannot even see 
 
 ---
 
-## Bug 82 — A contact key re-exchange makes every in-flight message from that contact permanently undecryptable
+## Bug 82 — A contact identity-key change makes earlier messages from that contact permanently undecryptable
 
-**Status:** **Accepted for v1.10.2 — shipping as-is, decided 2026-08-13.** Deferred on
-likelihood: a contact re-exchanging keys *while a message from them is in flight* is a narrow
-window, and the loss is availability rather than confidentiality. Not rejected — the remedy
-below stands, and the tradeoff it carries still needs deciding rather than defaulting.
+**Status:** **Re-filed as a split, 2026-08-15**, after the original likelihood argument was
+challenged and the stated trigger turned out to be wrong. The two halves have different
+frequencies, different consequences, and very different fix costs, and bundling them produced
+both an inflated likelihood claim and an over-large remedy.
+
+- **82a — fallback-mode half.** Open, targeted for this release. Breaks *retained* bundles, not
+  just unopened ones, and needs no prekey work to fix.
+- **82b — forward-secret half.** Accepted, deferred. This is the narrow unopened-message race
+  the original entry described, and its fix is the expensive one.
 
 Found 2026-08-13 while scoping the §2.2 prekey finding in
-`Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback-mode half has been there for as
-long as `resolveSenderPublicKey` has, and the signature half arrived with 1.10.0. Not introduced
-by this release.
+`Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback half has been there for as long as
+`resolveSenderPublicKey` has, and the signature half arrived with 1.10.0. Not introduced by that
+release. The original entry is preserved in git history.
 
-**Target:** post-1.10.2.
+### Correction — the trigger this was filed under does not occur
 
-**Consequence of deferring, given §2.2 is being fixed by consuming at open:** when this does
-occur, the in-flight message is lost *and* its prekey is destroyed rather than left alive. That
-is the strictly safer of the two failures — the message was already unrecoverable, and burning
-the key removes the forward-secrecy exposure that §2.2 was about — but it is worth stating
-plainly, because it means fixing §2.2 first makes this bug's blast radius slightly larger and
-its forward-secrecy consequence smaller.
+The original entry said this "lands on ordinary use: a contact reinstalling the app and
+re-exchanging keys is a normal thing to do, not an edge case." That is wrong, and it was the
+load-bearing likelihood claim.
+
+`Manager.Key.retrievePrivateKey()` (`Key+Manager.swift:163`) is retrieve-or-create: it returns
+the existing Enclave key on `errSecSuccess` and only calls `create()` on `errSecItemNotFound`.
+Keychain items survive app deletion on iOS, and `WhenUnlockedThisDeviceOnly` does not change
+that. So a reinstall destroys the SwiftData store — the contact list is gone and the user must
+re-exchange to rebuild it — but the **identity key is unchanged**, and peers receive the same
+material.
+
+That matters because `update(key:for:)` (`Contact+Manager.swift:538`) appends unconditionally and
+computes `keyRotated` only to decide whether to emit `contactKeyRotated`. A re-exchange with
+unchanged material appends a record holding identical bytes, so `last(where:)` returns the same
+key and nothing breaks. **This bug requires the key material to actually change.**
+
+⚠️ The keychain-survives-uninstall behaviour is the fact everything here rests on and has not been
+confirmed on-device for this app. Confirm before relying on the frequency numbers below.
+
+### What actually changes an identity key
+
+Four events, all device-level rather than app-level:
+
+| Cause | Frequency |
+|---|---|
+| New iPhone | The device-replacement cycle — D-19 prices it at every 2–3 years per relationship per side |
+| Restore to new hardware from backup | Same; the SE key is non-migratable and `ThisDeviceOnly` is not in the backup |
+| In-app Erase All Data — `Manager.Key().deleteAllKeys()` (`Manager+App.swift:26`) | Panic-wipe path only |
+| Erase All Content and Settings | Rare |
+
+Not reinstall, and not anything in ordinary use. So the event is **rarer than originally claimed
+but certain** — every relationship reaches it, on a hardware cycle, from both sides.
+
+**This is D-19's event.** Device replacement forces a new identity because identity *is* the
+Enclave key, cross-device sync is intentionally absent, and the no-self-vouching rule requires a
+new device's key to be established by physical exchange rather than vouched for by the old one.
+D-19 is that moment's authenticity face — a legitimate "I replaced my phone" is indistinguishable
+from an attacker saying it — and this bug is its availability face. They should be scoped
+together, not separately.
 
 ### What happens
 
@@ -3643,31 +3681,88 @@ derivation. The 1:1 path resolves the sender the same way (`:1565`) and fails id
 There is no healing path. The resolution never widens, so re-opening the same file fails the
 same way forever. The messages are lost, not delayed.
 
+### Why the two halves are different bugs
+
+The split is not administrative — the modes differ in whether a bundle can be opened twice, and
+that changes both the exposure and the fix.
+
+| | 82a — fallback (`.longTermFallback` / `.longTermNoPQ`) | 82b — forward-secret |
+|---|---|---|
+| Wrapping key | `ECDH(ourLongTermPriv, theirLongTermPub)` — deterministic, consumes nothing | Prekey ECDH — prekey consumed on open |
+| Re-openable? | **Yes, indefinitely** | No. Single-use by design, independent of this bug |
+| Exposure window | Every retained bundle, including ones already read | Only bundles sealed and never opened |
+| Failure | Slot never opens — **undecryptable** | Opens, then `senderEphemeralSignatureMismatch` |
+| When this mode is used | First message ever to a contact (no batch yet), and prekey exhaustion | Steady state once a batch exists |
+
+**82a is the one the original likelihood argument missed.** Because fallback bundles re-open
+forever and the app has no message history, re-opening the `.occ` is the only way to re-read
+anything — and the README positions the bundle as the durable artifact ("share the bundle however
+you want"). So when a contact replaces their phone, every fallback bundle they ever sent stops
+opening, retroactively, including the first message of the relationship. That is not a race; it
+is an archive break at a scheduled moment.
+
+Unknown, and unknowable without telemetry this project has deliberately declined: how many
+recipients actually retain `.occ` files rather than decrypting and saving the plaintext. The
+"keep the encrypted container" habit is plausible for the legal/medical persona but is not
+evidenced.
+
+**82b is the race as originally described**, and the pushback on it is fair. Its window is
+"sealed but never opened" — though note that with no inbox, a bundle sits in Mail or Files until
+the recipient acts, and the re-exchange is triggered by something unrelated to the message, so
+the window is measured in however long a file goes unopened rather than in transit time.
+
 ### Severity
 
 Availability, not confidentiality — nothing is exposed, and a forged bundle is no more likely to
-be accepted than before. But the loss is silent and permanent, and it lands on ordinary use: a
-contact reinstalling the app and re-exchanging keys is a normal thing to do, not an edge case.
+be accepted than before. Both halves are silent and permanent. 82a additionally reaches data the
+user believes they already have.
 
-### Interaction with the §2.2 prekey finding
+### Remedy — 82a
 
-The forward-secret half of this is one of the three throw sites that currently leave a prekey
-unconsumed, and it is the **only** one reachable without an attacker. That matters for how §2.2
-gets fixed: any remedy there that consumes the prekey on rejection would, in this scenario, also
-destroy the prekey a legitimate message was sealed to — turning a lost message into a lost
-message *and* a burned key. Fixing this first confines that cost to genuinely forged bundles.
+Resolve a candidate **set** rather than a single key, in `deriveInboundKey` only. Try the current
+key first, exactly as today, and walk back through the older unexpired records only when it fails,
+so the common path keeps its present cost.
 
-### Remedy
+This half needs **no prekey work**: fallback slots consume nothing, so a failed candidate leaves
+no state behind and the §2.2 `defer` is never armed. It touches neither
+`findAndOpenRecipientSlot`'s exit contract nor the signature path.
 
-Resolve a candidate **set** rather than a single key. Try the current key first, exactly as
-today, and walk back through the older records only when it fails — the common path keeps its
-present cost, and the extra work happens only where the code currently gives up. Whichever
-candidate succeeds must then be used for the rest of the bundle: the key that opened the slot
-has to be the same key `senderProof` is checked against, or the mismatch just moves.
+The one constraint that still applies: whichever candidate opens the slot must be the key
+`senderProof` is checked against at `Contact+Manager.swift:1892`, or the mismatch just moves from
+derivation to proof. So the winning key has to be returned upward, not discarded.
 
-Bound the candidate count. `findAndOpenRecipientSlot` already loops over recipient slots, so
-adding candidates makes fallback mode O(slots × keys) trial decryptions, and Bug 74 is the
-standing reminder that Secure Enclave round trips have a ceiling.
+Bound the candidate count — fallback derivation costs an SE ECDH per candidate per slot, and Bug
+74 is the standing reminder that Enclave round trips have a ceiling.
+
+### Remedy — 82b, and why it is deferred
+
+The naive fix is wrong in a way worth recording, because it is the obvious one: looping over
+candidates by *re-calling* `findAndOpenRecipientSlot` cannot work in FS mode.
+
+FS mode's wrapping key never involves the sender's long-term identity (finding #8,
+`SecurityReview2026-07-24`), so the slot opens on the **first** attempt regardless of which
+candidate key is passed. `usedPrekey` is set, the signature check fails, and §2.2's `defer`
+consumes the prekey on the way out. The second attempt then finds no prekey, opens nothing, and
+returns `recipientSlotNotFound`. The retry is dead, and the first attempt destroyed the key the
+legitimate message was sealed to.
+
+A correct fix therefore has to try the candidates **at the signature check**, inside
+`findAndOpenRecipientSlot`, before either returning or throwing — modifying the function whose
+exit contract was rewritten for §2.2 in 1.10.2, to guard the less likely half. That cost against
+that likelihood is why it is deferred.
+
+### Interaction with the §2.2 prekey finding — the honest cost of deferring 82b
+
+The FS half is one of the three throw sites §2.2 addressed, and the **only** one reachable
+without an attacker. §2.2 shipped in 1.10.2 by consuming the prekey the moment the slot opens,
+accepted on the reasoning that rejections are attacker-driven.
+
+Deferring 82b leaves that reasoning incomplete: when a contact replaces their device, an unopened
+FS bundle both fails *and* burns its prekey, with no attacker involved. The blast radius is a lost
+message plus a destroyed key rather than a lost message alone. That is still the fail-secure
+direction — the message was unrecoverable either way, and the key is gone rather than exposed —
+but the original claim that fixing this "confines that cost to genuinely forged bundles" does not
+hold while 82b is open. Fixing 82a does **not** address this; only 82b does.
 
 ### The tradeoff this makes, which is the real decision
 
@@ -3684,6 +3779,11 @@ currently ignores it:
   re-exchange case, and is safe to accept.
 
 Today `resolveSenderPublicKey` treats the two identically by looking at neither.
+
+`reset(identity:)` is user-reachable — `TrustCheckV2.swift:182` and the v1 contact form — so the
+revocation lever exists in the UI. What is not established is whether a user who rotates *because
+of* a compromise knows to reach for it rather than simply re-exchanging. That is a copy question,
+and it is what makes accepting superseded keys safe or unsafe in practice.
 
 ---
 

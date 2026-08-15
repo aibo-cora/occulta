@@ -96,7 +96,9 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       fresh batch. The trade is availability under an active attacker for forward secrecy under
       coercion, which is the right way round for this threat model. Bug 82 is the one benign
       trigger and is deferred; when it fires the message is lost either way, and now its prekey
-      is destroyed rather than left exposed.
+      is destroyed rather than left exposed. (Narrowed 2026-08-15: the benign trigger is
+      specifically **82b**, the forward-secret half, which remains deferred. 82a cannot reach
+      this path — fallback slots consume no prekey.)
 
       Guarded by `PrekeyConsumptionOnRejectionTests`, which were verified to fail against the
       previous behaviour: 4 of its 5 cases break when the `defer` is removed. The fifth asserts
@@ -252,17 +254,28 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       1.10.2 sign-off; the checklist recorded the field's placement (see the inbound-path note
       above) but never why that placement is load-bearing.
 
-- [ ] Messages already in flight survive a contact key re-exchange
+- [ ] Messages already sent survive a contact identity-key change
       — **FAIL. Filed as Bug 82**, pre-existing rather than introduced by this release.
-      `resolveSenderPublicKey` (`Contact+Manager.swift:1633`) returns only the newest unexpired
-      key record, while the model retains the whole history — `saveKey` appends on re-exchange
-      and only `reset(identity:)` ever writes `expiredOn`. Three inbound consumers depend on
-      that value: the fallback-mode wrapping key, `verifySenderEphemeralSignature`, and the
-      `senderProof` HMAC. All three compare against a key that did not exist when the message
-      was sealed, so fallback-mode messages become undecryptable outright and forward-secret
-      ones fail verification. Silent, permanent, and triggered by something ordinary — a
-      contact reinstalling and re-exchanging. New item; the checklist did not previously assert
-      this anywhere.
+      `resolveSenderPublicKey` (`Contact+Manager.swift:1643`) returns only the newest unexpired
+      key record, while the model retains the whole history — `update(key:for:)` (`:538`) appends
+      on re-exchange and only `reset(identity:)` ever writes `expiredOn`. Three inbound consumers
+      depend on that value: the fallback-mode wrapping key, `verifySenderEphemeralSignature`, and
+      the `senderProof` HMAC. All three compare against a key that did not exist when the message
+      was sealed, so fallback-mode messages become undecryptable outright and forward-secret ones
+      fail verification. New item; the checklist did not previously assert this anywhere.
+
+      **Corrected and re-filed 2026-08-15 as Bug 82a/82b.** The wording above and the original
+      bug entry both said this triggers on "a contact reinstalling and re-exchanging." It does
+      not: `retrievePrivateKey()` (`Key+Manager.swift:163`) returns the existing Enclave key and
+      creates one only on `errSecItemNotFound`, and keychain items survive app deletion — so a
+      reinstall loses the contact list but not the identity key, and a re-exchange with unchanged
+      material appends a record holding identical bytes. The real trigger is an identity-key
+      *change*: new hardware, restore to new hardware, in-app Erase All Data, or a device wipe.
+      Rarer than claimed, but certain — it is D-19's device-replacement event seen from the
+      availability side. The two halves have since been split, because fallback bundles re-open
+      indefinitely (so the exposure is every retained bundle, not just unopened ones) while
+      forward-secret bundles are single-use by design. See Bug 82 in
+      `Docs/Features/Secure Mode/bugs.md`.
 - [x] `buildOwnedBasket` returns `nil` (no basket shown) when an `identityChallenge` envelope
       is present — no double-display
       — `OccultaApp.swift:673–681`.
@@ -568,10 +581,15 @@ the contributor set grows beyond people with commit access.
 5. ~~`senderEphemeralSignature` has no domain-separation prefix~~ — **fixed**, behind the
    `.prefixedSenderSignatureCapable` tier so 1.10.0/1.10.1 recipients keep receiving messages.
    The bare verification arm is transitional; remove it once those versions are gone. See §3.6.
-6. **In-flight messages do not survive a contact key re-exchange** (§3, Bug 82) — pre-existing,
-   availability rather than confidentiality, and worth fixing before §2.2 rather than after: it
-   is the only trigger of §2.2's rejection path that needs no attacker, so closing it confines
-   any consume-on-rejection remedy to genuinely forged bundles.
+6. **Messages do not survive a contact identity-key change** (§3, Bug 82) — pre-existing,
+   availability rather than confidentiality. Re-filed 2026-08-15 as 82a/82b; the sentence this
+   item carried at sign-off — that fixing it "confines any consume-on-rejection remedy to
+   genuinely forged bundles" — applies only to **82b**, the forward-secret half, which is the one
+   being deferred. So that reasoning stays incomplete for now: a contact replacing their device
+   still burns a prekey on an unopened FS bundle with no attacker involved. **82a**, the fallback
+   half, is the one targeted for v1.11.0 — it is the larger exposure (retained bundles, not just
+   unopened ones) and the cheaper fix (no prekey interaction at all), but it does not close this
+   §2.2 gap.
 7. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
    §3.2, §5.1, §6.2, §8's skip rule. The two CLAUDE.md clauses this item also named — "no
    external package manager" and "iOS 16.0+" — are both gone; neither string is in the file, and
