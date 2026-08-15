@@ -2289,7 +2289,9 @@ contactManager.syncShareIndex()
 
 ## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
 
-**Status:** Open
+**Status:** Open — **narrowed 2026-08-15 to fix 1 only** (backup exclusion). Fix 2 (carry lockout
+fields through rotation) is implemented and was independently unnecessary; see "Reconciled
+2026-08-15" at the bottom of this entry.
 
 ### Severity: High
 
@@ -2310,6 +2312,11 @@ The SwiftData store is excluded from iCloud backup (`isExcludedFromBackup = true
 
 A second, independent path: key rotation in `activateSecureMode` and `deactivateSecureMode` re-encrypts contact and vault fields under the staged key but does not re-encrypt `lockoutCountEncrypted` or `lockoutExpiryEncrypted`. After rotation those fields are encrypted under the superseded canonical key and decode as `return 0` / `return nil` (see `AppLayerConfig+Model.swift` fallback). An in-progress lockout is silently reset by any activation or deactivation cycle. This angle is independent of backup and is documented in the repo audit as SEC-2.
 
+> **Stale as of 2026-08-15 — do not act on this paragraph.** The rotation does re-encrypt both
+> fields, the second field is not called `lockoutExpiryEncrypted`, and there is no in-progress
+> lockout at rotation time to reset. See "Reconciled 2026-08-15" below. The backup path in the
+> symptom above is unaffected and remains the live half of this bug.
+
 ### Resolution (pending)
 
 Two independent fixes required:
@@ -2317,6 +2324,35 @@ Two independent fixes required:
 **1. Verify `isExcludedFromBackup` covers local backups.** Confirm that `excludeStoreFromBackup(url:)` (added in `a320e3b`) prevents the database from appearing in a wired iTunes/Finder backup, not just iCloud. If local backup exclusion requires a different entitlement or API call, apply it.
 
 **2. Carry lockout fields through key rotation.** In the re-encryption loops of `activateSecureMode` and `deactivateSecureMode`, re-encrypt `lockoutCountEncrypted` and `lockoutExpiryEncrypted` under the staged key alongside the other `AppLayerConfig` fields. A test asserting that a lockout in progress at activation time is still active and unexpired after deactivation should be added.
+
+### Reconciled 2026-08-15 — fix 2 is done, was never needed, and named a field that no longer exists
+
+Three separate documents disagreed about this half of the bug. Resolved by reading the code rather
+than by picking between them; **fix 1 is the entire remaining scope of Bug 70.**
+
+**Fix 2 is implemented.** `AppLayerConfig.reencrypt(from:to:)` reseals both lockout fields
+(`AppLayerConfig+Model.swift:314-315`), so they are carried through every rotation. It arrived in
+`182920b` on `release/v1.10.2` — the **Bug 76** fix — which re-keyed `AppLayerConfig` wholesale and
+picked these up as part of that sweep. Nobody fixed Bug 70; Bug 76 covered it in passing, which is
+why no document records it.
+
+**Fix 2 was also unnecessary, and `SecurityReview2026-07-24` item #7 was right to retract it** —
+though for a reason worth stating more precisely than the retraction did. Every rotation path is
+gated behind a successful PIN verification, and `verify()` calls `resetCounters()` on every match
+(`Manager+Security.swift:1135` normal, `:1145` duress). A lockout in progress cannot coexist with a
+rotation either, because `verify()` returns `.locked(until:)` before reaching any verifier scan while
+the delay is outstanding (`:1121-1124`). So at the moment any rotation runs, both fields are already
+zero by construction. There has never been an in-progress lockout for a rotation to preserve.
+
+**Both this entry and the retraction name `lockoutExpiryEncrypted`, which does not exist.** The field
+is `lockoutAnchorUptimeEncrypted` — a boot-anchored monotonic value, not a wall-clock expiry. It was
+renamed by the **SEC-1** fix (2026-08-05) that closed the clock-rollback bypass, which is the same
+audit item this entry's own root cause section cites. A `grep` for the old name returns nothing,
+which is the confusing way to discover this.
+
+**What this does not touch.** The backup-restore vector in the symptom above — the actual Bug 70 —
+is untested and unaddressed. Rotation carrying the fields correctly is irrelevant to an adversary
+who replaces the whole database file with an earlier copy. Fix 1 stands as written.
 
 ---
 
@@ -2390,7 +2426,7 @@ func randomSlot(excluding excluded: Set<Int> = []) -> Int {
 
 ## Bug 73 — Group duress membership shared across all duress depths, breaking multi-layer decoys
 
-**Status:** Closed (Fixed) — implemented and verified on `release/v1.9.1` (34/34 Group tests passing, including new regression coverage for depth-1/2/3 independence). Not yet committed/pushed.
+**Status:** Closed (Fixed) — implemented and verified on `release/v1.9.1` (34/34 Group tests passing, including new regression coverage for depth-1/2/3 independence). ~~Not yet committed/pushed.~~ **Corrected 2026-08-15:** committed as `8924df6` and merged to `develop` via `aee66b9` (PR #64). The trailing sentence had been left as written at the time of the fix and read, months later, as though the work were still sitting uncommitted.
 
 **Target:** v1.9.1
 
@@ -2461,7 +2497,7 @@ Given the negligible magnitude, this is low priority and can be deferred.
 
 ## Bug 74 — Eager `deeperMemberSlots` migration caused launch crash/freeze; reverted to lazy-only
 
-**Status:** Closed (Reverted) — v1.9.1 shipped with the eager migration; a follow-up patch removes it.
+**Status:** Closed (Reverted) — v1.9.1 shipped with the eager migration; a follow-up patch removes it. **Confirmed landed 2026-08-15:** `654aaba`, "Revert eager group deeper-slot migration — caused launch crash and freeze". Note this removed only the *eager migration*; `deeperMemberSlots` itself is intact and correct (`Group+Model.swift:50`), since it is the Bug 73 mechanism. Migration remains lazy-only, which is the state the Decision section below settled on.
 
 **Target:** v1.9.2 (or next patch)
 

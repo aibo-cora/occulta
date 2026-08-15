@@ -590,14 +590,108 @@ the contributor set grows beyond people with commit access.
    half, is the one targeted for v1.11.0 — it is the larger exposure (retained bundles, not just
    unopened ones) and the cheaper fix (no prekey interaction at all), but it does not close this
    §2.2 gap.
-7. Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
-   §3.2, §5.1, §6.2, §8's skip rule. The two CLAUDE.md clauses this item also named — "no
-   external package manager" and "iOS 16.0+" — are both gone; neither string is in the file, and
-   its Build & Test section now records the 18.6 target and the removed dependency.
+7. ~~Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
+   §3.2, §5.1, §6.2, §8's skip rule.~~ **Addressed 2026-08-15** — replacement wording for all seven
+   is in the "Correction block" below the sign-off, appended rather than edited in place so the
+   1.10.2 sign-off keeps attesting to the text that was signed. Adopt at the next pass. The two
+   CLAUDE.md clauses this item also named — "no external package manager" and "iOS 16.0+" — are
+   both gone; neither string is in the file, and its Build & Test section now records the 18.6
+   target and the removed dependency.
 
 Every item now carries a result. Two smaller things recorded in place rather than raised here:
 `deleteAllKeys(for:)` is best-effort with no signal on failure (§2.4), and contact-identifier
 encryption falls open to the raw UUID if key derivation fails (§4.1).
+
+---
+
+## Correction block — item wordings, appended 2026-08-15
+
+Blocker 7 above lists seven items whose **wording** is wrong, in the specific sense that a future
+pass following the text literally would measure the wrong property and record a FAIL against
+correct code. The replacement wording for each is given here rather than edited into the items in
+place, so the 1.10.2 sign-off keeps attesting to exactly the text that was signed. **Adopt these at
+the next pass**; from that point the items above are superseded by this block.
+
+Nothing here changes a result. Every item is a re-description of a property already verified; the
+evidence lines attached to each item above remain valid as written.
+
+**§1.2 — AAD.** Replace *"AAD is always `version ∥ sorted SecrecyContext fields` — no call site
+omits it"* with:
+
+> Every **bundle** encryption binds `version ∥ sorted SecrecyContext fields` as AAD, via
+> `computeAdditionalAuthentication(version:secrecy:)`. Seals outside the bundle/transport path —
+> the PIN verifier sentinel, `ShareIndexKeyManager`, and `SecureMode+LayerStore` — are separate key
+> contexts with no `SecrecyContext` to bind and are out of scope for this item.
+
+Rationale: the rule is a bundle-transport rule. Stated universally it makes three correct, unrelated
+key contexts read as violations.
+
+**§1.5 — Hybrid combiner.** Replace *"P-256 shared secret XOR'd with both ML-KEM secrets before
+HKDF, not after"* with:
+
+> The hybrid IKM is the **concatenation** `ECDH ‖ sorted(kem₁, kem₂)`, HKDF'd with the ECDH-derived
+> salt, with the two ML-KEM secrets in canonical sorted order so both sides agree on ordering.
+
+Rationale: the item as written describes a construction that would be *wrong*. XOR into a
+fixed-width value discards entropy; concatenation is the correct KEM combiner. The code is right and
+the item was wrong.
+
+**§2.5 — `PortingManager`.** Delete the item. No such type exists anywhere in the repository. The
+property it guarded still holds by construction and is worth keeping under a name that exists:
+
+> No code path exports an SE private key. Every `SecKeyCopyExternalRepresentation` call site
+> extracts a **public** key (`PrekeyManager.swift:70`, `ShareIndexKeyManager.swift:147`, and
+> `TestKeyManager`'s in-memory pairs).
+
+**§3.2 — Peer identity.** Replace *"MCSession peer identity is validated before accepting key
+exchange data"* with:
+
+> Key exchange is gated by **physical proximity plus out-of-band confirmation**, not by transport
+> authentication: a peer's discovery token must range at ≤ 0.25 m before any identity is sent
+> (`Exchange+Manager.swift:638`), `guard self.exchangeStatus == nil` allows the protocol to start
+> exactly once, and both sides compare diceware words derived from the completed shared secret
+> (`KeyExchange.swift:236`). MultipeerConnectivity authenticates nobody — `securityIdentity: nil`,
+> all invitations accepted, no `didReceiveCertificate` — and is not relied on to.
+
+Rationale: as written the item asserts a check that does not exist, so it can only ever be recorded
+FAIL. The residual risk it should prompt a reviewer to re-examine is the ranging race, which is
+tracked in §B of `OPEN_LIMITATIONS.md`. If `didReceiveCertificate` is ever implemented, restore the
+original item alongside this one rather than replacing it.
+
+**§5.1 — Share Extension types.** Replace *"Extension matches on UTI
+`com.github.aibo-cora.occulta` and `.occ` path extension fallback — no other types accepted"* with:
+
+> **Inbound** (`.occ` intake): `looksLikeOCC` (`ShareViewController.swift:410`) matches exactly the
+> `com.github.aibo-cora.occulta` UTI and the `.occ` path extension, and nothing else.
+> **Outbound** (encrypt-for-contact, the extension's primary purpose): the activation rule
+> deliberately accepts any file and any image, up to 20 each (`ShareExtension/Info.plist`).
+
+Rationale: the item claims a restriction the extension does not have **and should not have** — the
+broad activation rule is the feature.
+
+**§6.2 — Debug symbols.** Replace *"`Strip Debug Symbols During Copy` = YES in Release"* with:
+
+> The archived binary carries **no debug map** — `nm -a` reports zero `OSO`/`SO`/`FUN` entries for
+> `Occulta` and for `ShareExtension.appex` — and full `.dSYM`s are produced for all targets.
+
+Rationale: `COPY_PHASE_STRIP` is a legacy setting governing files copied by a Copy Files phase, not
+the product. It is `NO`, and the product is stripped anyway. Assert the property, which is what
+matters and what is measurable, not the setting.
+
+**§8 — Skip rule.** Replace *"Zero skips, excluding `KeychainMigrationSETests`"* with:
+
+> **Exactly 6 skips, and all six are `KeychainMigrationSETests`.** Any other skip means the host
+> lacked a Secure Enclave and the run does not count toward this gate.
+
+Rationale: those six throw `XCTSkip` from `setUpWithError` behind a compile-time
+`#if targetEnvironment(simulator)` that never consults `secureEnclaveAvailable()`, so they cannot
+run on any host this gate permits — only a physical device runs them. "Zero skips" is therefore
+unachievable rather than merely unmet. The alternative, if the gate should genuinely reach them, is
+to change their gate to `.enabled(if: secureEnclaveAvailable())` so a bare-metal Simulator run
+covers them; until someone does that, a count of exactly 6 with those names is the pass condition.
+
+**Not in this block, because it is a result rather than a wording problem:** §3.7 (messages
+surviving a contact identity-key change) remains a genuine FAIL, tracked as Bug 82a/82b.
 
 ---
 

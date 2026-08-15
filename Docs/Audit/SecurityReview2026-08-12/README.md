@@ -189,7 +189,11 @@ not attacker-controllable. Left as-is because changing the fallback also changes
 and has existing test coverage asserting the current mapping. "Newer than I understand" should
 logically be the most capable case, not the least.
 
-## ⚪ Open — `TestKeyManager` ships in the release binary
+## ✅ Fixed — `TestKeyManager` ships in the release binary
+
+**Closed 2026-08-15.** `Occulta/Protocols/KeyManagerProtocol.swift:124` is now `#if DEBUG`, with the
+reasoning recorded at `:128`. The SwiftUI-preview obstacle noted below was evidently resolved rather
+than worked around. The finding text is kept as written; only the status changed.
 
 `Occulta/Protocols/KeyManagerProtocol.swift` has no `#if DEBUG` anywhere. A fully functional
 in-memory key manager that bypasses the Secure Enclave is compiled into the shipped app, and this
