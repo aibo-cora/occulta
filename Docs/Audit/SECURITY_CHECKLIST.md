@@ -684,11 +684,19 @@ matters and what is measurable, not the setting.
 > lacked a Secure Enclave and the run does not count toward this gate.
 
 Rationale: those six throw `XCTSkip` from `setUpWithError` behind a compile-time
-`#if targetEnvironment(simulator)` that never consults `secureEnclaveAvailable()`, so they cannot
-run on any host this gate permits — only a physical device runs them. "Zero skips" is therefore
-unachievable rather than merely unmet. The alternative, if the gate should genuinely reach them, is
-to change their gate to `.enabled(if: secureEnclaveAvailable())` so a bare-metal Simulator run
-covers them; until someone does that, a count of exactly 6 with those names is the pass condition.
+`#if targetEnvironment(simulator)`, so they cannot run on any host this gate permits — only a
+physical device runs them. "Zero skips" is therefore unachievable rather than merely unmet.
+
+**The exclusion is permanent, and the obvious alternative does not work — tried and reverted
+2026-08-15.** Swapping the compile-time gate for a runtime `.enabled(if: secureEnclaveAvailable())`
+looks right, because a bare-metal Simulator genuinely does reach the Enclave. It fails on a
+distinction the predicate cannot see: Enclave *key creation* works in the Simulator (an SE-key probe
+returns true, and `testKeyCreatedWithAccessGroupIsDiscoverable` passes), but `SecItemUpdate` cannot
+add `kSecAttrAccessGroup` to an SE-protected key there, returning **-25303 `errSecNoSuchAttr`** —
+and that update is the entire subject of the suite. The runtime gate therefore converts six honest
+skips into two failures reading *"the migration strategy is unviable"*. Enclave availability is not
+the predicate; Simulator keychain fidelity is, and nothing probes it short of the assertion itself.
+The gate now carries a note saying so.
 
 **Not in this block, because it is a result rather than a wording problem:** §3.7 (messages
 surviving a contact identity-key change) remains a genuine FAIL, tracked as Bug 82a/82b.

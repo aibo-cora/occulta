@@ -78,7 +78,7 @@ struct Sign: View {
                                             let signature = try crypto.sign(data: self.text.data(using: .utf8)).uppercased()
                                             let signedMessage = self.text + "\n\n\n" + "MavSig: \(signature)"
 
-                                            UIPasteboard.general.string = signedMessage
+                                            UIPasteboard.general.copySensitive(signedMessage)
                                         } catch {
                                             self.signErrorMessage = "Could not create a signature. Please try again."
                                             self.isShowingSignError = true

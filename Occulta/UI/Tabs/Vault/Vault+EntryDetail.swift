@@ -354,7 +354,7 @@ struct VaultEntryDetail: View {
             Button {
                 if let data = try? vault.decryptContent(for: entry),
                    let str  = String(data: data, encoding: .utf8) {
-                    UIPasteboard.general.string = str
+                    UIPasteboard.general.copySensitive(str)
                 }
             } label: {
                 self.actionButton("Copy", style: .standard)
