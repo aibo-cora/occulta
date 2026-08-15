@@ -266,60 +266,6 @@ private struct RootView: View {
             }
             // onOpenURL must be on the outermost container so it fires in all phases.
             .onOpenURL { url in self.handleOpenURL(url) }
-            .alert("Error", isPresented: self.$showError) {
-                Button("OK") { }
-            } message: {
-                Text(self.errorMessage)
-            }
-            .sheet(item: self.$openedFileContents) {
-                /// Dismiss
-            } content: { data in
-                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
-                    .map { AttachmentManager(contactKey: $0) }
-                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
-                    .onDisappear {
-                        data.basket.files.forEach { file in
-                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
-                        }
-                    }
-            }
-            .sheet(item: self.$shareResult) { result in
-                ShareActivityView(url: result.url)
-                    .onDisappear {
-                        try? FileManager.default.removeItem(at: result.url)
-                    }
-            }
-            // Identity-challenge outbound share (challenge OR response `.occ`).
-            .sheet(item: Binding(
-                get: { self.identityChallenge.outboundShare },
-                set: { self.identityChallenge.outboundShare = $0 }
-            )) { share in
-                ShareActivityView(url: share.url)
-                    .onDisappear {
-                        try? FileManager.default.removeItem(at: share.url)
-                    }
-            }
-            // Identity-challenge responder approval sheet.
-            .sheet(item: Binding(
-                get: { self.identityChallenge.incomingChallenge },
-                set: { self.identityChallenge.incomingChallenge = $0 }
-            )) { incoming in
-                IdentityChallenge.IncomingChallengeSheet(
-                    incoming:  incoming,
-                    onApprove: { self.identityChallenge.approvePending() },
-                    onDecline: { self.identityChallenge.declinePending() }
-                )
-            }
-            // Identity-challenge verification result on the challenger side.
-            .sheet(item: Binding(
-                get: { self.identityChallenge.verificationOutcome },
-                set: { self.identityChallenge.verificationOutcome = $0 }
-            )) { outcome in
-                IdentityChallenge.VerificationResultSheet(
-                    outcome:   outcome,
-                    onDismiss: { self.identityChallenge.verificationOutcome = nil }
-                )
-            }
             // Drain any file queued while locked when the app unlocks (PIN entry or
             // grace-period auto-unlock). Processes identically regardless of which PIN
             // succeeded — passSecurityControl's removal (Non-Safe-Sender-Rejection-Is-A-
@@ -327,7 +273,16 @@ private struct RootView: View {
             // left to differ on, so a duress unlock draining this the same way as a
             // normal one introduces no new signal.
             .onChange(of: self.appScreen.phase) { _, newPhase in
-                guard newPhase == .unlocked else { return }
+                guard newPhase == .unlocked else {
+                    // Leaving .unlocked (grace expired on a warm return) tears down the
+                    // branch that owns the presentations, dismissing anything on screen.
+                    // Their item state outlives the branch, so clear it here — otherwise
+                    // the next unlock re-presents a sheet the user already finished with,
+                    // over content they have only just re-authenticated to.
+                    self.openedFileContents = nil
+                    self.shareResult = nil
+                    return
+                }
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
                 // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
                 self.purgeOrphanedGroupsIfAtRealDepth()
@@ -414,10 +369,73 @@ private struct RootView: View {
             // cover is removed as soon as PINEntry is on screen.
             .onAppear { self.appScreen.pinViewAppeared() }
         case .unlocked:
-            if !self.hasCompleted {
-                OnboardingView()
-            } else {
-                self.tabContent
+            SwiftUI.Group {
+                if !self.hasCompleted {
+                    OnboardingView()
+                } else {
+                    self.tabContent
+                }
+            }
+            // Every modal presentation lives here, inside the .unlocked branch, and not on
+            // the outer view. A `.sheet` or `.alert` attached above this switch attaches to
+            // the same host as PINEntry, and a UIKit modal renders over it — which is how
+            // Bug 1's "messages visible over the PIN lock" came back as Bug 84 Part B once
+            // `8b95ee5` replaced the fullScreenCover with this in-tree branch. Do not move
+            // these back out, and do not reintroduce the cover: its async presentation
+            // window is what caused Bug 56.
+            .alert("Error", isPresented: self.$showError) {
+                Button("OK") { }
+            } message: {
+                Text(self.errorMessage)
+            }
+            .sheet(item: self.$openedFileContents) {
+                /// Dismiss
+            } content: { data in
+                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
+                    .map { AttachmentManager(contactKey: $0) }
+                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
+                    .onDisappear {
+                        data.basket.files.forEach { file in
+                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
+                        }
+                    }
+            }
+            .sheet(item: self.$shareResult) { result in
+                ShareActivityView(url: result.url)
+                    .onDisappear {
+                        try? FileManager.default.removeItem(at: result.url)
+                    }
+            }
+            // Identity-challenge outbound share (challenge OR response `.occ`).
+            .sheet(item: Binding(
+                get: { self.identityChallenge.outboundShare },
+                set: { self.identityChallenge.outboundShare = $0 }
+            )) { share in
+                ShareActivityView(url: share.url)
+                    .onDisappear {
+                        try? FileManager.default.removeItem(at: share.url)
+                    }
+            }
+            // Identity-challenge responder approval sheet.
+            .sheet(item: Binding(
+                get: { self.identityChallenge.incomingChallenge },
+                set: { self.identityChallenge.incomingChallenge = $0 }
+            )) { incoming in
+                IdentityChallenge.IncomingChallengeSheet(
+                    incoming:  incoming,
+                    onApprove: { self.identityChallenge.approvePending() },
+                    onDecline: { self.identityChallenge.declinePending() }
+                )
+            }
+            // Identity-challenge verification result on the challenger side.
+            .sheet(item: Binding(
+                get: { self.identityChallenge.verificationOutcome },
+                set: { self.identityChallenge.verificationOutcome = $0 }
+            )) { outcome in
+                IdentityChallenge.VerificationResultSheet(
+                    outcome:   outcome,
+                    onDismiss: { self.identityChallenge.verificationOutcome = nil }
+                )
             }
         }
     }
