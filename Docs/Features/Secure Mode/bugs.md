@@ -3460,6 +3460,15 @@ not in the field — a message from a contact running 1.9.0 failed to open with
 
 **Target:** post-1.10.2, if the affected population turns out to matter.
 
+**Priority reviewed 2026-08-16 — remains an accepted limitation, and is *not* a release blocker.**
+It was briefly promoted to P0 in the open-limitations register when Bug 82a was re-rated out of that
+slot; the promotion was made by elimination, without re-reading this entry, and is withdrawn. The
+narrowing facts below all still hold — the band is exactly 1.9.x, the gate is per-contact, fallback
+sends are unaffected, and one message from the contact after they reach 1.10.0+ repairs the marker
+permanently. Severity per affected pair stays **High** (permanent, silent, unrepairable by the
+recipient); priority is **P1**. The population that would justify more is the one this project has
+no telemetry to measure, which is the same reasoning that re-rated 82a — applied consistently.
+
 ### The decision, and why it is defensible
 
 Ship the fail-closed gate. Contacts on **1.9.0 ≤ version < 1.10.0** cannot have their forward-secret
@@ -3650,6 +3659,14 @@ material issued to the impersonated contact may be the wrong trade for now. That
 decision, not a security one, and it should be taken with the population figure in hand.
 
 ### Regardless of which remedy is chosen
+
+> **Stale as of 2026-08-16 — superseded twice over; do not act on this paragraph.** It was written
+> before `f7c41f1` made the failure legible, and before the 2026-08-14 amendment collapsed the two
+> strings into one to close a duress oracle. Both events are recorded at the top of this entry. The
+> current behaviour is a single deliberate string at `OccultaApp.swift:664-666`, not an opaque error
+> code. A reader reaching this section first — as happened on 2026-08-16, producing a wrong P0
+> rating in the open-limitations register — will conclude there is unfixed work here. There is not;
+> there is a *declined candidate*, recorded in the amendment above.
 
 The failure is currently opaque: `GroupDecryptError: 7` in a log, with no user-facing explanation.
 It should say what the group-eligibility screen already says — that this contact needs to update
