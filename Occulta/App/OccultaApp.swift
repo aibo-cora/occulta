@@ -636,18 +636,30 @@ private struct RootView: View {
         // undo it: the stranded ciphertext is preserved on purpose (see Bug 80), so the tell
         // outlives the feature it reveals.
         //
-        // **This is not a clear win, and the losses are real.**
+        // **The advice lives inside the single string (restored 2026-08-16).**
         //
-        // Bug 81 argued for the split and the argument was sound: "ask this contact to update"
-        // is actionable, and the overwhelmingly likely cause of a refusal is a contact still on
-        // 1.9.x rather than an attack. That advice is now gone, and every benign
-        // old-contact refusal reads as a security event. Alarm fatigue is the mild version of
-        // the cost; the sharp version is a user coming to distrust a contact who did nothing
-        // wrong, and withdrawing from a channel that was safe.
+        // Bug 81 argued for splitting the strings so the UI could say "ask this contact to
+        // update" — actionable, and describing the overwhelmingly likely cause of a refusal: a
+        // contact still on 1.9.x rather than an attack. The collapse took that advice out along
+        // with the oracle, and the cost was real — every benign old-contact refusal read as a
+        // security event. Alarm fatigue is the mild version; the sharp version is a user coming
+        // to distrust a contact who did nothing wrong and withdrawing from a channel that was
+        // safe.
         //
-        // The advice is not gone from the app, only from here: the group-eligibility screen
-        // still says "Needs to update Occulta" for exactly these contacts, which is where a
-        // user goes when they want to know why someone is unreachable.
+        // The leak was the two cases producing *different* text, not the mention of updates. One
+        // string carries both meanings, so the advice returns without reopening anything: the
+        // sentence below is emitted identically whether the marker was unreadable or the
+        // signature was simply absent, and an observer learns nothing from seeing it.
+        //
+        // It is deliberately diagnostic rather than explanatory. Followed in the benign case it
+        // ends the problem — one message from that contact once they are on 1.10.0+ repairs the
+        // marker permanently. Followed against a forgery it returns "I'm already on the latest
+        // version", which is information the user did not have, arriving without the app having
+        // accused anyone. Both suggested actions work against a 1.9.x contact, since the
+        // identity challenge rides on `.v3fs`/`.longTermFallback`.
+        //
+        // The group-eligibility screen carries the same advice for exactly these contacts, which
+        // is where a user goes when they want to know why someone is unreachable.
         //
         // Note this resolves *opposite* to the same question on that screen, which collapses
         // toward the innocuous label rather than the alarming one. Not an inconsistency — the
@@ -663,7 +675,7 @@ private struct RootView: View {
         // No duress state is recoverable from it.
         } catch GroupDecryptError.senderSignatureCapabilityUnknown,
                 GroupDecryptError.missingSenderEphemeralSignature {
-            self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened."
+            self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be using an older version — ask them to update, or verify them another way."
             self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"

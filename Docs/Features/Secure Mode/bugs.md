@@ -3556,6 +3556,35 @@ user-facing copy on a release branch for a self-limiting cost.
 Revisit only if 1.9.x adoption turns out to be stickier than expected, or if users report
 distrusting contacts over this.
 
+### Shipped 2026-08-16 — the decline above is reversed
+
+The candidate string is in the build (`OccultaApp.swift:666`), verbatim as written above. Nothing
+in the analysis changed; only the cost side did.
+
+**What the decline actually rested on** was *"not worth changing user-facing copy on a release
+branch for a self-limiting cost"* — a statement about marginal cost on `release/v1.10.2`, not about
+the wording, which the same section had already judged strictly better on three counts: it leaks
+nothing, it is true in both cases, and its advice is diagnostic. That marginal cost is now lower:
+1.10.3 is touching user-facing surfaces regardless, and the change is one appended sentence at one
+call site with no test pinning the old text.
+
+**The invariant is untouched, and that is the thing to check on any future edit.** The oracle came
+from the two cases producing *different* text; both still resolve to a single string, emitted
+identically whether the marker was unreadable or the signature was simply absent. Length is not the
+leak. The `⚠️` comment at `OccultaApp.swift:626` still forbids splitting, and now also explains why
+adding the advice back did not reopen anything.
+
+**What this buys, restated because it is easy to read as cosmetic.** The population that sees this
+message is overwhelmingly benign — contacts on 1.9.x, not attackers — and until now they were
+being shown an unexplained security refusal about someone who had done nothing wrong. The sharp
+harm named above was a user withdrawing from a safe channel on that basis. The restored sentence
+also gives the user a cheap disambiguation the app deliberately refuses to perform itself: against
+a forgery, *"ask them to update"* comes back *"I'm already on the latest version."*
+
+The self-limiting argument still holds, and now cuts the other way as well — as the 1.9.x
+population drains, the advice costs less and less, because there is progressively less benign
+traffic for it to be wrong about.
+
 ### What was considered and not taken
 
 A per-contact exemption for genuinely-old builds was explored and does not work by inference: it
