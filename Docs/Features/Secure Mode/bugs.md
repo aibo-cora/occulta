@@ -3665,8 +3665,9 @@ challenged and the stated trigger turned out to be wrong. The two halves have di
 frequencies, different consequences, and very different fix costs, and bundling them produced
 both an inflated likelihood claim and an over-large remedy.
 
-- **82a — fallback-mode half.** Open, targeted for this release. Breaks *retained* bundles, not
-  just unopened ones, and needs no prekey work to fix.
+- **82a — fallback-mode half.** Open. **Re-rated 2026-08-16 from High/P0 to Medium/P1** and
+  re-scoped to the *unopened*-bundle case; the retained-archive justification did not survive
+  challenge. See "Re-rated 2026-08-16" below. Needs no prekey work to fix.
 - **82b — forward-secret half.** Accepted, deferred. This is the narrow unopened-message race
   the original entry described, and its fix is the expensive one.
 
@@ -3789,6 +3790,60 @@ the window is measured in however long a file goes unopened rather than in trans
 Availability, not confidentiality — nothing is exposed, and a forged bundle is no more likely to
 be accepted than before. Both halves are silent and permanent. 82a additionally reaches data the
 user believes they already have.
+
+### Re-rated 2026-08-16 — High/P0 → Medium/P1, and re-scoped to unopened bundles
+
+Challenged by the release owner: *"I am still not convinced this is a bug. Are we worried that the
+few bundles encrypted by our long-term identity key will no longer be readable? In a perfect
+scenario, bundles are in forward secrecy mode."* The challenge largely holds, and the entry above
+overstated the case.
+
+**Measured, not assumed — how often fallback actually fires.** `defaultBatchSize = 15`; the UWB
+exchange carries **no** prekeys (zero references in `Exchange+Manager.swift`); batches are generated
+only on the receive side (`Contact+Manager.swift:1586`, `:1867`). So the long-term path is taken in
+exactly two places: **the first message in each direction of a relationship**, and roughly **1 in 16**
+during sustained one-way flow. A clear minority of traffic.
+
+**What the challenge defeats — the retained-archive framing.** The headline claim was that a key
+change breaks *"every fallback bundle they ever sent, retroactively."* True mechanically, but its
+severity rests entirely on recipients keeping `.occ` files rather than decrypting and saving the
+content — which this entry already conceded is *"unknown, and unknowable without telemetry this
+project has deliberately declined."* An unevidenced habit cannot carry a P0.
+
+**The sharper form of the objection, which is the one that matters.** Forward-secret bundles are
+already single-use: the prekey is deleted on successful open, so an FS `.occ` cannot be re-opened at
+all. That means the **only** re-openable archive in this app is the fallback bundles — and that
+re-openability is an *artifact of the mode*, not a designed feature. 82a therefore destroys an
+accidental archive, not a promised one, and paying for it has to be justified on something else.
+
+**A note on the reasoning, since it will be re-derived.** "Forward secrecy" does not itself mean old
+messages should be unreadable to their owner — it means a long-term key compromise does not expose
+past session keys, a statement about an adversary's retrospective reach. Signal has forward secrecy
+and a fully readable history. The conclusion happens to hold *here* for a different reason:
+prekey-on-open deletion. Do not generalise the principle; cite the mechanism.
+
+**What survives, and it is the whole remaining case: unopened bundles.** A recipient with unread
+`.occ` files from a contact who then replaces their device loses those messages on the next open.
+No retention habit is involved — this is content the user has never seen. It is narrow, needing a
+device-replacement event to coincide with an unopened backlog, but it specifically includes the
+**relationship-opening message in each direction**, which is always fallback and is exactly the kind
+left sitting while two people arrange to meet.
+
+**A live alternative: make fallback ephemeral on purpose.** The app's posture is currently
+inconsistent — FS bundles single-use, fallback bundles permanent — and 82a is an inelegant accident
+that makes them consistent. Deciding that retained `.occ` re-openability was never a promise is a
+defensible product position, and it would mean **not** fixing 82a for the archive case at all. It
+does not cover the unopened case, which is wrong under either posture.
+
+**Consequence for the fix, which the challenge sharpens rather than removes.** The remedy accepts
+superseded keys in `deriveInboundKey`, and that weakens rotation as a revocation lever. With the
+benefit now scoped to unopened bundles rather than whole archives, the `expiredOn` /
+merely-superseded distinction below stops being a nicety and becomes the condition on which the fix
+is worth shipping at all. Do not implement the candidate walk-back without it.
+
+**Net:** still a real defect, still worth the small fix, no longer a release blocker. Bugs 81 and
+81-b take the P0 slots — they block legitimate messages permanently with no device-replacement
+precondition.
 
 ### Remedy — 82a
 

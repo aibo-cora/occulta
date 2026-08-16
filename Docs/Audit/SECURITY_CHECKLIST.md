@@ -606,6 +606,15 @@ the contributor set grows beyond people with commit access.
    half, is the one targeted for v1.11.0 — it is the larger exposure (retained bundles, not just
    unopened ones) and the cheaper fix (no prekey interaction at all), but it does not close this
    §2.2 gap.
+
+   **Amended 2026-08-16 — "the larger exposure" no longer holds.** 82a was re-rated High/P0 →
+   Medium/P1 and re-scoped to *unopened* bundles only. The retained-bundle claim depends on
+   recipients keeping `.occ` files, which Bug 82 itself calls unknowable without telemetry this
+   project has declined; and since FS bundles are single-use by construction, the fallback
+   archive it protects is an artifact of the mode rather than a promised feature. Both halves
+   are now scoped to unopened bundles, differing in cost rather than in kind. This does not
+   change the §2.2 conclusion above — a contact replacing their device still burns a prekey on
+   an unopened FS bundle with no attacker involved, and only 82b closes that.
 7. ~~Stale item wordings to correct so future passes measure the right thing: §1.2, §1.5, §2.5,
    §3.2, §5.1, §6.2, §8's skip rule.~~ **Addressed 2026-08-15** — replacement wording for all seven
    is in the "Correction block" below the sign-off, appended rather than edited in place so the
