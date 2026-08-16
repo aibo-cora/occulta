@@ -231,6 +231,14 @@ private struct RootView: View {
     @State private var errorMessage = ""
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
+    /// A share-extension session staged in the App Group, waiting for the user to pick who it
+    /// gets encrypted for.
+    ///
+    /// Queued intent, not a presentation: it is set straight from `onOpenURL` at any phase and
+    /// is deliberately **not** cleared when the app re-locks, so a share that arrives while the
+    /// PIN gate is up presents its picker once the PIN is answered. Nothing is decrypted and no
+    /// key material moves until a recipient is chosen — which is the whole of Bug 84 Part A.
+    @State private var pendingShareSession: PendingShareSession?
 
     // MARK: Body
 
@@ -406,6 +414,20 @@ private struct RootView: View {
                         try? FileManager.default.removeItem(at: result.url)
                     }
             }
+            // Recipient choice for a staged share-extension session. Reachable only from
+            // here, which is why it cannot run before the PIN.
+            .sheet(item: self.$pendingShareSession) { session in
+                ShareRecipientPicker { recipient in
+                    self.pendingShareSession = nil
+                    self.encryptShareSession(session.id, to: recipient)
+                } onCancel: {
+                    self.pendingShareSession = nil
+                    if let container = ShareSession.sharedContainer {
+                        ShareSession.delete(id: session.id, in: container)
+                    }
+                }
+                .environment(self.security)
+            }
             // Identity-challenge outbound share (challenge OR response `.occ`).
             .sheet(item: Binding(
                 get: { self.identityChallenge.outboundShare },
@@ -522,7 +544,12 @@ private struct RootView: View {
                 openedThroughShareExtension = true
 
             case "share":
-                self.processShareSession(sessionID: sessionID)
+                // Queue only. The extension has staged encrypted files and a manifest that
+                // no longer names a recipient; nothing here reads them. The picker sheet is
+                // attached to the .unlocked branch, so a session arriving at the PIN gate
+                // waits there instead of running the outbound pipeline pre-authentication
+                // (Bug 84 Part A).
+                self.pendingShareSession = PendingShareSession(id: sessionID)
                 return
 
             default:
@@ -877,124 +904,69 @@ private struct RootView: View {
 
     // MARK: Share Extension Processing
 
-    private enum ShareSessionError: Error, LocalizedError {
-        case staleSession
-
-        var errorDescription: String? {
-            switch self {
-            case .staleSession: return "This share session has expired. Please share the content again."
-            }
-        }
-    }
-
-    /// Process a share session handed off from the extension via `occulta://share?session=<uuid>`.
+    /// Encrypt a staged share session for the recipient the user just picked, and present the
+    /// result for transport.
     ///
-    /// Reads the encrypted manifest, EXIF-strips images, encrypts via the full FS path,
-    /// and presents the resulting `.occ` file for sharing. The entire flow is wrapped in
-    /// do/catch — any failure deletes the session directory immediately.
-    private func processShareSession(sessionID: String) {
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
-        else { return }
+    /// Runs only from `ShareRecipientPicker`'s selection callback, which is reachable only from
+    /// the `.unlocked` phase. Before Bug 84 this body ran straight off `onOpenURL`, so
+    /// `encryptBundle`'s prekey pop and its `modelContext.save()` committed at whatever depth the
+    /// process happened to hold — depth 0 on a cold launch — with no PIN entered.
+    private func encryptShareSession(_ sessionID: String, to recipient: ShareRecipientPicker.Recipient) {
+        guard let container = ShareSession.sharedContainer else { return }
 
-        let sessionDir = containerURL
-            .appendingPathComponent("pending")
-            .appendingPathComponent(sessionID)
+        // Covers the success path and every throw below. `ShareSession.load` also deletes on its
+        // own failures; deleting twice is harmless, and neither caller may skip it.
+        defer { ShareSession.delete(id: sessionID, in: container) }
 
         do {
-            // 1. Read and decrypt manifest
-            let manifestURL = sessionDir.appendingPathComponent("manifest.enc")
-            let keyManager = ShareIndexKeyManager()
-            var manifestData = try keyManager.decrypt(data: Data(contentsOf: manifestURL))
-            let manifest = try JSONDecoder().decode(ShareManifest.self, from: manifestData)
+            var files = try ShareSession.load(
+                id: sessionID, in: container, keyManager: ShareIndexKeyManager()
+            )
 
-            // Reject stale sessions — same 1-hour cutoff cleanupPendingSessions uses.
-            // Correctness/robustness, not a security boundary (the session directory
-            // only exists inside this app's own App Group container): guards against a
-            // stale or already-processed session being unexpectedly reprocessed, e.g. a
-            // re-tapped notification or duplicate deep-link delivery
-            // (SecurityReview2026-07-24, finding #11).
-            guard manifest.createdAt > Date().addingTimeInterval(-3600) else {
-                throw ShareSessionError.staleSession
-            }
-
-            // Zero manifest plaintext — contains contact identifier (relationship metadata)
-            _ = manifestData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            manifestData = Data()
-
-            // 2. Build files — EXIF strip images before encryption (in main app, not extension)
-            var files: [Occulta.File] = []
-            // Safety net for every exit from this do block, not just the success path
-            // below: a throw anywhere after files starts accumulating decrypted content
-            // (encryptBundle, a later loop iteration's decrypt/EXIF-strip) previously left
-            // that plaintext un-zeroed on the heap — the catch block only deleted the
-            // on-disk session directory. A defer here runs on the success path too (right
-            // after the explicit zero below, so it finds an already-empty array — harmless)
-            // and on any throw, whatever files currently holds.
+            // files holds decrypted attachment content. Zero it on every exit from here on —
+            // the success path included, where it is dead the moment the bundle is sealed.
             defer {
                 for i in files.indices {
                     _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                 }
             }
 
-            for entry in manifest.files {
-                let fileURL = sessionDir.appendingPathComponent(entry.filename)
-                var ciphertext = try Data(contentsOf: fileURL)
-                var content = try keyManager.decrypt(data: ciphertext)
-                _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                ciphertext = Data()
+            let basket = Basket(files: files, date: Date())
+            let occData: Data
 
-                // Strip EXIF/GPS/camera metadata from images before encryption.
-                // If stripping fails (e.g. unsupported format), the original data is used —
-                // metadata stays inside the encrypted payload, visible only to the recipient.
-                if UTType(entry.uti)?.conforms(to: .image) == true {
-                    if let stripped = self.stripEXIF(from: content, uti: entry.uti) {
-                        _ = content.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                        content = stripped
-                    }
-                }
+            switch recipient {
+            case .contact(let contactID):
+                let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
+                let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
+                let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
+                let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
 
-                let metadata = Occulta.File.Metadata(
-                    name: UUID().uuidString,
-                    extension: entry.fileExtension
+                occData = try self.contactManager.encryptBundle(
+                    basket:          basket,
+                    for:             contactID,
+                    shardOperations: shardOps.isEmpty ? nil : shardOps,
+                    custodyManifest: custody,
+                    expectedShards:  expected
                 )
-                files.append(Occulta.File(content: content, format: .file(metadata)))
+
+            case .group(let groupID):
+                // Depth filtering of the membership is encryptGroupBundle's own — it reads
+                // members(atDepth: currentDepth) and re-filters by each member's isVisible.
+                occData = try self.contactManager.encryptGroupBundle(
+                    basket:              basket,
+                    groupID:             groupID,
+                    shardCustodyManager: self.shardCustodyManager,
+                    vaultManager:        self.vaultManager
+                )
             }
 
-            // 3. Encrypt via the full FS path — same as in-app messages
-            let basket    = Basket(files: files, date: Date())
-            let contactID = manifest.contactIdentifier
-            let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
-            let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
-            let manifest_  = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
-            let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
-
-            let occData = try self.contactManager.encryptBundle(
-                basket:          basket,
-                for:             contactID,
-                shardOperations: shardOps.isEmpty ? nil : shardOps,
-                custodyManifest: manifest_,
-                expectedShards:  expected
-            )
-            for i in files.indices {
-                _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            }
-            files = []
-
-            // 4. Write .occ file
             let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
             let occURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(occID).occ")
             try occData.writeProtected(to: occURL)
 
-            // 5. Delete session directory — plaintext no longer needed
-            try FileManager.default.removeItem(at: sessionDir)
-
-            // 6. Present share sheet
             self.shareResult = ShareResult(url: occURL)
         } catch {
-            // Plaintext cleanup on ANY failure — non-negotiable
-            try? FileManager.default.removeItem(at: sessionDir)
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
             self.showError = true
         }
@@ -1029,21 +1001,6 @@ private struct RootView: View {
         }
     }
 
-    /// Strip EXIF, GPS, camera metadata from image data using CGImageSource/CGImageDestination.
-    private func stripEXIF(from imageData: Data, uti: String) -> Data? {
-        guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
-
-        let destData = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            destData, uti as CFString, 1, nil
-        ) else { return nil }
-
-        // Empty properties dictionary strips all metadata
-        CGImageDestinationAddImageFromSource(destination, source, 0, [:] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-
-        return destData as Data
-    }
 }
 
 // MARK: - Tabs
@@ -1087,6 +1044,12 @@ enum Tabs: String, Hashable {
 private struct ShareResult: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+/// A staged share-extension session awaiting a recipient. `id` is the session UUID string,
+/// already validated as a UUID by `handleOpenURL` before it reaches a path component.
+private struct PendingShareSession: Identifiable {
+    let id: String
 }
 
 /// Wraps `UIActivityViewController` for SwiftUI. Presents the system share sheet

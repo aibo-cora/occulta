@@ -9,8 +9,11 @@
 import Foundation
 
 struct ShareManifest: Codable {
-    /// Contact identifier — matches Contact.Profile.identifier in the main store.
-    let contactIdentifier: String
+    /// No recipient field. The extension stages files; the main app picks who they are
+    /// encrypted for, after the PIN (Bug 84). A manifest written by a pre-1.11.0 extension
+    /// still decodes — `JSONDecoder` ignores its now-unknown `contactIdentifier` — and a
+    /// session staged by this build and left for an older app is caught by the 1-hour sweep.
+    ///
     /// One entry per file, in order.
     let files: [FileEntry]
     /// Timestamp for stale session detection.
