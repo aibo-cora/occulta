@@ -3925,7 +3925,7 @@ unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare
 ## Bug 84 — Share-extension handoff runs the whole outbound encryption before the PIN, and its transport sheet presents over the PIN gate
 
 **Status:** **Closed (Fixed)** 2026-08-16, by candidate 2 below — the picker moved into the app.
-Filed 2026-08-15 from a report against `release/v1.11.0`.
+Filed 2026-08-15 from a report against `release/v1.10.3` (named `release/v1.11.0` at the time).
 
 ### Severity: High
 

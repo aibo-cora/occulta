@@ -69,7 +69,7 @@ A native Xcode project with **no** package dependencies — no SPM, CocoaPods, o
 crypto is CryptoKit and Security.framework, ML-KEM included.
 
 The one SPM dependency (`apple/swift-crypto` 4.2.0, pulling `apple/swift-asn1`) was removed on
-`release/v1.11.0`, 2026-08-14. Nothing imported it: on Apple platforms swift-crypto's `Crypto`
+`release/v1.10.3`, 2026-08-14. Nothing imported it: on Apple platforms swift-crypto's `Crypto`
 module compiles to nothing but `@_exported import CryptoKit`, so the single `import Crypto` was an
 alias for a framework the file already imported. The five vendored BoringSSL resource bundles came
 from the `CryptoExtras`/`_CryptoExtras` products, which were linked to the app target and imported
@@ -166,3 +166,8 @@ Unit tests for all implementations
 - `develop` — integration branch; PRs target this
 - `release/v*` — release branches
 - Feature branches prefixed `v1.*.0/`
+
+The current release branch was renamed `release/v1.11.0` → `release/v1.10.3` on 2026-08-16, when
+its contents were re-scoped as a patch. References to the old name in commit messages and PR titles
+predate that; the docs were updated to the new name, so a dated entry reading "on
+`release/v1.10.3`, 2026-08-14" is the same branch under its earlier name, not a contradiction.

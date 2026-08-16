@@ -471,12 +471,12 @@ sign-off block, not against project settings alone.
       `Info.plist`, `PkgInfo`, `PlugIns/`, the two app icons, `Assets.car`,
       `eff_large_wordlist.txt`, `features.plist`, and the five swift-crypto bundles — the last
       of those being §7.2, deliberately left in place for this release. (Those five are gone as
-      of `release/v1.11.0`; the sentence records the 1.10.2 archive as inspected. See §7.)
+      of `release/v1.10.3`; the sentence records the 1.10.2 archive as inspected. See §7.)
 
 ## 7. Dependency & Supply Chain
 
 - [x] No third-party dependencies (confirmed: no CocoaPods, SPM, Carthage)
-      — **was FAIL for 1.10.2, fixed on `release/v1.11.0` (2026-08-14, after the 1.10.2
+      — **was FAIL for 1.10.2, fixed on `release/v1.10.3` (2026-08-14, after the 1.10.2
       sign-off).** 1.10.2 shipped with an SPM dependency: `apple/swift-crypto` (pinned 4.2.0),
       pulling `apple/swift-asn1` (1.5.1), with three products linked — `Crypto`, `CryptoExtras`,
       `_CryptoExtras`. All three product dependencies, the package reference, and
@@ -485,7 +485,7 @@ sign-off block, not against project settings alone.
       The project has no package dependencies of any kind.
 - [x] All crypto uses Apple frameworks only (`CryptoKit`, `Security.framework`) — no vendored
       crypto code
-      — **was FAIL for 1.10.2, fixed on `release/v1.11.0` (2026-08-14).** 1.10.2 shipped five
+      — **was FAIL for 1.10.2, fixed on `release/v1.10.3` (2026-08-14).** 1.10.2 shipped five
       swift-crypto resource bundles inside the app, including
       `swift-crypto_CCryptoBoringSSL.bundle` and `swift-crypto_CryptoBoringWrapper.bundle` —
       vendored BoringSSL. The crypto *in use* was already Apple-framework-only, so what failed
@@ -589,7 +589,7 @@ the contributor set grows beyond people with commit access.
    opens, covering all three throw sites and any added later. Accepts a known cost: a rejected
    bundle now burns a prekey. See §2.2.
 4. ~~Unused swift-crypto dependency ships vendored BoringSSL~~ (§7.1, §7.2) — **accepted for
-   1.10.2, then removed on `release/v1.11.0` (2026-08-14), which is the "revisit before the next
+   1.10.2, then removed on `release/v1.10.3` (2026-08-14), which is the "revisit before the next
    tag" this item asked for.** All three product dependencies, the package reference, and
    `Package.resolved` are gone; the one `import Crypto` was an alias for CryptoKit and the
    BoringSSL bundles came from the two `CryptoExtras` products, which nothing imported. Verified
@@ -737,7 +737,7 @@ are ticked; the other 10 are stale wordings, accepted limitations, or deferred b
 decision written down. There is no item in the "we did not look" state, which is what the earlier
 version of this block would have been signed over.
 
-**Post-sign-off, 2026-08-14 (`release/v1.11.0`):** §7.1 and §7.2 have since been fixed and ticked,
+**Post-sign-off, 2026-08-14 (`release/v1.10.3`):** §7.1 and §7.2 have since been fixed and ticked,
 so the current count reads 47 of 55. The numbers above are left as the record of what was signed
 for 1.10.2 — which did ship the dependency — rather than backdated. Nothing else in this sign-off
 is affected: the change removes an unused package and touches no crypto path, and it was verified
