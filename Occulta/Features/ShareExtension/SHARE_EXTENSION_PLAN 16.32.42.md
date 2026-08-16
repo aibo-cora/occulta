@@ -1,5 +1,28 @@
 # Share Extension — Detailed Architecture Plan
 
+> **Superseded in part, 2026-08-16.** Steps 3, 4, and 6 below describe a contact mirror
+> (`ShareIndex.sqlite`, `ShareableContact`, `syncShareIndex()`) that existed so the *extension*
+> could draw the recipient picker. That mirror and that picker are gone: the main app owns
+> recipient choice now, behind its own PIN gate, and it offers groups as well as contacts.
+>
+> **Why, since this document never argued the point.** Nothing here justified putting the picker
+> in the extension — Step 1 assumes the App Group and every later step builds on it. The one hard
+> constraint that *is* recorded (Step 2: the identity and local DB keys could not be migrated into
+> a shared access group, so all real encryption must happen in the main app) explains the App
+> Group, the separate `ShareIndexKeyManager`, and the encrypted manifest. It never explained the
+> picker. And because encryption can only run in the app, the flow always returned there anyway —
+> so choosing the recipient in the extension bought no avoided context switch. It cost a second
+> copy of the contact list in a container any group process can read, which is the whole of
+> Bugs 6, 65, 66, 67, 68, and 69, and it made the app treat an incoming deep link as a finished
+> instruction, which is Bug 84 Part A: the entire outbound pipeline ran before any PIN.
+>
+> Read Steps 1, 2, 5, 7-9, 11-13, and 15 as current. Read Steps 3, 4, and 6, and invariant 7,
+> against `Docs/Features/Secure Mode/bugs.md` Bug 84 and `ShareSession.swift`.
+>
+> Invariant 7 in particular claimed EXIF stripping that did not happen — `stripEXIF` passed an
+> empty overrides dictionary to `CGImageDestinationAddImageFromSource`, which preserves the
+> source's metadata rather than dropping it. Fixed the same day; see the checklist entry.
+
 ---
 
 ## Step 1: App Group Container

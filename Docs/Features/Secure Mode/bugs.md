@@ -118,6 +118,8 @@ Three changes applied together:
 - **Lock handler** — on `scenePhase == .inactive` when `requiresPIN && appLockEnabled`, immediately rebuild the share index filtered to depth-1 (`safeContactIDs(atDepth: 1)`). Sensitive contacts are removed from the index before the app suspends.
 - **Foreground handler** — when `isLocked == true` (PIN not yet entered) or `isRestricted == true` (duress mode), apply depth-1 filtering instead of writing all contacts. Only after a successful PIN entry (`onNormal`) does the index expand to all contacts.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 7 — Hard-delete inside staged key rollback scope causes irrecoverable data loss
@@ -2160,6 +2162,8 @@ self.contactManager.syncShareIndex()
 
 When Secure Mode is active the share index is always restricted to the depth-1 (duress) view, regardless of the authenticated depth of the main app. When inactive all contacts are written as before.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 66 — Scene phase handlers fight PIN-entry share index updates and use wrong depth
@@ -2186,6 +2190,8 @@ The share index was treated as something to be corrected reactively at scene bou
 
 Both handlers' share index logic removed. The `.active` handler retains `cleanupPendingSessions()`, which genuinely belongs there. The `.inactive` handler is now empty. Share index correctness is owned entirely by `onAuthenticated`, `onDuress`, `activateSecureMode`, and `deactivateSecureMode`.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 67 — `activateSecureMode` and `deactivateSecureMode` do not sync share index
@@ -2211,6 +2217,8 @@ Both functions call `contactManager.shareIndexAllowedIDs = ...` and `contactMana
 - `activateSecureMode`: `safeContactIDs(atDepth: max(self.currentDepth, 1))` — restricts to at least the depth-1 view immediately after activation.
 - `deactivateSecureMode` (full path): corrected in Bug 68 below.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 68 — `deactivateSecureMode` cascade path sets `shareIndexAllowedIDs = nil` while Secure Mode remains active
@@ -2243,6 +2251,8 @@ contactManager.syncShareIndex()
 After full deactivation: `isSecureModeActive = false` → `nil` ✓  
 After cascade deactivation: `isSecureModeActive = true`, `currentDepth = 1` → `safeContactIDs(atDepth: 1)` ✓
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 69 — Cold launch with `pinEnabled = false, isSecureModeActive = true` leaves share index uninitialized
@@ -2285,6 +2295,8 @@ contactManager.syncShareIndex()
 
 `currentDepth` is correctly restored from `persistedDepth` at this point (Bug 50), so `safeContactIDs` produces the correct depth-filtered set before any contact mutation can trigger a sync.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
@@ -3912,8 +3924,8 @@ unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare
 
 ## Bug 84 — Share-extension handoff runs the whole outbound encryption before the PIN, and its transport sheet presents over the PIN gate
 
-**Status:** **Open.** Filed 2026-08-15 from a report against `release/v1.11.0`. Not yet fixed —
-verification only.
+**Status:** **Closed (Fixed)** 2026-08-16, by candidate 2 below — the picker moved into the app.
+Filed 2026-08-15 from a report against `release/v1.11.0`.
 
 ### Severity: High
 
@@ -4009,3 +4021,52 @@ worse trade than the bug.
    switch into Occulta before the recipient is chosen.
 3. **Re-establish the z-order invariant** — required under either of the above. Suppressing the
    sheet/alert items while `phase != .unlocked` keeps Bug 56 fixed and Bug 1 fixed at the same time.
+
+---
+
+### Resolution
+
+**Part B first.** All six sheets and the error alert moved inside the `.unlocked` branch of
+`phaseContent`, which is where they belong — every one is a view onto unlocked content. The
+`fullScreenCover` was *not* restored; its async presentation window is what caused Bug 56. Leaving
+`.unlocked` now tears the branch down and dismisses whatever is on screen, so the phase handler also
+clears `openedFileContents` and `shareResult` — their state outlives the branch, and a warm return
+past the grace period would otherwise re-present a finished sheet over freshly re-authenticated
+content. One deliberate consequence: an error raised while locked no longer alerts over the PIN
+screen. `showError` survives and fires once unlocked, which is what Bug 24's rule requires.
+
+**Part A by removing the entry point, not by gating it.** `case "share"` records the session id and
+returns. The picker sheet hangs off `.unlocked`, so a session that arrives at the PIN gate waits
+there with nothing decrypted and no key material touched. `pendingShareSession` is deliberately
+*not* cleared on re-lock — it is queued intent, the same shape as `pendingFileData`, and clearing it
+would discard a share the user staged.
+
+Recipient choice is now `ShareRecipientPicker`, composed from the contacts tab's own
+`ContactRowV2`, `GroupRowV2`, `SectionHeaderV2`, and a new `ContactListFilter` holding the filtering
+and sort order lifted out of `ContactsV2`. Groups are selectable for the first time; the picker
+hides those whose membership is empty at the current depth so it cannot offer a recipient
+`encryptGroupBundle` would reject.
+
+`ShareIndex.sqlite`, `ShareableContact`, and `syncShareIndex()` with all five call sites are gone,
+and `ShareSession.removeLegacyContactIndex` sweeps the file out of the App Group on every
+foreground. See the notes appended to Bugs 6, 65, 66, 67, 68, and 69.
+
+### What the new coverage found on its way in
+
+`ShareSession` exists so this path can be tested at all — the lifecycle used to be a private method
+on a SwiftUI `View`, and a path no test can reach is a path where a missing PIN gate survives
+review. The first EXIF test written against it failed, and not because of the fixture:
+
+`stripEXIF` passed an empty properties dictionary to `CGImageDestinationAddImageFromSource`. That
+argument is a set of **overrides** onto the metadata the source already carries, so an empty
+dictionary means *override nothing* — every byte of EXIF and GPS was copied into the output
+untouched. Every photo shared through the extension since the feature landed carried its capture
+location and time to the recipient, while `SHARE_EXTENSION_PLAN` invariant 7 and the security
+checklist both recorded the strip as done. Removal requires naming each dictionary with `kCFNull`,
+which it now does for Exif, ExifAux, GPS, IPTC, TIFF, and MakerApple; orientation is carried over
+explicitly, since dropping the TIFF dictionary wholesale lays portrait photos on their side.
+
+Already-sent bundles cannot be recalled. This is worth a release note rather than a silent fix.
+
+The general lesson is the one this entry opened with: a function named for a security property is
+not evidence the property holds, and neither is a checklist line citing the function.

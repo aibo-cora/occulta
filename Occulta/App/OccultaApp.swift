@@ -309,14 +309,6 @@ private struct RootView: View {
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
-                case .inactive:
-                    // Defense-in-depth, not a correctness fix — syncShareIndex() already
-                    // runs after every contact mutation, unlock/duress-unlock, activate,
-                    // and deactivate, which cover every path that changes currentDepth or
-                    // isSecureModeActive today. This re-asserts the already-correct index
-                    // right before backgrounding, hedging against any future path that
-                    // changes security state without going through one of those four.
-                    self.contactManager.syncShareIndex()
                 default:
                     break
                 }
@@ -363,14 +355,8 @@ private struct RootView: View {
             Color.clear.ignoresSafeArea()
         case .pinRequired:
             PINEntry(
-                onAuthenticated: { _ in
-                    self.appScreen.pinDidSucceed()
-                    self.contactManager.syncShareIndex()
-                },
-                onDuress: {
-                    self.contactManager.syncShareIndex()
-                    self.appScreen.pinDidSucceed()
-                }
+                onAuthenticated: { _ in self.appScreen.pinDidSucceed() },
+                onDuress:        { self.appScreen.pinDidSucceed() }
             )
             .environment(self.security)
             // pinViewAppeared() is called here (not inside PINEntry) so the UIKit

@@ -55,24 +55,11 @@ class ContactManager {
 
     @ObservationIgnored
     let security: Manager.Security
-    @ObservationIgnored
-    private var cancellables = Set<AnyCancellable>()
 
     init(modelContainer: ModelContainer, security: Manager.Security) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
-
-        NotificationCenter.default
-            .publisher(
-                for: NSManagedObjectContext.didSaveObjectsNotification,
-                object: self.modelExecutor.modelContext
-            )
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.syncShareIndex()
-            }
-            .store(in: &self.cancellables)
     }
     
     var dateFormatter: DateFormatter {

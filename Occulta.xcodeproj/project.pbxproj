@@ -79,7 +79,6 @@
 		DE1C8BF02F8EC17200F0E248 /* Exceptions for "Occulta" folder in "ShareExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Features/ShareExtension/ShareableContact.swift,
 				Features/ShareExtension/ShareIndexKeyManager.swift,
 				Features/ShareExtension/ShareManifest.swift,
 			);

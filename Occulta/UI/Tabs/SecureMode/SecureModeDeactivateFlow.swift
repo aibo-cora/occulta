@@ -31,7 +31,6 @@ struct SecureModeDeactivateFlow: View {
                         contactManager:     cm,
                         vaultManager:       vm
                     )
-                    cm.syncShareIndex()
                     self.isDeactivating = false
                     self.dismiss()
                 } catch {

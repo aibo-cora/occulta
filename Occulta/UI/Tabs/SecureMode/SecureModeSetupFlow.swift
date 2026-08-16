@@ -309,7 +309,6 @@ private struct SummaryView: View {
                                 contactManager:     cm,
                                 vaultManager:       self.vaultManager
                             )
-                            cm.syncShareIndex()
                             self.isActivating = false
                             self.onDone()
                         } catch Manager.Security.SecurityError.invalidStateTransition {

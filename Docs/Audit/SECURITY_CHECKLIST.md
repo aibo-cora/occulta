@@ -344,8 +344,9 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       the extension's main purpose. Reword to cover both branches; as written it claims a
       restriction the extension does not have and should not have.
 - [x] Extension writes only to its designated shared-container subdirectory, never to app-group root
-      — four write sites, all under `pending/<sessionID>/` or `inbound/`. The only app-group-root
-      path touched is `ShareIndex.sqlite`, opened read-only.
+      — four write sites, all under `pending/<sessionID>/` or `inbound/`. The extension no longer
+      touches any app-group-root path at all: `ShareIndex.sqlite` was the one it opened read-only,
+      and the mirror was deleted along with the extension's picker (Bug 84).
 - [x] `occulta://inbound?session=<uuid>` URL contains only the UUID — no key material or
       plaintext in the URL
       — `:486`, and the outbound `occulta://share?session=<uuid>` at `:347`. The main app
@@ -360,18 +361,33 @@ not an oversight. `file:line` references are to the commit named in the sign-off
       positional (`0.tmp`, `1.tmp`); real names live only inside the encrypted manifest.
 - [x] Main app decrypts session files via `ShareIndexKeyManager` before EXIF stripping and
       bundle encryption, and zeroes the ciphertext buffer after decryption
-      — `OccultaApp.swift:879–882`, then EXIF strip at `:887`, then `encryptBundle` at `:909`.
-      A `defer` at `:871` zeroes accumulated plaintext on every exit from the block, throw
-      included.
+      — all three now live in `ShareSession.load` (`ShareSession.swift`), which zeroes each
+      ciphertext buffer immediately after decryption, zeroes accumulated plaintext on any throw,
+      and deletes the session directory on failure. `RootView.encryptShareSession` zeroes the
+      returned files on every exit and calls `encryptBundle`/`encryptGroupBundle` after the user
+      has picked a recipient — which now happens after the PIN, not before it (Bug 84 Part A).
+- [x] **EXIF and GPS are actually removed, not merely passed through a function named for it**
+      — **was broken from the feature's introduction until 2026-08-16.** `stripEXIF` handed
+      `CGImageDestinationAddImageFromSource` an empty properties dictionary, but that argument is
+      a set of *overrides* onto the source's metadata: empty means override nothing, so capture
+      location and time were copied verbatim into every shared photo. Removal requires naming
+      each dictionary with `kCFNull`, which `ShareSession.stripEXIF` now does for Exif, ExifAux,
+      GPS, IPTC, TIFF, and MakerApple, carrying orientation over explicitly. Covered by
+      `ShareSessionTests.load_stripsEXIFFromImages` and
+      `load_preservesOrientationThroughTheStrip`, with `exifFixture_carriesMetadata` guarding the
+      fixture. **Any photo shared through the extension before this date carries its original
+      location to whoever received it; the bundles are already delivered and cannot be recalled.**
 - [x] Session directory (`pending/<sessionID>/`) is deleted immediately after
-      `processShareSession` completes — on both success and failure paths
-      — success `:928`, failure `:934`.
+      the flow completes — on both success and failure paths
+      — `encryptShareSession`'s `defer` covers success, throw, and the picker's Cancel;
+      `ShareSession.load` additionally deletes on its own failures, so the guarantee does not
+      depend on caller discipline.
 - [x] On app launch, any `pending/` directories surviving from a previous crash are swept and
       deleted before processing any new session
       — `cleanupPendingSessions()` on `scenePhase == .active` (`OccultaApp.swift:348`), which
       fires on launch and on every foreground return. Sessions with no manifest, an unreadable
       manifest, or one older than an hour are removed
-      (`ContactManager+ShareIndex.swift:123`). Note the comment at `:156` calls manifest-less
+      (`ShareSession.sweep`). Note the comment at `:156` calls manifest-less
       session files "plaintext" — they are ciphertext under the share key; the deletion is
       still right, the reason given for it is stale.
 

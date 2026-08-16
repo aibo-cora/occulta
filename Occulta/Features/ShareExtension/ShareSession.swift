@@ -149,6 +149,23 @@ enum ShareSession {
         }
     }
 
+    /// Delete `ShareIndex.sqlite` and its companions, left behind by builds before the picker
+    /// moved into the app.
+    ///
+    /// Not merely tidiness. The rows are AES-GCM sealed, but the file's existence, its row
+    /// count, its sizes, and its mtime are relationship metadata sitting in the App Group with
+    /// no reader — precisely the kind of residue `forensic-trace-avoidance.md` exists to
+    /// prevent. The SE key stays: staged files and manifests are still sealed with it.
+    ///
+    /// Runs on every foreground rather than behind a one-shot flag. It is three `removeItem`
+    /// calls against paths that are absent after the first pass, and a migration marker would
+    /// itself be a new artifact recording when this build was first run.
+    static func removeLegacyContactIndex(in container: URL) {
+        for name in ["ShareIndex.sqlite", "ShareIndex.sqlite-wal", "ShareIndex.sqlite-shm"] {
+            try? FileManager.default.removeItem(at: container.appendingPathComponent(name))
+        }
+    }
+
     // MARK: - Private
 
     /// Strip EXIF, GPS, and camera metadata using CGImageSource/CGImageDestination.

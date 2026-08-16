@@ -302,3 +302,45 @@ struct ShareSessionSweepTests {
         ShareSession.sweep(in: container, keyManager: ShareIndexKeyManager())
     }
 }
+
+// MARK: - Legacy contact mirror
+
+@Suite("ShareSession — legacy contact index removal")
+struct ShareSessionLegacyIndexTests {
+
+    /// An upgrade from a build that still mirrored the contact list must not leave the mirror
+    /// in the App Group. Its rows are sealed, but its existence, row count, and mtime are
+    /// relationship metadata with nothing left to read them.
+    @Test func removeLegacyContactIndex_deletesStoreAndCompanions() throws {
+        let container = try makeContainer()
+        let names = ["ShareIndex.sqlite", "ShareIndex.sqlite-wal", "ShareIndex.sqlite-shm"]
+
+        for name in names {
+            try Data("stale".utf8).write(to: container.appendingPathComponent(name))
+        }
+
+        ShareSession.removeLegacyContactIndex(in: container)
+
+        for name in names {
+            #expect(!FileManager.default.fileExists(atPath: container.appendingPathComponent(name).path), "\(name) survived")
+        }
+    }
+
+    @Test func removeLegacyContactIndex_whenAbsent_isANoOp() throws {
+        let container = try makeContainer()
+        ShareSession.removeLegacyContactIndex(in: container)
+        ShareSession.removeLegacyContactIndex(in: container)
+    }
+
+    /// Removing the mirror must not take the staging directory with it. Built by hand rather
+    /// than through `stage` so this case still runs where the share key is unavailable.
+    @Test func removeLegacyContactIndex_leavesPendingSessionsAlone() throws {
+        let container = try makeContainer()
+        let id  = UUID().uuidString
+        let dir = ShareSession.directory(for: id, in: container)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        ShareSession.removeLegacyContactIndex(in: container)
+        #expect(exists(id, in: container))
+    }
+}
