@@ -186,13 +186,19 @@ enum ShareSession {
             destData, uti as CFString, 1, nil
         ) else { return nil }
 
+        // `kCFNull` imports as `CFNull!`. Dropping it straight into an `Any` slot stores
+        // `Optional<CFNull>` rather than the sentinel itself — the compiler warns, and
+        // ImageIO would not recognise the wrapped value as a removal instruction. Bind it
+        // once with an explicit type so the unwrap happens in one place.
+        let remove: CFNull = kCFNull
+
         var overrides: [CFString: Any] = [
-            kCGImagePropertyExifDictionary:       kCFNull,
-            kCGImagePropertyExifAuxDictionary:    kCFNull,
-            kCGImagePropertyGPSDictionary:        kCFNull,
-            kCGImagePropertyIPTCDictionary:       kCFNull,
-            kCGImagePropertyTIFFDictionary:       kCFNull,
-            kCGImagePropertyMakerAppleDictionary: kCFNull
+            kCGImagePropertyExifDictionary:       remove,
+            kCGImagePropertyExifAuxDictionary:    remove,
+            kCGImagePropertyGPSDictionary:        remove,
+            kCGImagePropertyIPTCDictionary:       remove,
+            kCGImagePropertyTIFFDictionary:       remove,
+            kCGImagePropertyMakerAppleDictionary: remove
         ]
 
         if let properties  = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
