@@ -80,6 +80,25 @@ by zero files. A re-archive confirms zero bundles and zero BoringSSL symbols; se
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)
 - **Test all:** Cmd+U in Xcode, or via CLI:
 
+  ```
+  xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
+    -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
+  ```
+
+  **The scheme must be `OccultaTests`, not `Occulta`.** The `Occulta` scheme has no test action,
+  and `xcodebuild -list` does not even show `OccultaTests` — it reports only the two schemes marked
+  shared in the container, so the one you need is absent from the listing that is supposed to tell
+  you what exists. Passing `-scheme Occulta` fails with "not currently configured for the test
+  action", which reads like a project-level problem rather than a wrong scheme name.
+
+  Narrow a run with `-only-testing:OccultaTests/<SuiteStructName>` — the *struct* name, not the
+  `@Suite("…")` display string. `test-without-building` is unavailable here for the same
+  scheme-configuration reason, so an iterated run pays the build each time.
+
+  Swift Testing failures print as a bare `Test case '…' failed` with no reason attached, and the
+  detail does not reach stdout. Read it from the `.xcresult` the run prints at the end, or split
+  the assertion into its own `@Test` and bisect — often faster than fighting `xcresulttool`.
+
 **Requirements:** `IPHONEOS_DEPLOYMENT_TARGET` is **18.6** across all ten build configurations;
 Xcode 26.2 / iOS SDK 26.2 at the last release. Physical device needed for NearbyInteraction.
 
@@ -87,12 +106,14 @@ Note the deployment target and the availability gates are different things: ML-K
 `#available(iOS 26, *)` in `PQProvider`, so the post-quantum path is live only on iOS 26+ and the
 classical-only modes exist for everything between 18.6 and that.
 
-**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; **260
-of 742** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
-go through `Manager.Key()` directly with no injection seam. (Gated count measured 2026-08-14 by
-counting `@Test` declarations gated directly or by their enclosing suite; total refreshed
-2026-08-15 — re-measure rather than trusting either, they have drifted before: the gated figure
-read "roughly 146" while the real number was 260.) Those carry
+**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; **270
+of 806** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
+go through `Manager.Key()` directly with no injection seam. (Both re-measured 2026-08-16: gated by
+counting `@Test` declarations carrying `secureEnclaveAvailable()` directly or by their enclosing
+suite, total by counting unique test cases in a full local run — 771 `@Test` plus 36 XCTest cases
+declared. Re-measure rather than trusting either; they have drifted every time. The gated figure
+once read "roughly 146" against a real 260, and the total sat at 742 while the suite had grown
+past 770.) Those carry
 `.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
 notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
 have Enclave access and runs the full suite.
@@ -115,7 +136,7 @@ disguised: xcodebuild relaunches per test and reports a green **"Executed 0 test
 stop running entirely and still look fine. The 23 Swift Testing files that call
 `secureEnclaveAvailable()` are unaffected, reaching it from a task context.
 
-**A separate and worse problem: ~113 tests still skip the old way** — `print("⚠︎ Skipping"); return`
+**A separate and worse problem: 112 tests still skip the old way** — `print("⚠︎ Skipping"); return`
 — which reports as **passed**, not skipped. So the suite's green count overstates what actually
 ran, and unlike the gated tests the shortfall is invisible. Prefer injecting a key manager; where
 there is no seam, use `.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not
