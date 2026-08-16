@@ -694,6 +694,20 @@ Rationale: `COPY_PHASE_STRIP` is a legacy setting governing files copied by a Co
 the product. It is `NO`, and the product is stripped anyway. Assert the property, which is what
 matters and what is measurable, not the setting.
 
+**§6.5 — Entitlements.** Replace *"Entitlements contain only the capabilities actually used — no
+stale or over-broad entries"*, whose evidence line reads the two `.entitlements` **source files**,
+with:
+
+> The **signed** binary's effective entitlements — `codesign -d --entitlements -` on the app and
+> every appex — contain only capabilities actually used. The source `.entitlements` files are not
+> sufficient evidence: the provisioning profile injects entitlements the source files never name.
+
+Rationale: same class of error as §6.2 — the item asserted a *setting* and was verified against
+source, while the property is about the *artifact*. Measured 2026-08-15 (below): both source files
+do carry exactly one key, and the shipped binary carries **four**. Three are profile-injected and
+unavoidable. The item as written cannot detect an over-broad entitlement that arrives via the
+profile, which is the main way one would.
+
 **§8 — Skip rule.** Replace *"Zero skips, excluding `KeychainMigrationSETests`"* with:
 
 > **Exactly 6 skips, and all six are `KeychainMigrationSETests`.** Any other skip means the host
@@ -716,6 +730,72 @@ The gate now carries a note saying so.
 
 **Not in this block, because it is a result rather than a wording problem:** §3.7 (messages
 surviving a contact identity-key change) remains a genuine FAIL, tracked as Bug 82a/82b.
+
+---
+
+## Signed-artifact verification — 2026-08-15
+
+Closes most of the sign-off's condition 1 (*"the signed artifact was never inspected"*). Every §6/§7
+check above was previously run against an archive built `CODE_SIGNING_ALLOWED=NO`; they are now
+re-run against a **real signed archive**.
+
+**Archive:** Release, `generic/platform=iOS`, automatic signing, team `R6F5KHKKNX`, profile
+*"iOS Team Provisioning Profile: com.github.aibo-cora.occulta"*. Signature verifies
+`--deep --strict`: valid on disk, satisfies its Designated Requirement.
+
+| Check | Result |
+|---|---|
+| §6 bundle contents — `.md`/`.html` anywhere in archive | **0** ✅ |
+| §7.1/§7.2 — `*.bundle` in archive | **0** ✅ |
+| §7.2 — paths matching `*crypto*` / `*boring*` | **0** ✅ |
+| §7.2 — BoringSSL symbols in app binary | **0** ✅ |
+| §7.2 — crypto links (`otool -L`) | CryptoKit only ✅ |
+| §6.2 — debug map (`OSO`/`SO`/`FUN`), app and ShareExtension | **0** and **0** ✅ |
+| §6.2 — dSYMs | all three present ✅ |
+| §6.4 — `features.plist` as shipped | matches intended values exactly ✅ |
+| §6.6 — ATS key in `Info.plist` | absent ✅ |
+| §6.7 — App Group across components | app + ShareExtension carry it; `OccultaPreview` does not ✅ |
+| §6.5 — effective entitlements | **see below** |
+
+**`OccultaPreview` carrying no app-group entitlement is correct, not a gap.** It never touches
+decrypted content (`SecurityReview2026-07-24`, Share Extension section), so it has no business
+reaching the shared container. Least privilege, and worth not "fixing" for symmetry.
+
+**§6.5 — the one thing the unsigned archive could not show.** The source `.entitlements` files
+each contain exactly one key, as §6.5 records. The **signed** binary contains four:
+
+    application-identifier                    R6F5KHKKNX.com.github.aibo-cora.occulta
+    com.apple.developer.team-identifier       R6F5KHKKNX
+    com.apple.security.application-groups     group.com.occulta.shared
+    get-task-allow                            true
+
+The three extra keys are injected by the provisioning profile. The first two are unavoidable and
+carry no capability. **`get-task-allow: true` makes the binary debuggable — any process can attach.**
+That is correct and expected for a *development* signature, and an App Store distribution profile
+forces it to `false`.
+
+### What is still not verified, and why
+
+**No Apple Distribution identity exists on this machine** — `security find-identity -v` returns two
+Apple Development certs and nothing else, and the 14 installed provisioning profiles are all for an
+unrelated `com.mindvalley.*` project. A distribution-signed archive cannot be produced here.
+
+Everything in the table above is **signature-independent**: stripping, bundle contents, linkage and
+plists are settled before signing, so a distribution signature cannot change them, and they are now
+confirmed against a signed artifact rather than an unsigned one. What remains is exactly the
+distribution-specific half, and it is small enough to state as a checklist of its own. **On the
+distribution build, before submitting:**
+
+1. `codesign -d --entitlements - --xml <app>` — confirm **`get-task-allow` is `false`** on the app
+   and on **both** appexes. This is the single check that matters most and the only one that cannot
+   be approximated here.
+2. Confirm the embedded profile is an **App Store** profile, not a Team Provisioning Profile.
+3. Confirm no capability beyond `com.apple.security.application-groups` was added by the
+   distribution profile — compare against the four keys listed above.
+4. Re-run `codesign --verify --deep --strict`.
+
+Condition 1 of the sign-off should therefore be read as **narrowed, not met**: the artifact has now
+been inspected signed, but not *distribution*-signed.
 
 ---
 
