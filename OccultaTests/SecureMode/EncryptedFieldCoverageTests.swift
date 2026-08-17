@@ -12,13 +12,24 @@
 //  Two complementary guards:
 //
 //  1. **Tripwire** — the set of stored property names on each model must equal an explicit
-//     list here. Adding any property fails the test until someone acknowledges it. This
+//     classification. Adding any property fails the test until someone classifies it. This
 //     cannot tell whether a new field needs re-keying; it forces the decision to be made,
 //     which is precisely what did not happen for `maxBundleVersion`.
 //
 //  2. **Behavioural** — populate every encrypted field, rotate, assert each one still
-//     reads. This catches the actual defect rather than a proxy for it. The tripwire is
-//     what forces this fixture to be updated when a field is added.
+//     reads. This catches the actual defect rather than a proxy for it.
+//
+//  **For `Contact.Profile`, both derive from one table** (`probes` / `unprobedFields`) as of
+//  2026-08-16. That matters: previously the tripwire was silenced by adding a name to a list
+//  of its own, which proved *awareness* while the behavioural fixture — a separate,
+//  hand-maintained list — proved *coverage*. Acknowledging a field without re-keying it passed.
+//  Now an entry must carry a key path and a probe value, so silencing the tripwire is the same
+//  act as being checked by the round-trip.
+//
+//  The other three models still keep a name list and a behavioural test of their own, in
+//  `GroupKeyRotationTests`, `DraftKeyRotationTests` and `AppLayerConfigRotationTests`. See
+//  `Docs/Features/Secure Mode/ROTATION_COVERAGE.md` for why `Contact.Profile` went first and
+//  what extending to the rest involves.
 //
 //  Why names and not types: `Mirror` on a SwiftData `@Model` does enumerate every stored
 //  property (prefixed `_`, plus `_$backingData` and `_$observationRegistrar`), but erases
@@ -74,34 +85,181 @@ rather than merely losing a value.
 
 If it also needs to survive a deactivation restore, add it to LayerContact / Contact.Draft too.
 
-Then add the name to the list in this test.
+Then classify it here:
+  • Contact.Profile → add to `probes` (with a key path and a distinct probe value) if the \
+rotation must re-key it, or to `unprobedFields` (with the key that seals it instead, or "plaintext"). \
+Adding to `probes` is what makes the round-trip test check it — a name alone is not enough, by design.
+  • Group / Message.Draft / AppLayerConfig → add the name to that model's list below, and \
+extend its behavioural test by hand. These have not been moved to probe tables yet.
 """
+
+// MARK: - Probe table
+
+/// One field's contribution to rotation coverage: how to seal a known value into it, and how to
+/// read that value back under a new key.
+///
+/// This exists so a **single** table can drive the three things that used to be maintained by
+/// hand and separately — the tripwire's name list, the populate helper, and the round-trip
+/// assertions. Adding a field to the table is therefore the same act as covering it: the
+/// tripwire cannot be silenced by typing a name, because an entry must carry a key path and a
+/// probe value, and once it does the round-trip below fails if `reencryptAllFields` does not
+/// re-key it.
+///
+/// That closes the gap the old shape left. The tripwire's guidance used to end "then add the
+/// name to the list in this test" — an edit that silenced the alarm without proving anything
+/// had been re-keyed.
+enum FieldProbe<M: AnyObject> {
+    /// Base64 ciphertext in a non-optional `String`.
+    case string(ReferenceWritableKeyPath<M, String>, String)
+    /// Base64 ciphertext in an optional `String`.
+    case optionalString(ReferenceWritableKeyPath<M, String?>, String)
+    /// Raw ciphertext, cleared when unreadable — the ordinary case.
+    case data(ReferenceWritableKeyPath<M, Data?>, Data)
+    /// Raw ciphertext whose *presence* carries meaning independently of its content, so an
+    /// unreadable value must be preserved byte-for-byte rather than cleared. `deletionToken` is
+    /// the motivating case: nil there means "not deleted", so clearing an unreadable token
+    /// un-deletes the contact.
+    case preserving(ReferenceWritableKeyPath<M, Data?>, Data)
+}
+
+extension FieldProbe {
+
+    /// Seals the probe value into the field under the **canonical** key — the one
+    /// `reencryptAllFields` decrypts with.
+    func populate(_ model: M) throws {
+        switch self {
+        case let .string(keyPath, value):
+            model[keyPath: keyPath] = try sealString(value)
+        case let .optionalString(keyPath, value):
+            model[keyPath: keyPath] = try sealString(value)
+        case let .data(keyPath, value), let .preserving(keyPath, value):
+            model[keyPath: keyPath] = try value.encrypt()
+        }
+    }
+
+    /// `nil` when the field reads back as the probe value under `key`; otherwise a description
+    /// of what was found instead.
+    func mismatch(in model: M, using key: SymmetricKey) -> String? {
+        switch self {
+        case let .string(keyPath, expected):
+            let actual = decryptString(model[keyPath: keyPath], using: key)
+            return actual == expected ? nil : "expected \"\(expected)\", read \(actual ?? "nil")"
+        case let .optionalString(keyPath, expected):
+            let actual = model[keyPath: keyPath].flatMap { decryptString($0, using: key) }
+            return actual == expected ? nil : "expected \"\(expected)\", read \(actual ?? "nil")"
+        case let .data(keyPath, expected), let .preserving(keyPath, expected):
+            let actual = model[keyPath: keyPath]?.decrypt(using: key)
+            return actual == expected
+                ? nil
+                : "expected \(Array(expected)), read \(actual.map { Array($0) }.map(String.init(describing:)) ?? "nil")"
+        }
+    }
+
+    /// Fields whose presence carries meaning — see `.preserving`.
+    var isPreserving: Bool {
+        if case .preserving = self { return true }
+        return false
+    }
+
+    /// The raw-`Data` key path, for the stranded-value check. `nil` for string fields.
+    var dataKeyPath: ReferenceWritableKeyPath<M, Data?>? {
+        switch self {
+        case let .data(keyPath, _), let .preserving(keyPath, _): return keyPath
+        case .string, .optionalString:                           return nil
+        }
+    }
+}
+
+extension Contact.Profile {
+
+    /// Every field `reencryptAllFields` must re-key, with the means to populate and verify it.
+    /// Each probe value is distinct so a mismatch names the field that moved.
+    static let probes: [String: FieldProbe<Contact.Profile>] = [
+        "givenName":              .string(\.givenName,          "given"),
+        "familyName":             .string(\.familyName,         "family"),
+        "middleName":             .string(\.middleName,         "middle"),
+        "namePrefix":             .string(\.namePrefix,         "prefix"),
+        "nameSuffix":             .string(\.nameSuffix,         "suffix"),
+        "nickname":               .string(\.nickname,           "nick"),
+        "organizationName":       .string(\.organizationName,   "org"),
+        "departmentName":         .string(\.departmentName,     "dept"),
+        "jobTitle":               .string(\.jobTitle,           "job"),
+        "phoneticGivenName":      .string(\.phoneticGivenName,  "pgiven"),
+        "phoneticMiddleName":     .string(\.phoneticMiddleName, "pmiddle"),
+        "phoneticFamilyName":     .string(\.phoneticFamilyName, "pfamily"),
+        "note":                   .string(\.note,               "note"),
+        "birthday":               .optionalString(\.birthday,   "birthday"),
+
+        "imageData":              .data(\.imageData,               Data([0xA1])),
+        "thumbnailImageData":     .data(\.thumbnailImageData,      Data([0xA2])),
+        "forwardSecrecyEncrypted":.data(\.forwardSecrecyEncrypted, Data([0xA3])),
+        "signedAttributes":       .data(\.signedAttributes,        Data([0xA4])),
+        "visibleThroughDepth":    .data(\.visibleThroughDepth,     Data([0xA5])),
+        "globalTrusteeDepth":     .data(\.globalTrusteeDepth,      Data([0xA6])),
+        "originDepth":            .data(\.originDepth,             Data([0xA7])),
+
+        // Presence carries meaning — see `.preserving`.
+        "maxBundleVersion":       .preserving(\.maxBundleVersion, Data([0x07])),
+        "deletionToken":          .preserving(\.deletionToken,    Data([1])),
+    ]
+
+    /// Every other stored property, with why it is not probed.
+    ///
+    /// Encrypted-but-not-rotated belongs here too, not only plaintext: putting such a field
+    /// through the rotation would re-seal it under the wrong key and strand it the other way
+    /// round. `Contact.Profile` has none today, but `AppLayerConfig` does.
+    static let unprobedFields: [String: String] = [
+        "identifier":        "plaintext — queried with #Predicate, so it cannot be encrypted",
+        "encryptionScheme":  "plaintext — plain Int discriminator",
+        "phoneNumbers":      "relationship — swept by its own loop in reencryptAllFields; the sub-model has no tripwire of its own yet",
+        "emailAddresses":    "relationship — as above",
+        "postalAddresses":   "relationship — as above",
+        "urlAddresses":      "relationship — as above",
+        "contactPublicKeys": "relationship — re-keyed by reencryptKeyRecords, not reencryptAllFields",
+    ]
+}
 
 // MARK: - Tripwires
 
 @Suite("Encrypted field coverage — tripwires")
 struct EncryptedFieldTripwireTests {
 
+    /// Derives from `probes` and `unprobedFields` rather than a list of its own, so silencing
+    /// this tripwire requires supplying the means to populate and verify the field — which the
+    /// round-trip test below then uses. Adding the name is no longer enough.
     @Test("Contact.Profile has no unreviewed stored properties")
     func profilePropertiesReviewed() {
-        let expected: Set<String> = [
-            // Plaintext — `identifier` is queried with #Predicate and cannot be encrypted;
-            // `encryptionScheme` is a plain Int discriminator.
-            "identifier", "encryptionScheme",
-            // Encrypted strings (base64 ciphertext).
-            "givenName", "familyName", "middleName", "namePrefix", "nameSuffix", "nickname",
-            "organizationName", "departmentName", "jobTitle", "phoneticGivenName",
-            "phoneticMiddleName", "phoneticFamilyName", "birthday", "note",
-            // Encrypted Data.
-            "thumbnailImageData", "imageData", "forwardSecrecyEncrypted", "signedAttributes",
-            "deletionToken", "visibleThroughDepth", "globalTrusteeDepth", "maxBundleVersion",
-            "originDepth",
-            // Relationships — re-encrypted via their own loops.
-            "phoneNumbers", "emailAddresses", "postalAddresses", "urlAddresses",
-            "contactPublicKeys",
-        ]
+        let actual     = storedPropertyNames(of: makeProbeProfile())
+        let classified = Set(Contact.Profile.probes.keys)
+            .union(Contact.Profile.unprobedFields.keys)
 
-        #expect(storedPropertyNames(of: makeProbeProfile()) == expected, "\(tripwireGuidance)")
+        // Report the difference, not the two sets. Comparing them directly makes the failure
+        // print sixty names and leaves the reader to diff by eye, at exactly the moment they
+        // are trying to ship.
+        let unreviewed = actual.subtracting(classified)
+        let stale      = classified.subtracting(actual)
+
+        #expect(unreviewed.isEmpty, """
+        Unreviewed stored properties on Contact.Profile: \(unreviewed.sorted())
+
+        \(tripwireGuidance)
+        """)
+
+        #expect(stale.isEmpty, """
+        Classified in `probes` / `unprobedFields` but no longer on the model: \(stale.sorted())
+
+        The property was removed or renamed — delete the entry, or correct its key.
+        """)
+    }
+
+    /// A field cannot be in both tables — that would mean claiming it is both re-keyed and
+    /// deliberately outside the rotation.
+    @Test("No Contact.Profile field is both probed and unprobed")
+    func profileClassificationsAreDisjoint() {
+        let both = Set(Contact.Profile.probes.keys)
+            .intersection(Contact.Profile.unprobedFields.keys)
+
+        #expect(both.isEmpty, "Classified twice: \(both.sorted())")
     }
 
     // Needs a Secure Enclave only because constructing a `Group` seals its fields; the
@@ -171,57 +329,51 @@ struct EncryptedFieldRotationTests {
         let newKey = SymmetricKey(size: .bits256)
         try profile.reencryptAllFields(to: newKey, aad: aad)
 
-        // Encrypted strings.
-        #expect(decryptString(profile.givenName,          using: newKey) == "given")
-        #expect(decryptString(profile.familyName,         using: newKey) == "family")
-        #expect(decryptString(profile.middleName,         using: newKey) == "middle")
-        #expect(decryptString(profile.namePrefix,         using: newKey) == "prefix")
-        #expect(decryptString(profile.nameSuffix,         using: newKey) == "suffix")
-        #expect(decryptString(profile.nickname,           using: newKey) == "nick")
-        #expect(decryptString(profile.organizationName,   using: newKey) == "org")
-        #expect(decryptString(profile.departmentName,     using: newKey) == "dept")
-        #expect(decryptString(profile.jobTitle,           using: newKey) == "job")
-        #expect(decryptString(profile.phoneticGivenName,  using: newKey) == "pgiven")
-        #expect(decryptString(profile.phoneticMiddleName, using: newKey) == "pmiddle")
-        #expect(decryptString(profile.phoneticFamilyName, using: newKey) == "pfamily")
-        #expect(decryptString(profile.note,               using: newKey) == "note")
-        #expect(decryptString(profile.birthday ?? "",     using: newKey) == "birthday")
+        // Driven by the probe table, so a field added there is checked here without any
+        // further edit. This is the assertion that converts the tripwire's *awareness* into
+        // *coverage*: it fails if `reencryptAllFields` does not re-key a probed field.
+        for (name, probe) in Contact.Profile.probes.sorted(by: { $0.key < $1.key }) {
+            let mismatch = probe.mismatch(in: profile, using: newKey)
+            #expect(mismatch == nil, """
+            `\(name)` did not survive the rotation: \(mismatch ?? "").
 
-        // Encrypted Data.
-        #expect(profile.imageData?.decrypt(using: newKey)               == Data([0xA1]))
-        #expect(profile.thumbnailImageData?.decrypt(using: newKey)      == Data([0xA2]))
-        #expect(profile.forwardSecrecyEncrypted?.decrypt(using: newKey) == Data([0xA3]))
-        #expect(profile.signedAttributes?.decrypt(using: newKey)        == Data([0xA4]))
-        #expect(profile.visibleThroughDepth?.decrypt(using: newKey)     == Data([0xA5]))
-        #expect(profile.globalTrusteeDepth?.decrypt(using: newKey)      == Data([0xA6]))
-        #expect(profile.originDepth?.decrypt(using: newKey)             == Data([0xA7]))
-
-        // The field this whole suite exists for.
-        #expect(profile.maxBundleVersion?.decrypt(using: newKey) == Data([0x07]))
-
-        // Presence-carrying field: still present, and now readable under the new key.
-        #expect(profile.deletionToken != nil)
-        #expect(profile.deletionToken?.decrypt(using: newKey) == Data([1]))
+            It is listed in `Contact.Profile.probes`, so it is claimed to be re-keyed — but
+            after `reencryptAllFields` it does not read back under the new key. Either add it
+            to that function, or move it to `unprobedFields` with the key that actually seals it.
+            """)
+        }
     }
 
-    /// The regression that motivated the preserving helper. A token stranded by an earlier
-    /// rotation must stay non-nil, or `fetchAllContacts` starts returning contacts the user
-    /// deleted.
-    @Test("An unreadable deletionToken is preserved, not cleared")
-    func strandedDeletionTokenPreserved() throws {
+    /// The regression that motivated the preserving helper, generalised. A value stranded by an
+    /// earlier rotation must stay non-nil and byte-identical — for `deletionToken`, clearing it
+    /// makes `fetchAllContacts` return contacts the user deleted; for `maxBundleVersion`, it
+    /// collapses "present but unreadable" into "never seen" and forecloses Bug 80's fix.
+    ///
+    /// Driven by the table, so a **third** `.preserving` field gets this coverage for free.
+    /// Both cases were hand-written before 2026-08-16 and a new one would have had none.
+    @Test("Every preserving field survives as stranded bytes, not cleared")
+    func preservingFieldsAreNotCleared() throws {
         _ = try #require(canonicalKey())
-        let aad     = EncryptionScheme.v2_hybridPQ.aad
-        let profile = makeProbeProfile()
+        let aad = EncryptionScheme.v2_hybridPQ.aad
 
-        // Sealed under a key nobody holds — the state every row soft-deleted before this
-        // field was covered is already in.
-        profile.deletionToken = try Data([1]).encrypt(using: SymmetricKey(size: .bits256))
-        let stranded = profile.deletionToken
+        for (name, probe) in Contact.Profile.probes.sorted(by: { $0.key < $1.key })
+        where probe.isPreserving {
+            guard let keyPath = probe.dataKeyPath else { continue }
+            let profile = makeProbeProfile()
 
-        try profile.reencryptAllFields(to: SymmetricKey(size: .bits256), aad: aad)
+            // Sealed under a key nobody holds — the state a row stranded by an earlier
+            // rotation is already in.
+            profile[keyPath: keyPath] = try Data([0xEE])
+                .encrypt(using: SymmetricKey(size: .bits256))
+            let stranded = profile[keyPath: keyPath]
 
-        #expect(profile.deletionToken != nil)
-        #expect(profile.deletionToken == stranded)
+            try profile.reencryptAllFields(to: SymmetricKey(size: .bits256), aad: aad)
+
+            #expect(profile[keyPath: keyPath] != nil,
+                    "`\(name)` is marked .preserving but was cleared when unreadable")
+            #expect(profile[keyPath: keyPath] == stranded,
+                    "`\(name)` is marked .preserving but its stranded bytes were altered")
+        }
     }
 
     /// A contact that was never soft-deleted must stay that way — the preserving helper
@@ -239,29 +391,16 @@ struct EncryptedFieldRotationTests {
         #expect(profile.deletionToken == nil)
     }
 
-    /// An unreadable `maxBundleVersion` must be **preserved**, not cleared (Bug 80).
+    /// Why `maxBundleVersion` is `.preserving` rather than `.data`, recorded because the table
+    /// entry alone does not carry it: this asserted the opposite until 2026-08-12. Clearing
+    /// looked right — nil reads as "version unknown", which produces the accurate "send me a
+    /// message" instead of the false "they need to update". But the field also gates a
+    /// receive-side authentication check, and that gate can only be repaired if "present but
+    /// unreadable" stays distinguishable from "never seen". Clearing collapses the two
+    /// permanently, for exactly the installs that have the vulnerability. The message is fixed
+    /// at the reading site instead. The behavioural assertion now lives in
+    /// `preservingFieldsAreNotCleared`, driven by the table.
     ///
-    /// This asserted the opposite until 2026-08-12. Clearing looked right — nil reads as
-    /// "version unknown", which produces the accurate "send me a message" instead of the false
-    /// "they need to update". But this field also gates a receive-side authentication check,
-    /// and that gate can only be repaired if "present but unreadable" stays distinguishable
-    /// from "never seen". Clearing collapses the two permanently, for exactly the installs that
-    /// have the vulnerability. The message is fixed at the reading site instead.
-    @Test("An unreadable maxBundleVersion is preserved, not cleared")
-    func strandedMaxBundleVersionPreserved() throws {
-        _ = try #require(canonicalKey())
-        let profile = makeProbeProfile()
-        profile.maxBundleVersion = try Data([0x07]).encrypt(using: SymmetricKey(size: .bits256))
-        let stranded = profile.maxBundleVersion
-
-        try profile.reencryptAllFields(
-            to: SymmetricKey(size: .bits256), aad: EncryptionScheme.v2_hybridPQ.aad
-        )
-
-        #expect(profile.maxBundleVersion != nil)
-        #expect(profile.maxBundleVersion == stranded)
-    }
-
     /// The distinction Bug 80's fix depends on, asserted directly: three states, three answers.
     @Test("hasReadableBundleVersion separates stranded from never-seen")
     func readabilitySeparatesStrandedFromAbsent() throws {
@@ -292,33 +431,13 @@ private func makeProbeProfile() -> Contact.Profile {
     )
 }
 
-/// Seals a distinct known value into every encrypted field, under the canonical key that
-/// `reencryptAllFields` reads with.
+/// Seals a distinct known value into every probed field, under the canonical key that
+/// `reencryptAllFields` reads with. Driven by the table, so a field added there is populated
+/// here without a second edit.
 private func populateEncryptedFields(of profile: Contact.Profile) throws {
-    profile.givenName          = try sealString("given")
-    profile.familyName         = try sealString("family")
-    profile.middleName         = try sealString("middle")
-    profile.namePrefix         = try sealString("prefix")
-    profile.nameSuffix         = try sealString("suffix")
-    profile.nickname           = try sealString("nick")
-    profile.organizationName   = try sealString("org")
-    profile.departmentName     = try sealString("dept")
-    profile.jobTitle           = try sealString("job")
-    profile.phoneticGivenName  = try sealString("pgiven")
-    profile.phoneticMiddleName = try sealString("pmiddle")
-    profile.phoneticFamilyName = try sealString("pfamily")
-    profile.note               = try sealString("note")
-    profile.birthday           = try sealString("birthday")
-
-    profile.imageData               = try Data([0xA1]).encrypt()
-    profile.thumbnailImageData      = try Data([0xA2]).encrypt()
-    profile.forwardSecrecyEncrypted = try Data([0xA3]).encrypt()
-    profile.signedAttributes        = try Data([0xA4]).encrypt()
-    profile.visibleThroughDepth     = try Data([0xA5]).encrypt()
-    profile.globalTrusteeDepth      = try Data([0xA6]).encrypt()
-    profile.originDepth             = try Data([0xA7]).encrypt()
-    profile.maxBundleVersion        = try Data([0x07]).encrypt()
-    profile.deletionToken           = try Data([1]).encrypt()
+    for probe in Contact.Profile.probes.values {
+        try probe.populate(profile)
+    }
 }
 
 private func sealString(_ value: String) throws -> String {
