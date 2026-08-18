@@ -4450,3 +4450,126 @@ depth, since all five arrays are trivially uniform before one. No existing test 
 is the check that would have caught both this and the `pinEnabledPerDepth` hazard that was reasoned
 about by hand instead.
 
+---
+
+## Bug 87 — A stranded `visibleThroughDepth` is un-hidden by rotation, in both directions
+
+**Status:** **Open.** Filed 2026-08-18 while writing Bug 85's migration guards. Found by asking what
+a normalisation pass must do with a row it cannot decrypt, then discovering the shipped rotation
+paths already answer that question wrongly.
+
+**Target:** unset, but this is separable from Bug 85 and much smaller — the fix is a fallback change
+in two places, with no wire-format implications.
+
+### Severity: High (security, not forensic)
+
+Different in kind from Bugs 85 and 86. Those are passive distinguishers that leak *metadata* about
+hidden contacts. This one makes a contact the user marked sensitive **visible to a coercer at every
+duress depth** — not a leak about the protection, but the protection itself failing open.
+
+Rated High rather than Critical only because it needs a precondition: the contact's
+`visibleThroughDepth` ciphertext must already be unreadable. Bugs 85 and 86 need no precondition at
+all. If stranded ciphertext turns out to be common rather than exceptional, this is Critical.
+
+### What happens
+
+`isVisible(atDepth:)` fails **closed** — a non-nil ceiling that will not decrypt excludes the
+contact, per its own comment: *"non-nil field that won't decrypt = sensitive shell; exclude"*
+(`Contact+Model.swift:212`). So while a contact's ceiling is stranded, it is correctly hidden.
+
+Both halves of a rotation cycle destroy that state, by different mechanisms, and both land on
+*visible everywhere*.
+
+**Deactivation** (`Manager+Security.swift:838`) resolves an unreadable ceiling to `Int.max` and then
+persists it:
+
+```swift
+let contactDepth: Int = {
+    guard let data = profile.visibleThroughDepth,
+          let plain = data.decrypt(),
+          let value = DepthCodec.decode(plain)
+    else { return Int.max }          // ← unreadable → "safe"
+    return value
+}()
+…
+profile.visibleThroughDepth = try AES.GCM.seal(DepthCodec.encode(contactDepth), …)
+```
+
+The comment above it reads *"undecryptable or absent → Int.max (safe / never classified)"*, which is
+the defect stated out loud: **absent** means genuinely never classified, **undecryptable** means the
+value is unknown. Collapsing the two resolves an unknown to the most permissive value available.
+
+**Activation** (Step 8, `Manager+Security.swift:556`) reaches the same outcome through
+`reencryptAllFields`, whose `reencrypt(data:)` helper returns nil for anything it cannot decrypt —
+deliberately, so callers reinitialise. And `isVisible` treats nil as *visible*:
+
+```swift
+guard let data = self.visibleThroughDepth else { return true }
+```
+
+So activation nils the stranded ceiling and the contact becomes visible at every depth. The nil does
+not even persist as nil: `migrateSafeContactVisibilityBackfill` re-stamps it to `Int.max` on the next
+launch, cementing the same end state deactivation reaches directly.
+
+### Why this is the one pattern the file already guards against elsewhere
+
+`reencryptAllFields` has a second helper, `reencryptPreserving`, for exactly this hazard. It is used
+on precisely two fields, and the reasoning on one of them is a sentence-for-sentence match for
+`visibleThroughDepth`'s situation (`Contact+Model+Reencrypt.swift:70`):
+
+> Clearing an unreadable token would therefore un-delete the contact: every row soft-deleted before
+> this field was re-keyed carries a stranded token, and they would all silently reappear on the next
+> rotation.
+
+Substitute *un-hide* for *un-delete* and it describes this bug. `deletionToken` gets
+`reencryptPreserving` because clearing it un-deletes; `maxBundleVersion` gets it because of Bug 80.
+`visibleThroughDepth` gets the nil-ing helper, one line below, even though clearing it un-hides.
+
+The consequence was also already known. Bug 78's fix comment (`Manager+Security.swift:385`) says:
+
+> Losing `visibleThroughDepth` alone drops the Secure Mode visibility ceiling for the whole address
+> book.
+
+Bug 78 addressed the *whole-key outage* case by deriving the key up front so nothing is touched. It
+did not address a *single field* that fails to decrypt while the key is perfectly healthy, which is
+the case here.
+
+### Why the vault gets this right and contacts do not
+
+`forensic-trace-avoidance.md` S7 handles the identical situation for `VaultEntry`, and states the
+principle:
+
+> **Non-nil, unreadable** (Bug 27 — corrupt or wrong-key ciphertext) — treated as `encode(0)` under
+> staged key. Fail-safe to hidden: an entry that is invisible in duress mode is a UX inconvenience;
+> one that is visible is a security failure.
+
+Vault entries fail closed. Contacts fail open. Only the vault side has the reasoning written down,
+and it is the correct reasoning for both.
+
+### Reproduction
+
+1. Classify a contact as sensitive at depth 0 (`visibleThroughDepth = encode(0)`).
+2. Corrupt its `visibleThroughDepth` ciphertext, or strand it under a key no longer canonical.
+3. Confirm it is hidden: `isVisible(atDepth:)` returns false at every depth.
+4. Activate, then deactivate Secure Mode.
+5. `visibleThroughDepth` now decodes to `Int.max`. The contact is visible at every duress depth.
+
+### Remedies to weigh
+
+1. **Fail closed in both paths.** Deactivation's fallback becomes the current depth (hidden at the
+   next layer) rather than `Int.max`; activation switches `visibleThroughDepth` — and, for the same
+   reason, `globalTrusteeDepth` and `originDepth` — to `reencryptPreserving`. Matches S7 and matches
+   `deletionToken`. Smallest diff, and the fallback direction stops contradicting `isVisible`.
+2. **Preserve rather than resolve.** Leave stranded bytes byte-identical everywhere, so the state
+   stays exactly what `isVisible` already interprets correctly, and no path invents a value. Cleanest
+   semantically; needs a check that a permanently stranded field cannot wedge a later rotation.
+3. **Make nil unreachable and fail closed on it.** Reverse `isVisible`'s nil branch to return false.
+   Rejected as stated: nil is the documented never-classified default (S6) and reversing it would
+   hide every contact on a pre-backfill install.
+
+The guard is a test that a contact with an unreadable ceiling is still hidden **after** a full
+activate/deactivate cycle — the property `unreadableCeilingFailsClosed` in `DepthCodecTests` asserts
+only before one. Note this bug is why Bug 85's normalisation pass must skip rows it cannot decrypt:
+the same fail-open default, written into a migration, would do this to every stranded row at once
+instead of only on rotation.
+
