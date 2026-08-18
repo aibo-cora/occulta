@@ -4309,7 +4309,9 @@ regardless of visibility — a check no existing test makes, and the one that wo
 
 **Status:** **Open.** Filed 2026-08-18 while checking whether Bug 85's codec could be reused for the
 other depth-shaped fields. Found by measurement, and the fix is materially riskier than Bug 85's —
-see "Why this one can lose user data".
+see "Why this one can lose user data". **Amended the same day** — a third array turned out to have a
+narrower version of the same defect on one path, plus a functional failure alongside it; see
+"Amendment" below. The scope table's `pinEnabledPerDepth` row was corrected accordingly.
 
 **Target:** unset. Sequenced after Bug 85's format decision, since both want the same fixed-width
 treatment and the same migration point.
@@ -4405,12 +4407,63 @@ function three lines away.
 |---|---|---|---|
 | `sealedBlobSlots` | 29 or 30 | 30 | **No** — 29 proves occupancy |
 | `layerSequenceNumbers` | 29–38; ~98% are 37–38 | 30 | **No** — essentially always distinguishable |
-| `pinEnabledPerDepth` | 29 (`UInt8`) | 29 (encrypted `1`) | Yes, by design |
+| `pinEnabledPerDepth` | 29 (`UInt8`) — **except one path, below** | 29 (encrypted `1`) | Mostly, by design |
 | `sealedNormalVerifiers` | 53 (`PINManager.verifierSize` = 12 + sentinel + 16) | 53 | Yes, by design |
 | `sealedDuressVerifiers` | 53 | 53 | Yes, by design |
 
-The two correct arrays are correct for the same reason and by explicit construction, which is what
-makes the other two an inconsistency rather than an oversight of the whole design.
+The verifier arrays are correct by explicit construction, which is what makes the two broken ones an
+inconsistency rather than an oversight of the whole design.
+
+### Amendment (2026-08-18): the third array has one path that breaks it too
+
+`pinEnabledPerDepth` was credited above as correct by design, and its steady-state writer is —
+`writePinEnabled` encodes `UInt8(1)`/`UInt8(0)`, one byte either way. But the legacy-upgrade path in
+`Manager+Security.swift:227` writes a **`Bool`** into the same array:
+
+```swift
+if !config.readPinEnabledLegacy(), persistedDepth < array.count,
+   let encrypted = try? JSONEncoder().encode(false).encrypt() {
+    array[persistedDepth] = encrypted
+}
+```
+
+Measured (`xcrun swift`, 2026-08-18):
+
+| Written | JSON | Plaintext | Sealed |
+|---|---|---|---|
+| `UInt8(1)` / `UInt8(0)` — normal writer | `1` / `0` | 1 byte | **29 bytes** |
+| `false` — this path | `false` | 5 bytes | **33 bytes** |
+| random filler fallback | — | — | 30 bytes |
+
+So a 33-byte entry is unique in the array and marks both that the PIN gate was disabled and the
+depth at which it was. This is the exact hazard the array's own doc comment exists to prevent, quoted
+word for word:
+
+> A `Bool` encoding would produce `"true"` (4 bytes) vs `"false"` (5 bytes); AES-GCM does not pad, so
+> the sealed box sizes would differ by one byte. A forensic examiner could identify the disabled slot
+> by size alone — without the SE key and without decryption.
+
+The comment is on `pinEnabledPerDepth`. The violation is a `Bool` written into `pinEnabledPerDepth`.
+
+**And the write does not work either.** `readPinEnabled(at:)` decodes `UInt8.self`; decoding the
+plaintext `false` as `UInt8` returns nil, so the guard falls through to `else { return true }`.
+Measured: `try? JSONDecoder().decode(UInt8.self, from: encode(false))` → `nil`.
+
+The block's own comment states the intent — *"if the old scalar was `false`, record that at the
+persisted depth so the gate stays down after the upgrade"* — and the gate does not stay down. It
+comes back up on every read, because the value is unreadable by the only reader.
+
+Note the functional direction is the safe one: an unreadable entry falls back to "PIN required", so
+this costs a user their disabled-gate preference rather than dropping a gate that should be up. The
+forensic direction is not safe: the 33-byte entry announces exactly the state the failed write was
+trying to record.
+
+Reachable only on installs predating per-layer PIN tracking whose legacy scalar was `false` — but
+those are precisely the installs an upgrade release exists to carry forward.
+
+**Fix:** write `UInt8(0)` rather than `false`, i.e. route this path through `writePinEnabled` instead
+of hand-rolling the encode. That corrects the size and makes the value readable in one change. It
+does not need the fixed-width work the other two arrays require, so it can land on its own.
 
 **Also variable, separately:** the scalars `persistedDepth` (`:450`) and `coercerBaseDepth` (`:503`)
 encode a raw depth, so they are 29 bytes below depth 10 and 30 at or above it. Single-valued, so they
