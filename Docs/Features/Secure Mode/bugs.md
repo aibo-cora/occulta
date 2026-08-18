@@ -4303,3 +4303,150 @@ the devices that already have it, and with no way to prompt them without itself 
 Whichever is chosen, the guard is a test asserting **every** row's ciphertext length is identical
 regardless of visibility — a check no existing test makes, and the one that would have caught this.
 
+---
+
+## Bug 86 — `AppLayerConfig`'s padded arrays name the occupied depths by element length, with no key
+
+**Status:** **Open.** Filed 2026-08-18 while checking whether Bug 85's codec could be reused for the
+other depth-shaped fields. Found by measurement, and the fix is materially riskier than Bug 85's —
+see "Why this one can lose user data".
+
+**Target:** unset. Sequenced after Bug 85's format decision, since both want the same fixed-width
+treatment and the same migration point.
+
+### Severity: Critical (forensic)
+
+Stronger than Bug 85 in the way that matters most: Bug 85 says nothing until at least one contact has
+been classified, whereas this marks an occupied depth from the moment a layer is created, names
+*which* depth, and does so whether or not the address book was ever touched.
+
+Weaker in one respect: extraction is not Bug 85's single SQL function. It needs the column's archive
+parsed — a dozen lines of stdlib Python, still passive, still keyless. See "Reproduction".
+
+### What happens
+
+`ensurePadded()` (`AppLayerConfig+Model.swift:373`) pads three arrays to 32 entries so that, in the
+field's own words (`:45`), *"array length is forensically constant"*. Filler is `fillerSize = 30`
+random bytes (`:369`).
+
+Two of the three arrays store values whose sealed length is not 30.
+
+**`layerSequenceNumbers[depth]`** holds `JSONEncoder().encode(seqNum).encrypt(using: blobKey)`, and
+`randomSequenceNumber()` (`Manager+Security.swift`) returns `Int(UInt32)` — the full 32-bit range.
+AES-GCM is length-preserving, so sealed length is decimal digits + 28.
+
+Measured (`xcrun swift`, 2026-08-18) over 2,000,000 uniform `UInt32` draws:
+
+| Sealed length | Share of real entries |
+|---|---|
+| 32–36 bytes | 2.3% |
+| 37 bytes | 21.0% |
+| **38 bytes** | **76.7%** |
+| **30 bytes — collides with filler** | **0.0000021%** |
+
+A real entry is indistinguishable from filler only when its sequence number happens to have exactly
+two digits: 90 values out of 2³², about 1 in 48 million. Every other occupied depth is identifiable
+from element length alone.
+
+**`sealedBlobSlots[depth]`** holds `encode(slot).encrypt(...)` where `randomSlot()` returns 0–31 —
+29 bytes for slots 0–9, 30 for 10–31. A 29-byte element proves a layer exists at that depth, which
+happens for 10 of 32 slots (~31%). One-sided and weaker, but the same defect.
+
+### Reproduction
+
+A `[Data]` property is not a child table. Verified 2026-08-18 against a minimal SwiftData model: the
+column is a single `BLOB` holding an `NSKeyedArchiver` binary plist with element order preserved.
+
+```python
+import plistlib
+d    = plistlib.load(open('blob.bin', 'rb'))
+objs = d['$objects']
+root = objs[d['$top']['root'].data]
+print([len(objs[u.data]) for u in root['NS.objects']])
+```
+
+Against a store seeded with one 38-byte entry at index 7 among 31 fillers, this returned
+`[30]*7 + [38] + [30]*24` — the occupied depth named by its index. No key, no PIN, no Enclave, no
+decryption.
+
+### What it leaks
+
+1. **That Secure Mode is configured**, without needing any contact to have been classified. Writing
+   a layer at any depth stamps both arrays.
+2. **Which depths are occupied**, by array index — the nesting structure of the duress layers.
+
+As in Bug 85, uniformity is the innocent baseline: a never-activated install has all 32 entries at
+exactly 30 bytes, and the deviation is the signal.
+
+### Why this contradicts a stated invariant
+
+`:45` claims the padding makes the array *forensically constant*. Constant array **length** was
+achieved. Constant **element** length was not, and element length is what carries the information.
+
+### Root cause, and why it survived
+
+One constant, `fillerSize = 30`, serving two arrays whose real entries are not 30 bytes. It reads
+like it was derived from a two-digit value — correct for slots 10–31, wrong for slots 0–9, and wrong
+for essentially every sequence number.
+
+It survived because the reasoning that would have caught it is written down in the same file, on the
+array that gets it right (`:50`–`:55`):
+
+> A forensic examiner could identify the disabled slot by size alone — without the SE key and
+> without decryption.
+
+That is the comment explaining why `pinEnabledPerDepth` encodes `UInt8` rather than `Bool`. The
+hazard was understood, documented, and then not applied to the two sibling arrays padded by the same
+function three lines away.
+
+### Scope — two of five padded arrays
+
+| Array | Real entry | Filler | Uniform? |
+|---|---|---|---|
+| `sealedBlobSlots` | 29 or 30 | 30 | **No** — 29 proves occupancy |
+| `layerSequenceNumbers` | 29–38; ~98% are 37–38 | 30 | **No** — essentially always distinguishable |
+| `pinEnabledPerDepth` | 29 (`UInt8`) | 29 (encrypted `1`) | Yes, by design |
+| `sealedNormalVerifiers` | 53 (`PINManager.verifierSize` = 12 + sentinel + 16) | 53 | Yes, by design |
+| `sealedDuressVerifiers` | 53 | 53 | Yes, by design |
+
+The two correct arrays are correct for the same reason and by explicit construction, which is what
+makes the other two an inconsistency rather than an oversight of the whole design.
+
+**Also variable, separately:** the scalars `persistedDepth` (`:450`) and `coercerBaseDepth` (`:503`)
+encode a raw depth, so they are 29 bytes below depth 10 and 30 at or above it. Single-valued, so they
+partition nothing — they only distinguish depth ≥ 10. Minor, same defect, worth folding into the
+same fix.
+
+### Why this one can lose user data
+
+`layerSequenceNumbers` is not inert metadata. It is validated on pop
+(`SecureMode+LayerStore.swift`, `Error.sequenceNumberMismatch`), and a mismatch is caught in
+`deactivateSecureMode` with the payload replaced by an empty one. The existing comment there
+(`Manager+Security.swift:776`) states the consequence plainly:
+
+> Blob corrupted, overwritten by `maintain()`, or seqnum mismatch. Sensitive contacts unrecoverable;
+> safe contacts in DB are intact.
+
+So a format change to this array that fails to round-trip an existing value does not degrade a
+privacy property — it **permanently destroys every sensitive contact sealed in that layer**. This
+raises the bar well above Bug 85's: the dual-format read is not a nicety here, it is the difference
+between a fix and data loss, and it needs a test that pops a layer written in the old format.
+
+### Remedies to weigh
+
+1. **Fixed-width plaintext per array, with filler derived from it rather than hardcoded.** Sequence
+   numbers need 4 bytes (`UInt32`, fixed endianness) → 32-byte sealed; slots need 1 byte → 29-byte
+   sealed. That means two filler constants, each computed from its array's canonical encoding so the
+   two can never drift apart again — the present bug is exactly that drift.
+2. **One width for both**, padding the slot index out to the sequence number's width. Fewer
+   constants, one uniform size across both arrays, at the cost of 3 wasted bytes per slot entry.
+3. **Reuse Bug 85's codec for the slot array only** and give sequence numbers their own fixed-width
+   type. The slot array's domain (0–31) is identical to the depth fields'; the sequence number's is
+   not, and forcing it through a one-byte codec would truncate it.
+
+Whichever is chosen, `fillerSize` must stop being a literal. The guard is a test asserting that
+**every element of every padded array has identical length** — evaluated after a real write at some
+depth, since all five arrays are trivially uniform before one. No existing test checks this, and it
+is the check that would have caught both this and the `pinEnabledPerDepth` hazard that was reasoned
+about by hand instead.
+
