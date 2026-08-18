@@ -288,7 +288,7 @@ extension ContactManager {
         // Step 4 short-circuit), so anything reaching this function has originDepth == 0
         // by construction. There is no captured value to restore here.
         restored.originDepth = try AES.GCM.seal(
-            JSONEncoder().encode(0), using: stagedKey, authenticating: aad
+            DepthCodec.encode(0), using: stagedKey, authenticating: aad
         ).combined
 
         if let attrs = record.signedAttributes, !attrs.isEmpty {
