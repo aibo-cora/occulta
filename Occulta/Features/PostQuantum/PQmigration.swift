@@ -82,7 +82,7 @@ struct DatabaseMigration {
         guard !contacts.isEmpty else { return }
 
         for contact in contacts {
-            contact.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+            contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
         }
         try modelContext.save()
     }
@@ -103,7 +103,7 @@ struct DatabaseMigration {
         guard !contacts.isEmpty else { return }
 
         for contact in contacts {
-            contact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            contact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
         }
         try modelContext.save()
     }
@@ -129,7 +129,7 @@ struct DatabaseMigration {
         guard !contacts.isEmpty else { return }
 
         for contact in contacts {
-            contact.originDepth = try JSONEncoder().encode(0).encrypt()
+            contact.originDepth = try DepthCodec.encode(0).encrypt()
         }
         try modelContext.save()
     }
@@ -163,7 +163,7 @@ struct DatabaseMigration {
             let trusteeIDs = Set(payload.trusteeIDs)
             let contacts = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
             for contact in contacts where trusteeIDs.contains(contact.identifier) {
-                contact.globalTrusteeDepth = try JSONEncoder().encode(0).encrypt()
+                contact.globalTrusteeDepth = try DepthCodec.encode(0).encrypt()
             }
         }
 

@@ -24,7 +24,7 @@ extension ContactManager {
         guard let contact = try? self.modelContext.fetch(descriptor).first,
               let data    = contact.visibleThroughDepth,
               let plain   = data.decrypt(),
-              let value   = try? JSONDecoder().decode(Int.self, from: plain)
+              let value   = DepthCodec.decode(plain)
         else { return false }
         return value == self.security.currentDepth
     }
@@ -72,7 +72,7 @@ extension ContactManager {
         guard let contact = try? self.modelContext.fetch(descriptor).first,
               let data    = contact.globalTrusteeDepth,
               let plain   = data.decrypt(),
-              let value   = try? JSONDecoder().decode(Int.self, from: plain)
+              let value   = DepthCodec.decode(plain)
         else { return false }
         return value == self.security.currentDepth
     }
@@ -139,7 +139,7 @@ extension ContactManager {
         for contact in contacts {
             guard contact.isVisible(atDepth: depth) else { continue }
             let depthValue = safeIDs.contains(contact.identifier) ? Int.max : depth
-            contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            contact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             if depthValue != Int.max { hiddenIdentifiers.insert(contact.identifier) }
         }
         for identifier in hiddenIdentifiers {
@@ -168,7 +168,7 @@ extension ContactManager {
         )
         guard let contact = try? self.modelContext.fetch(descriptor).first else { return }
         let depth = self.security.currentDepth
-        contact.visibleThroughDepth = try JSONEncoder().encode(
+        contact.visibleThroughDepth = try DepthCodec.encode(
             isSensitive ? depth : Int.max
         ).encrypt()
 
@@ -195,7 +195,7 @@ extension ContactManager {
         for contact in contacts {
             guard contact.isVisible(atDepth: depth) else { continue }
             let value = selectedIDs.contains(contact.identifier) ? depth : -1
-            contact.globalTrusteeDepth = try JSONEncoder().encode(value).encrypt()
+            contact.globalTrusteeDepth = try DepthCodec.encode(value).encrypt()
         }
         try self.modelContext.save()
     }
@@ -273,14 +273,14 @@ extension ContactManager {
         // before this field was added — any blob contact had a finite visibleThroughDepth.
         let depth = record.visibleThroughDepth ?? 0
         restored.visibleThroughDepth = try AES.GCM.seal(
-            JSONEncoder().encode(depth), using: stagedKey, authenticating: aad
+            DepthCodec.encode(depth), using: stagedKey, authenticating: aad
         ).combined
 
         // Same restore for the global-trustee stamp. Falls back to -1 (not a trustee)
         // for blobs written before this field was added.
         let trusteeDepth = record.globalTrusteeDepth ?? -1
         restored.globalTrusteeDepth = try AES.GCM.seal(
-            JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+            DepthCodec.encode(trusteeDepth), using: stagedKey, authenticating: aad
         ).combined
 
         // Write the originDepth sentinel directly, not restored from the blob — a

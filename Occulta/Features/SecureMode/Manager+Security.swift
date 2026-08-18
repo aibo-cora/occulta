@@ -461,7 +461,7 @@ extension Manager {
                     let originDepth: Int = {
                         guard let data = profile.originDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return 0 }
                         return value
                     }()
@@ -477,7 +477,7 @@ extension Manager {
                     let contactDepth: Int = {
                         guard let data = profile.visibleThroughDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return Int.max }
                         return value
                     }()
@@ -497,7 +497,7 @@ extension Manager {
                         let trusteeDepth: Int = {
                             guard let data = profile.globalTrusteeDepth,
                                   let plain = data.decrypt(),
-                                  let value = try? JSONDecoder().decode(Int.self, from: plain)
+                                  let value = DepthCodec.decode(plain)
                             else { return -1 }
                             return value
                         }()
@@ -521,13 +521,13 @@ extension Manager {
                 // originDepth (should be a no-op — creation and the backfill migrations
                 // already keep all three fields non-nil) ───────────────────────────────
                 for profile in safeProfiles where profile.visibleThroughDepth == nil {
-                    profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+                    profile.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
                 }
                 for profile in safeProfiles where profile.globalTrusteeDepth == nil {
-                    profile.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+                    profile.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
                 }
                 for profile in safeProfiles where profile.originDepth == nil {
-                    profile.originDepth = try JSONEncoder().encode(0).encrypt()
+                    profile.originDepth = try DepthCodec.encode(0).encrypt()
                 }
 
                 // ── Step 6: Push blob ────────────────────────────────────────────────
@@ -838,7 +838,7 @@ extension Manager {
                     let contactDepth: Int = {
                         guard let data = profile.visibleThroughDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return Int.max }
                         return value
                     }()
@@ -847,7 +847,7 @@ extension Manager {
                     let trusteeDepth: Int = {
                         guard let data = profile.globalTrusteeDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return -1 }
                         return value
                     }()
@@ -861,7 +861,7 @@ extension Manager {
                     let originDepth: Int = {
                         guard let data = profile.originDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return 0 }
                         return value
                     }()
@@ -875,15 +875,15 @@ extension Manager {
                     // literal nil here would make them stand out against that baseline instead
                     // of blending into it. See forensic-trace-avoidance.md S6.
                     profile.visibleThroughDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(contactDepth), using: stagedKey, authenticating: aad
                     ).combined
                     // Same non-nil invariant applies to the global-trustee stamp.
                     profile.globalTrusteeDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(trusteeDepth), using: stagedKey, authenticating: aad
                     ).combined
                     // Same non-nil invariant applies to the duress-origin stamp.
                     profile.originDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(originDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(originDepth), using: stagedKey, authenticating: aad
                     ).combined
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.

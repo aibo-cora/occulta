@@ -202,13 +202,13 @@ extension Contact.Profile {
     func isVisible(atDepth depth: Int) -> Bool {
         if let data = self.originDepth {
             guard let decrypted = data.decrypt(),
-                  let origin = try? JSONDecoder().decode(Int.self, from: decrypted)
+                  let origin = DepthCodec.decode(decrypted)
             else { return false }
             if origin > 0 { return depth >= origin }
         }
         guard let data = self.visibleThroughDepth else { return true }
         guard let decrypted = data.decrypt(),
-              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value = DepthCodec.decode(decrypted)
         else { return false }   // non-nil field that won't decrypt = sensitive shell; exclude
         return value >= depth
     }
@@ -219,13 +219,13 @@ extension Contact.Profile {
     func isVisible(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
         if let data = self.originDepth {
             guard let decrypted = data.decrypt(using: key),
-                  let origin = try? JSONDecoder().decode(Int.self, from: decrypted)
+                  let origin = DepthCodec.decode(decrypted)
             else { return false }
             if origin > 0 { return depth >= origin }
         }
         guard let data = self.visibleThroughDepth else { return true }
         guard let decrypted = data.decrypt(using: key),
-              let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value = DepthCodec.decode(decrypted)
         else { return false }
         return value >= depth
     }
@@ -235,7 +235,7 @@ extension Contact.Profile {
     func isGlobalTrustee(atDepth depth: Int, usingKey key: SymmetricKey) -> Bool {
         guard let data      = self.globalTrusteeDepth,
               let decrypted = data.decrypt(using: key),
-              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value     = DepthCodec.decode(decrypted)
         else { return false }
         return value == depth
     }

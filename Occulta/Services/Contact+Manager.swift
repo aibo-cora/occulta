@@ -191,14 +191,14 @@ class ContactManager {
             // Depth 0 imports are safe contacts → Int.max (visible everywhere).
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
-            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
-            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
-            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -378,14 +378,14 @@ class ContactManager {
             // Depth 0 contacts are safe by default → Int.max (visible everywhere).
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
-            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
-            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
-            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
