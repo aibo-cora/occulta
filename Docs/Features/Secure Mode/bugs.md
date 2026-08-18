@@ -4171,3 +4171,135 @@ Already-sent bundles cannot be recalled. This is worth a release note rather tha
 
 The general lesson is the one this entry opened with: a function named for a security property is
 not evidence the property holds, and neither is a checklist line citing the function.
+
+---
+
+## Bug 85 — `visibleThroughDepth` ciphertext length partitions safe from sensitive contacts, with no key
+
+**Status:** **Open.** Filed 2026-08-16 while scoping rotation-coverage step 3, from a question about
+whether the field is ever nil. Found by measurement, not by reading — the doc comment on the field
+asserts the opposite and is why it survived.
+
+**Target:** unset. The write-format change needs designing against the rotation contract; see
+"Why this is not a one-line fix".
+
+### Severity: Critical (forensic)
+
+The first **passive, keyless, row-level** distinguisher found in this codebase. Every other tracked
+tell is weaker: Bug 71's is a timestamp correlation, Bug 62's Gap 1a gives a *count* to an examiner
+who already holds the SE key. This one names individual rows to anyone holding the database file.
+
+### What happens
+
+`Contact.Profile.visibleThroughDepth` stores `try JSONEncoder().encode(depthValue).encrypt()`.
+`JSONEncoder` is variable-length and AES-GCM is length-preserving — `.combined` is
+nonce(12) ∥ ciphertext(plaintext length) ∥ tag(16), so ciphertext length is plaintext + 28.
+
+Measured (`xcrun swift`, 2026-08-16):
+
+| Value written | Meaning | Plaintext | Ciphertext |
+|---|---|---|---|
+| `Int.max` | always visible — **safe** | **19 bytes** | **47 bytes** |
+| `0`–`9` | hidden at that duress depth — **sensitive** | 1 byte | **29 bytes** |
+| `10`–`31` | hidden at depth ≥ 10 | 2 bytes | 30 bytes |
+
+`Int.max` is not an edge case: it is the default for every new contact
+(`Contact+Manager.swift:194, :381`), the value written for every contact marked safe
+(`ContactManager+Classification.swift:142, :171`), and the legacy backfill
+(`PQmigration.swift:85`, `Manager+Security.swift:524`).
+
+So the column length is a two-value classifier over exactly the safe/sensitive partition. No
+clamping exists at any write site: `saveClassification` writes
+`safeIDs.contains(contact.identifier) ? Int.max : depth` and `setVisibility` writes
+`isSensitive ? depth : Int.max`, both encoded raw.
+
+### Reproduction
+
+Against the store file, with no key, no PIN, no Secure Enclave and no decryption. Column and table
+names follow Core Data's convention, which SwiftData inherits:
+
+```sql
+SELECT length(ZVISIBLETHROUGHDEPTH) AS n, COUNT(*) FROM ZPROFILE GROUP BY n;
+```
+
+`n = 47` are safe contacts. `n = 29` (or 30) are hidden ones. The principle does not depend on the
+exact column name — any inspection of that BLOB's length works.
+
+### What it leaks
+
+Both of the things the feature exists to hide:
+
+1. **That Secure Mode is configured.** An install that never classified anyone is uniformly 47
+   bytes, because every contact carries the `Int.max` default. Mixed lengths arise only once
+   contacts are classified, which happens only through the activation flow. Uniformity is the
+   innocent baseline, and the deviation from it is the tell.
+2. **Which specific contacts are hidden**, row by row, by name of row rather than in aggregate.
+
+### Why this contradicts a stated invariant
+
+`forensic-trace-avoidance.md` S5 — *"Sensitive contacts remain in DB; page slack covered by S1 +
+S2"* — rests entirely on the row being indistinguishable at the SQLite layer. Hard deletion was
+removed (Bug 13) on the strength of that premise. This defeats it directly rather than degrading it.
+
+### Root cause, and why it survived
+
+Variable-length plaintext under a length-preserving cipher, with a sentinel (`Int.max`) whose JSON
+form is 19× the size of an ordinary depth.
+
+It survived multiple audits because the field's own doc comment states the opposite
+(`Contact+Model.swift:81`):
+
+> All values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+
+That is true for `0`–`9` and false for `Int.max`, which is the commonest value in the table. Anyone
+checking this property read the comment and moved on. **The comment is a security claim the code
+does not implement, and it should be corrected immediately and separately from the format fix** —
+whatever is decided about the format, nothing should keep asserting a property that is not there.
+
+### Scope — one field
+
+Checked the siblings; none has the same shape:
+
+| Field | Values written | Uniform? |
+|---|---|---|
+| `Contact.Profile.globalTrusteeDepth` | `-1` sentinel (2 bytes), small ints | Near-uniform; no `Int.max` |
+| `Contact.Profile.originDepth` | small depths only | Uniform |
+| `VaultEntry.visibleThroughDepth` | `currentDepth`, `encode(0)` | Uniform |
+
+Only `Contact.Profile.visibleThroughDepth` carries a large sentinel, and only there does the length
+split map exactly onto safe-versus-sensitive.
+
+**Second-order, minor:** depths ≥ 10 are 2 bytes, so a 30-byte row is hidden at depth 10 or deeper.
+Negligible beside the main partition, but it is the same defect and any fix should cover it.
+
+### Why this is not a one-line fix
+
+The obvious change — a fixed-width encoding, e.g. one byte with `0xFF` for always-visible — is a
+**wire-format change to an encrypted field at rest**, which is the exact shape that produced Bugs
+75, 76 and 77. It needs a read path accepting both formats, a normalisation pass so existing rows
+converge, and assurance the pass cannot strand values.
+
+**Partial normalisation reintroduces the leak in a new form.** `saveClassification` skips contacts
+already hidden (`guard contact.isVisible(atDepth: depth) else { continue }`), so it does not rewrite
+every row. A mix of 47-byte legacy, 29-byte legacy and fixed-width new rows is still a partition,
+just a three-way one.
+
+Rotation *does* touch every contact's `visibleThroughDepth`, so an activation is the natural
+normalisation point. But that means the leak persists until the user next activates — on exactly
+the devices that already have it, and with no way to prompt them without itself being a tell.
+
+### Remedies to weigh
+
+1. **Fixed-width plaintext.** One byte, `0xFF` = always visible, `0…31` = depth ceiling. Uniform 29
+   bytes for every row, and it also closes the depth ≥ 10 variance. Needs the dual-format read and
+   the normalisation pass above.
+2. **Pad before sealing.** Keep the JSON, pad the plaintext to a fixed length, strip on read. Less
+   elegant, same migration problem, but a smaller diff at the write sites.
+3. **Normalise inside the rotation.** Fold the format change into `reencryptAllFields` so it happens
+   wherever rotation already runs. Attractive — that path already rewrites the field — but it means
+   a format migration riding the code path with the worst failure history in the project, and it
+   still leaves never-activated devices untouched.
+
+Whichever is chosen, the guard is a test asserting **every** row's ciphertext length is identical
+regardless of visibility — a check no existing test makes, and the one that would have caught this.
+
