@@ -26,10 +26,16 @@
 //  Now an entry must carry a key path and a probe value, so silencing the tripwire is the same
 //  act as being checked by the round-trip.
 //
-//  The other three models still keep a name list and a behavioural test of their own, in
-//  `GroupKeyRotationTests`, `DraftKeyRotationTests` and `AppLayerConfigRotationTests`. See
-//  `Docs/Features/Secure Mode/ROTATION_COVERAGE.md` for why `Contact.Profile` went first and
-//  what extending to the rest involves.
+//  `AppLayerConfig` followed on the same date, and its round-trip runs **without a Secure
+//  Enclave** — the first field-level coverage check in the project that CI actually executes.
+//  The difference is the signature: `AppLayerConfig.reencrypt(from:to:)` takes both keys, so the
+//  test picks both, while `reencryptAllFields` decrypts ambiently and forces a gate.
+//
+//  `Group` and `Message.Draft` still keep a name list and a behavioural test of their own, in
+//  `GroupKeyRotationTests` and `DraftKeyRotationTests`. Neither is a drop-in: Draft's two fields
+//  are non-optional `Data`, and three of Group's six are `private(set)` arrays whose only writer
+//  is a `private` method, so they cannot be populated by key path at all. See
+//  `Docs/Features/Secure Mode/ROTATION_COVERAGE.md`.
 //
 //  Why names and not types: `Mirror` on a SwiftData `@Model` does enumerate every stored
 //  property (prefixed `_`, plus `_$backingData` and `_$observationRegistrar`), but erases
@@ -86,11 +92,13 @@ rather than merely losing a value.
 If it also needs to survive a deactivation restore, add it to LayerContact / Contact.Draft too.
 
 Then classify it here:
-  • Contact.Profile → add to `probes` (with a key path and a distinct probe value) if the \
-rotation must re-key it, or to `unprobedFields` (with the key that seals it instead, or "plaintext"). \
-Adding to `probes` is what makes the round-trip test check it — a name alone is not enough, by design.
-  • Group / Message.Draft / AppLayerConfig → add the name to that model's list below, and \
-extend its behavioural test by hand. These have not been moved to probe tables yet.
+  • Contact.Profile / AppLayerConfig → add to that model's `probes` (with a key path and a \
+distinct probe value) if the rotation must re-key it, or to `unprobedFields` (with the key that \
+seals it instead, or "plaintext"). Adding to `probes` is what makes the round-trip test check it — \
+a name alone is not enough, by design.
+  • Group / Message.Draft → add the name to that model's list below, and extend its behavioural \
+test by hand. These have not been moved to probe tables yet, and neither is a drop-in — see \
+ROTATION_COVERAGE.md.
 """
 
 // MARK: - Probe table
@@ -120,20 +128,49 @@ enum FieldProbe<M: AnyObject> {
     /// the motivating case: nil there means "not deleted", so clearing an unreadable token
     /// un-deletes the contact.
     case preserving(ReferenceWritableKeyPath<M, Data?>, Data)
+    /// An array of independently sealed ciphertexts, re-sealed entry by entry.
+    ///
+    /// Every entry is checked, not just one. `AppLayerConfig.pinEnabledPerDepth` is why: its
+    /// filler *is* real ciphertext — encrypted `1`, chosen so enabled and disabled encode to
+    /// equal lengths — and `reencrypt` re-seals all 32 entries rather than skipping unreadable
+    /// ones, specifically so they stay equal-length and mutually indistinguishable. A probe
+    /// checking one entry would pass a partial re-seal.
+    case dataArray(ReferenceWritableKeyPath<M, [Data]>, [Data])
 }
 
 extension FieldProbe {
 
-    /// Seals the probe value into the field under the **canonical** key — the one
-    /// `reencryptAllFields` decrypts with.
-    func populate(_ model: M) throws {
+    /// Seals the probe value into the field.
+    ///
+    /// Pass `key` when the model's re-key function takes both keys explicitly — then the test
+    /// picks both and needs no Secure Enclave. Omit it for models whose re-key path decrypts
+    /// through the **ambient** `Manager.Key()`, which forces the probe to seal under the real
+    /// canonical key and forces the test to be Enclave-gated.
+    ///
+    /// That split is not cosmetic: it is exactly why `Contact.Profile`'s round-trip is gated
+    /// and `AppLayerConfig`'s is not. `reencryptAllFields` decrypts ambiently;
+    /// `AppLayerConfig.reencrypt(from:to:)` does not. Removing the ambient dependency is
+    /// step 4 of `Docs/Features/Secure Mode/ROTATION_COVERAGE.md`, and it would let the
+    /// coverage check for contacts run in CI too.
+    func populate(_ model: M, using key: SymmetricKey? = nil) throws {
+        func seal(_ plain: Data) throws -> Data? {
+            if let key { return try plain.encrypt(using: key) }
+            return try plain.encrypt()
+        }
+        func sealText(_ value: String) throws -> String {
+            guard let sealed = try seal(Data(value.utf8)) else { return "" }
+            return sealed.base64EncodedString()
+        }
+
         switch self {
         case let .string(keyPath, value):
-            model[keyPath: keyPath] = try sealString(value)
+            model[keyPath: keyPath] = try sealText(value)
         case let .optionalString(keyPath, value):
-            model[keyPath: keyPath] = try sealString(value)
+            model[keyPath: keyPath] = try sealText(value)
         case let .data(keyPath, value), let .preserving(keyPath, value):
-            model[keyPath: keyPath] = try value.encrypt()
+            model[keyPath: keyPath] = try seal(value)
+        case let .dataArray(keyPath, values):
+            model[keyPath: keyPath] = try values.compactMap { try seal($0) }
         }
     }
 
@@ -152,6 +189,15 @@ extension FieldProbe {
             return actual == expected
                 ? nil
                 : "expected \(Array(expected)), read \(actual.map { Array($0) }.map(String.init(describing:)) ?? "nil")"
+        case let .dataArray(keyPath, expected):
+            let stored = model[keyPath: keyPath]
+            guard stored.count == expected.count else {
+                return "expected \(expected.count) entries, found \(stored.count)"
+            }
+            let bad = zip(stored, expected).enumerated()
+                .filter { $0.element.0.decrypt(using: key) != $0.element.1 }
+                .map(\.offset)
+            return bad.isEmpty ? nil : "entries \(bad) did not read back under the new key"
         }
     }
 
@@ -161,11 +207,11 @@ extension FieldProbe {
         return false
     }
 
-    /// The raw-`Data` key path, for the stranded-value check. `nil` for string fields.
+    /// The raw-`Data` key path, for the stranded-value check. `nil` for string and array fields.
     var dataKeyPath: ReferenceWritableKeyPath<M, Data?>? {
         switch self {
         case let .data(keyPath, _), let .preserving(keyPath, _): return keyPath
-        case .string, .optionalString:                           return nil
+        case .string, .optionalString, .dataArray:               return nil
         }
     }
 }
@@ -219,7 +265,103 @@ extension Contact.Profile {
     ]
 }
 
+extension AppLayerConfig {
+
+    /// Distinct one-byte plaintexts for all 32 `pinEnabledPerDepth` entries.
+    ///
+    /// Exactly 32, which is `paddedArrayCount`, so `ensurePadded()` inside `reencrypt` is a
+    /// no-op. That matters: its padding path seals through the **ambient** key
+    /// (`AppLayerConfig+Model.swift:381`) and would drag this otherwise Enclave-free test back
+    /// onto a real Secure Enclave, falling back to random filler where none exists.
+    static let probeSlotPlaintexts: [Data] = (0..<32).map { Data([UInt8($0)]) }
+
+    /// Every field `AppLayerConfig.reencrypt(from:to:)` must re-key.
+    static let probes: [String: FieldProbe<AppLayerConfig>] = [
+        "persistedDepth":               .data(\.persistedDepth,               Data([0xB1])),
+        "pinEnabled":                   .data(\.pinEnabled,                   Data([0xB2])),
+        "coercerBaseDepth":             .data(\.coercerBaseDepth,             Data([0xB3])),
+        "lockoutCountEncrypted":        .data(\.lockoutCountEncrypted,        Data([0xB4])),
+        "lockoutAnchorUptimeEncrypted": .data(\.lockoutAnchorUptimeEncrypted, Data([0xB5])),
+        "pinEnabledPerDepth":           .dataArray(\.pinEnabledPerDepth, AppLayerConfig.probeSlotPlaintexts),
+    ]
+
+    /// Every other stored property, with the key that seals it.
+    ///
+    /// This is the model where `unprobedFields` earns its keep: **half of its encrypted fields
+    /// must never be rotated.** Adding one of these to `reencrypt` would re-seal it under the
+    /// local DB key and strand it the other way round — which the rotation contract calls as
+    /// much a bug as leaving a rotated field out.
+    static let unprobedFields: [String: String] = [
+        "sealedNormalVerifier":  "SE Secure Mode key via PINManager — the scalar nil/non-nil flag behind requiresPIN. Never rotate",
+        "sealedDuressVerifier":  "SE Secure Mode key via PINManager. Never rotate",
+        "sealedNormalVerifiers": "SE Secure Mode key via PINManager — the array verify() scans. Never rotate; this is why PIN entry kept working across rotations while everything else on the row did not",
+        "sealedDuressVerifiers": "SE Secure Mode key via PINManager. Never rotate",
+        "sealedBlobSlots":       "AppLayerConfig.blobMetadataKey(from:), HKDF from the SE Secure Mode key — moved there by Bug 76's fix so no rotation can strand it by construction rather than by remembering",
+        "layerSequenceNumbers":  "AppLayerConfig.blobMetadataKey(from:) — as above",
+    ]
+}
+
 // MARK: - Tripwires
+
+/// `AppLayerConfig`'s round-trip, in its own suite because — unlike `Contact.Profile`'s — it
+/// needs **no Secure Enclave** and therefore runs on CI runners.
+///
+/// The reason is the signature: `AppLayerConfig.reencrypt(from:to:)` takes both keys explicitly,
+/// so the test picks both and never touches `Manager.Key()`. `reencryptAllFields` decrypts
+/// ambiently, which is what forces the contact suite to be gated. This is the first field-level
+/// coverage check in the project that CI actually executes, and a preview of what step 4 of
+/// `Docs/Features/Secure Mode/ROTATION_COVERAGE.md` would buy for contacts.
+@Suite("Encrypted field coverage — AppLayerConfig rotation (no Enclave)")
+struct AppLayerConfigFieldCoverageTests {
+
+    @Test("Every AppLayerConfig field survives a rotation")
+    func configFieldsSurvive() throws {
+        let oldKey = SymmetricKey(size: .bits256)
+        let newKey = SymmetricKey(size: .bits256)
+        let config = AppLayerConfig()
+
+        for probe in AppLayerConfig.probes.values {
+            try probe.populate(config, using: oldKey)
+        }
+
+        try config.reencrypt(from: oldKey, to: newKey)
+
+        for (name, probe) in AppLayerConfig.probes.sorted(by: { $0.key < $1.key }) {
+            let mismatch = probe.mismatch(in: config, using: newKey)
+            #expect(mismatch == nil, """
+            `\(name)` did not survive AppLayerConfig.reencrypt: \(mismatch ?? "").
+
+            It is listed in `AppLayerConfig.probes`, so it is claimed to be re-keyed. Either add
+            it to `reencrypt(from:to:)`, or move it to `unprobedFields` with the key that
+            actually seals it — the SE Secure Mode key for verifiers, the blob metadata key for
+            slot indices.
+            """)
+        }
+    }
+
+    /// The other direction, and the one specific to this model: a field sealed under the SE
+    /// Secure Mode key must come out of `reencrypt` untouched. Re-sealing it under the local DB
+    /// key would strand it exactly as omitting a rotated field does — the contract calls that
+    /// "as much a bug as leaving one of the above out".
+    @Test("Fields outside the rotation are left byte-identical")
+    func unprobedFieldsAreUntouched() throws {
+        let oldKey = SymmetricKey(size: .bits256)
+        let newKey = SymmetricKey(size: .bits256)
+        let config = AppLayerConfig()
+
+        // Stand-ins for SE-sealed material: `reencrypt` must not read or rewrite these.
+        config.sealedNormalVerifier = Data([0xC1])
+        config.sealedDuressVerifier = Data([0xC2])
+        let before = (config.sealedNormalVerifier, config.sealedDuressVerifier)
+
+        try config.reencrypt(from: oldKey, to: newKey)
+
+        #expect(config.sealedNormalVerifier == before.0,
+                "sealedNormalVerifier was rewritten — it is sealed under the SE Secure Mode key")
+        #expect(config.sealedDuressVerifier == before.1,
+                "sealedDuressVerifier was rewritten — it is sealed under the SE Secure Mode key")
+    }
+}
 
 @Suite("Encrypted field coverage — tripwires")
 struct EncryptedFieldTripwireTests {
@@ -293,20 +435,33 @@ struct EncryptedFieldTripwireTests {
         #expect(storedPropertyNames(of: probe) == expected, "\(tripwireGuidance)")
     }
 
+    /// Derives from `probes` / `unprobedFields`, like Contact.Profile's above.
     @Test("AppLayerConfig has no unreviewed stored properties")
     func appLayerConfigPropertiesReviewed() {
-        let expected: Set<String> = [
-            // Sealed by PINManager under the SE Secure Mode key — never rotate.
-            "sealedNormalVerifier", "sealedDuressVerifier",
-            "sealedNormalVerifiers", "sealedDuressVerifiers",
-            // Sealed under the SE-derived blob metadata key — never rotate.
-            "sealedBlobSlots", "layerSequenceNumbers",
-            // Local DB key — must be covered by AppLayerConfig.reencrypt.
-            "persistedDepth", "pinEnabled", "pinEnabledPerDepth", "coercerBaseDepth",
-            "lockoutCountEncrypted", "lockoutAnchorUptimeEncrypted",
-        ]
+        let actual     = storedPropertyNames(of: AppLayerConfig())
+        let classified = Set(AppLayerConfig.probes.keys)
+            .union(AppLayerConfig.unprobedFields.keys)
 
-        #expect(storedPropertyNames(of: AppLayerConfig()) == expected, "\(tripwireGuidance)")
+        let unreviewed = actual.subtracting(classified)
+        let stale      = classified.subtracting(actual)
+
+        #expect(unreviewed.isEmpty, """
+        Unreviewed stored properties on AppLayerConfig: \(unreviewed.sorted())
+
+        \(tripwireGuidance)
+        """)
+
+        #expect(stale.isEmpty, """
+        Classified but no longer on AppLayerConfig: \(stale.sorted())
+        """)
+    }
+
+    @Test("No AppLayerConfig field is both probed and unprobed")
+    func appLayerConfigClassificationsAreDisjoint() {
+        let both = Set(AppLayerConfig.probes.keys)
+            .intersection(AppLayerConfig.unprobedFields.keys)
+
+        #expect(both.isEmpty, "Classified twice: \(both.sorted())")
     }
 }
 
