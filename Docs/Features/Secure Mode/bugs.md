@@ -4535,9 +4535,48 @@ if it fails — nothing staged, nothing written, no partial rewrite. This is the
 fix, which moved a key derivation to the top of activation precisely so that a key failure would be
 inert rather than half-applied, and the reasoning transfers verbatim.
 
+#### What actually guarantees the key is there — and what does not
+
+Checked rather than assumed, 2026-08-19, because the guard above rests entirely on it.
+
+**Nothing caches.** `createHybridLocalEncryptionKey()` performs an SE ECDH plus two Keychain reads on
+*every call*; `deriveSecureModeKey()` performs a Keychain read plus an SE key exchange on every call.
+Every item involved is stored `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — **not**
+`AfterFirstUnlock`. So each call requires the device to be unlocked *at that moment*, not merely
+unlocked once since boot.
+
+**Launch time is protected by configuration, not by design.** No `UIBackgroundModes` is declared in
+any Info.plist, so iOS will not background-launch the app; `App.init()` — where `migrate()` runs —
+is reached from a user tap, which implies an unlocked device. The Share extension neither builds a
+`ModelContainer` nor calls `DatabaseMigration`. That holds today, and nothing asserts it: declaring
+a background mode in a later release would silently remove this protection with no test failing.
+
+**The gap this leaves is a device lock *during* the pass**, which auto-lock makes ordinary rather
+than exotic. Because every `.encrypt()`/`.decrypt()` re-derives from the Keychain, calls made after
+the lock fail while earlier ones succeeded — a partially-applied pass, which for these two arrays is
+the wipe described above.
+
+So "derive up front and abort" is necessary but **not sufficient**, and the stronger rule is:
+
+> Derive the SE key once, then use that in-memory `SymmetricKey` for **every** element read and
+> write. Never call ambient `.encrypt()`/`.decrypt()` inside the loop.
+
+An in-memory `SymmetricKey` survives a device lock; a Keychain read does not. The array API already
+supports this — `writeBlobSlot(_:at:using:)` and `writeSequenceNumber(_:at:using:)` take the key
+explicitly, so this costs nothing to honour.
+
+`pinEnabledPerDepth` is the exception and does not need it: its writer and filler both go through
+ambient `encrypt()`, and a per-element failure there is benign — an unreadable entry reads back as
+`true` (gate up), which is its documented fallback.
+
+**For contrast, the Bug 85 pass is already safe under this.** `migrateDepthFieldsToFixedWidth` uses
+ambient calls, so a mid-pass lock makes them return nil, `fixedWidthRewrite` skips the row, and the
+pass simply converts fewer rows and retries on the next launch. It costs progress, not data. That is
+the skip-on-undecryptable rule covering a case it was not written for.
+
 Note what this means for verification: a test can prove the guard works once it exists, but it cannot
-prove the guard is present on every path that reaches the rewrite. That property wants a review of
-the code's shape, not another assertion.
+prove the guard is present on every path that reaches the rewrite, nor that no future background mode
+undermines the launch-time assumption. Those want a review of the code's shape, not another assertion.
 
 ### Test plan
 
