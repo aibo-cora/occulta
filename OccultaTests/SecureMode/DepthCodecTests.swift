@@ -176,6 +176,7 @@ private func makeContainer() throws -> ModelContainer {
         Contact.Profile.URLAddress.self,
         Contact.Profile.Key.self,
         VaultEntry.self,
+        AppLayerConfig.self,
     ])
     return try ModelContainer(
         for: schema,
@@ -313,6 +314,62 @@ struct DepthFixedWidthMigrationTests {
         let row = try context.fetch(FetchDescriptor<VaultEntry>()).first
         #expect(row?.visibleThroughDepth == nil,
                 "stamping a value here would hide an entry the user can currently see")
+    }
+
+    // MARK: - AppLayerConfig scalars
+
+    /// The dual-format read matters more here than anywhere else, because the failure is
+    /// silent and points the wrong way. `Manager.Security.init` restores
+    /// `currentDepth = persistedDepth` when the PIN gate is down, and `readPersistedDepth`
+    /// falls back to **0** — the real depth — on any decode failure. So a read that broke
+    /// on the format change would not error: it would quietly show the real address book
+    /// to someone who should be seeing a duress layer.
+    ///
+    /// `Manager.Security` is also constructed before `migrate()` runs in `App.init()`, so
+    /// this read genuinely happens against un-migrated bytes on the first launch after
+    /// upgrade. It is not a hypothetical ordering.
+    @Test("A legacy persistedDepth still reads — the fallback on failure is the real depth")
+    func legacyScalarsStillRead() throws {
+        let config = AppLayerConfig()
+
+        config.persistedDepth = try JSONEncoder().encode(3).encrypt()
+        #expect(config.readPersistedDepth() == 3, """
+            A legacy persistedDepth must still decode. It falls back to 0 on failure, which \
+            is the real depth — so a broken read here surfaces the real address book to \
+            someone who should be seeing a duress layer, with no error anywhere.
+            """)
+
+        config.coercerBaseDepth = try JSONEncoder().encode(2).encrypt()
+        #expect(config.readCoercerBaseDepth() == 2)
+
+        // And the new format round-trips through the same accessors.
+        try config.writePersistedDepth(4)
+        try config.writeCoercerBaseDepth(1)
+        #expect(config.readPersistedDepth()   == 4)
+        #expect(config.readCoercerBaseDepth() == 1)
+    }
+
+    /// Same second-order variance the vault entries had: a depth of 10 or more is two JSON
+    /// bytes where a smaller one is one. These two fields are seeded at row creation
+    /// specifically so their *presence* is forensically constant; their length should be too.
+    @Test("The config scalars converge, and stop varying with depth")
+    func configScalarsConverge() throws {
+        let context = ModelContext(try makeContainer())
+        let config = AppLayerConfig()
+        config.persistedDepth   = try JSONEncoder().encode(12).encrypt()  // 2 JSON bytes
+        config.coercerBaseDepth = try JSONEncoder().encode(3).encrypt()   // 1 JSON byte
+        context.insert(config)
+        try context.save()
+
+        try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
+
+        let row = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        #expect(row.readPersistedDepth()   == 12, "value must survive the conversion")
+        #expect(row.readCoercerBaseDepth() == 3)
+        #expect(row.persistedDepth?.count == row.coercerBaseDepth?.count, """
+            A shallow depth and a depth of 10+ must seal to the same length; otherwise the \
+            column still says which side of 10 the operator's layer is on.
+            """)
     }
 
     /// It runs on every launch, so a second run must be a no-op rather than re-sealing

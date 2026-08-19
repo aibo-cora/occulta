@@ -441,13 +441,13 @@ final class AppLayerConfig {
         guard
             let data      = self.persistedDepth,
             let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+            let value     = DepthCodec.decode(decrypted)
         else { return 0 }
         return value
     }
 
     func writePersistedDepth(_ depth: Int) throws {
-        self.persistedDepth = try JSONEncoder().encode(depth).encrypt()
+        self.persistedDepth = try DepthCodec.encode(depth).encrypt()
     }
 
     // MARK: - PIN enabled (per depth)
@@ -494,13 +494,13 @@ final class AppLayerConfig {
         guard
             let data      = self.coercerBaseDepth,
             let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+            let value     = DepthCodec.decode(decrypted)
         else { return 0 }
         return value
     }
 
     func writeCoercerBaseDepth(_ depth: Int) throws {
-        self.coercerBaseDepth = try JSONEncoder().encode(depth).encrypt()
+        self.coercerBaseDepth = try DepthCodec.encode(depth).encrypt()
     }
 
     // MARK: - Lockout counter

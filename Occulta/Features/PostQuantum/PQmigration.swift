@@ -193,6 +193,24 @@ struct DatabaseMigration {
             }
         }
 
+        // AppLayerConfig's two scalar depths. Only the scalars: the padded arrays on the
+        // same model are Bug 86, where the format and `fillerSize` have to change together
+        // and a sequence number does not fit a depth's one-byte payload at all.
+        //
+        // These are also written rarely — `coercerBaseDepth` only on a coercion event — so
+        // without this pass they would sit in the old format almost indefinitely, unlike
+        // fields that any classification change rewrites.
+        for config in try modelContext.fetch(FetchDescriptor<AppLayerConfig>()) {
+            if let rewritten = try Self.fixedWidthRewrite(of: config.persistedDepth) {
+                config.persistedDepth = rewritten
+                didChange = true
+            }
+            if let rewritten = try Self.fixedWidthRewrite(of: config.coercerBaseDepth) {
+                config.coercerBaseDepth = rewritten
+                didChange = true
+            }
+        }
+
         if didChange { try modelContext.save() }
     }
 

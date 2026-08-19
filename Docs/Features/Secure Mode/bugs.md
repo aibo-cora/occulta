@@ -4626,3 +4626,102 @@ only before one. Note this bug is why Bug 85's normalisation pass must skip rows
 the same fail-open default, written into a migration, would do this to every stranded row at once
 instead of only on rotation.
 
+## Bug 88 — Vault backup ignores `visibleThroughDepth` in both directions
+
+**Status:** **Open.** Filed 2026-08-19 while confirming, on request, how vault export/import behave
+under Secure Mode. Found by tracing `exportBackup`/`importBackup` for any reference to depth or
+Secure Mode and finding none.
+
+**Target:** unset.
+
+### Severity: Critical (security)
+
+No precondition at all — unlike Bug 87, which needs stranded ciphertext first. Any export performed
+while at a duress depth dumps the entire real vault, decrypted, into the resulting file. This is the
+same class of failure as Bug 87 (the depth-visibility protection failing open rather than leaking
+metadata about it), but reachable by ordinary use of a shipped, user-facing feature rather than by a
+corruption precondition, and it hands the coercer a portable, permanent copy rather than a
+transient on-screen view.
+
+### What happens
+
+**Export ignores depth entirely.** `exportBackup()` (`Vault+Manager+Backup.swift:160`) calls
+`fetchAllEntries()` (`Vault+Manager.swift:260`), an unfiltered fetch with no `visibleThroughDepth`
+predicate and no reference to `currentDepth`. It decrypts and serializes every entry:
+
+```swift
+let entries = try self.fetchAllEntries()
+…
+for entry in entries {
+    let labelPayload = try self.decryptLabelPayload(for: entry)
+    let content      = try self.decryptContent(for: entry)
+    backupEntries.append(VaultBackupEntry(…))   // Vault+Manager+Backup.swift:178-193
+}
+```
+
+The depth gate that exists — `Manager.Security.isEntryVisible(_:)` — is consulted by exactly one
+call site in the whole codebase, the vault list's `visibleEntries` (`Vault+Tab.swift:199-201`):
+
+```swift
+private var visibleEntries: [VaultEntry] {
+    return self.entries.filter { self.security.isEntryVisible($0) }
+}
+```
+
+`exportBackup` and `importBackup` never call it, and a repo-wide search for `secureMode` /
+`isSecureModeEnabled` under `Features/Vault` and `UI/Tabs/Vault` returns zero matches. `addEntry`
+stamps every entry with an encrypted depth ceiling specifically so it can be hidden
+(`Vault+Manager.swift:211-213`, *"Depth 0 entries get encrypt(0): real-layer items hidden from all
+duress views"*) — the export path simply never asks.
+
+`VaultBackupEntry` (`Vault+Manager+Backup.swift:56-62`) doesn't even have a field for it, so the
+classification isn't just unfiltered, it's unrepresentable in the backup format.
+
+**Import erases depth classification on the way back in.** `importBackup()`
+(`Vault+Manager+Backup.swift:231-294`) builds a fresh `VaultEntry` per restored row and sets `id`
+and `createdAt` from the backup, but never touches `visibleThroughDepth`:
+
+```swift
+let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+entry.id        = backupEntry.id
+entry.createdAt = backupEntry.createdAt
+// visibleThroughDepth left at its model default
+```
+
+The model default is `nil` (`Vault+Model.swift:194`), and `isEntryVisible` treats `nil` as *always
+visible* (`Manager+Security.swift:1515`). So a restored entry — even one that was created and hidden
+at real depth 0 — becomes visible at every depth, including any duress depth, until the user
+manually re-classifies it. `VAULT_BACKUP_GUIDE.md`'s description of import behaving "exactly as if
+the entries were created new" is inaccurate here: `addEntry` always stamps a concrete depth
+(`Vault+Manager.swift:213`, "always encrypted, never nil"); `importBackup` stamps nothing.
+
+### Reproduction
+
+1. At real depth 0, create a vault entry (`visibleThroughDepth = encode(0)`).
+2. Enter the duress PIN to reach a decoy depth > 0. Confirm the entry is absent from the vault list.
+3. From that duress depth, tap Export backup. The resulting `.occbak` file, once decrypted with the
+   BEK, contains the depth-0 entry's plaintext label and content.
+4. Separately: import any `.occbak` file on a fresh device. Every restored entry is visible at every
+   depth, including duress ones, regardless of the depth it was hidden at when exported.
+
+### Remedies to weigh
+
+1. **Filter export by `isEntryVisible` at the current depth**, matching the vault list. Simplest, but
+   changes what "backup" means — a duress-depth export would silently produce a partial (decoy-only)
+   file rather than failing or warning, which could itself read as suspicious to a coercer, or could
+   surprise a legitimate user who only ever uses depth 0 but layers entries.
+2. **Block export outright while `currentDepth > 0`.** Removes the leak with a hard rule instead of a
+   filter, at the cost of a duress-depth session being unable to produce even a decoy backup — which
+   Secure Mode elsewhere goes out of its way to make behaviorally normal.
+3. **Carry `visibleThroughDepth` in `VaultBackupEntry` and gate export the same way**, so a full
+   export still contains every entry (matching current behavior for legitimate depth-0 backup/
+   restore use) but only ever from a `currentDepth == 0` session, and import restores the original
+   ceiling instead of defaulting to always-visible. Closest to preserving today's real-depth backup
+   utility while closing both the export leak and the import regression in one change; needs a wire
+   format bump (`version: 1` → `2`) and a migration note for existing `.occbak` files, which have no
+   ceiling field to restore from.
+
+No test currently exercises `exportBackup` or `importBackup` at all — a repo-wide search for both
+names under `OccultaTests/` returns zero matches, so there is no round-trip coverage to catch this,
+depth-related or otherwise.
+
