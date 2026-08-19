@@ -222,12 +222,17 @@ extension Manager {
             // at the persisted depth so the gate stays down after the upgrade.
             let persistedDepth = config.readPersistedDepth()
             if config.pinEnabledPerDepth.isEmpty {
-                var array = AppLayerConfig.pinEnabledFillerArray()
-                if !config.readPinEnabledLegacy(), persistedDepth < array.count,
-                   let encrypted = try? JSONEncoder().encode(false).encrypt() {
-                    array[persistedDepth] = encrypted
+                config.pinEnabledPerDepth = AppLayerConfig.pinEnabledFillerArray()
+                // Through writePinEnabled, not a hand-rolled encode. It encodes UInt8, which
+                // this array's whole design depends on: a Bool seals to 33 bytes ("false")
+                // against every other entry's 29, so the disabled depth would be identifiable
+                // by size alone — the exact hazard `pinEnabledFillerArray`'s doc comment
+                // exists to prevent. `readPinEnabled` also decodes UInt8, so a Bool plaintext
+                // was unreadable and fell back to `true`, meaning the gate this branch is
+                // trying to keep down came straight back up. See Bug 86's amendment.
+                if !config.readPinEnabledLegacy(), persistedDepth < config.pinEnabledPerDepth.count {
+                    try? config.writePinEnabled(false, at: persistedDepth)
                 }
-                config.pinEnabledPerDepth = array
                 try? context.save()
             }
 

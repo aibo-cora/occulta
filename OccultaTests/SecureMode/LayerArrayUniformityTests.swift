@@ -90,14 +90,17 @@ struct LayerArrayUniformityTests {
         }
     }
 
-    /// The amendment. `pinEnabledPerDepth`'s steady-state writer is correct — `UInt8`, one
-    /// byte either way — but the legacy-upgrade path in `Manager.Security.init` writes a
-    /// `Bool`. `"false"` is five bytes where `UInt8` is one.
+    /// **Fixed** — Bug 86's amendment, now a regression guard rather than a reproduction.
     ///
-    /// Two failures, not one: the element is a unique size *and* `readPinEnabled` decodes
-    /// `UInt8`, so it cannot parse what that path wrote and falls back to `true`. The
-    /// block's own comment says it records the old scalar "so the gate stays down after the
-    /// upgrade"; the gate comes back up on every read.
+    /// The legacy-upgrade path in `Manager.Security.init` used to hand-roll
+    /// `JSONEncoder().encode(false)`, which sealed to 33 bytes against every other entry's
+    /// 29 — identifying the disabled depth by size alone, the exact hazard this array's own
+    /// doc comment exists to prevent. It failed twice over: `readPinEnabled` decodes
+    /// `UInt8`, could not parse a `Bool` plaintext, and fell back to `true`, so the gate
+    /// that branch means to keep down came straight back up.
+    ///
+    /// It now routes through `writePinEnabled`, which encodes `UInt8` like every other
+    /// writer.
     ///
     /// Needs the Enclave: this path and the array's filler both go through ambient
     /// `encrypt()`.
@@ -126,17 +129,15 @@ struct LayerArrayUniformityTests {
         let upgraded = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
         let lengths  = Set(upgraded.pinEnabledPerDepth.map(\.count))
 
-        withKnownIssue("Bug 86 amendment: the upgrade path encodes Bool, not UInt8") {
-            #expect(lengths.count == 1, """
-                pinEnabledPerDepth holds \(lengths.sorted()) distinct element lengths. The \
-                oversized one is the depth whose PIN gate was disabled — which is exactly \
-                what this array's own doc comment says must not be identifiable by size.
-                """)
-            #expect(upgraded.readPinEnabled(at: 0) == false, """
-                readPinEnabled decodes UInt8 and cannot parse a Bool plaintext, so it falls \
-                back to true. The gate the upgrade meant to keep down comes back up.
-                """)
-        }
+        #expect(lengths.count == 1, """
+            pinEnabledPerDepth holds \(lengths.sorted()) distinct element lengths. The \
+            oversized one is the depth whose PIN gate was disabled — which is exactly \
+            what this array's own doc comment says must not be identifiable by size.
+            """)
+        #expect(upgraded.readPinEnabled(at: 0) == false, """
+            readPinEnabled decodes UInt8 and cannot parse a Bool plaintext, so it falls \
+            back to true. The gate the upgrade meant to keep down comes back up.
+            """)
     }
 }
 

@@ -4313,6 +4313,10 @@ see "Why this one can lose user data". **Amended the same day** — a third arra
 narrower version of the same defect on one path, plus a functional failure alongside it; see
 "Amendment" below. The scope table's `pinEnabledPerDepth` row was corrected accordingly.
 
+**The amendment is fixed** (2026-08-19); the two array defects this entry was opened for are not. The
+amendment was separable because it needed neither a format change, a `fillerSize` change, nor a
+migration — see the note at the end of that section.
+
 **Target:** unset. Sequenced after Bug 85's format decision, since both want the same fixed-width
 treatment and the same migration point.
 
@@ -4407,7 +4411,7 @@ function three lines away.
 |---|---|---|---|
 | `sealedBlobSlots` | 29 or 30 | 30 | **No** — 29 proves occupancy |
 | `layerSequenceNumbers` | 29–38; ~98% are 37–38 | 30 | **No** — essentially always distinguishable |
-| `pinEnabledPerDepth` | 29 (`UInt8`) — **except one path, below** | 29 (encrypted `1`) | Mostly, by design |
+| `pinEnabledPerDepth` | 29 (`UInt8`) | 29 (encrypted `1`) | Yes — one path was not, now fixed |
 | `sealedNormalVerifiers` | 53 (`PINManager.verifierSize` = 12 + sentinel + 16) | 53 | Yes, by design |
 | `sealedDuressVerifiers` | 53 | 53 | Yes, by design |
 
@@ -4461,9 +4465,24 @@ trying to record.
 Reachable only on installs predating per-layer PIN tracking whose legacy scalar was `false` — but
 those are precisely the installs an upgrade release exists to carry forward.
 
-**Fix:** write `UInt8(0)` rather than `false`, i.e. route this path through `writePinEnabled` instead
-of hand-rolling the encode. That corrects the size and makes the value readable in one change. It
-does not need the fixed-width work the other two arrays require, so it can land on its own.
+**Fixed 2026-08-19.** The path now routes through `writePinEnabled` instead of hand-rolling the
+encode, which corrects the size and makes the value readable in one change — `writePinEnabled`
+encodes `UInt8` like every other writer, so the disabled entry is 29 bytes like its neighbours and
+`readPinEnabled` can parse it.
+
+This landed ahead of the rest of the entry because it is genuinely separable: no format change, no
+`fillerSize` change, no migration, and it touches neither array that sits under the SE Secure Mode
+key. None of the hazards in "The migration hazard" apply to it.
+
+`LayerArrayUniformityTests.legacyPinGateUpgradeIsUniformAndReadable` was written as a reproduction —
+driving `Manager.Security.init` with a pre-upgrade row rather than replicating the write, so the
+defect was confirmed reachable through the real path — and now passes with its `withKnownIssue`
+wrapper removed. It stays as the regression guard. The other three tests in that file still record
+expected failures, which is the accurate picture: one of the four defects is closed.
+
+**Still open in this array, separately:** `pinEnabledFillerArray()` falls back to `randomFiller()`
+(30 bytes) if `encrypt()` fails, against 29-byte real entries. That only arises when key derivation
+is unavailable, in which case little else works either, so it is noted rather than rated.
 
 **Also variable, separately:** the scalars `persistedDepth` (`:450`) and `coercerBaseDepth` (`:503`)
 encode a raw depth, so they are 29 bytes below depth 10 and 30 at or above it. Single-valued, so they
