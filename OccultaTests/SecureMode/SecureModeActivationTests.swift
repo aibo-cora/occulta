@@ -145,7 +145,7 @@ private func secureEnclaveAvailable() -> Bool {
 /// any activation/deactivation has happened.
 private func decodedDepth(from data: Data?) -> Int? {
     guard let data, let plain = data.decrypt() else { return nil }
-    return try? JSONDecoder().decode(Int.self, from: plain)
+    return DepthCodec.decode(plain)
 }
 
 /// Same as `decodedDepth`, but decrypts using the given `TestKeyManager`'s CURRENT
@@ -161,7 +161,7 @@ private func decodedStagedDepth(from data: Data?, keyManager: TestKeyManager) ->
           let plain = try? AES.GCM.open(box, using: key,
                                          authenticating: EncryptionScheme.v2_hybridPQ.aad)
     else { return nil }
-    return try? JSONDecoder().decode(Int.self, from: plain)
+    return DepthCodec.decode(plain)
 }
 
 // MARK: - Vault entry helpers

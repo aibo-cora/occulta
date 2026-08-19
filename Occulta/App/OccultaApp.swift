@@ -146,6 +146,16 @@ struct OccultaApp: App {
             #endif
         }
 
+        // Must run after the three backfills above: they own the nil case, and this pass
+        // deliberately leaves nil alone rather than manufacturing a value of its own.
+        do {
+            try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("depth field fixed-width normalisation error: \(error)")
+            #endif
+        }
+
         do {
             try DatabaseMigration.migrateGlobalShardConfigToPerContact(
                 modelContext: context, shardCustodyManager: self.shardCustodyManager

@@ -74,11 +74,15 @@ extension Contact {
         /// Named `deletionToken` (not `isDeleted`) to avoid shadowing NSManagedObject.isDeleted.
         var deletionToken: Data? = nil
 
-        /// Encrypted depth-visibility (encrypted JSON Int):
+        /// Encrypted depth-visibility (fixed-width plaintext, via `DepthCodec`):
         ///   Int.max — always visible (default for all new contacts)
         ///   0       — hidden at all duress depths
         ///   N       — visible through duress depth N, hidden at N+1 and deeper
-        /// All values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+        /// Every value encodes to exactly two bytes, so the sealed column is 30 bytes
+        /// whichever one is stored. That is a security property rather than an incidental
+        /// one: AES-GCM does not pad, so a variable-length plaintext makes the column
+        /// length a keyless classifier over safe versus hidden contacts — which is what
+        /// the previous JSON encoding did, for every row, until Bug 85.
         /// Always non-nil after creation (Contact+Manager.swift) or the legacy backfill
         /// migration — nil is not a valid steady state; see forensic-trace-avoidance.md S6.
         var visibleThroughDepth: Data? = nil

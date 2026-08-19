@@ -134,6 +134,68 @@ struct DatabaseMigration {
         try modelContext.save()
     }
 
+    /// Converts any remaining legacy JSON depth plaintexts to `DepthCodec`'s fixed-width
+    /// format, so every row's ciphertext is the same length regardless of value (Bug 85).
+    ///
+    /// Runs at launch rather than inside rotation, and that is the point: rotation only
+    /// happens on devices that use Secure Mode, so a format transition riding it would
+    /// leave the format mix correlated with the very secret the fix exists to hide. A
+    /// launch pass runs identically on every install, which is what restores uniformity
+    /// as the innocent baseline.
+    ///
+    /// Four cases are deliberately left byte-identical rather than rewritten:
+    ///
+    /// - **Absent (nil).** The three backfills above own that case; this pass must run
+    ///   after them and must not manufacture a value of its own.
+    /// - **Undecryptable.** This is the important one. `isVisible` fails *closed* on a
+    ///   ciphertext it cannot read — "non-nil field that won't decrypt = sensitive shell;
+    ///   exclude" — so a stranded row is currently *hidden*. Resolving it to a default
+    ///   here would persist that default, and the only permissive default available
+    ///   (`Int.max`) means visible at every duress depth. That is Bug 87's failure mode;
+    ///   written into a migration it would fire on every stranded row at once instead of
+    ///   one per rotation. Preserving the bytes keeps the fail-closed reading intact.
+    /// - **Already fixed-width.** Makes the pass idempotent across launches.
+    /// - **Would not survive the round-trip.** A belt-and-braces guard: the value is only
+    ///   rewritten when decoding the re-encoded form reproduces it exactly, so the pass
+    ///   can never quietly change a value it did not fully understand.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateDepthFieldsToFixedWidth(modelContext: ModelContext) throws {
+        let contacts = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
+        var didChange = false
+
+        for contact in contacts {
+            if let rewritten = try Self.fixedWidthRewrite(of: contact.visibleThroughDepth) {
+                contact.visibleThroughDepth = rewritten
+                didChange = true
+            }
+            if let rewritten = try Self.fixedWidthRewrite(of: contact.globalTrusteeDepth) {
+                contact.globalTrusteeDepth = rewritten
+                didChange = true
+            }
+            if let rewritten = try Self.fixedWidthRewrite(of: contact.originDepth) {
+                contact.originDepth = rewritten
+                didChange = true
+            }
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
+    /// The fixed-width re-encryption of `field`, or nil when it must be left untouched.
+    /// Every nil return is a case the migration is required not to rewrite — see
+    /// `migrateDepthFieldsToFixedWidth`.
+    private static func fixedWidthRewrite(of field: Data?) throws -> Data? {
+        guard let field                                  else { return nil }  // absent
+        guard let plain = field.decrypt()                else { return nil }  // stranded
+        guard let value = DepthCodec.decode(plain)       else { return nil }  // unreadable
+        let reencoded = DepthCodec.encode(value)
+        guard reencoded != plain                         else { return nil }  // already converted
+        guard DepthCodec.decode(reencoded) == value      else { return nil }  // would not round-trip
+        guard let sealed = try reencoded.encrypt()       else { return nil }  // seal failed
+        return sealed
+    }
+
     /// One-time consolidation onto a single trustee mechanism: reads any existing
     /// `GlobalShardConfig.trusteeIDs` (the old depth-0-only global trustee list) and
     /// stamps `globalTrusteeDepth = encrypt(0)` on each of those contacts, then wipes
