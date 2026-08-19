@@ -4565,9 +4565,41 @@ An in-memory `SymmetricKey` survives a device lock; a Keychain read does not. Th
 supports this — `writeBlobSlot(_:at:using:)` and `writeSequenceNumber(_:at:using:)` take the key
 explicitly, so this costs nothing to honour.
 
-`pinEnabledPerDepth` is the exception and does not need it: its writer and filler both go through
+**But holding the key is only half of it, and not the half that carries the guarantee.** A device
+lock takes away two things, not one. The SQLite store, WAL and SHM files are stamped
+`FileProtectionType.complete` at init and re-stamped after every save (`OccultaApp.swift:73`, S3 in
+`forensic-trace-avoidance.md`). `NSFileProtectionComplete` means the OS encrypts those files while
+the device is locked — inaccessible **to the app itself**, not merely to an examiner. So an
+in-memory key keeps the crypto working right up to the moment the pass tries to persist, and then
+the write fails anyway.
+
+Which is survivable, and the reason is the shape of the write rather than the key:
+
+> Mutate every element in memory, then call `save()` **exactly once**, at the end. Never per element.
+
+SQLite transactions are atomic, so the pass either commits in full or not at all. A lock mid-pass
+means the save fails, nothing is persisted, and the next launch retries from the original bytes. The
+in-memory key is what makes a *complete* result available at that single save; the single save is
+what makes a partial result impossible. Saving per element would defeat it entirely — holding the
+key would not help, and the result would be a half-converted array with mismatched element sizes,
+which is this bug again in a new shape.
+
+So the full requirement is four things, of which the key is only the first:
+
+1. Derive the SE key **once**, into an in-memory `SymmetricKey`.
+2. Fetch the config and materialise the arrays into locals early, so nothing lazy-faults from a file
+   that may since have become unreadable. (Belt-and-braces — SwiftData's faulting behaviour here has
+   not been verified in detail.)
+3. Do all 32 elements' crypto in memory, with the held key.
+4. Assign back and `save()` exactly once.
+
+`pinEnabledPerDepth` is exempt from (1) and does not need it: its writer and filler both go through
 ambient `encrypt()`, and a per-element failure there is benign — an unreadable entry reads back as
-`true` (gate up), which is its documented fallback.
+`true` (gate up), which is its documented fallback. It is **not** exempt from (4).
+
+Bug 85's shipped pass already satisfies (4) — `migrateDepthFieldsToFixedWidth` accumulates into
+`didChange` and saves once at the end. That was written for idempotence, not for lock-safety, and
+gets lock-safety for free.
 
 **For contrast, the Bug 85 pass is already safe under this.** `migrateDepthFieldsToFixedWidth` uses
 ambient calls, so a mid-pass lock makes them return nil, `fixedWidthRewrite` skips the row, and the
