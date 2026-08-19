@@ -175,6 +175,7 @@ private func makeContainer() throws -> ModelContainer {
         Contact.Profile.PostalAddress.self,
         Contact.Profile.URLAddress.self,
         Contact.Profile.Key.self,
+        VaultEntry.self,
     ])
     return try ModelContainer(
         for: schema,
@@ -262,6 +263,56 @@ struct DepthFixedWidthMigrationTests {
 
         let row = try context.fetch(FetchDescriptor<Contact.Profile>()).first
         #expect(row?.visibleThroughDepth == nil)
+    }
+
+    // MARK: - VaultEntry
+
+    /// `VaultEntry` carries the same stamp under the same key, with a narrower range — no
+    /// `Int.max` sentinel, just a depth — so its leak is the second-order one: depth ≥ 10
+    /// is two JSON bytes where a smaller depth is one. Same defect, same fix.
+    @Test("Vault entries converge too, values intact")
+    func vaultEntriesConverge() throws {
+        let context = ModelContext(try makeContainer())
+        let shallow = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+        shallow.visibleThroughDepth = try JSONEncoder().encode(2).encrypt()
+        let deep = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+        deep.visibleThroughDepth = try JSONEncoder().encode(12).encrypt()   // 2 JSON bytes
+        context.insert(shallow)
+        context.insert(deep)
+        try context.save()
+
+        try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
+
+        let rows = try context.fetch(FetchDescriptor<VaultEntry>())
+        let lengths = Set(rows.compactMap { $0.visibleThroughDepth?.count })
+        #expect(lengths.count == 1,
+                "a depth of 12 must not be distinguishable from 2 by length, got \(lengths.sorted())")
+
+        func depth(_ id: UUID) -> Int? {
+            rows.first { $0.id == id }?.visibleThroughDepth
+                .flatMap { $0.decrypt() }.flatMap { DepthCodec.decode($0) }
+        }
+        #expect(depth(shallow.id) == 2)
+        #expect(depth(deep.id)    == 12)
+    }
+
+    /// `VaultEntry`'s nil means something `Contact.Profile`'s does not. `isEntryVisible`
+    /// reads nil as *visible at every depth* — the documented state for entries pre-dating
+    /// the field — so manufacturing a value here would change what the user sees, not just
+    /// the bytes. There is no backfill that owns this case either.
+    @Test("A nil vault stamp stays nil — it means visible, not missing")
+    func nilVaultStampIsUntouched() throws {
+        let context = ModelContext(try makeContainer())
+        let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+        entry.visibleThroughDepth = nil
+        context.insert(entry)
+        try context.save()
+
+        try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
+
+        let row = try context.fetch(FetchDescriptor<VaultEntry>()).first
+        #expect(row?.visibleThroughDepth == nil,
+                "stamping a value here would hide an entry the user can currently see")
     }
 
     /// It runs on every launch, so a second run must be a no-op rather than re-sealing

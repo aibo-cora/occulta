@@ -145,8 +145,11 @@ struct DatabaseMigration {
     ///
     /// Four cases are deliberately left byte-identical rather than rewritten:
     ///
-    /// - **Absent (nil).** The three backfills above own that case; this pass must run
-    ///   after them and must not manufacture a value of its own.
+    /// - **Absent (nil).** For `Contact.Profile` the three backfills above own that case, so
+    ///   this pass must run after them and must not manufacture a value of its own. For
+    ///   `VaultEntry` nil is a legitimate steady state rather than a gap — `isEntryVisible`
+    ///   reads it as "visible at every depth" for entries pre-dating the field — so
+    ///   inventing a value there would change what the user sees. Either way: leave it.
     /// - **Undecryptable.** This is the important one. `isVisible` fails *closed* on a
     ///   ciphertext it cannot read — "non-nil field that won't decrypt = sensitive shell;
     ///   exclude" — so a stranded row is currently *hidden*. Resolving it to a default
@@ -175,6 +178,17 @@ struct DatabaseMigration {
             }
             if let rewritten = try Self.fixedWidthRewrite(of: contact.originDepth) {
                 contact.originDepth = rewritten
+                didChange = true
+            }
+        }
+
+        // VaultEntry carries the same kind of stamp under the same local DB key. Its range
+        // is narrower — no Int.max sentinel, only a depth — so the leak is the second-order
+        // one: a depth of 10 or more is two JSON bytes where a smaller one is one. Same
+        // defect, same fix.
+        for entry in try modelContext.fetch(FetchDescriptor<VaultEntry>()) {
+            if let rewritten = try Self.fixedWidthRewrite(of: entry.visibleThroughDepth) {
+                entry.visibleThroughDepth = rewritten
                 didChange = true
             }
         }

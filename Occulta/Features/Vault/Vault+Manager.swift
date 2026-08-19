@@ -210,7 +210,7 @@ final class VaultManager {
 
         // Stamp depth ceiling — always encrypted, never nil.
         // Depth 0 entries get encrypt(0): real-layer items hidden from all duress views.
-        entry.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
+        entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)

@@ -304,7 +304,7 @@ private func secureEnclaveAvailable() -> Bool {
 
         guard let data = entry.visibleThroughDepth,
               let plain = data.decrypt(),
-              let value = try? JSONDecoder().decode(Int.self, from: plain)
+              let value = DepthCodec.decode(plain)
         else { Issue.record("visibleThroughDepth did not decrypt"); return }
         #expect(value == 2)
     }
@@ -318,7 +318,7 @@ private func secureEnclaveAvailable() -> Bool {
 
         guard let data = entry.visibleThroughDepth,
               let plain = data.decrypt(),
-              let value = try? JSONDecoder().decode(Int.self, from: plain)
+              let value = DepthCodec.decode(plain)
         else { Issue.record("visibleThroughDepth did not decrypt"); return }
         #expect(value == 0)
     }

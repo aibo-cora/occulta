@@ -569,7 +569,7 @@ extension Manager {
                 //   • nil depth (Bug 26): pre-existing entry never stamped → hide at all duress depths.
                 //   • non-nil but unreadable (Bug 27): corrupt/wrong-key ciphertext → treat as hidden.
                 //   • non-nil and readable: re-encrypt the existing value verbatim.
-                let hiddenData = try JSONEncoder().encode(0)
+                let hiddenData = DepthCodec.encode(0)
                 for entry in try vaultManager.fetchAllEntries() {
                     let plain = entry.visibleThroughDepth.flatMap { $0.decrypt() } ?? hiddenData
                     entry.visibleThroughDepth = try AES.GCM.seal(
@@ -919,12 +919,12 @@ extension Manager {
                     // hidden, matching activateSecureMode's own fallback for this field.
                     let entryDepth: Int = {
                         guard let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return 0 }
                         return value
                     }()
                     entry.visibleThroughDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(entryDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(entryDepth), using: stagedKey, authenticating: aad
                     ).combined
                 }
                 if !allVaultEntries.isEmpty {
@@ -1514,7 +1514,7 @@ extension Manager {
         func isEntryVisible(_ entry: VaultEntry) -> Bool {
             guard let data = entry.visibleThroughDepth else { return true }
             guard let decrypted = data.decrypt(),
-                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
+                  let value = DepthCodec.decode(decrypted)
             else { return false }  // non-nil field that won't decrypt = sensitive shell; exclude
             return value == self.currentDepth
         }
