@@ -4315,7 +4315,9 @@ narrower version of the same defect on one path, plus a functional failure along
 
 **The amendment is fixed** (2026-08-19); the two array defects this entry was opened for are not. The
 amendment was separable because it needed neither a format change, a `fillerSize` change, nor a
-migration — see the note at the end of that section.
+migration — see the note at the end of that section. Remaining scope is therefore **two** arrays, not
+three: `sealedBlobSlots` and `layerSequenceNumbers`. The design for them is settled — see "Settled
+design" — and the reason the third is excluded is recorded with it.
 
 **Target:** unset. Sequenced after Bug 85's format decision, since both want the same fixed-width
 treatment and the same migration point.
@@ -4504,21 +4506,68 @@ privacy property — it **permanently destroys every sensitive contact sealed in
 raises the bar well above Bug 85's: the dual-format read is not a nicety here, it is the difference
 between a fix and data loss, and it needs a test that pops a layer written in the old format.
 
-### Remedies to weigh
+### Settled design (2026-08-19)
 
-1. **Fixed-width plaintext per array, with filler derived from it rather than hardcoded.** Sequence
-   numbers need 4 bytes (`UInt32`, fixed endianness) → 32-byte sealed; slots need 1 byte → 29-byte
-   sealed. That means two filler constants, each computed from its array's canonical encoding so the
-   two can never drift apart again — the present bug is exactly that drift.
-2. **One width for both**, padding the slot index out to the sequence number's width. Fewer
-   constants, one uniform size across both arrays, at the cost of 3 wasted bytes per slot entry.
-3. **Reuse Bug 85's codec for the slot array only** and give sequence numbers their own fixed-width
-   type. The slot array's domain (0–31) is identical to the depth fields'; the sequence number's is
-   not, and forcing it through a one-byte codec would truncate it.
+**Scope: two arrays.** `sealedBlobSlots` and `layerSequenceNumbers`. `pinEnabledPerDepth` is
+deliberately *excluded* now that its one defect is fixed — see "Why the third array is not in scope".
 
-Whichever is chosen, `fillerSize` must stop being a literal. The guard is a test asserting that
-**every element of every padded array has identical length** — evaluated after a real write at some
-depth, since all five arrays are trivially uniform before one.
+**One codec at one width**, sized by the widest value any of the two holds:
+
+| Array | Values | Needs |
+|---|---|---|
+| `sealedBlobSlots` | slot index 0–31 | 1 byte |
+| `layerSequenceNumbers` | `Int(UInt32)`, full 32-bit | **4 bytes** |
+
+```
+byte 0     0xFF                format tag
+bytes 1–4  UInt32 big-endian   payload
+```
+
+Five plaintext bytes → **33 sealed**. `fillerSize` becomes `LayerArrayCodec.sealedSize`, computed as
+`1 + payloadWidth + 28`, never a literal.
+
+**Why one width rather than one per array.** This bug *is* a drift between a format and a filler
+constant. Two widths means two constants and two chances to drift again. The cost is 3 wasted bytes
+per slot entry — 96 bytes across the whole array — against removing the failure mode entirely.
+
+**Why a tag byte.** The read path must accept legacy JSON for as long as un-migrated rows exist, and
+a legacy sequence-number plaintext can be any length from 1 to 10 bytes, so length alone cannot
+separate the formats. Legacy plaintexts are JSON integers, hence ASCII, hence they begin with `-`
+(0x2D) or a digit (0x30–0x39); `0xFF` cannot begin one. Same discriminator as `DepthCodec`, for the
+same reason.
+
+**`DepthCodec` stays separate at 2 bytes.** Unifying would mean re-migrating the seven depth fields
+already converted and correct, which is churn and risk on working code. Cross-field uniformity
+between a column and an array element buys nothing — nobody compares them.
+
+### Why the third array is not in scope
+
+`pinEnabledPerDepth` was the third broken array; its `Bool` path is fixed and every writer now
+encodes `UInt8` (`writePinEnabled`, `reencrypt`'s fallback, `ensurePadded`, `pinEnabledFillerArray`).
+Three reasons to leave it alone rather than fold it into the new codec:
+
+1. It is correct. Touching it is churn on working code.
+2. It is under the **local DB key**, while the two in scope are under the **SE Secure Mode key**, so
+   they cannot share a migration pass anyway — the tidiness of one shared constant does not buy a
+   shared pass.
+3. **It already implements the principle this fix is trying to establish.** Its filler is not a
+   hardcoded size; it is literally `encode(UInt8(1)).encrypt()`, so the filler *is* the encoding and
+   the two cannot drift apart. That is exactly why it is correct, and exactly what `fillerSize = 30`
+   fails to do for the other two.
+
+**The two in scope cannot copy that trick, and the reason is semantic rather than technical.** For
+`pinEnabledPerDepth`, "no entry" is not a state — every depth has a gate, defaulting to `true` — so
+encrypting `1` as filler is honest. For the blob arrays, "no layer at this depth" *is* the state
+filler represents, and it must be indistinguishable from a real entry to someone without the key. Any
+real encryption would decode to some slot index. So those two need **random** filler, sized from the
+codec.
+
+**Still open in `pinEnabledPerDepth`, separately:** `pinEnabledFillerArray()` falls back to
+`randomFiller()` (30 bytes) against 29-byte real entries when `encrypt()` fails. Only reachable when
+key derivation is unavailable, in which case little else works either.
+
+The guard remains a test asserting that **every element of every padded array has identical length**,
+evaluated after a real write at some depth, since all five arrays are trivially uniform before one.
 
 ### The migration hazard: no key means "everything looks like filler"
 
