@@ -4661,9 +4661,19 @@ Phase 2, with the migration, in rising order of what they protect:
 
 ## Bug 87 — A stranded `visibleThroughDepth` is un-hidden by rotation, in both directions
 
-**Status:** **Open.** Filed 2026-08-18 while writing Bug 85's migration guards. Found by asking what
-a normalisation pass must do with a row it cannot decrypt, then discovering the shipped rotation
-paths already answer that question wrongly.
+**Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while writing Bug 85's migration guards. Found by
+asking what a normalisation pass must do with a row it cannot decrypt, then discovering the shipped
+rotation paths already answer that question wrongly.
+
+Both halves were fixed as remedy 1. Activation's three depth fields moved to `reencryptPreserving`,
+so a stranded ceiling is no longer nil-ed into "visible everywhere". Deactivation now separates
+*absent* from *undecryptable*: absent still resolves to `Int.max` (never classified, per S6), while
+undecryptable resolves to `0` — hidden at every duress depth, still visible to the real user at depth
+0, which is the fail-safe S7 already states for vault entries.
+
+Guarded by `StrandedCeilingRotationTests`, verified non-vacuous by stashing the fix and confirming
+both reproductions fail without it, with a third test asserting a readable ceiling is untouched by
+the new fallback.
 
 **Target:** unset, but this is separable from Bug 85 and much smaller — the fix is a fallback change
 in two places, with no wire-format implications.

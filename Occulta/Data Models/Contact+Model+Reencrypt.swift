@@ -43,9 +43,21 @@ extension Contact.Profile {
         self.thumbnailImageData      = try reencrypt(data: self.thumbnailImageData,      to: newKey, aad: aad)
         self.forwardSecrecyEncrypted = try reencrypt(data: self.forwardSecrecyEncrypted, to: newKey, aad: aad)
         self.signedAttributes        = try reencrypt(data: self.signedAttributes,        to: newKey, aad: aad)
-        self.visibleThroughDepth     = try reencrypt(data: self.visibleThroughDepth,     to: newKey, aad: aad)
-        self.globalTrusteeDepth      = try reencrypt(data: self.globalTrusteeDepth,      to: newKey, aad: aad)
-        self.originDepth             = try reencrypt(data: self.originDepth,             to: newKey, aad: aad)
+        // Preserving, for the same reason as `deletionToken` below — Bug 87.
+        //
+        // `reencrypt(data:)` returns nil for anything it cannot decrypt, and nil is *not* a
+        // neutral value for these three. `isVisible` reads a nil ceiling as "visible at every
+        // depth", so nil-ing a stranded `visibleThroughDepth` un-hides exactly the contact it
+        // was hiding; the launch backfill then re-stamps it to `Int.max`, cementing that.
+        // A nil `originDepth` likewise stops confining a duress-origin contact, dropping it
+        // through to a ceiling check that was never meant to protect it.
+        //
+        // Preserving the stranded ciphertext keeps `isVisible`'s fail-closed reading intact:
+        // present-but-unreadable stays hidden, which is the safe direction and the one S7
+        // already documents for vault entries.
+        self.visibleThroughDepth     = try reencryptPreserving(data: self.visibleThroughDepth, to: newKey, aad: aad)
+        self.globalTrusteeDepth      = try reencryptPreserving(data: self.globalTrusteeDepth,  to: newKey, aad: aad)
+        self.originDepth             = try reencryptPreserving(data: self.originDepth,         to: newKey, aad: aad)
 
         // Preserving, NOT the nil-on-failure helper — and the reason is security, not data.
         //

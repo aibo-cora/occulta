@@ -838,13 +838,24 @@ extension Manager {
                 for profile in try contactManager.fetchAllContacts() {
                     // Decode the contact's current classification BEFORE re-encrypting
                     // other fields — this still uses the active OLD canonical key.
-                    // Same fallback as activateSecureMode's own classification step:
-                    // undecryptable or absent → Int.max (safe / never classified).
+                    //
+                    // Absent and undecryptable are deliberately NOT the same fallback here
+                    // (Bug 87). Absent means never classified, so Int.max — safe — is right.
+                    // Undecryptable means the value is *unknown*, and this loop re-seals
+                    // whatever it decides into a readable field: resolving an unknown to
+                    // Int.max persists "visible at every duress depth" for a contact that
+                    // `isVisible` was correctly keeping hidden, irreversibly, because the
+                    // original ciphertext is then gone.
+                    //
+                    // 0 is the fail-safe: hidden at every duress depth, still visible to the
+                    // real user at depth 0. Same principle S7 states for vault entries — an
+                    // entry invisible in duress mode is an inconvenience, one that is visible
+                    // is a security failure.
                     let contactDepth: Int = {
-                        guard let data = profile.visibleThroughDepth,
-                              let plain = data.decrypt(),
+                        guard let data = profile.visibleThroughDepth else { return Int.max }
+                        guard let plain = data.decrypt(),
                               let value = DepthCodec.decode(plain)
-                        else { return Int.max }
+                        else { return 0 }
                         return value
                     }()
                     // Same preserve-real-value treatment for the global-trustee stamp —
