@@ -1193,3 +1193,136 @@ struct SecureModeRotationKeyGuardTests {
         #expect(survivor.visibleThroughDepth == ceiling, "aborted rotation must not mutate contacts")
     }
 }
+
+// MARK: - Launch migration composed with rotation
+
+/// The fixed-width normalisation (Bug 85) runs in `App.init()`, before any UI and before
+/// PIN entry, while rotation runs later on user action. These two have to compose in
+/// every order, and a device part-way through the rollout has a *mixed* population — some
+/// rows converted, some not — which is the state most likely to be got wrong.
+@Suite("Secure Mode — launch migration composed with rotation", .serialized)
+struct DepthMigrationRotationCompositionTests {
+
+    /// Migration first, then a full cycle. The ceiling has to survive both.
+    @Test("A migrated contact survives activate → deactivate with its ceiling intact",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func migratedContactSurvivesFullCycle() async throws {
+        let c = try makeComponents()
+        let id = "migrated-\(UUID().uuidString)"
+
+        // Seed in the OLD format, exactly as a pre-upgrade install has it.
+        try insertContact(identifier: id, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(0).encrypt())
+
+        // Launch migration converts it to fixed-width.
+        try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: ModelContext(c.container))
+        let afterMigration = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedDepth(from: afterMigration?.visibleThroughDepth) == 0,
+                "migration must preserve the ceiling verbatim")
+
+        try c.security.configurePIN("111111")
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "222222",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("222222"))
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "222222",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0, """
+            A contact converted to fixed-width by the launch migration lost its ceiling \
+            across an activate/deactivate cycle. The rotation paths must read both formats.
+            """)
+    }
+
+    /// The half-converted population: a device part-way through the rollout has some rows
+    /// in each format, and deactivation must read both identically.
+    ///
+    /// Contacts are inserted AFTER activation for the reason in this file's header — a row
+    /// that rides through an activation is re-sealed under `TestKeyManager`'s staged key,
+    /// which the deactivation path's ambient `.decrypt()` (real `Manager.Key`) cannot read,
+    /// so it would fall back to `Int.max` for *both* formats and prove nothing about
+    /// either. In production both are the same key manager and that split does not exist.
+    /// Ceilings are deeper than any live layer so the assertion isolates format handling
+    /// from cascade semantics.
+    @Test("Legacy and fixed-width rows deactivate identically",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func mixedFormatPopulationSurvivesDeactivation() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("333333")
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "333333", duressPIN: "444444",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+        c.security.applyVerifyState(for: try c.security.verify("444444"))
+
+        let legacyID = "legacy-\(UUID().uuidString)"
+        let fixedID  = "fixed-\(UUID().uuidString)"
+        let safeID   = "safe-\(UUID().uuidString)"
+
+        // Same ceiling, two formats — the only variable under test.
+        try insertContact(identifier: legacyID, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(5).encrypt())
+        try insertContact(identifier: fixedID, in: c.container,
+                          visibleThroughDepth: try DepthCodec.encode(5).encrypt())
+        // The commonest value, in the old format — the one Bug 85 was actually about.
+        try insertContact(identifier: safeID, in: c.container,
+                          visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt())
+
+        try await c.security.deactivateSecureMode(
+            confirmingEntryPIN: "444444",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let rows = try fetchAllProfiles(from: c.container)
+        func ceiling(_ id: String) -> Int? {
+            decodedStagedDepth(from: rows.first { $0.identifier == id }?.visibleThroughDepth,
+                               keyManager: c.keyManager)
+        }
+        #expect(ceiling(legacyID) == 5,       "an un-migrated legacy row must keep its ceiling")
+        #expect(ceiling(fixedID)  == 5,       "an already-converted row must keep its ceiling")
+        #expect(ceiling(safeID)   == Int.max, "a legacy Int.max must not be lost or truncated")
+        #expect(ceiling(legacyID) == ceiling(fixedID),
+                "the two formats must be indistinguishable to the rotation path")
+
+        // And the mix resolves itself: rotation re-seals every row through the codec, so
+        // all three come out one length regardless of which format they went in as.
+        let lengths = Set([legacyID, fixedID, safeID].compactMap { id in
+            rows.first { $0.identifier == id }?.visibleThroughDepth?.count
+        })
+        #expect(lengths.count == 1,
+                "after a rotation every row must be one ciphertext length, got \(lengths.sorted())")
+    }
+
+    /// The migration is written to skip rows it cannot decrypt. An interrupted rotation
+    /// leaves exactly that: rows sealed under a key that is no longer canonical. The
+    /// migration must be inert against them rather than resolving them to a default.
+    @Test("The migration is a no-op against rows it cannot decrypt, leaving them for rotation",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func migrationIsInertAgainstForeignKeyRows() throws {
+        let c = try makeComponents()
+        let id = "foreign-\(UUID().uuidString)"
+
+        // Sealed under a key that is not the canonical one — what an interrupted
+        // rotation leaves behind.
+        let foreignKey = SymmetricKey(size: .bits256)
+        let foreign = try AES.GCM.seal(JSONEncoder().encode(0), using: foreignKey,
+                                       authenticating: EncryptionScheme.v2_hybridPQ.aad).combined
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: foreign)
+
+        try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: ModelContext(c.container))
+
+        let row = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(row?.visibleThroughDepth == foreign, """
+            A row sealed under a non-canonical key must be left byte-identical. Rewriting \
+            it would need a decrypt that cannot succeed; resolving it to a default would \
+            persist Int.max — visible at every duress depth.
+            """)
+    }
+}
