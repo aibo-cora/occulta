@@ -4499,9 +4499,73 @@ between a fix and data loss, and it needs a test that pops a layer written in th
 
 Whichever is chosen, `fillerSize` must stop being a literal. The guard is a test asserting that
 **every element of every padded array has identical length** — evaluated after a real write at some
-depth, since all five arrays are trivially uniform before one. No existing test checks this, and it
-is the check that would have caught both this and the `pinEnabledPerDepth` hazard that was reasoned
-about by hand instead.
+depth, since all five arrays are trivially uniform before one.
+
+### The migration hazard: no key means "everything looks like filler"
+
+**This is the most dangerous part of the fix and it is not the format change.**
+
+Two facts combine badly.
+
+**First, the three arrays are under two different keys.** `pinEnabledPerDepth` is sealed with the
+ambient local DB key. `sealedBlobSlots` and `layerSequenceNumbers` are sealed under
+`AppLayerConfig.blobMetadataKey(from: seKey)`, derived from the **SE Secure Mode key** — which is why
+`RotationRegistry` records that blob metadata *"must stay out"* of the rotation. So the conversion is
+two passes with different key requirements, not one uniform sweep.
+
+**Second, filler and an unreadable real entry are indistinguishable.** That is by design: it is
+exactly how `readBlobSlot(at:)` tells "no layer here" from "layer here" — it attempts decryption and
+treats failure as absence. There is no marker to inspect.
+
+Those two together mean the pass *cannot* use Bug 85's skip-on-undecryptable rule. Filler is
+precisely what has to change size, so undecryptable elements must be rewritten as fresh filler.
+
+That is safe when the key is good: an element that will not decrypt under a known-good key is either
+filler or a layer that is already lost, since `readBlobSlot` returning nil already sends
+`deactivateSecureMode` down its empty-payload path. Overwriting it destroys nothing that still worked.
+
+**It is catastrophic when the key is absent.** If `deriveSecureModeKey()` fails and the pass runs
+anyway, every element in both arrays looks undecryptable, all 32 entries of each are replaced with
+filler, and every layer's blob slot and sequence number are gone at once. Deactivation can then pop
+no blob at any depth: sensitive contacts unrecoverable, for every layer, on a device where nothing
+was wrong a moment earlier.
+
+**The guard is structural, not a value check.** Derive the SE key up front and abort the entire pass
+if it fails — nothing staged, nothing written, no partial rewrite. This is the same shape as Bug 78's
+fix, which moved a key derivation to the top of activation precisely so that a key failure would be
+inert rather than half-applied, and the reasoning transfers verbatim.
+
+Note what this means for verification: a test can prove the guard works once it exists, but it cannot
+prove the guard is present on every path that reaches the rewrite. That property wants a review of
+the code's shape, not another assertion.
+
+### Test plan
+
+Phase 0 is committed ahead of any fix, in `LayerArrayUniformityTests.swift`, wrapped in
+`withKnownIssue` so the suite stays green while this is open and each test flips to failing the day
+it is fixed. All four record an expected failure today, which is the executable reproduction:
+
+- blob-slot elements are not one length (29 against 30-byte filler)
+- sequence-number elements are not one length (37–38 against 30)
+- `fillerSize` does not match what either writer produces
+- the `pinEnabledPerDepth` upgrade path writes an oversized entry *and* one `readPinEnabled` cannot
+  parse — confirmed reachable by driving `Manager.Security.init`, not merely by reading the code
+
+The first three need no Secure Enclave: `writeBlobSlot` and `writeSequenceNumber` take their key
+explicitly, so they run on CI runners.
+
+Phase 1, with the codec: round-trip across the `UInt32` range including boundaries, legacy JSON still
+decoding, and `fillerSize == codec.sealedSize` — trivially true once derived, and there to fail the
+day someone re-hardcodes it, which is how this bug happened.
+
+Phase 2, with the migration, in rising order of what they protect:
+
+1. **No SE key → the pass is a complete no-op.** The guard above.
+2. Filler resizes and real entries survive: a written slot and sequence number read back identically,
+   and all 32 elements end one length.
+3. **The blob still pops after migration** — activate, migrate, deactivate, assert the sensitive
+   contacts come back. Everything else checks bytes; this checks that what the bytes are *for* still
+   works, and it is the direct guard on "sensitive contacts unrecoverable".
 
 ---
 
