@@ -45,6 +45,15 @@ enum DepthCodec {
     private static let alwaysVisible: UInt8 = 0xFF   // Int.max
     private static let notATrustee:   UInt8 = 0xFE   // -1
 
+    /// Sealed length of every value written through this codec — tag + payload, plus
+    /// AES-GCM's nonce(12) and tag(16).
+    ///
+    /// Derived, never a literal. A filler size sitting beside a format as a hardcoded number
+    /// is exactly how `AppLayerConfig.fillerSize = 30` drifted from encodings producing 29
+    /// and 37–38 (Bug 86). Bug 88's scrub of soft-deleted rows is a filler size for these
+    /// fields, so it takes it from here rather than from a number observed in a log.
+    static let sealedSize = 1 + 1 + 28
+
     /// Largest depth the payload byte carries literally. Far above
     /// `AppLayerConfig.maxVerifierCount` (32), which is the real structural limit on
     /// nesting — this is only the encoding's ceiling, deliberately not the domain's.

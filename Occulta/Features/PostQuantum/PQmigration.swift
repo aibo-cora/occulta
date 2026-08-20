@@ -59,6 +59,7 @@ struct DatabaseMigration {
 
         #if DEBUG
         var migrated = 0
+        
         if !contacts.isEmpty {
             debugPrint("[Bug89] migrateToV2: \(contacts.count) contacts still marked v1")
         }
@@ -87,6 +88,7 @@ struct DatabaseMigration {
                 // Inside the `do` deliberately: a throwing save must roll back too.
                 contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
                 try modelContext.save()
+                
                 #if DEBUG
                 migrated += 1
                 #endif
@@ -535,6 +537,67 @@ struct DatabaseMigration {
         debugPrint("[Bug89]     row left at v1 and rolled back; \(total - index - 1) still to try")
     }
     #endif
+
+    /// Overwrites the depth stamps of already-soft-deleted rows with random bytes at
+    /// `DepthCodec`'s uniform length (Bug 88).
+    ///
+    /// The repair half. `deleteContact` scrubs these at deletion time from now on, so this
+    /// exists only for rows deleted before that shipped — nothing else will ever rewrite
+    /// them, because rotation skips soft-deleted rows and the fixed-width pass cannot
+    /// convert a field it cannot decrypt.
+    ///
+    /// **Needs no key, and never decrypts.** `deletionToken != nil` is the entire test.
+    /// Whether the field is currently readable does not matter: for an erased row the value
+    /// carries no meaning either way, so there is nothing to preserve and nothing to
+    /// distinguish. That also means an unavailable key cannot block this pass — the hazard
+    /// Bug 86's array migration has to manage, avoided rather than handled.
+    ///
+    /// Random rather than a fresh encryption: on a stranded row every other field fails to
+    /// decrypt, so a depth field that decrypts cleanly is the outlier and implies something
+    /// wrote after the erasure. This also normalises the half-readable rows the three
+    /// backfills produced by stamping current-key values onto deleted rows without filtering
+    /// `deletionToken`.
+    ///
+    /// Idempotent by length, so it does not re-randomise on every launch.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateScrubDeletedDepthStamps(modelContext: ModelContext) throws {
+        let deleted = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken != nil })
+        )
+        var didChange = false
+
+        for contact in deleted {
+            if let scrubbed = Self.scrubbedStamp(contact.visibleThroughDepth) {
+                contact.visibleThroughDepth = scrubbed
+                didChange = true
+            }
+            if let scrubbed = Self.scrubbedStamp(contact.globalTrusteeDepth) {
+                contact.globalTrusteeDepth = scrubbed
+                didChange = true
+            }
+            if let scrubbed = Self.scrubbedStamp(contact.originDepth) {
+                contact.originDepth = scrubbed
+                didChange = true
+            }
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
+    /// Random bytes at the uniform length, or nil when the field is already that length.
+    ///
+    /// Per field, not per row: a deleted row can legitimately have one stamp readable and
+    /// the others stranded, because the backfills do not filter `deletionToken`. Promoting
+    /// this to "if any stamp is wrong, replace all three" would discard real values for no
+    /// gain.
+    ///
+    /// A nil stamp is scrubbed too — nil is its own tell (S6), and random bytes make it
+    /// non-nil and the same length as everything else.
+    private static func scrubbedStamp(_ field: Data?) -> Data? {
+        guard field?.count != DepthCodec.sealedSize else { return nil }
+        return Data.randomBytes(DepthCodec.sealedSize)
+    }
 
     /// Builds the error for a legacy decryption that threw, probing whether the field is
     /// readable with the **current** key on the way.

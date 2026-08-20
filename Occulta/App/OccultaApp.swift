@@ -71,9 +71,11 @@ struct OccultaApp: App {
         }
         let url = modelConfiguration.url
         let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
+        
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-wal")
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-shm")
+        
         RootView.excludeStoreFromBackup(url: url)
 
         self.storeURL = url
@@ -86,6 +88,7 @@ struct OccultaApp: App {
         if FeatureFlags.isEnabled(.secureMode) {
             security.maintainLayerStore()
         }
+        
         self.security = security
 
         let contactManager = ContactManager(modelContainer: sharedModelContainer, security: security)
@@ -166,6 +169,16 @@ struct OccultaApp: App {
         } catch {
             #if DEBUG
             debugPrint("depth field fixed-width normalisation error: \(error)")
+            #endif
+        }
+
+        // After the fixed-width pass, not before: that pass converts what it can read, and
+        // this one scrubs what is left on rows whose content is already erased (Bug 88).
+        do {
+            try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("soft-deleted depth stamp scrub error: \(error)")
             #endif
         }
 

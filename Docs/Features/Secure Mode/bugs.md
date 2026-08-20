@@ -4969,8 +4969,19 @@ depth-related or otherwise.
 
 ## Bug 88 — Bug 85's fix does not reach soft-deleted rows, leaving its classifier alive there
 
-**Status:** **Open.** Found 2026-08-19 on a live device, in the `⚠️` line Bug 85's own DEBUG
-diagnostic prints. Not a regression from that fix — an area it does not cover.
+**Status:** **Fixed 2026-08-20.** Found 2026-08-19 on a live device, in the `⚠️` line Bug 85's own
+DEBUG diagnostic prints. Not a regression from that fix — an area it did not cover.
+
+`migrateScrubDeletedDepthStamps` writes `Data.randomBytes(DepthCodec.sealedSize)` into any depth
+stamp of a soft-deleted row that is not already that length — no key, no decryption, idempotent by
+length. `DepthCodec` gained `sealedSize` so the length comes from the format rather than from a
+number observed in a log, which is the lesson of `fillerSize = 30`.
+
+One pass, no deletion-time hook: see the remedy for why prevention is unnecessary here.
+
+Guarded by `DeletedDepthStampScrubTests`, including the property the bug is actually about — after
+the pass, live and soft-deleted rows are one length. `DepthCodecTests` asserts that for live rows
+only, which is why this survived Bug 85's fix.
 
 **Target:** unset. Small and independent of Bugs 86 and 87.
 
@@ -5032,20 +5043,27 @@ Ciphertext length adds nothing to a partition that a NULL check already gives aw
 been built on an ambiguity that does not exist. The lesson: before rating a length as a
 distinguisher, check whether the same partition is already available through a plainer channel.
 
-### Remedy — random bytes, no key, in two halves
+### Remedy — a one-time repair, and nothing else
 
-**Prevention: scrub at soft-deletion.** Soft-deleting already writes the row
-(`Contact+Manager.swift:471` sets `deletionToken`), so overwriting the three depth fields in that
-same operation costs one more assignment inside a write that happens anyway. A contact deleted after
-this ships never produces a stranded legacy-length depth field, because the field was randomised
-while the row was still being written for another reason. Fixing the state at the point it is
-created, rather than detecting and repairing it later.
+**This is a purely historical defect. There is no prevention half, and adding one would be churn.**
 
-**Repair: a one-time launch pass** for rows already in this state, which nothing else will ever
-rewrite.
+A row becomes a length outlier only if it has legacy-format stamps *and* is stranded so the
+fixed-width pass cannot convert them. The first condition is now unreachable: every write path
+produces fixed-width — creation, classification, the three backfills, rotation, blob restore. So a
+contact deleted from now on already carries 30-byte stamps *before* anything can strand it, and when
+a later rotation skips it, it is already uniform.
 
-Both write **random bytes at `DepthCodec`'s uniform sealed length**, for rows where
-`deletionToken != nil`, skipping any field already at that length so the pass is idempotent.
+Only rows written in legacy format and stranded before the fixed-width migration ran are affected.
+Repair those and the class is closed permanently.
+
+Worth recording because it is an easy mistake to make twice: an earlier draft of this remedy added a
+scrub to `deleteContact`, on the reasoning that fixing a state where it is created beats repairing it
+later. That reasoning is sound in general and wrong here — at deletion the stamps are *already* 30
+bytes, so the scrub replaced good bytes with random ones of the same length and achieved nothing.
+Without this paragraph the one-time pass reads as incomplete and someone adds the hook back.
+
+**The repair:** a launch pass over rows where `deletionToken != nil`, writing
+`Data.randomBytes(DepthCodec.sealedSize)` into any depth stamp not already at that length.
 
 The `deletionToken` test is what makes this safe, and it is the whole design:
 
@@ -5073,6 +5091,12 @@ which points at the normalisation itself.
 Random keeps the story coherent, and drops the key requirement entirely: nothing is encrypted, and
 decryptability never has to be tested, so the pass cannot be blocked by an unavailable key. That is
 the hazard Bug 86's array migration has to manage, avoided here rather than handled.
+
+**Out of scope: live stranded rows.** A live row with an unreadable ceiling also keeps its legacy
+length — your device has two — but they are not this bug's to fix. `isVisible` fails closed on such a
+ceiling, so it still means *hidden*, and overwriting it is Bug 87 exactly. They resolve on the next
+activate/deactivate instead: deactivation resolves an unreadable ceiling to `0` and re-seals it at
+the uniform length, which is Bug 87's fix already shipped.
 
 **It also normalises the mixed rows.** The three backfills
 (`migrateSafeContactVisibilityBackfill` and its siblings) do **not** filter `deletionToken`, so a

@@ -21,8 +21,10 @@ extension Manager {
         /// SE keys are deleted last — once gone, all data encrypted under them is permanently inaccessible.
         func eraseAllData() throws {
             Manager.PrekeyManager().deleteAllKeys()
+            
             try self.contacts.deleteAllContacts()
             try self.vault.deleteAllData()
+            
             Manager.Key().deleteAllKeys()
         }
     }
