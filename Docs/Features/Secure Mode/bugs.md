@@ -4956,3 +4956,96 @@ No test currently exercises `exportBackup` or `importBackup` at all — a repo-w
 names under `OccultaTests/` returns zero matches, so there is no round-trip coverage to catch this,
 depth-related or otherwise.
 
+
+---
+
+## Bug 88 — Bug 85's fix does not reach soft-deleted rows, leaving its classifier alive there
+
+**Status:** **Open.** Found 2026-08-19 on a live device, in the `⚠️` line Bug 85's own DEBUG
+diagnostic prints. Not a regression from that fix — an area it does not cover.
+
+**Target:** unset. Small and independent of Bugs 86 and 87.
+
+### Severity: Medium (forensic)
+
+Lower than Bug 85 on two counts. It cannot name *which* contact is hidden, only that classification
+happened at all; and it is confined to rows whose content is already cryptographically erased.
+
+It is still a deniability break, because "was Secure Mode ever configured" is exactly the question
+the feature exists to leave unanswerable.
+
+### What happens
+
+Activation's Step 8 re-encrypts `allProfiles = try contactManager.fetchAllContacts()`, and that
+fetch filters `deletionToken == nil`. **Soft-deleted rows are never re-keyed.** Once the old key is
+deleted at the end of a rotation their fields are permanently unreadable — which is S1 working as
+designed: the row survives for forensic uniformity (hard deletion was removed in Bug 13), the content
+does not.
+
+`migrateDepthFieldsToFixedWidth` then correctly refuses to touch them, because a row it cannot
+decrypt is left byte-identical (Bug 87). So live rows converge on the fixed-width 30 bytes and
+soft-deleted rows keep whatever legacy length they had when they were last written.
+
+Measured on a device, 14 rows, 7 live and 7 soft-deleted:
+
+```
+Contact.visibleThroughDepth outcomes: UNDECRYPTABLE=7 alreadyFixedWidth=7
+Contact.visibleThroughDepth   [29, 30, 47] over 14 rows
+Contact.originDepth           [29, 30] over 14 rows
+```
+
+`originDepth` shows no 47 while `visibleThroughDepth` does, which is what the two fields' ranges
+predict — `originDepth` never holds `Int.max`. The split is real, not an artifact of the logging.
+
+### What it leaks
+
+Legacy length still encodes the classification a row carried when last written: 47 is `Int.max`
+(safe or never classified), 29 is a small depth. A 29-byte stranded row can only have been produced
+by one of two writes, and **both imply Secure Mode was configured** — a classification
+(`saveClassification`/`setVisibility`), or creation while already at a duress depth
+(`Contact+Manager.swift:193`, `currentDepth == 0 ? Int.max : currentDepth`).
+
+So mixed lengths *among the stranded rows* are evidence the feature was used. An install that never
+classified anything has uniform 47s there.
+
+### What it does NOT leak, and why the first analysis was wrong
+
+The first reading of this was that it made **soft-deleted rows distinguishable from live ones**,
+since live rows now converge on 30. That was wrong, and worth recording because the mistake is an
+easy one to repeat.
+
+`deletionToken` is a nullable column whose nil/non-nil status is directly observable with no key —
+that is not incidental, it is how the app itself partitions the table (`fetchAllContacts` filters on
+`deletionToken == nil`, evaluated against a NULL column), and the field's own doc says only its
+nil/non-nil status is meaningful at the query layer. A coercer can already run
+`WHERE ZDELETIONTOKEN IS NULL` and get the live count exactly.
+
+Ciphertext length adds nothing to a partition that a NULL check already gives away. The argument had
+been built on an ambiguity that does not exist. The lesson: before rating a length as a
+distinguisher, check whether the same partition is already available through a plainer channel.
+
+### Remedy
+
+Extend the migration to overwrite an undecryptable depth field **when `deletionToken != nil`**, with
+random bytes at `DepthCodec`'s uniform sealed length.
+
+The `deletionToken` test is what makes this safe, and it is the whole design:
+
+- **Soft-deleted row** — content is already erased by rotation, by design. There is nothing left to
+  preserve, so overwriting loses nothing.
+- **Live row** — an unreadable ceiling still means something: `isVisible` fails closed and treats it
+  as hidden. Overwriting it is Bug 87 exactly, and must not happen.
+
+Same rule the rest of this work follows — never resolve an unknown that still carries meaning — with
+the observation that for an erased row the unknown no longer carries any.
+
+**Note the interaction with the 50-row cap.** Soft-deleted rows are capped at 50, with one
+hard-deleted to make room when full, so the affected population is bounded and churns. That limits
+the exposure but does not remove it: a device that classified contacts and then deleted some will
+carry the signal until those rows age out.
+
+### Guard
+
+A test asserting that after the migration **every** row's depth fields are one length, including
+soft-deleted rows — the current assertion only holds for live ones, which is why this survived. The
+device diagnostic already reports it; the suite does not.
