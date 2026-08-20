@@ -5062,9 +5062,20 @@ device diagnostic already reports it; the suite does not.
 
 ## Bug 89 — One unmigratable contact permanently blocks every v1 contact after it, and can leave a half-migrated row behind
 
-**Status:** **Open.** Found 2026-08-19 on a live device reporting
+**Status:** **Fixed 2026-08-20.** Found 2026-08-19 on a live device reporting
 `Migration error: authenticationFailure` on every launch alongside seven contacts whose fields no
 longer decrypt.
+
+All three parts landed together, because the first two are unsafe apart: isolating per contact
+without discarding the partial mutation would have made the corruption reliable rather than
+incidental. Per-contact `do/catch` with `modelContext.rollback()`, failures left at `v1` so they are
+retried; resume, so a field already converted by an earlier partial run is left untouched instead of
+throwing; and `autosaveEnabled = false` across the migrations (`c5c32d3`) so the rollback has
+something to roll back.
+
+Guarded by `MigrateToV2ResilienceTests`, which asserts through a **fresh** `ModelContext` rather than
+the in-memory object — `rollback()` discards the context's pending changes, but an already
+materialised reference can still hold the mutated value, and only what reached disk matters.
 
 **Target:** unset. Independent of Bugs 85–88; this is the v1→v2 scheme migration, not the depth work.
 

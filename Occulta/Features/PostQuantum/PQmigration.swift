@@ -69,33 +69,54 @@ struct DatabaseMigration {
         }
         #endif
 
+        var failed = 0
+
         for (index, contact) in contacts.enumerated() {
-            if contact.deletionToken == nil {
-                #if DEBUG
-                let debugName = contact.givenName.decrypt()
-                #endif
-
-                // The catch is logging only — the error is rethrown unchanged, so the abort
-                // this records is still exactly the behaviour Bug 89 describes.
-                do {
+            // One contact's failure must not end the pass (Bug 89). Before this, a bare
+            // `try` here meant the first row whose legacy ciphertext would not authenticate
+            // stopped every row after it, permanently — and the rows after it may be
+            // perfectly migratable, which is what made it a bug rather than a row with
+            // unrecoverable data.
+            do {
+                if contact.deletionToken == nil {
                     try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
-                } catch {
-                    #if DEBUG
-                    Self.logMigrationFailure(error, index: index, total: contacts.count, migrated: migrated)
-                    #endif
-                    throw error
                 }
-
+                // Soft-deleted rows: skip re-encryption but advance the scheme marker
+                // so they are never fetched again on subsequent launches.
+                //
+                // Inside the `do` deliberately: a throwing save must roll back too.
+                contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+                try modelContext.save()
                 #if DEBUG
                 migrated += 1
-                debugPrint("Migrated contact to v2 encryption scheme, contact - \(debugName)")
+                #endif
+            } catch {
+                // Discard this contact's partial mutation. `migrateContact` assigns field by
+                // field, so a throw partway leaves earlier fields already converted on the
+                // live object; without this the next contact's `save()` would commit them and
+                // create exactly the half-converted row this fix exists to repair.
+                //
+                // Safe because `migrate()` suspends autosave for the whole sequence and this
+                // migration runs first, so nothing else has pending changes on this context —
+                // correct by ordering, which is why it is written down here.
+                modelContext.rollback()
+                failed += 1
+
+                // The marker is deliberately not advanced: the row stays at v1 and is retried
+                // next launch. Marking it v2 would collapse "not yet migrated" into "migrated"
+                // and destroy the only evidence that a retry is possible — the same reasoning
+                // as Bug 80's `reencryptPreserving`.
+                #if DEBUG
+                Self.logMigrationFailure(error, index: index, total: contacts.count, migrated: migrated)
                 #endif
             }
-            // Soft-deleted rows: skip re-encryption but advance the scheme marker
-            // so they are never fetched again on subsequent launches.
-            contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
-            try modelContext.save()
         }
+
+        #if DEBUG
+        if failed > 0 {
+            debugPrint("[Bug89]   \(failed) contact(s) left at v1 — will be retried next launch")
+        }
+        #endif
     }
 
     /// One-time backfill for contacts whose `visibleThroughDepth` predates the
@@ -511,7 +532,7 @@ struct DatabaseMigration {
         default:
             debugPrint("[Bug89]   \(position) FAILED — \(error)")
         }
-        debugPrint("[Bug89]   aborted — \(migrated) migrated, \(total - index - 1) never attempted")
+        debugPrint("[Bug89]     row left at v1 and rolled back; \(total - index - 1) still to try")
     }
     #endif
 
@@ -545,7 +566,13 @@ struct DatabaseMigration {
         do {
             decrypted = try legacy.decryptLegacy(data: ciphertext)
         } catch {
-            throw Self.legacyThrew(ciphertext, field: field, id: id, new: new, error: error)
+            let failure = Self.legacyThrew(ciphertext, field: field, id: id, new: new, error: error)
+            // Resume: this field was already converted by an earlier run that failed partway
+            // (Bug 89). It is correct as it stands, so return it untouched rather than
+            // throwing — that is what lets a half-migrated row finish instead of being stuck
+            // forever on the field it already converted.
+            if case .legacyDecryptionThrew(_, _, alreadyV2: true, _) = failure { return base64 }
+            throw failure
         }
         guard let plaintext = decrypted else {
             throw MigrationError.legacyDecryptionFailed(field: field, contactID: id)
@@ -574,7 +601,10 @@ struct DatabaseMigration {
         do {
             decrypted = try legacy.decryptLegacy(data: data)
         } catch {
-            throw Self.legacyThrew(data, field: field, id: id, new: new, error: error)
+            let failure = Self.legacyThrew(data, field: field, id: id, new: new, error: error)
+            // Resume — see reencryptString.
+            if case .legacyDecryptionThrew(_, _, alreadyV2: true, _) = failure { return data }
+            throw failure
         }
         guard let plaintext = decrypted else {
             throw MigrationError.legacyDecryptionFailed(field: field, contactID: id)
