@@ -5049,3 +5049,101 @@ carry the signal until those rows age out.
 A test asserting that after the migration **every** row's depth fields are one length, including
 soft-deleted rows — the current assertion only holds for live ones, which is why this survived. The
 device diagnostic already reports it; the suite does not.
+
+---
+
+## Bug 89 — One unmigratable contact permanently blocks every v1 contact after it, and can leave a half-migrated row behind
+
+**Status:** **Open.** Found 2026-08-19 on a live device reporting
+`Migration error: authenticationFailure` on every launch alongside seven contacts whose fields no
+longer decrypt.
+
+**Target:** unset. Independent of Bugs 85–88; this is the v1→v2 scheme migration, not the depth work.
+
+### Severity: High (data availability, and a corruption path)
+
+The blocking half is certain and permanent. The corruption half needs a partial mutation to reach
+disk, which the current call sequence makes possible rather than hypothetical — see "The second
+defect".
+
+### The first defect: one bad row stops the rest, forever
+
+`migrateToV2` fetches every contact still marked `v1_identityDerived` and migrates them in a loop:
+
+```swift
+for contact in contacts {
+    if contact.deletionToken == nil {
+        try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+    }
+    contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+    try modelContext.save()
+}
+```
+
+`try` propagates out of the loop, so the **first** contact whose legacy ciphertext will not
+authenticate ends the whole pass. Three consequences compound:
+
+1. Every v1 contact *after* it is never processed — however many that is, and however recoverable
+   they individually were.
+2. The scheme marker is advanced *after* the migrate call, so the failing row stays `v1` and is
+   retried on the next launch, where it fails identically. The block is permanent, not transient.
+3. The fetch has no `sortBy`, so which contacts end up stranded depends on SwiftData's return order
+   — arbitrary, and not necessarily stable between launches.
+
+`OccultaApp.migrate()` catches and logs, so the app carries on and the failure is invisible outside a
+DEBUG build. Contacts left at v1 have their fields read with v2 crypto, fail to decrypt, and are then
+excluded from every view because `isVisible` fails closed — so they read as "gone" rather than as
+"broken".
+
+**One unrecoverable row strands an unbounded number of recoverable ones.** That is the defect; the
+first row's own data may well be genuinely unreadable, and nothing can fix that.
+
+### The second defect: the partial row can be committed by a later migration
+
+`migrateContact` assigns field by field — fourteen scalar strings, then images, then the forward
+secrecy blob, then relationships — mutating the model object in place as it goes. A throw on, say,
+`jobTitle` leaves the preceding fields already re-encrypted to v2 **on the live object**.
+
+That alone would be harmless, because the failing contact's `save()` is never reached. But
+`OccultaApp.migrate()` creates **one** `ModelContext` and passes it to every migration in sequence:
+
+```swift
+let context = ModelContext(self.sharedModelContainer)
+do { try DatabaseMigration.migrateToV2(modelContext: context, …) } catch { … }
+do { try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context) } catch { … }
+…
+```
+
+The backfills and the fixed-width pass all call `save()` on that same context. So the partially
+mutated contact — dirty, and still holding v2 ciphertext in some fields and v1 in others — is
+committed by the next migration that saves anything.
+
+The row then has mixed-scheme fields with `encryptionScheme` still reading `v1`, and nothing records
+which fields are which. The next launch tries the legacy key against all of them, fails on the first
+already-converted field, and throws again.
+
+### Remedy
+
+1. **Isolate per contact.** Wrap the `migrateContact` call in its own `do/catch`, count failures, and
+   continue. Leave a failed row at `v1` rather than advancing its marker — collapsing "not yet
+   migrated" into "migrated" would destroy the only evidence that a retry is possible, the same
+   reasoning as Bug 80's `reencryptPreserving`.
+2. **Do not let a partial mutation escape.** Either give `migrateToV2` its own `ModelContext` so a
+   discarded context discards the partial row, or build the new values locally and assign them only
+   once every field has succeeded. The second is better: it makes atomicity a property of the
+   function rather than of how the caller happens to sequence contexts.
+3. **Report counts**, not just the first error. The current log gives one `authenticationFailure` and
+   no indication of how many rows are affected or whether the rest would have succeeded.
+
+### Adjacent, not part of this bug
+
+`migrateToV2` decrypts and logs a contact's given name under `#if DEBUG`
+(`let debugName = contact.givenName.decrypt()`). DEBUG-only, but it is a contact name in the console,
+which is the one thing the rest of this subsystem's logging is careful never to emit.
+
+### Guard
+
+No test exercises `migrateToV2` with a contact that fails to decrypt. The two properties to pin are
+that a failing row does not stop the ones after it, and that a failing row leaves **no** field
+changed — asserted after a subsequent migration has saved on the same context, since that is the
+path that commits it.
