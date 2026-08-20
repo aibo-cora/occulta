@@ -378,7 +378,7 @@ final class AppLayerConfig {
             self.layerSequenceNumbers.append(Self.randomFiller())
         }
         while self.pinEnabledPerDepth.count < Self.paddedArrayCount {
-            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? Self.randomFiller())
+            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? Self.pinEnabledFiller())
         }
     }
 
@@ -392,11 +392,35 @@ final class AppLayerConfig {
     }
 
     private static func randomFiller() -> Data {
+        Self.randomBytes(count: Self.fillerSize)
+    }
+
+    /// Sealed size of one `pinEnabledPerDepth` entry: JSON `UInt8` is one byte, plus
+    /// AES-GCM's nonce(12) and tag(16).
+    ///
+    /// This array's own constant, deliberately **not** `fillerSize`. Its fallback used to
+    /// borrow the blob arrays' filler size, which made an entry written when `encrypt()`
+    /// failed a 30-byte outlier among 29-byte real entries — the exact size tell this
+    /// array's `UInt8`-not-`Bool` encoding exists to prevent, arriving through the back
+    /// door. The coupling also meant the outlier would grow to 4 bytes the moment
+    /// `fillerSize` moved for Bug 86's blob arrays, silently, as a side effect of fixing a
+    /// different array. See Bug 86.
+    static let pinEnabledEntrySize = 1 + 28
+
+    /// Correctly-sized random bytes for a `pinEnabledPerDepth` slot whose real ciphertext
+    /// could not be produced. Reachable in practice, not only in theory: the device locking
+    /// part-way through `pinEnabledFillerArray()`'s map leaves earlier entries sealed at 29
+    /// bytes and the rest falling back here.
+    private static func pinEnabledFiller() -> Data {
+        Self.randomBytes(count: Self.pinEnabledEntrySize)
+    }
+
+    private static func randomBytes(count: Int) -> Data {
         // SystemRandomNumberGenerator uses arc4random_buf under the hood, seeded by the
         // kernel at boot — always available on any running iOS device. Unlike SecRandomCopyBytes
         // it has no error return, so no throws cascade into non-throwing call sites.
         var rng = SystemRandomNumberGenerator()
-        return Data((0..<fillerSize).map { _ in UInt8.random(in: 0...255, using: &rng) })
+        return Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
 
     static func verifierFiller() -> Data {
@@ -422,7 +446,7 @@ final class AppLayerConfig {
     /// vs `"false"` (5 bytes) would differ by one byte without any decryption.
     static func pinEnabledFillerArray() -> [Data] {
         (0..<paddedArrayCount).map { _ in
-            (try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? randomFiller()
+            (try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? pinEnabledFiller()
         }
     }
 

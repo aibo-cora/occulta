@@ -90,6 +90,26 @@ struct LayerArrayUniformityTests {
         }
     }
 
+    /// `pinEnabledEntrySize` must equal what a real entry actually seals to, because the
+    /// fallback filler is sized from it. A constant that drifts from the format it
+    /// describes is this whole bug — and this array's fallback previously borrowed the blob
+    /// arrays' `fillerSize`, which is drift by construction: it would have grown from a
+    /// 1-byte outlier to a 4-byte one the moment that constant moved for the blob arrays.
+    ///
+    /// Enclave-free: the property is the size arithmetic, so a local key is enough.
+    @Test("pinEnabledEntrySize matches what a real entry seals to")
+    func pinEnabledEntrySizeIsAccurate() throws {
+        let key = SymmetricKey(size: .bits256)
+        for value in [UInt8(0), UInt8(1)] {
+            let sealed = try AES.GCM.seal(JSONEncoder().encode(value), using: key).combined
+            #expect(sealed?.count == AppLayerConfig.pinEnabledEntrySize, """
+                A gate entry for \(value) seals to \(sealed?.count ?? -1), but the fallback \
+                filler is sized \(AppLayerConfig.pinEnabledEntrySize). Any difference names \
+                the depth whose entry could not be encrypted.
+                """)
+        }
+    }
+
     /// **Fixed** — Bug 86's amendment, now a regression guard rather than a reproduction.
     ///
     /// The legacy-upgrade path in `Manager.Security.init` used to hand-roll
