@@ -212,7 +212,54 @@ struct DatabaseMigration {
         }
 
         if didChange { try modelContext.save() }
+
+        #if DEBUG
+        Self.logDepthFieldUniformity(modelContext: modelContext, didChange: didChange)
+        #endif
     }
+
+    #if DEBUG
+    /// On-device diagnostic for Bug 85: prints the distinct sealed lengths of every depth
+    /// field, which is precisely the property the fix establishes.
+    ///
+    /// Deliberately logs only **aggregate lengths and row counts** — never a decoded value,
+    /// a depth, or a contact identifier. A log line naming which contacts are hidden would
+    /// be the leak this fix removes, relocated somewhere even easier to read.
+    ///
+    /// A single length per field is the pass condition. More than one means a row did not
+    /// convert; the usual cause is a stranded ciphertext, which the pass leaves byte-identical
+    /// on purpose rather than resolving to a default (Bug 87).
+    private static func logDepthFieldUniformity(modelContext: ModelContext, didChange: Bool) {
+        func lengths(_ values: [Data?]) -> String {
+            let present = values.compactMap { $0?.count }
+            let nils    = values.count - present.count
+            let distinct = Set(present).sorted()
+            return "\(distinct) over \(present.count) rows" + (nils > 0 ? " (+\(nils) nil)" : "")
+        }
+
+        let contacts = (try? modelContext.fetch(FetchDescriptor<Contact.Profile>())) ?? []
+        let entries  = (try? modelContext.fetch(FetchDescriptor<VaultEntry>())) ?? []
+        let configs  = (try? modelContext.fetch(FetchDescriptor<AppLayerConfig>())) ?? []
+
+        debugPrint("[Bug85] depth-field normalisation — rewrote something: \(didChange)")
+        debugPrint("[Bug85]   Contact.visibleThroughDepth   \(lengths(contacts.map(\.visibleThroughDepth)))")
+        debugPrint("[Bug85]   Contact.globalTrusteeDepth    \(lengths(contacts.map(\.globalTrusteeDepth)))")
+        debugPrint("[Bug85]   Contact.originDepth           \(lengths(contacts.map(\.originDepth)))")
+        debugPrint("[Bug85]   VaultEntry.visibleThroughDepth \(lengths(entries.map(\.visibleThroughDepth)))")
+        debugPrint("[Bug85]   AppLayerConfig.persistedDepth  \(lengths(configs.map(\.persistedDepth)))")
+        debugPrint("[Bug85]   AppLayerConfig.coercerBaseDepth \(lengths(configs.map(\.coercerBaseDepth)))")
+
+        let all = Set(
+            contacts.flatMap { [$0.visibleThroughDepth, $0.globalTrusteeDepth, $0.originDepth] }
+                .compactMap { $0?.count }
+            + entries.compactMap { $0.visibleThroughDepth?.count }
+            + configs.flatMap { [$0.persistedDepth, $0.coercerBaseDepth] }.compactMap { $0?.count }
+        )
+        debugPrint(all.count <= 1
+                   ? "[Bug85]   ✅ every depth field is one length — no keyless classifier"
+                   : "[Bug85]   ⚠️ lengths \(all.sorted()) — a row did not convert (stranded ciphertext?)")
+    }
+    #endif
 
     /// The fixed-width re-encryption of `field`, or nil when it must be left untouched.
     /// Every nil return is a case the migration is required not to rewrite — see
