@@ -23,6 +23,20 @@ struct DatabaseMigration {
         case encryptionFailed(field: String, contactID: String)
         case hybridKeyUnavailable
         case legacyKeyUnavailable
+
+        /// Legacy decryption *threw* rather than returning nil.
+        ///
+        /// The two are not interchangeable and only this one occurs in practice:
+        /// `decryptLegacy` surfaces an AES-GCM tag mismatch as a thrown
+        /// `CryptoKitError.authenticationFailure`, so `guard let … else { throw
+        /// legacyDecryptionFailed }` never fires for it and the field and contact were
+        /// being discarded in exactly the failure mode that happens. See Bug 89.
+        ///
+        /// `alreadyV2` is the diagnostic that matters: it records whether the field could
+        /// be read with the *current* key, which means it had already been migrated and
+        /// this row is half-converted — Bug 89's second defect, observed rather than
+        /// inferred.
+        case legacyDecryptionThrew(field: String, contactID: String, alreadyV2: Bool, underlying: Error)
     }
 
     /// Run the v1 → v2 migration for all contacts in the given context.
@@ -43,15 +57,37 @@ struct DatabaseMigration {
         )
         let contacts = try modelContext.fetch(descriptor)
 
-        for contact in contacts {
+        #if DEBUG
+        var migrated = 0
+        if !contacts.isEmpty {
+            debugPrint("[Bug89] migrateToV2: \(contacts.count) contacts still marked v1")
+        }
+        defer {
+            if !contacts.isEmpty {
+                debugPrint("[Bug89]   \(migrated) of \(contacts.count) migrated this launch")
+            }
+        }
+        #endif
+
+        for (index, contact) in contacts.enumerated() {
             if contact.deletionToken == nil {
                 #if DEBUG
                 let debugName = contact.givenName.decrypt()
                 #endif
 
-                try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+                // The catch is logging only — the error is rethrown unchanged, so the abort
+                // this records is still exactly the behaviour Bug 89 describes.
+                do {
+                    try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+                } catch {
+                    #if DEBUG
+                    Self.logMigrationFailure(error, index: index, total: contacts.count, migrated: migrated)
+                    #endif
+                    throw error
+                }
 
                 #if DEBUG
+                migrated += 1
                 debugPrint("Migrated contact to v2 encryption scheme, contact - \(debugName)")
                 #endif
             }
@@ -443,6 +479,58 @@ struct DatabaseMigration {
     /// Re-encrypt a base64-encoded ciphertext string from v1 → v2.
     ///
     /// Empty strings are preserved as-is (they represent empty plaintext).
+    #if DEBUG
+    /// Reports where the v1→v2 migration stopped and why (Bug 89).
+    ///
+    /// The counts are the point: the previous log gave a bare `authenticationFailure` with
+    /// no indication of how many contacts were affected or whether the ones after it would
+    /// have succeeded — and it is the ones after it that make this a bug rather than a row
+    /// with unrecoverable data.
+    ///
+    /// Logs a 12-character prefix of the encrypted identifier so rows can be correlated
+    /// across launches. Never a name — `migrateContact`'s own `debugName` line predates this
+    /// and is called out separately in the entry.
+    private static func logMigrationFailure(_ error: Error, index: Int, total: Int, migrated: Int) {
+        let position = "\(index + 1)/\(total)"
+        func tail(_ id: String) { debugPrint("[Bug89]     contact \(id.prefix(12))…") }
+
+        switch error as? MigrationError {
+        case .legacyDecryptionThrew(let field, let id, let alreadyV2, let underlying):
+            debugPrint("[Bug89]   \(position) FAILED — field '\(field)', legacy decrypt threw \(underlying)")
+            tail(id)
+            debugPrint(alreadyV2
+                       ? "[Bug89]     probe: readable with the CURRENT key → already migrated, row is MIXED"
+                       : "[Bug89]     probe: unreadable with both keys → genuinely lost")
+        case .legacyDecryptionFailed(let field, let id):
+            debugPrint("[Bug89]   \(position) FAILED — field '\(field)', legacy decrypt returned nil")
+            tail(id)
+        case .encryptionFailed(let field, let id):
+            debugPrint("[Bug89]   \(position) FAILED — field '\(field)', re-encryption failed")
+            debugPrint("[Bug89]     that is a key problem, not unreadable data")
+            tail(id)
+        default:
+            debugPrint("[Bug89]   \(position) FAILED — \(error)")
+        }
+        debugPrint("[Bug89]   aborted — \(migrated) migrated, \(total - index - 1) never attempted")
+    }
+    #endif
+
+    /// Builds the error for a legacy decryption that threw, probing whether the field is
+    /// readable with the **current** key on the way.
+    ///
+    /// That probe is the whole diagnostic. A field that fails the legacy key but succeeds
+    /// the current one was already migrated, which means this row is half-converted and
+    /// Bug 89's second defect has actually fired here — rather than being a hazard the code
+    /// merely permits. It decides whether a fix needs resume-mode for mixed rows or only
+    /// needs to stop creating them.
+    private static func legacyThrew(
+        _ ciphertext: Data, field: String, id: String, new: CryptoProtocol, error: Error
+    ) -> MigrationError {
+        let alreadyV2 = ((try? new.decrypt(data: ciphertext)) ?? nil) != nil
+        return .legacyDecryptionThrew(field: field, contactID: id,
+                                      alreadyV2: alreadyV2, underlying: error)
+    }
+
     private static func reencryptString(_ base64: String, field: String, id: String, legacy: CryptoProtocol, new: CryptoProtocol) throws -> String {
         guard !base64.isEmpty else { return "" }
 
@@ -453,7 +541,13 @@ struct DatabaseMigration {
         // Empty ciphertext data means the field was empty when encrypted.
         guard !ciphertext.isEmpty else { return "" }
 
-        guard let plaintext = try legacy.decryptLegacy(data: ciphertext) else {
+        let decrypted: Data?
+        do {
+            decrypted = try legacy.decryptLegacy(data: ciphertext)
+        } catch {
+            throw Self.legacyThrew(ciphertext, field: field, id: id, new: new, error: error)
+        }
+        guard let plaintext = decrypted else {
             throw MigrationError.legacyDecryptionFailed(field: field, contactID: id)
         }
 
@@ -476,7 +570,13 @@ struct DatabaseMigration {
     ) throws -> Data? {
         guard let data, !data.isEmpty else { return nil }
 
-        guard let plaintext = try legacy.decryptLegacy(data: data) else {
+        let decrypted: Data?
+        do {
+            decrypted = try legacy.decryptLegacy(data: data)
+        } catch {
+            throw Self.legacyThrew(data, field: field, id: id, new: new, error: error)
+        }
+        guard let plaintext = decrypted else {
             throw MigrationError.legacyDecryptionFailed(field: field, contactID: id)
         }
 
