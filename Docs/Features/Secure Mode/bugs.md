@@ -5032,20 +5032,62 @@ Ciphertext length adds nothing to a partition that a NULL check already gives aw
 been built on an ambiguity that does not exist. The lesson: before rating a length as a
 distinguisher, check whether the same partition is already available through a plainer channel.
 
-### Remedy
+### Remedy — random bytes, no key, in two halves
 
-Extend the migration to overwrite an undecryptable depth field **when `deletionToken != nil`**, with
-random bytes at `DepthCodec`'s uniform sealed length.
+**Prevention: scrub at soft-deletion.** Soft-deleting already writes the row
+(`Contact+Manager.swift:471` sets `deletionToken`), so overwriting the three depth fields in that
+same operation costs one more assignment inside a write that happens anyway. A contact deleted after
+this ships never produces a stranded legacy-length depth field, because the field was randomised
+while the row was still being written for another reason. Fixing the state at the point it is
+created, rather than detecting and repairing it later.
+
+**Repair: a one-time launch pass** for rows already in this state, which nothing else will ever
+rewrite.
+
+Both write **random bytes at `DepthCodec`'s uniform sealed length**, for rows where
+`deletionToken != nil`, skipping any field already at that length so the pass is idempotent.
 
 The `deletionToken` test is what makes this safe, and it is the whole design:
 
 - **Soft-deleted row** — content is already erased by rotation, by design. There is nothing left to
-  preserve, so overwriting loses nothing.
+  preserve, so overwriting loses nothing. The app has no undelete path: soft-deleted rows are never
+  shown in any view, and the 50-row cap hard-deletes to make room.
 - **Live row** — an unreadable ceiling still means something: `isVisible` fails closed and treats it
   as hidden. Overwriting it is Bug 87 exactly, and must not happen.
 
 Same rule the rest of this work follows — never resolve an unknown that still carries meaning — with
 the observation that for an erased row the unknown no longer carries any.
+
+**Random, not a fresh encryption — and this reverses an earlier recommendation.** The first version
+of this remedy proposed writing a real `encrypt(Int.max)`, reasoning by analogy with
+`pinEnabledPerDepth`, whose filler is deliberately real ciphertext, *"indistinguishable from a real
+entry where the gate is up"*. The analogy was applied without checking which way the population ran.
+
+Filler has to blend into its neighbours. In `pinEnabledPerDepth` the neighbours are live entries that
+all decrypt, so real ciphertext blends and random would stand out. On a stranded soft-deleted row the
+neighbours are fields that **all fail to decrypt**, so a field that decrypts cleanly is the outlier —
+and worse, it tells an incoherent story. A fully stranded row reads as "rotation erased this". A row
+whose name will not decrypt but whose depth field will says something wrote here *after* the erasure,
+which points at the normalisation itself.
+
+Random keeps the story coherent, and drops the key requirement entirely: nothing is encrypted, and
+decryptability never has to be tested, so the pass cannot be blocked by an unavailable key. That is
+the hazard Bug 86's array migration has to manage, avoided here rather than handled.
+
+**It also normalises the mixed rows.** The three backfills
+(`migrateSafeContactVisibilityBackfill` and its siblings) do **not** filter `deletionToken`, so a
+soft-deleted row whose field was nil got it stamped under the current key while its other fields
+stayed stranded. Those rows are already half-readable today, which is the same incoherence described
+above, arrived at accidentally. Overwriting all three fields makes them uniformly unreadable.
+
+**On the write itself being a trace.** Considered and rejected as a reason not to do this.
+`Contact.Profile` declares no `Date` field, and SQLite keeps no per-row or per-field modification
+time, so there is no timestamp to recover. The only per-row trace is Core Data's `Z_OPT`, an
+optimistic-locking counter rather than a clock; after the pass every soft-deleted row has been
+scrubbed, so their counters move together and there is no scrubbed-versus-unscrubbed split to read.
+Whatever it suggests, it suggests about rows `deletionToken` already flags. Set against that,
+declining to act leaves a 29-byte value that says a contact was classified as sensitive — a concrete
+inference about the feature, traded away for a hypothetical one with no channel.
 
 **Note the interaction with the 50-row cap.** Soft-deleted rows are capped at 50, with one
 hard-deleted to make room when full, so the affected population is bounded and churns. That limits
