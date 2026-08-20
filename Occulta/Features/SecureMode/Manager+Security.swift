@@ -334,6 +334,12 @@ extension Manager {
             let seqsBefore  = lengths(config.layerSequenceNumbers)
             #endif
 
+            // The single save() below is what makes this pass all-or-nothing; an autosave
+            // firing mid-pass would commit a partially-converted array and defeat it. Same
+            // idiom as the rotation paths in this file.
+            context.autosaveEnabled = false
+            defer { context.autosaveEnabled = true }
+
             guard let seKey = try? self.keyManager.deriveSecureModeKey() else {
                 #if DEBUG
                 debugPrint("[Bug86] blob-array normalisation SKIPPED — no Secure Mode key.")

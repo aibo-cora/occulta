@@ -4662,6 +4662,7 @@ the write fails anyway.
 Which is survivable, and the reason is the shape of the write rather than the key:
 
 > Mutate every element in memory, then call `save()` **exactly once**, at the end. Never per element.
+> And suspend `autosaveEnabled` for the duration, or the first half of that sentence is not true.
 
 SQLite transactions are atomic, so the pass either commits in full or not at all. A lock mid-pass
 means the save fails, nothing is persisted, and the next launch retries from the original bytes. The
@@ -4677,7 +4678,14 @@ So the full requirement is four things, of which the key is only the first:
    that may since have become unreadable. (Belt-and-braces — SwiftData's faulting behaviour here has
    not been verified in detail.)
 3. Do all 32 elements' crypto in memory, with the held key.
-4. Assign back and `save()` exactly once.
+4. Assign back and `save()` exactly once, with `autosaveEnabled = false` for the pass.
+
+**On (4), corrected 2026-08-20.** The autosave half was missing when this was first written, and
+without it the rest does not hold: a RunLoop- or backgrounding-triggered autosave can commit a
+partially-applied pass before the function decides whether to, so "one save at the end" is a property
+of the code only while autosave is suspended. Three other multi-step sequences here already suspend
+it for exactly this reason — `activateSecureMode`, `deactivateSecureMode`, and `Message.Draft`'s
+purge — and all three restore it with `defer`, which is what marks `true` as the normal state.
 
 `pinEnabledPerDepth` is exempt from (1) and does not need it: its writer and filler both go through
 ambient `encrypt()`, and a per-element failure there is benign — an unreadable entry reads back as

@@ -109,6 +109,19 @@ struct OccultaApp: App {
         let legacyCrypto = LegacyCryptoManager()
         let newCrypto = Manager.Crypto()
 
+        // Every migration below relies on its own explicit save() being the only write it
+        // makes — `migrateDepthFieldsToFixedWidth` accumulates into `didChange` and saves
+        // once at the end precisely so a failure part-way leaves the original bytes for the
+        // next launch. A RunLoop- or backgrounding-triggered autosave breaks that: it can
+        // commit a partially-applied pass before the function decides whether to.
+        //
+        // Same idiom and same reason as `activateSecureMode`, `deactivateSecureMode` and
+        // `Message.Draft`'s purge, all of which suspend autosave for a multi-step sequence
+        // and restore it after. Doing it once here covers every migration rather than asking
+        // each to defend itself.
+        context.autosaveEnabled = false
+        defer { context.autosaveEnabled = true }
+
         do {
             try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
         } catch {
