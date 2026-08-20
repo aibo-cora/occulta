@@ -4307,8 +4307,26 @@ regardless of visibility — a check no existing test makes, and the one that wo
 
 ## Bug 86 — `AppLayerConfig`'s padded arrays name the occupied depths by element length, with no key
 
-**Status:** **Open.** Filed 2026-08-18 while checking whether Bug 85's codec could be reused for the
-other depth-shaped fields. Found by measurement, and the fix is materially riskier than Bug 85's —
+**Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while checking whether Bug 85's codec could be
+reused for the other depth-shaped fields.
+
+Both arrays now use `LayerArrayCodec` — tag byte plus a 4-byte big-endian `UInt32`, 33 bytes sealed
+for every value either holds — and `fillerSize` is `LayerArrayCodec.sealedSize` rather than a
+literal, which is what makes the drift unrepeatable. `pinEnabledPerDepth` was severed from that
+constant first, in its own commit, because moving `fillerSize` would otherwise have widened its
+fallback outlier from 1 byte to 4 as a side effect.
+
+The conversion runs in `Manager.Security.init` rather than `DatabaseMigration`: that context owns
+the `AppLayerConfig` row, so no second context's cached copy can overwrite the result. It derives the
+SE key once and aborts entirely if that fails, uses only the in-memory key for all 64 elements, and
+saves exactly once — the three properties recorded under "The migration hazard".
+
+The SE key is now seeded at first launch (`bd0160b`), so deriving it in the pass cannot mint a key as
+a side effect. That removed the branch this fix was otherwise going to need, and the tell that made
+the branch necessary.
+
+All four Phase 0 reproductions flipped from recording expected failures to passing, and their
+`withKnownIssue` wrappers were removed. Suite: 844 passed, 0 failed, 0 expected failures. Found by measurement, and the fix is materially riskier than Bug 85's —
 see "Why this one can lose user data". **Amended the same day** — a third array turned out to have a
 narrower version of the same defect on one path, plus a functional failure alongside it; see
 "Amendment" below. The scope table's `pinEnabledPerDepth` row was corrected accordingly.

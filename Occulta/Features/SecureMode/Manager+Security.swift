@@ -218,6 +218,14 @@ extension Manager {
                 try? context.save()
             }
 
+            // Bug 86: convert the blob-metadata arrays to the fixed-width format.
+            //
+            // Here rather than in `DatabaseMigration` for two reasons. This context owns the
+            // AppLayerConfig row, so there is no second context whose cached copy could
+            // overwrite the result. And the SE key is seeded just above, so deriving it
+            // costs nothing and cannot mint a key as a side effect.
+            self.migrateBlobMetadataArrays(config: config, context: context)
+
             // Migration: populate verifier arrays from scalar fields on first launch after
             // the multi-layer upgrade. Scalars remain as nil/non-nil flags for requiresPIN
             // and isSecureModeActive; arrays are the source of truth for verify() scanning.
@@ -291,6 +299,68 @@ extension Manager {
             DispatchQueue.global(qos: .background).async {
                 store.maintain()
             }
+        }
+
+        /// Converts `sealedBlobSlots` and `layerSequenceNumbers` to `LayerArrayCodec`'s
+        /// fixed-width format, resizing filler to match (Bug 86).
+        ///
+        /// Three properties carry the safety here, and all three are load-bearing.
+        ///
+        /// **The key is derived once, up front, and failure aborts the whole pass.** Filler
+        /// and an unreadable real entry are indistinguishable — that is exactly how
+        /// `readBlobSlot` tells absence from presence — so the pass has to rewrite
+        /// undecryptable elements as fresh filler, filler being what changes size. Without a
+        /// good key every element looks undecryptable, all 32 entries of both arrays become
+        /// filler, and every layer's blob metadata is destroyed at once on a device where
+        /// nothing was wrong a moment earlier.
+        ///
+        /// **Every element uses that one in-memory key**, never an ambient `encrypt()`. A
+        /// derived `SymmetricKey` survives a device lock; a Keychain read does not, and
+        /// these items are `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`.
+        ///
+        /// **One `save()`, at the end.** SQLite transactions are atomic, so a lock mid-pass
+        /// means the save fails and the next launch retries from the original bytes. Saving
+        /// per element would defeat both properties above: the result would be a
+        /// half-converted array with mismatched element sizes, which is this bug in a new
+        /// shape. The in-memory key is what makes a complete result available at that single
+        /// save; the single save is what makes a partial result impossible.
+        private func migrateBlobMetadataArrays(config: AppLayerConfig, context: ModelContext) {
+            guard let seKey = try? self.keyManager.deriveSecureModeKey() else { return }
+            let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
+
+            var didChange = false
+
+            func converted(_ elements: [Data]) -> [Data] {
+                elements.map { element in
+                    guard let plain = element.decrypt(using: blobKey),
+                          let value = LayerArrayCodec.decode(plain)
+                    else {
+                        // Filler, or a layer already lost — `readBlobSlot` returns nil for
+                        // it either way, so deactivation already treats it as absent and
+                        // replacing it destroys nothing that still worked. Left alone when
+                        // it is already the right size, so the pass is idempotent rather
+                        // than re-randomising all 32 entries on every launch.
+                        guard element.count != LayerArrayCodec.sealedSize else { return element }
+                        didChange = true
+                        return AppLayerConfig.blobArrayFiller()
+                    }
+                    let reencoded = LayerArrayCodec.encode(value)
+                    guard reencoded != plain else { return element }   // already converted
+                    guard let sealed = (try? reencoded.encrypt(using: blobKey)) ?? nil else {
+                        return element    // never replace a readable entry with filler
+                    }
+                    didChange = true
+                    return sealed
+                }
+            }
+
+            let slots = converted(config.sealedBlobSlots)
+            let seqs  = converted(config.layerSequenceNumbers)
+
+            guard didChange else { return }
+            config.sealedBlobSlots      = slots
+            config.layerSequenceNumbers = seqs
+            try? context.save()
         }
 
         /// Rewrites the no-op layer store file on a background thread.

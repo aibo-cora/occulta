@@ -244,6 +244,14 @@ final class TestKeyManager: KeyManagerProtocol {
     /// to be able to produce the nil.
     var simulatesHybridKeyUnavailable = false
 
+    /// Forces `deriveSecureModeKey()` to return nil.
+    ///
+    /// Exists for Bug 86's migration guard. That pass rewrites any element it cannot decrypt
+    /// as fresh filler — filler being what changes size — so without a usable key every
+    /// element looks like filler and all 32 entries of both blob-metadata arrays would be
+    /// destroyed at once. Producing the nil is the only way to test that it aborts instead.
+    var simulatesSecureModeKeyUnavailable = false
+
     /// v2 — hybrid PQ-reinforced local key.
     func createHybridLocalEncryptionKey() throws -> SymmetricKey? {
         if self.simulatesHybridKeyUnavailable { return nil }
@@ -349,6 +357,7 @@ final class TestKeyManager: KeyManagerProtocol {
     }
 
     func deriveSecureModeKey() throws -> SymmetricKey? {
+        if self.simulatesSecureModeKeyUnavailable { return nil }
         guard let fixedPubKey = makePublicKey(from: fixedX963) else { return nil }
         var err: Unmanaged<CFError>?
         guard

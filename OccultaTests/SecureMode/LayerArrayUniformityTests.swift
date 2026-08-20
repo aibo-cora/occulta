@@ -8,9 +8,10 @@
 //  "array length is forensically constant". Array *length* was made constant; element
 //  length was not, and element length is what names the occupied depths.
 //
-//  These assertions are wrapped in `withKnownIssue`, so the suite stays green while the
-//  bug is open and each test flips to failing the moment it is fixed — at which point the
-//  wrapper should be removed and the assertion kept as the regression guard.
+//  These began wrapped in `withKnownIssue` so the suite stayed green while the bug was
+//  open. Each flipped to failing the moment the fix landed — `withKnownIssue` fails when
+//  no issue is recorded — and the wrappers came off then, leaving the assertions as
+//  regression guards. The migration tests at the bottom cover the conversion itself.
 //
 //  The two blob-array tests need no Secure Enclave: `writeBlobSlot` and
 //  `writeSequenceNumber` both take their key explicitly, and `encrypt(using:)` uses the
@@ -38,13 +39,11 @@ struct LayerArrayUniformityTests {
         try config.writeBlobSlot(7, at: 2, using: key)
 
         let lengths = Set(config.sealedBlobSlots.map(\.count))
-        withKnownIssue("Bug 86: fillerSize is 30, a single-digit slot index seals to 29") {
-            #expect(lengths.count == 1, """
-                sealedBlobSlots holds \(lengths.sorted()) distinct element lengths. Element \
-                length is readable from the store file with no key, and the array is indexed \
-                by depth — so an element that differs from the filler names an occupied depth.
-                """)
-        }
+        #expect(lengths.count == 1, """
+            sealedBlobSlots holds \(lengths.sorted()) distinct element lengths. Element \
+            length is readable from the store file with no key, and the array is indexed \
+            by depth — so an element that differs from the filler names an occupied depth.
+            """)
     }
 
     /// The severe one. Sequence numbers are `Int(UInt32)`, so ~98% of real entries seal to
@@ -60,13 +59,11 @@ struct LayerArrayUniformityTests {
         try config.writeSequenceNumber(3_000_000_000, at: 2, using: key)
 
         let lengths = Set(config.layerSequenceNumbers.map(\.count))
-        withKnownIssue("Bug 86: fillerSize is 30, a 32-bit sequence number seals to 37–38") {
-            #expect(lengths.count == 1, """
-                layerSequenceNumbers holds \(lengths.sorted()) distinct element lengths. \
-                This marks an occupied depth from the moment a layer is created, whether or \
-                not any contact was ever classified.
-                """)
-        }
+        #expect(lengths.count == 1, """
+            layerSequenceNumbers holds \(lengths.sorted()) distinct element lengths. \
+            This marks an occupied depth from the moment a layer is created, whether or \
+            not any contact was ever classified.
+            """)
     }
 
     /// Both arrays are padded by the same `ensurePadded()` against the same `fillerSize`
@@ -82,12 +79,10 @@ struct LayerArrayUniformityTests {
         try config.writeBlobSlot(7, at: 0, using: key)
         try config.writeSequenceNumber(3_000_000_000, at: 1, using: key)
 
-        withKnownIssue("Bug 86: fillerSize = 30 is a literal, unrelated to either encoding") {
-            #expect(config.sealedBlobSlots[0].count == fillerLength,
-                    "a written slot must be the same size as the filler it replaces")
-            #expect(config.layerSequenceNumbers[1].count == fillerLength,
-                    "a written sequence number must be the same size as the filler it replaces")
-        }
+        #expect(config.sealedBlobSlots[0].count == fillerLength,
+                "a written slot must be the same size as the filler it replaces")
+        #expect(config.layerSequenceNumbers[1].count == fillerLength,
+                "a written sequence number must be the same size as the filler it replaces")
     }
 
     /// `pinEnabledEntrySize` must equal what a real entry actually seals to, because the
@@ -163,4 +158,119 @@ struct LayerArrayUniformityTests {
 
 private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+// MARK: - Migration
+
+@MainActor
+private func makeConfigContainer() throws -> ModelContainer {
+    let schema = Schema([AppLayerConfig.self])
+    return try ModelContainer(
+        for: schema,
+        configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+    )
+}
+
+/// Seeds a config whose blob arrays are in the OLD format: legacy JSON entries at `depth`,
+/// 30-byte random filler everywhere else, exactly as a pre-upgrade install has them.
+@MainActor
+private func seedLegacyConfig(
+    slot: Int, sequenceNumber: Int, at depth: Int,
+    blobKey: SymmetricKey, in context: ModelContext
+) throws {
+    let config = AppLayerConfig()
+    var slots = (0..<32).map { _ in Data((0..<30).map { _ in UInt8.random(in: 0...255) }) }
+    var seqs  = slots
+    slots[depth] = try JSONEncoder().encode(slot).encrypt(using: blobKey)!
+    seqs[depth]  = try JSONEncoder().encode(sequenceNumber).encrypt(using: blobKey)!
+    config.sealedBlobSlots      = slots
+    config.layerSequenceNumbers = seqs
+    context.insert(config)
+    try context.save()
+}
+
+@Suite("Bug 86 — blob array fixed-width migration", .serialized)
+@MainActor
+struct BlobArrayFixedWidthMigrationTests {
+
+    /// The catastrophic guard. Filler and an unreadable real entry are indistinguishable, so
+    /// the pass rewrites anything it cannot decrypt as fresh filler. Without a usable key
+    /// *every* element looks undecryptable, and all 32 entries of both arrays would be
+    /// replaced — destroying every layer's blob metadata on a device where nothing was wrong.
+    @Test("With no Secure Mode key the pass is a complete no-op")
+    func noKeyMeansNoOp() throws {
+        let container  = try makeConfigContainer()
+        let context    = ModelContext(container)
+        let keyManager = TestKeyManager()
+        let seKey      = try #require(try keyManager.deriveSecureModeKey())
+        let blobKey    = AppLayerConfig.blobMetadataKey(from: seKey)
+        try seedLegacyConfig(slot: 7, sequenceNumber: 3_000_000_000, at: 2,
+                             blobKey: blobKey, in: context)
+
+        let before = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        let slotsBefore = before.sealedBlobSlots
+        let seqsBefore  = before.layerSequenceNumbers
+
+        keyManager.simulatesSecureModeKeyUnavailable = true
+        _ = Manager.Security(modelContainer: container, keyManager: keyManager)
+
+        let after = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        #expect(after.sealedBlobSlots == slotsBefore, """
+            Without a usable key the pass must touch nothing. Rewriting here replaces every \
+            element with filler, and deactivation can then pop no blob at any depth — \
+            sensitive contacts unrecoverable, for every layer at once.
+            """)
+        #expect(after.layerSequenceNumbers == seqsBefore)
+    }
+
+    /// The conversion itself: real entries survive with their values, filler is resized, and
+    /// the array comes out uniform — which is the point.
+    @Test("Legacy arrays converge to one element length, values intact")
+    func legacyArraysConverge() throws {
+        let container  = try makeConfigContainer()
+        let context    = ModelContext(container)
+        let keyManager = TestKeyManager()
+        let seKey      = try #require(try keyManager.deriveSecureModeKey())
+        let blobKey    = AppLayerConfig.blobMetadataKey(from: seKey)
+        try seedLegacyConfig(slot: 7, sequenceNumber: 3_000_000_000, at: 2,
+                             blobKey: blobKey, in: context)
+
+        _ = Manager.Security(modelContainer: container, keyManager: keyManager)
+
+        let after = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        #expect(Set(after.sealedBlobSlots.map(\.count)).count == 1,
+                "slots: \(Set(after.sealedBlobSlots.map(\.count)).sorted())")
+        #expect(Set(after.layerSequenceNumbers.map(\.count)).count == 1,
+                "seqnums: \(Set(after.layerSequenceNumbers.map(\.count)).sorted())")
+        #expect(after.readBlobSlot(at: 2, using: blobKey) == 7,
+                "the slot index must survive the conversion verbatim")
+        #expect(after.readSequenceNumber(at: 2, using: blobKey) == 3_000_000_000, """
+            The sequence number must survive verbatim. It is validated on pop, and a mismatch \
+            makes deactivation substitute an empty payload — sensitive contacts unrecoverable.
+            """)
+    }
+
+    /// It runs on every launch, so a second pass must not re-randomise filler — that would
+    /// churn the WAL on every start and rewrite 32 entries for nothing.
+    @Test("A second run changes nothing")
+    func migrationIsIdempotent() throws {
+        let container  = try makeConfigContainer()
+        let context    = ModelContext(container)
+        let keyManager = TestKeyManager()
+        let seKey      = try #require(try keyManager.deriveSecureModeKey())
+        let blobKey    = AppLayerConfig.blobMetadataKey(from: seKey)
+        try seedLegacyConfig(slot: 3, sequenceNumber: 42, at: 1, blobKey: blobKey, in: context)
+
+        _ = Manager.Security(modelContainer: container, keyManager: keyManager)
+        let first = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+        let slotsAfterFirst = first.sealedBlobSlots
+        let seqsAfterFirst  = first.layerSequenceNumbers
+
+        _ = Manager.Security(modelContainer: container, keyManager: keyManager)
+        let second = try #require(try context.fetch(FetchDescriptor<AppLayerConfig>()).first)
+
+        #expect(second.sealedBlobSlots == slotsAfterFirst,
+                "a converted array must not be rewritten on the next launch")
+        #expect(second.layerSequenceNumbers == seqsAfterFirst)
+    }
 }

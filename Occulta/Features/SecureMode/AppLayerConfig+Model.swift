@@ -155,7 +155,7 @@ final class AppLayerConfig {
     func readBlobSlot(at depth: Int, using key: SymmetricKey) -> Int? {
         guard depth < self.sealedBlobSlots.count,
               let decrypted = self.sealedBlobSlots[depth].decrypt(using: key),
-              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value     = LayerArrayCodec.decode(decrypted)
         else { return nil }
         return value
     }
@@ -165,7 +165,7 @@ final class AppLayerConfig {
         // encrypt(data: Data?) overload when input is nil. Treat nil as a key failure
         // and throw rather than silently skipping: a missing blob slot means deactivation
         // will never find the blob and sensitive contacts will be permanently lost.
-        guard let encrypted = try JSONEncoder().encode(slot).encrypt(using: key) else {
+        guard let encrypted = try LayerArrayCodec.encode(slot).encrypt(using: key) else {
             throw CocoaError(.coderValueNotFound)
         }
         self.ensurePadded()
@@ -187,7 +187,7 @@ final class AppLayerConfig {
     func readSequenceNumber(at depth: Int, using key: SymmetricKey) -> Int? {
         guard depth < self.layerSequenceNumbers.count,
               let decrypted = self.layerSequenceNumbers[depth].decrypt(using: key),
-              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value     = LayerArrayCodec.decode(decrypted)
         else { return nil }
         return value
     }
@@ -196,7 +196,7 @@ final class AppLayerConfig {
         // Same invariant as writeBlobSlot — nil from encrypt() is a key failure, not a
         // valid code path for non-nil input. Throw so activation aborts rather than
         // succeeding silently with missing deactivation metadata.
-        guard let encrypted = try JSONEncoder().encode(seqNum).encrypt(using: key) else {
+        guard let encrypted = try LayerArrayCodec.encode(seqNum).encrypt(using: key) else {
             throw CocoaError(.coderValueNotFound)
         }
         self.ensurePadded()
@@ -366,7 +366,13 @@ final class AppLayerConfig {
 
     private static let paddedArrayCount = 32  // Manager.LayerStore.slotCount
     /// Byte size of random filler for blob-slot and sequence-number arrays.
-    private static let fillerSize = 30
+    ///
+    /// **Derived from the codec, never a literal.** A hardcoded 30 sitting beside a format
+    /// that produced 29 for a single-digit slot index and 37–38 for a sequence number is
+    /// Bug 86 in its entirety: array *length* was constant, element length was not, and the
+    /// arrays are indexed by depth, so any element differing from the filler named an
+    /// occupied depth. Deriving it is what makes that drift unrepeatable.
+    private static let fillerSize = LayerArrayCodec.sealedSize
     /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize (53).
     static let verifierFillerSize = 53
 
@@ -394,6 +400,13 @@ final class AppLayerConfig {
     private static func randomFiller() -> Data {
         Self.randomBytes(count: Self.fillerSize)
     }
+
+    /// Correctly-sized random filler for the blob-metadata arrays.
+    ///
+    /// Exposed for the fixed-width migration, which has to resize *filler* as well as real
+    /// entries — filler is precisely what changes size, and it is indistinguishable from an
+    /// unreadable real entry, which is how `readBlobSlot` tells absence from presence.
+    static func blobArrayFiller() -> Data { Self.randomFiller() }
 
     /// Sealed size of one `pinEnabledPerDepth` entry: JSON `UInt8` is one byte, plus
     /// AES-GCM's nonce(12) and tag(16).
