@@ -168,6 +168,23 @@ extension Manager {
             // isRestricted = false. All properties stay at defaults.
             guard enabled else { return }
 
+            // Bootstrap: ensure the Secure Mode SE key exists from the very first launch.
+            //
+            // Same reasoning as the config row below, applied to the one piece of this
+            // subsystem that was still created lazily. `deriveSecureModeKey()` creates the
+            // key on first use, and its only callers are `configurePIN` and the rotation
+            // paths — so on an install that never set a PIN, the key simply does not exist.
+            // Keychain items carry `kSecAttrCreationDate`, so lazy creation leaks not just
+            // *whether* a PIN was ever configured but *when*. Creating it here makes both
+            // facts uniform across installs: every device has it, dated at first launch.
+            //
+            // Deliberately discarding the result — this is a create-if-absent, not a use.
+            // Nothing anywhere treats a nil return as "Secure Mode was never configured";
+            // all call sites read it as a derivation failure, so seeding it changes no
+            // behaviour. Silent and cheap: the key is `.privateKeyUsage` only, with no
+            // biometry flag and no LAContext, so there is no prompt.
+            _ = try? self.keyManager.deriveSecureModeKey()
+
             // Bootstrap: ensure the config row exists from the very first launch.
             // AppLayerConfig must always be present regardless of whether a PIN or
             // Secure Mode has ever been configured — its absence would be a forensic
