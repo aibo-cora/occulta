@@ -57,22 +57,7 @@ struct DatabaseMigration {
         )
         let contacts = try modelContext.fetch(descriptor)
 
-        #if DEBUG
-        var migrated = 0
-        
-        if !contacts.isEmpty {
-            debugPrint("[Bug89] migrateToV2: \(contacts.count) contacts still marked v1")
-        }
-        defer {
-            if !contacts.isEmpty {
-                debugPrint("[Bug89]   \(migrated) of \(contacts.count) migrated this launch")
-            }
-        }
-        #endif
-
-        var failed = 0
-
-        for (index, contact) in contacts.enumerated() {
+        for contact in contacts {
             // One contact's failure must not end the pass (Bug 89). Before this, a bare
             // `try` here meant the first row whose legacy ciphertext would not authenticate
             // stopped every row after it, permanently — and the rows after it may be
@@ -88,10 +73,6 @@ struct DatabaseMigration {
                 // Inside the `do` deliberately: a throwing save must roll back too.
                 contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
                 try modelContext.save()
-                
-                #if DEBUG
-                migrated += 1
-                #endif
             } catch {
                 // Discard this contact's partial mutation. `migrateContact` assigns field by
                 // field, so a throw partway leaves earlier fields already converted on the
@@ -102,23 +83,13 @@ struct DatabaseMigration {
                 // migration runs first, so nothing else has pending changes on this context —
                 // correct by ordering, which is why it is written down here.
                 modelContext.rollback()
-                failed += 1
 
                 // The marker is deliberately not advanced: the row stays at v1 and is retried
                 // next launch. Marking it v2 would collapse "not yet migrated" into "migrated"
                 // and destroy the only evidence that a retry is possible — the same reasoning
                 // as Bug 80's `reencryptPreserving`.
-                #if DEBUG
-                Self.logMigrationFailure(error, index: index, total: contacts.count, migrated: migrated)
-                #endif
             }
         }
-
-        #if DEBUG
-        if failed > 0 {
-            debugPrint("[Bug89]   \(failed) contact(s) left at v1 — will be retried next launch")
-        }
-        #endif
     }
 
     /// One-time backfill for contacts whose `visibleThroughDepth` predates the
@@ -271,76 +242,8 @@ struct DatabaseMigration {
         }
 
         if didChange { try modelContext.save() }
-
-        #if DEBUG
-        debugPrint("[Bug85] depth-field normalisation — rewrote something: \(didChange)")
-        #endif
     }
 
-    #if DEBUG
-    /// On-device diagnostic for Bug 85: prints the distinct sealed lengths of every depth
-    /// field, which is precisely the property the fix establishes.
-    ///
-    /// Deliberately logs only **aggregate lengths and row counts** — never a decoded value,
-    /// a depth, or a contact identifier. A log line naming which contacts are hidden would
-    /// be the leak this fix removes, relocated somewhere even easier to read.
-    ///
-    /// A single length per field is the pass condition. More than one means a row did not
-    /// convert; the usual cause is a stranded ciphertext, which the pass leaves byte-identical
-    /// on purpose rather than resolving to a default (Bug 87).
-    static func logDepthFieldUniformity(modelContext: ModelContext) {
-        func lengths(_ values: [Data?]) -> String {
-            let present = values.compactMap { $0?.count }
-            let nils    = values.count - present.count
-            let distinct = Set(present).sorted()
-            return "\(distinct) over \(present.count) rows" + (nils > 0 ? " (+\(nils) nil)" : "")
-        }
-
-        let contacts = (try? modelContext.fetch(FetchDescriptor<Contact.Profile>())) ?? []
-        let entries  = (try? modelContext.fetch(FetchDescriptor<VaultEntry>())) ?? []
-        let configs  = (try? modelContext.fetch(FetchDescriptor<AppLayerConfig>())) ?? []
-
-        // Why each field was skipped. "Nothing changed" has six causes and they are not
-        // equally benign: `alreadyFixedWidth` everywhere means the job is done, whereas
-        // `undecryptable` on a legacy-length row means the key cannot read data it should.
-        func tally(_ values: [Data?], _ label: String) {
-            var counts: [String: Int] = [:]
-            for value in values {
-                let name: String
-                switch (try? Self.rewriteOutcome(of: value)) ?? .sealFailed {
-                case .converted:         name = "converted"
-                case .absent:            name = "absent(nil)"
-                case .undecryptable:     name = "UNDECRYPTABLE"
-                case .undecodable:       name = "UNDECODABLE"
-                case .alreadyFixedWidth: name = "alreadyFixedWidth"
-                case .wouldNotRoundTrip: name = "wouldNotRoundTrip"
-                case .sealFailed:        name = "sealFailed"
-                }
-                counts[name, default: 0] += 1
-            }
-            debugPrint("[Bug85]   \(label) outcomes: \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
-        }
-
-        tally(contacts.map(\.visibleThroughDepth), "Contact.visibleThroughDepth")
-        tally(contacts.map(\.originDepth),         "Contact.originDepth        ")
-        debugPrint("[Bug85]   Contact.visibleThroughDepth   \(lengths(contacts.map(\.visibleThroughDepth)))")
-        debugPrint("[Bug85]   Contact.globalTrusteeDepth    \(lengths(contacts.map(\.globalTrusteeDepth)))")
-        debugPrint("[Bug85]   Contact.originDepth           \(lengths(contacts.map(\.originDepth)))")
-        debugPrint("[Bug85]   VaultEntry.visibleThroughDepth \(lengths(entries.map(\.visibleThroughDepth)))")
-        debugPrint("[Bug85]   AppLayerConfig.persistedDepth  \(lengths(configs.map(\.persistedDepth)))")
-        debugPrint("[Bug85]   AppLayerConfig.coercerBaseDepth \(lengths(configs.map(\.coercerBaseDepth)))")
-
-        let all = Set(
-            contacts.flatMap { [$0.visibleThroughDepth, $0.globalTrusteeDepth, $0.originDepth] }
-                .compactMap { $0?.count }
-            + entries.compactMap { $0.visibleThroughDepth?.count }
-            + configs.flatMap { [$0.persistedDepth, $0.coercerBaseDepth] }.compactMap { $0?.count }
-        )
-        debugPrint(all.count <= 1
-                   ? "[Bug85]   ✅ every depth field is one length — no keyless classifier"
-                   : "[Bug85]   ⚠️ lengths \(all.sorted()) — a row did not convert (stranded ciphertext?)")
-    }
-    #endif
 
     /// The fixed-width re-encryption of `field`, or nil when it must be left untouched.
     /// Every nil return is a case the migration is required not to rewrite — see
@@ -501,41 +404,6 @@ struct DatabaseMigration {
     /// Re-encrypt a base64-encoded ciphertext string from v1 → v2.
     ///
     /// Empty strings are preserved as-is (they represent empty plaintext).
-    #if DEBUG
-    /// Reports where the v1→v2 migration stopped and why (Bug 89).
-    ///
-    /// The counts are the point: the previous log gave a bare `authenticationFailure` with
-    /// no indication of how many contacts were affected or whether the ones after it would
-    /// have succeeded — and it is the ones after it that make this a bug rather than a row
-    /// with unrecoverable data.
-    ///
-    /// Logs a 12-character prefix of the encrypted identifier so rows can be correlated
-    /// across launches. Never a name — `migrateContact`'s own `debugName` line predates this
-    /// and is called out separately in the entry.
-    private static func logMigrationFailure(_ error: Error, index: Int, total: Int, migrated: Int) {
-        let position = "\(index + 1)/\(total)"
-        func tail(_ id: String) { debugPrint("[Bug89]     contact \(id.prefix(12))…") }
-
-        switch error as? MigrationError {
-        case .legacyDecryptionThrew(let field, let id, let alreadyV2, let underlying):
-            debugPrint("[Bug89]   \(position) FAILED — field '\(field)', legacy decrypt threw \(underlying)")
-            tail(id)
-            debugPrint(alreadyV2
-                       ? "[Bug89]     probe: readable with the CURRENT key → already migrated, row is MIXED"
-                       : "[Bug89]     probe: unreadable with both keys → genuinely lost")
-        case .legacyDecryptionFailed(let field, let id):
-            debugPrint("[Bug89]   \(position) FAILED — field '\(field)', legacy decrypt returned nil")
-            tail(id)
-        case .encryptionFailed(let field, let id):
-            debugPrint("[Bug89]   \(position) FAILED — field '\(field)', re-encryption failed")
-            debugPrint("[Bug89]     that is a key problem, not unreadable data")
-            tail(id)
-        default:
-            debugPrint("[Bug89]   \(position) FAILED — \(error)")
-        }
-        debugPrint("[Bug89]     row left at v1 and rolled back; \(total - index - 1) still to try")
-    }
-    #endif
 
     /// Overwrites the depth stamps of already-soft-deleted rows with random bytes at
     /// `DepthCodec`'s uniform length (Bug 88).

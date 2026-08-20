@@ -325,29 +325,13 @@ extension Manager {
         /// shape. The in-memory key is what makes a complete result available at that single
         /// save; the single save is what makes a partial result impossible.
         private func migrateBlobMetadataArrays(config: AppLayerConfig, context: ModelContext) {
-            #if DEBUG
-            // Aggregate element lengths only — never a slot index, a sequence number, or a
-            // depth. The array is indexed by depth, so logging which element changed would
-            // name an occupied layer: the exact leak this fix removes, moved to the console.
-            func lengths(_ a: [Data]) -> [Int] { Set(a.map(\.count)).sorted() }
-            let slotsBefore = lengths(config.sealedBlobSlots)
-            let seqsBefore  = lengths(config.layerSequenceNumbers)
-            #endif
-
             // The single save() below is what makes this pass all-or-nothing; an autosave
             // firing mid-pass would commit a partially-converted array and defeat it. Same
             // idiom as the rotation paths in this file.
             context.autosaveEnabled = false
             defer { context.autosaveEnabled = true }
 
-            guard let seKey = try? self.keyManager.deriveSecureModeKey() else {
-                #if DEBUG
-                debugPrint("[Bug86] blob-array normalisation SKIPPED — no Secure Mode key.")
-                debugPrint("[Bug86]   This is the guard, not a failure: without a key every")
-                debugPrint("[Bug86]   element looks undecryptable and all 64 would become filler.")
-                #endif
-                return
-            }
+            guard let seKey = try? self.keyManager.deriveSecureModeKey() else { return }
             let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
 
             var didChange = false
@@ -379,27 +363,10 @@ extension Manager {
             let slots = converted(config.sealedBlobSlots)
             let seqs  = converted(config.layerSequenceNumbers)
 
-            guard didChange else {
-                #if DEBUG
-                debugPrint("[Bug86] blob-array normalisation — nothing to do (already converted).")
-                debugPrint("[Bug86]   sealedBlobSlots \(slotsBefore) · layerSequenceNumbers \(seqsBefore)")
-                #endif
-                return
-            }
+            guard didChange else { return }
             config.sealedBlobSlots      = slots
             config.layerSequenceNumbers = seqs
             try? context.save()
-
-            #if DEBUG
-            let slotsAfter = lengths(config.sealedBlobSlots)
-            let seqsAfter  = lengths(config.layerSequenceNumbers)
-            debugPrint("[Bug86] blob-array normalisation — converted.")
-            debugPrint("[Bug86]   sealedBlobSlots      \(slotsBefore) → \(slotsAfter)")
-            debugPrint("[Bug86]   layerSequenceNumbers \(seqsBefore) → \(seqsAfter)")
-            debugPrint(slotsAfter.count <= 1 && seqsAfter.count <= 1
-                       ? "[Bug86]   ✅ both arrays one length — no depth is named by size"
-                       : "[Bug86]   ⚠️ still mixed — an element did not convert")
-            #endif
         }
 
         /// Rewrites the no-op layer store file on a background thread.

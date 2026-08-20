@@ -182,13 +182,6 @@ struct OccultaApp: App {
             #endif
         }
 
-        // Reported here rather than inside the fixed-width pass, because the property it
-        // asserts — every depth field one length — is only true once the scrub above has also
-        // run. Inside that pass it measured the middle of the sequence and always showed a
-        // stale picture on the launch that fixed things.
-        #if DEBUG
-        DatabaseMigration.logDepthFieldUniformity(modelContext: context)
-        #endif
 
         do {
             try DatabaseMigration.migrateGlobalShardConfigToPerContact(
