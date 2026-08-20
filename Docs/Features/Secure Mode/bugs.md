@@ -5147,3 +5147,102 @@ No test exercises `migrateToV2` with a contact that fails to decrypt. The two pr
 that a failing row does not stop the ones after it, and that a failing row leaves **no** field
 changed — asserted after a subsequent migration has saved on the same context, since that is the
 path that commits it.
+
+---
+
+## Bug 90 — `Contact.Draft` does not mirror `Contact.Profile`, and it is used as a persistence format
+
+**Status:** **Open.** Noticed 2026-08-19 while weighing whether `Contact.Draft` could serve as the
+carrier type for Bug 89's atomicity refactor. It cannot, and the reason it cannot is itself the bug.
+
+**Target:** unset.
+
+### Severity: unrated pending the check in "What still needs confirming"
+
+The structural defect is certain. Whether it is currently *losing* data depends on a question this
+entry does not answer — see below. Rating it before that is guesswork.
+
+### What happens
+
+`Contact.Draft` is a `Codable` value type that reads as a mirror of `Contact.Profile`, and is used as
+one in two places that persist it:
+
+- **`LayerContact`** (`SecureMode+LayerStore.swift`) — the per-contact record inside a Secure Mode
+  activation blob. `let draft: Contact.Draft`, and that blob is where a sensitive contact's data
+  lives while the layer is active.
+- **Import/export** (`Import+View.swift`) — `JSONDecoder().decode([Contact.Draft].self, …)` reads a
+  shared-contacts file, and the encode side writes one.
+
+But it is not a mirror. Comparing stored properties, `Draft` carries the fourteen scalar strings,
+`birthday`, `note`, both image fields, the four relationship arrays, `contactPublicKeys`, plus
+`importedAt` and `status` of its own. `Contact.Profile` additionally has at least:
+
+| Profile field | On Draft? | On `LayerContact`? |
+|---|---|---|
+| `signedAttributes` | No | **Yes — added separately** |
+| `visibleThroughDepth` | No | **Yes — added separately (Bug 23)** |
+| `globalTrusteeDepth` | No | **Yes — added separately** |
+| `originDepth` | No | No — deliberately, with a documented reason |
+| `forwardSecrecyEncrypted` | No | **No** |
+| `maxBundleVersion` | No | **No** |
+| `deletionToken`, `encryptionScheme` | No | No — row metadata, arguably correct |
+
+### The shape of the defect
+
+The three fields `LayerContact` carries alongside the draft are the evidence. Each was bolted on
+individually, and at least one of them (`visibleThroughDepth`) was added in response to a filed bug —
+Bug 23 — after it had already been lost through a blob round-trip.
+
+So the pattern is: a field is added to `Contact.Profile`, `Draft` is not updated, the omission is
+invisible until something round-trips a contact through a blob, and then it is patched by adding one
+more parallel field to `LayerContact`. Three times so far. Nothing enforces the correspondence, and
+nothing fails when it is broken — the type is `Codable`, so a missing field is simply absent, never a
+compile error and never a decode error.
+
+`originDepth` is the exception that proves the rule: it is absent *deliberately*, with a comment
+explaining that a duress-origin contact can never reach the struct. That is what a considered
+omission looks like, and the others do not look like that.
+
+### What still needs confirming
+
+**Whether `forwardSecrecyEncrypted` and `maxBundleVersion` are actually lost on a blob round-trip, or
+merely absent from the blob.**
+
+Blob-sealed contacts are not deleted from the database — the row persists and is re-encrypted under
+the staged key in activation's Step 8. `restoreFromBlob` writes back only
+`visibleThroughDepth`, `globalTrusteeDepth`, `originDepth` and `signedAttributes`; it does not touch
+`forwardSecrecyEncrypted` or `maxBundleVersion`. So those two may survive on the row untouched, in
+which case the blob's omission costs nothing today.
+
+That is the question to answer before rating this. If they survive on the row, this is a latent
+structural hazard. If they do not, it is active data loss on every activate/deactivate cycle for
+every sensitive contact — and `maxBundleVersion` in particular is the field Bug 80 turns on, while
+`forwardSecrecyEncrypted` is per-contact forward-secrecy state.
+
+The import/export path is a separate exposure with the same root: whatever a shared-contacts file
+omits is simply not imported, and no field there is bolted back on the way `LayerContact` does it.
+
+### Remedy to weigh
+
+1. **Make the correspondence enforced rather than remembered.** The project already has the pattern:
+   `EncryptedFieldCoverageTests` drives `Contact.Profile`'s coverage from a probe table and a
+   tripwire over `unprobedFields`, so a newly added stored property fails a test until someone
+   classifies it. The same tripwire shape would work here — every `Profile` stored property must be
+   either present on `Draft`, present on `LayerContact`, or explicitly listed as deliberately
+   excluded with a reason, as `originDepth` already is.
+2. **Fold the three bolted-on fields into `Draft`**, so `LayerContact` stops being a place where the
+   gap is patched one field at a time. Larger, and it changes a serialised wire format, so it wants
+   the dual-read treatment the depth fields got.
+3. **Leave `Draft` as an editing type and give the blob its own record type** that is exhaustive by
+   construction. Honest about the two roles, but it is a third type covering the same fields.
+
+Remedy 1 is worth doing regardless of which of the others is chosen: it converts a silent omission
+into a failing test, which is the property that is missing today.
+
+### Not a carrier for Bug 89
+
+Recorded because it was the question that surfaced this. `Draft` cannot serve as the compute-phase
+carrier for Bug 89's two-phase refactor: it lacks `forwardSecrecyEncrypted`, its `identifier` and
+`status` are `let` so it cannot be mutated in place, and its relationship children are value types
+while `Profile`'s are `@Model` classes — so applying them back still requires pairing by identity,
+which is the part of that refactor where a mistake would hide.
