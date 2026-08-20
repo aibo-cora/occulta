@@ -241,7 +241,30 @@ struct DatabaseMigration {
         let entries  = (try? modelContext.fetch(FetchDescriptor<VaultEntry>())) ?? []
         let configs  = (try? modelContext.fetch(FetchDescriptor<AppLayerConfig>())) ?? []
 
+        // Why each field was skipped. "Nothing changed" has six causes and they are not
+        // equally benign: `alreadyFixedWidth` everywhere means the job is done, whereas
+        // `undecryptable` on a legacy-length row means the key cannot read data it should.
+        func tally(_ values: [Data?], _ label: String) {
+            var counts: [String: Int] = [:]
+            for value in values {
+                let name: String
+                switch (try? Self.rewriteOutcome(of: value)) ?? .sealFailed {
+                case .converted:         name = "converted"
+                case .absent:            name = "absent(nil)"
+                case .undecryptable:     name = "UNDECRYPTABLE"
+                case .undecodable:       name = "UNDECODABLE"
+                case .alreadyFixedWidth: name = "alreadyFixedWidth"
+                case .wouldNotRoundTrip: name = "wouldNotRoundTrip"
+                case .sealFailed:        name = "sealFailed"
+                }
+                counts[name, default: 0] += 1
+            }
+            debugPrint("[Bug85]   \(label) outcomes: \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        }
+
         debugPrint("[Bug85] depth-field normalisation — rewrote something: \(didChange)")
+        tally(contacts.map(\.visibleThroughDepth), "Contact.visibleThroughDepth")
+        tally(contacts.map(\.originDepth),         "Contact.originDepth        ")
         debugPrint("[Bug85]   Contact.visibleThroughDepth   \(lengths(contacts.map(\.visibleThroughDepth)))")
         debugPrint("[Bug85]   Contact.globalTrusteeDepth    \(lengths(contacts.map(\.globalTrusteeDepth)))")
         debugPrint("[Bug85]   Contact.originDepth           \(lengths(contacts.map(\.originDepth)))")
@@ -265,14 +288,32 @@ struct DatabaseMigration {
     /// Every nil return is a case the migration is required not to rewrite — see
     /// `migrateDepthFieldsToFixedWidth`.
     private static func fixedWidthRewrite(of field: Data?) throws -> Data? {
-        guard let field                                  else { return nil }  // absent
-        guard let plain = field.decrypt()                else { return nil }  // stranded
-        guard let value = DepthCodec.decode(plain)       else { return nil }  // unreadable
+        if case .converted(let sealed) = try Self.rewriteOutcome(of: field) { return sealed }
+        return nil
+    }
+
+    /// Why a field was or was not rewritten. Every non-`converted` case is one the migration
+    /// is required not to touch — the distinction exists so a device can report *which*,
+    /// since "nothing changed" has six very different causes and they are not equally benign.
+    enum DepthRewriteOutcome {
+        case converted(Data)
+        case absent             // nil — the backfills own it, or VaultEntry's "visible" state
+        case undecryptable      // present but the key cannot read it — leave the bytes alone
+        case undecodable        // decrypts, but neither format parses
+        case alreadyFixedWidth  // nothing to do; keeps the pass idempotent
+        case wouldNotRoundTrip  // the value would not survive re-encoding — refuse to guess
+        case sealFailed         // decoded fine, but could not be re-encrypted
+    }
+
+    static func rewriteOutcome(of field: Data?) throws -> DepthRewriteOutcome {
+        guard let field                             else { return .absent }
+        guard let plain = field.decrypt()           else { return .undecryptable }
+        guard let value = DepthCodec.decode(plain)  else { return .undecodable }
         let reencoded = DepthCodec.encode(value)
-        guard reencoded != plain                         else { return nil }  // already converted
-        guard DepthCodec.decode(reencoded) == value      else { return nil }  // would not round-trip
-        guard let sealed = try reencoded.encrypt()       else { return nil }  // seal failed
-        return sealed
+        guard reencoded != plain                    else { return .alreadyFixedWidth }
+        guard DepthCodec.decode(reencoded) == value else { return .wouldNotRoundTrip }
+        guard let sealed = try reencoded.encrypt()  else { return .sealFailed }
+        return .converted(sealed)
     }
 
     /// One-time consolidation onto a single trustee mechanism: reads any existing
