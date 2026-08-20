@@ -273,7 +273,7 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
 
         #if DEBUG
-        Self.logDepthFieldUniformity(modelContext: modelContext, didChange: didChange)
+        debugPrint("[Bug85] depth-field normalisation — rewrote something: \(didChange)")
         #endif
     }
 
@@ -288,7 +288,7 @@ struct DatabaseMigration {
     /// A single length per field is the pass condition. More than one means a row did not
     /// convert; the usual cause is a stranded ciphertext, which the pass leaves byte-identical
     /// on purpose rather than resolving to a default (Bug 87).
-    private static func logDepthFieldUniformity(modelContext: ModelContext, didChange: Bool) {
+    static func logDepthFieldUniformity(modelContext: ModelContext) {
         func lengths(_ values: [Data?]) -> String {
             let present = values.compactMap { $0?.count }
             let nils    = values.count - present.count
@@ -321,7 +321,6 @@ struct DatabaseMigration {
             debugPrint("[Bug85]   \(label) outcomes: \(counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
         }
 
-        debugPrint("[Bug85] depth-field normalisation — rewrote something: \(didChange)")
         tally(contacts.map(\.visibleThroughDepth), "Contact.visibleThroughDepth")
         tally(contacts.map(\.originDepth),         "Contact.originDepth        ")
         debugPrint("[Bug85]   Contact.visibleThroughDepth   \(lengths(contacts.map(\.visibleThroughDepth)))")
