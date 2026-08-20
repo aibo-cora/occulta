@@ -5157,10 +5157,11 @@ carrier type for Bug 89's atomicity refactor. It cannot, and the reason it canno
 
 **Target:** unset.
 
-### Severity: unrated pending the check in "What still needs confirming"
+### Severity: Low for the blob path, unrated for import/export
 
-The structural defect is certain. Whether it is currently *losing* data depends on a question this
-entry does not answer — see below. Rating it before that is guesswork.
+**Checked 2026-08-19: `forwardSecrecyEncrypted` and `maxBundleVersion` survive a blob round-trip.**
+The blob path is a latent hazard, not active loss — see "What was confirmed". The import/export
+exposure is separate and unmeasured.
 
 ### What happens
 
@@ -5203,24 +5204,42 @@ compile error and never a decode error.
 explaining that a duress-origin contact can never reach the struct. That is what a considered
 omission looks like, and the others do not look like that.
 
-### What still needs confirming
+### What was confirmed
 
-**Whether `forwardSecrecyEncrypted` and `maxBundleVersion` are actually lost on a blob round-trip, or
-merely absent from the blob.**
+**They survive.** Traced 2026-08-19:
 
-Blob-sealed contacts are not deleted from the database — the row persists and is re-encrypted under
-the staged key in activation's Step 8. `restoreFromBlob` writes back only
-`visibleThroughDepth`, `globalTrusteeDepth`, `originDepth` and `signedAttributes`; it does not touch
-`forwardSecrecyEncrypted` or `maxBundleVersion`. So those two may survive on the row untouched, in
-which case the blob's omission costs nothing today.
+`restoreContact` does not merely patch the four fields it names — it first calls
+`save(contact: record.draft, using: crypto)`, and that function is explicitly **dual-purpose, create
+or update**. It looks the contact up by the identifier the draft carries:
 
-That is the question to answer before rating this. If they survive on the row, this is a latent
-structural hazard. If they do not, it is active data loss on every activate/deactivate cycle for
-every sensitive contact — and `maxBundleVersion` in particular is the field Bug 80 turns on, while
-`forwardSecrecyEncrypted` is per-contact forward-secrecy state.
+- **Found** → the update branch assigns only what `Draft` holds: the scalars, `birthday`, images, the
+  four relationship arrays, `note`, `encryptionScheme`. It never touches `forwardSecrecyEncrypted`,
+  `maxBundleVersion`, `deletionToken` or the depth stamps.
+- **Not found** → it constructs a new `Contact.Profile` from the draft, on which those fields are nil.
 
-The import/export path is a separate exposure with the same root: whatever a shared-contacts file
-omits is simply not imported, and no field there is bolted back on the way `LayerContact` does it.
+Blob-sealed rows are never deleted (S5 — sensitive contacts remain in the DB), and `identifier` is
+not among the fields `reencryptAllFields` re-encrypts, so the identifier ciphertext is stable across
+rotation and the lookup matches. The update branch always runs, and the omitted fields are simply
+left alone on the row.
+
+So the blob's omission costs nothing today. The field survives because nothing overwrites it — not
+because anything preserves it deliberately.
+
+### The conditional this rests on
+
+**The whole guarantee is "the lookup succeeds."** If it ever fails, `save` silently takes the create
+branch instead: a second `Contact.Profile` row is inserted from the draft, with
+`forwardSecrecyEncrypted` and `maxBundleVersion` nil, while the original row stays behind. One failed
+lookup turns "fields preserved" into "fields lost **and** a duplicate contact", with no error at
+either site.
+
+Nothing asserts that invariant. It holds because `identifier` happens not to be in
+`reencryptAllFields`'s list — a property of a list in another file, not of anything at this call
+site. That is what makes this worth keeping open at Low rather than closing.
+
+The import/export path is a separate exposure with the same root and no such saving grace: whatever a
+shared-contacts file omits is simply not imported, and nothing is bolted back on the way
+`LayerContact` does it. Unmeasured — no test exercises that path at all.
 
 ### Remedy to weigh
 
