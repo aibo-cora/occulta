@@ -5235,113 +5235,91 @@ path that commits it.
 
 ---
 
-## Bug 90 — `Contact.Draft` does not mirror `Contact.Profile`, and it is used as a persistence format
+## Bug 90 — Three rules govern what `Contact.Draft` may carry, and none is written down or enforced
 
 **Status:** **Open.** Noticed 2026-08-19 while weighing whether `Contact.Draft` could serve as the
-carrier type for Bug 89's atomicity refactor. It cannot, and the reason it cannot is itself the bug.
+carrier type for Bug 89's atomicity refactor. **Substantially rewritten 2026-08-20** — the first
+version framed this as "`Draft` should mirror `Contact.Profile` and does not", which is wrong, and
+wrong in a direction that would cause harm if acted on. See "Why mirroring would be a bug".
 
 **Target:** unset.
 
-### Severity: Low for the blob path, unrated for import/export
+### Severity: Low, and the risk is future rather than present
 
-**Checked 2026-08-19: `forwardSecrecyEncrypted` and `maxBundleVersion` survive a blob round-trip.**
-The blob path is a latent hazard, not active loss — see "What was confirmed". The import/export
-exposure is separate and unmeasured.
+Every field that must be carried today **is** carried. Nothing is currently lost. What is missing is
+any statement of the rules, and anything that fails when they are broken — and the field list was
+arrived at by patching three times after the fact, once after data had already been lost (Bug 23).
 
-### What happens
+### The three rules
 
-`Contact.Draft` is a `Codable` value type that reads as a mirror of `Contact.Profile`, and is used as
-one in two places that persist it:
+`Contact.Draft` sits at the intersection of three paths with different requirements. Each field it
+omits is omitted for one of these reasons, and the reasons are not interchangeable:
 
-- **`LayerContact`** (`SecureMode+LayerStore.swift`) — the per-contact record inside a Secure Mode
-  activation blob. `let draft: Contact.Draft`, and that blob is where a sensitive contact's data
-  lives while the layer is active.
-- **Import/export** (`Import+View.swift`) — `JSONDecoder().decode([Contact.Draft].self, …)` reads a
-  shared-contacts file, and the encode side writes one.
-
-But it is not a mirror. Comparing stored properties, `Draft` carries the fourteen scalar strings,
-`birthday`, `note`, both image fields, the four relationship arrays, `contactPublicKeys`, plus
-`importedAt` and `status` of its own. `Contact.Profile` additionally has at least:
-
-| Profile field | On Draft? | On `LayerContact`? |
+| Rule | Applies to | Why |
 |---|---|---|
-| `signedAttributes` | No | **Yes — added separately** |
-| `visibleThroughDepth` | No | **Yes — added separately (Bug 23)** |
-| `globalTrusteeDepth` | No | **Yes — added separately** |
-| `originDepth` | No | No — deliberately, with a documented reason |
-| `forwardSecrecyEncrypted` | No | **No** |
-| `maxBundleVersion` | No | **No** |
-| `deletionToken`, `encryptionScheme` | No | No — row metadata, arguably correct |
+| **Carry on `LayerContact`** | anything deactivation *overwrites* | the value must be captured at activation or the restore writes a fallback over it |
+| **Set fresh at creation** | anything the import path should re-derive | a newly created contact has no history to preserve |
+| **Never on `Draft`** | anything that must not leave the device | `Draft` is a wire format, not just a model carrier |
 
-### The shape of the defect
+**The first rule is narrower than it looks.** A field needs a source in the blob only if
+`restoreContact` writes it. It writes exactly six things: everything `save(contact: record.draft)`
+assigns, plus `visibleThroughDepth`, `globalTrusteeDepth`, `originDepth` and `signedAttributes`.
+Everything else survives untouched on the row, because a blob-sealed row is never deleted and
+`save`'s update branch only assigns what `Draft` carries. That is why `forwardSecrecyEncrypted` and
+`maxBundleVersion` are safely absent — nothing overwrites them.
 
-The three fields `LayerContact` carries alongside the draft are the evidence. Each was bolted on
-individually, and at least one of them (`visibleThroughDepth`) was added in response to a filed bug —
-Bug 23 — after it had already been lost through a blob round-trip.
+That also explains the three fields bolted onto `LayerContact`. They are not there because `Draft` is
+deficient; they are there because deactivation rewrites them and needs the captured value. Bug 23 was
+exactly that: without the captured ceiling, restore wrote its `?? 0` fallback over a real
+classification.
 
-So the pattern is: a field is added to `Contact.Profile`, `Draft` is not updated, the omission is
-invisible until something round-trips a contact through a blob, and then it is patched by adding one
-more parallel field to `LayerContact`. Three times so far. Nothing enforces the correspondence, and
-nothing fails when it is broken — the type is `Codable`, so a missing field is simply absent, never a
-compile error and never a decode error.
+### Why mirroring would be a bug
 
-`originDepth` is the exception that proves the rule: it is absent *deliberately*, with a comment
-explaining that a duress-origin contact can never reach the struct. That is what a considered
-omission looks like, and the others do not look like that.
+`Contact.Draft` is the **shared-contacts wire format**. `Import+View.swift:292` filters received
+basket files for `format == .contacts` and decodes `[Contact.Draft]` out of them, so a `Draft` is
+something that arrives from another person's device.
 
-### What was confirmed
+Putting the depth stamps on `Draft` to "complete the mirror" would therefore put them in every
+shared-contacts file. `visibleThroughDepth` would tell the recipient **which of your contacts you
+marked sensitive** — the exact secret Secure Mode exists to protect, handed to someone else in a file
+you deliberately sent them. `signedAttributes` and `globalTrusteeDepth` are private in the same way,
+and `deletionToken` on `Draft` would let an import resurrect a deleted contact while
+`encryptionScheme` would let it claim a scheme it is not in.
 
-**They survive.** Traced 2026-08-19:
+So `Draft`'s omissions are load-bearing. The first version of this entry recommended removing them.
 
-`restoreContact` does not merely patch the four fields it names — it first calls
-`save(contact: record.draft, using: crypto)`, and that function is explicitly **dual-purpose, create
-or update**. It looks the contact up by the identifier the draft carries:
+### The exposure is latent, not live
 
-- **Found** → the update branch assigns only what `Draft` holds: the scalars, `birthday`, images, the
-  four relationship arrays, `note`, `encryptionScheme`. It never touches `forwardSecrecyEncrypted`,
-  `maxBundleVersion`, `deletionToken` or the depth stamps.
-- **Not found** → it constructs a new `Contact.Profile` from the draft, on which those fields are nil.
+Checked 2026-08-20: **nothing in production writes a `.contacts` file.** `format: .contacts` is
+constructed only inside `#Preview` blocks. The app can receive shared-contacts files and never sends
+one — the read side, the `Format` case in `Transfers.swift` and the whole import UI exist, but the
+write side was never implemented.
 
-Blob-sealed rows are never deleted (S5 — sensitive contacts remain in the DB), and `identifier` is
-not among the fields `reencryptAllFields` re-encrypts, so the identifier ciphertext is stable across
-rotation and the lookup matches. The update branch always runs, and the omitted fields are simply
-left alone on the row.
+That is why this is filed rather than fixed, and why it is worth filing at all: the rule needs to be
+written down **before** someone builds the send side. Whatever `Draft` carries on the day that lands
+is what leaves the device.
 
-So the blob's omission costs nothing today. The field survives because nothing overwrites it — not
-because anything preserves it deliberately.
+### `originDepth` is the model
 
-### The conditional this rests on
+It is absent from both `Draft` and `LayerContact` *deliberately*, with a comment explaining that a
+duress-origin contact is exempt from blob-sealing entirely and so can never reach the struct. That is
+what a considered omission looks like. The others are correct, but they do not look like that, and
+nothing distinguishes "correct by reasoning" from "not yet noticed".
 
-**The whole guarantee is "the lookup succeeds."** If it ever fails, `save` silently takes the create
-branch instead: a second `Contact.Profile` row is inserted from the draft, with
-`forwardSecrecyEncrypted` and `maxBundleVersion` nil, while the original row stays behind. One failed
-lookup turns "fields preserved" into "fields lost **and** a duplicate contact", with no error at
-either site.
+### Remedy
 
-Nothing asserts that invariant. It holds because `identifier` happens not to be in
-`reencryptAllFields`'s list — a property of a list in another file, not of anything at this call
-site. That is what makes this worth keeping open at Low rather than closing.
+1. **Write the three rules down**, on `Contact.Draft` itself. They are currently distributed across
+   `restoreContact`'s assignments, `save(contact:)`'s create branch, and an unstated assumption about
+   what a wire format may carry.
+2. **Make them enforced rather than remembered.** The project already has the pattern:
+   `EncryptedFieldCoverageTests` drives `Contact.Profile`'s coverage from a probe table with an
+   `unprobedFields` tripwire, so a newly added stored property fails a test until someone classifies
+   it. The same shape here would require every `Profile` property to be classified against the three
+   rules above, with a reason.
 
-The import/export path is a separate exposure with the same root and no such saving grace: whatever a
-shared-contacts file omits is simply not imported, and nothing is bolted back on the way
-`LayerContact` does it. Unmeasured — no test exercises that path at all.
-
-### Remedy to weigh
-
-1. **Make the correspondence enforced rather than remembered.** The project already has the pattern:
-   `EncryptedFieldCoverageTests` drives `Contact.Profile`'s coverage from a probe table and a
-   tripwire over `unprobedFields`, so a newly added stored property fails a test until someone
-   classifies it. The same tripwire shape would work here — every `Profile` stored property must be
-   either present on `Draft`, present on `LayerContact`, or explicitly listed as deliberately
-   excluded with a reason, as `originDepth` already is.
-2. **Fold the three bolted-on fields into `Draft`**, so `LayerContact` stops being a place where the
-   gap is patched one field at a time. Larger, and it changes a serialised wire format, so it wants
-   the dual-read treatment the depth fields got.
-3. **Leave `Draft` as an editing type and give the blob its own record type** that is exhaustive by
-   construction. Honest about the two roles, but it is a third type covering the same fields.
-
-Remedy 1 is worth doing regardless of which of the others is chosen: it converts a silent omission
-into a failing test, which is the property that is missing today.
+The tripwire matters most for the third rule. Violating the first is a data-loss hazard that a blob
+round-trip test would catch; violating the third is a privacy leak into a file the user hands to
+someone else, and nothing would catch it at all.
 
 ### Not a carrier for Bug 89
 
