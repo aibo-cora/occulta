@@ -1616,7 +1616,10 @@ extension ContactManager {
         try self.modelContext.save()
 
         #if DEBUG
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
+        // contact across a session, without putting a plaintext name in the console — the
+        // identifier is already ciphertext and is never decrypted here.
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
         #endif
 
         return (decodedPayload, sender.identifier)
@@ -1894,7 +1897,8 @@ extension ContactManager {
         try self.modelContext.save()
 
         #if DEBUG
-        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        // Identifier prefix, not the decrypted name — see the same log on the direct path.
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
         #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }
