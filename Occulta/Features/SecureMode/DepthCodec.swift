@@ -50,7 +50,7 @@ enum DepthCodec {
     ///
     /// Derived, never a literal. A filler size sitting beside a format as a hardcoded number
     /// is exactly how `AppLayerConfig.fillerSize = 30` drifted from encodings producing 29
-    /// and 37–38 (Bug 86). Bug 88's scrub of soft-deleted rows is a filler size for these
+    /// and 37–38 (Bug 86). Bug 89's scrub of soft-deleted rows is a filler size for these
     /// fields, so it takes it from here rather than from a number observed in a log.
     static let sealedSize = 1 + 1 + 28
 

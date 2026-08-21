@@ -2,7 +2,7 @@
 //  DeletedDepthStampScrubTests.swift
 //  OccultaTests
 //
-//  Bug 88 — a soft-deleted row's depth stamps must not keep their legacy length.
+//  Bug 89 — a soft-deleted row's depth stamps must not keep their legacy length.
 //
 //  Needs no Secure Enclave, and that is the point of the design rather than a convenience:
 //  the scrub never encrypts and never decrypts, so an unavailable key cannot block it.
@@ -52,7 +52,7 @@ private let legacyIntMax = Data(repeating: 0xA1, count: 47)
 /// A legacy small depth — the value that says a contact was classified as sensitive.
 private let legacySmallDepth = Data(repeating: 0xB2, count: 29)
 
-@Suite("Bug 88 — soft-deleted depth stamp scrub", .serialized)
+@Suite("Bug 89 — soft-deleted depth stamp scrub", .serialized)
 @MainActor
 struct DeletedDepthStampScrubTests {
 

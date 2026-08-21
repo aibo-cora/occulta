@@ -30,11 +30,11 @@ struct DatabaseMigration {
         /// `decryptLegacy` surfaces an AES-GCM tag mismatch as a thrown
         /// `CryptoKitError.authenticationFailure`, so `guard let … else { throw
         /// legacyDecryptionFailed }` never fires for it and the field and contact were
-        /// being discarded in exactly the failure mode that happens. See Bug 89.
+        /// being discarded in exactly the failure mode that happens. See Bug 90.
         ///
         /// `alreadyV2` is the diagnostic that matters: it records whether the field could
         /// be read with the *current* key, which means it had already been migrated and
-        /// this row is half-converted — Bug 89's second defect, observed rather than
+        /// this row is half-converted — Bug 90's second defect, observed rather than
         /// inferred.
         case legacyDecryptionThrew(field: String, contactID: String, alreadyV2: Bool, underlying: Error)
     }
@@ -58,7 +58,7 @@ struct DatabaseMigration {
         let contacts = try modelContext.fetch(descriptor)
 
         for contact in contacts {
-            // One contact's failure must not end the pass (Bug 89). Before this, a bare
+            // One contact's failure must not end the pass (Bug 90). Before this, a bare
             // `try` here meant the first row whose legacy ciphertext would not authenticate
             // stopped every row after it, permanently — and the rows after it may be
             // perfectly migratable, which is what made it a bug rather than a row with
@@ -406,7 +406,7 @@ struct DatabaseMigration {
     /// Empty strings are preserved as-is (they represent empty plaintext).
 
     /// Overwrites the depth stamps of already-soft-deleted rows with random bytes at
-    /// `DepthCodec`'s uniform length (Bug 88).
+    /// `DepthCodec`'s uniform length (Bug 89).
     ///
     /// The repair half. `deleteContact` scrubs these at deletion time from now on, so this
     /// exists only for rows deleted before that shipped — nothing else will ever rewrite
@@ -471,7 +471,7 @@ struct DatabaseMigration {
     ///
     /// That probe is the whole diagnostic. A field that fails the legacy key but succeeds
     /// the current one was already migrated, which means this row is half-converted and
-    /// Bug 89's second defect has actually fired here — rather than being a hazard the code
+    /// Bug 90's second defect has actually fired here — rather than being a hazard the code
     /// merely permits. It decides whether a fix needs resume-mode for mixed rows or only
     /// needs to stop creating them.
     private static func legacyThrew(
@@ -498,7 +498,7 @@ struct DatabaseMigration {
         } catch {
             let failure = Self.legacyThrew(ciphertext, field: field, id: id, new: new, error: error)
             // Resume: this field was already converted by an earlier run that failed partway
-            // (Bug 89). It is correct as it stands, so return it untouched rather than
+            // (Bug 90). It is correct as it stands, so return it untouched rather than
             // throwing — that is what lets a half-migrated row finish instead of being stuck
             // forever on the field it already converted.
             if case .legacyDecryptionThrew(_, _, alreadyV2: true, _) = failure { return base64 }

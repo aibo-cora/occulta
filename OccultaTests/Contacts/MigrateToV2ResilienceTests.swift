@@ -2,7 +2,7 @@
 //  MigrateToV2ResilienceTests.swift
 //  OccultaTests
 //
-//  Bug 89 — one unmigratable contact must not block the rest, and a failed contact must
+//  Bug 90 — one unmigratable contact must not block the rest, and a failed contact must
 //  leave no field changed.
 //
 //  Needs no Secure Enclave: `migrateToV2` takes its legacy and new crypto as parameters,
@@ -19,7 +19,7 @@ import SwiftData
 
 /// Legacy crypto that decrypts with a fixed key, and *throws* on anything it cannot
 /// authenticate — which is the real behaviour: `authenticationFailure` comes out of
-/// AES-GCM, it is not a nil return. That distinction is the whole of Bug 89's diagnostic.
+/// AES-GCM, it is not a nil return. That distinction is the whole of Bug 90's diagnostic.
 private struct StubCrypto: CryptoProtocol {
     let key: SymmetricKey
     static let aad = EncryptionScheme.v2_hybridPQ.aad
@@ -75,7 +75,7 @@ private func insertV1(identifier id: String, givenName: String, familyName: Stri
     return profile
 }
 
-@Suite("Bug 89 — v1 migration resilience", .serialized)
+@Suite("Bug 90 — v1 migration resilience", .serialized)
 @MainActor
 struct MigrateToV2ResilienceTests {
 

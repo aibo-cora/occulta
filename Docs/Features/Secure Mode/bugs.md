@@ -4967,7 +4967,7 @@ depth-related or otherwise.
 
 ---
 
-## Bug 88 — Bug 85's fix does not reach soft-deleted rows, leaving its classifier alive there
+## Bug 89 — Bug 85's fix does not reach soft-deleted rows, leaving its classifier alive there
 
 **Status:** **Fixed 2026-08-20.** Found 2026-08-19 on a live device, in the `⚠️` line Bug 85's own
 DEBUG diagnostic prints. Not a regression from that fix — an area it did not cover.
@@ -5126,7 +5126,7 @@ device diagnostic already reports it; the suite does not.
 
 ---
 
-## Bug 89 — One unmigratable contact permanently blocks every v1 contact after it, and can leave a half-migrated row behind
+## Bug 90 — One unmigratable contact permanently blocks every v1 contact after it, and can leave a half-migrated row behind
 
 **Status:** **Fixed 2026-08-20.** Found 2026-08-19 on a live device reporting
 `Migration error: authenticationFailure` on every launch alongside seven contacts whose fields no
@@ -5235,10 +5235,10 @@ path that commits it.
 
 ---
 
-## Bug 90 — Three rules govern what `Contact.Draft` may carry, and none is written down or enforced
+## Bug 91 — Three rules govern what `Contact.Draft` may carry, and none is written down or enforced
 
 **Status:** **Open.** Noticed 2026-08-19 while weighing whether `Contact.Draft` could serve as the
-carrier type for Bug 89's atomicity refactor. **Substantially rewritten 2026-08-20** — the first
+carrier type for Bug 90's atomicity refactor. **Substantially rewritten 2026-08-20** — the first
 version framed this as "`Draft` should mirror `Contact.Profile` and does not", which is wrong, and
 wrong in a direction that would cause harm if acted on. See "Why mirroring would be a bug".
 
@@ -5321,10 +5321,10 @@ The tripwire matters most for the third rule. Violating the first is a data-loss
 round-trip test would catch; violating the third is a privacy leak into a file the user hands to
 someone else, and nothing would catch it at all.
 
-### Not a carrier for Bug 89
+### Not a carrier for Bug 90
 
 Recorded because it was the question that surfaced this. `Draft` cannot serve as the compute-phase
-carrier for Bug 89's two-phase refactor: it lacks `forwardSecrecyEncrypted`, its `identifier` and
+carrier for Bug 90's two-phase refactor: it lacks `forwardSecrecyEncrypted`, its `identifier` and
 `status` are `let` so it cannot be mutated in place, and its relationship children are value types
 while `Profile`'s are `@Model` classes — so applying them back still requires pairing by identity,
 which is the part of that refactor where a mistake would hide.

@@ -173,7 +173,7 @@ struct OccultaApp: App {
         }
 
         // After the fixed-width pass, not before: that pass converts what it can read, and
-        // this one scrubs what is left on rows whose content is already erased (Bug 88).
+        // this one scrubs what is left on rows whose content is already erased (Bug 89).
         do {
             try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
         } catch {
