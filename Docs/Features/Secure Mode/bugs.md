@@ -4981,6 +4981,18 @@ under this rule it writes the depth-0 layer only. A user with layered entries wo
 they think, silently. The export screen should say what it captured — "12 entries from this layer" —
 rather than letting "backup" be read as "everything".
 
+**The import half is live, and its caller is not the UI.** Checked 2026-08-22. `importBackup` has one
+production caller — `attemptBEKRestore()` (`Vault+Manager+Backup.swift:608`) — reached from
+`unlock(context:)` (`Vault+Manager.swift:175`) and from `acceptReturnedShard`
+(`Vault+Manager+ReturnBuffer.swift:85`). So the import defect is not latent behind an unshipped
+screen: it runs **automatically on every vault unlock** once shard recovery reaches threshold, which
+is the primary way entries come back after a lost device.
+
+That breaks the "stamp with M" rule for this path, because nobody chose M — it is whatever depth the
+unlock happened to land in. **Bug 93 covers it**, and the import half of this bug cannot be
+implemented without it: the deferral it specifies is what makes "stamp with the current depth" safe
+to apply to the automatic path. Do the export half independently; gate the import half on 93.
+
 **Rejected while designing this:** a single depth-0 export carrying every layer with its depth, so a
 full restore is one pass. It restores layer structure in one go, but the file then describes every
 layer, needs the format bump, and adds asymmetric export behaviour to reason about. The restore
@@ -5488,3 +5500,136 @@ serve that. *"This file is stale, re-export"* is recoverable; *"this file is dea
 that entries survive a round trip — both of which must hold across the envelope change. What it
 cannot yet assert is the property this bug is about: **a file exported at one layer must not decrypt
 at another.** That test is the fix's acceptance criterion.
+
+
+---
+
+## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
+
+**Status:** **Open.** Filed 2026-08-22 while checking, for Bug 88's fix plan, whether
+`pendingRestoreActive` is depth-aware. It is not, and neither is anything else in the recovery path.
+
+**Target:** unset. **Bug 88's import-side remedy depends on this** — see *Relationship to Bug 88*.
+
+### Severity: High (security), with the same shape of precondition as Bug 92
+
+Needs a pending restore to exist: a `.occbak` awaiting shard recovery. That is not an edge case — it
+is the ordinary state of a device being rebuilt after loss, which is the exact situation the shard
+system exists for, and the exact situation a user is most likely to be carrying a partly-configured
+device around in.
+
+### What happens
+
+`refreshPendingRestoreState()` (`Vault+Manager+Backup.swift:546`) sets the published state from a
+file's existence and a shard count. No depth input:
+
+```swift
+func refreshPendingRestoreState() {
+    self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
+    self.pendingRestoreShardCount = self.pendingRestoreActive
+        ? ((try? self.loadRestoreShards())?.count ?? 0)
+        : 0
+}
+```
+
+`Vault+Tab.swift:238` renders it unconditionally — no `isSecureModeActive` check, no `currentDepth`
+check:
+
+```swift
+if self.vault.pendingRestoreActive {
+    …
+    Text("Restoring your vault")
+    Text("\(self.vault.pendingRestoreShardCount) recovery pieces collected")
+}
+```
+
+And `attemptBEKRestore()` (`Vault+Manager+Backup.swift:589`) guards on `isUnlocked` and
+`pendingRestoreActive` and nothing else, then calls `importBackup`:
+
+```swift
+guard self.isUnlocked, self.pendingRestoreActive else { return }
+```
+
+It is reached from `unlock(context:)` (`Vault+Manager.swift:175`) — **every unlock, at every depth** —
+and from `acceptReturnedShard` (`Vault+Manager+ReturnBuffer.swift:85`) whenever a shard arrives.
+
+So the whole depth-blind surface is:
+
+| Surface | Depth-aware? |
+|---|---|
+| `refreshPendingRestoreState()` | No — file existence only |
+| `pendingRestoreActive` / `pendingRestoreShardCount` | No |
+| "Restoring your vault" banner, `Vault+Tab.swift:238` | No |
+| `attemptBEKRestore()` on unlock and on shard arrival | No |
+| `postRestoreActionNeeded` → `VaultPostRestoreSheet`, `Vault+Tab.swift:142` | No |
+
+### Two harms, and they are not the same one
+
+**1. Disclosure to a coerced session.** A coercer holding the phone at a duress depth reads
+*"Restoring your vault — 3 recovery pieces collected"*, watches the counter climb as trustees hand
+shards back, and is then shown a post-restore sheet offering to set up backup. The duress layer is
+supposed to be a complete, boring, plausible device; instead it volunteers that a vault exists, that
+trustees exist, that recovery is inbound, and roughly how close it is. It also gives the coercer a
+reason to wait rather than give up.
+
+**2. The restore completes into the duress layer.** Combined with Bug 88's import half —
+`importBackup` never sets `visibleThroughDepth`, and `isEntryVisible` reads nil as visible at every
+depth — the recovered entries become visible immediately in the coercer's view. **A coerced session
+watches the real vault arrive.** Neither bug alone does that: Bug 88 needs someone to reach an
+import, and this is what reaches it, automatically, unprompted.
+
+### What is *not* wrong with it today
+
+Worth stating so the fix is not misjudged. The banner is **not currently a duress oracle**. It shows
+the same thing at every depth, so a coercer cannot compare it against a real-layer view they never
+see, and its presence is fully explained by facts they can already observe. The defect today is
+disclosure and misdelivery, not a tell.
+
+### Relationship to Bug 88
+
+Bug 88's import remedy is *"import at depth M stamps every restored entry with M"*. That is correct
+for a user-initiated import — the user chose the moment and the layer. It is wrong for this path,
+because **nobody chose the moment**: the restore fires on whatever unlock happens to complete the
+shard threshold. Stamping current depth would file a recovered real-layer backup into whichever
+duress layer the user happened to unlock into, silently and unrecoverably in place.
+
+The fix is to defer: `attemptBEKRestore` no-ops above depth 0 the way it already no-ops while
+locked, and completes on the next depth-0 unlock. Shards continue to be collected and stored
+meanwhile — storage is silent and `storeRestoreShard` already works while locked — so nothing is
+lost, only postponed.
+
+**But a deferral alone converts harm 1 into a genuine oracle.** A coercer who can see
+*"5 recovery pieces collected"* and then watches the threshold pass with nothing happening has found
+a view that contradicts itself, and self-contradiction inside a single view is exactly what an
+observer can catch. The requirement is not that the duress view match the real one — the coercer
+never sees the real one — but that **the duress view be internally coherent**. So the deferral and
+the surface-hiding are one change, not two: above depth 0 the recovery machinery must both decline to
+run *and* decline to announce itself, leaving a layer that looks like a device with nothing pending.
+
+### Open question the fix has to answer
+
+What happens when a `.occbak` is opened from Files (`storePendingRestore`, `Vault+Manager+Backup.swift:554`)
+while at a duress depth. Two shapes, neither yet chosen:
+
+- **Accept silently, show nothing.** Coherent for a coercer who did not open it, incoherent for one
+  who did — they took an action and got no feedback, which is its own tell.
+- **Make pending-restore state per-layer**, so a file opened at depth N shows and restores within
+  depth N, and the depth-0 restore is invisible from N. Coherent in both directions and consistent
+  with how the rest of Secure Mode partitions state, at the cost of real work: the restore files are
+  currently one global pair of paths in Application Support, with no per-layer notion at all.
+
+### Guard
+
+No test touches the recovery path — a repo-wide search under `OccultaTests/` for
+`attemptBEKRestore`, `pendingRestoreActive`, or `storePendingRestore` returns nothing, so the
+automatic import that `VaultBackupRoundTripTests` documents as *live* has no coverage of its trigger.
+Acceptance criteria for the fix: a restore reaching threshold at depth > 0 must leave
+`pendingRestoreActive` false to the UI, must not insert entries, and must complete on the next
+depth-0 unlock with the entries stamped 0.
+
+### Noted in passing, not filed
+
+`handleHandback` (`ShardCustody+Manager.swift:207`) relaxes shard signature verification whenever
+`pendingRestoreActive` — deliberate, for the rotated-key new-device case, and documented as such.
+It is not depth-related, but it is a second behaviour that changes based on this same unguarded flag,
+and it should be re-read once the flag becomes depth-aware.
