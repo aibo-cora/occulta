@@ -5633,3 +5633,281 @@ depth-0 unlock with the entries stamped 0.
 `pendingRestoreActive` — deliberate, for the rotated-key new-device case, and documented as such.
 It is not depth-related, but it is a second behaviour that changes based on this same unguarded flag,
 and it should be re-read once the flag becomes depth-aware.
+
+
+---
+
+## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
+
+**Status:** **Open.** Filed 2026-08-22 during a critical read of the export/import mechanism,
+requested after Bug 93. Found by asking what `ownerIdentity: nil` actually gives up.
+
+**Target:** unset. **Independent of Bugs 88, 92 and 93** — those are about depth. This one survives
+all three being fixed.
+
+### Severity: Critical (security)
+
+Preconditions are two, and both are ordinary: the user opens one attacker-supplied `.occbak`, and the
+attacker is an established contact able to send `.occ` bundles. No confirmation prompt exists
+anywhere in the flow to interrupt either half.
+
+### The circular argument
+
+`attemptBEKRestore` (`Vault+Manager+Backup.swift:606`) reconstructs with signature verification
+switched off:
+
+```swift
+try self.reconstructBEK(shards: group, backupData: backupData, ownerIdentity: nil)
+```
+
+`reconstructBEK`'s doc comment states the substitute: *"Pass nil on new-device path (old key
+non-migratable); GCM tag substitutes."* And the GCM tag does prove something — that the reconstructed
+BEK opens `backupData`.
+
+**But on this path the attacker supplies both.** They generate a BEK, seal their own `VaultBackup`
+JSON under it, Shamir-split it, and send the shares. The tag then proves their shards match their
+file, which is true and worthless. The ECDSA check against the owner's identity is the only thing on
+this path that binds the material to *this device*, and it is the thing being skipped.
+
+### The chain, end to end
+
+**1 — The file is armed with no confirmation, and above the Secure Mode gate.**
+`OccultaApp.swift:625-630` routes any `.occbak` straight into `storePendingRestore`, which validates
+four magic bytes and nothing else:
+
+```swift
+if fileLocation.pathExtension == "occbak" {
+    try self.vaultManager.storePendingRestore(data)
+    return
+}
+
+// Secure Mode gate: if the app is locked, queue raw bytes without any processing.
+if self.appScreen.phase != .unlocked { … }
+```
+
+The `return` is *above* the lock check, so a `.occbak` arms a pending restore while the app is
+locked — unlike every other inbound file type, which is queued unprocessed.
+
+**2 — Forged shards are accepted, twice over.** `handleHandback`
+(`ShardCustody+Manager.swift:200`) hard-rejects a bad signature *except* during a pending restore:
+
+```swift
+guard vaultManager.pendingRestoreActive else { throw CustodyError.signatureRejected }
+```
+
+Then `acceptReturnedShard` (`Vault+Manager+ReturnBuffer.swift:44`) performs what its own
+documentation calls *"Best-effort signature verification"* — it logs under `#if DEBUG` and continues
+regardless. Step 1 of its documented steps enforces nothing in any build. It validates
+`category == .shard` and a non-nil `entryID`, and **never checks that `entryID` names a distribution
+this device ever created.**
+
+`.handback` is also the only `ShardOperation.Kind` whose handler receives neither `senderPublicKey`
+nor `senderIdentifier` — `handleDistribute` and `handleReplace` both take them.
+
+**3 — Reconstruction "validates."** Shamir returns the attacker's BEK; `AES.GCM.open` on the
+attacker's file succeeds; the guard passes.
+
+**4 — The real BEK is deleted.** `persistBEKPayload` (`Vault+Manager+Backup.swift:728-731`) is
+delete-and-replace:
+
+```swift
+let existing = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
+for row in existing { self.modelContext.delete(row) }
+self.modelContext.insert(BackupEncryptionKey(id: rowID, encryptedPayload: combined))
+```
+
+Every genuine backup file sealed under the old BEK becomes permanently unrestorable, and the
+trustees' real shards now reconstruct a key that matches nothing on the device.
+
+**5 — Entries are inserted.** `importBackup` writes the attacker's rows into the user's vault.
+
+**Nothing guards on the device already having a BEK.** `attemptBEKRestore`'s only preconditions are
+`isUnlocked` and `pendingRestoreActive`. An established device with a healthy vault runs all five
+steps.
+
+### Remedy
+
+Three changes, smallest first. The first alone stops the destructive half.
+
+1. **Refuse to overwrite an existing BEK row during restore.** A device that already holds a BEK is
+   not a fresh restore target. Kills step 4 with no format change and no new state.
+2. **Scope the `ownerIdentity: nil` exception instead of removing the check.** Verify whenever we
+   still hold the identity that signed the shards; skip only where it has demonstrably rotated.
+   Rotation is the case the exception was written for; the exception was applied to every case.
+3. **Require explicit confirmation before an automatic import mutates the vault.** Bug 93 already
+   establishes that this path runs unprompted on unlock.
+
+### Why this shape recurred
+
+The rationale for `ownerIdentity: nil` is genuine — a new device's SE identity key has rotated, so
+old shards cannot verify against it. But the fix routed *around* that instead of scoping it: the
+check was removed for every device on the path, including those whose key never rotated. **A
+narrower rule preserves the new-device case and closes the rest.** This is the same failure mode as
+Bug 80's stranded `maxBundleVersion` and Bug 81's fail-closed gate — an exception written for one
+state applied unconditionally.
+
+### Guard
+
+`VaultBackupRoundTripTests` covers the honest round trip. Acceptance criteria here: a device holding
+a BEK must reject a restore that would replace it; shards that fail verification against a
+still-present identity key must be refused; and neither must produce a crash or a silent insert.
+
+---
+
+## Bug 95 — One poisoned shard permanently blocks legitimate vault recovery
+
+**Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read.
+
+**Target:** unset.
+
+### Severity: High (availability)
+
+Needs a pending restore and knowledge of the `distributionID`. **Any trustee has the latter** — it is
+the `entryID` on the shard they hold — so the attacker set is exactly the people the user chose to
+trust with recovery, which is the set this system already assumes may be partly hostile.
+
+### What happens
+
+`ShamirSecretSharing.reconstruct` (`ShamirSecretSharing.swift:136`) interpolates over **every share
+passed to it**. There is no subset search and no try-all-k-combinations:
+
+```swift
+let xCoords = shares.map { $0[0] }
+for byteIdx in 0..<32 {
+    let yCoords = shares.map { $0[byteIdx + 1] }
+    secret[byteIdx] = Self.lagrange(xCoords: xCoords, yCoords: yCoords)
+}
+```
+
+`attemptBEKRestore` groups by `entryID` and hands the whole group in:
+
+```swift
+groups[eid, default: []].append(shard)
+…
+try self.reconstructBEK(shards: group, backupData: backupData, ownerIdentity: nil)
+```
+
+So one bogus 33-byte share carrying the real `distributionID` and a fresh x-coordinate merges with
+the legitimate shares. Lagrange returns garbage, the GCM open fails, `continue`. The poisoned shard
+is persisted in `pending-restore-shards.dat`, **no UI can clear it**, and every subsequent unlock
+retries the same doomed group. Recovery is permanently dead.
+
+Bug 94's signature bypass widens the attacker set beyond trustees to anyone who learns a
+`distributionID`.
+
+### What is already right
+
+Worth recording so the fix is not misaimed at the arithmetic. `reconstruct` **does** close the
+obvious attacks:
+
+```swift
+guard !xCoords.contains(0)                else { throw Error.invalidShareFormat }
+guard Set(xCoords).count == xCoords.count else { throw Error.duplicateXCoordinate }
+```
+
+x = 0 is the secret itself, and a duplicate x would corrupt interpolation. Both are rejected. The gap
+is not a flaw in the field arithmetic — it is that a well-formed share with a fresh x is
+indistinguishable from a genuine one **once signature verification has been skipped**, and that
+`attemptBEKRestore` treats a group as all-or-nothing.
+
+### Remedy
+
+- **Verify shard signatures** (Bug 94, remedy 2). A forged share never enters the group. This is the
+  real fix; the two below are defence in depth.
+- **Try k-subsets rather than the whole group** when the full group fails, bounded by a sane cap.
+  `reconstruct` already rejects malformed input cheaply, and the GCM tag is a clean oracle for which
+  subset is right. Cost is combinatorial — cap it, and prefer the signature fix.
+- **Give the user a way to discard a pending restore.** There is currently no path to delete
+  `pending-restore.occbak` or `pending-restore-shards.dat` from the UI, so any wedged restore is
+  permanent regardless of cause. This is worth doing on its own.
+
+### Guard
+
+No test touches the recovery path at all (see Bug 93). Acceptance criterion: a group containing one
+forged share must still recover from the genuine ones, or must be discardable.
+
+---
+
+## Bug 96 — Restore-path robustness: two traps on decoded content, unbounded growth, and vault plaintext left unzeroed
+
+**Status:** **Open.** Filed 2026-08-22 alongside Bugs 94 and 95. Grouped because all four are
+robustness rather than access-control defects, and none is worth its own entry.
+
+**Target:** unset.
+
+### Severity: Medium, rising to High in combination with Bug 94
+
+Two of these need the BEK to reach. Bug 94 hands an attacker the BEK, so they should be read as
+amplifiers of it rather than as independently gated.
+
+### 1 — Two traps reachable from decoded backup content
+
+`importBackup` (`Vault+Manager+Backup.swift:255`):
+
+```swift
+let entryType = VaultEntryType(rawValue: UInt8(backupEntry.entryType)) ?? .note
+```
+
+`backupEntry.entryType` is `Int` from JSON. `VaultEntryType` is `UInt8`-backed with three cases. The
+`?? .note` guards the `rawValue:` lookup — but `UInt8(300)` or `UInt8(-1)` **traps before it is
+reached**. The nil-coalescing is on the wrong conversion.
+
+`VaultEntry.aad(for:)` (`Vault+Model.swift:227`):
+
+```swift
+var ts = UInt64(self.createdAt.timeIntervalSince1970).bigEndian
+```
+
+`UInt64` of a negative `Double` traps. Any `createdAt` before 1970 in a backup crashes the app.
+
+**Why this is not merely a robustness nit.** `attemptBEKRestore` runs on every unlock, and the
+pending-restore file is deleted *only after* `importBackup` returns. A trap is not an `Error`, so the
+`catch … continue` does not catch it. Under Bug 94 an attacker who can craft a file can therefore
+choose a **permanent crash on every vault unlock** in place of the entry injection.
+
+Fix: validate the `Int` range before converting, and reject a non-representable `createdAt` at
+import rather than at AAD construction.
+
+### 2 — Unbounded shard file and unbounded group count
+
+`storeRestoreShard` deduplicates by `SignedAttribute.id` only, and the attacker picks fresh UUIDs:
+
+```swift
+guard !shards.contains(where: { $0.id == attribute.id }) else { return }
+```
+
+The file grows without limit, is fully read, GCM-opened and JSON-decoded on every unlock, and each
+distinct attacker-chosen `entryID` creates another group to run Shamir plus GCM against.
+`storePendingRestore` likewise accepts a file of any size and writes it to Application Support.
+
+Fix: cap the shard count and the file size, both well above any legitimate trustee count.
+
+### 3 — The entire vault plaintext is left in freed heap on export
+
+The file header states the discipline (`Vault+Manager+Backup.swift:8-9`):
+
+> *"BEK bytes only exist in memory during an active operation and are zeroed via defer where they
+> appear as raw `[UInt8]` or `Data` buffers."*
+
+It is honoured precisely for 32-byte keys in `setupBEK`, `rotateBEK`, `prepareBEKShards` and
+`reconstructBEK`. Meanwhile `exportBackup` builds `backupEntries` — every label and every content
+blob in the vault, decrypted — and then `JSONEncoder().encode(backup)`. **Neither is zeroed.**
+
+Guarding the key while leaving what the key protects is the wrong way round. `JSONEncoder`'s internal
+buffers cannot be reached, which limits how complete any fix can be, but the two named buffers can
+be — and the discipline as written promises more than it delivers.
+
+### 4 — Minor, recorded so they are not rediscovered
+
+- **`VaultBackup.version` is decorative.** It is decoded and never read; `importBackup` accepts any
+  value. Same root cause as Bug 92's note — it lives inside the ciphertext, so it cannot gate
+  anything about decryption.
+- **`bekSetupState` reports `.notSetup` after a successful restore.** `reconstructBEK` sets
+  `shardMetadata: nil`, so `bekShardMetadata()` returns nil and the state collapses to `.notSetup`
+  while a BEK plainly exists. Intentional per the comment (*"redistribution prompt handles
+  rebuild"*), but the state asserts something false and `exportBackup` then throws `belowThreshold`
+  without explaining why.
+- **Self-describing artifacts.** `pending-restore.occbak`, `pending-restore-shards.dat`,
+  `backup-export-meta.dat`, and the `vault.postRestoreActionNeeded` `UserDefaults` key. Contents are
+  sealed; names and existence are not. `backup-export-meta.dat`'s mere presence proves an export was
+  performed on this device.
