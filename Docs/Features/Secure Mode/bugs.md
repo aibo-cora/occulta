@@ -5737,6 +5737,13 @@ Three changes, smallest first. The first alone stops the destructive half.
 3. **Require explicit confirmation before an automatic import mutates the vault.** Bug 93 already
    establishes that this path runs unprompted on unlock.
 
+**Constraint on any fix touching the `.occbak` handler.** The extension is shared with the Secure
+Mode layer store by design — `forensic-trace-avoidance.md` **B4**, *"Vault backups use the same
+`.occbak` extension and are indistinguishable at the filesystem level"* — and the OCBK magic check in
+`storePendingRestore` is what keeps a blob out of the restore path. All three remedies above route
+through that handler. None may make the two formats distinguishable to an examiner, and none may
+surface a user-visible response to a file that fails the magic check.
+
 ### Why this shape recurred
 
 The rationale for `ownerIdentity: nil` is genuine — a new device's SE identity key has rotated, so
