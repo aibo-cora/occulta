@@ -4943,7 +4943,51 @@ the entries were created new" is inaccurate here: `addEntry` always stamps a con
 4. Separately: import any `.occbak` file on a fresh device. Every restored entry is visible at every
    depth, including duress ones, regardless of the depth it was hidden at when exported.
 
-### Remedies to weigh
+### Correction: vault entries are exact-match, not a ceiling
+
+Worth stating before the remedies, because it is easy to design the wrong fix from the wrong model.
+`isEntryVisible` is `value == currentDepth`, **not** `value >= currentDepth`, and the doc comment
+says why: a ceiling let an entry created at a duress depth leak upward into every shallower depth
+including the real one (`Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`).
+
+So vault depths are *partitioned*, not nested. There is no "layers below" for a vault entry — each
+depth is an island. Contacts use a ceiling and do nest; vault entries do not, and reasoning about one
+from the other produces a design that enforces a hierarchy which does not exist.
+
+### Remedy 4 — one file per layer, and no format change at all *(preferred)*
+
+Falls out of exact-match, and is simpler than the three below.
+
+- **Export at depth N** writes only `{entries with depth == N}` — which at any depth is exactly "what
+  is visible here". Rebased to 0, though see below: there is nothing to rebase.
+- **Import at depth M** stamps every restored entry with M.
+
+Because every entry in a file comes from one layer, **the file never needs to record depth**, and
+`VaultBackupEntry` does not change. No `version: 1 → 2`, no migration story for existing `.occbak`
+files — an old file has no depth to restore, and stamping it with the current depth is the correct
+reading of that.
+
+Both halves close at once, and by construction rather than by a rule someone must keep honouring: an
+export cannot leak another layer because it never read one, and an import cannot produce an
+always-visible entry because it always stamps.
+
+**Full restore is one file per layer, imported at each layer.** That sounds like a cost and mostly is
+not: re-establishing the layers on a restored device is manual anyway — Secure Mode has to be
+configured and each duress PIN set before those layers exist — so importing that layer's file while
+already standing in it is one extra step, not a separate chore.
+
+**The one real cost, and it needs UI rather than code.** Today export at depth 0 writes everything;
+under this rule it writes the depth-0 layer only. A user with layered entries would back up less than
+they think, silently. The export screen should say what it captured — "12 entries from this layer" —
+rather than letting "backup" be read as "everything".
+
+**Rejected while designing this:** a single depth-0 export carrying every layer with its depth, so a
+full restore is one pass. It restores layer structure in one go, but the file then describes every
+layer, needs the format bump, and adds asymmetric export behaviour to reason about. The restore
+convenience it buys is small once you account for the layers having to be re-created manually
+regardless.
+
+### Remedies originally weighed
 
 1. **Filter export by `isEntryVisible` at the current depth**, matching the vault list. Simplest, but
    changes what "backup" means — a duress-depth export would silently produce a partial (decoy-only)
@@ -5328,3 +5372,119 @@ carrier for Bug 90's two-phase refactor: it lacks `forwardSecrecyEncrypted`, its
 `status` are `let` so it cannot be mutated in place, and its relationship children are value types
 while `Profile`'s are `@Model` classes — so applying them back still requires pairing by identity,
 which is the part of that refactor where a mistake would hide.
+
+---
+
+## Bug 92 — A backup file is readable from any layer, because the BEK is not layered
+
+**Status:** **Open.** Separated out of Bug 88's design discussion, 2026-08-20, on noticing that fixing
+the export leak does not stop a coerced session reading a backup file it *finds*.
+
+**Target:** unset. Independent of Bug 88 — that one needs no format change and should not wait for
+this.
+
+### Severity: High (security), with a precondition Bug 88 does not have
+
+Bug 88 needs someone to tap Export. This needs a backup file to exist and be reachable — on the
+device, in Files, in iCloud. Weaker, but ordinary: backups are made to be kept somewhere.
+
+### What happens
+
+The vault key comes from `deriveVaultKey(context:)` — a dedicated SE key gated on biometrics, with
+**no depth input** — and nothing in the backup path references depth at all. So there is one BEK per
+device, identical at every layer.
+
+A backup file is sealed with it. A duress session has it. Therefore a coerced session can decrypt any
+backup file it can reach, including one exported from the real layer, and read entries the vault UI
+would never show it because `isEntryVisible` filters them.
+
+Bug 88's remedy stops an export from *containing* other layers. It does not stop this: the file is a
+depth-bypassing artifact wherever it is stored.
+
+### Why the obvious keys do not work
+
+- **The BEK alone** is what we have — layer-blind by construction.
+- **A layer key derived from the SE Secure Mode key** does not help: a duress session holds that key,
+  so it could derive every layer's key.
+- **A layer key derived from PIN *verifiers*** does not help either, for the same reason — the
+  verifiers live in `AppLayerConfig`'s arrays under that same SE key.
+
+### The one input a coerced session does not hold
+
+**The PIN itself.** It is knowledge, not stored material. Verifiers let a candidate be checked; they
+do not yield the PIN. A coercer at depth N knows the PIN they forced — correct, that layer is the
+decoy — and does not know the real PIN.
+
+That makes it the first input in this subsystem a coerced session genuinely cannot derive, and the
+basis for the fix:
+
+```
+stretched = slowKDF(PIN, perFileSalt, high cost)
+fileKey   = HKDF(ikm: BEK ‖ stretched, salt: perFileSalt, info: "occulta.backup.v2")
+```
+
+**Combined, not substituted.** The BEK alone is layer-blind; the PIN alone is six digits. Together an
+attacker needs BEK access *and* PIN knowledge, which come from different places — the device or the
+shards for one, the user's memory for the other.
+
+### The number this turns on
+
+`PINEntry.swift:70` sets `pinLength = 6`, so the space is 10⁶. **A repo-wide search finds no slow
+KDF** — only HKDF, which is fast by design and correct for high-entropy inputs. Deriving a file key
+from a 6-digit PIN with HKDF gives an attacker holding the device a few minutes of work.
+
+So this fix has a hard dependency that does not exist in the codebase yet: a deliberately expensive
+KDF for the PIN. **Skipping it produces a design that looks layered and is not**, which is worse than
+not doing it, because the file would then be treated as protected.
+
+### File format
+
+The salt must be readable before the key can be derived, so it cannot live inside the sealed JSON.
+Today the layout is:
+
+```
+OCBK | nonce(12) | ciphertext | tag(16)
+└─plaintext─┘ └──────── AES-GCM sealed ────────┘
+```
+
+It becomes `OCBK | version(1) | salt(N) | nonce(12) | ciphertext | tag(16)`. **No `Codable` struct
+changes** — `VaultBackup` and `VaultBackupEntry` are untouched.
+
+**Note the trap this exposes.** `VaultBackup.version` lives *inside* the encrypted JSON, so reading
+it requires decrypting, which requires already knowing the scheme and salt. It therefore cannot
+version anything that affects decryption — which is precisely this change. The discriminator has to
+be in the plaintext envelope. Keeping the magic and adding a version byte is preferred over a second
+magic string: a reader can then say "this is an Occulta backup, but a newer one" rather than "unknown
+file", and it leaves room for a third scheme.
+
+### Two costs to decide before building
+
+**Recovery gains a second factor.** The shard system exists so a lost device does not lose the vault.
+Under this, shards alone stop being sufficient — the PIN is needed too. Defensible for a PIN the user
+knows, but it is a new way to permanently lose a backup and belongs in the recovery UI rather than
+being discovered.
+
+**PIN rotation orphans old files.** A file sealed under the old PIN needs the old PIN forever.
+Storing a wrapped key to avoid that would put the material back on the device and undo the benefit,
+so the honest answer is that rotation means re-exporting — which the existing staleness tracking
+already has somewhere to say so.
+
+### Rejected: invalidating old files on re-activation
+
+Considered folding an activation-scoped nonce into the derivation so that re-activating with the same
+PIN makes old files unreadable, forcing a re-export. Rejected.
+
+A backup exists for the case where everything else has gone wrong; tying its readability to an
+unrelated later event means a user can re-activate, lose the device, and find the backup
+cryptographically dead with every shard intact and the right PIN in hand. It buys no confidentiality
+either — a leaked file is already out, and re-keying afterwards does not reach it.
+
+The goal underneath it is freshness, and `refreshBackupStaleness()` / `BackupStalenessReport` already
+serve that. *"This file is stale, re-export"* is recoverable; *"this file is dead"* is not.
+
+### Guard
+
+`VaultBackupRoundTripTests` already pins that a backup carries no plaintext label or content, and
+that entries survive a round trip — both of which must hold across the envelope change. What it
+cannot yet assert is the property this bug is about: **a file exported at one layer must not decrypt
+at another.** That test is the fix's acceptance criterion.
