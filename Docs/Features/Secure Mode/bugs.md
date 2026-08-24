@@ -5589,7 +5589,7 @@ So the whole depth-blind surface is:
 | `attemptBEKRestore()` on unlock and on shard arrival | No |
 | `postRestoreActionNeeded` → `VaultPostRestoreSheet`, `Vault+Tab.swift:142` | No |
 
-### Two harms, and they are not the same one
+### Three harms, and they are not the same one
 
 **1. Disclosure to a coerced session.** A coercer holding the phone at a duress depth reads
 *"Restoring your vault — 3 recovery pieces collected"*, watches the counter climb as trustees hand
@@ -5603,6 +5603,20 @@ reason to wait rather than give up.
 depth — the recovered entries become visible immediately in the coercer's view. **A coerced session
 watches the real vault arrive.** Neither bug alone does that: Bug 88 needs someone to reach an
 import, and this is what reaches it, automatically, unprompted.
+
+**3. The filenames are self-describing, with no live session required at all.** Checked 2026-08-25.
+`Vault+Manager+Backup.swift:586-591` writes the two restore files as literally
+`pending-restore.occbak` and `pending-restore-shards.dat`, unobfuscated, sitting in Application
+Support. Harms 1 and 2 both need a live coerced session at the *duress* depth. This one needs
+neither a coercer nor any depth at all — a forensic examiner, a border search, or anyone else with
+filesystem access to a seized or extracted device reads the filenames without decrypting anything and
+learns a recovery is in progress, purely from `ls`. Compare `backup-export-meta.dat`
+(`Vault+Manager+Backup.swift:813`, already noted in Bug 96 item 4's "self-describing artifacts") —
+that name at least has a plausible cover story, since exports are ordinary. These two name the
+*mechanism* directly: not "this app made a backup," but "this device is mid-recovery, right now."
+Any fix that only addresses the live-UI banner (harms 1 and 2) leaves this open — it needs the
+restore files themselves to stop naming what they are, independent of whatever the deferral design
+ends up being.
 
 ### What is *not* wrong with it today
 
@@ -5646,12 +5660,14 @@ while at a duress depth. Two shapes, neither yet chosen:
 
 ### Guard
 
-No test touches the recovery path — a repo-wide search under `OccultaTests/` for
-`attemptBEKRestore`, `pendingRestoreActive`, or `storePendingRestore` returns nothing, so the
-automatic import that `VaultBackupRoundTripTests` documents as *live* has no coverage of its trigger.
-Acceptance criteria for the fix: a restore reaching threshold at depth > 0 must leave
-`pendingRestoreActive` false to the UI, must not insert entries, and must complete on the next
-depth-0 unlock with the entries stamped 0.
+Updated 2026-08-25: `VaultRestoreTrustTests.swift` now exercises `attemptBEKRestore`,
+`pendingRestoreActive` and `storePendingRestore`, added for Bug 94's authentication work — but
+nothing in it touches depth at all, since Bug 94's tests all run at depth 0. **This bug's actual
+surface — the banner, the filenames, depth > 0 — still has zero coverage.** Acceptance criteria for
+the fix: a restore reaching threshold at depth > 0 must leave `pendingRestoreActive` false to the UI,
+must not insert entries, and must complete on the next depth-0 unlock with the entries stamped 0.
+Harm 3 needs its own criterion, independent of any UI behavior: the on-disk filenames must not name
+the mechanism, regardless of what depth-gating design is chosen for harms 1 and 2.
 
 ### Noted in passing, not filed
 
