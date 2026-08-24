@@ -5520,8 +5520,9 @@ at another.** That test is the fix's acceptance criterion.
 
 ## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
 
-**Status:** **Open.** Filed 2026-08-22 while checking, for Bug 88's fix plan, whether
-`pendingRestoreActive` is depth-aware. It is not, and neither is anything else in the recovery path.
+**Status:** **Open, design settled 2026-08-25, not yet built.** Filed 2026-08-22 while checking, for
+Bug 88's fix plan, whether `pendingRestoreActive` is depth-aware. It is not, and neither is anything
+else in the recovery path. See *The design, settled* below for the resolved shape.
 
 **Target:** unset. **Bug 88's import-side remedy depends on this** — see *Relationship to Bug 88*.
 
@@ -5646,28 +5647,88 @@ never sees the real one — but that **the duress view be internally coherent**.
 the surface-hiding are one change, not two: above depth 0 the recovery machinery must both decline to
 run *and* decline to announce itself, leaving a layer that looks like a device with nothing pending.
 
-### Open question the fix has to answer
+### The design, settled 2026-08-25 — not yet built
 
-What happens when a `.occbak` is opened from Files (`storePendingRestore`, `Vault+Manager+Backup.swift:554`)
-while at a duress depth. Two shapes, neither yet chosen:
+Neither shape originally proposed was quite right. Accept-silently-always leaves a real gap for the
+"already armed, still pending" case (below). Per-layer state solves it but needs new storage the
+problem doesn't actually require. The answer that fell out of walking concrete scenarios end to end:
 
-- **Accept silently, show nothing.** Coherent for a coercer who did not open it, incoherent for one
-  who did — they took an action and got no feedback, which is its own tell.
-- **Make pending-restore state per-layer**, so a file opened at depth N shows and restores within
-  depth N, and the depth-0 restore is invisible from N. Coherent in both directions and consistent
-  with how the rest of Secure Mode partitions state, at the cost of real work: the restore files are
-  currently one global pair of paths in Application Support, with no per-layer notion at all.
+**Depth has to reach three places it doesn't today.** `unlock(context:)` gains a required
+`currentDepth: Int` parameter — its three call sites (`Vault+Tab.swift`, `VaultRecoverySettings.swift`,
+`VaultShardHealth.swift`) all pass `security.currentDepth`; the last of the three doesn't have
+`Manager.Security` in its environment yet and needs it added. The `acceptReturnedShard` path is
+reached from `OccultaApp.swift`'s inbound-bundle handling, which already holds `self.security`
+directly (confirmed before assuming it) — depth threads down through `ShardCustodyManager.handleInbound`
+into `acceptReturnedShard` from there.
+
+**`refreshPendingRestoreState` and `attemptBEKRestore` both gain the same guard.** Above depth 0, the
+published state is forced to `false`/`0` regardless of what's actually on disk — not "hidden if
+something's pending," genuinely false, so a coercer watching across multiple unlocks sees the same
+nothing every time. `attemptBEKRestore` additionally refuses to complete above depth 0, matching the
+"defer and hide together" requirement above — deferral alone (without the state-forcing) is what
+turns harm 1 into a self-contradicting oracle; this is why they ship as one change.
+
+**`storePendingRestore` gets a new check, and it resolves the open question.** Not "is this exact
+file already known" — "does any restore state already exist," pending or completed:
+
+```
+pending file already exists (recovery armed, not yet complete)  →  true
+        OR
+a BEK already exists (recovery already completed)               →  true
+```
+
+Both halves reuse state that's already there — the pending file's mere presence, and remedy 1's
+existing `fetchDecodedBEK` check — so this needs **no new persisted history**. If either is true: at
+depth 0, show the real, specific truth ("still restoring" or "already set up"); above depth 0, show
+a single flat acknowledgment — *"this backup file has already been processed"* — true in either
+sub-case, since it doesn't claim which one. If neither is true (genuinely nothing has happened yet):
+depth 0 starts the live progress UI as it does today; above depth 0, silent accept, file written,
+nothing shown.
+
+**Why "any restore state" rather than "this exact file" is the right framing, not a shortcut.** It
+means the message is never a lie — a *different* `.occbak` shown while one is already pending or
+done gets the same honest "already processed," rather than needing file-identity tracking (hashing,
+persisted history) to stay truthful. It also matches the constraint that already existed
+independently: accepting a second, conflicting restore target mid-flight is its own hazard, so
+refusing it is correct behavior regardless of the forensic question.
+
+**Two pieces not yet nailed down:**
+
+1. The message needs its own one-time display surface — a toast or brief alert reacting to the
+   file-open action — separate from the vault tab's persistent (and now permanently silent-above-
+   depth-0) banner. Not yet confirmed whether the app has an existing pattern for "briefly acknowledge
+   an inbound file action" to reuse, or whether this is new UI.
+2. A malformed `.occbak` (fails the magic-byte check) throws `BackupError.invalidFormat` today,
+   unconditionally, at every depth — not yet checked whether that surfaces any visible error, or
+   whether it's currently consistent across depths. If depth 0 shows "invalid file" and duress
+   swallows it silently (or the reverse), that's a fourth case this design hasn't accounted for.
+
+**Why the legitimate user isn't burdened by any of this.** A real recovery, done by the actual owner,
+has no reason to be initiated from a duress PIN in the first place — she would naturally do her own
+recovery at her real depth, which is exactly the path that shows her everything. The constraint only
+becomes visible in the adversarial case: a coercer forcing the duress PIN and trying the file anyway,
+which is precisely where "tell them nothing true or false" is the correct behavior.
 
 ### Guard
 
 Updated 2026-08-25: `VaultRestoreTrustTests.swift` now exercises `attemptBEKRestore`,
 `pendingRestoreActive` and `storePendingRestore`, added for Bug 94's authentication work — but
 nothing in it touches depth at all, since Bug 94's tests all run at depth 0. **This bug's actual
-surface — the banner, the filenames, depth > 0 — still has zero coverage.** Acceptance criteria for
-the fix: a restore reaching threshold at depth > 0 must leave `pendingRestoreActive` false to the UI,
-must not insert entries, and must complete on the next depth-0 unlock with the entries stamped 0.
-Harm 3 needs its own criterion, independent of any UI behavior: the on-disk filenames must not name
-the mechanism, regardless of what depth-gating design is chosen for harms 1 and 2.
+surface — the banner, the filenames, depth > 0 — still has zero coverage.**
+
+Acceptance criteria, matching *The design, settled*:
+
+- A restore reaching threshold at depth > 0 must leave `pendingRestoreActive` false to the UI, must
+  not insert entries, and must complete on the next depth-0 unlock with the entries stamped 0.
+- A genuinely new `.occbak`, no prior restore state, opened above depth 0: silent accept, file
+  written, `pendingRestoreActive` stays false, nothing displayed.
+- A `.occbak` opened above depth 0 while a restore is already pending *or* already completed (BEK
+  exists): the flat acknowledgment shown, never the live count, and identical whichever of the two
+  underlying states is true.
+- The same two cases at depth 0 show the real, specific state — this is not a security requirement,
+  it is the difference between the depth-0 and duress paths that makes the whole design coherent.
+- Harm 3 needs its own criterion, independent of any UI behavior: the on-disk filenames must not
+  name the mechanism, regardless of the above.
 
 ### Noted in passing, not filed
 
