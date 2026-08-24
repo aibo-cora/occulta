@@ -6009,8 +6009,11 @@ forged share must still recover from the genuine ones, or must be discardable.
 
 ## Bug 96 — Restore-path robustness: two traps on decoded content, unbounded growth, and vault plaintext left unzeroed
 
-**Status:** **Open.** Filed 2026-08-22 alongside Bugs 94 and 95. Grouped because all four are
-robustness rather than access-control defects, and none is worth its own entry.
+**Status:** **Partially fixed 2026-08-24.** Filed 2026-08-22 alongside Bugs 94 and 95. Grouped
+because all four are robustness rather than access-control defects, and none is worth its own
+entry. **Item 1 (the two traps) is fixed** — `importBackup` now range-checks `entryType` and
+`createdAt` before either reaches the conversion that used to crash the process. **Items 2
+(unbounded shard file) and 3 (unzeroed export plaintext) remain open.**
 
 **Target:** unset.
 
