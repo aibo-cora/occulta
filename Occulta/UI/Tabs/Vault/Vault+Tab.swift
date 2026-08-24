@@ -142,10 +142,23 @@ struct VaultTab: View {
                 if isUnlocked && self.postRestoreActionNeeded {
                     self.showPostRestoreSheet = true
                 }
+                // backupStaleness is depth-scoped and VaultManager has no way to know
+                // currentDepth on its own — refresh it here, where both vault and
+                // security are in scope, rather than inside unlock() itself.
+                if isUnlocked {
+                    self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                }
             }
             .onChange(of: self.postRestoreActionNeeded) { _, newValue in
                 if newValue && self.vault.isUnlocked {
                     self.showPostRestoreSheet = true
+                }
+            }
+            .onAppear {
+                // Covers returning to this tab while already unlocked, when the
+                // isUnlocked transition above never fires.
+                if self.vault.isUnlocked {
+                    self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
                 }
             }
         }
@@ -485,7 +498,7 @@ struct VaultTab: View {
 
     private func startExport() {
         do {
-            let data = try vault.exportBackup()
+            let data = try vault.exportBackup(currentDepth: self.security.currentDepth)
             let url  = VaultManager.tempBackupURL()
             try data.write(to: url, options: .completeFileProtection)
             BackupPickerPresenter.present(fileURL: url) {

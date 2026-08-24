@@ -168,7 +168,11 @@ final class VaultManager {
         self.drainPendingShardStatusUpdates()
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
-        self.refreshBackupStaleness()
+        // backupStaleness is refreshed by the views that display it (Vault+Tab,
+        // VaultRecoverySettings), not here — VaultManager has no dependency on
+        // Manager.Security and so no way to know currentDepth at unlock time, and
+        // staleness must never be computed from the wrong depth (see
+        // refreshBackupStaleness's own doc comment).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
         self.refreshPendingRestoreState()

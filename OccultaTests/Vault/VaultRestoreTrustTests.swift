@@ -134,7 +134,7 @@ struct VaultRestoreTrustTests {
 
         // The attacker seals their own file under their own BEK and splits that BEK.
         // Nothing here is forged — it is simply not the victim's.
-        let attackerBackup = try attacker.vault.exportBackup()
+        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
             try victim.vault.reconstructBEK(
@@ -168,7 +168,7 @@ struct VaultRestoreTrustTests {
         _ = try victim.vault.addEntry(label: "mine", content: Data("mine".utf8), type: .note)
         _ = try attacker.vault.addEntry(label: "planted", content: Data("planted".utf8), type: .note)
 
-        let attackerBackup = try attacker.vault.exportBackup()
+        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
             try victim.vault.reconstructBEK(shards: attacker.shards,
@@ -205,7 +205,7 @@ struct VaultRestoreTrustTests {
 
         let owner = try makeBackupReadyVault()
         _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
-        let backup    = try owner.vault.exportBackup()
+        let backup    = try owner.vault.exportBackup(currentDepth: 0)
         let ownerBEK  = try bekBytes(of: owner.vault)
 
         // The replacement device: vault set up, backup never configured, so no BEK row.
@@ -239,7 +239,7 @@ struct VaultRestoreTrustTests {
 
         let victim   = try makeBackupReadyVault()
         let attacker = try makeBackupReadyVault()
-        let attackerBackup = try attacker.vault.exportBackup()
+        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         try victim.vault.storePendingRestore(attackerBackup)
         try victim.vault.storeRestoreShard(attacker.shards[0])

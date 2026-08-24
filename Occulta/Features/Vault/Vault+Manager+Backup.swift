@@ -63,11 +63,14 @@ extension VaultManager {
         let content:   Data   // plaintext entry content
     }
 
-    // MARK: - Backup export metadata (staleness tracking)
+    // MARK: - Backup export metadata (staleness tracking, per depth)
 
-    /// Snapshot sealed under the vault key and written alongside each export.
-    /// Used to determine whether the vault state has drifted since the last backup.
-    /// Never stored in plaintext — always AES-GCM sealed with backupExportMetaAAD.
+    /// Decoded content of one depth's slot in the export-metadata file. Written alongside
+    /// each export, one record per depth. Used to determine whether the vault state at
+    /// *that depth* has drifted since *that depth's* last backup — never compared across
+    /// depths, since all slots share one vault key and depth-indexing is the only thing
+    /// keeping them apart. Never stored in plaintext — always AES-GCM sealed as part of
+    /// the whole 32-slot array, under backupExportMetaAAD.
     struct BackupExportMetadata: Codable {
         /// When the export was performed.
         let exportedAt:     Date
@@ -155,11 +158,18 @@ extension VaultManager {
 
     // MARK: - Export
 
-    /// Decrypt all vault entries and seal them under the BEK as a `.occbak` file.
+    /// Decrypt vault entries visible at `currentDepth` and seal them under the BEK as a
+    /// `.occbak` file.
+    ///
+    /// Depth-scoped, not vault-wide — vault entries are exact-match partitioned, not
+    /// nested (unlike contacts), so "what is visible here" is exactly "what depth ==
+    /// currentDepth", and a file never needs to record which depth it came from. No
+    /// default: a forgotten argument must be a compile error, not a silent leak of
+    /// every layer into whichever depth happened to call this (Bug 88).
     ///
     /// Blocked if the BEK is not set up or BEK shard distribution is below threshold.
     /// The caller presents the returned bytes via UIDocumentPickerViewController.
-    func exportBackup() throws -> Data {
+    func exportBackup(currentDepth: Int) throws -> Data {
         let vaultKey = try self.currentKey()
 
         guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {
@@ -177,7 +187,7 @@ extension VaultManager {
             throw BackupError.belowThreshold
         }
 
-        let entries = try self.fetchAllEntries()
+        let entries = try self.entriesVisible(atDepth: currentDepth)
         var backupEntries = [VaultBackupEntry]()
         backupEntries.reserveCapacity(entries.count)
 
@@ -209,18 +219,35 @@ extension VaultManager {
         var result = Self.backupMagic
         result.append(combined)
 
-        // Seal a snapshot of the vault state at export time. Used by
-        // refreshBackupStaleness() to detect drift on subsequent unlocks.
+        // Seal a snapshot of this depth's vault state at export time. Used by
+        // refreshBackupStaleness() to detect drift on subsequent unlocks at this
+        // same depth — entryCount here is this depth's count, not the vault's.
         let exportMeta = BackupExportMetadata(
             exportedAt:     Date(),
             distributionID: decoded.payload.distributionID,
             shardCount:     decoded.payload.shardMetadata?.shards.count ?? 0,
             entryCount:     entries.count
         )
-        try self.writeBackupExportMetadata(exportMeta, vaultKey: vaultKey)
-        self.refreshBackupStaleness()
+        try self.writeBackupExportMetadata(exportMeta, at: currentDepth, vaultKey: vaultKey)
+        self.refreshBackupStaleness(currentDepth: currentDepth)
 
         return result
+    }
+
+    /// Vault entries whose decrypted `visibleThroughDepth` ceiling equals `depth`,
+    /// exactly. Mirrors `Manager.Security.isEntryVisible(_:)`'s semantics without
+    /// depending on `Manager.Security` — VaultManager has no dependency on Secure Mode
+    /// internals, and `visibleThroughDepth` is sealed under the ordinary local DB key,
+    /// not anything Secure-Mode-specific, so nothing here needs `isEntryVisible` doesn't
+    /// already have available through `Data.decrypt()`.
+    private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
+        try self.fetchAllEntries().filter { entry in
+            guard let sealed = entry.visibleThroughDepth,
+                  let plain  = sealed.decrypt(),
+                  let value  = DepthCodec.decode(plain)
+            else { return false }  // unreadable ceiling — exclude, same as isEntryVisible
+            return value == depth
+        }
     }
 
     // MARK: - Import
@@ -677,6 +704,107 @@ extension VaultManager {
         return try JSONDecoder().decode([SignedAttribute].self, from: plain)
     }
 
+    // MARK: - Export metadata slot codec
+
+    /// Fixed-width plaintext codec for one `BackupExportMetadata` slot, and the
+    /// 32-slot layout that holds one per depth.
+    ///
+    /// One slot per depth so a slot's presence or absence never varies the file's
+    /// total length — the same reasoning as `DepthCodec`, applied to this file's own
+    /// format rather than to `Contact.Profile`'s depth fields. `slotCount` reuses
+    /// `AppLayerConfig.maxVerifierCount` deliberately, not as a borrowed number: that
+    /// constant is the actual, enforced ceiling on nesting in this codebase — the
+    /// verifier arrays themselves no-op past it — confirmed independently by
+    /// `DepthCodec`'s own doc comment, which calls it out as "the real structural
+    /// limit," distinct from `DepthCodec.maxEncodableDepth`'s far larger, deliberately
+    /// generous encoding ceiling.
+    ///
+    /// ```
+    /// byte 0      presence tag: 0xA5 = real record, anything else = absent/filler
+    /// byte 1–8    exportedAt   — UInt64 seconds since 1970, big-endian
+    /// byte 9–24   distributionID — UUID's raw 16 bytes
+    /// byte 25     shardCount   — UInt8, saturating
+    /// byte 26–27  entryCount   — UInt16, big-endian, saturating
+    /// ```
+    ///
+    /// Filler is random bytes at the same 28-byte width, not a structured "empty"
+    /// marker — matching `AppLayerConfig`/`Manager.LayerStore`'s house style. Unlike
+    /// those arrays, indistinguishability under decryption isn't load-bearing here
+    /// (these slots are only ever read by index, in context, never scanned or
+    /// inspected in isolation) — random filler is chosen for consistency with the
+    /// rest of Secure Mode, not because this format specifically requires it.
+    private enum ExportMetaSlotCodec {
+        static let slotCount:     Int = AppLayerConfig.maxVerifierCount
+        static let slotPlainSize: Int = 28
+
+        private static let presenceTag: UInt8 = 0xA5
+
+        /// `nil` encodes to random filler — total, matches `DepthCodec.encode`'s own
+        /// "must not trap" requirement. `shardCount`/`entryCount` saturate via
+        /// `clamping:` rather than a plain cast, which would trap outside range —
+        /// exactly the class of bug fixed twice in `importBackup` (Bug 96).
+        static func encodeSlot(_ meta: BackupExportMetadata?) -> Data {
+            guard let meta else { return Self.randomFiller() }
+
+            var out = Data(capacity: Self.slotPlainSize)
+            out.append(Self.presenceTag)
+
+            var ts = UInt64(max(0, meta.exportedAt.timeIntervalSince1970)).bigEndian
+            withUnsafeBytes(of: &ts) { out.append(contentsOf: $0) }
+
+            out.append(Self.uuidBytes(meta.distributionID))
+            out.append(UInt8(clamping: meta.shardCount))
+
+            var entryCount = UInt16(clamping: meta.entryCount).bigEndian
+            withUnsafeBytes(of: &entryCount) { out.append(contentsOf: $0) }
+
+            return out
+        }
+
+        /// `nil` for filler or a malformed slot — same "absent" meaning either way,
+        /// since a genuinely-never-written slot and random filler are indistinguishable
+        /// by construction.
+        static func decodeSlot(_ plain: Data) -> BackupExportMetadata? {
+            guard plain.count == Self.slotPlainSize, plain.first == Self.presenceTag else {
+                return nil
+            }
+            let bytes = [UInt8](plain)
+
+            let ts = bytes[1..<9].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let exportedAt = Date(timeIntervalSince1970: TimeInterval(ts))
+
+            guard let distributionID = Self.uuid(fromBytes: Array(bytes[9..<25])) else { return nil }
+
+            let shardCount = Int(bytes[25])
+            let entryCount = Int(bytes[26]) << 8 | Int(bytes[27])
+
+            return BackupExportMetadata(
+                exportedAt:     exportedAt,
+                distributionID: distributionID,
+                shardCount:     shardCount,
+                entryCount:     entryCount
+            )
+        }
+
+        private static func randomFiller() -> Data {
+            var bytes = [UInt8](repeating: 0, count: Self.slotPlainSize)
+            _ = SecRandomCopyBytes(kSecRandomDefault, Self.slotPlainSize, &bytes)
+            return Data(bytes)
+        }
+
+        private static func uuidBytes(_ id: UUID) -> Data {
+            withUnsafeBytes(of: id.uuid) { Data($0) }
+        }
+
+        private static func uuid(fromBytes bytes: [UInt8]) -> UUID? {
+            guard bytes.count == 16 else { return nil }
+            return UUID(uuid: (
+                bytes[0], bytes[1], bytes[2],  bytes[3],  bytes[4],  bytes[5],  bytes[6],  bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+            ))
+        }
+    }
+
     // MARK: - Export metadata helpers
 
     private static let backupExportMetaURL: URL =
@@ -687,15 +815,22 @@ extension VaultManager {
     private static let backupExportMetaAAD: Data =
         Data("occulta.backup-export-meta-v1".utf8)
 
-    /// Recompute `backupStaleness` by comparing the sealed export snapshot against
-    /// current vault state. Called on every unlock and after each successful export.
-    /// Sets `backupStaleness` to `nil` when no export has been done on this device.
-    func refreshBackupStaleness() {
+    /// Recompute `backupStaleness` for `currentDepth` by comparing that depth's sealed
+    /// export snapshot against that depth's current vault entries. Never derived from
+    /// another depth's record or entry count — the file holds 32 slots under one vault
+    /// key, and depth-indexing is the only thing keeping them apart, so reading anything
+    /// but slot[currentDepth] here would leak cross-depth state into a single depth's
+    /// signal (the same failure shape Bug 93 was filed over, on the restore side).
+    /// Sets `backupStaleness` to `nil` when this depth has never been exported.
+    func refreshBackupStaleness(currentDepth: Int) {
         guard let vaultKey = try? self.currentKey() else {
             self.backupStaleness = nil
             return
         }
-        guard let meta = try? self.loadBackupExportMetadata(vaultKey: vaultKey) else {
+        // try? on a `throws -> T?` flattens to `T?` — nil covers both "threw" and
+        // "decoded fine, no record for this depth" identically, which is the
+        // intended behaviour (see loadBackupExportMetadata's doc comment).
+        guard let meta = try? self.loadBackupExportMetadata(at: currentDepth, vaultKey: vaultKey) else {
             self.backupStaleness = nil
             return
         }
@@ -703,7 +838,7 @@ extension VaultManager {
         let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey)
 
         let bekRotated        = decoded.map { $0.payload.distributionID != meta.distributionID } ?? false
-        let currentEntryCount = (try? self.modelContext.fetchCount(FetchDescriptor<VaultEntry>())) ?? 0
+        let currentEntryCount = (try? self.entriesVisible(atDepth: currentDepth).count) ?? 0
         let newEntryCount     = max(0, currentEntryCount - meta.entryCount)
         let currentShardCount = decoded?.payload.shardMetadata?.shards.count ?? 0
         let trusteeSetChanged = currentShardCount != meta.shardCount
@@ -716,8 +851,18 @@ extension VaultManager {
         self.backupStaleness = report.isStale ? report : nil
     }
 
-    private func writeBackupExportMetadata(_ meta: BackupExportMetadata, vaultKey: SymmetricKey) throws {
-        let plain  = try JSONEncoder().encode(meta)
+    /// Write `meta` into `depth`'s slot only. Every other slot's plaintext is carried
+    /// through byte-for-byte. Out-of-range depths no-op, matching
+    /// `AppLayerConfig.writeDuressVerifier`'s own convention for the same situation.
+    private func writeBackupExportMetadata(_ meta: BackupExportMetadata, at depth: Int, vaultKey: SymmetricKey) throws {
+        var slots = (try? self.loadAllExportMetaSlots(vaultKey: vaultKey))
+            ?? Array<BackupExportMetadata?>(repeating: nil, count: ExportMetaSlotCodec.slotCount)
+        guard depth >= 0, depth < slots.count else { return }
+        slots[depth] = meta
+
+        var plain = Data(capacity: ExportMetaSlotCodec.slotCount * ExportMetaSlotCodec.slotPlainSize)
+        for slot in slots { plain.append(ExportMetaSlotCodec.encodeSlot(slot)) }
+
         let sealed = try AES.GCM.seal(
             plain, using: vaultKey,
             nonce: AES.GCM.Nonce(),
@@ -727,11 +872,26 @@ extension VaultManager {
         try combined.write(to: Self.backupExportMetaURL, options: [.atomic, .completeFileProtection])
     }
 
-    private func loadBackupExportMetadata(vaultKey: SymmetricKey) throws -> BackupExportMetadata {
+    /// `depth`'s slot, or `nil` if that depth has never been exported (a genuinely empty
+    /// slot decodes the same as filler — see `ExportMetaSlotCodec.decodeSlot`).
+    private func loadBackupExportMetadata(at depth: Int, vaultKey: SymmetricKey) throws -> BackupExportMetadata? {
+        let slots = try self.loadAllExportMetaSlots(vaultKey: vaultKey)
+        guard depth >= 0, depth < slots.count else { return nil }
+        return slots[depth]
+    }
+
+    private func loadAllExportMetaSlots(vaultKey: SymmetricKey) throws -> [BackupExportMetadata?] {
         let combined = try Data(contentsOf: Self.backupExportMetaURL)
-        let box      = try AES.GCM.SealedBox(combined: combined)
-        let plain    = try AES.GCM.open(box, using: vaultKey, authenticating: Self.backupExportMetaAAD)
-        return try JSONDecoder().decode(BackupExportMetadata.self, from: plain)
+        let box       = try AES.GCM.SealedBox(combined: combined)
+        let plain     = try AES.GCM.open(box, using: vaultKey, authenticating: Self.backupExportMetaAAD)
+        let slotSize  = ExportMetaSlotCodec.slotPlainSize
+        guard plain.count == ExportMetaSlotCodec.slotCount * slotSize else {
+            throw BackupError.invalidFormat
+        }
+        return (0..<ExportMetaSlotCodec.slotCount).map { i in
+            let start = plain.startIndex + i * slotSize
+            return ExportMetaSlotCodec.decodeSlot(plain.subdata(in: start..<(start + slotSize)))
+        }
     }
 
     // MARK: - Private helpers
