@@ -4867,9 +4867,17 @@ instead of only on rotation.
 
 ## Bug 88 — Vault backup ignores `visibleThroughDepth` in both directions
 
-**Status:** **Open.** Filed 2026-08-19 while confirming, on request, how vault export/import behave
-under Secure Mode. Found by tracing `exportBackup`/`importBackup` for any reference to depth or
-Secure Mode and finding none.
+**Status:** **Export half fixed 2026-08-24, per remedy 4.** Filed 2026-08-19 while confirming, on
+request, how vault export/import behave under Secure Mode. Found by tracing
+`exportBackup`/`importBackup` for any reference to depth or Secure Mode and finding none.
+**`exportBackup(currentDepth:)`** now filters to `visibleThroughDepth == currentDepth`, no default
+parameter, no wire format change — matching remedy 4 exactly as designed. Staleness metadata moved
+to a 32-slot fixed-width array (one per depth) as part of the same work, guarded by a dedicated
+cross-depth-isolation test. The export education screen's "all your vault entries" / "your entire
+vault" wording was also corrected — it overclaimed once export became depth-scoped. **The import
+half remains open, gated on Bug 93** — `importBackup` still never sets `visibleThroughDepth`, and
+stamping the current depth is unsafe on the automatic restore-on-unlock path until Bug 93's
+deferral lands.
 
 **Target:** unset.
 
