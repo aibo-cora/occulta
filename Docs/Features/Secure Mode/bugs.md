@@ -4176,12 +4176,18 @@ not evidence the property holds, and neither is a checklist line citing the func
 
 ## Bug 85 — `visibleThroughDepth` ciphertext length partitions safe from sensitive contacts, with no key
 
-**Status:** **Open.** Filed 2026-08-16 while scoping rotation-coverage step 3, from a question about
-whether the field is ever nil. Found by measurement, not by reading — the doc comment on the field
-asserts the opposite and is why it survived.
+**Status:** **Fixed 2026-08-19, device-verified.** Filed 2026-08-16 while scoping rotation-coverage
+step 3, from a question about whether the field is ever nil. Found by measurement, not by reading —
+the doc comment on the field asserts the opposite and is why it survived. This entry's status label
+sat stale as "Open" for several sessions after the fix actually shipped and was confirmed on a live
+device (all depth fields one length) — caught during a release-readiness check, corrected 2026-08-24.
+`DepthCodec.encode`/`.decode` (`DepthCodec.swift`) is now the sole write path for
+`visibleThroughDepth`, `.globalTrusteeDepth` and `.originDepth` across `Manager+Security.swift`,
+`Contact+Manager.swift`, `ContactManager+Classification.swift` and `PQmigration.swift` — fixed-width
+two-byte plaintext, sealed length constant regardless of value. `DepthCodecTests` covers the codec
+directly; `DeletedDepthStampScrubTests` and the migration tests cover the rows it reaches.
 
-**Target:** unset. The write-format change needs designing against the rotation contract; see
-"Why this is not a one-line fix".
+**Target:** — (closed).
 
 ### Severity: Critical (forensic)
 
