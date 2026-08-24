@@ -5763,9 +5763,9 @@ sub-case it leaves fully open.
 1. **Refuse to overwrite an existing BEK row during restore.** A device that already holds a BEK is
    not a fresh restore target. Kills step 4 with no format change and no new state. Does not help a
    device with no BEK — see above.
-2. **Verify when the identity hasn't rotated; re-pair over UWB when it has — never skip.** See below;
-   this is not a looser version of the ECDSA check, it is a second, different mechanism for the case
-   the check cannot cover.
+2. **Verify against the owner's current identity when possible; accept a trustee's attestation when
+   it isn't — never an unconditional skip.** See below; this is not a looser version of the ECDSA
+   check, it is a second, different mechanism for the one case the check structurally cannot cover.
 3. **Require explicit confirmation before an automatic import mutates the vault.** Bug 93 already
    establishes that this path runs unprompted on unlock.
 
@@ -5790,17 +5790,61 @@ secret sharing work at all. So there is no per-shard test available on the new-d
 post-hoc one on the whole group (see Bug 95, which is what a forged share does to that group).
 
 **The rotated case needs a different kind of trust anchor, not a weaker version of the same one.**
-Occulta already has one, and it's the mechanism this project uses everywhere else a new identity key
-needs to be trusted: physical UWB proximity, established through the same key-exchange flow that
-creates a contact in the first place (`KeyExchange.swift`, gated on the UWB chip). A signature can be
-forged or coerced from a distance; presence in the same room in that moment cannot. The fix for the
-rotated branch is to require the owner to re-pair with each trustee over UWB — which both proves
-presence and re-establishes the owner's new identity key with that trustee — and to trust a returned
-shard only once it arrives through a channel authenticated that way. This is the same rule the
-project already applies to new device *identity* keys generally: a remote signature never vouches for
-a device on its own; physical exchange does. The BEK-shard-return path is the one place that rule
-was not applied, and `ownerIdentity: nil` is what let a remote signature attempt — and then
-concede — the job proximity was always meant to do.
+Not a new one, either — Occulta already has what's needed, just not applied here. **The trustee is
+the anchor.** `Contact.Profile.Key` is append-only (`Contact+Manager.swift:552`, `update(key:for:)`):
+when Bob re-pairs with the owner's new device over UWB — which has to happen anyway, or none of his
+bundles decrypt on that device at all — his contact record for the owner gains a new key without
+deleting the old one. He still holds the exact public key that originally signed his `CustodyShard`,
+long after the owner's own device has lost the ability to verify against it. **Bob can perform the
+check the owner's device structurally cannot, using data that was never his to lose.**
+
+So the fix is not a new channel for the shard to travel over. It already travels over an ordinary
+bundle, authenticated the ordinary way, to a contact the owner's new device re-paired with over UWB
+regardless. The fix is what the trustee attaches to it: a fresh signature, made with *his own current*
+identity key, attesting that he checked the share's original signature against his own retained copy
+of the owner's old key before sending it. The owner's device cannot check the old signature. It can
+check this one — the same way it already checks anything else from a contact it has UWB-established.
+
+### The design: trustee attestation
+
+Two other designs were considered and rejected before this one, recorded so they are not
+re-proposed without re-deriving why they were wrong.
+
+**Rejected: a dedicated live exchange session for the shard specifically.** The instinct was to reuse
+`ExchangeManager`'s `NISession`/`MCSession` machinery (`Exchange+Manager.swift:30`) as a new, separate
+ceremony for handing back a shard. Redundant: the proximity anchor it would provide already exists,
+upstream, in the ordinary re-pairing required for Bob's bundle to decrypt on the owner's new device at
+all. A second session would re-prove something already proven.
+
+**Rejected: asking the owner to enumerate her trustees at recovery time.** The instinct was that since
+the device has no local record of who held what (`shardMetadata: nil` on reconstruction — Gap 2
+below), only the owner's own memory could supply it. Wrong premise: the record was never the owner's
+alone to lose. The trustee's own contact history survives exactly where the owner's identity does not,
+and an owner-supplied list adds nothing an honest trustee's attestation doesn't already prove, while
+adding a step a coerced or careless owner could get wrong.
+
+**What attestation actually closes.** It is self-limiting to genuine trustees by construction — to
+attest, Bob needs both a real `CustodyShard` and a matching historical key for the owner, neither of
+which an arbitrary contact (the population identified above, in "The other population") was ever
+given. There is nothing to fake possessing. This closes that population's attack categorically, not by
+raising the cost of it.
+
+**What it does not close, and why that is not a gap in this design.** Nothing cryptographically forces
+a trustee to have actually performed the check before signing an attestation — it is a claim, not a
+proof the claim's process ran. A single dishonest or compromised trustee could sign an attestation
+over fabricated bytes. But one fabricated share, mixed with k−1 genuine ones, simply fails to
+reconstruct anything that opens the target file — Shamir does not degrade gracefully. Defeating this
+needs k or more trustees dishonest *and* colluding, which is the same assumption every k-of-n
+threshold scheme already rests on. Attestation is not required to improve on that baseline; nothing
+built on top of Shamir sharing is.
+
+**Kept as cheap defense-in-depth: do not silently auto-arm the file.** Attestation closes the shard
+side outright, which means the file side matters less than it did — but a colluding-majority attacker
+who also controls what `.occbak` gets tested against is a strictly worse position for the owner than
+one who does not. Moving `storePendingRestore`'s trigger behind a deliberate "restore my vault, pick
+your backup file" action, instead of the current silent handler on any inbound file, costs little and
+narrows that residual case further. Not load-bearing on its own — see "The other population" above for
+why a confirmation step alone cannot stop an attacker who supplies both sides.
 
 ### The gate is too narrow even for the mechanism it already has
 
@@ -5836,13 +5880,18 @@ offered back and rejected on every future exchange, with no exit. Beyond the clu
 rejected-handshake pattern between the same two identities is its own distinctive signal — worth
 weighing against this project's forensic-trace standard the same way B4 is.
 
-**The fix reuses machinery rather than adding a mechanism.** On post-recovery redistribution, pull
+**Gap 1 resolves as a side effect of remedy 2's design, not as a separate fix.** Once
+`handleHandback`'s acceptance condition is "verifies directly (Branch A) or carries a valid trustee
+attestation" rather than "verifies directly or `pendingRestoreActive` is true," there is no global
+flag left to scope in the first place. The attestation check is safe to run on *any* incoming
+handback, bootstrap or routine hygiene alike, because it is self-limiting to genuine trustees
+regardless of when it arrives. The tension with remedy 3 that an earlier version of this entry raised
+here doesn't apply once the accept condition stops being a flag at all.
+
+**Gap 2 still needs its own fix, unrelated to attestation.** On post-recovery redistribution, pull
 each trustee's current manifest (which arrives unprompted, per above) and issue `.replace` naming
 that ID instead of defaulting to `.distribute` — that alone buys `.replace`'s existing cleanup for
-free. Gap 1 needs more thought: `handleHandback` needs a legitimate accept path outside
-`pendingRestoreActive`, scoped to "this ID is one I currently expect from this trustee" rather than
-"a restore happens to be in progress" — which pushes back on remedy 3's confirmation-gate design,
-since the accept condition can't simply be narrowed to a single global flag a second time.
+free.
 
 **Constraint on any fix touching the `.occbak` handler.** The extension is shared with the Secure
 Mode layer store by design — `forensic-trace-avoidance.md` **B4**, *"Vault backups use the same
@@ -5858,23 +5907,24 @@ old shards cannot verify against it, and no amount of stricter checking recovers
 exists. But the fix routed *around* the problem instead of solving the rotated case on its own terms:
 the check was removed for every device on the path, including those whose key never rotated, rather
 than being paired with a mechanism that actually covers rotation. **The unrotated case needs the
-existing check enforced; the rotated case needs a different anchor — UWB re-pairing — not a skipped
-one.** This is the same failure mode as Bug 80's stranded `maxBundleVersion` and Bug 81's fail-closed
-gate: an exception written for one state applied unconditionally instead of being scoped to it.
+existing check enforced; the rotated case needs a different anchor — the trustee's own attestation —
+not a skipped one.** This is the same failure mode as Bug 80's stranded `maxBundleVersion` and Bug
+81's fail-closed gate: an exception written for one state applied unconditionally instead of being
+scoped to it.
 
 ### Guard
 
-`VaultBackupRoundTripTests` covers the honest round trip. Acceptance criteria here: a device holding
-a BEK must reject a restore that would replace it; **a device with no BEK must reject reconstruction
-from shards that did not arrive through an authenticated channel, exactly as an existing-BEK device
-would** — remedy 1's test alone is not sufficient, since it only exercises the population that already
-has a BEK; on an unrotated identity, shards that fail signature verification must be refused; on a
-rotated identity, a returned shard must be trusted only once it arrives through a fresh
-UWB-authenticated re-pairing with that trustee, never on the signature or the GCM tag alone; and none
-of the above may produce a crash or a silent insert. Beyond bootstrap: a mismatch-handback arriving
-after recovery has already completed must be reconcilable rather than rejected outright, and a
-post-recovery redistribution to an already-known trustee must clear that trustee's stale shard rather
-than leaving it orphaned.
+`VaultBackupRoundTripTests` covers the honest round trip. Acceptance criteria: a device holding a BEK
+must reject a restore that would replace it; a device with no BEK must reject reconstruction from
+shards that carry neither a valid direct signature nor a valid trustee attestation — remedy 1's test
+alone is not sufficient, since it only exercises the population that already has a BEK; a contact who
+was never given a real share must be unable to produce an accepted attestation under any
+circumstance, no matter how many bundles they send; a rotated-identity share must be accepted on its
+attestation, never on the direct signature or the GCM tag alone; and none of the above may produce a
+crash or a silent insert. A mismatch-handback arriving after recovery has already completed must be
+reconcilable on the same attestation check, not rejected for arriving outside a bootstrap window.
+Explicitly out of scope for this bug's guard, and inherent to any k-of-n scheme rather than a defect
+in this one: k or more genuinely-held trustee shards being dishonest and colluding.
 
 ---
 
