@@ -5639,8 +5639,13 @@ and it should be re-read once the flag becomes depth-aware.
 
 ## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
 
-**Status:** **Open.** Filed 2026-08-22 during a critical read of the export/import mechanism,
-requested after Bug 93. Found by asking what `ownerIdentity: nil` actually gives up.
+**Status:** **Partially fixed 2026-08-24.** Filed 2026-08-22 during a critical read of the
+export/import mechanism, requested after Bug 93. Found by asking what `ownerIdentity: nil`
+actually gives up. **Remedy 1 (overwrite refusal) is in** — `reconstructBEK` now refuses before
+touching Shamir, GCM, or `persistBEKPayload` whenever a BEK row already exists, closing the
+*destructive* half unconditionally. **Remedy 2 (trustee attestation) and remedy 3 (explicit
+confirmation) remain open** — the population with no BEK yet, "the other population" below, is
+still fully exposed; that is the larger remaining risk, not a residual edge case.
 
 **Target:** unset. **Independent of Bugs 88, 92 and 93** — those are about depth. This one survives
 all three being fixed.
