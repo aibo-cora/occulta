@@ -5532,6 +5532,18 @@ is the ordinary state of a device being rebuilt after loss, which is the exact s
 system exists for, and the exact situation a user is most likely to be carrying a partly-configured
 device around in.
 
+**"No BEK yet" is not only the lost-device case.** Checked 2026-08-25:
+`Manager.Key.retrievePrivateKey()` (`Key+Manager.swift:163`) does `SecItemCopyMatching` against a
+fixed, hardcoded tag before ever calling `create()`, and keychain items survive an app delete on the
+same device by default — nothing here deletes them first. So the identity key persists across a plain
+uninstall/reinstall; only the SwiftData database (Application Support) is wiped. That means "no BEK
+yet" covers three distinct starting states, not one: a genuinely new device, the same device erased
+("Erase All Content and Settings"), or the same device with the app merely reinstalled. **This bug's
+exposure is identical across all three** — it has nothing to do with whether the identity key
+happens to have rotated, only with there being a pending restore and no depth awareness anywhere in
+the path. The distinction matters for Bug 94's remedy, not this one; noted here so the precondition
+isn't misread as narrower than it is.
+
 ### What happens
 
 `refreshPendingRestoreState()` (`Vault+Manager+Backup.swift:546`) sets the published state from a
@@ -5814,6 +5826,17 @@ applies directly. **On a genuinely new device it does not, structurally, because
 non-exportable and die with the device they were created on.** There is no looser version of an
 ECDSA check that recovers a public key which no longer exists anywhere reachable — tightening the
 check cannot help a device that has nothing to check against.
+
+**"Unrotated" is broader than "never lost the device," and this matters for scope, not just for
+wording.** Checked 2026-08-25 against `Manager.Key.retrievePrivateKey()` (`Key+Manager.swift:163`):
+it looks the identity key up under a fixed, hardcoded keychain tag before ever creating one, and
+keychain items survive a plain app delete on the same device — only the SwiftData database gets
+wiped on uninstall. So the same-device-reinstall population — no BEK, but the identity key intact —
+is `retrieveIdentity()`-unrotated in every sense that matters here, and Branch A authenticates its
+returning shards correctly with zero new mechanism. **Attestation is load-bearing only for the
+remaining two starting states: a genuinely new physical device, or the same device deliberately
+erased.** Both are real and both need it — but the population this remedy has to cover is narrower
+than "any recovery with no BEK yet" (Bug 93's precondition) suggests on its own.
 
 The other candidate oracle doesn't help either. The GCM tag on the backup file is the only signal
 that survives rotation, but it operates on a **reconstructed group**, not a single share — Shamir
