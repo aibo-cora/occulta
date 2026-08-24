@@ -103,10 +103,16 @@ struct DatabaseMigration {
     /// Idempotent: the predicate only matches remaining nil rows, so already-backfilled
     /// contacts are skipped on subsequent launches.
     ///
+    /// Excludes soft-deleted rows (Bug 97): a deleted row with a nil stamp is left for
+    /// `migrateScrubDeletedDepthStamps` to handle with keyless random bytes. Stamping it
+    /// here instead would seal a fresh value under the *current* key on a row whose other
+    /// fields don't decrypt under it — the exact asymmetry Bug 88's keyless-filler remedy
+    /// was written to avoid.
+    ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateSafeContactVisibilityBackfill(modelContext: ModelContext) throws {
         let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.visibleThroughDepth == nil }
+            predicate: #Predicate { $0.visibleThroughDepth == nil && $0.deletionToken == nil }
         )
         let contacts = try modelContext.fetch(descriptor)
         guard !contacts.isEmpty else { return }
@@ -124,10 +130,13 @@ struct DatabaseMigration {
     ///
     /// Idempotent: the predicate only matches remaining nil rows.
     ///
+    /// Excludes soft-deleted rows (Bug 97) — see `migrateSafeContactVisibilityBackfill`'s
+    /// doc comment for why.
+    ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateGlobalTrusteeDepthBackfill(modelContext: ModelContext) throws {
         let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.globalTrusteeDepth == nil }
+            predicate: #Predicate { $0.globalTrusteeDepth == nil && $0.deletionToken == nil }
         )
         let contacts = try modelContext.fetch(descriptor)
         guard !contacts.isEmpty else { return }
@@ -150,10 +159,13 @@ struct DatabaseMigration {
     ///
     /// Idempotent: the predicate only matches remaining nil rows.
     ///
+    /// Excludes soft-deleted rows (Bug 97) — see `migrateSafeContactVisibilityBackfill`'s
+    /// doc comment for why.
+    ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateOriginDepthBackfill(modelContext: ModelContext) throws {
         let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.originDepth == nil }
+            predicate: #Predicate { $0.originDepth == nil && $0.deletionToken == nil }
         )
         let contacts = try modelContext.fetch(descriptor)
         guard !contacts.isEmpty else { return }
@@ -455,9 +467,14 @@ struct DatabaseMigration {
     /// Random bytes at the uniform length, or nil when the field is already that length.
     ///
     /// Per field, not per row: a deleted row can legitimately have one stamp readable and
-    /// the others stranded, because the backfills do not filter `deletionToken`. Promoting
-    /// this to "if any stamp is wrong, replace all three" would discard real values for no
-    /// gain.
+    /// the others stranded. Historically this was guaranteed — the three backfills below
+    /// didn't filter `deletionToken`, so an ordinary launch could stamp one field of an
+    /// already-deleted row under the current key while leaving the others untouched (Bug
+    /// 97, fixed 2026-08-24: all three now exclude deleted rows). That population still
+    /// exists on any device that ran an affected launch before the fix, so the per-field
+    /// design stays — promoting this to "if any stamp is wrong, replace all three" would
+    /// discard real values for no gain, and nothing guarantees a row's three fields only
+    /// ever go stale together going forward either.
     ///
     /// A nil stamp is scrubbed too — nil is its own tell (S6), and random bytes make it
     /// non-nil and the same length as everything else.
