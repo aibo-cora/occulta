@@ -5725,12 +5725,44 @@ trustees' real shards now reconstruct a key that matches nothing on the device.
 `isUnlocked` and `pendingRestoreActive`. An established device with a healthy vault runs all five
 steps.
 
+### The other population: no BEK yet, and remedy 1 does not reach it
+
+Checked 2026-08-22, asking whether "refuse to overwrite an existing BEK" (remedy 1, below) is a
+complete fix. It is not — it protects exactly the population that already has something to lose, and
+does nothing for the population that doesn't yet, which given `setupBEK()`'s single opt-in caller
+(`Vault+ShardSetup.swift:553`, `.backup` mode only) is most users most of the time, and permanently
+for anyone who never turns the feature on.
+
+Steps 1, 2, 3 and 5 above do not depend on step 4 (the overwrite) at all. On a device with no BEK row,
+`fetchDecodedBEK` returns `nil`, step 3's reconstruction still "validates" against the attacker's own
+file, and step 5 still inserts. **Nothing is destroyed, because nothing existed — but a working,
+plausible, attacker-controlled vault is planted where none was, silently, with no anomaly for the
+user to ever notice.** That is arguably worse than the overwrite case: overwriting at least breaks
+something a user might go looking for; planting creates something they have no reason to.
+
+**The attacker does not need to be a trustee.** `handleHandback` checks a signature (skippable, see
+above) and nothing else — there is no `ShardRecord` to check the sender against, because none exists
+until a BEK does. And `ShamirSecretSharing.reconstruct` only requires `shares.count >= 2`
+(`ShamirSecretSharing.swift:137`). So the minimal attack is: any existing contact — not specifically
+someone the victim ever entrusted with recovery — sends one hostile `.occbak` (sealed under a BEK of
+their choosing) plus two forged `SignedAttribute` `.handback` ops forming a valid 2-of-2 split of
+that same BEK, sharing one `entryID`. `identifyOwner(for:)` (`Contact+Manager.swift:1501`) does still
+require the sender to be a *known* contact — an unrelated stranger's bundle never decrypts — but nothing
+requires that contact to be a trustee.
+
+**Remedy 1 does not cover this population, by construction — only remedy 2 does**, since it is the
+only mechanism capable of asking "is this genuinely the owner's own material" rather than "does
+something already exist to protect." Any acceptance criterion for this bug that stops at "an existing
+BEK cannot be overwritten" is incomplete.
+
 ### Remedy
 
-Three changes, smallest first. The first alone stops the destructive half.
+Three changes, smallest first. The first closes the *overwrite* sub-case only — see above for the
+sub-case it leaves fully open.
 
 1. **Refuse to overwrite an existing BEK row during restore.** A device that already holds a BEK is
-   not a fresh restore target. Kills step 4 with no format change and no new state.
+   not a fresh restore target. Kills step 4 with no format change and no new state. Does not help a
+   device with no BEK — see above.
 2. **Verify when the identity hasn't rotated; re-pair over UWB when it has — never skip.** See below;
    this is not a looser version of the ECDSA check, it is a second, different mechanism for the case
    the check cannot cover.
@@ -5833,13 +5865,16 @@ gate: an exception written for one state applied unconditionally instead of bein
 ### Guard
 
 `VaultBackupRoundTripTests` covers the honest round trip. Acceptance criteria here: a device holding
-a BEK must reject a restore that would replace it; on an unrotated identity, shards that fail
-signature verification must be refused; on a rotated identity, a returned shard must be trusted only
-once it arrives through a fresh UWB-authenticated re-pairing with that trustee, never on the
-signature or the GCM tag alone; and none of the above may produce a crash or a silent insert. Beyond
-bootstrap: a mismatch-handback arriving after recovery has already completed must be reconcilable
-rather than rejected outright, and a post-recovery redistribution to an already-known trustee must
-clear that trustee's stale shard rather than leaving it orphaned.
+a BEK must reject a restore that would replace it; **a device with no BEK must reject reconstruction
+from shards that did not arrive through an authenticated channel, exactly as an existing-BEK device
+would** — remedy 1's test alone is not sufficient, since it only exercises the population that already
+has a BEK; on an unrotated identity, shards that fail signature verification must be refused; on a
+rotated identity, a returned shard must be trusted only once it arrives through a fresh
+UWB-authenticated re-pairing with that trustee, never on the signature or the GCM tag alone; and none
+of the above may produce a crash or a silent insert. Beyond bootstrap: a mismatch-handback arriving
+after recovery has already completed must be reconcilable rather than rejected outright, and a
+post-recovery redistribution to an already-known trustee must clear that trustee's stale shard rather
+than leaving it orphaned.
 
 ---
 
