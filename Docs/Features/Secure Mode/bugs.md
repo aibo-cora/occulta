@@ -5731,11 +5731,86 @@ Three changes, smallest first. The first alone stops the destructive half.
 
 1. **Refuse to overwrite an existing BEK row during restore.** A device that already holds a BEK is
    not a fresh restore target. Kills step 4 with no format change and no new state.
-2. **Scope the `ownerIdentity: nil` exception instead of removing the check.** Verify whenever we
-   still hold the identity that signed the shards; skip only where it has demonstrably rotated.
-   Rotation is the case the exception was written for; the exception was applied to every case.
+2. **Verify when the identity hasn't rotated; re-pair over UWB when it has — never skip.** See below;
+   this is not a looser version of the ECDSA check, it is a second, different mechanism for the case
+   the check cannot cover.
 3. **Require explicit confirmation before an automatic import mutates the vault.** Bug 93 already
    establishes that this path runs unprompted on unlock.
+
+### Why remedy 2 can't just be "verify more strictly"
+
+Worth spelling out, because the natural first read of remedy 2 — check the signature whenever
+possible — undersells what the rotated branch actually needs.
+
+**A single shard cannot be authenticated in isolation, on either path.** `SignedAttribute.signature`
+is the *owner's* signature over the shard, made at `prepareBEKShards` time by whatever SE identity key
+existed on the device that split the BEK. Checking it needs that same key's public half. On an
+unrotated device, `retrieveIdentity()` returns it — the check is real and remedy 2's first half
+applies directly. **On a genuinely new device it does not, structurally, because SE keys are
+non-exportable and die with the device they were created on.** There is no looser version of an
+ECDSA check that recovers a public key which no longer exists anywhere reachable — tightening the
+check cannot help a device that has nothing to check against.
+
+The other candidate oracle doesn't help either. The GCM tag on the backup file is the only signal
+that survives rotation, but it operates on a **reconstructed group**, not a single share — Shamir
+shares are information-theoretically indistinguishable from random individually, which is what makes
+secret sharing work at all. So there is no per-shard test available on the new-device path, only a
+post-hoc one on the whole group (see Bug 95, which is what a forged share does to that group).
+
+**The rotated case needs a different kind of trust anchor, not a weaker version of the same one.**
+Occulta already has one, and it's the mechanism this project uses everywhere else a new identity key
+needs to be trusted: physical UWB proximity, established through the same key-exchange flow that
+creates a contact in the first place (`KeyExchange.swift`, gated on the UWB chip). A signature can be
+forged or coerced from a distance; presence in the same room in that moment cannot. The fix for the
+rotated branch is to require the owner to re-pair with each trustee over UWB — which both proves
+presence and re-establishes the owner's new identity key with that trustee — and to trust a returned
+shard only once it arrives through a channel authenticated that way. This is the same rule the
+project already applies to new device *identity* keys generally: a remote signature never vouches for
+a device on its own; physical exchange does. The BEK-shard-return path is the one place that rule
+was not applied, and `ownerIdentity: nil` is what let a remote signature attempt — and then
+concede — the job proximity was always meant to do.
+
+### The gate is too narrow even for the mechanism it already has
+
+Traced 2026-08-22, prompted by asking whether an owner-identity rotation could be closed out
+afterward by re-signing what trustees already hold. It can't be done in place — that would move the
+raw share value between devices again — but the trustee side already contains most of what a clean
+reissue needs, and two separate gaps stop it from finishing.
+
+**The trustee side already self-triggers on rotation.** `buildShardOperations` calls
+`mismatchHandbackOps(for:currentFP:)` with whatever fingerprint the trustee currently has on file for
+the owner. The moment a trustee re-pairs with the owner's new device — updating their own contact
+record — their *next ordinary outbound bundle* compares that fresh fingerprint against
+`CustodyShard.payload.ownerKeyFingerprint` (captured at original distribution), finds a mismatch, and
+offers the stale shard back as `.handback`, unprompted. This is not hypothetical machinery to build —
+it already runs.
+
+**Gap 1 — `handleHandback` only accepts a mismatch during an active restore.** Its guard is
+`vaultManager.pendingRestoreActive`. Once the owner has already recovered, that flag is false, so any
+*later* mismatch-handback — from a trustee who re-pairs after the fact, which is the ordinary case,
+since not every trustee is available at the moment of bootstrap — is hard-rejected with
+`CustodyError.signatureRejected`. There is no accept-and-reconcile path for a trustee returning a
+stale shard as routine hygiene outside the bootstrap window.
+
+**Gap 2 — `reconstructBEK` clears `shardMetadata: nil` on success**, so a freshly-recovered owner has
+no record of who held what. `distributeBEKShards`'s existing-vs-new-trustee split is keyed off that
+now-empty map, so every trustee reads as new, and redistribution issues plain `.distribute`. But
+`.distribute`'s handler (`ShardCustody+Manager.swift:115`) never calls `deleteMismatchShards` —
+**only `.replace`'s handler does** (`:171-176`). So the stale shard is never cleaned up by a
+post-recovery redistribution either.
+
+**Net effect: a trustee ends up holding both a valid new shard and a permanently orphaned old one,**
+offered back and rejected on every future exchange, with no exit. Beyond the clutter, a repeating
+rejected-handshake pattern between the same two identities is its own distinctive signal — worth
+weighing against this project's forensic-trace standard the same way B4 is.
+
+**The fix reuses machinery rather than adding a mechanism.** On post-recovery redistribution, pull
+each trustee's current manifest (which arrives unprompted, per above) and issue `.replace` naming
+that ID instead of defaulting to `.distribute` — that alone buys `.replace`'s existing cleanup for
+free. Gap 1 needs more thought: `handleHandback` needs a legitimate accept path outside
+`pendingRestoreActive`, scoped to "this ID is one I currently expect from this trustee" rather than
+"a restore happens to be in progress" — which pushes back on remedy 3's confirmation-gate design,
+since the accept condition can't simply be narrowed to a single global flag a second time.
 
 **Constraint on any fix touching the `.occbak` handler.** The extension is shared with the Secure
 Mode layer store by design — `forensic-trace-avoidance.md` **B4**, *"Vault backups use the same
@@ -5747,17 +5822,24 @@ surface a user-visible response to a file that fails the magic check.
 ### Why this shape recurred
 
 The rationale for `ownerIdentity: nil` is genuine — a new device's SE identity key has rotated, so
-old shards cannot verify against it. But the fix routed *around* that instead of scoping it: the
-check was removed for every device on the path, including those whose key never rotated. **A
-narrower rule preserves the new-device case and closes the rest.** This is the same failure mode as
-Bug 80's stranded `maxBundleVersion` and Bug 81's fail-closed gate — an exception written for one
-state applied unconditionally.
+old shards cannot verify against it, and no amount of stricter checking recovers a key that no longer
+exists. But the fix routed *around* the problem instead of solving the rotated case on its own terms:
+the check was removed for every device on the path, including those whose key never rotated, rather
+than being paired with a mechanism that actually covers rotation. **The unrotated case needs the
+existing check enforced; the rotated case needs a different anchor — UWB re-pairing — not a skipped
+one.** This is the same failure mode as Bug 80's stranded `maxBundleVersion` and Bug 81's fail-closed
+gate: an exception written for one state applied unconditionally instead of being scoped to it.
 
 ### Guard
 
 `VaultBackupRoundTripTests` covers the honest round trip. Acceptance criteria here: a device holding
-a BEK must reject a restore that would replace it; shards that fail verification against a
-still-present identity key must be refused; and neither must produce a crash or a silent insert.
+a BEK must reject a restore that would replace it; on an unrotated identity, shards that fail
+signature verification must be refused; on a rotated identity, a returned shard must be trusted only
+once it arrives through a fresh UWB-authenticated re-pairing with that trustee, never on the
+signature or the GCM tag alone; and none of the above may produce a crash or a silent insert. Beyond
+bootstrap: a mismatch-handback arriving after recovery has already completed must be reconcilable
+rather than rejected outright, and a post-recovery redistribution to an already-known trustee must
+clear that trustee's stale shard rather than leaving it orphaned.
 
 ---
 
