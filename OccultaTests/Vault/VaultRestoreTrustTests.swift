@@ -5,17 +5,15 @@
 //  Bug 94 — the restore path lets attacker-supplied material authenticate itself.
 //  Bug 96 — traps and unbounded growth on the same path.
 //
-//  Written before the fix. Needs no Secure Enclave: `TestKeyManager` supplies the vault
-//  key and the recovery buffer key, so every test here runs anywhere.
+//  Needs no Secure Enclave: `TestKeyManager` supplies the vault key and the recovery
+//  buffer key, so every test here runs anywhere.
 //
-//  ── Why some tests are `.disabled` rather than `withKnownIssue` ─────────────────────
-//
-//  `withKnownIssue` records a *failure*. Bug 96's two defects are **traps**, not throws:
-//  `UInt8(300)` and `UInt64(-1.0)` crash the process, and a crash is not an issue Swift
-//  Testing can record — it takes the whole run with it, reporting the disguised green
-//  "Executed 0 tests" that CLAUDE.md documents for `Manager.Key` in `setUpWithError`.
-//  So those two are written, reviewable, and switched off. **Enable them in the same
-//  commit as the fix**; they must fail-by-throwing before they can be trusted to pass.
+//  Bug 96's two trap tests were originally written `.disabled` rather than wrapped in
+//  `withKnownIssue`: `UInt8(300)` and `UInt64(-1.0)` crash the process rather than throw,
+//  and a crash is not an issue Swift Testing can record — it takes the whole run with it,
+//  reporting the disguised green "Executed 0 tests" that CLAUDE.md documents for
+//  `Manager.Key` in `setUpWithError`. Both traps are fixed now (guards in `importBackup`,
+//  ahead of the conversions that used to crash) and the tests run as ordinary assertions.
 //
 
 import Testing
@@ -251,8 +249,7 @@ struct VaultRestoreRobustnessTests {
 
     /// `VaultEntryType(rawValue: UInt8(backupEntry.entryType))` — the `?? .note` guards
     /// the `rawValue:` lookup, but `UInt8(_: Int)` traps first on anything outside 0...255.
-    @Test("An out-of-range entryType is rejected, not trapped",
-          .disabled("Traps today (UInt8(300)) and would take the whole run with it — enable with the fix"))
+    @Test("An out-of-range entryType is rejected, not trapped")
     func outOfRangeEntryTypeThrows() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
@@ -273,8 +270,7 @@ struct VaultRestoreRobustnessTests {
     /// `VaultEntry.aad(for:)` does `UInt64(self.createdAt.timeIntervalSince1970)`, which
     /// traps on any date before 1970. The fix belongs at import: `aad` is read by every
     /// vault path, and changing its byte layout would strand every existing entry.
-    @Test("A pre-1970 createdAt is rejected, not trapped",
-          .disabled("Traps today (UInt64 of a negative Double) — enable with the fix"))
+    @Test("A pre-1970 createdAt is rejected, not trapped")
     func preEpochCreatedAtThrows() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }

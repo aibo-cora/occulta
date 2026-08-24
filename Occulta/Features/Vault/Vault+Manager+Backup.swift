@@ -254,8 +254,25 @@ extension VaultManager {
             // restore (e.g. app crash after some entries were saved but before file cleanup).
             if (try? self.fetchEntry(by: backupEntry.id)) != nil { continue }
 
-            let entryType   = VaultEntryType(rawValue: UInt8(backupEntry.entryType)) ?? .note
+            // UInt8(_: Int) traps outside 0...255 — VaultEntryType(rawValue:) is the safe
+            // conversion, but only once the Int is known to fit. Anything that doesn't isn't
+            // a future version's entry type, it's malformed.
+            guard let entryTypeRaw = UInt8(exactly: backupEntry.entryType) else {
+                throw BackupError.invalidFormat
+            }
+            let entryType   = VaultEntryType(rawValue: entryTypeRaw) ?? .note
             let labelString = String(data: backupEntry.label, encoding: .utf8) ?? ""
+
+            // UInt64(_: Double) traps outside its representable range — negative (pre-1970)
+            // or large enough to overflow. aad(for:) does this exact conversion and cannot be
+            // changed to guard it (sealed contract, see its doc comment), so the check has to
+            // happen here, before createdAt is ever assigned. A plain range check rather than
+            // UInt64(exactly:) — the latter requires exact integer representability, which
+            // would reject every legitimate sub-second timestamp along with the bad ones.
+            let createdAtSeconds = backupEntry.createdAt.timeIntervalSince1970
+            guard createdAtSeconds >= 0, createdAtSeconds < Double(UInt64.max) else {
+                throw BackupError.invalidFormat
+            }
 
             // Build the entry with the original id and createdAt so that AAD is
             // consistent with the original device and entry history is preserved.
