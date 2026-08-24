@@ -225,6 +225,39 @@ struct VaultRestoreTrustTests {
             exists for, and its failure mode is discovered only when the device is gone.
             """)
     }
+
+    /// The consequence of remedy 1 that motivated it: on an existing-BEK device, every group
+    /// `reconstructBEK` sees now fails immediately via `bekAlreadyPresent` — so the "success"
+    /// branch that clears `pendingRestoreActive` and deletes the restore files can never run.
+    /// Without the early check in `attemptBEKRestore`, a single hostile `.occbak` would leave
+    /// the device permanently in "restoring" state: the banner never clears, and every future
+    /// shard arrival keeps appending to a file nothing will ever read successfully again.
+    @Test("A hostile restore on an existing-BEK device cleans itself up, not stalls forever")
+    func existingBEKRestoreDoesNotStallForever() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let victim   = try makeBackupReadyVault()
+        let attacker = try makeBackupReadyVault()
+        let attackerBackup = try attacker.vault.exportBackup()
+
+        try victim.vault.storePendingRestore(attackerBackup)
+        try victim.vault.storeRestoreShard(attacker.shards[0])
+        #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
+        #expect(victim.vault.pendingRestoreShardCount == 1)
+
+        victim.vault.attemptBEKRestore()
+
+        #expect(!victim.vault.pendingRestoreActive, """
+            pendingRestoreActive is stuck true — every future unlock will retry against a \
+            file that can never succeed, and the "Restoring your vault" banner never clears.
+            """)
+        #expect(victim.vault.pendingRestoreShardCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: pendingRestoreURL.path),
+                "the pending .occbak must be removed, not retried forever")
+        #expect(!FileManager.default.fileExists(atPath: pendingRestoreShardsURL.path),
+                "the shard file must be removed — nothing will ever clear it otherwise")
+    }
 }
 
 // MARK: - Bug 96
@@ -293,14 +326,22 @@ struct VaultRestoreRobustnessTests {
     /// fresh UUID each time. The file is re-encoded and rewritten on every call and fully
     /// decoded on every unlock, so growth is both unbounded and quadratic.
     ///
-    /// Pins only that *a* bound exists — the value is the fix's choice. Any cap near a
-    /// realistic trustee count (single digits; threshold ≥ 2) sits far below this ceiling.
-    @Test("The restore-shard file does not grow without bound")
+    /// **Scoped to a fresh, no-BEK vault deliberately.** On an existing-BEK device, the early
+    /// check added to `attemptBEKRestore` bounds this to roughly one shard per arming cycle in
+    /// real usage — `acceptReturnedShard` calls it immediately after every `storeRestoreShard`
+    /// — so this test would no longer reflect production behaviour if run against
+    /// `makeBackupReadyVault()`. The no-BEK population has no equivalent early-out (there is no
+    /// BEK to detect), so growth there is still genuinely unbounded — but a realistic attack
+    /// costs the attacker real inbound-bundle volume for modest payoff (300 shards ≈ 1s to
+    /// store; this is a nice-to-have hardening item, not an urgent one). Pins only that *a*
+    /// bound exists — the value is the fix's choice. Any cap near a realistic trustee count
+    /// (single digits; threshold ≥ 2) sits far below this ceiling.
+    @Test("The restore-shard file does not grow without bound, on a device that still needs one")
     func restoreShardFileIsBounded() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
 
-        let victim   = try makeBackupReadyVault()
+        let victim   = try makeFreshVault()
         let attempts = 300
 
         for i in 0..<attempts {

@@ -5647,6 +5647,19 @@ touching Shamir, GCM, or `persistBEKPayload` whenever a BEK row already exists, 
 confirmation) remain open** — the population with no BEK yet, "the other population" below, is
 still fully exposed; that is the larger remaining risk, not a residual edge case.
 
+**A consequence of remedy 1, found and closed the same day.** Every group `reconstructBEK` sees
+on an existing-BEK device now fails immediately via `bekAlreadyPresent` — so the "success" branch
+in `attemptBEKRestore` that clears `pendingRestoreActive` and deletes the restore files can never
+run. Without a further change, one hostile `.occbak` would leave the device stuck in "restoring"
+state permanently: the banner never clears (Bug 93's surface), and every future shard arrival
+keeps appending to a file nothing can ever read successfully again (Bug 96's growth item).
+`attemptBEKRestore` now checks for an existing BEK *before* touching the shard file at all, and
+if one exists, clears `pendingRestoreActive` and deletes both restore files immediately rather
+than letting every group fail one at a time. Because `acceptReturnedShard` calls
+`attemptBEKRestore()` synchronously right after every `storeRestoreShard()`, this bounds growth
+on an existing-BEK device to roughly one shard per arming cycle in real usage — see Bug 96's
+entry for what this does and does not resolve there.
+
 **Target:** unset. **Independent of Bugs 88, 92 and 93** — those are about depth. This one survives
 all three being fixed.
 
@@ -6022,7 +6035,7 @@ entry. **Item 1 (the two traps) is fixed** — `importBackup` now range-checks `
 Two of these need the BEK to reach. Bug 94 hands an attacker the BEK, so they should be read as
 amplifiers of it rather than as independently gated.
 
-### 1 — Two traps reachable from decoded backup content
+### 1 — Two traps reachable from decoded backup content — **fixed 2026-08-24**
 
 `importBackup` (`Vault+Manager+Backup.swift:255`):
 
@@ -6050,7 +6063,7 @@ choose a **permanent crash on every vault unlock** in place of the entry injecti
 Fix: validate the `Int` range before converting, and reject a non-representable `createdAt` at
 import rather than at AAD construction.
 
-### 2 — Unbounded shard file and unbounded group count
+### 2 — Unbounded shard file and unbounded group count — **narrowed 2026-08-24, and downgraded to nice-to-have**
 
 `storeRestoreShard` deduplicates by `SignedAttribute.id` only, and the attacker picks fresh UUIDs:
 
@@ -6062,7 +6075,30 @@ The file grows without limit, is fully read, GCM-opened and JSON-decoded on ever
 distinct attacker-chosen `entryID` creates another group to run Shamir plus GCM against.
 `storePendingRestore` likewise accepts a file of any size and writes it to Application Support.
 
-Fix: cap the shard count and the file size, both well above any legitimate trustee count.
+**Resolved for the existing-BEK population, as a side effect of Bug 94's remedy 1.** Every group on
+that population now fails immediately via `bekAlreadyPresent`, and `attemptBEKRestore` checks for
+that up front rather than letting the shard file grow while every group fails one at a time — see
+Bug 94's entry. Because `acceptReturnedShard` calls `attemptBEKRestore()` synchronously right after
+`storeRestoreShard()`, real-world growth on that population is now bounded to roughly one shard per
+arming cycle, not a numeric cap.
+
+**Still open for the no-BEK population**, which has no equivalent early-out — there is no BEK to
+detect, and that device may legitimately need shards trickling in from real trustees over time, so
+there is no way to distinguish "not enough shards yet" from "never going to get enough" the way the
+existing-BEK case can. A count cap remains the only cheap defense there until Bug 94 remedy 2
+(trustee attestation) lands.
+
+**Downgraded from "fix" to "nice to have," on reconsideration of actual cost.** The original framing
+overstated urgency: reaching a size that meaningfully hurts (multi-second stalls, real memory
+pressure) needs several orders of magnitude beyond what one reproduction test showed (300 forged
+shards ≈ 1 second to store) — and getting there requires the attacker to deliver that many *distinct
+inbound bundles* through the ordinary messaging pipeline, which has its own cost on both ends and is
+a pre-existing, general flood surface this fix would not touch regardless of what the bundles
+contain. A cap here still costs nothing to add and is still worth doing, but it is not the
+same order of urgency as the trap fixes were, and should not be prioritized as if it were.
+
+`storePendingRestore` accepting a file of unbounded size is unaffected by any of the above and
+remains open — a separate concern from the shard-count question.
 
 ### 3 — The entire vault plaintext is left in freed heap on export
 

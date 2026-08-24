@@ -611,8 +611,25 @@ extension VaultManager {
     /// `AES.GCM` authentication inside `reconstructBEK` is the oracle — the
     /// correct group decrypts successfully; all others throw. Runs silently
     /// when not enough shards are present. Requires vault to be unlocked.
+    ///
+    /// Checks for an existing BEK before touching the shard file at all (Bug 94 remedy 1
+    /// would refuse every group anyway, at the `reconstructBEK` level) — because that
+    /// per-group refusal has no path back to the cleanup below. A device that already has
+    /// a BEK can never reach the success branch, so without this check `pendingRestoreActive`
+    /// would stay stuck true forever, and the shard file would keep accepting new entries on
+    /// every arrival with nothing left to ever clear it (Bug 96).
     func attemptBEKRestore() {
         guard self.isUnlocked, self.pendingRestoreActive else { return }
+
+        if let vaultKey = try? self.currentKey(),
+           (try? self.fetchDecodedBEK(vaultKey: vaultKey)) != nil {
+            try? FileManager.default.removeItem(at: Self.pendingRestoreShardsURL)
+            try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
+            self.pendingRestoreActive     = false
+            self.pendingRestoreShardCount = 0
+            return
+        }
+
         guard let backupData = try? Data(contentsOf: Self.pendingRestoreURL) else { return }
         guard let shards     = try? self.loadRestoreShards(), !shards.isEmpty else { return }
 
