@@ -6149,8 +6149,12 @@ be — and the discipline as written promises more than it delivers.
 
 ## Bug 97 — Depth-field backfills stamp deleted rows with current-key material, the exact pattern rejected elsewhere in this file
 
-**Status:** **Open.** Filed 2026-08-22, confirming a note carried since Bug 89 rather than acting on
-it unverified. Re-checked against current code before filing.
+**Status:** **Fixed 2026-08-24.** Filed 2026-08-22, confirming a note carried since Bug 89 rather than
+acting on it unverified. Re-checked against current code before filing. All three predicates now
+carry `&& $0.deletionToken == nil`, matching the remedy exactly. `scrubbedStamp`'s doc comment
+(`PQmigration.swift:467`) — the one this entry quoted as evidence — is updated to record the gap as
+historical rather than live. `DeletedRowBackfillExclusionTests` covers the exclusion, the still-works
+case for live rows, and composition with Bug 89's scrub.
 
 **Target:** unset. Sibling to Bug 89 (closed) — that fixed the *classifier* left behind by legacy
 lengths; this is a *live* backfill still writing fresh stamps onto deleted rows on every launch.
