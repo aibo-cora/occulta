@@ -6000,3 +6000,138 @@ be — and the discipline as written promises more than it delivers.
   `backup-export-meta.dat`, and the `vault.postRestoreActionNeeded` `UserDefaults` key. Contents are
   sealed; names and existence are not. `backup-export-meta.dat`'s mere presence proves an export was
   performed on this device.
+
+
+---
+
+## Bug 97 — Depth-field backfills stamp deleted rows with current-key material, the exact pattern rejected elsewhere in this file
+
+**Status:** **Open.** Filed 2026-08-22, confirming a note carried since Bug 89 rather than acting on
+it unverified. Re-checked against current code before filing.
+
+**Target:** unset. Sibling to Bug 89 (closed) — that fixed the *classifier* left behind by legacy
+lengths; this is a *live* backfill still writing fresh stamps onto deleted rows on every launch.
+
+### Severity: Medium (forensic trace)
+
+No user action needed — the three backfills below run unconditionally on every launch, per their
+own doc comments (`PQmigration.swift:95-116`).
+
+### What happens
+
+`migrateSafeContactVisibilityBackfill`, `migrateGlobalTrusteeDepthBackfill`, and the sibling for
+`originDepth` (`PQmigration.swift:105`, `:126`, `:147`) each match purely on the field being `nil`:
+
+```swift
+let descriptor = FetchDescriptor<Contact.Profile>(
+    predicate: #Predicate { $0.visibleThroughDepth == nil }
+)
+…
+for contact in contacts {
+    contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
+}
+```
+
+No `deletionToken == nil` filter. A soft-deleted row whose depth field happens to be `nil` — plausible
+for anything deleted before the "never nil" creation-time invariant existed — gets sealed with a
+**fresh value under the current key** by ordinary backfill logic, indistinguishable from a live
+contact's stamp being written.
+
+`migrateScrubDeletedDepthStamps`'s own doc comment already names this precisely
+(`PQmigration.swift:458`): *"a deleted row can legitimately have one stamp readable and the others
+stranded, because the backfills do not filter `deletionToken`"* — the fix for Bug 89 was written
+knowing this, and scoped around it rather than closing it, because the scrub only touches rows *after*
+this has already happened, once. It does not stop it happening again on the next contact deleted with
+a `nil` stamp.
+
+### Why this is the pattern already rejected here
+
+Directly contradicts a design decision made earlier in this same file, for the same class of field:
+*"I don't like the idea of encrypting any field with current key of profiles that have been
+stranded. It smells like a tell"* — the reasoning behind Bug 88's keyless-filler remedy. A deleted
+row's neighbours (its other fields) don't decrypt under the current key; a fresh current-key stamp on
+one field of that row is exactly the asymmetry that reasoning was written to avoid. The backfills
+predate that design conversation and were never revisited against it.
+
+### Remedy
+
+Add `deletionToken == nil` to each of the three predicates. A deleted row with a `nil` depth field
+should be left for `migrateScrubDeletedDepthStamps` to handle — keyless random bytes at the uniform
+length, which is already the correct answer for exactly this state, per Bug 89's fix.
+
+### Guard
+
+None of `DepthCodecTests`, `DeletedDepthStampScrubTests`, or `MigrateToV2ResilienceTests` construct a
+deleted row with a nil depth field ahead of the backfill pass — the gap has no reproduction yet.
+
+---
+
+## Bug 98 — The field-coverage tripwire is two different strengths, and the class of bug it exists to catch has no coverage at all
+
+**Status:** **Open.** Filed 2026-08-22, confirming a note carried since the Bug 76/77 tripwire work
+rather than acting on it unverified.
+
+**Target:** unset.
+
+### Severity: Low (process gap — nothing is exploitable, a future addition could ship unreviewed)
+
+### What happens
+
+`EncryptedFieldCoverageTests.swift` documents its own history at the top of the file: *"previously
+the tripwire was silenced by adding a name to a list… now an entry must carry a key path and a probe
+value, so silencing the tripwire is the same [cost as fixing it]."* That upgrade — from a bare name
+list to the `probes`/`unprobedFields` table — was applied to `Contact.Profile` and `AppLayerConfig`
+as of 2026-08-16. It was not applied everywhere the file has a tripwire.
+
+**`Group`'s tripwire is still the old form** (`:409-416`):
+
+```swift
+@Test("Group has no unreviewed stored properties", .enabled(if: secureEnclaveAvailable()))
+func groupPropertiesReviewed() throws {
+    let expected: Set<String> = [
+        "encryptedID", "encryptedName", "encryptedCreatedAt",
+        "realMemberSlots", "duressMemberSlots", "deeperMemberSlots",
+    ]
+    #expect(storedPropertyNames(of: try Group(name: "probe")) == expected, "\(tripwireGuidance)")
+}
+```
+
+A new stored property is caught, but the fix the test invites is adding its name to `expected` — no
+proof that the field was actually classified for rotation, unlike the table-driven form.
+
+**`Message.Draft`'s tripwire is the same weaker form** (`:421-434`), and its own doc comment already
+names the limit: *"Its fields were never stranded by a field omission — the whole model was skipped
+by one of the two rotation paths — so this tripwire would not have caught that bug."* Correct, and
+also true of `Group`'s: a name-list tripwire catches an added field, not a field routed to the wrong
+handling.
+
+**`VaultEntry` has no coverage test in this file at all.** No `vaultEntryPropertiesReviewed`, no
+name list, nothing — confirmed by absence, not by a weaker form. This is the model where the
+consequence is most concrete: `visibleThroughDepth` on `Contact.Profile` is exactly the field family
+Bugs 85, 87 and 89 were about, and `VaultEntry.visibleThroughDepth` (`Vault+Model.swift:194`) is the
+same hazard on the sibling model. Bug 87's fix added rotation-composition tests for the existing
+field; nothing would flag a *new* `VaultEntry` stored property that needs the same scrutiny.
+
+`Contact.Draft`'s absence is already recorded — Bug 91's remedy proposes the table-driven form for
+it specifically. This entry is about the three gaps Bug 91 does not cover: `Group`, `Message.Draft`,
+and `VaultEntry`.
+
+### Remedy
+
+1. Port `Group` and `Message.Draft` to the `probes`/`unprobedFields` table form, matching
+   `Contact.Profile` and `AppLayerConfig`.
+2. Add the same coverage for `VaultEntry`.
+
+Not a design question — the pattern exists twice already; this is applying it to what it was left
+off of.
+
+### Checked and not filed alongside this
+
+Three functions named `randomBytes` exist (`AppLayerConfig+Model.swift:431`,
+`IdentityChallenge+Manager.swift:520`, `Passphrase+Manager.swift:93`). Read side by side, they are
+not the same function under three names: one is deliberately non-throwing
+(`SystemRandomNumberGenerator`, with a comment explaining why the call site cannot cascade a throw),
+one throws on `SecRandomCopyBytes` failure, and one falls back to `SystemRandomNumberGenerator`
+silently rather than throwing. Three different failure-handling contracts for three different call
+sites — consolidating them would be a behavioural decision, not a naming cleanup, so this is not
+filed as a bug.
