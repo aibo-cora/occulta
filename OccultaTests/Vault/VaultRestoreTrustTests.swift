@@ -120,8 +120,8 @@ struct VaultRestoreTrustTests {
     ///
     /// `attemptBEKRestore` passes `ownerIdentity: nil`, so the GCM tag is the only check —
     /// and it only proves the shards match the file. Here the *same* party produced both,
-    /// so the tag proves nothing about whose backup this is. Reconstruction succeeds, and
-    /// `persistBEKPayload` is delete-and-replace.
+    /// so the tag proves nothing about whose backup this is. Remedy 1 (`reconstructBEK`'s
+    /// step 0) refuses before any of that runs, purely because the victim already has a row.
     @Test("A foreign backup and its own shards must not replace an existing BEK")
     func foreignShardsCannotReplaceExistingBEK() throws {
         clearRestoreFiles()
@@ -138,25 +138,27 @@ struct VaultRestoreTrustTests {
         // Nothing here is forged — it is simply not the victim's.
         let attackerBackup = try attacker.vault.exportBackup()
 
-        try? victim.vault.reconstructBEK(
-            shards:        attacker.shards,
-            backupData:    attackerBackup,
-            ownerIdentity: nil
-        )
-
-        let victimBEKAfter = try? bekBytes(of: victim.vault)
-
-        withKnownIssue("Bug 94: reconstructBEK overwrites an existing BEK with no owner binding") {
-            #expect(victimBEKAfter == victimBEKBefore, """
-                The victim's BEK was replaced by one reconstructed from a stranger's shards. \
-                Every backup file sealed under the old key is now permanently unrestorable, \
-                and the trustees' real shards reconstruct a key that matches nothing.
-                """)
+        #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
+            try victim.vault.reconstructBEK(
+                shards:        attacker.shards,
+                backupData:    attackerBackup,
+                ownerIdentity: nil
+            )
         }
+
+        let victimBEKAfter = try bekBytes(of: victim.vault)
+        #expect(victimBEKAfter == victimBEKBefore, """
+            The victim's BEK was replaced by one reconstructed from a stranger's shards. \
+            Every backup file sealed under the old key is now permanently unrestorable, \
+            and the trustees' real shards reconstruct a key that matches nothing.
+            """)
     }
 
     /// The second half of the same harm: once the BEK has been replaced, `importBackup`
     /// decrypts the attacker's file with it and inserts their rows into the user's vault.
+    /// With remedy 1 in place, `reconstructBEK` never gets far enough to replace anything,
+    /// so `importBackup` is never even reached on this path — asserted directly below rather
+    /// than via `attemptBEKRestore`, since that already stops calling it once the first throws.
     @Test("A foreign backup's entries must not be inserted into an existing vault")
     func foreignEntriesAreNotInserted() throws {
         clearRestoreFiles()
@@ -170,20 +172,25 @@ struct VaultRestoreTrustTests {
 
         let attackerBackup = try attacker.vault.exportBackup()
 
-        try? victim.vault.reconstructBEK(shards: attacker.shards,
-                                         backupData: attackerBackup, ownerIdentity: nil)
-        try? victim.vault.importBackup(attackerBackup)
+        #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
+            try victim.vault.reconstructBEK(shards: attacker.shards,
+                                            backupData: attackerBackup, ownerIdentity: nil)
+        }
+        // importBackup still decrypts with whatever BEK is installed — the victim's own,
+        // unchanged — so the attacker's ciphertext must fail to open at all, not just fail
+        // to name the entry "planted".
+        #expect(throws: VaultManager.BackupError.decryptionFailed) {
+            try victim.vault.importBackup(attackerBackup)
+        }
 
         let labels = try ModelContext(victim.container)
             .fetch(FetchDescriptor<VaultEntry>())
             .compactMap { try? victim.vault.decryptLabelPayload(for: $0).label }
 
-        withKnownIssue("Bug 94: import inserts a stranger's entries once their BEK is installed") {
-            #expect(!labels.contains("planted"), """
-                A stranger's vault entry was inserted into the user's vault. Labels now: \
-                \(labels.sorted()).
-                """)
-        }
+        #expect(!labels.contains("planted"), """
+            A stranger's vault entry was inserted into the user's vault. Labels now: \
+            \(labels.sorted()).
+            """)
     }
 
     /// **The regression guard, and the reason it outranks the two above.**

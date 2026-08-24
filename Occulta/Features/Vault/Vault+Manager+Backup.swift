@@ -34,6 +34,8 @@ extension VaultManager {
         case encryptionFailed
         /// Shamir reconstruction or shard validation failed.
         case bekReconstructionFailed
+        /// A BEK row already exists — this device is not a fresh restore target.
+        case bekAlreadyPresent
     }
 
     // MARK: - Wire format constants
@@ -414,6 +416,8 @@ extension VaultManager {
     /// and re-wrap under the current vault key.
     ///
     /// Steps:
+    ///   0. Refuse if a BEK row already exists — this device is not a fresh restore
+    ///      target, and reconstruction only ever fires automatically (Bug 94).
     ///   1. Verify all shards share a single distributionID.
     ///   2. If `ownerIdentity` is provided, ECDSA-verify each shard.
     ///      Pass nil on new-device path (old key non-migratable); GCM tag substitutes.
@@ -429,6 +433,10 @@ extension VaultManager {
         ownerIdentity: Data?
     ) throws {
         let vaultKey = try self.currentKey()
+
+        guard try self.fetchDecodedBEK(vaultKey: vaultKey) == nil else {
+            throw BackupError.bekAlreadyPresent
+        }
 
         let entryIDs = Set(shards.compactMap { $0.entryID })
         guard entryIDs.count == 1, let distributionID = entryIDs.first else {
