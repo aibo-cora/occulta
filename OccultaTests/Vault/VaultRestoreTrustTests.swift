@@ -249,6 +249,56 @@ struct VaultRestoreTrustTests {
         #expect(!victim.vault.pendingRestoreActive)
     }
 
+    /// The third outcome of the two-signal check, and the baseline the two refusal tests
+    /// are measured against: neither signal is true, so the call must succeed silently.
+    @Test("storePendingRestore accepts a genuinely new file when nothing is pending or done")
+    func storePendingRestoreAcceptsAGenuinelyNewFile() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+
+        #expect(FileManager.default.fileExists(atPath: pendingRestoreURL.path))
+        #expect(fresh.vault.pendingRestoreActive)
+    }
+
+    /// Found while writing this test: the original ordering wrote the second file's bytes
+    /// to disk *before* checking whether one was already pending, then threw afterward — so
+    /// a second, different `.occbak` silently replaced a genuine in-flight restore while the
+    /// caller saw the same reassuring `alreadyProcessed`. Fixed to check-then-refuse,
+    /// symmetric with the BEK-exists branch above. Asserts both halves: the throw, and that
+    /// the original bytes on disk are untouched by the second call.
+    @Test("storePendingRestore refuses a second file without overwriting the one already pending")
+    func storePendingRestoreRefusesWithoutOverwritingWhenAlreadyPending() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let firstOwner  = try makeBackupReadyVault()
+        let secondOwner = try makeBackupReadyVault()
+        let firstBackup  = try firstOwner.vault.exportBackup(currentDepth: 0)
+        let secondBackup = try secondOwner.vault.exportBackup(currentDepth: 0)
+        #expect(firstBackup != secondBackup,
+                "the two backups must actually differ for this test to mean anything")
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(firstBackup, currentDepth: 0)
+
+        #expect(throws: VaultManager.BackupError.alreadyProcessed) {
+            try fresh.vault.storePendingRestore(secondBackup, currentDepth: 0)
+        }
+
+        let onDisk = try Data(contentsOf: pendingRestoreURL)
+        #expect(onDisk == firstBackup, """
+            The second call overwrote the genuinely pending restore with a different file's \
+            bytes before throwing — the caller sees "already processed" as if nothing changed, \
+            while the recovery target was silently replaced underneath it.
+            """)
+    }
+
     /// The consequence of remedy 1 that motivated it: on an existing-BEK device, every group
     /// `reconstructBEK` sees now fails immediately via `bekAlreadyPresent` — so the "success"
     /// branch that clears `pendingRestoreActive` and deletes the restore files can never run.

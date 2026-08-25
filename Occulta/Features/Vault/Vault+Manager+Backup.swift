@@ -642,11 +642,15 @@ extension VaultManager {
     /// the same honest `alreadyProcessed`, so the signal is never a lie and needs no new
     /// persisted history to stay truthful. See Bug 93, "The design, settled".
     ///
-    /// If a BEK already exists there is nothing to arm — refuses before writing anything.
-    /// Otherwise the file is always written (so a later depth-0 unlock can still act on
-    /// it), and `pendingRestoreActive`/`pendingRestoreShardCount` are only ever set at
-    /// depth 0 — above that, published state stays whatever `refreshPendingRestoreState`
-    /// already forced it to.
+    /// If a BEK already exists, or a restore is already pending, there is nothing to arm —
+    /// refuses before writing anything in either case. A second file must never overwrite
+    /// a genuine restore that is already in flight: the caller sees the same honest
+    /// `alreadyProcessed` either way, but silently replacing already-pending recovery
+    /// material with a second file's bytes (attacker-supplied or not) would be a real
+    /// change of what completes, hidden behind a message that claims nothing changed.
+    /// `pendingRestoreActive`/`pendingRestoreShardCount` are only ever set at depth 0 —
+    /// above that, published state stays whatever `refreshPendingRestoreState` already
+    /// forced it to.
     func storePendingRestore(_ data: Data, currentDepth: Int) throws {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
 
@@ -654,15 +658,16 @@ extension VaultManager {
         let alreadyHasBEK  = vaultKey.flatMap { try? self.fetchDecodedBEK(vaultKey: $0) } != nil
         guard !alreadyHasBEK else { throw BackupError.alreadyProcessed }
 
-        let alreadyPending = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
+        guard !FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path) else {
+            throw BackupError.alreadyProcessed
+        }
+
         try data.write(to: Self.pendingRestoreURL, options: [.atomic, .completeFileProtection])
 
         if currentDepth == 0 {
             self.pendingRestoreActive     = true
             self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
         }
-
-        if alreadyPending { throw BackupError.alreadyProcessed }
     }
 
     /// Append one incoming BEK shard to the restore-shard file. Deduplicates by id.
