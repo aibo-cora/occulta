@@ -4897,11 +4897,13 @@ metadata about it), but reachable by ordinary use of a shipped, user-facing feat
 corruption precondition, and it hands the coercer a portable, permanent copy rather than a
 transient on-screen view.
 
-### What happens
+### What happens, as originally found — export half fixed 2026-08-24, import half unchanged
 
-**Export ignores depth entirely.** `exportBackup()` (`Vault+Manager+Backup.swift:160`) calls
-`fetchAllEntries()` (`Vault+Manager.swift:260`), an unfiltered fetch with no `visibleThroughDepth`
-predicate and no reference to `currentDepth`. It decrypts and serializes every entry:
+**Export ignored depth entirely.** `exportBackup()` called `fetchAllEntries()`
+(`Vault+Manager.swift:270`), an unfiltered fetch with no `visibleThroughDepth`
+predicate and no reference to `currentDepth`. It decrypted and serialized every entry — this code
+no longer exists; `exportBackup(currentDepth:)` (`Vault+Manager+Backup.swift:176`) now filters via
+`entriesVisible(atDepth:)` instead, per remedy 4 below. Kept here as the original finding:
 
 ```swift
 let entries = try self.fetchAllEntries()
@@ -4931,9 +4933,9 @@ duress views"*) — the export path simply never asks.
 `VaultBackupEntry` (`Vault+Manager+Backup.swift:56-62`) doesn't even have a field for it, so the
 classification isn't just unfiltered, it's unrepresentable in the backup format.
 
-**Import erases depth classification on the way back in.** `importBackup()`
-(`Vault+Manager+Backup.swift:231-294`) builds a fresh `VaultEntry` per restored row and sets `id`
-and `createdAt` from the backup, but never touches `visibleThroughDepth`:
+**Import erases depth classification on the way back in — still true today.**
+`importBackup(_ data: Data)` (`Vault+Manager+Backup.swift:264-345`) builds a fresh `VaultEntry` per
+restored row and sets `id` and `createdAt` from the backup, but never touches `visibleThroughDepth`:
 
 ```swift
 let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
@@ -4997,16 +4999,27 @@ they think, silently. The export screen should say what it captured — "12 entr
 rather than letting "backup" be read as "everything".
 
 **The import half is live, and its caller is not the UI.** Checked 2026-08-22. `importBackup` has one
-production caller — `attemptBEKRestore()` (`Vault+Manager+Backup.swift:608`) — reached from
-`unlock(context:)` (`Vault+Manager.swift:175`) and from `acceptReturnedShard`
-(`Vault+Manager+ReturnBuffer.swift:85`). So the import defect is not latent behind an unshipped
-screen: it runs **automatically on every vault unlock** once shard recovery reaches threshold, which
-is the primary way entries come back after a lost device.
+production caller — `attemptBEKRestore(currentDepth:)` (`Vault+Manager+Backup.swift:712`) — reached
+from `unlock(context:currentDepth:)` (`Vault+Manager.swift:167`) and from
+`acceptReturnedShard(_:currentDepth:)` (`Vault+Manager+ReturnBuffer.swift:38`). So the import defect
+is not latent behind an unshipped screen: it runs **automatically on every vault unlock** once shard
+recovery reaches threshold, which is the primary way entries come back after a lost device.
 
-That breaks the "stamp with M" rule for this path, because nobody chose M — it is whatever depth the
-unlock happened to land in. **Bug 93 covers it**, and the import half of this bug cannot be
-implemented without it: the deferral it specifies is what makes "stamp with the current depth" safe
-to apply to the automatic path. Do the export half independently; gate the import half on 93.
+That broke the "stamp with M" rule for this path, because nobody chose M — it was whatever depth the
+unlock happened to land in. **Bug 93 covered it, and is now fixed (2026-08-25, all four harms):**
+`attemptBEKRestore` defers completion to depth 0 and never fires with any other value, so "stamp
+with the current depth" is now safe on the automatic path — the gate this paragraph describes is
+lifted; see the Status line above. The export half was done independently, as planned here; the
+import half is what's left.
+
+**The import fix itself, worked out 2026-08-25, not yet built:** one line, mirroring what `addEntry`
+already does (`Vault+Manager.swift:223`) — `entry.visibleThroughDepth =
+try DepthCodec.encode(currentDepth).encrypt()`, added right after `entry.createdAt` is set inside
+`importBackup`'s per-entry loop. `importBackup(_ data: Data)` needs a `currentDepth: Int` parameter,
+no default, to have something to stamp with — its one call site (`attemptBEKRestore`, above) already
+has `currentDepth == 0` in scope by the time it gets there, asserted two lines earlier by its own
+guard. `importRestoresDepthCeiling` (see below) already pins the expected behavior; the fix just
+needs to make it pass and its `withKnownIssue` wrapper removed.
 
 **Rejected while designing this:** a single depth-0 export carrying every layer with its depth, so a
 full restore is one pass. It restores layer structure in one go, but the file then describes every
@@ -5031,9 +5044,11 @@ regardless.
    format bump (`version: 1` → `2`) and a migration note for existing `.occbak` files, which have no
    ceiling field to restore from.
 
-No test currently exercises `exportBackup` or `importBackup` at all — a repo-wide search for both
-names under `OccultaTests/` returns zero matches, so there is no round-trip coverage to catch this,
-depth-related or otherwise.
+No test exercised `exportBackup` or `importBackup` at all when this was filed — a repo-wide search
+for both names under `OccultaTests/` returned zero matches. **`VaultBackupRoundTripTests.swift` now
+covers both**, built alongside the export fix: `exportExcludesHiddenEntries` guards the export half
+as a real assertion; `importRestoresDepthCeiling` pins the still-open import half, currently wrapped
+in `withKnownIssue` — that wrapper comes off once the import fix below lands.
 
 
 ---
