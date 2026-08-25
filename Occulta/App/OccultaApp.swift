@@ -275,6 +275,12 @@ private struct RootView: View {
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
+    // Backup-file acknowledgment (Bug 93) — deliberately separate from showError/
+    // errorMessage: "already processed" is not a failure, and reusing the "Error" alert
+    // title for it would be a strange thing to show a legitimate user even though it's
+    // harmless at a duress depth.
+    @State private var showBackupNotice = false
+    @State private var backupNoticeMessage = ""
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
     /// A share-extension session staged in the App Group, waiting for the user to pick who it
@@ -427,6 +433,11 @@ private struct RootView: View {
                 Button("OK") { }
             } message: {
                 Text(self.errorMessage)
+            }
+            .alert("Backup File", isPresented: self.$showBackupNotice) {
+                Button("OK") { }
+            } message: {
+                Text(self.backupNoticeMessage)
             }
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
@@ -637,6 +648,9 @@ private struct RootView: View {
                 }
 
                 await self.processInboundFile(data)
+            } catch VaultManager.BackupError.alreadyProcessed {
+                self.backupNoticeMessage = "This backup file has already been processed."
+                self.showBackupNotice = true
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
