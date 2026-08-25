@@ -5521,23 +5521,26 @@ at another.** That test is the fix's acceptance criterion.
 
 ## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
 
-**Status:** **Fixed 2026-08-25.** Filed 2026-08-22 while checking, for Bug 88's fix plan, whether
-`pendingRestoreActive` is depth-aware. It was not, and neither was anything else in the recovery
-path. Built in five parts, each committed separately: **A** — `currentDepth` threaded through
-`unlock(context:)` and the `OccultaApp.swift → ShardCustodyManager.handleInbound → handleHandback` /
-`acceptReturnedShard` chain. **B** — `refreshPendingRestoreState` and `attemptBEKRestore` both force
-published state false/defer above depth 0; `isRestorePending` added as the always-truthful signal
-for the two functional consumers (`acceptReturnedShard`, `handleHandback`) that must keep absorbing
-shards and relaxing signature checks regardless of depth. **C** — a distinct `showBackupNotice`
-alert for `alreadyProcessed`, separate from the generic `showError`, so a legitimate user sees a
-neutral acknowledgment rather than an "Error" dialog. **D** — the on-disk filenames renamed from
-`pending-restore.occbak` / `pending-restore-shards.dat` to `backup-import-cache.occbak` /
-`backup-import-cache-shards.dat`, closing harm 3 independent of the other four parts. **E** —
-dedicated tests for all three `storePendingRestore` outcomes, which surfaced and fixed a real
-ordering bug: the pending-file branch wrote a second file's bytes to disk *before* checking whether
-one was already pending, so a different `.occbak` could silently replace a genuine in-flight restore
-while the caller still saw the same reassuring `alreadyProcessed`. See *The design, settled* below
-for the shape all five parts implement, and *Guard* for what now covers it.
+**Status:** **Fixed 2026-08-25, all four harms.** Filed 2026-08-22 while checking, for Bug 88's fix
+plan, whether `pendingRestoreActive` is depth-aware. It was not, and neither was anything else in the
+recovery path. Built in five parts, each committed separately: **A** — `currentDepth` threaded
+through `unlock(context:)` and the `OccultaApp.swift → ShardCustodyManager.handleInbound →
+handleHandback` / `acceptReturnedShard` chain. **B** — `refreshPendingRestoreState` and
+`attemptBEKRestore` both force published state false/defer above depth 0; `isRestorePending` added
+as the always-truthful signal for the two functional consumers (`acceptReturnedShard`,
+`handleHandback`) that must keep absorbing shards and relaxing signature checks regardless of depth.
+**C** — a distinct `showBackupNotice` alert for `alreadyProcessed`, separate from the generic
+`showError`, so a legitimate user sees a neutral acknowledgment rather than an "Error" dialog. **D**
+— the on-disk filenames renamed from `pending-restore.occbak` / `pending-restore-shards.dat` to
+`backup-import-cache.occbak` / `backup-import-cache-shards.dat`, closing harm 3 independent of the
+other four parts. **E** — dedicated tests for all three `storePendingRestore` outcomes, which
+surfaced and fixed a real ordering bug: the pending-file branch wrote a second file's bytes to disk
+*before* checking whether one was already pending, so a different `.occbak` could silently replace a
+genuine in-flight restore while the caller still saw the same reassuring `alreadyProcessed`. **A
+fourth harm, found the same day in review** (a coercer could distinguish the three
+`storePendingRestore` outcomes by which duress response they got, without ever seeing depth 0) **was
+fixed same-day too** — see *Harm 4, found after the fix* below. See *The design, settled* below for
+the shape all five parts implement, and *Guard* for what covers it now.
 
 **Target:** met. **Bug 88's import-side remedy depended on this** — see *Relationship to Bug 88*;
 that remedy can now proceed.
@@ -5737,6 +5740,58 @@ recovery at her real depth, which is exactly the path that shows her everything.
 becomes visible in the adversarial case: a coercer forcing the duress PIN and trying the file anyway,
 which is precisely where "tell them nothing true or false" is the correct behavior.
 
+### Harm 4, found after the fix, 2026-08-25 — fixed same day
+
+Found while walking a proposal to relax the depth-0 completion gate (rejected — see below). The
+proposal's justification ("silence in duress reads as a tell") turned out to be correct, just not for
+the reason it was raised for.
+
+**Duress's response to opening a `.occbak` was not uniform across the two-signal check's three
+states.** A genuinely new file (nothing pending, no BEK) was accepted silently — no alert of any kind.
+A file opened while one was already pending, or while a BEK already existed, showed the flat
+`alreadyProcessed` acknowledgment (Part C). Those were two different observable outcomes, and the
+difference between them **leaks which of the three states is true, without ever needing to compare
+against depth 0** — a coercer who tries more than one `.occbak` against the same duress session sees
+some produce an alert and some produce nothing, which is the two-signal distinction read straight off
+the UI. And even with a single file: an adversary specifically probing for a decoy layer doesn't need
+to see the victim's real depth at all — they can install the same shipped app, test it themselves with
+no coercion involved, learn independently that opening a `.occbak` is *supposed* to produce some
+acknowledgment, and then notice its absence on the victim's device. "The coercer never sees depth 0"
+is not the same claim as "the coercer has no way to know what normal behavior looks like," and the
+original design conflated the two.
+
+**This was narrower than it first looked, and doesn't reopen harms 1 or 2.** There are two different
+surfaces bundled under "what does duress show," and only one of them was fixable this way:
+
+- **The one-time file-open acknowledgment** (this harm) — whether *anything at all* is shown the
+  moment a `.occbak` is opened. **Fixed:** `OccultaApp.swift`'s `.occbak` handling now shows the same
+  "Backup file received" acknowledgment above depth 0 for all three states — fresh accept, already
+  pending, already done — via a local `do`/`catch` around `storePendingRestore` rather than the
+  now-removed outer `catch VaultManager.BackupError.alreadyProcessed` clause. The wording is
+  deliberately vague: it has to stay true whichever of the three actually happened, so it can't imply
+  completion or duplication. Depth 0 keeps its differentiated, truthful behavior unchanged — silent +
+  live banner for fresh, the existing "already been processed" wording for pending/done — since this
+  constraint is about duress's internal consistency, not about matching depth 0.
+- **The ongoing, live progress banner** (harms 1 and 2, already closed) — the persistent, updating
+  shard count in the vault tab. This one genuinely can't be unified: showing it in duress is harm 1
+  outright (direct disclosure that a recovery is inbound), and fabricating a fake, plausible,
+  consistently-timed counter that tracks nothing real is a harder and riskier build than the problem
+  it would solve — wrong timing or an inconsistency across repeat checks would itself be a tell, and a
+  worse one. This divergence is structural, not a gap, and stays as built.
+
+**The rejected proposal, for the record.** Allowing `attemptBEKRestore` to complete above depth 0
+when no BEK exists yet was suggested on the theory that a coercer would need cooperating trustees to
+reach threshold, so there was no real risk. Traced through `handleHandback`
+(`ShardCustody+Manager.swift:201-219`): once `isRestorePending` is true, signature verification on
+incoming shard attributes is skipped entirely — deliberate, for the rotated-key new-device case — so
+nothing checks that a shard came from a real, previously-established trustee at all. A coercer with
+physical access to the victim's phone (no-BEK state only — Bug 94's still-open "other population")
+can set up their own vault on their own device, export their own `.occbak`, deliver it and their own
+self-authored shard attributes through the same file/bundle-open channel used for everything else, and
+reach threshold using entirely self-supplied material — no real trustees needed. Today the depth-0
+completion gate stops this cold: nothing completes while the coercer is watching. Relaxing it for the
+no-BEK case would make this exact attack succeed live, in front of them, instead. Kept as built.
+
 ### Guard
 
 Updated 2026-08-25, Part E: `VaultRestoreDepthGatingTests` (`VaultRestoreTrustTests.swift`) covers
@@ -5747,14 +5802,26 @@ AboveDepthZero`, `shardsStillAccumulateAboveDepthZero`, `publishedStateIsForcedF
 `storePendingRestoreRefusesWithoutOverwritingWhenAlreadyPending` — the last of which is what caught
 the write-ordering bug above. Filenames are asserted directly in `VaultRestoreTrustTests.swift`'s
 own path constants (`backup-import-cache.occbak` / `-shards.dat`), which fail to compile-match if
-production and test ever drift. The five acceptance criteria below are all met.
+production and test ever drift.
+
+**Harm 4's fix has no automated coverage.** `storePendingRestore` itself is unchanged by that fix —
+it still throws `alreadyProcessed` for two of the three states and returns normally for the third,
+exactly as `VaultRestoreTrustTests`' three outcome tests already assert, and those tests remain
+correct descriptions of the underlying function. What changed is `OccultaApp.swift`'s UI wiring
+around that call, which none of the `VaultManager`-level tests reach at all — they call
+`storePendingRestore` directly, not through the app's file-open handling. Verified by reading the
+resulting code path for all three states rather than by a test; a SwiftUI-level test that opens a
+`.occbak` through the app and asserts on `showBackupNotice`/`backupNoticeMessage` would close this
+gap if one is added later.
 
 Acceptance criteria, matching *The design, settled*:
 
 - ✅ A restore reaching threshold at depth > 0 must leave `pendingRestoreActive` false to the UI, must
   not insert entries, and must complete on the next depth-0 unlock with the entries stamped 0.
-- ✅ A genuinely new `.occbak`, no prior restore state, opened above depth 0: silent accept, file
-  written, `pendingRestoreActive` stays false, nothing displayed.
+- ✅ A genuinely new `.occbak`, no prior restore state, opened above depth 0: silent write to the
+  pending-restore file, `pendingRestoreActive` stays false. Superseded in spirit by Harm 4's fix below
+  (the file-open response is no longer silent), but the underlying storage behavior this criterion was
+  really about — no live count, no state change visible above depth 0 — still holds.
 - ✅ A `.occbak` opened above depth 0 while a restore is already pending *or* already completed (BEK
   exists): the flat acknowledgment shown, never the live count, and identical whichever of the two
   underlying states is true.
@@ -5762,6 +5829,9 @@ Acceptance criteria, matching *The design, settled*:
   it is the difference between the depth-0 and duress paths that makes the whole design coherent.
 - ✅ Harm 3 needs its own criterion, independent of any UI behavior: the on-disk filenames must not
   name the mechanism, regardless of the above.
+- ✅ **Harm 4:** all three `storePendingRestore` outcomes produce the same one-time acknowledgment
+  above depth 0 — never silence for one and an alert for the others — so trying multiple files against
+  the same duress session never produces a distinguishable pattern. No automated test; see *Guard*.
 
 ### Noted in passing, not filed
 
