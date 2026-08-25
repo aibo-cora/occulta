@@ -59,7 +59,8 @@ final class ShardCustodyManager {
         expectedShards:   [UUID]?,
         senderPublicKey:  Data,
         senderIdentifier: String,
-        vaultManager:     VaultManager
+        vaultManager:     VaultManager,
+        currentDepth:     Int
     ) -> Bool {
         let hasOps      = (shardOperations?.isEmpty == false)
         let hasManifest = custodyManifest != nil
@@ -75,7 +76,7 @@ final class ShardCustodyManager {
                 case .replace:
                     try self.handleReplace(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
                 case .handback:
-                    try self.handleHandback(op: op, vaultManager: vaultManager)
+                    try self.handleHandback(op: op, vaultManager: vaultManager, currentDepth: currentDepth)
                 case .unsupported:
                     break
                 }
@@ -197,21 +198,24 @@ final class ShardCustodyManager {
     /// because the GCM oracle in `reconstructBEK` / `reconstructEntry` is the real
     /// integrity check. When no restore is active a verification failure means the
     /// shard is either from a different distribution generation or tampered, and we reject.
-    private func handleHandback(op: OccultaBundle.ShardOperation, vaultManager: VaultManager) throws {
+    private func handleHandback(op: OccultaBundle.ShardOperation, vaultManager: VaultManager, currentDepth: Int) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
         }
         if let ownKey = try? self.keyManager.retrieveIdentity(),
            !attribute.verify(against: ownKey) {
             // Hard-reject unless we're in a pending restore (new-device, key rotated).
-            guard vaultManager.pendingRestoreActive else {
+            // isRestorePending, not pendingRestoreActive — the latter is depth-gated for
+            // display (Bug 93) and would make this reject a legitimate handback outright,
+            // above depth 0, instead of deferring it.
+            guard vaultManager.isRestorePending else {
                 throw CustodyError.signatureRejected
             }
             #if DEBUG
             debugPrint("handleHandback: signature verification failed — allowing through for pending restore.")
             #endif
         }
-        try vaultManager.acceptReturnedShard(attribute)
+        try vaultManager.acceptReturnedShard(attribute, currentDepth: currentDepth)
     }
 
     // MARK: - Manifest reconciliation

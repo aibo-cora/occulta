@@ -105,14 +105,14 @@ private func makeContainer() throws -> ModelContainer {
     func unlockSetsFlag() throws {
         let (vm, _) = try makeVaultManager()
         #expect(vm.isUnlocked == false)
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         #expect(vm.isUnlocked == true)
     }
 
     @Test("lock() sets isUnlocked = false")
     func lockClearsFlag() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         vm.lock()
         #expect(vm.isUnlocked == false)
     }
@@ -128,7 +128,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("Vault locks automatically when key derivation fails (lock condition 5)")
     func locksOnDerivationFailure() throws {
         let (vm, km) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vm.addEntry(label: "test", content: Data(), type: .note)
 
         km.simulateVaultKeyFailure = true
@@ -142,7 +142,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("Vault locks after inactivity timeout (lock condition 4)")
     func locksAfterInactivity() async throws {
         let (vm, _) = try makeVaultManager(inactivityTimeout: 0.05)
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         #expect(vm.isUnlocked == true)
 
         try await Task.sleep(for: .milliseconds(150))
@@ -158,7 +158,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("addEntry then decryptLabel round-trips the label")
     func addAndDecryptLabel() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let entry = try vm.addEntry(label: "My Seed Phrase", content: Data("secret".utf8), type: .seedPhrase)
         let label = try vm.decryptLabel(for: entry)
@@ -168,7 +168,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("addEntry then decryptContent round-trips the content")
     func addAndDecryptContent() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let content   = Data("hunter2".utf8)
         let entry     = try vm.addEntry(label: "Password", content: content, type: .keyToken)
@@ -179,7 +179,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("encryptedLabel stored in SwiftData is not plaintext")
     func labelIsNotPlaintext() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let plainLabel = "Secret seed phrase"
         let entry      = try vm.addEntry(label: plainLabel, content: Data(), type: .seedPhrase)
@@ -192,7 +192,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("decryptLabel throws .locked when vault is not unlocked")
     func decryptLabelRequiresUnlock() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vm.addEntry(label: "test", content: Data(), type: .note)
         vm.lock()
 
@@ -204,7 +204,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("decryptContent throws .locked when vault is not unlocked")
     func decryptContentRequiresUnlock() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vm.addEntry(label: "test", content: Data("secret".utf8), type: .note)
         vm.lock()
 
@@ -224,7 +224,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("Field discriminator — cross-field ciphertext swap is rejected")
     func fieldDiscriminatorPreventsSwap() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let entry = try vm.addEntry(label: "test", content: Data("x".utf8), type: .note)
 
@@ -242,7 +242,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("fetchAllEntries returns inserted entries")
     func fetchAll() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         _ = try vm.addEntry(label: "A", content: Data(), type: .note)
         _ = try vm.addEntry(label: "B", content: Data(), type: .keyToken)
@@ -254,7 +254,7 @@ private func makeContainer() throws -> ModelContainer {
     @Test("deleteEntry removes the entry")
     func deleteEntry() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let entry = try vm.addEntry(label: "to delete", content: Data(), type: .note)
         try vm.deleteEntry(id: entry.id)
@@ -298,7 +298,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test func addEntry_stampsGivenDepth_readableBack() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let entry = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 2)
 
@@ -312,7 +312,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test func addEntry_defaultsToDepth0_whenNotSpecified() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let entry = try vm.addEntry(label: "entry", content: Data(), type: .note)
 
@@ -333,7 +333,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test func isEntryVisible_stampedDepth0_onlyVisibleAtDepth0() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry    = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 0)
 
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
@@ -349,7 +349,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test func isEntryVisible_stampedDepthN_onlyVisibleAtN_hiddenElsewhere() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry    = try vm.addEntry(label: "entry", content: Data(), type: .note, currentDepth: 2)
 
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
@@ -364,7 +364,7 @@ private func secureEnclaveAvailable() -> Bool {
 
     @Test func isEntryVisible_legacyNilVisibleThroughDepth_alwaysVisible() throws {
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
         entry.visibleThroughDepth = nil
 
@@ -376,7 +376,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test func visibleEntries_endToEnd_exactMatchOnly() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
 
         let real  = try vm.addEntry(label: "real",  content: Data(), type: .note, currentDepth: 0)
         let decoy = try vm.addEntry(label: "decoy", content: Data(), type: .note, currentDepth: 3)
@@ -435,7 +435,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("prepareShards returns one SignedAttribute per recipient")
     func shardCountMatchesRecipients() throws {
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data("secret".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
 
@@ -446,7 +446,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("Each SignedAttribute has category .shard")
     func categoryIsShard() throws {
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
 
@@ -457,7 +457,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("Each shard signature verifies against our identity public key")
     func shardSignaturesVerify() throws {
         let (vm, km) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
 
@@ -472,7 +472,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("Each shard has a distinct value (different x-coordinates)")
     func shardsAreDistinct() throws {
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
 
@@ -484,7 +484,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("prepareShards persists encrypted ShardDistributionMetadata on the entry")
     func metadataPersistedOnEntry() throws {
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
 
@@ -496,7 +496,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("prepareShards throws .locked when vault is not unlocked")
     func prepareShardsRequiresUnlock() throws {
         let (vm, _)  = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
         vm.lock()
@@ -509,7 +509,7 @@ private func secureEnclaveAvailable() -> Bool {
     @Test("SSS reconstruction from threshold shards recovers the entry's PEK")
     func shardsReconstructPEK() throws {
         let (vm, km) = try makeVaultManager()
-        vm.unlock(context: LAContext())
+        vm.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vm.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
 

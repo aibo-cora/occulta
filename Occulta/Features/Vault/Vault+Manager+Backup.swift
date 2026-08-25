@@ -36,6 +36,10 @@ extension VaultManager {
         case bekReconstructionFailed
         /// A BEK row already exists — this device is not a fresh restore target.
         case bekAlreadyPresent
+        /// A restore is already pending, or already completed (a BEK exists). Not a
+        /// failure — the caller shows a neutral, depth-safe acknowledgment rather than
+        /// the generic error path. See Bug 93.
+        case alreadyProcessed
     }
 
     // MARK: - Wire format constants
@@ -593,22 +597,68 @@ extension VaultManager {
     private static let pendingRestoreShardsAAD: Data =
         Data("occulta.pending-bek-restore-shards".utf8)
 
+    /// Whether a restore file genuinely exists on disk — independent of depth, and
+    /// independent of the published `pendingRestoreActive`, which is deliberately
+    /// depth-gated for display (Bug 93). **Functional callers deciding whether to store
+    /// a shard, or whether to relax signature checking, must use this, never the
+    /// published property** — depth-gating `pendingRestoreActive` above depth 0 would
+    /// otherwise make a genuine, in-progress recovery silently stop accepting shards, or
+    /// reject a legitimate new-device handback outright instead of deferring it.
+    var isRestorePending: Bool {
+        FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
+    }
+
     /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem.
     /// Called on every vault unlock so state is correct after app restarts.
-    func refreshPendingRestoreState() {
+    ///
+    /// Above depth 0 the published state is forced to inactive regardless of what is
+    /// actually on disk — not "hidden if something's pending," genuinely false, so a
+    /// coercer watching across multiple unlocks sees the same nothing every time. See
+    /// Bug 93 — this is one half of "defer and hide together"; `attemptBEKRestore`'s own
+    /// depth guard is the other.
+    func refreshPendingRestoreState(currentDepth: Int) {
+        guard currentDepth == 0 else {
+            self.pendingRestoreActive     = false
+            self.pendingRestoreShardCount = 0
+            return
+        }
         self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
         self.pendingRestoreShardCount = self.pendingRestoreActive
             ? ((try? self.loadRestoreShards())?.count ?? 0)
             : 0
     }
 
-    /// Validate and persist an incoming `.occbak` file. Marks restore as active.
-    /// Called when the user opens a `.occbak` file from Files.
-    func storePendingRestore(_ data: Data) throws {
+    /// Validate and persist an incoming `.occbak` file. Called when the user opens a
+    /// `.occbak` file from Files.
+    ///
+    /// Checks whether *any* restore state already exists — a pending file already on
+    /// disk, or a BEK already present (remedy 1's own check, reused rather than
+    /// duplicated) — before deciding what the caller sees. Deliberately not "is this the
+    /// same file": a different `.occbak` shown while one is already pending or done gets
+    /// the same honest `alreadyProcessed`, so the signal is never a lie and needs no new
+    /// persisted history to stay truthful. See Bug 93, "The design, settled".
+    ///
+    /// If a BEK already exists there is nothing to arm — refuses before writing anything.
+    /// Otherwise the file is always written (so a later depth-0 unlock can still act on
+    /// it), and `pendingRestoreActive`/`pendingRestoreShardCount` are only ever set at
+    /// depth 0 — above that, published state stays whatever `refreshPendingRestoreState`
+    /// already forced it to.
+    func storePendingRestore(_ data: Data, currentDepth: Int) throws {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
+
+        let vaultKey       = try? self.currentKey()
+        let alreadyHasBEK  = vaultKey.flatMap { try? self.fetchDecodedBEK(vaultKey: $0) } != nil
+        guard !alreadyHasBEK else { throw BackupError.alreadyProcessed }
+
+        let alreadyPending = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
         try data.write(to: Self.pendingRestoreURL, options: [.atomic, .completeFileProtection])
-        self.pendingRestoreActive     = true
-        self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
+
+        if currentDepth == 0 {
+            self.pendingRestoreActive     = true
+            self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
+        }
+
+        if alreadyPending { throw BackupError.alreadyProcessed }
     }
 
     /// Append one incoming BEK shard to the restore-shard file. Deduplicates by id.
@@ -645,8 +695,14 @@ extension VaultManager {
     /// a BEK can never reach the success branch, so without this check `pendingRestoreActive`
     /// would stay stuck true forever, and the shard file would keep accepting new entries on
     /// every arrival with nothing left to ever clear it (Bug 96).
-    func attemptBEKRestore() {
+    ///
+    /// Never completes above depth 0 (Bug 93) — the other half of "defer and hide
+    /// together" alongside `refreshPendingRestoreState`'s own depth guard. Shards keep
+    /// accumulating silently regardless (`storeRestoreShard` doesn't check depth), so
+    /// nothing is lost, only postponed to the next depth-0 unlock.
+    func attemptBEKRestore(currentDepth: Int) {
         guard self.isUnlocked, self.pendingRestoreActive else { return }
+        guard currentDepth == 0 else { return }
 
         if let vaultKey = try? self.currentKey(),
            (try? self.fetchDecodedBEK(vaultKey: vaultKey)) != nil {

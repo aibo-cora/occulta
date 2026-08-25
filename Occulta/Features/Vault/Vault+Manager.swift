@@ -159,7 +159,12 @@ final class VaultManager {
     /// The caller (a view or coordinator) evaluates the biometric policy via
     /// LAContext.evaluatePolicy before calling unlock. VaultManager stores only
     /// the context reference — no key material is held.
-    func unlock(context: LAContext) {
+    ///
+    /// `currentDepth` has no default — a forgotten argument must be a compile error,
+    /// not a silent leak of restore state into whichever depth happened to call this
+    /// (Bug 93). Required specifically because `refreshPendingRestoreState` and
+    /// `attemptBEKRestore` must never run as though they're at depth 0 by accident.
+    func unlock(context: LAContext, currentDepth: Int) {
         self.authContext = context
         self.resetInactivityTimer()
         // Drain reconstruction buffer entries that crossed threshold while locked.
@@ -169,14 +174,15 @@ final class VaultManager {
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
         // backupStaleness is refreshed by the views that display it (Vault+Tab,
-        // VaultRecoverySettings), not here — VaultManager has no dependency on
-        // Manager.Security and so no way to know currentDepth at unlock time, and
-        // staleness must never be computed from the wrong depth (see
-        // refreshBackupStaleness's own doc comment).
+        // VaultRecoverySettings), not here. currentDepth is available in this scope
+        // now (added for Bug 93, below) — that's no longer why staleness stays external.
+        // It's left where it already is, tested and working, rather than consolidated
+        // here without a reason tied to this fix (see refreshBackupStaleness's own
+        // doc comment for why it must never be computed from the wrong depth).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
-        self.refreshPendingRestoreState()
-        self.attemptBEKRestore()
+        self.refreshPendingRestoreState(currentDepth: currentDepth)
+        self.attemptBEKRestore(currentDepth: currentDepth)
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.

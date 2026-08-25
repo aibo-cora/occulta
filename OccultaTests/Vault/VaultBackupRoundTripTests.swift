@@ -54,7 +54,7 @@ private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
     let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-    vault.unlock(context: LAContext())
+    vault.unlock(context: LAContext(), currentDepth: 0)
     try vault.setupBEK()
 
     let recipients = (0..<2).map { i -> Contact.Profile in

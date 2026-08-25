@@ -624,7 +624,7 @@ private struct RootView: View {
 
                 // .occbak — vault backup restore file.
                 if fileLocation.pathExtension == "occbak" {
-                    try self.vaultManager.storePendingRestore(data)
+                    try self.vaultManager.storePendingRestore(data, currentDepth: self.security.currentDepth)
                     return
                 }
 
@@ -826,7 +826,8 @@ private struct RootView: View {
                             expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
+                            vaultManager:     self.vaultManager,
+                            currentDepth:     self.security.currentDepth
                         )
                     }
 
@@ -870,7 +871,8 @@ private struct RootView: View {
                             expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
+                            vaultManager:     self.vaultManager,
+                            currentDepth:     self.security.currentDepth
                         )
                     }
 

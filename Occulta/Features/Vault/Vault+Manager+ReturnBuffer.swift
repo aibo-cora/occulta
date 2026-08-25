@@ -35,7 +35,7 @@ extension VaultManager {
     ///   4. Opportunistically call `tryFinalizeReconstruction(entryID:)` —
     ///      if the vault is locked, the call returns without touching state
     ///      and finalisation is retried on the next vault unlock.
-    func acceptReturnedShard(_ attribute: SignedAttribute) throws {
+    func acceptReturnedShard(_ attribute: SignedAttribute, currentDepth: Int) throws {
         guard attribute.category == .shard, let entryID = attribute.entryID else {
             throw VaultError.decryptionFailed
         }
@@ -80,9 +80,13 @@ extension VaultManager {
         // ── 5. BEK restore — store shard + attempt reconstruction ────────
         // Only active when a .occbak file is awaiting recovery. storeRestoreShard
         // is safe while locked (recovery buffer key); attemptBEKRestore no-ops if locked.
-        if self.pendingRestoreActive {
+        //
+        // isRestorePending, not pendingRestoreActive — the shard must still be stored
+        // above depth 0, or a genuine recovery silently stops accumulating shards the
+        // moment the user is at a duress depth (Bug 93).
+        if self.isRestorePending {
             try? self.storeRestoreShard(attribute)
-            self.attemptBEKRestore()
+            self.attemptBEKRestore(currentDepth: currentDepth)
         }
     }
 

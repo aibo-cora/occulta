@@ -69,7 +69,7 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
     let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-    vault.unlock(context: LAContext())
+    vault.unlock(context: LAContext(), currentDepth: 0)
     try vault.setupBEK()
 
     let recipients = (0..<2).map { i -> Contact.Profile in
@@ -97,7 +97,7 @@ private func makeFreshVault() throws -> (vault: VaultManager, container: ModelCo
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
     let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
-    vault.unlock(context: LAContext())
+    vault.unlock(context: LAContext(), currentDepth: 0)
     return (vault, container)
 }
 
@@ -226,13 +226,42 @@ struct VaultRestoreTrustTests {
             """)
     }
 
+    /// `storePendingRestore` now refuses outright when a BEK already exists (Bug 93's own
+    /// two-signal check, reusing remedy 1's `fetchDecodedBEK`) — a hostile file on an
+    /// existing-BEK device is rejected before it is ever written, not armed-then-cleaned-up.
+    /// This is what `existingBEKRestoreDoesNotStallForever` below used to test by calling
+    /// `storePendingRestore` directly; that path is no longer reachable, so it now
+    /// constructs its scenario by writing straight to disk instead.
+    @Test("storePendingRestore refuses outright when a BEK already exists")
+    func storePendingRestoreRefusesWhenBEKAlreadyExists() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let victim   = try makeBackupReadyVault()
+        let attacker = try makeBackupReadyVault()
+        let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
+
+        #expect(throws: VaultManager.BackupError.alreadyProcessed) {
+            try victim.vault.storePendingRestore(attackerBackup, currentDepth: 0)
+        }
+        #expect(!FileManager.default.fileExists(atPath: pendingRestoreURL.path),
+                "nothing should be written at all — refused before the write, not after")
+        #expect(!victim.vault.pendingRestoreActive)
+    }
+
     /// The consequence of remedy 1 that motivated it: on an existing-BEK device, every group
     /// `reconstructBEK` sees now fails immediately via `bekAlreadyPresent` — so the "success"
     /// branch that clears `pendingRestoreActive` and deletes the restore files can never run.
-    /// Without the early check in `attemptBEKRestore`, a single hostile `.occbak` would leave
+    /// Without the early check in `attemptBEKRestore`, a single stale `.occbak` would leave
     /// the device permanently in "restoring" state: the banner never clears, and every future
     /// shard arrival keeps appending to a file nothing will ever read successfully again.
-    @Test("A hostile restore on an existing-BEK device cleans itself up, not stalls forever")
+    ///
+    /// Constructed by writing directly to the restore paths, bypassing `storePendingRestore` —
+    /// that path now refuses outright on an existing-BEK device (see the test above), so this
+    /// scenario is only reachable the way it would be in practice: a file already pending
+    /// *before* a BEK existed (attacker-armed, or simply stale), with `setupBEK()` called
+    /// afterward through ordinary use while it still sat there.
+    @Test("A stale restore on an existing-BEK device cleans itself up, not stalls forever")
     func existingBEKRestoreDoesNotStallForever() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
@@ -241,12 +270,13 @@ struct VaultRestoreTrustTests {
         let attacker = try makeBackupReadyVault()
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
-        try victim.vault.storePendingRestore(attackerBackup)
+        try attackerBackup.write(to: pendingRestoreURL, options: [.atomic, .completeFileProtection])
         try victim.vault.storeRestoreShard(attacker.shards[0])
+        victim.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
         #expect(victim.vault.pendingRestoreShardCount == 1)
 
-        victim.vault.attemptBEKRestore()
+        victim.vault.attemptBEKRestore(currentDepth: 0)
 
         #expect(!victim.vault.pendingRestoreActive, """
             pendingRestoreActive is stuck true — every future unlock will retry against a \
@@ -257,6 +287,119 @@ struct VaultRestoreTrustTests {
                 "the pending .occbak must be removed, not retried forever")
         #expect(!FileManager.default.fileExists(atPath: pendingRestoreShardsURL.path),
                 "the shard file must be removed — nothing will ever clear it otherwise")
+    }
+}
+
+// MARK: - Bug 93
+
+/// Depth-gating for the automatic restore path. `attemptBEKRestore` must never complete
+/// above depth 0 (defer), and `refreshPendingRestoreState` must never publish real state
+/// above depth 0 (hide) — the two ship together, since deferring without hiding turns a
+/// disclosure into a self-contradicting oracle.
+@Suite("Bug 93 — recovery must not run or announce itself above depth 0", .serialized)
+@MainActor
+struct VaultRestoreDepthGatingTests {
+
+    /// The regression guard, and the reason it outranks the deferral test below: a fix
+    /// that defers correctly but never lets a genuine recovery complete at depth 0 either
+    /// is worse than the bug it replaces.
+    @Test("A genuine restore still completes at depth 0")
+    func genuineRestoreCompletesAtDepthZero() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        for shard in owner.shards { try fresh.vault.storeRestoreShard(shard) }
+
+        fresh.vault.attemptBEKRestore(currentDepth: 0)
+
+        #expect((try? fresh.vault.currentBEK()) != nil, "the BEK must be installed at depth 0")
+        #expect(!fresh.vault.pendingRestoreActive, "a completed restore must clear the flag")
+    }
+
+    /// The deferral itself: the same genuine restore, reaching threshold while the caller
+    /// reports a duress depth, must not complete.
+    @Test("The same genuine restore does not complete above depth 0")
+    func genuineRestoreDoesNotCompleteAboveDepthZero() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        for shard in owner.shards { try fresh.vault.storeRestoreShard(shard) }
+
+        fresh.vault.attemptBEKRestore(currentDepth: 2)
+
+        #expect((try? fresh.vault.currentBEK()) == nil, """
+            The restore completed while the caller reported a duress depth — a recovered \
+            real-layer vault was just filed into whichever layer the coercer happened to \
+            be looking at.
+            """)
+    }
+
+    /// Shards must keep accumulating above depth 0 — "defer" is not "stop collecting".
+    /// The deferred restore must still complete once depth 0 is reached, using shards
+    /// gathered while at a duress depth.
+    @Test("Shards still accumulate above depth 0, and the deferred restore completes later")
+    func shardsStillAccumulateAboveDepthZero() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        for shard in owner.shards { try fresh.vault.storeRestoreShard(shard) }
+
+        fresh.vault.attemptBEKRestore(currentDepth: 3)
+        #expect((try? fresh.vault.currentBEK()) == nil, "must not complete above depth 0")
+
+        fresh.vault.attemptBEKRestore(currentDepth: 0)
+        #expect((try? fresh.vault.currentBEK()) != nil, """
+            Shards collected while at a duress depth must not be lost — the deferred \
+            restore must complete on the next depth-0 attempt using the same shards.
+            """)
+    }
+
+    /// `refreshPendingRestoreState` must publish false above depth 0 regardless of what is
+    /// actually on disk — not "hidden if pending," genuinely false, so a coercer watching
+    /// across multiple unlocks sees the same nothing every time. Not a one-way ratchet
+    /// either: depth 0 still sees the truth afterward.
+    @Test("Published pending-restore state is forced false above depth 0, and recovers at depth 0")
+    func publishedStateIsForcedFalseAboveDepthZero() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        try fresh.vault.storeRestoreShard(owner.shards[0])
+
+        fresh.vault.refreshPendingRestoreState(currentDepth: 0)
+        #expect(fresh.vault.pendingRestoreActive, "depth 0 must reflect the real, pending state")
+        #expect(fresh.vault.pendingRestoreShardCount == 1)
+
+        fresh.vault.refreshPendingRestoreState(currentDepth: 2)
+        #expect(!fresh.vault.pendingRestoreActive, """
+            A genuinely pending restore must publish as inactive above depth 0 — this is \
+            what keeps the duress view coherent across repeated unlocks.
+            """)
+        #expect(fresh.vault.pendingRestoreShardCount == 0)
+
+        fresh.vault.refreshPendingRestoreState(currentDepth: 0)
+        #expect(fresh.vault.pendingRestoreActive, "returning to depth 0 must restore the real state")
     }
 }
 

@@ -133,7 +133,8 @@ struct InboundShardCustodyDuressTests {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     vault
+            vaultManager:     vault,
+            currentDepth: 0
         )
 
         #expect(try custodyShardCount(in: container) == 1,
@@ -180,7 +181,8 @@ struct InboundShardCustodyDuressTests {
             expectedShards:   nil,
             senderPublicKey:  bobPub,
             senderIdentifier: "bob",
-            vaultManager:     vault
+            vaultManager:     vault,
+            currentDepth: 0
         )
 
         #expect(try custodyShardCount(in: container) == 1,
