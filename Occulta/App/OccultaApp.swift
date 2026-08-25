@@ -634,8 +634,28 @@ private struct RootView: View {
                 }.value
 
                 // .occbak — vault backup restore file.
+                //
+                // Above depth 0, all three storePendingRestore outcomes (fresh accept, already
+                // pending, already done) must show the same acknowledgment — trying multiple
+                // files against the same duress session must never produce a distinguishable
+                // pattern (Bug 93, harm 4). "Backup file received" is deliberately vague: it has
+                // to stay true in all three cases, so it can't imply completion or duplication.
+                // Depth 0 keeps its differentiated, truthful behavior — this constraint is about
+                // duress's internal consistency, not about matching depth 0.
                 if fileLocation.pathExtension == "occbak" {
-                    try self.vaultManager.storePendingRestore(data, currentDepth: self.security.currentDepth)
+                    let currentDepth = self.security.currentDepth
+                    do {
+                        try self.vaultManager.storePendingRestore(data, currentDepth: currentDepth)
+                        if currentDepth != 0 {
+                            self.backupNoticeMessage = "Backup file received."
+                            self.showBackupNotice = true
+                        }
+                    } catch VaultManager.BackupError.alreadyProcessed {
+                        self.backupNoticeMessage = currentDepth == 0
+                            ? "This backup file has already been processed."
+                            : "Backup file received."
+                        self.showBackupNotice = true
+                    }
                     return
                 }
 
@@ -648,9 +668,8 @@ private struct RootView: View {
                 }
 
                 await self.processInboundFile(data)
-            } catch VaultManager.BackupError.alreadyProcessed {
-                self.backupNoticeMessage = "This backup file has already been processed."
-                self.showBackupNotice = true
+                // BackupError.alreadyProcessed is handled locally in the .occbak branch above —
+                // storePendingRestore is its only source, so no case reaches this far.
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
