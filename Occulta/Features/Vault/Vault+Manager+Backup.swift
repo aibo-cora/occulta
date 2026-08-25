@@ -261,7 +261,11 @@ extension VaultManager {
     /// Requires the BEK to be set up — call `reconstructBEK(shards:backupData:ownerIdentity:)`
     /// first on a new device. Inserts new VaultEntry rows preserving the original
     /// id and createdAt from the backup so entry history is maintained.
-    func importBackup(_ data: Data) throws {
+    ///
+    /// Stamps every restored entry with `currentDepth` (Bug 88's import half) — no default,
+    /// same reasoning as `exportBackup(currentDepth:)`. Safe on the automatic restore path
+    /// because `attemptBEKRestore` never calls this with anything but 0 (Bug 93).
+    func importBackup(_ data: Data, currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
 
         guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {
@@ -310,6 +314,11 @@ extension VaultManager {
             let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
             entry.id        = backupEntry.id
             entry.createdAt = backupEntry.createdAt
+
+            // Stamp depth ceiling — always encrypted, never nil, same as addEntry
+            // (Vault+Manager.swift:223). A backup file only ever holds one layer's
+            // entries (Bug 88 remedy 4), so the depth to stamp is simply "here."
+            entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()
 
             var pekBytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, 32, &pekBytes) == errSecSuccess else {
@@ -474,7 +483,7 @@ extension VaultManager {
     ///   5. Persist new BackupEncryptionKey row sealed under current vault key.
     ///      shardMetadata is cleared — redistribution prompt handles rebuild.
     ///
-    /// On success, call `importBackup(_:)` to restore vault entries.
+    /// On success, call `importBackup(_:currentDepth:)` to restore vault entries.
     func reconstructBEK(
         shards:        [SignedAttribute],
         backupData:    Data,
@@ -739,7 +748,8 @@ extension VaultManager {
                 // reconstructBEK: Shamir combine → GCM oracle → persist BEK row.
                 try self.reconstructBEK(shards: group, backupData: backupData, ownerIdentity: nil)
                 // importBackup: read persisted BEK row → decrypt file → insert entries.
-                try self.importBackup(backupData)
+                // currentDepth == 0 here always — asserted by this function's own guard above.
+                try self.importBackup(backupData, currentDepth: currentDepth)
             } catch {
                 continue    // Wrong group or not enough shards — try next.
             }

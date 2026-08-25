@@ -178,7 +178,7 @@ struct VaultRestoreTrustTests {
         // unchanged — so the attacker's ciphertext must fail to open at all, not just fail
         // to name the entry "planted".
         #expect(throws: VaultManager.BackupError.decryptionFailed) {
-            try victim.vault.importBackup(attackerBackup)
+            try victim.vault.importBackup(attackerBackup, currentDepth: 0)
         }
 
         let labels = try ModelContext(victim.container)
@@ -216,7 +216,7 @@ struct VaultRestoreTrustTests {
         #expect(try bekBytes(of: fresh.vault) == ownerBEK,
                 "reconstruction must install the owner's BEK on a device that had none")
 
-        try fresh.vault.importBackup(backup)
+        try fresh.vault.importBackup(backup, currentDepth: 0)
         let labels = try ModelContext(fresh.container)
             .fetch(FetchDescriptor<VaultEntry>())
             .compactMap { try? fresh.vault.decryptLabelPayload(for: $0).label }
@@ -489,7 +489,7 @@ struct VaultRestoreRobustnessTests {
         let data = try self.sealedBackup(hostile, under: victim.vault)
 
         #expect(throws: (any Error).self) {
-            try victim.vault.importBackup(data)
+            try victim.vault.importBackup(data, currentDepth: 0)
         }
     }
 
@@ -511,7 +511,7 @@ struct VaultRestoreRobustnessTests {
         let data = try self.sealedBackup(hostile, under: victim.vault)
 
         #expect(throws: (any Error).self) {
-            try victim.vault.importBackup(data)
+            try victim.vault.importBackup(data, currentDepth: 0)
         }
     }
 

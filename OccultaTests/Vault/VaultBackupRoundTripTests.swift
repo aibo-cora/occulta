@@ -12,9 +12,10 @@
 //
 //  Export half fixed 2026-08-24 — exportBackup(currentDepth:) filters to that depth's
 //  entries. exportExcludesHiddenEntries is a real assertion now, not a withKnownIssue.
-//  importRestoresDepthCeiling stays wrapped: importBackup still never sets
-//  visibleThroughDepth, gated on Bug 93 (automatic restore-on-unlock has no depth to
-//  stamp with safely until that lands).
+//  Import half fixed 2026-08-25, once Bug 93 made "stamp with currentDepth" safe on the
+//  automatic restore-on-unlock path — importBackup(_:currentDepth:) now stamps every
+//  restored entry the same way addEntry does. importRestoresDepthCeiling is a real
+//  assertion now too.
 //
 
 import Testing
@@ -98,7 +99,7 @@ struct VaultBackupRoundTripTests {
         try wipe.save()
         #expect(try entries(in: container).isEmpty)
 
-        try vault.importBackup(backup)
+        try vault.importBackup(backup, currentDepth: 0)
 
         let restored = try entries(in: container)
         #expect(restored.count == 2, "both entries must come back")
@@ -150,7 +151,7 @@ struct VaultBackupRoundTripTests {
         for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
         try wipe.save()
 
-        try vault.importBackup(backup)
+        try vault.importBackup(backup, currentDepth: 2)
         let restoredCount = try entries(in: container).count
 
         #expect(restoredCount == 1, """
@@ -160,9 +161,10 @@ struct VaultBackupRoundTripTests {
             """)
     }
 
-    /// Import builds a fresh `VaultEntry` and never sets `visibleThroughDepth`. The model
-    /// default is nil, and `isEntryVisible` reads nil as *visible at every depth* — so a
-    /// restored entry that was hidden at depth 0 becomes visible in every duress view.
+    /// Fixed: `importBackup(_:currentDepth:)` now stamps every restored entry with
+    /// `currentDepth`, mirroring `addEntry`. A file only ever holds one layer's entries
+    /// (Bug 88 remedy 4), so the depth to stamp is simply whichever depth the import is
+    /// running at — here, the same depth 0 the backup was exported from.
     @Test("Import restores the depth ceiling rather than defaulting to always-visible")
     func importRestoresDepthCeiling() throws {
         let (vault, container) = try makeBackupReadyVault()
@@ -173,16 +175,15 @@ struct VaultBackupRoundTripTests {
         for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
         try wipe.save()
 
-        try vault.importBackup(backup)
+        try vault.importBackup(backup, currentDepth: 0)
         let restored = try #require(try entries(in: container).first)
 
-        withKnownIssue("Bug 88: importBackup never assigns visibleThroughDepth, and nil means visible") {
-            #expect(restored.visibleThroughDepth != nil, """
-                The restored entry has a nil ceiling, which `isEntryVisible` treats as visible at \
-                every depth — including duress ones. An entry hidden before the backup comes back \
-                exposed, and `VaultBackupEntry` has no field to carry the ceiling at all.
-                """)
-        }
+        let decodedDepth = restored.visibleThroughDepth?.decrypt().flatMap { DepthCodec.decode($0) }
+        #expect(decodedDepth == 0, """
+            The restored entry's ceiling decoded to \(String(describing: decodedDepth)), not 0. A \
+            nil or wrong ceiling means `isEntryVisible` reads it as visible at every depth — \
+            including duress ones — regardless of the depth it was hidden at when exported.
+            """)
     }
 
     // MARK: - Staleness metadata (32-slot, one per depth)
