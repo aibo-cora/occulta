@@ -9,7 +9,7 @@
 //
 //  Scope: this model handles per-entry PEK recovery. BEK restore shards that
 //  arrive during device recovery are stored in a separate encrypted file
-//  (pending-restore-shards.dat) to isolate their lifecycle from per-entry
+//  (backup-import-cache-shards.dat) to isolate their lifecycle from per-entry
 //  cleanup. See VAULT_BACKUP_GUIDE.md and Vault+Manager+Backup.swift.
 //
 //  Privacy model — encryption at rest:

@@ -584,15 +584,19 @@ extension VaultManager {
 
     // MARK: - Pending restore
 
+    // Filenames deliberately do not name the mechanism — see Bug 93 harm 3. A file
+    // literally named "pending-restore" is a forensic tell readable with `ls` alone,
+    // no decryption needed. These sit alongside backup-export-meta.dat and borrow its
+    // cover story: ordinary-looking backup bookkeeping.
     private static let pendingRestoreURL: URL =
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("pending-restore.occbak")
+            .appendingPathComponent("backup-import-cache.occbak")
 
     private static let pendingRestoreShardsURL: URL =
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("pending-restore-shards.dat")
+            .appendingPathComponent("backup-import-cache-shards.dat")
 
     private static let pendingRestoreShardsAAD: Data =
         Data("occulta.pending-bek-restore-shards".utf8)

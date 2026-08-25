@@ -30,8 +30,8 @@ import SwiftData
 /// AAD would produce `decryptionFailed` and the paths would clean nothing.
 private let backupFileAAD = Data("occulta-backup-v1".utf8)
 private let appSupport    = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-private let pendingRestoreURL       = appSupport.appendingPathComponent("pending-restore.occbak")
-private let pendingRestoreShardsURL = appSupport.appendingPathComponent("pending-restore-shards.dat")
+private let pendingRestoreURL       = appSupport.appendingPathComponent("backup-import-cache.occbak")
+private let pendingRestoreShardsURL = appSupport.appendingPathComponent("backup-import-cache-shards.dat")
 
 /// Both restore files live at fixed global paths, so a leftover from one test changes
 /// what `unlock(context:)` does in the next — it calls `refreshPendingRestoreState()`

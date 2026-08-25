@@ -514,7 +514,7 @@ without attempting decryption.
 | Backup row in vault list (graduated appearance, 3 states) | ✅ |
 | BEK shard setup view (`VaultShardSetup(mode: .backup)`) | ✅ |
 | BEK shard collection via auto-handback on contact key re-exchange | ✅ |
-| Pending restore: `pending-restore.occbak` + shard file + vault-list progress section | ✅ |
+| Pending restore: `backup-import-cache.occbak` + shard file + vault-list progress section | ✅ |
 | BEK reconstruction (Shamir.combine + GCM oracle) + re-wrap under new device vaultKey | ✅ |
 | `VaultBackup` / `VaultBackupEntry` Codable models | ✅ |
 | Export: unwrap encryptedBEK + decrypt all entries + AES-GCM seal | ✅ |
