@@ -6025,7 +6025,7 @@ anywhere in the flow to interrupt either half.
 
 ### The circular argument
 
-`attemptBEKRestore` (`Vault+Manager+Backup.swift:606`) reconstructs with signature verification
+`attemptBEKRestore` (`Vault+Manager+Backup.swift:721`) reconstructs with signature verification
 switched off:
 
 ```swift
@@ -6044,12 +6044,17 @@ this path that binds the material to *this device*, and it is the thing being sk
 ### The chain, end to end
 
 **1 — The file is armed with no confirmation, and above the Secure Mode gate.**
-`OccultaApp.swift:625-630` routes any `.occbak` straight into `storePendingRestore`, which validates
-four magic bytes and nothing else:
+`OccultaApp.swift:645-660` routes any `.occbak` into `storePendingRestore`, which validates four
+magic bytes and — since Bug 93 — the two-signal check (refuses if a BEK already exists or a restore
+is already pending) and nothing else about the file's actual contents or provenance:
 
 ```swift
 if fileLocation.pathExtension == "occbak" {
-    try self.vaultManager.storePendingRestore(data)
+    let currentDepth = self.security.currentDepth
+    do {
+        try self.vaultManager.storePendingRestore(data, currentDepth: currentDepth)
+        …
+    } catch VaultManager.BackupError.alreadyProcessed { … }
     return
 }
 
@@ -6057,17 +6062,27 @@ if fileLocation.pathExtension == "occbak" {
 if self.appScreen.phase != .unlocked { … }
 ```
 
-The `return` is *above* the lock check, so a `.occbak` arms a pending restore while the app is
-locked — unlike every other inbound file type, which is queued unprocessed.
+The `return` is still *above* the lock check, so a `.occbak` arms a pending restore while the app is
+locked — unlike every other inbound file type, which is queued unprocessed. Bug 93's additions
+(depth threading, the two-signal check, the acknowledgment UI) changed what gets displayed and when
+completion is allowed to run; they did not add any check on the file's contents, so this step is
+otherwise unchanged from when this bug was filed.
 
 **2 — Forged shards are accepted, twice over.** `handleHandback`
-(`ShardCustody+Manager.swift:200`) hard-rejects a bad signature *except* during a pending restore:
+(`ShardCustody+Manager.swift:201`) hard-rejects a bad signature *except* during a pending restore:
 
 ```swift
-guard vaultManager.pendingRestoreActive else { throw CustodyError.signatureRejected }
+guard vaultManager.isRestorePending else { throw CustodyError.signatureRejected }
 ```
 
-Then `acceptReturnedShard` (`Vault+Manager+ReturnBuffer.swift:44`) performs what its own
+**Renamed from `pendingRestoreActive` by Bug 93 (2026-08-25), same behavior.** Bug 93 needed
+`pendingRestoreActive` to start lying above depth 0 for display, and split off `isRestorePending` as
+an always-truthful twin specifically so this gate — a functional check, not a display one — would
+keep working exactly as before. Confirmed against the actual diff: `isRestorePending` reads identically
+to how `pendingRestoreActive` behaved pre-Bug-93, at every depth. **This bug's exploitability is
+unchanged; only the name in this quote was stale.**
+
+Then `acceptReturnedShard` (`Vault+Manager+ReturnBuffer.swift:38`) performs what its own
 documentation calls *"Best-effort signature verification"* — it logs under `#if DEBUG` and continues
 regardless. Step 1 of its documented steps enforces nothing in any build. It validates
 `category == .shard` and a non-nil `entryID`, and **never checks that `entryID` names a distribution
@@ -6079,7 +6094,7 @@ nor `senderIdentifier` — `handleDistribute` and `handleReplace` both take them
 **3 — Reconstruction "validates."** Shamir returns the attacker's BEK; `AES.GCM.open` on the
 attacker's file succeeds; the guard passes.
 
-**4 — The real BEK is deleted.** `persistBEKPayload` (`Vault+Manager+Backup.swift:728-731`) is
+**4 — The real BEK is deleted.** `persistBEKPayload` (`Vault+Manager+Backup.swift:1005-1008`) is
 delete-and-replace:
 
 ```swift
@@ -6245,36 +6260,41 @@ offers the stale shard back as `.handback`, unprompted. This is not hypothetical
 it already runs.
 
 **Gap 1 — `handleHandback` only accepts a mismatch during an active restore.** Its guard is
-`vaultManager.pendingRestoreActive`. Once the owner has already recovered, that flag is false, so any
-*later* mismatch-handback — from a trustee who re-pairs after the fact, which is the ordinary case,
-since not every trustee is available at the moment of bootstrap — is hard-rejected with
-`CustodyError.signatureRejected`. There is no accept-and-reconcile path for a trustee returning a
-stale shard as routine hygiene outside the bootstrap window.
+`vaultManager.isRestorePending` (renamed from `pendingRestoreActive` by Bug 93, 2026-08-25 — same
+behavior, see *The chain, end to end* above). Once the owner has already recovered, that check is
+false, so any *later* mismatch-handback — from a trustee who re-pairs after the fact, which is the
+ordinary case, since not every trustee is available at the moment of bootstrap — is hard-rejected
+with `CustodyError.signatureRejected`. There is no accept-and-reconcile path for a trustee returning
+a stale shard as routine hygiene outside the bootstrap window.
 
-**Gap 2 — `reconstructBEK` clears `shardMetadata: nil` on success**, so a freshly-recovered owner has
-no record of who held what. `distributeBEKShards`'s existing-vs-new-trustee split is keyed off that
-now-empty map, so every trustee reads as new, and redistribution issues plain `.distribute`. But
-`.distribute`'s handler (`ShardCustody+Manager.swift:115`) never calls `deleteMismatchShards` —
-**only `.replace`'s handler does** (`:171-176`). So the stale shard is never cleaned up by a
-post-recovery redistribution either.
+**Gap 2 — re-examined 2026-08-26, and the claim as originally written doesn't hold.** The reasoning
+up to the redistribution decision is still right: `reconstructBEK` clears `shardMetadata: nil` on
+success, so a freshly-recovered owner has no record of who held what, `distributeBEKShards`'s
+existing-vs-new-trustee split reads every trustee as new off that empty map, and redistribution
+issues plain `.distribute`. **But the conclusion — that `.distribute`'s handler never cleans up the
+stale shard — is wrong.** Checked directly: `handleDistribute`
+(`ShardCustody+Manager.swift:116-144`) calls `deleteMismatchShards(for:newFingerprint:)` at line 142,
+unconditionally, on every accepted `.distribute`, using the fingerprint of whoever just signed the
+incoming shard. `git log` traces this call to `0f5392a` (2026-05-04, the original manifest-based
+reconciliation protocol) — nearly four months before this bug was filed, so this was never a
+regression introduced alongside the rest of Bug 94's finding; the doc's claim was incorrect from the
+moment it was written, not something that changed later. **So a post-recovery `.distribute` to a
+trustee already holding a stale shard for that owner does get cleaned up**, the same way `.replace`
+does — Gap 2 does not need its own fix.
 
-**Net effect: a trustee ends up holding both a valid new shard and a permanently orphaned old one,**
-offered back and rejected on every future exchange, with no exit. Beyond the clutter, a repeating
-rejected-handshake pattern between the same two identities is its own distinctive signal — worth
-weighing against this project's forensic-trace standard the same way B4 is.
+**Net effect on Gap 1 alone: a trustee's stale shard is only orphaned between recovery and their
+next re-pairing** — not permanently, as originally written, since redistribution's `.distribute`
+already cleans it up once it arrives. In that window, offering it back gets hard-rejected; a repeating
+rejected-handshake pattern between the same two identities in that window is still worth weighing
+against this project's forensic-trace standard, the same way B4 is, but it is bounded, not indefinite.
 
 **Gap 1 resolves as a side effect of remedy 2's design, not as a separate fix.** Once
 `handleHandback`'s acceptance condition is "verifies directly (Branch A) or carries a valid trustee
-attestation" rather than "verifies directly or `pendingRestoreActive` is true," there is no global
-flag left to scope in the first place. The attestation check is safe to run on *any* incoming
-handback, bootstrap or routine hygiene alike, because it is self-limiting to genuine trustees
-regardless of when it arrives. The tension with remedy 3 that an earlier version of this entry raised
-here doesn't apply once the accept condition stops being a flag at all.
-
-**Gap 2 still needs its own fix, unrelated to attestation.** On post-recovery redistribution, pull
-each trustee's current manifest (which arrives unprompted, per above) and issue `.replace` naming
-that ID instead of defaulting to `.distribute` — that alone buys `.replace`'s existing cleanup for
-free.
+attestation" rather than "verifies directly or `isRestorePending` is true," there is no global flag
+left to scope in the first place. The attestation check is safe to run on *any* incoming handback,
+bootstrap or routine hygiene alike, because it is self-limiting to genuine trustees regardless of
+when it arrives. The tension with remedy 3 that an earlier version of this entry raised here doesn't
+apply once the accept condition stops being a flag at all.
 
 **Constraint on any fix touching the `.occbak` handler.** The extension is shared with the Secure
 Mode layer store by design — `forensic-trace-avoidance.md` **B4**, *"Vault backups use the same
