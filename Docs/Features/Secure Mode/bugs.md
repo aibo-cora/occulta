@@ -5147,8 +5147,11 @@ import fix landed.
 
 ## Bug 89 — Bug 85's fix does not reach soft-deleted rows, leaving its classifier alive there
 
-**Status:** **Fixed 2026-08-20.** Found 2026-08-19 on a live device, in the `⚠️` line Bug 85's own
-DEBUG diagnostic prints. Not a regression from that fix — an area it did not cover.
+**Status:** **Fixed 2026-08-20**, then **superseded by Bug 89a on 2026-08-26** — the fix described
+below never fired on a readable row, and its "no deletion-time hook" conclusion was wrong. Read this
+entry for the length leak and Bug 89a for the value leak and the shipped behaviour. Found 2026-08-19
+on a live device, in the `⚠️` line Bug 85's own DEBUG diagnostic prints. Not a regression from that
+fix — an area it did not cover.
 
 `migrateScrubDeletedDepthStamps` writes `Data.randomBytes(DepthCodec.sealedSize)` into any depth
 stamp of a soft-deleted row that is not already that length — no key, no decryption, idempotent by
@@ -5301,6 +5304,143 @@ carry the signal until those rows age out.
 A test asserting that after the migration **every** row's depth fields are one length, including
 soft-deleted rows — the current assertion only holds for live ones, which is why this survived. The
 device diagnostic already reports it; the suite does not.
+
+---
+
+## Bug 89a — Bug 89's scrub never fires on the rows that leak, and leaves the depth value itself readable
+
+**Status:** **Fixed 2026-08-26.** Found the same day by a security review of `release/v1.10.3`, in
+the code Bug 89 shipped. A defect in that fix, not an area it did not cover — the distinction Bug 89
+itself was careful to draw about Bug 85.
+
+**Target:** `release/v1.10.3`. Blocks the release: this is a live deniability break, not a residue.
+
+### Severity: High (forensic)
+
+Higher than Bug 89, which it supersedes in scope. Bug 89 leaked a *length*, and from it the
+inference "classification happened at all". This leaks the **value**: `originDepth` names the duress
+layer a contact was created in and `visibleThroughDepth` says it was deliberately hidden from every
+cover story. That is not "was Secure Mode configured" but "here is the depth of a layer you have not
+admitted exists", recovered from a row the user believes they deleted.
+
+### What happens
+
+Three faults compose, and each one alone would have been enough to keep the true value on disk.
+
+**1. The predicate is inverted.** `scrubbedStamp` skipped any field already at
+`DepthCodec.sealedSize`:
+
+```swift
+guard field?.count != DepthCodec.sealedSize else { return nil }
+```
+
+`sealedSize` is 30, which is by construction the length of *every* stamp the current codec writes.
+So a readable stamp — the only kind that leaks a value — was always skipped, and only legacy-width
+stranded ones (29/47), which leak nothing but their length, were ever rewritten. The guard was
+written as an idempotency check ("already scrubbed") and silently doubles as "already sealed",
+because random filler and real ciphertext are the same length by design. Length cannot separate
+those two states, so it cannot be the predicate for either.
+
+**2. The pass that runs first removes the remaining evidence.**
+`migrateDepthFieldsToFixedWidth` fetched `FetchDescriptor<Contact.Profile>()` with no
+`deletionToken` filter, and runs at `OccultaApp.swift:168`, before the scrub at `:178` — an ordering
+the comment there states deliberately. Any legacy-width stamp on a soft-deleted row it *could* read
+was converted to 30 bytes one pass earlier, and then skipped permanently by fault 1.
+
+**3. The deletion-time half was never built.** Bug 89's entry says *"One pass, no deletion-time
+hook: see the remedy for why prevention is unnecessary here"*, and the shipped doc comment on
+`migrateScrubDeletedDepthStamps` went further, asserting `deleteContact` *"scrubs these at deletion
+time from now on, so this exists only for rows deleted before that shipped"*. It never did.
+`deleteContact` set `deletionToken`, purged drafts, prekeys and group membership, and left all three
+depth stamps untouched. So the affected population was never historical — **it grew with every
+deletion.**
+
+### Why the "random, not a fresh encryption" reasoning was wrong
+
+Bug 89's remedy reversed an earlier proposal to write a real `encrypt(Int.max)`, on the grounds that
+*"on a stranded soft-deleted row the neighbours are fields that all fail to decrypt, so a field that
+decrypts cleanly is the outlier"*. That argument is correct, and it is the right instinct — filler
+has to blend into its neighbours. It was applied to the wrong population.
+
+**Soft-deleted and stranded are not the same set.** A row is stranded only once a rotation has
+happened *since* its deletion, because rotation is what abandons the key its fields were sealed
+under. A row deleted since the last rotation is soft-deleted and fully readable: its name, its
+`deletionToken`, everything. On that row the neighbours all decrypt, so random bytes are the outlier
+— and they tell the same incoherent story in reverse, one the earlier analysis named precisely
+without noticing it cuts both ways. Three fields that will not decrypt on a row whose every other
+field will does not read as erasure. It reads as *deliberate destruction*, which points at the
+scrub itself and is a worse trace than the value it was hiding.
+
+The lesson generalises past this bug: **the tell is never the value in the field, it is a field
+whose readability disagrees with the row it sits on.** Neither "always random" nor "always sealed"
+can be right, because the target state is a property of the row, not of the format.
+
+### Remedy
+
+**Scrub at deletion time, and make the migration a pure repair pass.** `deleteContact` now seals the
+benign triple before marking the row deleted, under the same key the rest of the row already uses:
+
+| Field | Value | Why |
+| --- | --- | --- |
+| `visibleThroughDepth` | `Int.max` | Visible at every duress depth — an ordinary contact. Also the backfill's own default, so it is the modal value on any install |
+| `globalTrusteeDepth` | `-1` | The codec's dedicated "not a trustee" sentinel |
+| `originDepth` | `0` | Born in the real session; `isVisible` only branches on `origin > 0` |
+
+Written unconditionally, so there is no branch on secret state. Note **not** `visibleThroughDepth =
+0`: that is the incriminating value, the one that marks a contact hidden from every cover story, and
+it is also what Bug 87's fail-closed reading resolves an unreadable ceiling *to*. The benign value
+and the fail-closed value point in opposite directions here, which is worth stating because the two
+are easy to conflate.
+
+Doing this at deletion time rather than in a migration also means there is never a window in which
+the true value sits on disk on an already-deleted row.
+
+**The migration keys on the row, not on length.** `scrubbedStamp` now takes the benign value and a
+`rowIsReadable` flag: readable rows get the sealed benign value, stranded rows keep the key-free
+random-bytes path, and a stamp already sealed under a superseded key is left byte-identical because
+it is *already* consistent with its neighbours. Idempotent in both branches, and the readable branch
+requires fixed width as well as a benign value — a legacy-format stamp can already decode to
+`Int.max` while still leaking through its length (Bug 85).
+
+**`deletionToken` is the readability oracle.** It is the right one on three counts: it is set on
+exactly this population, it is always encrypted, and its plaintext is the known constant `Data([1])`
+— so it confirms a *correct* decrypt rather than a merely non-throwing one. It also tracks the row's
+bulk state rather than a stray field, which matters for the Bug 97 population, where one stamp can
+be current-key while the names are stranded. Probing an individual stamp would misread those rows
+and re-seal all three into readability against stranded neighbours.
+
+**`migrateDepthFieldsToFixedWidth` fetches live rows only**, so it stops feeding fault 1.
+
+**On losing the key-free property.** Bug 89 valued that the pass *"cannot be blocked by an
+unavailable key"*. The readable branch necessarily gives that up — it exists to write values that
+decrypt. It degrades rather than breaking: with no key, `deletionToken` will not decrypt, every row
+reads as stranded, and the pass falls back to exactly the old key-free length normalisation.
+
+**Page hygiene needed no new work.** `PRAGMA secure_delete = ON` (`OccultaApp.swift:210`) zeroes the
+freed page holding the pre-scrub ciphertext rather than leaving it in the freelist, and
+`deleteContact` already calls `checkpointStore()` after its save, so the WAL frame is flushed. The
+scrub is placed before that save and is covered by both.
+
+### Residual, accepted
+
+Every scrubbed row now reads identically. An examiner holding the key and comparing the live
+population against the deleted one has a weak distributional signal: live contacts vary across
+depths, deleted ones are uniformly ordinary. Accepted rather than closed. Sampling the benign value
+from the live distribution would flatten it and would risk writing a value that names a real layer,
+which is a strictly worse trade. The values chosen are also what an install that never activated
+Secure Mode holds, so the population blends into the innocent baseline rather than into itself.
+
+### Guard
+
+`ScrubMatchesRowReadabilityTests` covers both branches: a readable row's stamps decode to the benign
+triple and still decrypt afterwards, a stranded row's do neither, the readable branch is idempotent,
+and a readable legacy-width stamp is rewritten even when its value is already benign.
+`FixedWidthPassExcludesDeletedRowsTests` pins the fetch filter in both directions.
+`DeleteContactScrubsStampsTests` covers the deletion-time control — the one that keeps the
+population from growing. All three fail against the pre-fix code.
+
+Bug 89's own suite is unchanged and still passes: its fixtures use a `deletionToken` that does not
+decrypt, so those rows take the stranded branch, which is the behaviour it was written to assert.
 
 ---
 
