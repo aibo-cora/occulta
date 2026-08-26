@@ -5424,22 +5424,31 @@ which is the part of that refactor where a mistake would hide.
 
 ## Bug 92 — A backup file is readable from any layer, because the BEK is not layered
 
-**Status:** **Open.** Separated out of Bug 88's design discussion, 2026-08-20, on noticing that fixing
-the export leak does not stop a coerced session reading a backup file it *finds*.
+**Status:** **Open — re-examined 2026-08-26, scenario narrower than originally filed.** Separated out
+of Bug 88's design discussion, 2026-08-20, on noticing that fixing the export leak does not stop a
+coerced session reading a backup file it *finds*. **That specific in-app scenario no longer reaches**
+— see *Re-examined* below, added after Bugs 93 and 94 (both filed and fixed after this one) turned
+out to close the only code path that ever calls `importBackup`. The remaining exposure is real but
+different: raw key extraction outside the app, not a coerced PIN entry inside it. Severity re-rated
+accordingly.
 
 **Target:** unset. Independent of Bug 88 — that one needs no format change and should not wait for
 this.
 
-### Severity: High (security), with a precondition Bug 88 does not have
+### Severity: Medium (security) — re-rated 2026-08-26 from High, see *Re-examined* below
 
-Bug 88 needs someone to tap Export. This needs a backup file to exist and be reachable — on the
-device, in Files, in iCloud. Weaker, but ordinary: backups are made to be kept somewhere.
+**Original reasoning, preserved:** Bug 88 needs someone to tap Export. This needs a backup file to
+exist and be reachable — on the device, in Files, in iCloud. Weaker, but ordinary: backups are made
+to be kept somewhere. **That comparison was about reachability, not about what a coercer can do once
+they've reached it** — the second half turned out to be much narrower than assumed; see below.
 
-### What happens
+### What happens, as originally found
 
 The vault key comes from `deriveVaultKey(context:)` — a dedicated SE key gated on biometrics, with
 **no depth input** — and nothing in the backup path references depth at all. So there is one BEK per
-device, identical at every layer.
+device, identical at every layer. That part is still true and is the whole reason a fix is still
+worth building — see *Re-examined* just below for what it does and doesn't currently let a coercer
+do about it.
 
 A backup file is sealed with it. A duress session has it. Therefore a coerced session can decrypt any
 backup file it can reach, including one exported from the real layer, and read entries the vault UI
@@ -5447,6 +5456,45 @@ would never show it because `isEntryVisible` filters them.
 
 Bug 88's remedy stops an export from *containing* other layers. It does not stop this: the file is a
 depth-bypassing artifact wherever it is stored.
+
+### Re-examined 2026-08-26 — the in-app path this severity was rated on doesn't reach
+
+Asked directly: how would a coercer actually get the app to decrypt a *found* file using the
+device's own BEK? Traced every caller of `importBackup` — there is exactly one, inside
+`attemptBEKRestore`'s shard-reconstruction branch (`Vault+Manager+Backup.swift:721-753`). Two things
+built after this bug was filed, for unrelated reasons, close that path off for the population that
+matters:
+
+- **A device that already has a BEK** — the realistic target, someone who actually finished setting
+  up backup — never reaches `importBackup` at all. `storePendingRestore` (Bug 93's own two-signal
+  check) refuses to arm a newly-found file outright whenever `alreadyHasBEK` is true, before writing
+  anything. Dead end at every depth, immediately.
+- **A device with no BEK yet** can arm a found file, but completion still requires genuine trustee
+  shards reaching threshold, and `attemptBEKRestore` only ever completes at depth 0 (Bug 93's
+  deferral). So even here, a coercer sitting in a duress session watching this happen never sees the
+  result — the decrypted entries only surface later, to the real owner, at their own next real
+  unlock. "A coerced session can decrypt any backup file it can reach" does not hold even in this
+  narrower case: nothing is ever displayed to the coerced session at all.
+
+So the scenario this bug's High rating was based on — sit in duress, open a found file, read what
+comes back — isn't reachable through the shipped UI today. **That doesn't make the underlying defect
+harmless, it changes what kind of attacker can reach it:**
+
+1. **Raw BEK extraction outside the app, then offline decryption** — device forensics, a jailbreak, a
+   memory-dump exploit, or any other compromise that gets the BEK bytes directly rather than through
+   the app's gated flows. None of the in-app guards above are barriers once the key is out, because
+   none of that code is being run. This is what the PIN-combined derivation actually defends
+   against: a leaked or forensically-extracted BEK alone still isn't sufficient, because the PIN —
+   knowledge, not stored material — isn't part of what was extracted.
+2. **A found file plus genuinely cooperating trustees, landing at the real owner's own later
+   depth-0 unlock.** Not really coercion-shaped — closer to "someone else's old backup, someone
+   else's real trustees, enough time" — and the result reaches the real layer for the real owner,
+   never a coercer's view.
+
+Neither of these is a duress-specific, PIN-coercion attack. The layering fix is still worth building
+— the BEK genuinely is layer-blind, and that's a real design gap for anything that *does* get raw key
+access — but the urgency is that of a device-compromise defense-in-depth measure, not a PIN-coercion
+mitigation, which is why the severity below is re-rated rather than left at High.
 
 ### Why the obvious keys do not work
 
