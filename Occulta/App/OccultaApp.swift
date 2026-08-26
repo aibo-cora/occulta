@@ -243,7 +243,7 @@ struct OccultaApp: App {
 
 // MARK: - Root View
 
-private struct RootView: View {
+struct RootView: View {
 
     let storeURL: URL
 
