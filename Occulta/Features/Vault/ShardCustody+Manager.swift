@@ -227,21 +227,28 @@ final class ShardCustodyManager {
             throw CustodyError.invalidPayload
         }
 
+        // Only a Branch B attestation is carried forward. Every op now ships an attestation —
+        // filler where there is no real one, so the field's presence cannot partition a group
+        // send by size — and `op.attestation` is therefore no longer evidence of anything on
+        // its own. Persisting it unconditionally would store random bytes on every Branch A
+        // shard.
+        let verifiedAttestation: SignedAttribute?
+
         if let ownKey = try? self.keyManager.retrieveIdentity(), attribute.verify(against: ownKey) {
-            // Branch A.
+            verifiedAttestation = nil                                   // Branch A.
         } else if let attestation = op.attestation,
                   attestation.category == .attestation,
                   attestation.entryID == attribute.entryID,
                   attestation.verify(against: senderPublicKey),
                   attestation.value == Data(SHA256.hash(data: attribute.signingPayload())) {
-            // Branch B.
+            verifiedAttestation = attestation                           // Branch B.
         } else {
             throw CustodyError.signatureRejected
         }
 
         try vaultManager.acceptReturnedShard(
             attribute,
-            attestation: op.attestation,
+            attestation: verifiedAttestation,
             senderIdentifier: senderIdentifier,
             currentDepth: currentDepth
         )
@@ -353,7 +360,11 @@ final class ShardCustodyManager {
             return OccultaBundle.ShardOperation(
                 kind:        payload.oldAttributeID != nil ? .replace : .distribute,
                 attribute:   payload.signedAttribute,
-                attributeID: payload.oldAttributeID
+                attributeID: payload.oldAttributeID,
+                // Filler, never read: `handleDistribute`/`handleReplace` don't look at
+                // `attestation`. It is here so the field's presence is constant across every
+                // op on the wire — see `attestationFiller`.
+                attestation: Self.attestationFiller(entryID: payload.signedAttribute.entryID)
             )
         }
     }
@@ -371,8 +382,35 @@ final class ShardCustodyManager {
             .map    { OccultaBundle.ShardOperation(
                 kind:        .handback,
                 attribute:   $0.payload.signedAttribute,
+                // Filler when this device cannot produce a real one, never nil. A real
+                // attestation and a missing one are ~260 encoded bytes apart, so leaving it
+                // nil would let a bundle be partitioned by which recipient is genuinely mid-
+                // recovery — see `attestationFiller`. Filler fails Branch B exactly as nil
+                // did, so the receive path is unchanged.
                 attestation: self.attestation(for: $0.payload)
+                             ?? Self.attestationFiller(entryID: $0.payload.signedAttribute.entryID)
             ) }
+    }
+
+    /// A random attribute shaped like a real `.attestation`, for ops that have no real one.
+    ///
+    /// Same reasoning as `wrapRecipient`'s `randomEphemeralSignatureFiller`, and the same
+    /// pattern as `verifierFillerArray`/`pinEnabledFillerArray`/shard tier-padding: a field
+    /// whose *presence* varies between recipients partitions a group send by
+    /// `Recipient.wrappedPayload.count` alone, which is cleartext in the bundle. Tier padding
+    /// equalises the op *count* per recipient; it does not equalise their encoded size, so an
+    /// optional 260-byte member has to be filled rather than omitted.
+    ///
+    /// Sizes track the real thing: a 32-byte SHA256 `value`, a 72-byte DER-shaped `signature`,
+    /// the same fixed label, and a non-nil `entryID`.
+    private static func attestationFiller(entryID: UUID?) -> SignedAttribute {
+        SignedAttribute(
+            label:     "shard-attestation",
+            value:     Data.randomBytes(32),
+            category:  .attestation,
+            signature: Data.randomBytes(72),
+            entryID:   entryID ?? UUID()
+        )
     }
 
     /// Vouch for `payload.signedAttribute` with this device's *current* identity key,

@@ -683,9 +683,13 @@ extension VaultManager {
     ///
     /// At most one stored shard per `senderIdentifier` (Bug 94 remedy 2) — a second
     /// share from the same sender replaces the first rather than accumulating, so
-    /// `attemptBEKRestore`'s grouping structurally reflects distinct senders, not
-    /// just distinct `SignedAttribute.id`s. Safe to call while the vault is locked —
-    /// uses the recovery buffer key.
+    /// `attemptBEKRestore`'s grouping reflects distinct senders, not just distinct
+    /// `SignedAttribute.id`s. Safe to call while the vault is locked — uses the
+    /// recovery buffer key.
+    ///
+    /// The floor this produces is **two** senders, not `threshold` — see `AttestedShard`
+    /// for why a device with no BEK cannot know the owner's `threshold`, and why the
+    /// depth-0 confirmation rather than this count is what gates an unsolicited restore.
     func storeRestoreShard(_ attribute: SignedAttribute, attestation: SignedAttribute?, senderIdentifier: String) throws {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw VaultError.keyDerivationFailed

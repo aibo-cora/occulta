@@ -79,7 +79,12 @@ final class ReconstructShard {
     /// trustee, identified by the SignedAttribute.id from the original split).
     /// `senderIdentifier`/`attestation` are Bug 94 remedy 2: at most one stored
     /// row per (entryID, senderIdentifier) is kept, so a threshold-reaching group
-    /// structurally requires distinct senders, not just distinct attrIDs.
+    /// requires distinct senders, not just distinct attrIDs.
+    ///
+    /// Unlike the BEK path, a per-entry group *does* reach the entry's real threshold:
+    /// the entry is one this device split itself, so its `shardDistributionEncrypted`
+    /// is on hand and `tryFinalizeReconstruction` verifies every shard against the
+    /// owner identity. `AttestedShard` documents why the BEK path cannot do the same.
     struct Payload: Codable {
         let entryID: UUID
         let attrID:  UUID

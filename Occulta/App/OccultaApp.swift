@@ -281,6 +281,9 @@ struct RootView: View {
     // harmless at a duress depth.
     @State private var showBackupNotice = false
     @State private var backupNoticeMessage = ""
+    /// A `.occbak` opened at depth 0, held until the user confirms. Never set above depth 0.
+    @State private var pendingRestoreFile: Data?
+    @State private var showRestoreConfirmation = false
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
     /// A share-extension session staged in the App Group, waiting for the user to pick who it
@@ -438,6 +441,15 @@ struct RootView: View {
                 Button("OK") { }
             } message: {
                 Text(self.backupNoticeMessage)
+            }
+            .alert("Restore from this backup?", isPresented: self.$showRestoreConfirmation) {
+                Button("Cancel", role: .cancel) { self.pendingRestoreFile = nil }
+                Button("Restore", role: .destructive) { self.armPendingRestore() }
+            } message: {
+                Text("""
+                    Occulta will collect shards from your trustees and then import this file's \
+                    entries into your vault. Continue only if you asked for this file.
+                    """)
             }
             .sheet(item: self.$openedFileContents) {
                 /// Dismiss
@@ -644,18 +656,29 @@ struct RootView: View {
                 // duress's internal consistency, not about matching depth 0.
                 if fileLocation.pathExtension == "occbak" {
                     let currentDepth = self.security.currentDepth
-                    do {
-                        try self.vaultManager.storePendingRestore(data, currentDepth: currentDepth)
-                        if currentDepth != 0 {
-                            self.backupNoticeMessage = "Backup file received."
-                            self.showBackupNotice = true
+
+                    // Above depth 0 the three outcomes must stay indistinguishable, so that
+                    // path arms silently and acknowledges uniformly, exactly as before. A
+                    // confirmation prompt there would be a signal in itself.
+                    guard currentDepth == 0 else {
+                        do {
+                            try self.vaultManager.storePendingRestore(data, currentDepth: currentDepth)
+                        } catch VaultManager.BackupError.alreadyProcessed {
+                            // Same acknowledgment as a fresh accept — see above.
                         }
-                    } catch VaultManager.BackupError.alreadyProcessed {
-                        self.backupNoticeMessage = currentDepth == 0
-                            ? "This backup file has already been processed."
-                            : "Backup file received."
+                        self.backupNoticeMessage = "Backup file received."
                         self.showBackupNotice = true
+                        return
                     }
+
+                    // Depth 0 confirms before arming. Arming is not inert: it makes the device
+                    // accept BEK shards from contacts and, once enough arrive, import the file's
+                    // entries into the real-layer vault with no further prompt. Opening a file
+                    // must not be enough to start that on its own — a device with no BEK of its
+                    // own (fresh install, new phone) will reconstruct whatever key the file's
+                    // shards rebuild, and nothing in the file authenticates who authored it.
+                    self.pendingRestoreFile = data
+                    self.showRestoreConfirmation = true
                     return
                 }
 
@@ -674,6 +697,23 @@ struct RootView: View {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
             }
+        }
+    }
+
+    /// Arms the confirmed `.occbak` for restore. Depth 0 only — the confirmation that
+    /// reaches here is never presented above it.
+    private func armPendingRestore() {
+        guard let data = self.pendingRestoreFile else { return }
+        self.pendingRestoreFile = nil
+
+        do {
+            try self.vaultManager.storePendingRestore(data, currentDepth: 0)
+        } catch VaultManager.BackupError.alreadyProcessed {
+            self.backupNoticeMessage = "This backup file has already been processed."
+            self.showBackupNotice = true
+        } catch {
+            self.errorMessage = "There was an error. \(error.localizedDescription)"
+            self.showError = true
         }
     }
 

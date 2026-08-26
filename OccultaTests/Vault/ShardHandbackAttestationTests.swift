@@ -402,7 +402,15 @@ struct ShardHandbackAttestationTests {
         let ops = try trusteeCustody.buildShardOperations(for: "owner", currentContactPublicKey: ownerNewPub)
         let handback = try #require(ops.first { $0.kind == .handback })
 
-        #expect(handback.attestation == nil,
-                "with no retained key to check against, the op must go out without an attestation, not a fabricated one")
+        // Padding, not a vouch. Every op now ships an attestation so the field's mere
+        // presence cannot partition a group send by `wrappedPayload` size — see
+        // `ShardCustodyManager.attestationFiller`. The security property is unchanged and is
+        // asserted directly here: a device with nothing to check against cannot produce one
+        // that verifies, so filler is rejected by Branch B exactly as a nil was.
+        let attestation = try #require(handback.attestation)
+        #expect(!attestation.verify(against: try trusteeKM.retrieveIdentity()),
+                "filler must not verify — a device with no retained key must not be able to vouch")
+        #expect(attestation.value != Data(SHA256.hash(data: distributedAttr.signingPayload())),
+                "filler must not carry the hash a real attestation commits to")
     }
 }
