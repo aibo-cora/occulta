@@ -23,6 +23,10 @@ import LocalAuthentication
 import SwiftData
 @testable import Occulta
 
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
 // MARK: - Harness
 
 /// Duplicated from `Vault+Manager+Backup.swift`, where both are `private static`.
@@ -198,7 +202,13 @@ struct VaultRestoreTrustTests {
     /// lost everything, restoring from trustees. That failure is silent, and surfaces when
     /// the user has no device left to discover it on. This test must pass before the fix
     /// and after it.
-    @Test("A device with no BEK can still restore — the new-device path stays open")
+    /// The only test in this suite that needs a real Enclave. The other thirteen assert that
+    /// something is *refused*, and a refusal still happens when the depth stamp silently
+    /// fails to seal. This one asserts a restore succeeds end to end, which needs
+    /// `importBackup`'s stamp to actually be written — see `VaultBackupRoundTripTests` for
+    /// why the injected key manager does not reach it.
+    @Test("A device with no BEK can still restore — the new-device path stays open",
+          .enabled(if: secureEnclaveAvailable()))
     func freshDeviceCanStillRestore() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }

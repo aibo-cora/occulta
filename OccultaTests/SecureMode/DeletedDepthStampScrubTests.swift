@@ -197,7 +197,13 @@ struct DeletedRowBackfillExclusionTests {
     }
 
     /// The defect, and its fix.
-    @Test("A soft-deleted row's nil stamps are left for the scrub, not backfilled")
+    ///
+    /// Gated despite asserting nil, which a keyless host produces anyway: without an Enclave
+    /// the backfill's seal returns nil and the stamps stay nil for the wrong reason, so the
+    /// test passes without observing the filter it exists to pin. An honest skip beats a
+    /// green result that proves nothing.
+    @Test("A soft-deleted row's nil stamps are left for the scrub, not backfilled",
+          .enabled(if: secureEnclaveAvailable()))
     func deletedRowIsExcludedFromBackfill() throws {
         let context = ModelContext(try makeContainer())
         insert("deleted", deleted: true, stamps: nil, in: context)
@@ -218,7 +224,12 @@ struct DeletedRowBackfillExclusionTests {
 
     /// The constraint that keeps this from over-scoping: a live row's nil stamp is
     /// exactly the case the backfill exists to fix, and must still be stamped.
-    @Test("A live row's nil stamps are still backfilled normally")
+    ///
+    /// Needs a real Enclave — the backfill seals through `Data.encrypt()`, which builds its
+    /// own `Manager.Key()`, so with none available the stamp stays nil and this fails on the
+    /// count rather than skipping.
+    @Test("A live row's nil stamps are still backfilled normally",
+          .enabled(if: secureEnclaveAvailable()))
     func liveRowIsStillBackfilled() throws {
         let context = ModelContext(try makeContainer())
         insert("live", deleted: false, stamps: nil, in: context)

@@ -2,13 +2,22 @@
 //  LayerStoreMaintenanceTests.swift
 //  OccultaTests
 //
-//  Guards the maintenance-rewrite cadence (Bug 71). No Secure Enclave needed — these
-//  assert a constant and a threshold comparison, nothing that touches key material.
+//  Guards the maintenance-rewrite cadence (Bug 71). The three cadence tests need no Secure
+//  Enclave — they assert a constant and a threshold comparison. The fourth does, and the
+//  header used to claim otherwise for the whole file: `maintain()` rewrites through
+//  `writeNoOpFile`, which derives a key from `Manager.Key()` directly and returns without
+//  writing when there is none. On a runner with no Enclave that turns "an older file is
+//  rewritten" into a failure rather than a skip. `LayerStore`'s only seam is its backend, so
+//  this is gated rather than injected.
 //
 
 import Testing
 import Foundation
 @testable import Occulta
+
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
 
 @Suite("LayerStore — maintenance cadence")
 struct LayerStoreMaintenanceTests {
@@ -40,7 +49,8 @@ struct LayerStoreMaintenanceTests {
         #expect(first == second)
     }
 
-    @Test("A file younger than the threshold is not rewritten; an older one is")
+    @Test("A file younger than the threshold is not rewritten; an older one is",
+          .enabled(if: secureEnclaveAvailable()))
     func maintainRespectsTheThreshold() throws {
         let maxAge = Manager.LayerStore.maxAge
         let marker = Data(repeating: 0xAB, count: 8)
