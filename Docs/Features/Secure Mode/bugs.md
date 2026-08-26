@@ -6000,13 +6000,17 @@ and it should be re-read once the flag becomes depth-aware.
 
 ## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
 
-**Status:** **Partially fixed 2026-08-24.** Filed 2026-08-22 during a critical read of the
-export/import mechanism, requested after Bug 93. Found by asking what `ownerIdentity: nil`
-actually gives up. **Remedy 1 (overwrite refusal) is in** — `reconstructBEK` now refuses before
-touching Shamir, GCM, or `persistBEKPayload` whenever a BEK row already exists, closing the
-*destructive* half unconditionally. **Remedy 2 (trustee attestation) and remedy 3 (explicit
-confirmation) remain open** — the population with no BEK yet, "the other population" below, is
-still fully exposed; that is the larger remaining risk, not a residual edge case.
+**Status:** **Partially fixed 2026-08-24; remedy 2's design settled and stress-tested 2026-08-26, not
+yet built.** Filed 2026-08-22 during a critical read of the export/import mechanism, requested after
+Bug 93. Found by asking what `ownerIdentity: nil` actually gives up. **Remedy 1 (overwrite refusal)
+is in** — `reconstructBEK` now refuses before touching Shamir, GCM, or `persistBEKPayload` whenever a
+BEK row already exists, closing the *destructive* half unconditionally. **Remedy 2 (trustee
+attestation) and remedy 3 (explicit confirmation) remain open** — the population with no BEK yet,
+"the other population" below, is still fully exposed; that is the larger remaining risk, not a
+residual edge case. **Remedy 2's first-pass design had a critical gap** — a naive implementation let
+a single attacker self-attest a full threshold's worth of forged shares, reintroducing this bug's
+exact severity through the new mechanism — found and closed before any code was written; see
+*Implementation, worked out and stress-tested* below for the corrected design.
 
 **A consequence of remedy 1, found and closed the same day.** Every group `reconstructBEK` sees
 on an existing-BEK device now fails immediately via `bekAlreadyPresent` — so the "success" branch
@@ -6250,6 +6254,77 @@ one who does not. Moving `storePendingRestore`'s trigger behind a deliberate "re
 your backup file" action, instead of the current silent handler on any inbound file, costs little and
 narrows that residual case further. Not load-bearing on its own — see "The other population" above for
 why a confirmation step alone cannot stop an attacker who supplies both sides.
+
+### Implementation, worked out and stress-tested 2026-08-26
+
+**"Defeating this needs k or more trustees dishonest and colluding," above, is not automatic from
+attestation existing — it is a property of one specific mechanism, and a first-pass design of that
+mechanism didn't actually have it.** Recorded in full because the failure mode is exactly the kind
+this bug is about: a check that looks like it closes the population but doesn't.
+
+**The flaw a naive Branch B has.** The obvious shape — accept a shard whenever its signature fails
+direct verification but an attestation from a known contact vouches for it — only checks that *some*
+known contact signed *something*. It never independently verifies the original `attribute.signature`
+against anything. Nothing stops the attester and the "original signer" from being the same party: a
+single known contact (not a trustee, never given a real share) can invent their own fake
+`SignedAttribute` with an observable target `entryID`, sign an attestation over it with their own
+current key, and have it verify cleanly — because it genuinely is their own signature over their own
+fabricated data. Nothing stops them minting `threshold`-many distinct fake `SignedAttribute.id`s this
+way, all sharing the target `entryID`. `ShamirSecretSharing.reconstruct` only checks
+`shares.count >= threshold` and distinct x-coordinates — it does not check who sent them. One attacker,
+alone, reconstructs a key of their choosing. That is Bug 94's original severity, relocated into the new
+code path, not the "k colluding trustees" bound this design is supposed to provide.
+
+**The fix: enforce distinct senders, not just distinct share IDs, toward any threshold.**
+
+1. The attestation is a `SignedAttribute` with a new `.attestation` category, signed by the trustee's
+   current identity key over `SHA256(attribute.signingPayload())` — a hash, not the raw payload, so the
+   attestation doesn't carry a second copy of the raw shard bytes (`signingPayload()` includes `value`,
+   the actual GF(2^8) shard material) alongside the original in the same message.
+2. `handleHandback` accepts via **Branch A** (`attribute.verify(against: ownKey)` — can only ever be
+   genuine; forging it means breaking ECDSA or stealing the SE key, so no dedup is needed for this
+   branch) or **Branch B** (`attestation.verify(against: senderPublicKey)`, the hash matches, `entryID`
+   matches).
+3. Every stored share — both the per-entry `ReconstructShard` buffer and the BEK-restore shard file —
+   carries `senderIdentifier` alongside the attribute and attestation. Storage keeps **at most one
+   share per `(entryID, senderIdentifier)`**, replacing rather than accumulating on a repeat from the
+   same sender. Reconstruction then structurally requires `threshold` *distinct senders*, because
+   that's what the stored count now actually reflects — restoring the bound the design always claimed.
+4. **Dedup key is `senderIdentifier` (the contact record), not `senderPublicKey`'s fingerprint.**
+   Stress-tested this choice rather than assuming it: keying on the raw public key would let a single
+   hostile trustee reinstall the app or use a second device, generate a fresh identity key, re-pair with
+   the owner as "the same contact" (`Contact.Profile.Key`'s history is append-only — nothing marks an
+   old key as the *only* valid one), and hold two fingerprints that both count — a cheaper Sybil than
+   establishing a second contact relationship. `senderIdentifier` stays stable across a trustee's own
+   legitimate key rotation, correctly counting them once.
+5. **`senderIdentifier` is receiver-derived, not sender-asserted — checked directly, not assumed.**
+   Traced both call sites (`OccultaApp.swift:835-864` group path, `:885-909` 1:1 path): `ownerID` comes
+   from the *receiving* device's own `contactManager.openGroup(...)`, and `senderPublicKey` is looked up
+   *from* that resolved `ownerID` via `currentPublicKey(forIdentifier:)` — the lookup runs
+   identifier-on-file → key, not key → sender-claimed-identifier. An attacker can't assert a different
+   name across bundles; whichever contact the decrypting key actually resolves to on the receiver's own
+   records is what `senderIdentifier` will be, every time. This is what makes step 3's dedup sound —
+   had this gone the other way, the whole mechanism would need a different anchor.
+6. **BEK-shard and per-entry-PEK-shard storage need different gates, not one flag loosened
+   uniformly.** A per-entry share can be gated precisely: the device already knows locally which
+   entries have an outstanding distribution (`VaultEntry.shardDistributionEncrypted != nil`), so gate
+   on that rather than the old global flag — more precise *and* safer than today, where the buffer
+   insert is otherwise ungated on anything but `category == .shard`. A BEK share can't be gated that
+   precisely: a fresh device doesn't know the expected `distributionID` before reconstruction succeeds
+   (it lives inside the encrypted BEK payload), so `isRestorePending` has to stay as that gate — an
+   earlier pass proposed dropping it everywhere, which was wrong for this branch specifically. Gap 1's
+   bootstrap-window removal still holds for the per-entry case, where a precise gate now exists to
+   replace it.
+
+**What stays explicitly out of scope, on purpose:** a genuinely-established, otherwise-legitimate
+trustee still overwriting their own stored share with poisoned material — remedy 2 authenticates
+provenance, not correctness, and error-correction against a bad-but-genuinely-sent share is Bug 95's
+territory, not this one's. Sybil identities via *separate* contact relationships (distinct from the
+same-trustee-multiple-keys case step 4 closes) — the app already treats an established contact,
+however recently added, as its baseline trust unit everywhere else; closing that boundary isn't this
+fix's job.
+
+**Not yet built.** This is the design as it stands after review; implementation is the next step.
 
 ### The gate is too narrow even for the mechanism it already has
 
