@@ -1875,23 +1875,51 @@ At depth N+1 (Bug 47 coercer after `reEnablePIN`): `coercerBaseDepth = N+1` — 
 
 ## Bug 62 — `pinCollision` "Activation Failed" alert is a forensic tell; enables coercer PIN oracle at duress depth
 
-**Status:** Open
+**Status:** **Open — root scenario fixed, escalation gaps remain.** Re-examined 2026-08-26: the
+bug's actual root — a single, accidental `pinCollision` during ordinary setup, revealing that
+something is already configured to a coercer who was led to believe otherwise — is fully closed by
+the Resolution's silent-dismiss + dummy-blob-write fix, on one occurrence, no repeated guessing
+needed. What's left (Gaps 1a, 2, 3) all target a narrower, more deliberate escalation: a coercer who
+already suspects collisions carry meaning and tries to exploit that on purpose. See *The root
+scenario* below.
 
-### Severity: High (forensic)
+### Severity: High (forensic) — root scenario closed; remaining gaps are lower-likelihood escalations
 
 `SummaryView` catches `pinCollision` in the generic `catch` block and shows an "Activation Failed" alert. A device with no Secure Mode active has no existing verifiers, so it can never produce a `pinCollision` during activation — any PIN the user proposes will succeed. A device with Secure Mode active can produce a collision when the proposed duress PIN matches an existing verifier. Seeing "Activation Failed" (as opposed to a wrong-entry-PIN error, which would have been caught earlier in the flow) confirms that protected verifiers already exist on the device. The alert directly reveals that Secure Mode is running.
 
 Compare with `invalidStateTransition`, which is silently dismissed: that arm was added in Bug 24 precisely for tell-avoidance — the same principle must apply to `pinCollision`.
 
-### PIN oracle attack
+### The root scenario — clarified 2026-08-26
 
-A coercer at depth 1 with `state = .duress` (no prior activation from this depth) can exploit the collision signal as a binary oracle to identify the master PIN:
+The bug's actual root is simpler than the oracle framing below makes it sound, and worth stating
+plainly: **a coercer routed to a duress layer is shown a device that looks completely unprotected —
+that's the whole point of a decoy layer. If they then decide to set up Secure Mode themselves,
+believing they're configuring it for the first time, and the PIN they happen to propose collides
+with an existing verifier anywhere in the real layer stack, `pinCollision` fires — on the first,
+completely ordinary, non-adversarial attempt.** No deliberate guessing needed. Under the belief the
+coercer was given (nothing is configured), a collision is logically impossible — there's nothing to
+collide with. So the mere existence of a failure that can only happen when something already exists
+is proof, in one interaction, that the device isn't what it appeared to be. That's the tell, and it
+doesn't require the coercer to understand verifiers, oracles, or anything about how the app works —
+just to notice that "set up fresh" unexpectedly failed.
+
+**This is exactly what the Resolution below closes, fully, on a single occurrence** — not just for a
+sequence of deliberate guesses. The silent-dismiss fix makes collision and success produce the
+identical UI outcome; the dummy-blob-write fix (Gap 1) makes them identical at the disk level too.
+So the root scenario is closed as of the Resolution landing, independent of everything below it.
+
+### PIN oracle attack — an escalation on top of the root scenario, not the root scenario itself
+
+Distinct from the above: a coercer who *already suspects*, through some channel other than the now-
+silenced alert, that collisions carry meaning, and who deliberately exploits that by probing multiple
+candidates on purpose. A coercer at depth 1 with `state = .duress` (no prior activation from this
+depth) can attempt to use the collision as a binary oracle to identify the master PIN:
 
 1. Open the activation flow, confirm their PIN ("1111"), propose candidate PIN X.
 2. "Activation Failed" → X collides with an existing verifier. Because `sealedNormalVerifiers[0]` holds the master normal PIN, X = master PIN — found.
 3. No alert (flow dismisses normally) → X is not in use. A new layer is created at depth 2.
 
-Each successful probe creates a new layer and transitions `state` to `.normal` (Bug 58 fix), after which `invalidStateTransition` blocks further activation attempts from depth 1. Each colliding probe leaks whether the proposed PIN is the master PIN. With `pinCollision` silently dismissed the coercer receives no signal — successful activation and a collision are indistinguishable from the UI.
+Each successful probe creates a new layer and transitions `state` to `.normal` (Bug 58 fix), after which `invalidStateTransition` blocks further activation attempts from depth 1. Each colliding probe leaks whether the proposed PIN is the master PIN. With `pinCollision` silently dismissed the coercer receives no signal — successful activation and a collision are indistinguishable from the UI, so **this specific version of the attack no longer works at all** once the Resolution below lands; it's preserved here as the reasoning that motivated Gap 1, and because Gap 1a and Gap 2 both target residual, more speculative versions of a coercer trying to reconstruct this signal some other way.
 
 ### Root Cause
 
@@ -1969,7 +1997,13 @@ does not remove the signal, only bounds it.
 
 ---
 
-#### Gap 2 — Rate limit proposal is flawed
+#### Gap 2 — Rate limit proposal is flawed, and re-examined 2026-08-26: it targets a narrower threat than it sounds like, and its own replacement has the same class of problem it was proposed to fix
+
+**Scope, clarified first:** this gap does not defend the bug's root scenario (a single accidental
+collision during ordinary setup) — that's fully closed by the Resolution above, on one occurrence,
+with no attempt count involved. Gap 2 only matters for the PIN-oracle escalation: a coercer
+deliberately trying many candidates on purpose, via some channel other than the now-silenced alert.
+That's a narrower and more speculative population than the bug's main case.
 
 The original Option A (N activations per 24-hour window) was inadequate on multiple dimensions:
 
@@ -1978,7 +2012,31 @@ The original Option A (N activations per 24-hour window) was inadequate on multi
 - **Non-colliding probes create real state.** Each successful (non-colliding) probe creates a real new layer: new verifiers, new blob slot entry, new cryptographic artefacts that accumulate indefinitely. The rate limit constrains collision probes but not layer proliferation.
 - **Clock manipulation.** iOS system time is controllable in some jailbreak or MDM-adjacent scenarios; a 24-hour window tied to wall time is not robust.
 
-**Better framing:** a **session-scoped limit** (1–2 activation attempts per authenticated session at a given depth) is invisible to a legitimate user and makes brute-forcing impractical given the physical access requirement per session. This requires no persistent counter and is not vulnerable to clock manipulation.
+**Better framing, originally proposed:** a **session-scoped limit** (1–2 activation attempts per authenticated session at a given depth) is invisible to a legitimate user and makes brute-forcing impractical given the physical access requirement per session. This requires no persistent counter and is not vulnerable to clock manipulation.
+
+**Re-examined 2026-08-26 — the session-scoped proposal assumes the wrong adversary.** "Requires a
+fresh unlock to get another attempt" is a real cost against an attacker who has the *device* without
+the *owner* — someone who stole or seized it and doesn't control re-authentication. That is not
+Secure Mode's threat model. The threat model here is a coercer with the compliant owner physically
+present, directing them to enter PINs on command — which is the entire premise of a duress PIN
+existing at all. For that adversary, "lock it, unlock it again" costs nothing; a session-scoped limit
+resets on exactly the thing a coercer can trivially compel for free.
+
+**What it still buys, and what it doesn't.** Exhaustive brute force — cycling the full PIN space
+(10⁴-10⁶ candidates) at 1-2 guesses per relock, even at a generous 10-15 seconds per cycle — adds up
+to weeks or months of continuous relocking, genuinely impractical inside an hours-long coercion
+window. But a small number of *targeted*, plausible guesses (birthdate, anniversary, repeated
+digits) costs a compliant victim's coercer almost nothing to cycle through, ten or twenty relocks at
+most. The doc's own acceptance-criteria section (below) already names targeted guessing as the more
+realistic scenario, not exhaustive brute force — so the fix as proposed is strongest against the
+attack that's least likely and weakest against the one already flagged as most likely.
+
+**No replacement design yet.** A limit that survives a compliant-victim relock cycle needs to persist
+across the session boundary — which walks straight back into the same "counter is observable"
+objection that got the original 24-hour proposal rejected. Persistent-enough-to-survive-relock,
+forensically invisible, and not itself the tell appear to pull against each other; no shape has been
+found yet that satisfies all three. This is now a blocking design question, the same shape as Gap 3's
+below, not an implementation task.
 
 ---
 
