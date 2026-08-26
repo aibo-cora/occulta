@@ -3815,7 +3815,7 @@ that. So a reinstall destroys the SwiftData store — the contact list is gone a
 re-exchange to rebuild it — but the **identity key is unchanged**, and peers receive the same
 material.
 
-That matters because `update(key:for:)` (`Contact+Manager.swift:538`) appends unconditionally and
+That matters because `update(key:for:)` (`Contact+Manager.swift:525`) appends unconditionally and
 computes `keyRotated` only to decide whether to emit `contactKeyRotated`. A re-exchange with
 unchanged material appends a record holding identical bytes, so `last(where:)` returns the same
 key and nothing breaks. **This bug requires the key material to actually change.**
@@ -3831,7 +3831,7 @@ Four events, all device-level rather than app-level:
 |---|---|
 | New iPhone | The device-replacement cycle — D-19 prices it at every 2–3 years per relationship per side |
 | Restore to new hardware from backup | Same; the SE key is non-migratable and `ThisDeviceOnly` is not in the backup |
-| In-app Erase All Data — `Manager.Key().deleteAllKeys()` (`Manager+App.swift:26`) | Panic-wipe path only |
+| In-app Erase All Data — `Manager.Key().deleteAllKeys()` (`Manager+App.swift:28`) | Panic-wipe path only |
 | Erase All Content and Settings | Rare |
 
 Not reinstall, and not anything in ordinary use. So the event is **rarer than originally claimed
@@ -3854,11 +3854,13 @@ sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
 
 `Contact+Manager.swift:1633`. The newest non-expired record, and nothing else.
 
-The model keeps the rest. `saveKey` **appends** a new `Contact.Profile.Key` when a contact
-re-exchanges (`:565`) and emits `contactKeyRotated` when the fingerprint actually changed
-(`:574`). Nothing deletes the superseded record, and `expiredOn` is written only by
-`reset(identity:)` (`:588`). So the full history is sitting in the store, and this line never
-looks at it.
+The model keeps the rest. `update(key:for:)` **appends** a new `Contact.Profile.Key` when a contact
+re-exchanges (`Contact+Manager.swift:552`) and emits `contactKeyRotated` when the fingerprint
+actually changed (`:561`). Nothing deletes the superseded record, and `expiredOn` is written only by
+`reset(identity:)` (`:576`). So the full history is sitting in the store, and this line never
+looks at it. **Corrected 2026-08-26: this function was never named `saveKey`** — that name doesn't
+appear anywhere in this file's git history; it has always been `update(key:for:)`, matching the
+reference two paragraphs up.
 
 Any message sealed **before** the re-exchange was built against the old key. After the
 re-exchange we resolve the new one, and every check that depends on the sender's identity
@@ -3871,12 +3873,12 @@ That single value feeds three separate consumers on the inbound path, and all th
 | Consumer | Where | Failure |
 |---|---|---|
 | Fallback-mode wrapping key — `ECDH(ourLongTermPriv, theirLongTermPub)` | `deriveInboundKey` → `deriveSessionKey(using:quantumMaterial:)` | Key cannot be derived, the slot never opens, `recipientSlotNotFound` |
-| `verifySenderEphemeralSignature` | `Crypto+Manager+GroupDecrypt.swift:105` | `senderEphemeralSignatureMismatch` |
-| `senderProof` HMAC over the sender's public key | `Contact+Manager.swift:1856` | `senderProofMismatch` |
+| `verifySenderEphemeralSignature` | `Crypto+Manager+GroupDecrypt.swift:199`, throw site `:141-145` | `senderEphemeralSignatureMismatch` |
+| `senderProof` HMAC over the sender's public key | `Contact+Manager.swift:1882-1885` | `senderProofMismatch` |
 
 So this is not only "forward-secret messages fail to verify". **Fallback-mode messages become
 undecryptable outright**, because the sender's identity key is load-bearing in that mode's key
-derivation. The 1:1 path resolves the sender the same way (`:1565`) and fails identically.
+derivation. The 1:1 path resolves the sender the same way (`:1564`) and fails identically.
 
 There is no healing path. The resolution never widens, so re-opening the same file fails the
 same way forever. The messages are lost, not delayed.
@@ -3982,7 +3984,7 @@ no state behind and the §2.2 `defer` is never armed. It touches neither
 `findAndOpenRecipientSlot`'s exit contract nor the signature path.
 
 The one constraint that still applies: whichever candidate opens the slot must be the key
-`senderProof` is checked against at `Contact+Manager.swift:1892`, or the mismatch just moves from
+`senderProof` is checked against at `Contact+Manager.swift:1882-1885`, or the mismatch just moves from
 derivation to proof. So the winning key has to be returned upward, not discarded.
 
 Bound the candidate count — fallback derivation costs an SE ECDH per candidate per slot, and Bug
@@ -4043,12 +4045,17 @@ and it is what makes accepting superseded keys safe or unsafe in practice.
 
 ## Bug 83 — A contact who downgrades below 1.10.2 permanently stops receiving our forward-secret group messages
 
-**Status:** **Open — accepted for v1.10.2.** Introduced by this release, alongside the
-`.prefixedSenderSignatureCapable` tier (§3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`). Filed
-2026-08-13. Deferred on likelihood, not on cost: the App Store does not offer downgrades, so
-this needs TestFlight or a device restore onto an older build.
+**Status:** **Open — accepted for v1.10.2, still unfixed and still absent from `release/v1.10.3`.**
+Introduced by 1.10.2, alongside the `.prefixedSenderSignatureCapable` tier (§3.6 of
+`Docs/Audit/SECURITY_CHECKLIST.md`). Filed 2026-08-13. Deferred on likelihood, not on cost: the App
+Store does not offer downgrades, so this needs TestFlight or a device restore onto an older build.
 
-**Target:** post-1.10.2.
+**Target: not 1.10.2 or 1.10.3 — a later release, same as Bug 82a.** "Post-1.10.2" was accurate when
+written but is now ambiguous: the branch once bound for 1.11.0 was re-cut and shipped as the 1.10.3
+patch (`b34277f`, 2026-08-16) without this fix, so the deferral has already outlived one full
+release. `updateMaxVersion`'s own code comment still cites this bug live — *"See also Bug 83:
+monotonicity is safe for capability decisions but not for decisions that change what we put on the
+wire"* — confirming the deferral, not a fix, is still the current state.
 
 ### What happens
 
@@ -4056,7 +4063,7 @@ this needs TestFlight or a device restore onto an older build.
 `.prefixedSenderSignatureCapable`, and over the bare ephemeral public key for everyone below.
 The tier comes from `Contact.Profile.maxBundleVersion`, which is a **high-water mark**:
 `updateMaxVersion` writes only when the claimed tier clears the recorded one
-(`Contact+Manager.swift:1718`), so the marker rises and never falls.
+(`Contact+Manager.swift:1722-1724`), so the marker rises and never falls.
 
 If a contact recorded at `0x08` moves back to 1.10.0 or 1.10.1, nothing walks that marker down —
 their subsequent bundles claim 1.10.0, `.senderSignatureCapable.isAtLeast(.prefixedSenderSignatureCapable)`
@@ -6333,7 +6340,11 @@ in this one: k or more genuinely-held trustee shards being dishonest and colludi
 
 ## Bug 95 — One poisoned shard permanently blocks legitimate vault recovery
 
-**Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read.
+**Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
+2026-08-26** against Bug 93's depth-gating: `attemptBEKRestore` now guards `currentDepth == 0` before
+the grouping/reconstruction loop this bug lives in (`Vault+Manager+Backup.swift:723`) — not a fix,
+just confirmation that the vulnerable code only ever runs at the one depth recovery was always meant
+to complete at, same reachability as before.
 
 **Target:** unset.
 
@@ -6422,7 +6433,8 @@ amplifiers of it rather than as independently gated.
 
 ### 1 — Two traps reachable from decoded backup content — **fixed 2026-08-24**
 
-`importBackup` (`Vault+Manager+Backup.swift:255`):
+`importBackup` (`Vault+Manager+Backup.swift:268`, this trapping form no longer present — the fixed
+guards live at `:295` and `:308`):
 
 ```swift
 let entryType = VaultEntryType(rawValue: UInt8(backupEntry.entryType)) ?? .note
@@ -6599,7 +6611,8 @@ rather than acting on it unverified.
 the tripwire was silenced by adding a name to a list… now an entry must carry a key path and a probe
 value, so silencing the tripwire is the same [cost as fixing it]."* That upgrade — from a bare name
 list to the `probes`/`unprobedFields` table — was applied to `Contact.Profile` and `AppLayerConfig`
-as of 2026-08-16. It was not applied everywhere the file has a tripwire.
+— `7e811b5` for `Contact.Profile` (2026-08-17), `4dc6e9d` for `AppLayerConfig` (2026-08-18). It was
+not applied everywhere the file has a tripwire.
 
 **`Group`'s tripwire is still the old form** (`:409-416`):
 
@@ -6617,7 +6630,7 @@ func groupPropertiesReviewed() throws {
 A new stored property is caught, but the fix the test invites is adding its name to `expected` — no
 proof that the field was actually classified for rotation, unlike the table-driven form.
 
-**`Message.Draft`'s tripwire is the same weaker form** (`:421-434`), and its own doc comment already
+**`Message.Draft`'s tripwire is the same weaker form** (`:424-436`, doc comment at `:419-421`), and its own doc comment already
 names the limit: *"Its fields were never stranded by a field omission — the whole model was skipped
 by one of the two rotation paths — so this tripwire would not have caught that bug."* Correct, and
 also true of `Group`'s: a name-list tripwire catches an added field, not a field routed to the wrong
