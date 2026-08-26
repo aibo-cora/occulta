@@ -6140,8 +6140,11 @@ and it should be re-read once the flag becomes depth-aware.
 
 ## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
 
-**Status:** **Remedy 1 fixed 2026-08-24; remedy 2 (trustee attestation) built and tested 2026-08-26;
-remedy 3 (explicit confirmation) remains open.** Filed 2026-08-22 during a critical read of the
+**Status:** **All three remedies in as of 2026-08-26.** Remedy 1 fixed 2026-08-24; remedy 2 (trustee
+attestation) built and tested 2026-08-26; **remedy 3 (explicit confirmation) built 2026-08-26**, when
+a security review of `release/v1.10.3` established that it is not the optional third of three but the
+only control that actually gates this attack — see *Remedy 3, and why the threshold cannot be
+enforced* below. Filed 2026-08-22 during a critical read of the
 export/import mechanism, requested after Bug 93. Found by asking what `ownerIdentity: nil` actually
 gives up. **Remedy 1 (overwrite refusal) is in** — `reconstructBEK` now refuses before touching
 Shamir, GCM, or `persistBEKPayload` whenever a BEK row already exists, closing the *destructive* half
@@ -6585,6 +6588,140 @@ Acceptance criteria, and which test covers each:
 
 Explicitly out of scope for this bug's guard, and inherent to any k-of-n scheme rather than a defect
 in this one: k or more genuinely-held trustee shards being dishonest and colluding.
+
+### Remedy 3, and why the threshold cannot be enforced
+
+Added 2026-08-26, from a security review of `release/v1.10.3`. Remedy 3 was carried as the soft third
+of three — nice to have once the cryptographic remedies were in. That reading was wrong, and the
+reason matters more than the remedy.
+
+**What remedy 2 actually delivers is a floor of two distinct senders, not `threshold`.** The one-row-
+per-`senderIdentifier` rule is real and does what it says: one identity cannot self-attest a group.
+But nothing on the BEK path checks the *count* against the owner's chosen `k`. `attemptBEKRestore`
+groups by `entryID` and hands the group to `reconstructBEK` with `ownerIdentity: nil`, so the only
+floor left is `ShamirSecretSharing.reconstruct`'s own `shares.count >= 2`. An attacker authors the
+`.occbak`, generates its BEK, and splits that BEK with `k = 2` — so two paired identities suffice
+regardless of what the victim's real distribution used. Two devices, or one enrolled twice.
+
+**And the check cannot be added, which is the part worth recording.** Enforcing a threshold requires
+knowing the owner's `k` on a device that has no BEK — a fresh install or a new phone, which is
+precisely the population remedy 2 exists for. That value survives in exactly three places, and none
+of them is available there:
+
+| Where `k` lives | Why it does not help |
+| --- | --- |
+| The BEK payload's `ShardDistributionMetadata` | The restoring device has no BEK. That is the precondition for being on this path at all |
+| The `.occbak` file | Authored by the attacker. Reading `k` from it is reading the constraint from the party it constrains |
+| The trustees | `prepareBEKShards` records `threshold` in the *owner's* payload. A trustee is given a share and never learns `k` |
+
+So a threshold check here would be theatre: either unenforceable or self-asserted. Recording this so
+the "just enforce the threshold" fix is not re-proposed — it looks obviously correct until you ask
+where the number comes from.
+
+**What actually gates the attack is the victim opening and accepting the file**, which is remedy 3.
+Depth 0 previously showed no confirmation at all — `storePendingRestore` armed on the strength of
+opening a file, and arming is not inert: it makes the device accept BEK shards from contacts and,
+once enough arrive, import the file's entries into the real-layer vault with no further prompt. A
+confirmation now precedes arming at depth 0.
+
+**Above depth 0 is deliberately untouched.** All three outcomes still arm silently and acknowledge
+with the same string, because a confirmation prompt there would be exactly the distinguishable
+response Bug 93 harm 4 exists to prevent. Depth 0 keeps its differentiated, truthful behaviour, which
+is the same split that entry already established.
+
+The three doc comments that asserted the stronger property — `AttestedShard`, `storeRestoreShard`,
+`ReconstructShard.Payload` — now state the real one and why it cannot be stronger. `ReconstructShard`
+also notes the contrast worth keeping straight: the *per-entry* path does reach the entry's real
+threshold, because that entry is one this device split itself, so its distribution is on hand and
+every shard is verified against the owner identity. Only the BEK path is limited this way.
+
+**Not covered by a test.** The confirmation is view state in `OccultaApp`. Needs a manual device
+check: open a `.occbak` at depth 0, confirm the prompt appears, and that declining leaves nothing
+armed. Same standing limitation as Bug 93 harm 4's acknowledgment.
+
+---
+
+## Bug 94a — Remedy 2's attestation field is not padded, so slot size names the trustee who is mid-recovery
+
+**Status:** **Fixed 2026-08-26**, same day as the code it reports on. Found by a security review of
+`release/v1.10.3`, in remedy 2 itself.
+
+**Target:** `release/v1.10.3`.
+
+### Severity: Medium (forensic)
+
+No key material is exposed and nothing is forged. What leaks is the shape of a relationship: which
+member of a group send is genuinely holding shards for the sender, and that the sender's identity key
+has rotated — i.e. that they are mid-device-recovery. In a duress-depth send, where the member list
+is deliberately populated with contacts visible at that depth, this separates real trustees from
+cover members by file size alone.
+
+### What happens
+
+Remedy 2 added `ShardOperation.attestation` and populated it in `mismatchHandbackOps`.
+`ContactManager.fillerShardOperation` was not touched, so filler went out with `attestation: nil` —
+and `SignedAttribute` uses synthesized `Codable`, which omits a nil optional's key entirely rather
+than writing null. A populated attestation is roughly 260 bytes of JSON. Filler also carried
+`entryID: nil` where every real `.shard` attribute binds one, worth about 50 more.
+
+`ShardPadding` equalises the op **count** per recipient. Nothing equalises their encoded size. Each
+recipient's `RecipientPayload` is JSON-encoded and sealed with AES-GCM, which is length-preserving,
+and `GroupEnvelope`/`Recipient.wrappedPayload` travel as a cleartext JSON TLV block — so per-recipient
+byte lengths are readable straight out of a `.occ` with no key. That is not an inference; it is what
+`ShardPadding`'s own doc comment says the scheme exists to prevent.
+
+`fillerShardOperation`'s doc comment meanwhile still asserted the invariant it no longer held:
+*"filler and real entries aren't distinguishable by size within the array."*
+
+### Why the existing test did not catch it
+
+`GroupShardGatingTests.mixedGroupSendsToAllWithUniformSlotSize` asserts exactly the right property —
+both recipients' `wrappedPayload` within a tight tolerance — and passed throughout. It sends a
+`.distribute` op, and `attestation` is only ever set on `.handback`. The invariant was guarded on the
+one op kind that could not exhibit the defect.
+
+Its fixture had a second problem in the same direction: `makeSignedShardAttr` built `.shard`
+attributes with `entryID: nil`, which production never produces (`prepareBEKShards` binds the
+distributionID; per-entry splits bind the entry id). The fixture was ~50 bytes smaller than anything
+real, so it also could not have caught the `entryID` half.
+
+### Remedy
+
+**Fill the field, do not omit it** — the pattern this codebase already uses for exactly this class.
+`wrapRecipient` gives fallback-mode recipients a random `senderEphemeralSignature` of the right size
+for the same reason, and its comment names the same failure: *"otherwise this field's mere
+presence/size would let a mixed-mode group send distinguish FS from fallback recipients by
+RecipientPayload size alone."* Same shape as `verifierFillerArray`, `pinEnabledFillerArray`, and tier
+padding itself.
+
+So every outbound op now ships an attestation: real where one exists, `attestationFiller` otherwise —
+on `.distribute`, on `.replace`, on a `.handback` whose `attestation(for:)` returned nil, and on
+padding filler. Filler matches the real thing field for field: 32-byte value, 72-byte DER-shaped
+signature, same label, non-nil `entryID`.
+
+Behaviour is unchanged on receive. `handleDistribute`/`handleReplace` never read the field. A filler
+attestation fails Branch B exactly as a nil did, so a shard that needed a real one is still rejected;
+`noMatchingRetainedKeyProducesNoAttestation` now asserts that directly rather than asserting nil.
+`handleHandback` carries forward only a Branch B-*verified* attestation, so filler never reaches the
+recovery buffer.
+
+**Two residuals, both documented at the call site and neither scaling with content.** `kind`'s
+spelling — `.unsupported` (11 bytes) against `.handback` (8) — cannot be normalised without breaking
+the receiver's skip. And a real `.replace` carries an `attributeID` no other op has; giving filler one
+would make filler the outlier against the far more common `.distribute`, so the more common shape
+wins.
+
+### Guard
+
+`ShardOperationPaddingTests` encodes filler against a real attested handback and bounds the delta,
+sampled over 200 encodes rather than measured once — `Date` encodes as a variable-length `Double` and
+each op carries two, which is the same jitter that made the neighbouring test fail one run in three
+before its bound was widened. A second test pins the specific omissions (`attestation` non-nil,
+`attribute.entryID` non-nil, matching entryIDs) so they cannot return via a tidied nil default.
+
+`fillerShardOperation` is no longer `private`, solely so the first test can reach it. The general
+lesson is in its doc comment: **every optional member a real op can carry has to be filled here**,
+because tier padding equalises count and nothing equalises size.
 
 ---
 
