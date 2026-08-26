@@ -2359,9 +2359,18 @@ contactManager.syncShareIndex()
 
 ## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
 
-**Status:** Open — **narrowed 2026-08-15 to fix 1 only** (backup exclusion). Fix 2 (carry lockout
-fields through rotation) is implemented and was independently unnecessary; see "Reconciled
-2026-08-15" at the bottom of this entry.
+**Status:** **Fixed, re-examined and closed 2026-08-26.** Fix 2 (carry lockout fields through
+rotation) is implemented and was independently unnecessary; see "Reconciled 2026-08-15" at the
+bottom of this entry. **Fix 1 (backup exclusion) was already implemented** —
+`RootView.excludeStoreFromBackup(url:)` has shipped since `a320e3b` (2026-06-09), called at init
+and on every save, using `isExcludedFromBackup`, Apple's standard mechanism that covers both iCloud
+and local iTunes/Finder backups; no separate entitlement needed. What was actually missing was
+verification, not code: zero automated coverage existed. `OccultaTests/BackupExclusionTests.swift`
+now covers it — the store file gets excluded, both `-wal`/`-shm` sidecars get excluded when present,
+and a sidecar created *after* the first call still ends up covered once the function runs again
+(the exact recovery `reapplyFileProtection()` depends on for SQLite-recreated sidecars). A real
+iTunes/Finder backup-and-restore cycle is out-of-process and not exercisable from a unit test; these
+tests pin the contract the fix actually relies on instead.
 
 ### Severity: High
 
@@ -2387,13 +2396,25 @@ A second, independent path: key rotation in `activateSecureMode` and `deactivate
 > lockout at rotation time to reset. See "Reconciled 2026-08-15" below. The backup path in the
 > symptom above is unaffected and remains the live half of this bug.
 
-### Resolution (pending)
+### Resolution — both fixes done as of 2026-08-26
 
-Two independent fixes required:
+Two independent fixes were required; both are now in place.
 
-**1. Verify `isExcludedFromBackup` covers local backups.** Confirm that `excludeStoreFromBackup(url:)` (added in `a320e3b`) prevents the database from appearing in a wired iTunes/Finder backup, not just iCloud. If local backup exclusion requires a different entitlement or API call, apply it.
+**1. `isExcludedFromBackup` covers local backups — confirmed, not just assumed.** It's Apple's
+standard resource value, documented to exclude a file from both iCloud and local (wired)
+iTunes/Finder backups with no separate entitlement — so there was never a real ambiguity here to
+resolve by API choice. `excludeStoreFromBackup(url:)` (`a320e3b`) applies it to the store and its
+`-wal`/`-shm` sidecars, called at `RootView` init and on every `reapplyFileProtection()`. What had
+never been done was writing it down as a verified contract: `OccultaTests/BackupExclusionTests.swift`
+(2026-08-26) now asserts the flag actually lands on all three files, including the case where a
+sidecar is created *after* the first call — matching why `reapplyFileProtection()` re-invokes this
+on every save instead of once at launch.
 
-**2. Carry lockout fields through key rotation.** In the re-encryption loops of `activateSecureMode` and `deactivateSecureMode`, re-encrypt `lockoutCountEncrypted` and `lockoutExpiryEncrypted` under the staged key alongside the other `AppLayerConfig` fields. A test asserting that a lockout in progress at activation time is still active and unexpired after deactivation should be added.
+**2. Carry lockout fields through key rotation — done, and shown unnecessary.** See "Reconciled
+2026-08-15" below: `AppLayerConfig.reencrypt(from:to:)` already reseals both fields as a side effect
+of the Bug 76 sweep, and it turns out no rotation can ever observe an in-progress lockout in the
+first place, since `verify()` resets the counters on every match and blocks before any verifier scan
+while a lockout delay is outstanding.
 
 ### Reconciled 2026-08-15 — fix 2 is done, was never needed, and named a field that no longer exists
 
@@ -2420,9 +2441,10 @@ renamed by the **SEC-1** fix (2026-08-05) that closed the clock-rollback bypass,
 audit item this entry's own root cause section cites. A `grep` for the old name returns nothing,
 which is the confusing way to discover this.
 
-**What this does not touch.** The backup-restore vector in the symptom above — the actual Bug 70 —
-is untested and unaddressed. Rotation carrying the fields correctly is irrelevant to an adversary
-who replaces the whole database file with an earlier copy. Fix 1 stands as written.
+**What this did not touch, as of 2026-08-15 — since closed.** Rotation carrying the fields correctly
+was always irrelevant to an adversary who replaces the whole database file with an earlier copy —
+that's fix 1's territory, not fix 2's. At the time this was written fix 1 was implemented but had no
+test confirming it; see *Resolution* above for the 2026-08-26 close.
 
 ---
 
