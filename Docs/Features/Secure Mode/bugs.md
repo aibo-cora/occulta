@@ -6619,15 +6619,30 @@ the "just enforce the threshold" fix is not re-proposed — it looks obviously c
 where the number comes from.
 
 **What actually gates the attack is the victim opening and accepting the file**, which is remedy 3.
-Depth 0 previously showed no confirmation at all — `storePendingRestore` armed on the strength of
-opening a file, and arming is not inert: it makes the device accept BEK shards from contacts and,
-once enough arrive, import the file's entries into the real-layer vault with no further prompt. A
-confirmation now precedes arming at depth 0.
+There was previously no confirmation at all — `storePendingRestore` armed on the strength of opening
+a file, and arming is not inert: it makes the device accept BEK shards from contacts and, once enough
+arrive, import the file's entries into the real-layer vault with no further prompt. A confirmation
+now precedes arming.
 
-**Above depth 0 is deliberately untouched.** All three outcomes still arm silently and acknowledge
-with the same string, because a confirmation prompt there would be exactly the distinguishable
-response Bug 93 harm 4 exists to prevent. Depth 0 keeps its differentiated, truthful behaviour, which
-is the same split that entry already established.
+**At every depth, and the first attempt at this got it wrong.** The prompt was initially scoped to
+depth 0, reasoning that a confirmation above it would be the distinguishable response Bug 93 harm 4
+exists to prevent. That misreads which half of the interaction harm 4 constrains. The
+*acknowledgment* has to vary with the outcome — fresh accept, already pending, already done — and is
+therefore the thing that must be flattened above depth 0. The *prompt* is raised before
+`storePendingRestore` runs and cannot vary with the outcome at all: same text, same buttons, same
+order, in all three cases. Making it uniform across depths satisfies harm 4 completely.
+
+Scoping it to depth 0 also introduced a leak of its own, in the opposite direction to the one being
+avoided. Its **absence** would tell whoever is holding the phone that they are not at depth 0 — that
+they are in a duress layer. The app is open source, so the baseline behaviour that comparison needs is
+public. A control that only fires in the real session is a depth oracle for anyone who knows the app.
+
+The acknowledgment split is unchanged and still lives where it belongs, now in `armPendingRestore`:
+uniform "Backup file received." above depth 0, differentiated and truthful at depth 0.
+
+**The staged file carries the depth it was opened at**, rather than re-reading `currentDepth` when
+the user confirms, so a depth change while the prompt is up cannot arm a file against a depth it was
+never offered for.
 
 The three doc comments that asserted the stronger property — `AttestedShard`, `storeRestoreShard`,
 `ReconstructShard.Payload` — now state the real one and why it cannot be stronger. `ReconstructShard`
@@ -6636,8 +6651,9 @@ threshold, because that entry is one this device split itself, so its distributi
 every shard is verified against the owner identity. Only the BEK path is limited this way.
 
 **Not covered by a test.** The confirmation is view state in `OccultaApp`. Needs a manual device
-check: open a `.occbak` at depth 0, confirm the prompt appears, and that declining leaves nothing
-armed. Same standing limitation as Bug 93 harm 4's acknowledgment.
+check: open a `.occbak` at depth 0 and again at a duress depth, confirm the prompt is identical in
+both — text, buttons, order — and that declining leaves nothing armed at either. Same standing
+limitation as Bug 93 harm 4's acknowledgment.
 
 ---
 
