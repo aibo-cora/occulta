@@ -545,20 +545,24 @@ That split is why the gate has to be run by a human on real hardware before a re
       constructs it directly, so `-configuration Release` does not compile the test target at
       all. That is a compile error, not a test failure, and it is expected.
 
-- [x] **Zero failures.** 728 Swift Testing tests across 164 suites, plus 36 XCTest cases —
-      758 passed, 0 failed, 6 skipped. Run serially (`-parallel-testing-enabled NO`).
-- [ ] **Zero skips**, excluding `KeychainMigrationSETests`
-      — **the item is unachievable as originally written, and the exclusion is the fix.**
-      6 tests skipped, all in `KeychainMigrationSETests`, which throws `XCTSkip` from
-      `setUpWithError` behind `#if targetEnvironment(simulator)` — a *compile-time* gate that
-      does not consult `secureEnclaveAvailable()`. On bare-metal Apple Silicon the Simulator
-      does reach the Enclave, so these six cannot run on any host this gate permits; only a
-      physical device runs them. CI already skips the same suite by name
-      (`-skip-testing:OccultaTests/KeychainMigrationSETests`). Either accept the exclusion, or
-      change the gate to `.enabled(if: secureEnclaveAvailable())` so a bare-metal Simulator
-      run covers them — until then, a skip count of 6 with these six names is the pass
-      condition, and any *other* skip means the host lacked an Enclave and the run does not
-      count.
+- [x] **Zero failures — re-verified 2026-08-26.** 885 total (878 passed, 1 expected failure,
+      0 failed, 6 skipped), run serially (`-parallel-testing-enabled NO`), Apple Silicon,
+      iPhone 17 Pro Simulator, bare metal. The 2026-08-14 numbers (758 total) predate roughly
+      100 commits — all of Bugs 85 through 98, this project's most security-relevant stretch
+      of work since the last sign-off — so this re-run is the first evidence against the
+      current state of `release/v1.10.3`, not a repeat of the old one. The one expected
+      failure is `restoreShardFileIsBounded` (Bug 96 item 2, `withKnownIssue`-wrapped,
+      genuinely still open, not a regression).
+- [x] **Zero skips**, excluding `KeychainMigrationSETests` — **confirmed by name, not just
+      count, 2026-08-26.** Queried the `.xcresult` directly
+      (`xcrun xcresulttool get test-results tests`) rather than trusting the summary number:
+      all 6 skips are `KeychainMigrationSETests/testECDHWorksAfterAccessGroupUpdate`,
+      `testKeyCreatedWithAccessGroupIsDiscoverable`, `testKeyDiscoverableViaAccessGroupAfterUpdate`,
+      `testKeyNotDuplicatedAfterUpdate`, `testUpdateAddsAccessGroupToSEKey`,
+      `testUpdateIsIdempotent` — exactly the six this item's own exclusion names, no others.
+      The underlying issue (`#if targetEnvironment(simulator)` never consults
+      `secureEnclaveAvailable()`) is unchanged; this item is checked because the run matched
+      the documented exclusion exactly, not because the root cause was fixed.
 - [x] Forward secrecy tests (`OccultaTests/Forward+Secrecy/`) all pass, including prekey
       exhaustion, fallback, and pool-isolation paths
 - [x] `tempPrekey_wrongContactID_returnsNil` passes — the regression guard for the 2026-07-24
@@ -831,6 +835,16 @@ so the current count reads 47 of 55. The numbers above are left as the record of
 for 1.10.2 — which did ship the dependency — rather than backdated. Nothing else in this sign-off
 is affected: the change removes an unused package and touches no crypto path, and it was verified
 against its own fresh archive, not the one named above.
+
+**Post-sign-off, 2026-08-26 (`release/v1.10.3`):** §8 (Testing Gate) re-run against current
+`release/v1.10.3` — roughly 100 commits past the 2026-08-14 sign-off, covering Bugs 85 through 98.
+885 total, 878 passed, 1 expected failure (Bug 96 item 2, known-open, not a regression), 0 failed,
+6 skipped — all 6 confirmed by name via `xcresulttool` to be exactly `KeychainMigrationSETests`,
+no others. This is a §8-only re-verification, not a full re-sign-off: no other section was
+re-checked, no second reviewer has looked at the ~100 intervening commits, and no distribution
+archive containing this work has been inspected (condition 1 below still applies, now more so).
+Treat the current branch as **tested, not cleared to ship** — the remaining gate items are process,
+not code.
 
 Three conditions of the gate are **not** met, knowingly:
 
