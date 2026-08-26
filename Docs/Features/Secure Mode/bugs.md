@@ -6000,17 +6000,21 @@ and it should be re-read once the flag becomes depth-aware.
 
 ## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
 
-**Status:** **Partially fixed 2026-08-24; remedy 2's design settled and stress-tested 2026-08-26, not
-yet built.** Filed 2026-08-22 during a critical read of the export/import mechanism, requested after
-Bug 93. Found by asking what `ownerIdentity: nil` actually gives up. **Remedy 1 (overwrite refusal)
-is in** — `reconstructBEK` now refuses before touching Shamir, GCM, or `persistBEKPayload` whenever a
-BEK row already exists, closing the *destructive* half unconditionally. **Remedy 2 (trustee
-attestation) and remedy 3 (explicit confirmation) remain open** — the population with no BEK yet,
-"the other population" below, is still fully exposed; that is the larger remaining risk, not a
-residual edge case. **Remedy 2's first-pass design had a critical gap** — a naive implementation let
+**Status:** **Remedy 1 fixed 2026-08-24; remedy 2 (trustee attestation) built and tested 2026-08-26;
+remedy 3 (explicit confirmation) remains open.** Filed 2026-08-22 during a critical read of the
+export/import mechanism, requested after Bug 93. Found by asking what `ownerIdentity: nil` actually
+gives up. **Remedy 1 (overwrite refusal) is in** — `reconstructBEK` now refuses before touching
+Shamir, GCM, or `persistBEKPayload` whenever a BEK row already exists, closing the *destructive* half
+unconditionally. **Remedy 2 closes "the other population" below** — the no-BEK-yet population, most
+users most of the time, is no longer able to have a fully attacker-controlled vault silently planted
+by any known contact. **Remedy 2's first-pass design had a critical gap** — a naive implementation let
 a single attacker self-attest a full threshold's worth of forged shares, reintroducing this bug's
 exact severity through the new mechanism — found and closed before any code was written; see
-*Implementation, worked out and stress-tested* below for the corrected design.
+*Implementation, worked out and stress-tested* below for the corrected design, now built exactly as
+specified there and covered by `ShardHandbackAttestationTests.swift` (9 tests, including the specific
+single-attacker case the review caught). **Remedy 3 (explicit confirmation before an automatic import
+mutates the vault) is the only piece of the original three-part remedy still open** — kept as
+defense-in-depth on top of remedy 2, not load-bearing on its own; see *Remedy* below.
 
 **A consequence of remedy 1, found and closed the same day.** Every group `reconstructBEK` sees
 on an existing-BEK device now fails immediately via `bekAlreadyPresent` — so the "success" branch
@@ -6324,7 +6328,14 @@ same-trustee-multiple-keys case step 4 closes) — the app already treats an est
 however recently added, as its baseline trust unit everywhere else; closing that boundary isn't this
 fix's job.
 
-**Not yet built.** This is the design as it stands after review; implementation is the next step.
+**Built and tested 2026-08-26**, exactly as specified above — `SignedAttribute.Category.attestation`,
+`AttestedShard`, `OccultaBundle.ShardOperation.attestation`, `handleHandback`'s Branch A/B, the
+per-`(entryID, senderIdentifier)` storage cap in both `acceptReturnedShard` and `storeRestoreShard`,
+and the trustee-side `attestation(for:)` builder. `ShardHandbackAttestationTests.swift` covers both
+directions: the owner-side accept/reject logic (including the single-attacker-cannot-reach-threshold
+case this review caught) and the trustee-side building path end to end, including the
+no-matching-retained-key fallback to no-attestation-at-all rather than a fabricated one. Full
+affected-suite regression passes clean.
 
 ### The gate is too narrow even for the mechanism it already has
 
@@ -6399,15 +6410,39 @@ scoped to it.
 
 ### Guard
 
-`VaultBackupRoundTripTests` covers the honest round trip. Acceptance criteria: a device holding a BEK
-must reject a restore that would replace it; a device with no BEK must reject reconstruction from
-shards that carry neither a valid direct signature nor a valid trustee attestation — remedy 1's test
-alone is not sufficient, since it only exercises the population that already has a BEK; a contact who
-was never given a real share must be unable to produce an accepted attestation under any
-circumstance, no matter how many bundles they send; a rotated-identity share must be accepted on its
-attestation, never on the direct signature or the GCM tag alone; and none of the above may produce a
-crash or a silent insert. A mismatch-handback arriving after recovery has already completed must be
-reconcilable on the same attestation check, not rejected for arriving outside a bootstrap window.
+`VaultBackupRoundTripTests` covers the honest round trip; `VaultRestoreTrustTests` covers remedy 1
+(overwrite refusal). `ShardHandbackAttestationTests.swift` (2026-08-26, 9 tests) covers remedy 2
+directly — this is the suite that actually exercises the population remedy 1's own tests don't reach.
+
+Acceptance criteria, and which test covers each:
+
+- ✅ A device holding a BEK must reject a restore that would replace it —
+  `foreignShardsCannotReplaceExistingBEK` (`VaultRestoreTrustTests`, pre-existing).
+- ✅ A device with no BEK must reject reconstruction from shards that carry neither a valid direct
+  signature nor a valid trustee attestation — `noAttestationRejected`.
+- ✅ A rotated-identity share must be accepted on its attestation, never on the direct signature or
+  the GCM tag alone — `branchBAttestationAccepted`, `attestationWrongSenderRejected`,
+  `attestationHashMismatchRejected`.
+- ✅ A contact who was never given a real share must be unable to produce an accepted attestation
+  under any circumstance — `noMatchingRetainedKeyProducesNoAttestation` (no retained key → no
+  attestation, not a fabricated one) combined with `singleSenderCannotReachThresholdAlone` (even a
+  self-consistent fabricated attribute+attestation pair from one identity cannot single-handedly
+  reach threshold).
+- ✅ **The specific vulnerability this review caught**: a lone attacker must not be able to
+  self-attest a full threshold's worth of forged shares — `singleSenderCannotReachThresholdAlone`
+  directly, `sameSenderReplacesNotAccumulates` for the underlying storage mechanism.
+- ✅ The trustee-side builder must produce a working attestation when it genuinely can, and decline
+  cleanly when it can't — `trusteeBuildsAttestationOnFingerprintMismatch`,
+  `noMatchingRetainedKeyProducesNoAttestation`.
+- ✅ None of the above may produce a crash or a silent insert — implicit in every test above asserting
+  an exact `reconstructShardCount`, not just "no crash."
+- ✅ A mismatch-handback arriving after recovery has already completed must be reconcilable on the
+  same attestation check, not rejected for arriving outside a bootstrap window — resolved by
+  construction: `handleHandback`'s accept condition is no longer a flag (`isRestorePending`/
+  `pendingRestoreActive`) at all, so there is no bootstrap window left to fall outside of. No
+  dedicated test beyond the Branch A/B tests above, since there is no separate code path left to
+  test differently.
+
 Explicitly out of scope for this bug's guard, and inherent to any k-of-n scheme rather than a defect
 in this one: k or more genuinely-held trustee shards being dishonest and colluding.
 
