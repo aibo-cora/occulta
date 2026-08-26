@@ -468,6 +468,23 @@ class ContactManager {
             self.modelContext.delete(victim)
         }
 
+        // Scrub the three depth stamps before marking the row deleted, sealed under the same
+        // key the rest of the row already uses (Bug 89).
+        //
+        // Soft-deleted rows are the one population rotation never re-keys — `fetchAllContacts`
+        // filters `deletionToken == nil` — so whatever these hold at deletion time is what a
+        // forensic examiner reads for as long as the row survives, and the true values name
+        // the layer the contact lived in.
+        //
+        // Sealed benign values rather than random bytes: until the next rotation this row's
+        // other fields still decrypt, so three that did not would not read as concealment but
+        // as evidence something was deliberately destroyed. `Int.max` / `-1` / `0` are what an
+        // ordinary contact holds on a device that never activated Secure Mode, which is the
+        // baseline this has to blend into. Written unconditionally — no branch on secret state.
+        contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
+        contact.globalTrusteeDepth  = try DepthCodec.encode(-1).encrypt()
+        contact.originDepth         = try DepthCodec.encode(0).encrypt()
+
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
         Manager.PrekeyManager().deleteAllKeys(for: identifier)

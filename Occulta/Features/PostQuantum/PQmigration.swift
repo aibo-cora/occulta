@@ -206,7 +206,13 @@ struct DatabaseMigration {
     ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateDepthFieldsToFixedWidth(modelContext: ModelContext) throws {
-        let contacts = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
+        // Live rows only. A soft-deleted row's stamps belong to
+        // `migrateScrubDeletedDepthStamps`, which replaces the value outright rather than
+        // converting it; normalising one here first would hand that pass a row it can no
+        // longer tell apart from an already-scrubbed one (Bug 89).
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
+        )
         var didChange = false
 
         for contact in contacts {
@@ -417,27 +423,33 @@ struct DatabaseMigration {
     ///
     /// Empty strings are preserved as-is (they represent empty plaintext).
 
-    /// Overwrites the depth stamps of already-soft-deleted rows with random bytes at
-    /// `DepthCodec`'s uniform length (Bug 89).
+    /// Brings the depth stamps of already-soft-deleted rows in line with the rest of their
+    /// own row (Bug 89).
     ///
-    /// The repair half. `deleteContact` scrubs these at deletion time from now on, so this
-    /// exists only for rows deleted before that shipped — nothing else will ever rewrite
-    /// them, because rotation skips soft-deleted rows and the fixed-width pass cannot
-    /// convert a field it cannot decrypt.
+    /// The repair half. `ContactManager.deleteContact` scrubs these at deletion time, so this
+    /// covers only rows deleted before that shipped — nothing else will ever rewrite them,
+    /// because rotation skips soft-deleted rows and the fixed-width pass now excludes them.
     ///
-    /// **Needs no key, and never decrypts.** `deletionToken != nil` is the entire test.
-    /// Whether the field is currently readable does not matter: for an erased row the value
-    /// carries no meaning either way, so there is nothing to preserve and nothing to
-    /// distinguish. That also means an unavailable key cannot block this pass — the hazard
-    /// Bug 86's array migration has to manage, avoided rather than handled.
+    /// **What "scrubbed" means depends on the row, and that is the whole design.** The tell
+    /// is never the value in the field; it is a stamp whose readability disagrees with the
+    /// rest of the row it sits on:
     ///
-    /// Random rather than a fresh encryption: on a stranded row every other field fails to
-    /// decrypt, so a depth field that decrypts cleanly is the outlier and implies something
-    /// wrote after the erasure. This also normalises the half-readable rows the three
-    /// backfills produced by stamping current-key values onto deleted rows without filtering
-    /// `deletionToken`.
+    /// - **Readable row** (deleted, no rotation since). Its name fields still decrypt, so
+    ///   three stamps that did not would not read as concealment but as evidence something
+    ///   was deliberately destroyed — the trace this project must not leave. Re-seal the
+    ///   benign value instead: `Int.max` / `-1` / `0`, what an ordinary contact holds on a
+    ///   device that never activated Secure Mode.
+    /// - **Stranded row** (a rotation has happened since deletion). Every other field on it
+    ///   is unreadable, so a stamp that decrypts cleanly is the outlier. Random bytes at the
+    ///   uniform length. A stamp already sealed under the superseded key is *already*
+    ///   consistent and is left byte-identical; only nil or legacy-width fields are rewritten,
+    ///   since those leak through length (Bug 85) even when nothing can read them.
     ///
-    /// Idempotent by length, so it does not re-randomise on every launch.
+    /// Readability is decided per row by `deletionToken`, which is the ideal oracle: it is set
+    /// on exactly this population, always encrypted, and its plaintext is the known constant
+    /// `Data([1])` — so it confirms a *correct* decrypt rather than merely a non-throwing one.
+    ///
+    /// Idempotent in both branches, so it does not rewrite on every launch.
     ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateScrubDeletedDepthStamps(modelContext: ModelContext) throws {
@@ -447,15 +459,23 @@ struct DatabaseMigration {
         var didChange = false
 
         for contact in deleted {
-            if let scrubbed = Self.scrubbedStamp(contact.visibleThroughDepth) {
+            let readable = contact.deletionToken?.decrypt() == Data([1])
+
+            if let scrubbed = try Self.scrubbedStamp(
+                contact.visibleThroughDepth, benign: Int.max, rowIsReadable: readable
+            ) {
                 contact.visibleThroughDepth = scrubbed
                 didChange = true
             }
-            if let scrubbed = Self.scrubbedStamp(contact.globalTrusteeDepth) {
+            if let scrubbed = try Self.scrubbedStamp(
+                contact.globalTrusteeDepth, benign: -1, rowIsReadable: readable
+            ) {
                 contact.globalTrusteeDepth = scrubbed
                 didChange = true
             }
-            if let scrubbed = Self.scrubbedStamp(contact.originDepth) {
+            if let scrubbed = try Self.scrubbedStamp(
+                contact.originDepth, benign: 0, rowIsReadable: readable
+            ) {
                 contact.originDepth = scrubbed
                 didChange = true
             }
@@ -464,23 +484,38 @@ struct DatabaseMigration {
         if didChange { try modelContext.save() }
     }
 
-    /// Random bytes at the uniform length, or nil when the field is already that length.
+    /// The replacement for one depth stamp, or nil to leave the field byte-identical.
     ///
-    /// Per field, not per row: a deleted row can legitimately have one stamp readable and
-    /// the others stranded. Historically this was guaranteed — the three backfills below
-    /// didn't filter `deletionToken`, so an ordinary launch could stamp one field of an
-    /// already-deleted row under the current key while leaving the others untouched (Bug
-    /// 97, fixed 2026-08-24: all three now exclude deleted rows). That population still
-    /// exists on any device that ran an affected launch before the fix, so the per-field
-    /// design stays — promoting this to "if any stamp is wrong, replace all three" would
-    /// discard real values for no gain, and nothing guarantees a row's three fields only
-    /// ever go stale together going forward either.
+    /// Applied per field, not per row: a deleted row can legitimately have one stamp readable
+    /// and the others stranded. Historically this was guaranteed — the three backfills didn't
+    /// filter `deletionToken`, so an ordinary launch could stamp one field of an already-
+    /// deleted row under the current key while leaving the others untouched (Bug 97, fixed
+    /// 2026-08-24: all three now exclude deleted rows). `rowIsReadable` decides the *target*
+    /// state for the row; each field is then moved to it independently.
     ///
-    /// A nil stamp is scrubbed too — nil is its own tell (S6), and random bytes make it
-    /// non-nil and the same length as everything else.
-    private static func scrubbedStamp(_ field: Data?) -> Data? {
-        guard field?.count != DepthCodec.sealedSize else { return nil }
-        return Data.randomBytes(DepthCodec.sealedSize)
+    /// A nil stamp is replaced in both branches — nil is its own tell (S6). In the readable
+    /// branch it becomes a sealed benign value, matching a live row; in the stranded branch,
+    /// random bytes at the uniform length.
+    private static func scrubbedStamp(
+        _ field: Data?,
+        benign: Int,
+        rowIsReadable: Bool
+    ) throws -> Data? {
+        guard rowIsReadable else {
+            // Already sealed at the uniform length — unreadable here, and unreadable is
+            // exactly what this row's other fields are. Nothing to do.
+            guard field?.count != DepthCodec.sealedSize else { return nil }
+            return Data.randomBytes(DepthCodec.sealedSize)
+        }
+
+        // Both conditions matter. The value has to be benign, and it has to be fixed-width:
+        // a legacy-format stamp can already decode to the benign value while still leaking
+        // through its length, and the fixed-width pass no longer visits deleted rows.
+        if let field, field.count == DepthCodec.sealedSize,
+           let plain = field.decrypt(), DepthCodec.decode(plain) == benign {
+            return nil
+        }
+        return try DepthCodec.encode(benign).encrypt()
     }
 
     /// Builds the error for a legacy decryption that threw, probing whether the field is
