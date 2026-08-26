@@ -491,7 +491,7 @@ private func distribute(
         let recipients = try makeProfiles(count: 3)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
         try vault.tryFinalizeReconstruction(entryID: entry.id)
 
         let rows = try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>())

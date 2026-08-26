@@ -679,15 +679,26 @@ extension VaultManager {
         }
     }
 
-    /// Append one incoming BEK shard to the restore-shard file. Deduplicates by id.
-    /// Safe to call while the vault is locked — uses the recovery buffer key.
-    func storeRestoreShard(_ attribute: SignedAttribute) throws {
+    /// Append one incoming BEK shard to the restore-shard file.
+    ///
+    /// At most one stored shard per `senderIdentifier` (Bug 94 remedy 2) — a second
+    /// share from the same sender replaces the first rather than accumulating, so
+    /// `attemptBEKRestore`'s grouping structurally reflects distinct senders, not
+    /// just distinct `SignedAttribute.id`s. Safe to call while the vault is locked —
+    /// uses the recovery buffer key.
+    func storeRestoreShard(_ attribute: SignedAttribute, attestation: SignedAttribute?, senderIdentifier: String) throws {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw VaultError.keyDerivationFailed
         }
         var shards = (try? self.loadRestoreShards()) ?? []
-        guard !shards.contains(where: { $0.id == attribute.id }) else { return }
-        shards.append(attribute)
+        if let dupIndex = shards.firstIndex(where: {
+            $0.attribute.entryID == attribute.entryID && $0.senderIdentifier == senderIdentifier
+        }) {
+            if shards[dupIndex].attribute.id == attribute.id { return } // identical re-delivery
+            shards[dupIndex] = AttestedShard(attribute: attribute, attestation: attestation, senderIdentifier: senderIdentifier)
+        } else {
+            shards.append(AttestedShard(attribute: attribute, attestation: attestation, senderIdentifier: senderIdentifier))
+        }
 
         let plain  = try JSONEncoder().encode(shards)
         let sealed = try AES.GCM.seal(
@@ -737,10 +748,13 @@ extension VaultManager {
         // Update counter as a side effect (covers the on-unlock path).
         self.pendingRestoreShardCount = shards.count
 
+        // Already deduped to at most one per (entryID, senderIdentifier) at storage
+        // time (storeRestoreShard), so each group here already reflects distinct
+        // senders — not just distinct SignedAttribute.id's (Bug 94 remedy 2).
         var groups: [UUID: [SignedAttribute]] = [:]
         for shard in shards {
-            guard let eid = shard.entryID else { continue }
-            groups[eid, default: []].append(shard)
+            guard let eid = shard.attribute.entryID else { continue }
+            groups[eid, default: []].append(shard.attribute)
         }
 
         for (_, group) in groups {
@@ -766,7 +780,7 @@ extension VaultManager {
     }
 
     /// Decrypt the restore-shard file. Returns empty array when the file is absent.
-    private func loadRestoreShards() throws -> [SignedAttribute] {
+    private func loadRestoreShards() throws -> [AttestedShard] {
         guard FileManager.default.fileExists(atPath: Self.pendingRestoreShardsURL.path) else {
             return []
         }
@@ -776,7 +790,7 @@ extension VaultManager {
         let combined = try Data(contentsOf: Self.pendingRestoreShardsURL)
         let box      = try AES.GCM.SealedBox(combined: combined)
         let plain    = try AES.GCM.open(box, using: bufferKey, authenticating: Self.pendingRestoreShardsAAD)
-        return try JSONDecoder().decode([SignedAttribute].self, from: plain)
+        return try JSONDecoder().decode([AttestedShard].self, from: plain)
     }
 
     // MARK: - Export metadata slot codec

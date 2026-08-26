@@ -53,6 +53,12 @@ struct SignedAttribute: Codable, Identifiable {
         case crypto
         /// An SSS vault-key shard delivered to a trusted contact (Issue #34).
         case shard
+        /// A trustee's vouching signature over `SHA256(signingPayload())` of a
+        /// `.shard` attribute they hold, made with the trustee's *current* identity
+        /// key. Lets a rotated-identity owner accept a shard their new device
+        /// structurally cannot verify — the trustee checked it against their own
+        /// retained copy of the owner's old key instead (Bug 94 remedy 2).
+        case attestation
         case other
     }
 
@@ -200,4 +206,33 @@ struct SignedAttribute: Codable, Identifiable {
             &error
         )
     }
+}
+
+// MARK: - AttestedShard
+
+/// A `.shard` attribute together with who delivered it and, when the sender's
+/// identity has rotated since original distribution, the trustee's attestation
+/// vouching for it.
+///
+/// Threading `senderIdentifier` through storage is the load-bearing piece of
+/// Bug 94 remedy 2: reconstruction must require threshold-many *distinct
+/// senders*, not just threshold-many distinct `SignedAttribute.id`s, or a
+/// single attacker can self-attest a full threshold's worth of fabricated
+/// shares. See `Docs/Features/Secure Mode/bugs.md`, Bug 94, "Implementation,
+/// worked out and stress-tested."
+struct AttestedShard: Codable {
+    /// The owner-signed shard. Verifies directly against the owner's current
+    /// identity (Branch A, unrotated case) or is accompanied by `attestation`
+    /// (Branch B, rotated case).
+    let attribute: SignedAttribute
+    /// Present only on the rotated-identity path: the trustee's own signature,
+    /// category `.attestation`, over `SHA256(attribute.signingPayload())`.
+    let attestation: SignedAttribute?
+    /// The contact identifier this shard arrived from, as resolved by the
+    /// *receiving* device's own lookup — never sender-asserted. See
+    /// `ShardCustodyManager.handleInbound`'s callers in `OccultaApp.swift`,
+    /// where `senderIdentifier` comes from `contactManager.openGroup(...)`
+    /// resolving the decrypting key against the receiver's own contacts, not
+    /// from anything the bundle's payload claims.
+    let senderIdentifier: String
 }

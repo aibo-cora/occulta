@@ -20,72 +20,83 @@ extension VaultManager {
 
     // MARK: - Public surface
 
-    /// Absorb one `.respond` shard into the reconstruction buffer.
+    /// Absorb one returned shard into the reconstruction buffer.
+    ///
+    /// `attestation`/`senderIdentifier` come from `handleHandback`'s own Branch A/B
+    /// check (Bug 94 remedy 2) — verification already happened there; this function
+    /// no longer re-checks the signature itself. `senderIdentifier` must be the
+    /// *receiver's own* resolution of who sent this, never sender-asserted — see
+    /// `AttestedShard`'s doc comment.
     ///
     /// Steps:
-    ///   1. Best-effort signature verification against the owner's current
-    ///      identity public key. A mismatch is logged but does not abort —
-    ///      on a new device the SE identity key has rotated and every
-    ///      verification fails by design. The GCM authentication tag at
-    ///      finalisation is the real integrity check.
-    ///   2. Reject duplicates: if a row already encodes the same
-    ///      `signedAttribute.id`, drop the new copy silently.
-    ///   3. Seal `ReconstructShard.Payload` under the recovery buffer key
-    ///      with AAD = row.aad(); insert.
-    ///   4. Opportunistically call `tryFinalizeReconstruction(entryID:)` —
+    ///   1. Per-entry buffer: only for entries this device actually split
+    ///      (`VaultEntry.shardDistributionEncrypted != nil`) — excludes BEK shards
+    ///      by construction, since no `VaultEntry.id` is ever a `distributionID`,
+    ///      and refuses shards for an `entryID` with no outstanding distribution at
+    ///      all. At most one buffered row per `(entryID, senderIdentifier)`: a
+    ///      second share from the same sender replaces the first rather than
+    ///      accumulating, so a threshold-reaching group structurally requires
+    ///      distinct senders, not just distinct `SignedAttribute.id`s.
+    ///   2. Opportunistically call `tryFinalizeReconstruction(entryID:)` —
     ///      if the vault is locked, the call returns without touching state
     ///      and finalisation is retried on the next vault unlock.
-    func acceptReturnedShard(_ attribute: SignedAttribute, currentDepth: Int) throws {
+    ///   3. BEK restore — same one-per-sender rule, applied in `storeRestoreShard`.
+    func acceptReturnedShard(
+        _ attribute: SignedAttribute,
+        attestation: SignedAttribute?,
+        senderIdentifier: String,
+        currentDepth: Int
+    ) throws {
         guard attribute.category == .shard, let entryID = attribute.entryID else {
             throw VaultError.decryptionFailed
         }
 
-        // ── 1. Best-effort signature verification ────────────────────────
-        if let identity = try? self.keyManager.retrieveIdentity(),
-           !attribute.verify(against: identity) {
-            #if DEBUG
-            debugPrint("acceptReturnedShard: signature did not verify against current identity (new-device path or tampered shard).")
-            #endif
+        // ── 1. Per-entry buffer ───────────────────────────────────────────
+        if let entry = try? self.fetchEntry(by: entryID), entry.shardDistributionEncrypted != nil {
+            let existing = try self.decryptAllReconstructShards()
+            if let dup = existing.first(where: {
+                $0.payload.entryID == entryID && $0.payload.senderIdentifier == senderIdentifier
+            }) {
+                if dup.payload.attrID == attribute.id { return } // identical re-delivery
+                self.modelContext.delete(dup.row)                // sender is replacing their prior share
+            }
+
+            guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
+                throw VaultError.keyDerivationFailed
+            }
+
+            let rowID   = UUID()
+            let aad     = Self.reconstructRowAAD(id: rowID)
+            let payload = ReconstructShard.Payload(
+                entryID:          entryID,
+                attrID:           attribute.id,
+                signedAttribute:  attribute,
+                senderIdentifier: senderIdentifier,
+                attestation:      attestation
+            )
+            let plaintext = try JSONEncoder().encode(payload)
+            let sealed    = try AES.GCM.seal(plaintext, using: bufferKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+            guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+
+            let row = ReconstructShard(id: rowID, encryptedPayload: combined)
+            self.modelContext.insert(row)
+            try self.modelContext.save()
+
+            // ── 2. Opportunistic finalise ──────────────────────────────────
+            try? self.tryFinalizeReconstruction(entryID: entryID)
         }
 
-        // ── 2. Deduplicate by SignedAttribute.id within the buffer ──────
-        let existing = try self.decryptAllReconstructShards()
-        if existing.contains(where: { $0.payload.attrID == attribute.id }) {
-            return
-        }
-
-        // ── 3. Seal + insert ─────────────────────────────────────────────
-        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
-            throw VaultError.keyDerivationFailed
-        }
-
-        let rowID   = UUID()
-        let aad     = Self.reconstructRowAAD(id: rowID)
-        let payload = ReconstructShard.Payload(
-            entryID:         entryID,
-            attrID:          attribute.id,
-            signedAttribute: attribute
-        )
-        let plaintext = try JSONEncoder().encode(payload)
-        let sealed    = try AES.GCM.seal(plaintext, using: bufferKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
-
-        let row = ReconstructShard(id: rowID, encryptedPayload: combined)
-        self.modelContext.insert(row)
-        try self.modelContext.save()
-
-        // ── 4. Opportunistic finalise ────────────────────────────────────
-        try? self.tryFinalizeReconstruction(entryID: entryID)
-
-        // ── 5. BEK restore — store shard + attempt reconstruction ────────
+        // ── 3. BEK restore — store shard + attempt reconstruction ────────
         // Only active when a .occbak file is awaiting recovery. storeRestoreShard
         // is safe while locked (recovery buffer key); attemptBEKRestore no-ops if locked.
         //
         // isRestorePending, not pendingRestoreActive — the shard must still be stored
         // above depth 0, or a genuine recovery silently stops accumulating shards the
-        // moment the user is at a duress depth (Bug 93).
+        // moment the user is at a duress depth (Bug 93). Kept as the BEK-specific gate
+        // deliberately (Bug 94 remedy 2) — a fresh device can't know the expected
+        // distributionID any more precisely than this before reconstruction succeeds.
         if self.isRestorePending {
-            try? self.storeRestoreShard(attribute)
+            try? self.storeRestoreShard(attribute, attestation: attestation, senderIdentifier: senderIdentifier)
             self.attemptBEKRestore(currentDepth: currentDepth)
         }
     }

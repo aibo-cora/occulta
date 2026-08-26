@@ -386,7 +386,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
         // Simulate a .respond bundle delivering one shard back to Alice.
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 1)
 
@@ -410,7 +410,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let entry      = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
         guard let bufferKey = try alice.deriveRecoveryBufferKey() else {
             Issue.record("expected recovery buffer key"); return
@@ -440,7 +440,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 
         // Forget the wrap so legacy unwrap can't satisfy reconstruction; only
         // shards can recover. Then deliver only ONE shard (k=2, below threshold).
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
         try vault.tryFinalizeReconstruction(entryID: entry.id)
 
         #expect(try reconstructShardCount(in: container) == 1, "buffer row remains since threshold not met")
@@ -454,8 +454,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let recipients = try makeProfiles(count: 3)
         let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs[1], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
         // accept on the last shard auto-triggers finalisation.
 
         #expect(try reconstructShardCount(in: container) == 0, "buffer must be empty after finalisation")
@@ -476,14 +476,14 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 2, recipients: recipients)
 
         // Deliver one shard for each entry — each entry has 1/2.
-        try vault.acceptReturnedShard(attrs1[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs2[0], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs1[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 2,
                 "two entries, two distinct buffered shards, neither at threshold")
 
         // Push entry1 to threshold; entry2 stays at 1/2.
-        try vault.acceptReturnedShard(attrs1[1], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs1[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 1,
                 "entry1 finalised → only entry2's single shard remains")
@@ -497,8 +497,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let recipients = try makeProfiles(count: 2)
         let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs[0], currentDepth: 0)  // duplicate
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)  // duplicate
 
         // Threshold k=2; only one unique shard buffered → no finalise.
         #expect(try reconstructShardCount(in: container) == 1)
@@ -519,10 +519,10 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Lock so opportunistic finalisation does NOT fire on accept.
         vault.lock()
 
-        try vault.acceptReturnedShard(attrs1[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs1[1], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs2[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs2[1], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs1[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs1[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 4, "all rows still buffered while locked")
 
@@ -545,9 +545,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let attrs1 = try vault.prepareShards(for: entry1.id, threshold: 3, recipients: recipients)
         let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 3, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs1[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs2[0], currentDepth: 0)
-        try vault.acceptReturnedShard(attrs2[1], currentDepth: 0)
+        try vault.acceptReturnedShard(attrs1[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
 
         try vault.cancelReconstruction(entryID: entry2.id)
 

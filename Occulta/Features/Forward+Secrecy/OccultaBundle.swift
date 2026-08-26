@@ -335,15 +335,22 @@ struct OccultaBundle: Codable {
         let attribute: SignedAttribute?
         /// A single shard ID. Non-nil for `.replace` (old shard to delete).
         let attributeID: UUID?
+        /// Trustee's vouching signature, category `.attestation`. Only ever set on
+        /// `.handback`, and only when the trustee's own check against a retained
+        /// old owner key succeeded — see Bug 94 remedy 2. `nil` means "verify
+        /// `attribute` directly against the owner's current identity" (Branch A).
+        let attestation: SignedAttribute?
 
         init(
             kind: Kind,
             attribute: SignedAttribute? = nil,
-            attributeID: UUID? = nil
+            attributeID: UUID? = nil,
+            attestation: SignedAttribute? = nil
         ) {
             self.kind        = kind
             self.attribute   = attribute
             self.attributeID = attributeID
+            self.attestation = attestation
         }
     }
 

@@ -76,7 +76,7 @@ final class ShardCustodyManager {
                 case .replace:
                     try self.handleReplace(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier)
                 case .handback:
-                    try self.handleHandback(op: op, vaultManager: vaultManager, currentDepth: currentDepth)
+                    try self.handleHandback(op: op, senderPublicKey: senderPublicKey, senderIdentifier: senderIdentifier, vaultManager: vaultManager, currentDepth: currentDepth)
                 case .unsupported:
                     break
                 }
@@ -192,30 +192,59 @@ final class ShardCustodyManager {
 
     /// `.handback` — trustee returned one of our shards after detecting a fingerprint mismatch.
     ///
-    /// Verifies the shard's ECDSA signature against our own current identity key.
-    /// On a new device (identity key rotated), old signatures cannot be verified —
-    /// in that case we allow the shard through ONLY when a pending restore is active,
-    /// because the GCM oracle in `reconstructBEK` / `reconstructEntry` is the real
-    /// integrity check. When no restore is active a verification failure means the
-    /// shard is either from a different distribution generation or tampered, and we reject.
-    private func handleHandback(op: OccultaBundle.ShardOperation, vaultManager: VaultManager, currentDepth: Int) throws {
+    /// Two ways to accept (Bug 94 remedy 2):
+    ///
+    ///   **Branch A — direct verify.** `attribute` verifies against our own current
+    ///   identity key. Unrotated case: same-device reinstall, or a device that never
+    ///   lost its Enclave key. Can only ever be genuine — forging it means breaking
+    ///   ECDSA or stealing the SE key — so no further check is needed.
+    ///
+    ///   **Branch B — trustee attestation.** Direct verification fails (rotated
+    ///   identity — a genuinely new or erased device can't verify a signature made
+    ///   by a key that no longer exists), but `op.attestation` verifies against
+    ///   `senderPublicKey` and hashes to exactly `attribute.signingPayload()`. The
+    ///   trustee checked `attribute` against their own retained copy of our old key
+    ///   (something only a genuine trustee could ever have) and vouched for it with
+    ///   their current identity, which we can verify because we just re-paired with
+    ///   them over UWB regardless.
+    ///
+    /// Neither branch is gated on `isRestorePending` here — that used to be the
+    /// escape hatch for the rotated case, and it accepted *any* unverified shard
+    /// whenever a restore happened to be pending, from anyone. Acceptance is now
+    /// itself the authentication; what's still pending-gated is what happens next,
+    /// inside `acceptReturnedShard` (BEK storage) and its own per-entry check
+    /// (distribution-metadata storage) — deliberately two different gates, not one
+    /// loosened uniformly, since a fresh device can't know the expected BEK
+    /// `distributionID` any more precisely than "is a restore armed."
+    private func handleHandback(
+        op: OccultaBundle.ShardOperation,
+        senderPublicKey: Data,
+        senderIdentifier: String,
+        vaultManager: VaultManager,
+        currentDepth: Int
+    ) throws {
         guard let attribute = op.attribute, attribute.category == .shard else {
             throw CustodyError.invalidPayload
         }
-        if let ownKey = try? self.keyManager.retrieveIdentity(),
-           !attribute.verify(against: ownKey) {
-            // Hard-reject unless we're in a pending restore (new-device, key rotated).
-            // isRestorePending, not pendingRestoreActive — the latter is depth-gated for
-            // display (Bug 93) and would make this reject a legitimate handback outright,
-            // above depth 0, instead of deferring it.
-            guard vaultManager.isRestorePending else {
-                throw CustodyError.signatureRejected
-            }
-            #if DEBUG
-            debugPrint("handleHandback: signature verification failed — allowing through for pending restore.")
-            #endif
+
+        if let ownKey = try? self.keyManager.retrieveIdentity(), attribute.verify(against: ownKey) {
+            // Branch A.
+        } else if let attestation = op.attestation,
+                  attestation.category == .attestation,
+                  attestation.entryID == attribute.entryID,
+                  attestation.verify(against: senderPublicKey),
+                  attestation.value == Data(SHA256.hash(data: attribute.signingPayload())) {
+            // Branch B.
+        } else {
+            throw CustodyError.signatureRejected
         }
-        try vaultManager.acceptReturnedShard(attribute, currentDepth: currentDepth)
+
+        try vaultManager.acceptReturnedShard(
+            attribute,
+            attestation: op.attestation,
+            senderIdentifier: senderIdentifier,
+            currentDepth: currentDepth
+        )
     }
 
     // MARK: - Manifest reconciliation
@@ -333,10 +362,62 @@ final class ShardCustodyManager {
     ///
     /// Included on every outbound bundle to the owner until they redistribute with
     /// a new fingerprint, which triggers `deleteMismatchShards` in `handleDistribute`.
+    /// Each op carries an attestation when this device can produce one (Bug 94
+    /// remedy 2) — `attestation(for:)` returns nil on any failure, which is the
+    /// safe default: the op still goes out, just without a Branch B path.
     private func mismatchHandbackOps(for contactIdentifier: String, currentFP: Data) throws -> [OccultaBundle.ShardOperation] {
         return try self.decryptAllCustodyShards()
             .filter { $0.payload.ownerContactIdentifier == contactIdentifier && $0.payload.ownerKeyFingerprint != currentFP }
-            .map    { OccultaBundle.ShardOperation(kind: .handback, attribute: $0.payload.signedAttribute) }
+            .map    { OccultaBundle.ShardOperation(
+                kind:        .handback,
+                attribute:   $0.payload.signedAttribute,
+                attestation: self.attestation(for: $0.payload)
+            ) }
+    }
+
+    /// Vouch for `payload.signedAttribute` with this device's *current* identity key,
+    /// but only after independently verifying it against the owner's *retained old*
+    /// key — the check the owner's own new device structurally cannot perform, since
+    /// SE identity keys are non-exportable and die with the device they were created
+    /// on. Returns nil (no attestation, not a throw) whenever any step fails: no
+    /// matching key on file, the retained key doesn't decrypt, or the original
+    /// signature doesn't verify against it. A missing attestation just means this
+    /// op falls back to Branch A only — never a reason to treat the shard as invalid
+    /// here, since Branch A remains valid whenever the owner's identity hasn't
+    /// rotated at all.
+    private func attestation(for payload: CustodyShard.Payload) -> SignedAttribute? {
+        guard let ownerIdentifier = payload.ownerContactIdentifier else { return nil }
+
+        let contacts = (try? self.modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.identifier == ownerIdentifier })
+        )) ?? []
+        guard let owner = contacts.first else { return nil }
+
+        let crypto = Manager.Crypto(keyManager: self.keyManager)
+        let matchingKey = owner.contactPublicKeys?.first { record in
+            guard let material = try? crypto.decrypt(data: record.material) else { return false }
+            return Self.fingerprint(of: material) == payload.ownerKeyFingerprint
+        }
+        guard
+            let matchingKey,
+            let retainedOldKey = try? crypto.decrypt(data: matchingKey.material)
+        else { return nil }
+
+        guard payload.signedAttribute.verify(against: retainedOldKey) else { return nil }
+
+        let hash      = Data(SHA256.hash(data: payload.signedAttribute.signingPayload()))
+        let attrID    = UUID()
+        let createdAt = Date()
+        let signingPayload = SignedAttribute.signingPayload(
+            id: attrID, category: .attestation, value: hash,
+            entryID: payload.signedAttribute.entryID, createdAt: createdAt
+        )
+        guard let signature = try? self.keyManager.signData(signingPayload) else { return nil }
+
+        return SignedAttribute(
+            id: attrID, label: "shard-attestation", value: hash, category: .attestation,
+            signature: signature, createdAt: createdAt, entryID: payload.signedAttribute.entryID
+        )
     }
 
     // MARK: - Outbound: build manifest fields
