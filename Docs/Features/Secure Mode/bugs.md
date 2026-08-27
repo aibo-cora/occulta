@@ -7116,3 +7116,123 @@ one throws on `SecRandomCopyBytes` failure, and one falls back to `SystemRandomN
 silently rather than throwing. Three different failure-handling contracts for three different call
 sites — consolidating them would be a behavioural decision, not a naming cleanup, so this is not
 filed as a bug.
+
+---
+
+## Bug 99 — A coercer who supplies his own trustees can test whether the phone is in duress, because a restore completes in one layer and not the other
+
+**Status:** **Open.** Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
+asking what an attacker who owns the trustee set can do, rather than what one who does not can.
+
+**Target:** `release/v1.10.3`.
+
+### Severity: High (deniability break)
+
+Not a disclosure of vault contents. It answers the one question the whole layering system exists to
+leave unanswerable — *am I being shown the real phone?* — on demand, repeatably, with equipment the
+attacker already has.
+
+### The attack
+
+The victim is coerced, gives the duress PIN, and no restore is pending. The coercer has two phones.
+
+1. Pair both with the victim's phone over UWB. He is already holding it, so this is free.
+2. Author a `.occbak` on his own device, generate its BEK, and Shamir-split it at **k = 2** across
+   his two phones. He chooses `k`, so two is the entire cost.
+3. Open the file on the victim's phone and accept the confirmation. It arms, and the banner appears
+   — identical in both layers since Bug 93's follow-up, so nothing is learned yet.
+4. Both phones hand back their shards immediately. `handleHandback` takes them through Branch B: the
+   attestation verifies against `senderPublicKey`, and he controls the shard and the attestation
+   alike. `storeRestoreShard` banks them, because shard collection is depth-independent by design.
+5. **Wait.**
+
+At depth 0 `attemptBEKRestore` fires on the next unlock, reconstructs his BEK, imports his entries,
+and clears the banner. Above depth 0 nothing happens, ever. He establishes the baseline once on his
+own phone and then reads the victim's answer off it.
+
+### Why the standing reasoning does not cover this
+
+Two arguments in this file assume the attacker cannot make shards arrive.
+
+**"A duress session is short and shard handback needs UWB proximity with a trustee."** True of the
+victim's trustees. Irrelevant here — **he is the trustee**, standing next to the phone, delivering on
+demand. The premise fails exactly when the attacker supplies the trustee set, which costs him one
+extra handset.
+
+**"Deferral is what makes showing the banner in duress safe."** It is what stops a *completion* in
+duress, and that is still worth having. But deferral is itself the observable: completing in one
+layer and not the other is the signal. The control that protects the vault is the same control that
+answers his question.
+
+Bug 93's follow-up did not create this — before it, duress showed no banner at all, which was a
+cheaper version of the same tell requiring no shard delivery. It raised the price from "arm and
+glance" to "arm, pair two phones, deliver a full shard set, wait." That is a real increase and not a
+close.
+
+### Remedy: complete at the depth the file was armed at
+
+Not "complete in either layer" — that has a hole. A *genuine* backup armed at depth 0 contains
+depth-0 entries; if it completed at duress depth 2, `importBackup` would stamp them 2 and the real
+vault would materialise in the layer the coercer is reading. Worse than the oracle, because it hands
+over the data instead of revealing the lie.
+
+Binding completion to the arming depth removes the conditional behaviour instead:
+
+- The attacker arms in duress, so it completes in duress. His entries appear, exactly as his baseline
+  predicts.
+- A backup armed at depth 0 still only completes at depth 0, so a duress session can never finish it.
+
+Both layers then read the same from an observer's seat — *arm here, deliver shards, it completes
+here* — because the condition is "same depth as arming", which is symmetric rather than
+depth-privileged.
+
+**The edge case is symmetric too.** If a restore is already pending when he arms, his file is refused
+(`alreadyProcessed`) and his shards cannot reconstruct a BEK he did not split. His test returns "no
+completion" — which is equally what depth 0 returns in that state, so it distinguishes nothing.
+
+### This is better than deferral for containment, not merely equal
+
+Vault entries are **exact-match** partitioned, not nested like contacts — `isEntryVisible` and
+`entriesVisible(atDepth:)` both compare `value == depth`. So an entry imported at duress depth 2 is
+visible **only** at depth 2.
+
+That inverts the intuition. Deferral does not prevent his injection; it delays it and then delivers
+it into the *real* layer at the next depth-0 unlock. Completing where the file was armed quarantines
+it in the duress layer, where it is his own data sitting in his own cover story.
+
+Recorded because the analysis leading here got this backwards first, by applying the contact rule
+(`value >= depth`) to vault entries. The exact-match property is what makes the remedy work, and it
+is the thing easiest to misremember, since the two models sit side by side under one name.
+
+### What it does not change
+
+`BackupEncryptionKey` is not depth-scoped — one row per device. His BEK becomes the device's BEK
+whichever layer completes, so a later export at depth 0 is readable by him. Unchanged by this
+remedy, and already confined by Bug 94 remedy 1 to devices that have no BEK yet, which is also the
+only case where his restore can proceed at all.
+
+### Requirements
+
+**The arming depth has to be persisted, and sealed.** It sits beside the pending file, and it must go
+through `DepthCodec` under the recovery buffer key like every other depth stamp. A plaintext integer
+on disk naming a layer is precisely what Bug 93 harm 3 took out of those filenames, and this would
+put it straight back in the payload.
+
+**The deferral guard changes shape rather than disappearing.**
+`pendingRestoreNeverCompletesAboveDepthZero` becomes "does not complete at a depth other than the one
+it was armed at". Something still has to stop a duress session finishing a depth-0-armed restore —
+that is the assertion that protects the genuine backup.
+
+### Supersedes
+
+- "Defer and hide together" (Bug 93) — hiding is already gone; this replaces deferral's depth-0
+  privilege with an arming-depth binding.
+- The "unlikely to receive shards during a duress window" reasoning, wherever it appears. It holds
+  only for an attacker who does not bring his own trustees.
+
+### The limit this puts on the guarantee, stated plainly
+
+Even with the remedy, recovery-related deniability holds against a coercer who cannot supply his own
+trustees. It is worth writing down that this was ever in question, because it bounds what the
+surrounding fixes buy: they close the cheap tells, and the expensive one is closed by the arming-depth
+binding rather than by anything about the UI.
