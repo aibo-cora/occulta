@@ -6095,6 +6095,13 @@ surfaces bundled under "what does duress show," and only one of them was fixable
   **Cost, accepted:** on a device that already has a backup configured, opening another one now
   does nothing visible at all, where it used to say why. That is the price of the uniformity.
 
+  **And that price is conditional on the architecture, not permanent — see Bug 102.** Depth 0 had to
+  vary its reply on whether a BEK exists, and duress could not, only because there is one BEK for the
+  whole device. With a per-layer recovery subsystem each layer answers truthfully about its own state,
+  and that answer is identical to what a real session in that layer would give. The acknowledgment
+  should come back if that lands. Recorded here so this reads as "correct for the current design"
+  rather than as a settled conclusion about what the user is allowed to be told.
+
 - **The ongoing progress banner** — was the persistent, updating shard count in the vault tab.
   Originally judged un-unifiable: showing it in duress was harm 1 outright (direct disclosure that a
   recovery is inbound), and fabricating a plausible, consistently-timed counter that tracks nothing
@@ -7237,6 +7244,20 @@ smaller and safer on the other side of it.
 it was armed at". Something still has to stop a duress session finishing a depth-0-armed restore —
 that is the assertion that protects the genuine backup.
 
+### Superseded in part by Bug 102's wider framing
+
+**Amended 2026-08-27.** The arming-depth binding is the right fix *within the current architecture*,
+and remains worth building as an interim: it closes the oracle and contains the injection better than
+deferral does. But it is a binding bolted onto a device-wide subsystem.
+
+Bug 102, restated, layers the recovery subsystem itself. There the oracle closes because arming and
+completing are genuinely one per-layer operation rather than a masked depth-0 privilege, and shards
+self-route by `distributionID` with no depth binding at all. What survives of this entry in that world
+is only the tag on the pending `.occbak`, which stays a file and so still needs to say which layer
+armed it.
+
+Build order if both are wanted: this one now, Bug 102 when a minor release can carry it.
+
 ### Supersedes
 
 - "Defer and hide together" (Bug 93) — hiding is already gone; this replaces deferral's depth-0
@@ -7342,8 +7363,14 @@ This is the half worth fixing first. It is one line per file and needs no format
    a near-constant element size, to opening SQLite and querying a store shared by eighteen models
    plus freelist and WAL, whose own size decomposes into nothing. A reduction, not an elimination.
 
-   Bug 99 depends on this: with restore shards in a model, its arming depth is a field on that model
-   rather than a sidecar file or a new sealed header.
+   Bug 99 depends on this. Note the arming depth is *not* simply a field on that model, as first
+   assumed: at arming time no shard rows exist yet, and a depth written onto a shard row as it
+   arrives is the arrival depth, not the arming depth. See Bug 99's build plan for where it actually
+   has to live.
+
+   **Required under Bug 102's per-layer design too, not just this one.** Restore shards belong in
+   rows whether or not recovery is layered — and under layering they need no depth field at all,
+   because a shard already self-identifies by `distributionID`.
 3. **Pad the `.occbak` cache to a coarse tier.** `ShardPadding.tier(for:)`'s doubling ladder is the
    existing idiom. Bounded at 2× worst case, so the disk cost is understood rather than open-ended.
    Lower priority than the first two: the magnitude signal is weaker than the progress signal, and for
@@ -7487,7 +7514,54 @@ a fresh install or a new phone — and also the only population where a restore 
    threshold met. The user has a backup they believe is protected and recoverable, whose recovery
    depends entirely on the attacker's handsets.
 
-### Remedy: a per-depth BEK, and it is a feature rather than a field
+### Remedy: layer the recovery subsystem, of which the BEK is one part
+
+**Restated 2026-08-27, wider than first filed.** This entry began as "give the BEK a depth." The
+better framing came out of asking why the afternoon's UI work had been necessary at all, and it
+reframes Bugs 99, 100 and part of 93 as symptoms of one cause.
+
+**The cause: recovery is device-wide in an app that is layered everywhere else.** One BEK, one pending
+file, one shard buffer, plus a depth-0 privilege bolted on so the real layer wins. The two layers
+therefore genuinely behave differently, and every fix so far has flattened a *symptom* of that —
+uniform confirmation, uniform banner, deleted acknowledgment. Each makes the UI misrepresent the
+asymmetry slightly less. None removes it.
+
+Make recovery per-layer and the asymmetry stops existing, so the symptoms go with it rather than being
+suppressed one at a time.
+
+**The routing is already in the data.** A shard carries `entryID = distributionID`, and each depth's
+BEK would carry its own `distributionID` — so an arriving shard *self-identifies* which layer it
+belongs to. No depth field on the shard, and no arming-depth binding needed for shards at all.
+
+**What it subsumes**
+
+- **Bug 102** as originally scoped. A restore in duress installs the duress layer's BEK. Depth 0's key
+  is untouched, real trustees are not stranded, the vault does not list the attacker's phones.
+- **Bug 99's oracle.** He arms in duress, it completes in duress — indistinguishable from real,
+  because it is the same operation rather than a masked one.
+- **Part of Bug 93's follow-up, by reverting it.** With per-layer state, each layer can answer
+  truthfully about *its own* BEK, and that answer is exactly what a real session in that layer would
+  give. The file-open acknowledgment deleted on 2026-08-27 can come back. What was recorded there as
+  the accepted cost of uniformity was only a cost because the state was shared.
+
+**What it does not remove**
+
+- **Row and file counts still leak layer count.** N BEK rows, or N pending files, says N layers have
+  backups configured — countable without decrypting. Needs the fixed-slot padded-array treatment of
+  `pinEnabledPerDepth` and `verifierFillerArray`, not a naive one-row-per-depth table.
+- **Bug 99's binding survives in reduced form**, for the pending `.occbak` alone. That file is bulk
+  data and stays a file (Bug 100), so unless it is slotted per depth too it still needs a depth tag
+  saying which layer armed it.
+- **Bug 100 remedy 2 is required either way.** Restore shards belong in rows regardless of layering.
+
+**Cost, stated honestly.** This is a large change to a security-critical subsystem, and it is not a
+patch-release change. It also means part of what shipped on `release/v1.10.3` is correct for the
+current architecture and would be undone by the better one — specifically the deleted acknowledgment.
+That is recorded rather than left to be discovered.
+
+### The original remedy, for reference
+
+Narrower: give the BEK a depth and stop there.
 
 The direction is right and more consistent than what exists — `exportBackup(currentDepth:)` is already
 depth-scoped, so a per-depth key is the shape the rest of the feature implies. It is not small:
