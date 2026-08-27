@@ -435,13 +435,21 @@ struct RootView: View {
             } message: {
                 Text(self.errorMessage)
             }
+            // Wording is load-bearing three ways. It names no mechanism — "trustees" and
+            // "shards" would tell whoever raised this prompt that a distributed-secret scheme
+            // exists and that other people hold pieces, which is a lead a coercer does not
+            // otherwise get from this screen. It leads with the consequence rather than the
+            // process, because the risk is that an unrequested file plants someone else's
+            // entries and hands its author a key to every future backup. And the button says
+            // Accept, not Restore, because tapping it restores nothing now — it arms something
+            // that may complete days later or never.
             .alert("Restore from this backup?", isPresented: self.$showRestoreConfirmation) {
                 Button("Cancel", role: .cancel) { self.pendingRestoreFile = nil }
-                Button("Restore", role: .destructive) { self.armPendingRestore() }
+                Button("Accept", role: .destructive) { self.armPendingRestore() }
             } message: {
                 Text("""
-                    Occulta will collect shards from your trustees and then import this file's \
-                    entries into your vault. Continue only if you asked for this file.
+                    This will replace your vault with the contents of this file once enough \
+                    recovery pieces arrive. Only continue if you requested it.
                     """)
             }
             .sheet(item: self.$openedFileContents) {

@@ -283,7 +283,12 @@ struct VaultTab: View {
                             .foregroundStyle(Color.occultaAccent)
                     }
                 } footer: {
-                    Text("Open Occulta near your trustees to collect recovery pieces.")
+                    // Names no mechanism, for the same reason the restore confirmation does not:
+                    // this section renders at every depth now, so "your trustees" would tell
+                    // whoever is holding the phone that the recovery is split among specific
+                    // people and that proximity to them is what advances it. The real user still
+                    // gets the one instruction that matters — be near them with the app open.
+                    Text("Recovery continues when Occulta is open near the people helping you.")
                         .font(.system(size: 10, design: .monospaced))
                 }
             }
