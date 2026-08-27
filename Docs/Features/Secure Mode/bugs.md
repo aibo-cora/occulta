@@ -6067,12 +6067,59 @@ surfaces bundled under "what does duress show," and only one of them was fixable
   completion or duplication. Depth 0 keeps its differentiated, truthful behavior unchanged — silent +
   live banner for fresh, the existing "already been processed" wording for pending/done — since this
   constraint is about duress's internal consistency, not about matching depth 0.
-- **The ongoing, live progress banner** (harms 1 and 2, already closed) — the persistent, updating
-  shard count in the vault tab. This one genuinely can't be unified: showing it in duress is harm 1
-  outright (direct disclosure that a recovery is inbound), and fabricating a fake, plausible,
-  consistently-timed counter that tracks nothing real is a harder and riskier build than the problem
-  it would solve — wrong timing or an inconsistency across repeat checks would itself be a tell, and a
-  worse one. This divergence is structural, not a gap, and stays as built.
+
+  **Superseded 2026-08-27, and both halves of this bullet were rebuilt.** The acknowledgment is
+  gone entirely and the banner below is now depth-uniform. The paragraph above scoped depth 0 out
+  rather than clearing it, and the distinction was lost afterwards — the divergence got cited later
+  as a settled decision when it had only ever been declared out of scope.
+
+  **The comparison this fix ran was duress-against-duress:** can someone read the device's state by
+  trying several files in one duress session? No. The comparison nobody ran was
+  duress-against-real, which is the one a coercer can actually make. They open any `.occbak` —
+  their own will do — and read which session they are in off the reply: depth 0 said "already been
+  processed" on any device with a vault, or stayed silent on one without, where duress said
+  "Backup file received". The repo is public, so the baseline needed to interpret that is too.
+
+  **It could not be closed from the duress side.** Depth 0 varied its reply on whether a BEK
+  exists, and duress is deliberately blind to that, because surfacing real-layer state is a worse
+  leak than this one. Removing the message from duress alone — the obvious move — inverts the tell
+  rather than removing it: silence-versus-speech is legible at a glance, where a wording difference
+  at least needs prior knowledge. That is also roughly where this design started, before this harm
+  replaced it.
+
+  **So the acknowledgment was removed rather than harmonised.** The confirmation the user already
+  tapped (Bug 94 remedy 3) is the receipt for a fresh accept, and the banner is the durable signal.
+  A malformed file still errors at both depths; that branch turns on the file's own bytes, not on
+  vault state or depth.
+
+  **Cost, accepted:** on a device that already has a backup configured, opening another one now
+  does nothing visible at all, where it used to say why. That is the price of the uniformity.
+
+- **The ongoing progress banner** — was the persistent, updating shard count in the vault tab.
+  Originally judged un-unifiable: showing it in duress was harm 1 outright (direct disclosure that a
+  recovery is inbound), and fabricating a plausible, consistently-timed counter that tracks nothing
+  real is a harder and riskier build than the problem it solves — wrong timing or an inconsistency
+  across repeat checks is itself a tell, and a worse one.
+
+  **Revised 2026-08-27: the banner is now shown at every depth, and the count is gone.** That
+  reasoning was sound but attached to the wrong part. What could not be shown in duress was the
+  *number* — a live tally is a report on real depth-0 activity, and it would visibly climb during a
+  duress session, since shard collection is depth-independent (`storeRestoreShard`) even though
+  reconstruction is not. Dropping it leaves "Recovery in progress…", which claims no progress, so it
+  cannot contradict itself across repeated unlocks and reads the same as a real recovery still
+  waiting on trustees it has not met.
+
+  Neither horn of the original objection applies to the static form: it is real state rather than a
+  fabrication, so there is no timing to get wrong, and it is identical in both layers, so there is
+  nothing to compare. What it does concede is that duress advertises an event whose result only ever
+  lands at depth 0 — accepted, because a recovery that visibly never finishes is an ordinary thing
+  for one to do, and because the alternative was leaving a divergence a coercer can read in one move.
+
+  This reverses half of "defer and hide together". **Deferral is what makes it safe and stays
+  load-bearing:** `attemptBEKRestore` still refuses above depth 0, now pinned by
+  `pendingRestoreNeverCompletesAboveDepthZero`. `refreshPendingRestoreState` no longer takes a depth
+  at all, and the test that required it to publish false above depth 0 is inverted to require
+  uniformity.
 
 **The rejected proposal, for the record.** Allowing `attemptBEKRestore` to complete above depth 0
 when no BEK exists yet was suggested on the theory that a coercer would need cooperating trustees to

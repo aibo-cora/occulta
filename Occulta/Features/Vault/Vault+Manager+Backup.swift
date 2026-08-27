@@ -624,17 +624,28 @@ extension VaultManager {
     /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem.
     /// Called on every vault unlock so state is correct after app restarts.
     ///
-    /// Above depth 0 the published state is forced to inactive regardless of what is
-    /// actually on disk — not "hidden if something's pending," genuinely false, so a
-    /// coercer watching across multiple unlocks sees the same nothing every time. See
-    /// Bug 93 — this is one half of "defer and hide together"; `attemptBEKRestore`'s own
-    /// depth guard is the other.
-    func refreshPendingRestoreState(currentDepth: Int) {
-        guard currentDepth == 0 else {
-            self.pendingRestoreActive     = false
-            self.pendingRestoreShardCount = 0
-            return
-        }
+    /// **Depth-uniform, and this reverses half of Bug 93 deliberately.** That fix paired
+    /// "defer" with "hide": `attemptBEKRestore` refuses to complete above depth 0, and this
+    /// published nothing there, so duress never mentioned a recovery. Deferral stays; hiding
+    /// does not.
+    ///
+    /// Hiding was closing a duress-against-duress gap and opening a duress-against-real one.
+    /// A pending restore made depth 0 and duress behave differently — a banner in one, none in
+    /// the other, plus differently-worded file-open replies — and that difference is readable
+    /// by anyone who opens a `.occbak` and looks, against a baseline that is public because the
+    /// app is. Publishing the same state at every depth removes the comparison.
+    ///
+    /// What makes it safe is that the surface no longer carries a number. The count below is
+    /// maintained but no longer rendered (see `Vault+Tab`): a static "Recovery in progress…"
+    /// claims no progress, so it cannot contradict itself across repeated duress unlocks, and
+    /// it matches what a real, stalled recovery looks like — one waiting on trustees it has
+    /// not met yet. A live, climbing count could not have made that claim.
+    ///
+    /// Recovery still only completes at depth 0, so duress advertises an event whose result it
+    /// will never show. That is accepted: shard collection is depth-independent by design
+    /// (`storeRestoreShard`), so the state is real rather than fabricated, and a recovery that
+    /// visibly never finishes is an ordinary thing for one to do.
+    func refreshPendingRestoreState() {
         self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
         self.pendingRestoreShardCount = self.pendingRestoreActive
             ? ((try? self.loadRestoreShards())?.count ?? 0)
@@ -660,7 +671,7 @@ extension VaultManager {
     /// `pendingRestoreActive`/`pendingRestoreShardCount` are only ever set at depth 0 —
     /// above that, published state stays whatever `refreshPendingRestoreState` already
     /// forced it to.
-    func storePendingRestore(_ data: Data, currentDepth: Int) throws {
+    func storePendingRestore(_ data: Data) throws {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
 
         let vaultKey       = try? self.currentKey()
@@ -673,10 +684,10 @@ extension VaultManager {
 
         try data.write(to: Self.pendingRestoreURL, options: [.atomic, .completeFileProtection])
 
-        if currentDepth == 0 {
-            self.pendingRestoreActive     = true
-            self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
-        }
+        // Published at every depth — see `refreshPendingRestoreState` for why hiding this
+        // above depth 0 traded a duress-against-duress gap for a duress-against-real one.
+        self.pendingRestoreActive     = true
+        self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
     }
 
     /// Append one incoming BEK shard to the restore-shard file.

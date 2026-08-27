@@ -279,16 +279,8 @@ struct RootView: View {
     // errorMessage: "already processed" is not a failure, and reusing the "Error" alert
     // title for it would be a strange thing to show a legitimate user even though it's
     // harmless at a duress depth.
-    @State private var showBackupNotice = false
-    @State private var backupNoticeMessage = ""
-    /// A `.occbak` held until the user confirms, with the depth it was opened at — read at
-    /// open time rather than at confirm time so a depth change while the prompt is up cannot
-    /// arm the file against a depth the user never saw it offered for.
-    struct PendingRestore {
-        let data:  Data
-        let depth: Int
-    }
-    @State private var pendingRestoreFile: PendingRestore?
+    /// A `.occbak` held until the user confirms.
+    @State private var pendingRestoreFile: Data?
     @State private var showRestoreConfirmation = false
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
@@ -442,11 +434,6 @@ struct RootView: View {
                 Button("OK") { }
             } message: {
                 Text(self.errorMessage)
-            }
-            .alert("Backup File", isPresented: self.$showBackupNotice) {
-                Button("OK") { }
-            } message: {
-                Text(self.backupNoticeMessage)
             }
             .alert("Restore from this backup?", isPresented: self.$showRestoreConfirmation) {
                 Button("Cancel", role: .cancel) { self.pendingRestoreFile = nil }
@@ -651,9 +638,8 @@ struct RootView: View {
                     try Data(contentsOf: fileLocation, options: .mappedIfSafe)
                 }.value
 
-                // .occbak — vault backup restore file. Opening one only stages it; the
-                // acknowledgment rules (Bug 93, harm 4) live with the arming, in
-                // `armPendingRestore`.
+                // .occbak — vault backup restore file. Opening one only stages it; arming
+                // happens in `armPendingRestore`, behind the confirmation below.
                 if fileLocation.pathExtension == "occbak" {
                     // Confirm before arming. Arming is not inert: it makes the device accept BEK
                     // shards from contacts and, once enough arrive, import the file's entries
@@ -662,16 +648,12 @@ struct RootView: View {
                     // (fresh install, new phone) will reconstruct whatever key the file's shards
                     // rebuild, and nothing in the file authenticates who authored it.
                     //
-                    // At every depth, and the distinction matters. Harm 4 constrains the
-                    // *acknowledgment*, which has to vary with an outcome the user must not be
-                    // able to read back. This prompt is raised before `storePendingRestore` runs,
-                    // so it cannot vary with the outcome — identical text, identical buttons,
+                    // At every depth. The prompt is raised before `storePendingRestore` runs, so
+                    // it cannot vary with the outcome — identical text, identical buttons,
                     // whichever of the three cases the file turns out to be. Showing it only at
                     // depth 0 would be the leak: its *absence* would tell whoever is holding the
                     // phone that they are in a duress layer.
-                    self.pendingRestoreFile = PendingRestore(
-                        data: data, depth: self.security.currentDepth
-                    )
+                    self.pendingRestoreFile = data
                     self.showRestoreConfirmation = true
                     return
                 }
@@ -694,27 +676,36 @@ struct RootView: View {
         }
     }
 
-    /// Arms the confirmed `.occbak` for restore, at the depth it was opened at.
+    /// Arms the confirmed `.occbak` for restore.
     ///
-    /// The acknowledgment splits here and the prompt does not, which is the whole shape of
-    /// Bug 93 harm 4: above depth 0 all three outcomes have to read the same, because trying
-    /// files repeatedly against one duress session must not build up a picture of what the
-    /// device already holds. Depth 0 keeps its differentiated, truthful reply.
+    /// **Silent on every outcome, at every depth**, and that uniformity is the point. The
+    /// three outcomes — fresh accept, restore already pending, BEK already present — used to
+    /// be distinguishable at depth 0 ("already been processed" versus silence) while duress
+    /// flattened them into one string. Bug 93 harm 4 had compared duress against duress and
+    /// stopped there; the comparison that matters is duress against real, because that is the
+    /// one a coercer can run. They open any `.occbak` — their own will do — and read which
+    /// session they are in off the reply, against a baseline that is public because the app is.
+    ///
+    /// It could not be closed from the duress side. Depth 0 varied its reply on whether a BEK
+    /// exists, and duress is deliberately blind to that. So the acknowledgment is gone
+    /// entirely rather than harmonised: the confirmation the user already tapped is the
+    /// receipt for a fresh accept, and the vault tab's "Recovery in progress…" — now rendered
+    /// at every depth — is the durable one.
+    ///
+    /// What is lost: on a device that already has a backup configured, opening another one now
+    /// does nothing visible at all, where it used to say why. That case is the price of the
+    /// uniformity and is recorded in Bug 93 rather than hidden here.
+    ///
+    /// A malformed file still reports an error at both depths. That branch turns on the file's
+    /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
     private func armPendingRestore() {
         guard let pending = self.pendingRestoreFile else { return }
         self.pendingRestoreFile = nil
 
         do {
-            try self.vaultManager.storePendingRestore(pending.data, currentDepth: pending.depth)
-            if pending.depth != 0 {
-                self.backupNoticeMessage = "Backup file received."
-                self.showBackupNotice = true
-            }
+            try self.vaultManager.storePendingRestore(pending)
         } catch VaultManager.BackupError.alreadyProcessed {
-            self.backupNoticeMessage = pending.depth == 0
-                ? "This backup file has already been processed."
-                : "Backup file received."
-            self.showBackupNotice = true
+            // Deliberately indistinguishable from a fresh accept — see above.
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
             self.showError = true

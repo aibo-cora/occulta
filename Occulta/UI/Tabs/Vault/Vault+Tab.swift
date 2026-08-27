@@ -259,12 +259,15 @@ struct VaultTab: View {
                                 .font(.system(size: 16))
                                 .foregroundStyle(Color.occultaAccent)
                         }
+                        // No count, and that omission is what lets this render at every depth.
+                        // A climbing tally is a live report on real depth-0 activity and would
+                        // contradict itself in a duress session, where collection continues but
+                        // reconstruction never fires. A static line claims no progress, so it
+                        // reads the same as a real recovery still waiting on trustees it has not
+                        // met — see `refreshPendingRestoreState`.
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Restoring your vault")
+                            Text("Recovery in progress…")
                                 .font(.system(size: 16, weight: .medium))
-                            Text("\(self.vault.pendingRestoreShardCount) recovery pieces collected")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(Color.occultaAccent)
                         }
                         Spacer()
                     }

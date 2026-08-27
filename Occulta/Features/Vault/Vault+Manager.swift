@@ -162,8 +162,10 @@ final class VaultManager {
     ///
     /// `currentDepth` has no default — a forgotten argument must be a compile error,
     /// not a silent leak of restore state into whichever depth happened to call this
-    /// (Bug 93). Required specifically because `refreshPendingRestoreState` and
-    /// `attemptBEKRestore` must never run as though they're at depth 0 by accident.
+    /// (Bug 93). Required specifically because `attemptBEKRestore` must never run as
+    /// though it's at depth 0 by accident. `refreshPendingRestoreState` no longer takes
+    /// a depth at all: its published state is deliberately uniform across layers, and
+    /// deferral in `attemptBEKRestore` is what keeps that safe.
     func unlock(context: LAContext, currentDepth: Int) {
         self.authContext = context
         self.resetInactivityTimer()
@@ -181,7 +183,7 @@ final class VaultManager {
         // doc comment for why it must never be computed from the wrong depth).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
-        self.refreshPendingRestoreState(currentDepth: currentDepth)
+        self.refreshPendingRestoreState()
         self.attemptBEKRestore(currentDepth: currentDepth)
     }
 

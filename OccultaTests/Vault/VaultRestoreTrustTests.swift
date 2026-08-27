@@ -252,7 +252,7 @@ struct VaultRestoreTrustTests {
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         #expect(throws: VaultManager.BackupError.alreadyProcessed) {
-            try victim.vault.storePendingRestore(attackerBackup, currentDepth: 0)
+            try victim.vault.storePendingRestore(attackerBackup)
         }
         #expect(!FileManager.default.fileExists(atPath: pendingRestoreURL.path),
                 "nothing should be written at all — refused before the write, not after")
@@ -270,7 +270,7 @@ struct VaultRestoreTrustTests {
         let backup = try owner.vault.exportBackup(currentDepth: 0)
 
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        try fresh.vault.storePendingRestore(backup)
 
         #expect(FileManager.default.fileExists(atPath: pendingRestoreURL.path))
         #expect(fresh.vault.pendingRestoreActive)
@@ -295,10 +295,10 @@ struct VaultRestoreTrustTests {
                 "the two backups must actually differ for this test to mean anything")
 
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(firstBackup, currentDepth: 0)
+        try fresh.vault.storePendingRestore(firstBackup)
 
         #expect(throws: VaultManager.BackupError.alreadyProcessed) {
-            try fresh.vault.storePendingRestore(secondBackup, currentDepth: 0)
+            try fresh.vault.storePendingRestore(secondBackup)
         }
 
         let onDisk = try Data(contentsOf: pendingRestoreURL)
@@ -332,7 +332,7 @@ struct VaultRestoreTrustTests {
 
         try attackerBackup.write(to: pendingRestoreURL, options: [.atomic, .completeFileProtection])
         try victim.vault.storeRestoreShard(attacker.shards[0], attestation: nil, senderIdentifier: "trustee-0")
-        victim.vault.refreshPendingRestoreState(currentDepth: 0)
+        victim.vault.refreshPendingRestoreState()
         #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
         #expect(victim.vault.pendingRestoreShardCount == 1)
 
@@ -373,7 +373,7 @@ struct VaultRestoreDepthGatingTests {
         let backup = try owner.vault.exportBackup(currentDepth: 0)
 
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBEKRestore(currentDepth: 0)
@@ -394,7 +394,7 @@ struct VaultRestoreDepthGatingTests {
         let backup = try owner.vault.exportBackup(currentDepth: 0)
 
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBEKRestore(currentDepth: 2)
@@ -418,7 +418,7 @@ struct VaultRestoreDepthGatingTests {
         let backup = try owner.vault.exportBackup(currentDepth: 0)
 
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBEKRestore(currentDepth: 3)
@@ -431,12 +431,17 @@ struct VaultRestoreDepthGatingTests {
             """)
     }
 
-    /// `refreshPendingRestoreState` must publish false above depth 0 regardless of what is
-    /// actually on disk — not "hidden if pending," genuinely false, so a coercer watching
-    /// across multiple unlocks sees the same nothing every time. Not a one-way ratchet
-    /// either: depth 0 still sees the truth afterward.
-    @Test("Published pending-restore state is forced false above depth 0, and recovers at depth 0")
-    func publishedStateIsForcedFalseAboveDepthZero() throws {
+    /// **Reverses the original Bug 93 assertion, deliberately.** This test used to require
+    /// `refreshPendingRestoreState` to publish false above depth 0 — "defer and hide
+    /// together." Deferral stays and is covered by the two tests above; hiding is gone.
+    ///
+    /// Hiding closed a duress-against-duress gap and opened a duress-against-real one: a
+    /// pending restore made the two layers behave differently, and that difference is what a
+    /// coercer can actually read, against a baseline that is public. The banner is now
+    /// depth-uniform and carries no count, so it claims no progress and cannot contradict
+    /// itself across repeated duress unlocks.
+    @Test("Published pending-restore state is identical at every depth")
+    func publishedStateIsDepthUniform() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
 
@@ -444,22 +449,48 @@ struct VaultRestoreDepthGatingTests {
         let backup = try owner.vault.exportBackup(currentDepth: 0)
 
         let fresh = try makeFreshVault()
-        try fresh.vault.storePendingRestore(backup, currentDepth: 0)
+        try fresh.vault.storePendingRestore(backup)
         try fresh.vault.storeRestoreShard(owner.shards[0], attestation: nil, senderIdentifier: "trustee-0")
 
-        fresh.vault.refreshPendingRestoreState(currentDepth: 0)
-        #expect(fresh.vault.pendingRestoreActive, "depth 0 must reflect the real, pending state")
-        #expect(fresh.vault.pendingRestoreShardCount == 1)
-
-        fresh.vault.refreshPendingRestoreState(currentDepth: 2)
-        #expect(!fresh.vault.pendingRestoreActive, """
-            A genuinely pending restore must publish as inactive above depth 0 — this is \
-            what keeps the duress view coherent across repeated unlocks.
+        fresh.vault.refreshPendingRestoreState()
+        #expect(fresh.vault.pendingRestoreActive, """
+            A pending restore must publish as active — the banner is what a duress session \
+            shows in place of the file-open acknowledgment that used to differ by depth.
             """)
-        #expect(fresh.vault.pendingRestoreShardCount == 0)
 
-        fresh.vault.refreshPendingRestoreState(currentDepth: 0)
-        #expect(fresh.vault.pendingRestoreActive, "returning to depth 0 must restore the real state")
+        // Nothing about the published state is depth-derived any more, so a second sync
+        // taken while at a duress depth is the same call and must give the same answer.
+        fresh.vault.refreshPendingRestoreState()
+        #expect(fresh.vault.pendingRestoreActive,
+                "repeated syncs must not flip the published state — a coercer sees one story")
+    }
+
+    /// The other half of the pairing, and the reason the banner can be shown at all: shard
+    /// collection is depth-independent, but reconstruction is not. Duress advertises a
+    /// recovery it can never complete, which is exactly what a real recovery still waiting on
+    /// trustees looks like.
+    @Test("A pending restore does not complete above depth 0 even with a full shard set")
+    func pendingRestoreNeverCompletesAboveDepthZero() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        _ = try owner.vault.addEntry(label: "recovered", content: Data("recovered".utf8), type: .note)
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup)
+        for (i, shard) in owner.shards.enumerated() {
+            try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)")
+        }
+
+        fresh.vault.attemptBEKRestore(currentDepth: 2)
+
+        #expect((try? fresh.vault.currentBEK()) == nil, """
+            Deferral is the half of Bug 93 that stays. A full shard set at a duress depth must \
+            not install the BEK — showing the banner there is only safe because completion \
+            still cannot happen.
+            """)
     }
 }
 
