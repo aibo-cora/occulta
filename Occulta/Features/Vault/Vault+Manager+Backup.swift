@@ -602,14 +602,6 @@ extension VaultManager {
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("backup-import-cache.occbak")
 
-    private static let pendingRestoreShardsURL: URL =
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("backup-import-cache-shards.dat")
-
-    private static let pendingRestoreShardsAAD: Data =
-        Data("occulta.pending-bek-restore-shards".utf8)
-
     /// Whether a restore file genuinely exists on disk — independent of depth, and
     /// independent of the published `pendingRestoreActive`, which is deliberately
     /// depth-gated for display (Bug 93). **Functional callers deciding whether to store
@@ -690,42 +682,6 @@ extension VaultManager {
         self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
     }
 
-    /// Append one incoming BEK shard to the restore-shard file.
-    ///
-    /// At most one stored shard per `senderIdentifier` (Bug 94 remedy 2) — a second
-    /// share from the same sender replaces the first rather than accumulating, so
-    /// `attemptBEKRestore`'s grouping reflects distinct senders, not just distinct
-    /// `SignedAttribute.id`s. Safe to call while the vault is locked — uses the
-    /// recovery buffer key.
-    ///
-    /// The floor this produces is **two** senders, not `threshold` — see `AttestedShard`
-    /// for why a device with no BEK cannot know the owner's `threshold`, and why the
-    /// depth-0 confirmation rather than this count is what gates an unsolicited restore.
-    func storeRestoreShard(_ attribute: SignedAttribute, attestation: SignedAttribute?, senderIdentifier: String) throws {
-        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
-            throw VaultError.keyDerivationFailed
-        }
-        var shards = (try? self.loadRestoreShards()) ?? []
-        if let dupIndex = shards.firstIndex(where: {
-            $0.attribute.entryID == attribute.entryID && $0.senderIdentifier == senderIdentifier
-        }) {
-            if shards[dupIndex].attribute.id == attribute.id { return } // identical re-delivery
-            shards[dupIndex] = AttestedShard(attribute: attribute, attestation: attestation, senderIdentifier: senderIdentifier)
-        } else {
-            shards.append(AttestedShard(attribute: attribute, attestation: attestation, senderIdentifier: senderIdentifier))
-        }
-
-        let plain  = try JSONEncoder().encode(shards)
-        let sealed = try AES.GCM.seal(
-            plain, using: bufferKey,
-            nonce: AES.GCM.Nonce(),
-            authenticating: Self.pendingRestoreShardsAAD
-        )
-        guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
-        try combined.write(to: Self.pendingRestoreShardsURL, options: [.atomic, .completeFileProtection])
-        self.pendingRestoreShardCount = shards.count
-    }
-
     /// Attempt BEK reconstruction from all collected restore shards.
     ///
     /// Groups shards by `entryID` and tries `reconstructBEK` on each group.
@@ -750,7 +706,7 @@ extension VaultManager {
 
         if let vaultKey = try? self.currentKey(),
            (try? self.fetchDecodedBEK(vaultKey: vaultKey)) != nil {
-            try? FileManager.default.removeItem(at: Self.pendingRestoreShardsURL)
+            self.clearBEKRestoreShards()
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0
@@ -783,8 +739,8 @@ extension VaultManager {
                 continue    // Wrong group or not enough shards — try next.
             }
 
-            // Success — clean up both restore files and reset state.
-            try? FileManager.default.removeItem(at: Self.pendingRestoreShardsURL)
+            // Success — drop the buffered shards and the cached file, reset state.
+            self.clearBEKRestoreShards()
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0
@@ -792,20 +748,6 @@ extension VaultManager {
             UserDefaults.standard.set(true, forKey: "vault.postRestoreActionNeeded")
             return
         }
-    }
-
-    /// Decrypt the restore-shard file. Returns empty array when the file is absent.
-    private func loadRestoreShards() throws -> [AttestedShard] {
-        guard FileManager.default.fileExists(atPath: Self.pendingRestoreShardsURL.path) else {
-            return []
-        }
-        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
-            throw VaultError.keyDerivationFailed
-        }
-        let combined = try Data(contentsOf: Self.pendingRestoreShardsURL)
-        let box      = try AES.GCM.SealedBox(combined: combined)
-        let plain    = try AES.GCM.open(box, using: bufferKey, authenticating: Self.pendingRestoreShardsAAD)
-        return try JSONDecoder().decode([AttestedShard].self, from: plain)
     }
 
     // MARK: - Export metadata slot codec

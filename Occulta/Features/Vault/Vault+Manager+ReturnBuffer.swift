@@ -61,26 +61,12 @@ extension VaultManager {
                 self.modelContext.delete(dup.row)                // sender is replacing their prior share
             }
 
-            guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
-                throw VaultError.keyDerivationFailed
-            }
-
-            let rowID   = UUID()
-            let aad     = Self.reconstructRowAAD(id: rowID)
-            let payload = ReconstructShard.Payload(
+            try self.insertReconstructRow(
                 entryID:          entryID,
-                attrID:           attribute.id,
-                signedAttribute:  attribute,
-                senderIdentifier: senderIdentifier,
-                attestation:      attestation
+                attribute:        attribute,
+                attestation:      attestation,
+                senderIdentifier: senderIdentifier
             )
-            let plaintext = try JSONEncoder().encode(payload)
-            let sealed    = try AES.GCM.seal(plaintext, using: bufferKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-            guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
-
-            let row = ReconstructShard(id: rowID, encryptedPayload: combined)
-            self.modelContext.insert(row)
-            try self.modelContext.save()
 
             // ── 2. Opportunistic finalise ──────────────────────────────────
             try? self.tryFinalizeReconstruction(entryID: entryID)
@@ -166,6 +152,160 @@ extension VaultManager {
     }
 
     // MARK: - Private
+
+    /// Seal one buffered shard and insert it as a `ReconstructShard` row.
+    ///
+    /// Shared by both buffers — the per-entry one above and the BEK restore one below. They
+    /// differ only in what selects the rows back out again, never in how a row is written.
+    private func insertReconstructRow(
+        entryID:          UUID,
+        attribute:        SignedAttribute,
+        attestation:      SignedAttribute?,
+        senderIdentifier: String
+    ) throws {
+        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+
+        let rowID   = UUID()
+        let aad     = Self.reconstructRowAAD(id: rowID)
+        let payload = ReconstructShard.Payload(
+            entryID:          entryID,
+            attrID:           attribute.id,
+            signedAttribute:  attribute,
+            senderIdentifier: senderIdentifier,
+            attestation:      attestation
+        )
+        let plaintext = try JSONEncoder().encode(payload)
+        let sealed    = try AES.GCM.seal(plaintext, using: bufferKey, nonce: AES.GCM.Nonce(), authenticating: aad)
+        guard let combined = sealed.combined else { throw VaultError.encryptionFailed }
+
+        self.modelContext.insert(ReconstructShard(id: rowID, encryptedPayload: combined))
+        try self.modelContext.save()
+    }
+
+    // MARK: - BEK restore shards
+
+    /// BEK restore shards are `ReconstructShard` rows too, not a file of their own (Bug 100).
+    ///
+    /// The file they used to live in leaked through its length: AES-GCM preserves it, elements
+    /// are near-constant size, so `ls -l` divided out to the number of recovery pieces
+    /// collected — the same number deliberately removed from the vault tab for being a live
+    /// report on real depth-0 activity. Padding it to fixed-width slots was the obvious fix and
+    /// the wrong one; the file did not need to exist.
+    ///
+    /// `ReconstructShard`'s own doc justifies its separation from `CustodyShard` on three
+    /// grounds — different key, different lifecycle, different payload. None of the three
+    /// separates BEK restore shards from it. They seal under the same recovery buffer key,
+    /// which is the criterion that doc leads with; they are the same kind of transient buffer,
+    /// cleared when their recovery completes; and `Payload` already carries every field they
+    /// need.
+    ///
+    /// A row belongs to this path when its `entryID` resolves to no `VaultEntry`, because BEK
+    /// shards carry the `distributionID` and no `VaultEntry.id` is ever one. That is not a new
+    /// invariant — `acceptReturnedShard`'s per-entry step already relies on it in the opposite
+    /// direction to exclude these very shards.
+    private func bekRestoreRows() throws -> [DecodedReconstructRow] {
+        try self.decryptAllReconstructShards().filter { row in
+            ((try? self.fetchEntry(by: row.payload.entryID)) ?? nil) == nil
+        }
+    }
+
+    /// Append one incoming BEK shard to the restore buffer.
+    ///
+    /// At most one stored shard per `(entryID, senderIdentifier)` (Bug 94 remedy 2) — a second
+    /// share from the same sender replaces the first rather than accumulating, so
+    /// `attemptBEKRestore`'s grouping reflects distinct senders, not just distinct
+    /// `SignedAttribute.id`s. Safe to call while the vault is locked: the recovery buffer key
+    /// is derived from the Secure Enclave, not from the vault key.
+    ///
+    /// The floor this produces is **two** senders, not `threshold` — see `AttestedShard` for
+    /// why a device with no BEK cannot know the owner's `threshold`, and why the restore
+    /// confirmation rather than this count is what gates an unsolicited restore.
+    func storeRestoreShard(_ attribute: SignedAttribute, attestation: SignedAttribute?, senderIdentifier: String) throws {
+        guard let entryID = attribute.entryID else { throw VaultError.decryptionFailed }
+        try? self.migrateLegacyRestoreShardFile()
+
+        let existing = try self.decryptAllReconstructShards()
+        if let dup = existing.first(where: {
+            $0.payload.entryID == entryID && $0.payload.senderIdentifier == senderIdentifier
+        }) {
+            if dup.payload.attrID == attribute.id { return }  // identical re-delivery
+            self.modelContext.delete(dup.row)                 // sender is replacing their prior share
+        }
+
+        try self.insertReconstructRow(
+            entryID:          entryID,
+            attribute:        attribute,
+            attestation:      attestation,
+            senderIdentifier: senderIdentifier
+        )
+        self.pendingRestoreShardCount = (try? self.bekRestoreRows().count) ?? 0
+    }
+
+    /// Every BEK restore shard collected so far. Empty when none have arrived.
+    func loadRestoreShards() throws -> [AttestedShard] {
+        try? self.migrateLegacyRestoreShardFile()
+        return try self.bekRestoreRows().map {
+            AttestedShard(
+                attribute:        $0.payload.signedAttribute,
+                attestation:      $0.payload.attestation,
+                senderIdentifier: $0.payload.senderIdentifier
+            )
+        }
+    }
+
+    /// Drop every BEK restore shard. Called when a restore completes or is abandoned; leaves
+    /// per-entry reconstruction rows untouched.
+    func clearBEKRestoreShards() {
+        guard let rows = try? self.bekRestoreRows() else { return }
+        for row in rows { self.modelContext.delete(row.row) }
+        try? self.modelContext.save()
+        self.pendingRestoreShardCount = 0
+    }
+
+    // MARK: - Legacy shard-file import
+
+    private static let legacyRestoreShardsURL: URL =
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("backup-import-cache-shards.dat")
+
+    private static let legacyRestoreShardsAAD: Data =
+        Data("occulta.pending-bek-restore-shards".utf8)
+
+    /// Move a pre-Bug-100 shard file into rows, then delete it.
+    ///
+    /// Exists for one population: devices upgrading mid-restore. Dropping the file instead
+    /// would strand a genuine recovery — the shards are already spent from the trustees' side,
+    /// so re-collecting means asking every one of them to hand back again.
+    ///
+    /// Called from the two entry points that read or write the buffer rather than from launch,
+    /// so it needs no ordering guarantee and runs exactly when the data is first wanted.
+    private func migrateLegacyRestoreShardFile() throws {
+        let url = Self.legacyRestoreShardsURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        let combined = try Data(contentsOf: url)
+        let box      = try AES.GCM.SealedBox(combined: combined)
+        let plain    = try AES.GCM.open(box, using: bufferKey, authenticating: Self.legacyRestoreShardsAAD)
+        let shards   = try JSONDecoder().decode([AttestedShard].self, from: plain)
+
+        for shard in shards {
+            guard let entryID = shard.attribute.entryID else { continue }
+            try self.insertReconstructRow(
+                entryID:          entryID,
+                attribute:        shard.attribute,
+                attestation:      shard.attestation,
+                senderIdentifier: shard.senderIdentifier
+            )
+        }
+    }
 
     private struct DecodedReconstructRow {
         let row:     ReconstructShard

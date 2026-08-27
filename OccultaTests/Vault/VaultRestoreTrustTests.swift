@@ -49,6 +49,9 @@ private func makeContainer() throws -> ModelContainer {
     let schema = Schema([
         VaultEntry.self,
         BackupEncryptionKey.self,
+        // BEK restore shards are rows now, not a file (Bug 100) — a container without this
+        // model cannot store one, and every test here that collects shards fails at the insert.
+        ReconstructShard.self,
         Contact.Profile.self,
         Contact.Profile.PhoneNumber.self,
         Contact.Profile.EmailAddress.self,
@@ -557,8 +560,9 @@ struct VaultRestoreRobustnessTests {
     }
 
     /// `storeRestoreShard` deduplicates by `SignedAttribute.id`, and an attacker picks a
-    /// fresh UUID each time. The file is re-encoded and rewritten on every call and fully
-    /// decoded on every unlock, so growth is both unbounded and quadratic.
+    /// fresh UUID each time. Since Bug 100 these are `ReconstructShard` rows rather than a
+    /// file, which removes the whole-file re-encode per call — but growth is still unbounded,
+    /// and the dedup scan still decrypts every buffered row on each arrival.
     ///
     /// **Scoped to a fresh, no-BEK vault deliberately.** On an existing-BEK device, the early
     /// check added to `attemptBEKRestore` bounds this to roughly one shard per arming cycle in
@@ -570,7 +574,7 @@ struct VaultRestoreRobustnessTests {
     /// store; this is a nice-to-have hardening item, not an urgent one). Pins only that *a*
     /// bound exists — the value is the fix's choice. Any cap near a realistic trustee count
     /// (single digits; threshold ≥ 2) sits far below this ceiling.
-    @Test("The restore-shard file does not grow without bound, on a device that still needs one")
+    @Test("The restore-shard buffer does not grow without bound, on a device that still needs one")
     func restoreShardFileIsBounded() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
@@ -590,8 +594,8 @@ struct VaultRestoreRobustnessTests {
         withKnownIssue("Bug 96: storeRestoreShard has no cap") {
             #expect(victim.vault.pendingRestoreShardCount < attempts, """
                 \(victim.vault.pendingRestoreShardCount) shards accepted from \(attempts) \
-                attempts. Anyone able to send a bundle can grow this file without limit, and \
-                every unlock reads and decodes all of it.
+                attempts. Anyone able to send a bundle can grow this buffer without limit, and \
+                every arrival decrypts all of it.
                 """)
         }
     }
