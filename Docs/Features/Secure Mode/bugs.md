@@ -7213,10 +7213,24 @@ only case where his restore can proceed at all.
 
 ### Requirements
 
-**The arming depth has to be persisted, and sealed.** It sits beside the pending file, and it must go
-through `DepthCodec` under the recovery buffer key like every other depth stamp. A plaintext integer
-on disk naming a layer is precisely what Bug 93 harm 3 took out of those filenames, and this would
-put it straight back in the payload.
+**The arming depth has to be persisted, and sealed.** It must go through `DepthCodec` under the
+recovery buffer key like every other depth stamp. A plaintext integer naming a layer is precisely
+what Bug 93 harm 3 took out of those filenames, and storing one raw would put it straight back.
+Fixed-width matters for the same reason it does everywhere else: a JSON `Int` is one byte at depth 0
+and three at 253, and AES-GCM preserves that difference.
+
+**Where it lives falls out of Bug 100.** The first two designs considered here — a sealed sidecar
+file, then a header folded into the shard file — were both working around the shard file's existence.
+It should not exist: `ReconstructShard` is already a SwiftData model doing this exact job for
+per-entry recovery, sealed under the same recovery buffer key with a per-row AAD, and
+`acceptReturnedShard` writes rows for one path and a file for the other with no stated reason for the
+split. Once BEK restore shards are a model too (Bug 100 remedy 2), the arming depth is simply a field
+on that model.
+
+That removes the cleanup-parity hazard this entry would otherwise carry. A sidecar can go stale
+independently of the file it describes, and a stale one silently mis-gates the next restore; one row
+has one lifecycle and cannot drift from itself. **Build Bug 100 remedy 2 first** — this remedy is
+smaller and safer on the other side of it.
 
 **The deferral guard changes shape rather than disappearing.**
 `pendingRestoreNeverCompletesAboveDepthZero` becomes "does not complete at a depth other than the one
@@ -7305,15 +7319,41 @@ This is the half worth fixing first. It is one line per file and needs no format
 1. **Exclude all three from backup.** Extend the existing exclusion to the pending `.occbak`, the
    shard file, and the export-metadata file. Cheap, no format change, and it removes the off-device
    copy that makes the rest of this worth attacking.
-2. **Pad the shard file to a fixed slot count.** The house pattern already exists three times over —
-   `verifierFillerArray`, `pinEnabledPerDepth`, and this file's own neighbour
-   `backup-export-meta.dat`, which is 32 fixed-width slots precisely so its length says nothing. A
-   trustee set is small and bounded, so a fixed 32-slot array with filler entries is the same shape
-   and removes both the count and the Branch B sub-channel at once.
+2. **Move the BEK restore shards into the store, rather than padding the file.** Padding to a fixed
+   32-slot array was the first answer here — the house pattern exists three times over
+   (`verifierFillerArray`, `pinEnabledPerDepth`, and this file's own neighbour
+   `backup-export-meta.dat`). It is the wrong one, because the file should not exist.
+
+   `ReconstructShard` is already a SwiftData `@Model` doing this precise job for per-entry recovery:
+   a sealed `SignedAttribute` plus sender identifier, under `deriveRecoveryBufferKey()`, with AAD
+   bound to the row id. `acceptReturnedShard` writes rows in step 1 and a file in step 3 — the same
+   data, the same key, the same lifecycle, through two mechanisms. No comment anywhere gives a reason
+   for the split; `storeRestoreShard`'s "safe while locked" note is about which key it uses, not
+   where it writes, and applies equally to a row.
+
+   A sibling model gets four things at once: the length channel and its Branch B sub-channel
+   disappear rather than being padded around; remedy 1 covers it for free, since the store is already
+   excluded from backup; deletion goes through `PRAGMA secure_delete` page zeroing instead of a plain
+   unlink; and `RotationRegistryTests` forces an explicit rotation classification, because it asserts
+   every model in `OccultaApp.schema` is classified.
+
+   **What it does not do, stated so the claim is not oversold:** an examiner who opens the store can
+   still count rows. What changes is the bar — from `ls -l` on a file whose length divides cleanly by
+   a near-constant element size, to opening SQLite and querying a store shared by eighteen models
+   plus freelist and WAL, whose own size decomposes into nothing. A reduction, not an elimination.
+
+   Bug 99 depends on this: with restore shards in a model, its arming depth is a field on that model
+   rather than a sidecar file or a new sealed header.
 3. **Pad the `.occbak` cache to a coarse tier.** `ShardPadding.tier(for:)`'s doubling ladder is the
    existing idiom. Bounded at 2× worst case, so the disk cost is understood rather than open-ended.
    Lower priority than the first two: the magnitude signal is weaker than the progress signal, and for
    an attacker-supplied file it describes the attacker's own file rather than the victim's vault.
+
+   **This one stays a file, and that is not inconsistency with remedy 2.** A `.occbak` can be large —
+   photo and video attachments — and is memory-mapped deliberately (`.mappedIfSafe`, citing the
+   unbounded inbound-read finding in SecurityReview2026-07-24). A multi-megabyte attacker-supplied
+   blob does not belong in SQLite: it bloats the store, and the store's residue handling is tuned for
+   small rows. The distinction is size and access pattern, not principle.
 
 ### Already correct, for contrast
 
