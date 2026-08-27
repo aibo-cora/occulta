@@ -7236,3 +7236,87 @@ Even with the remedy, recovery-related deniability holds against a coercer who c
 trustees. It is worth writing down that this was ever in question, because it bounds what the
 surrounding fixes buy: they close the cheap tells, and the expensive one is closed by the arming-depth
 binding rather than by anything about the UI.
+
+---
+
+## Bug 100 — The pending-restore files are a keyless progress counter and a vault-size estimate, and they leave the device in backups
+
+**Status:** **Open.** Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
+reading the restore code — found by asking what an examiner sees, after the *same* number had just
+been removed from the UI for being too revealing.
+
+**Target:** unset. Independent of Bug 99, though both concern the same two files.
+
+### Severity: Medium (forensic)
+
+No contents are exposed. Both payloads stay sealed — the `.occbak` under the BEK, the shard file
+under the SE-derived recovery buffer key — and neither opens off-device. What leaks is metadata about
+a recovery: that one is under way, roughly how large, and how far along.
+
+### What leaks, and from where
+
+Two files in Application Support, both `.completeFileProtection`, both length-preserving because
+AES-GCM is:
+
+**`backup-import-cache-shards.dat` is a shard counter.** It holds `[AttestedShard]` JSON, appended to
+as each shard arrives. Every element adds a near-constant chunk — a `SignedAttribute` with a
+fixed-size share and signature, plus a sender identifier — so `ls -l` divides out to *n*. That is the
+count of recovery pieces collected, available without a key.
+
+There is a second-order channel in the same number. `handleHandback` carries forward only a Branch
+B-verified attestation, so an element is roughly 260 bytes larger when the shard arrived by the
+rotated-identity path. The file length therefore also weakly counts how many shards came in that way
+— i.e. indicates that the owner's identity key rotated, which means a device recovery rather than a
+routine one.
+
+**`backup-import-cache.occbak` is a vault-size estimate.** It is stored as delivered, so its length
+tracks the size of the vault it was exported from. Presence plus length says a recovery of roughly
+this magnitude is in progress. Since `exportBackup` is depth-scoped, for a genuine file that size
+reflects one specific depth's entry count.
+
+### Why this is filed now rather than accepted quietly
+
+The shard count is the exact number removed from the vault tab in Bug 93's follow-up, on the grounds
+that a live tally is a report on real depth-0 activity that would visibly climb during a duress
+session. That reasoning was accepted for the banner. It applies unchanged to the file, and the file
+was never looked at — the UI stopped showing the number while the filesystem kept publishing it, more
+durably and to a wider audience.
+
+Worth recording as a pattern rather than an incident: a value can be removed from a screen and remain
+fully readable in the artifact behind it. The banner fix is not wrong, it is just incomplete in a way
+that is invisible from the UI layer.
+
+### The escalation: these are not excluded from backup
+
+`RootView.excludeStoreFromBackup` covers the SQLite store and its `-wal`/`-shm` sidecars only. None of
+the three Application Support files — the pending `.occbak`, the shard file, or
+`backup-export-meta.dat` — is marked `isExcludedFromBackup`.
+
+So they are copied into iTunes/Finder/iCloud device backups. The sealed contents remain unreadable
+off-device (the recovery buffer key is Secure Enclave-derived and device-bound), but existence and
+length are not sealed and travel with the copy. A device backup is a far softer target than the device
+itself: it can be obtained without the passcode prompt that `.completeFileProtection` depends on, held
+indefinitely, and examined at leisure.
+
+This is the half worth fixing first. It is one line per file and needs no format change.
+
+### Remedy
+
+1. **Exclude all three from backup.** Extend the existing exclusion to the pending `.occbak`, the
+   shard file, and the export-metadata file. Cheap, no format change, and it removes the off-device
+   copy that makes the rest of this worth attacking.
+2. **Pad the shard file to a fixed slot count.** The house pattern already exists three times over —
+   `verifierFillerArray`, `pinEnabledPerDepth`, and this file's own neighbour
+   `backup-export-meta.dat`, which is 32 fixed-width slots precisely so its length says nothing. A
+   trustee set is small and bounded, so a fixed 32-slot array with filler entries is the same shape
+   and removes both the count and the Branch B sub-channel at once.
+3. **Pad the `.occbak` cache to a coarse tier.** `ShardPadding.tier(for:)`'s doubling ladder is the
+   existing idiom. Bounded at 2× worst case, so the disk cost is understood rather than open-ended.
+   Lower priority than the first two: the magnitude signal is weaker than the progress signal, and for
+   an attacker-supplied file it describes the attacker's own file rather than the victim's vault.
+
+### Already correct, for contrast
+
+`backup-export-meta.dat` is 32 fixed-width slots with random filler, so its length is constant
+whatever the export history holds. The pattern this entry asks for is not new — it is applied one
+file over and was not carried across.
