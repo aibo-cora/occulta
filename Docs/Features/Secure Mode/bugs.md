@@ -7552,7 +7552,58 @@ belongs to. No depth field on the shard, and no arming-depth binding needed for 
 - **Bug 99's binding survives in reduced form**, for the pending `.occbak` alone. That file is bulk
   data and stays a file (Bug 100), so unless it is slotted per depth too it still needs a depth tag
   saying which layer armed it.
-- **Bug 100 remedy 2 is required either way.** Restore shards belong in rows regardless of layering.
+- **Bug 100 remedy 2 is superseded rather than required.** Rows were the right answer against the
+  file, and the file-to-rows migration still earns its keep for devices upgrading now. But rows leave
+  a count — an examiner who opens the store can still `SELECT count(*)` — where a fixed-slot array
+  leaves nothing to count. Rows are the interim; slots are where this lands.
+
+### The shape: one array, not several
+
+**One fixed-width array of fixed-count slots, one slot per depth.** Each slot carries, as separately
+sealed fields:
+
+| Field | Sealed under | Why not shared |
+| --- | --- | --- |
+| BEK record | vault key | it protects backup contents |
+| Collected restore shards | recovery buffer key | shards arrive during inbound processing, which happens while the vault is locked |
+| Arming depth (Bug 99) | recovery buffer key | written at arming, read at completion |
+
+**Two keys do not force two containers.** Preserving a sealed blob never requires its key: a shard
+arriving at a locked vault rewrites its slot's shard field and copies the BEK field's ciphertext
+through untouched. One array is also better than two — one artifact of constant size rather than two
+to pad, clean up and explain.
+
+**Every sealed field's AAD must bind its slot index.** Without it, lifting slot 2's ciphertext into
+slot 0 moves a duress layer's BEK into the real one. Same discipline `reconstructRowAAD` applies to
+row ids and the export-metadata file applies to its depth slots.
+
+**Bug 96 closes for free.** Fixed width means a cap on shards per depth, which is exactly what that
+entry's unbounded-growth `withKnownIssue` asks for. A cap is inherent to the shape rather than bolted
+on.
+
+### Where it lives: `AppLayerConfig`, and the constraint that settles it
+
+`AppLayerConfig` already holds fixed-width padded per-depth arrays — `pinEnabledPerDepth`, the
+verifier arrays, the blob metadata arrays — is already classified in `RotationRegistry`, and **already
+exists on every install**. `Manager.Security`'s constructor seeds the row at first launch for the
+reason this design has to respect anyway:
+
+> its absence would be a forensic tell that the feature was never used
+
+**An earlier draft of this entry ruled `AppLayerConfig` out**, on the grounds that a device which
+never configured Secure Mode has no row and that this is the main restore population. That was wrong,
+and wrong twice — the same claim was used to reject it as a home for Bug 99's arming depth. It came
+from reading `requireConfig()`'s `.notConfigured` throw as evidence the row can be absent, when that
+throw guards a case the bootstrap makes unreachable. Recorded because the mistake is repeatable:
+where a state is *handled* says nothing about whether it *occurs*.
+
+**Eager creation is a constraint on this design, not a detail.** The same constructor applies it twice
+— to the config row, and to the Secure Mode SE key, where the argument is sharper still, since
+keychain items carry `kSecAttrCreationDate` and lazy creation leaks not just whether a PIN was ever
+configured but when. Any per-depth BEK structure must therefore exist from first launch, fully padded,
+on every install — including ones that never configure Secure Mode and never run a restore. A
+structure that appears when backup is first set up would reintroduce exactly the tell the surrounding
+code went to trouble to remove.
 
 **Cost, stated honestly.** This is a large change to a security-critical subsystem, and it is not a
 patch-release change. It also means part of what shipped on `release/v1.10.3` is correct for the
