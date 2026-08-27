@@ -7429,3 +7429,91 @@ found by reading the code that would have created it.
 Independent, and this one ranks higher. Bug 100 is metadata about a restore in flight, cleaned when it
 completes. This is retained content, accumulating across every file ever opened, in the directory iOS
 backs up by default. Same investigation, unrelated remedies.
+
+---
+
+## Bug 102 — The BEK has no layer concept, so a restore completing in duress hands the coercer the device's real backup key
+
+**Status:** **Open.** Filed 2026-08-27. Found by asking whether Bug 99's arming-depth remedy also
+contains the *key* a restore installs, not just the entries it imports. It does not.
+
+**Target:** unset. Larger than the entries it sits beside — see Remedy.
+
+### Severity: High
+
+Not a deniability break on its own. It is a durable compromise of the real layer reached from a
+duress session, and it survives the coercion.
+
+### What is not depth-scoped
+
+`BackupEncryptionKey` declares exactly two fields, `id` and `encryptedPayload`. There is no depth
+stamp. `fetchDecodedBEK` reads `fetch(FetchDescriptor<BackupEncryptionKey>()).first` — no predicate,
+no filter, take the single row. It is sealed under the vault key, which is one key for every depth;
+vault *entries* carry individual depth stamps, the key they are sealed under does not.
+
+So there is one BEK per device, readable and writable from any layer.
+
+This is genuinely surprising in a codebase where contacts, vault entries, group membership, PIN gates
+and layer arrays are all depth-partitioned, and nothing anywhere states it. Recorded plainly for that
+reason: the next reader is likely to assume it is layered, and the reader after that is likely to
+"fix" it into a per-depth form without knowing what that breaks (see Remedy).
+
+### Why Bug 99's remedy does not cover it
+
+That remedy binds completion to the depth the file was armed at, and `importBackup` stamps every
+restored entry with that depth. Entries are therefore contained — an attacker's rows land in his own
+cover story and never reach depth 0, which is a genuine improvement on deferral.
+
+The BEK is a different object. `reconstructBEK` persists it through `persistBEKPayload`, whose
+`Payload` carries `bekBytes`, `distributionID` and `shardMetadata` — and no depth. There is no field
+for the arming depth to stamp, so the binding has nothing to bind. **Bug 99 contains the contents and
+not the key that came with them.**
+
+### Three consequences, all on the no-BEK device
+
+The population is exactly the one Bug 94 remedy 1 does not cover: a device with no BEK yet, which is
+a fresh install or a new phone — and also the only population where a restore can proceed at all.
+
+1. **His key becomes the device's key.** Every backup exported afterwards, from any depth, is sealed
+   under a key he generated. Latent rather than immediate: it pays off only when a file crosses his
+   path — a device backup, iCloud Drive, mail, a shared computer. Bug 101 is one such path.
+2. **Real trustees are stranded.** They still hold shards for the BEK that this one replaced. If they
+   were ever needed they would reconstruct a key matching nothing on the device. This is precisely
+   the harm Bug 94 remedy 1 exists to prevent, arriving through the gap that remedy leaves open by
+   design.
+3. **The vault lists his phones as trustees.** `shardMetadata` rides inside the BEK payload, so
+   `bekShardMetadata()` returns his distribution. Shard health, trustee counts and `bekSetupState`
+   all describe his set, and `exportBackup` permits an export because his metadata reports the
+   threshold met. The user has a backup they believe is protected and recoverable, whose recovery
+   depends entirely on the attacker's handsets.
+
+### Remedy: a per-depth BEK, and it is a feature rather than a field
+
+The direction is right and more consistent than what exists — `exportBackup(currentDepth:)` is already
+depth-scoped, so a per-depth key is the shape the rest of the feature implies. It is not small:
+
+- **Shard distribution becomes per-depth.** Either each layer carries its own trustee set, or there
+  is an explicit, written decision that layers share one and what that means when a duress layer
+  distributes.
+- **Row count would leak layer count.** One row says nothing; N rows says N layers have backups
+  configured, readable by counting without decrypting anything. This needs the fixed-slot padded-array
+  treatment already used by `pinEnabledPerDepth` and `verifierFillerArray`, not a naive one-row-per-
+  depth table.
+
+### Two rejected fixes, recorded because both look correct
+
+**"Don't persist a BEK when the restore completes above depth 0."** Tidy, small, and wrong. After the
+identical action the vault would report *backup ready* in one layer and *not set up* in the other —
+`bekSetupState` is read straight into the vault tab. That is a new depth oracle bought to close a
+different problem, the same trade the depth-0-only restore confirmation made before it was corrected.
+
+**"Stamp the BEK row with the arming depth and filter `fetchDecodedBEK`."** Closer, but it is
+per-depth BEK with the hard parts omitted: it still leaves one row, so whichever layer wrote last owns
+the device's only key, and the filter turns a missing row into "no backup configured" for every other
+layer — reintroducing the same observable as the first rejected fix.
+
+### Relationship to the entries around it
+
+Bug 94 remedy 1 refuses to overwrite an existing BEK and explicitly does not cover the no-BEK device.
+Bug 99 contains what a restore imports. This is the third piece of the same seam: what a restore
+*installs*. All three are the no-BEK population, and none of the others closes this one.
