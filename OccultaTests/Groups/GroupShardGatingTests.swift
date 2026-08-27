@@ -300,28 +300,38 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
 @Suite("Shard op padding — filler matches a real attested handback")
 struct ShardOperationPaddingTests {
 
+    /// Signature and shard bytes are random, matching a real ECDSA signature and a real
+    /// GF(2^8) share — not the fixed repeating fill this used before. That fix matters:
+    /// `JSONEncoder` escapes `/` in base64 as `\/`, so a fixed byte pattern that never
+    /// happens to base64-encode to a `/` makes the "real" side artificially escape-free
+    /// while `ContactManager.fillerShardOperation()`'s genuinely random bytes do sometimes
+    /// escape — a one-sided bias inflating the delta below, not the two-sided noise its
+    /// bound was sized for.
     private func realAttestedHandback() -> OccultaBundle.ShardOperation {
         let entryID = UUID()
         let attribute = SignedAttribute(
-            label: "vault-shard", value: Data(repeating: 0x07, count: 33),
-            category: .shard, signature: Data(repeating: 0x08, count: 72), entryID: entryID
+            label: "vault-shard", value: Data((0..<33).map { _ in UInt8.random(in: .min ... .max) }),
+            category: .shard, signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }), entryID: entryID
         )
         let attestation = SignedAttribute(
-            label: "shard-attestation", value: Data(repeating: 0x09, count: 32),
-            category: .attestation, signature: Data(repeating: 0x0A, count: 72), entryID: entryID
+            label: "shard-attestation", value: Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }),
+            category: .attestation, signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }), entryID: entryID
         )
         return OccultaBundle.ShardOperation(
             kind: .handback, attribute: attribute, attestation: attestation
         )
     }
 
-    /// Sampled rather than measured once, and deliberately so. Two sources of spread exist,
-    /// both bounded and neither scaling with content: `kind`'s spelling ("unsupported"
-    /// against "handback", 3 bytes) and `createdAt` — a `Date` encodes as a `Double` whose
-    /// decimal form varies in length, and each op carries two. A single encode would sit
-    /// somewhere in that distribution at random, which is how the mixed-group test above
-    /// ended up failing one run in three before its bound was widened. Sampling asserts
-    /// against the worst case instead of a lucky one.
+    /// Sampled rather than measured once, and deliberately so. Spread comes from two
+    /// sources, both bounded and neither scaling with content: `kind`'s spelling
+    /// ("unsupported" against "handback", 3 bytes) and `JSONEncoder` escaping `/` as `\/`
+    /// in the base64 rendering of each op's two random byte blobs (signature + shard
+    /// value) — roughly 1 in 64 base64 characters, symmetric now that both sides use
+    /// random bytes. Measured empirically at 2000 simulated 200-sample runs: worst
+    /// observed delta was 18. The bound below leaves better than 2x headroom over that
+    /// while staying two orders of magnitude below the ~50-byte (missing entryID) and
+    /// ~260-byte (missing attestation) tells this test exists to catch — see
+    /// `fillerCarriesEveryOptionalMember` below.
     @Test("A filler op encodes to the same size as a real attested handback")
     func fillerMatchesAttestedHandback() throws {
         let encoder = JSONEncoder()
@@ -337,7 +347,7 @@ struct ShardOperationPaddingTests {
             }
         }
 
-        #expect(worst <= 16, """
+        #expect(worst <= 32, """
             A filler op must not be distinguishable from a real attested handback by size \
             (worst of 200: real \(worstPair.real), filler \(worstPair.filler), delta \(worst)). \
             Recipient.wrappedPayload lengths are cleartext in the bundle, so a gap here names \
