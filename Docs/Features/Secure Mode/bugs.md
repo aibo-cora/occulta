@@ -7360,3 +7360,72 @@ This is the half worth fixing first. It is one line per file and needs no format
 `backup-export-meta.dat` is 32 fixed-width slots with random filler, so its length is constant
 whatever the export history holds. The pattern this entry asks for is not new — it is applied one
 file over and was not carried across.
+
+---
+
+## Bug 101 — Every file opened through "Open in Occulta" is likely still sitting in `Documents/Inbox`, unsealed and backed up
+
+**Status:** **Open, one fact unverified — see Confirm first.** Filed 2026-08-27, found while scoping
+Bug 100's backup exclusion. Not found by reading the restore code: found by asking which copy of an
+opened file the exclusion would actually cover, and discovering there is one more copy than the code
+accounts for.
+
+**Target:** unset until the device check below settles the severity.
+
+### Severity: High if confirmed (contents, not metadata)
+
+Bug 100 is about a file's *length* revealing progress. This is the file itself. If confirmed, every
+`.occbak` and `.occ` ever handed to the app this way is retained indefinitely in the backed-up
+directory, as delivered.
+
+Note the `.occ`/`.occbak` payloads are themselves sealed, so this is not plaintext exposure. What
+leaks is the same class Bug 100 covers — existence, count, size, timestamps, one artifact per file
+ever received — except accumulated forever and copied off-device, rather than transient and confined
+to a pending restore.
+
+### Confirm first
+
+Two facts are established from the tree. The third is inferred and decides the severity.
+
+**Established.** `LSSupportsOpeningDocumentsInPlace` is not declared in `Occulta/Info.plist`. Absent,
+it defaults to `NO`, and the system hands a document-opening app a copy in `Documents/Inbox/` rather
+than the original in place.
+
+**Established.** The string `Inbox` appears in zero Swift files. Nothing enumerates that directory and
+nothing deletes from it. `FileManager.clearTemporaryDirectory()` clears `tmp/`, which is a different
+directory and not backed up in the first place. The cleanup at `OccultaApp.swift`'s `handleOpenURL`
+runs only when `openedThroughShareExtension` is true — the App Group `.occ` handoff — so a `.occbak`
+arriving by any other route has nothing remove anything.
+
+**Inferred, and the thing to check on device.** Which entry points actually produce that copy. The
+code calls `startAccessingSecurityScopedResource()`, which implies at least one path delivers a
+security-scoped original rather than a copy, so the two mechanisms plainly coexist here. Open a
+`.occbak` from the Files app and again from another app's share sheet, then list `Documents/Inbox`.
+Everything below is conditional on that listing being non-empty.
+
+### Why this was missed
+
+The three files Bug 100 enumerates are all ones this code writes deliberately, so reading the backup
+path finds them. This copy is made by the system, on the app's behalf, because of a key that is not
+in the plist — it is invisible from the Swift sources, and the only trace of the decision is an
+absence. Worth recording as a search pattern: an artifact created by a missing declaration cannot be
+found by reading the code that would have created it.
+
+### Remedy
+
+1. **Declare `LSSupportsOpeningDocumentsInPlace`.** The preferred fix: no copy is made at all, and
+   the existing `startAccessingSecurityScopedResource()` handling in `handleOpenURL` is already
+   written for exactly that. Verify both entry points still open afterwards — in-place opening is a
+   different contract, not just a flag.
+2. **Sweep `Documents/Inbox` on launch**, and delete the copy after reading it on the paths that
+   still produce one. Needed regardless of (1): existing installs have whatever has already
+   accumulated, and (1) changes future behaviour only.
+3. **Then apply Bug 100 remedy 1** to the Application Support files. Excluding those from backup while
+   an unmanaged, backed-up copy of the same content sits in `Documents/` is a half-measure — which is
+   how this was found.
+
+### Relationship to Bug 100
+
+Independent, and this one ranks higher. Bug 100 is metadata about a restore in flight, cleaned when it
+completes. This is retained content, accumulating across every file ever opened, in the directory iOS
+backs up by default. Same investigation, unrelated remedies.
