@@ -74,6 +74,14 @@ by convention. The BEK field cannot get the same treatment cheaply, since the va
 depth-derived and making it so touches every vault entry. State the asymmetry rather than implying
 both halves are equally protected.
 
+**This is Bug 92's subject, and it has a remedy.** The vault key opens every slot, so the BEK field is
+separated by convention: only the code declining to read slot 0 at depth 2 keeps them apart, and a
+device dump yields all of them regardless. Bug 92 identifies the one input a coerced session does not
+hold — the PIN, which is knowledge rather than stored material — and proposes
+`fileKey = HKDF(BEK ‖ slowKDF(PIN, salt))`. Adopting that here would make the separation
+cryptographic. **Open decision, see §4.4**, and note it carries a hard dependency: no slow KDF exists
+in the codebase, and a PIN-derived key without one is a design that looks layered and is not.
+
 ### 2.2 Where it lives
 
 **`AppLayerConfig`** for the small per-depth scalars. It already holds fixed-width padded per-depth
@@ -159,6 +167,10 @@ vault UI, with migrations. Own branch off `develop`, minor version.
    it at **export**, with a clear failure — not at restore, when the user has no vault left.
 3. **Drop versus defer for non-shard payloads** behind the §2.3 gate. Shards retry; messages do not.
    Deferring means storing the bundle, which is a cross-layer container again unless slotted.
+4. **Convention or cryptography for the BEK field's slot separation** (§2.1, Bug 92). Adopting
+   PIN-combined derivation requires first adding a slow KDF, and changes the recovery contract —
+   shards alone stop being sufficient, and PIN rotation orphans old backup files. Accepting
+   convention is defensible; accepting it silently is not.
 
 ---
 
@@ -180,6 +192,7 @@ Everything that led here. Full reasoning lives in `Docs/Features/Secure Mode/bug
 | 100 r2 | Shard file length was a keyless progress counter | fixed — rows; superseded by §2.1 slots |
 | 100 r3 | `.occbak` length estimates vault size | open — moot if §2.2 slots the contents |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
+| 92 | A backup file is readable from any layer (offline half) | open — complementary, see §2.1 |
 | 102 | The BEK has no layer concept | **this document** |
 | 105 | A duress layer can distribute shares of the real BEK | open — §6.1 |
 

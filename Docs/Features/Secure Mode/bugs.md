@@ -5804,12 +5804,52 @@ either — a leaked file is already out, and re-keying afterwards does not reach
 The goal underneath it is freshness, and `refreshBackupStaleness()` / `BackupStalenessReport` already
 serve that. *"This file is stale, re-export"* is recoverable; *"this file is dead"* is not.
 
+### Reconciled with Bug 102, 2026-08-28 — not a duplicate, and each needs the other
+
+Both entries open with the same sentence: the BEK is not layered. They diverge immediately, and
+neither subsumes the other.
+
+| | Bug 92 (this) | Bug 102 |
+| --- | --- | --- |
+| Harm | A backup *file* decrypts at any layer | In-app operations at a duress depth act on the *real* key |
+| Attacker | Holds raw BEK bytes, obtained outside the app | Uses the app normally, in a duress session |
+| Fix | Derive the file key from BEK ‖ slow-KDF(PIN) | Give each layer its own BEK |
+| Blocker | No slow KDF exists in the codebase | Storage-format change, staged |
+
+**Per-depth BEKs do not fix this bug**, and the reason is already stated above under *Why the obvious
+keys do not work*. Bug 102's slots would all be sealed under the vault key, which is not
+depth-derived — so an attacker who extracts key material gets every slot, exactly as they get the one
+BEK today. Layering the storage changes what the *app* will act on; it changes nothing about what
+falls out of a device dump.
+
+**And the converse: this bug supplies an input Bug 102's design is missing.** That design separates
+its per-depth slots by code discipline for the BEK field — only convention stops a duress session
+decrypting slot 0, because it holds the vault key. Its own §2.1 concedes this and calls the asymmetry
+out. The PIN is the only input in this subsystem a coerced session does not hold, so a
+PIN-combined derivation is what would make that separation cryptographic rather than conventional.
+Whether to adopt it there, or to accept convention and say so plainly, is a decision the refactor has
+to make rather than inherit.
+
+**Bug 105 may have restored the in-app route this entry's severity was re-rated away from.** The
+2026-08-26 re-rating turned on there being no way for a coercer to make the app decrypt a found file.
+Bug 105 does not do that — but it hands a coercer threshold shares of the real BEK through ordinary
+UI at a duress depth, from which the BEK reconstructs offline, after which any real-layer `.occbak`
+he obtains (Bugs 100 and 101 supply the routes) decrypts. That is this bug's harm reached without a
+jailbreak, forensic extraction or a memory dump — the three things the re-rating rested on.
+**Re-rate deliberately after Bug 105 is settled**, rather than leaving Medium standing on reasoning
+that predates it.
+
 ### Guard
 
 `VaultBackupRoundTripTests` already pins that a backup carries no plaintext label or content, and
 that entries survive a round trip — both of which must hold across the envelope change. What it
 cannot yet assert is the property this bug is about: **a file exported at one layer must not decrypt
 at another.** That test is the fix's acceptance criterion.
+
+Note that criterion is satisfiable two ways, and only one of them is real. Per-depth BEKs make it
+pass for a caller going through the app; only the PIN-combined derivation makes it pass for someone
+holding the storage. A test written against the app's own API cannot tell those apart, so it should
+assert on raw key material rather than on a decrypt call.
 
 
 ---
@@ -7676,6 +7716,25 @@ per-depth BEK with the hard parts omitted: it still leaves one row, so whichever
 the device's only key, and the filter turns a missing row into "no backup configured" for every other
 layer — reintroducing the same observable as the first rejected fix.
 
+### Reconciled with Bug 92, 2026-08-28
+
+Bug 92 shares this entry's premise — the BEK is not layered — and is not a duplicate of it. It
+addresses the *offline* consequence (a file decrypts at any layer for someone holding extracted key
+material); this addresses the *in-app* one (duress-depth operations act on the real key).
+
+**Neither fix covers the other's harm.** Per-depth slots would still all be sealed under the vault
+key, which is not depth-derived, so a device dump yields every slot — this entry's remedy does
+nothing for Bug 92. And a PIN-combined file key does not stop a duress session installing or
+distributing the real BEK, so Bug 92's remedy does nothing for this one.
+
+**Bug 92 does supply something this design needs.** §2.1 of `BEK_LAYERING_REFACTOR.md` concedes that
+the BEK field's slot separation is code discipline rather than cryptography, because the vault key
+opens every slot. Bug 92's insight — the PIN is the only input in this subsystem a coerced session
+does not hold — is the available answer. Adopting it here, or accepting convention and documenting
+that plainly, is an open decision for this refactor rather than something to inherit silently. It
+carries Bug 92's hard dependency with it: no slow KDF exists in the codebase, and a PIN-derived key
+without one is a design that looks layered and is not.
+
 ### Relationship to the entries around it
 
 Bug 94 remedy 1 refuses to overwrite an existing BEK and explicitly does not cover the no-BEK device.
@@ -7915,6 +7974,25 @@ recovery is not.
    still hold valid shares — same key, same distributionID — but the device's record of who holds what
    is gone. `bekSetupState`, shard health and trustee counts all report his set. The owner's real
    recovery now appears to depend on the attacker's handsets.
+
+### Reconciled with Bug 92, 2026-08-28
+
+Bug 92 shares this entry's premise — the BEK is not layered — and is not a duplicate of it. It
+addresses the *offline* consequence (a file decrypts at any layer for someone holding extracted key
+material); this addresses the *in-app* one (duress-depth operations act on the real key).
+
+**Neither fix covers the other's harm.** Per-depth slots would still all be sealed under the vault
+key, which is not depth-derived, so a device dump yields every slot — this entry's remedy does
+nothing for Bug 92. And a PIN-combined file key does not stop a duress session installing or
+distributing the real BEK, so Bug 92's remedy does nothing for this one.
+
+**Bug 92 does supply something this design needs.** §2.1 of `BEK_LAYERING_REFACTOR.md` concedes that
+the BEK field's slot separation is code discipline rather than cryptography, because the vault key
+opens every slot. Bug 92's insight — the PIN is the only input in this subsystem a coerced session
+does not hold — is the available answer. Adopting it here, or accepting convention and documenting
+that plainly, is an open decision for this refactor rather than something to inherit silently. It
+carries Bug 92's hard dependency with it: no slow KDF exists in the codebase, and a PIN-derived key
+without one is a design that looks layered and is not.
 
 ### Relationship to the entries around it
 
