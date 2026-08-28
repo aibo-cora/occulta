@@ -600,3 +600,86 @@ struct VaultRestoreRobustnessTests {
         }
     }
 }
+
+// MARK: - Bug 100 remedy 1
+
+/// The pending `.occbak` and the export-metadata file are written into Application Support,
+/// which `excludeStoreFromBackup` does not cover — it takes the SQLite store and its
+/// `-wal`/`-shm` sidecars only. So both were copied into iTunes/Finder/iCloud backups. The
+/// payloads stay sealed and device-bound, but existence, length and timestamps travel with the
+/// copy, and a backup is obtainable without the passcode prompt `.completeFileProtection`
+/// depends on.
+@Suite("Bug 100 — restore artifacts are excluded from device backups", .serialized)
+@MainActor
+struct RestoreArtifactBackupExclusionTests {
+
+    private func isExcluded(_ url: URL) throws -> Bool {
+        try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup ?? false
+    }
+
+    @Test("Arming a restore writes a file excluded from backup",
+          .enabled(if: secureEnclaveAvailable()))
+    func pendingRestoreIsExcluded() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup)
+
+        #expect(try self.isExcluded(pendingRestoreURL), """
+            The pending restore file is copied into device backups. Its length estimates the \
+            size of the vault it came from, and a backup can be obtained without the passcode \
+            prompt that complete file protection depends on.
+            """)
+    }
+
+    /// **The assertion that matters, and the one a wrong implementation passes without.**
+    ///
+    /// `isExcludedFromBackup` is a `URLResourceValues` attribute on the file, and `.atomic`
+    /// writes rename a fresh temp file over the target — so the inode holding the attribute is
+    /// discarded on every write. Setting the flag once at launch reads back correct exactly
+    /// once. Only a re-arm catches that, which is why this test arms twice rather than
+    /// checking the value after a single write.
+    @Test("The exclusion survives the file being rewritten by a second arming",
+          .enabled(if: secureEnclaveAvailable()))
+    func exclusionSurvivesRewrite() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup)
+
+        // A second arming is refused while one is pending, so clear the file the way a
+        // completed or abandoned restore does and arm again — the same rewrite, reached the
+        // way production reaches it.
+        try? FileManager.default.removeItem(at: pendingRestoreURL)
+        try fresh.vault.storePendingRestore(backup)
+
+        #expect(try self.isExcluded(pendingRestoreURL), """
+            The exclusion did not survive a rewrite. An implementation that sets the attribute \
+            at launch rather than at each write passes the first-write test and fails here, \
+            then ships silently unprotected from the second arming onward.
+            """)
+    }
+
+    @Test("Exporting writes export metadata excluded from backup",
+          .enabled(if: secureEnclaveAvailable()))
+    func exportMetadataIsExcluded() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner = try makeBackupReadyVault()
+        _ = try owner.vault.addEntry(label: "e", content: Data("e".utf8), type: .note)
+        _ = try owner.vault.exportBackup(currentDepth: 0)
+
+        let metaURL = appSupport.appendingPathComponent("backup-export-meta.dat")
+        #expect(try self.isExcluded(metaURL),
+                "the export-metadata file is copied into device backups")
+    }
+}

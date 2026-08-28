@@ -7289,11 +7289,13 @@ binding rather than by anything about the UI.
 
 ## Bug 100 — The pending-restore files are a keyless progress counter and a vault-size estimate, and they leave the device in backups
 
-**Status:** **Remedy 2 fixed 2026-08-27; remedies 1 and 3 open.** Remedy 2 shipped as part of this
+**Status:** **Remedies 1 and 2 fixed 2026-08-27; remedy 3 open.** Remedy 2 shipped as part of this
 branch — BEK restore shards are `ReconstructShard` rows and the shard file is gone, so the progress
-counter it leaked is gone with it. Remedy 1 (backup exclusion) and remedy 3 (`.occbak` padding) remain,
-and remedy 1 is now entangled with Bug 101, which found a further copy of the same content in
-`Documents/Inbox`. See also Bug 102: rows remove the length channel but still leave a row count, so
+counter it leaked is gone with it. Remedy 1 shipped too — both remaining Application Support files
+are now marked `isExcludedFromBackup` at each write, guarded by a test that rewrites the file rather
+than checking it once. **It does not stand alone: Bug 101 found the same content, unsealed, in
+`Documents/Inbox`, and that copy is still there.** Remedy 3 (`.occbak` padding) remains and is moot
+if Bug 102 slots the backup contents. See also Bug 102: rows remove the length channel but still leave a row count, so
 fixed slots supersede them. Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
 reading the restore code — found by asking what an examiner sees, after the *same* number had just
 been removed from the UI for being too revealing.

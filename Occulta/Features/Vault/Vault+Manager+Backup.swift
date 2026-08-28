@@ -591,6 +591,39 @@ extension VaultManager {
         )
     }
 
+    // MARK: - Backup-excluded writes
+
+    /// Write sealed bytes, then mark the result as excluded from device backups.
+    ///
+    /// **Per write, never once at launch, and `.atomic` is why that is not merely prudent.**
+    /// `isExcludedFromBackup` is a `URLResourceValues` attribute on the *file*. An atomic write
+    /// stages a temp file and renames it over the target, so the inode carrying the attribute is
+    /// discarded by the very next write — and both call sites rewrite routinely: every arming
+    /// replaces the pending file, every export replaces the metadata. A bootstrap-time version
+    /// would read back correct on the device it was tested on and be wrong from the second write
+    /// onward, with nothing observable to say so. `excludeStoreFromBackup` re-applies on every
+    /// `reapplyFileProtection` for the same reason, phrased there as "sidecar files may be
+    /// recreated by SQLite" (Bug 100 remedy 1).
+    ///
+    /// Failure to set the attribute is swallowed deliberately. It is best-effort metadata
+    /// hygiene, and failing an export or an arming because a backup flag would not stick trades a
+    /// working recovery for a marginal one. Tests assert on reading the value back rather than on
+    /// this not throwing.
+    ///
+    /// What this does and does not buy: the payloads are already sealed and device-bound, so a
+    /// backup copy was never readable off-device. What travelled with it was existence, length and
+    /// timestamps — and a backup is a far softer target than the device, obtainable without the
+    /// passcode prompt `.completeFileProtection` depends on. See Bug 101 for the same content in a
+    /// worse place; this remedy is incomplete without it.
+    private static func writeExcludedFromBackup(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+
+        var target = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? target.setResourceValues(values)
+    }
+
     // MARK: - Pending restore
 
     // Filenames deliberately do not name the mechanism — see Bug 93 harm 3. A file
@@ -674,7 +707,7 @@ extension VaultManager {
             throw BackupError.alreadyProcessed
         }
 
-        try data.write(to: Self.pendingRestoreURL, options: [.atomic, .completeFileProtection])
+        try Self.writeExcludedFromBackup(data, to: Self.pendingRestoreURL)
 
         // Published at every depth — see `refreshPendingRestoreState` for why hiding this
         // above depth 0 traded a duress-against-duress gap for a duress-against-real one.
@@ -915,7 +948,7 @@ extension VaultManager {
             authenticating: Self.backupExportMetaAAD
         )
         guard let combined = sealed.combined else { throw BackupError.encryptionFailed }
-        try combined.write(to: Self.backupExportMetaURL, options: [.atomic, .completeFileProtection])
+        try Self.writeExcludedFromBackup(combined, to: Self.backupExportMetaURL)
     }
 
     /// `depth`'s slot, or `nil` if that depth has never been exported (a genuinely empty
