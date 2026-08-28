@@ -7869,3 +7869,86 @@ trade as Bug 103's message body, recorded rather than decided so the two are set
 The `.response` branch also writes `verifiedAt[senderID]` before rendering
 (`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
 render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
+
+---
+
+## Bug 105 — A duress layer can distribute shares of the real BEK, through ordinary UI
+
+**Status:** **Open.** Filed 2026-08-28, found while scoping `BEK_LAYERING_REFACTOR.md` — by asking
+whether shard *distribution* is depth-gated, having already established that restore is not.
+
+**Target:** `release/v1.10.3`. Reachable on shipped code with no attacker-supplied file, no shard
+delivery, and no restore.
+
+### Severity: High
+
+A durable compromise of the real layer, reached from a duress session, that survives the coercion. The
+same class as Bug 102 and arrived at more cheaply — every step is legitimate app behaviour.
+
+### What happens
+
+`prepareBEKShards` has no depth gate. It reads the one device-wide BEK through
+`fetchDecodedBEK(vaultKey:)` and splits *that* key, whatever depth the caller is at.
+`Vault+ShardSetup.swift` contains **zero** references to `currentDepth` or `isVisible`.
+
+So at a duress depth a coercer opens the backup shard setup, picks trustees, and distributes. The
+shares he receives are shares of the owner's **real** backup key.
+
+### Why it is easy to miss
+
+**The trustee picker is correctly depth-filtered.** `mlkemEligibleContacts` applies
+`isVisible(atDepth: security.currentDepth)`, so a duress session offers only that layer's contacts —
+which reads as the flow being depth-aware. It is filtering the wrong axis. The contacts are per-layer;
+the key they are handed shares of is not.
+
+That is the entire thesis of Bug 102 in one screen: everything *around* recovery is layered, and
+recovery is not.
+
+### Two harms
+
+1. **He holds threshold shares of the real BEK.** Latent rather than immediate — it pays off when he
+   obtains any `.occbak`, via a device backup, iCloud, or Bug 101's `Documents/Inbox` copy. Note
+   `exportBackup` at a duress depth exports only that depth's entries, so the file he can make himself
+   is not the one he wants; he needs one of the owner's.
+2. **The owner's trustee list is replaced, immediately.** `prepareBEKShards` reuses the existing
+   `distributionID` and **overwrites** `shardMetadata` with the new distribution. Genuine trustees
+   still hold valid shares — same key, same distributionID — but the device's record of who holds what
+   is gone. `bekSetupState`, shard health and trustee counts all report his set. The owner's real
+   recovery now appears to depend on the attacker's handsets.
+
+### Relationship to the entries around it
+
+- **Bug 102** — same root cause, and this is the sharpest demonstration of it. Harm 2 here is Bug 102's
+  consequence 3, reached without any restore. It also settles that entry's open design question
+  empirically: *may a duress layer distribute?* It can today, and it distributes the real key.
+- **Bug 94 remedy 1** refuses to overwrite an existing BEK during a restore, precisely so a stranger's
+  material cannot strand the owner's trustees. This reaches the same end through distribution instead,
+  which that remedy does not cover.
+- **Bugs 100 and 101** supply the missing half of harm 1 — a copy of a real-layer `.occbak` that leaves
+  the device.
+- **Bugs 103 and 104** are the same omission at the view layer rather than the key layer: a depth
+  dimension that exists in the data model and was not applied at the boundary being written.
+
+### Remedy
+
+**Short term, and independent of the refactor:** gate distribution on depth. The narrow form is to
+refuse `prepareBEKShards` above depth 0 — but that is depth-conditional behaviour a coercer can
+observe (the setup flow works in one layer and not another), which is the trap two fixes already fell
+into this week. See Bug 93's follow-up and Bug 94 remedy 3.
+
+The honest short-term options are therefore both unattractive, and the choice should be made
+deliberately rather than by picking the smaller diff:
+
+- **Refuse above depth 0** — closes the harm, adds an observable difference between layers.
+- **Allow it, but distribute the layer's own key** — which requires the layer to *have* one, i.e. the
+  refactor.
+
+**Structurally:** `BEK_LAYERING_REFACTOR.md`. Once each layer holds its own BEK, distributing at a
+duress depth distributes that layer's key to that layer's contacts, and the operation is correct
+rather than merely permitted. That is the only version where the flow works identically in every layer
+because it *is* the same flow, not a suppressed one.
+
+### Guard
+
+No test covers distribution at a non-zero depth. `Vault+ShardSetup.swift` has no depth-aware tests at
+all, which is consistent with the code having no depth awareness to test.

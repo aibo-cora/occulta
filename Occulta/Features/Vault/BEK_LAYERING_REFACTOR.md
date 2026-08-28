@@ -181,6 +181,7 @@ Everything that led here. Full reasoning lives in `Docs/Features/Secure Mode/bug
 | 100 r3 | `.occbak` length estimates vault size | open — moot if §2.2 slots the contents |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
 | 102 | The BEK has no layer concept | **this document** |
+| 105 | A duress layer can distribute shares of the real BEK | open — §6.1 |
 
 **Adjacent, not BEK, but same root cause** — views and inbound paths that ignore depth: Bug 103
 (reader renders a hidden contact's name, phone, email) and Bug 104 (inbound identity challenge renders
@@ -191,9 +192,10 @@ layer," and §2.3's gate is the server-side half of the same problem.
 
 ## 6. Bugs — expected, and traps to avoid
 
-### 6.1 Unfiled: a duress layer can distribute shares of the real BEK today
+### 6.1 A duress layer can distribute shares of the real BEK today — Bug 105
 
-**Not yet in `bugs.md`.** Found 2026-08-28 while scoping this document.
+**Filed as Bug 105**, 2026-08-28, found while scoping this document. Full entry and remedy options in
+`Docs/Features/Secure Mode/bugs.md`; summarised here because it is the sharpest evidence for §1.
 
 `prepareBEKShards` has no depth gate — it reads the one device-wide BEK via `fetchDecodedBEK`, and
 `Vault+ShardSetup.swift` contains zero references to `currentDepth` or `isVisible`. The trustee
@@ -213,8 +215,12 @@ coercer can distribute shares of the owner's **real** backup key to his own phon
 
 This is the cleanest demonstration of the thesis in §1, because every step is legitimate app
 behaviour. It also answers open decision §4.1 empirically: a duress layer can distribute today, and it
-distributes the real key. **Needs its own entry in `bugs.md`; this section is a placeholder, not a
-home.**
+distributes the real key.
+
+**Its short-term remedy is genuinely unattractive**, which is an argument for the refactor rather than
+against fixing it now: refusing distribution above depth 0 closes the harm but adds an observable
+difference between layers — the trap two fixes already fell into this week. Bug 105 records both
+options rather than picking the smaller diff.
 
 ### 6.2 Anti-pairings
 
