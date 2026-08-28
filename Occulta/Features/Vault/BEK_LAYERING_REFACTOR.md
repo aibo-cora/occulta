@@ -153,8 +153,11 @@ complete a restore in his layer, and see exactly what a working app does — bec
 app in that layer, not a simulation of one. That is the test that distinguishes this from the
 flattening it replaces.
 
-**Not a patch-release change.** It touches BEK storage, restore, export, shard distribution and the
-vault UI, with migrations. Own branch off `develop`, minor version.
+**A large change for a patch release.** It touches BEK storage, restore, export, shard distribution
+and the vault UI, with migrations. This originally read "not a patch-release change — own branch off
+`develop`, minor version"; both halves were overridden on 2026-08-28. It ships in **v1.10.3**, on
+`v1.10.3/bek-layering-refactor` off `release/v1.10.3`. Reasoning, and what the patch framing costs,
+in §7.
 
 ---
 
@@ -167,10 +170,15 @@ vault UI, with migrations. Own branch off `develop`, minor version.
    it at **export**, with a clear failure — not at restore, when the user has no vault left.
 3. **Drop versus defer for non-shard payloads** behind the §2.3 gate. Shards retry; messages do not.
    Deferring means storing the bundle, which is a cross-layer container again unless slotted.
+
 4. **Convention or cryptography for the BEK field's slot separation** (§2.1, Bug 92). Adopting
    PIN-combined derivation requires first adding a slow KDF, and changes the recovery contract —
    shards alone stop being sufficient, and PIN rotation orphans old backup files. Accepting
    convention is defensible; accepting it silently is not.
+
+4a. **The `storePendingRestore` tombstone soft spot** — §7.3. A downgraded build can still *arm* a
+   restore against a tombstoned row, because that one site uses `try?` where its siblings use `try`.
+   Accept it, or add a guard distinguishing "no row" from "row present, undecryptable."
 
 ---
 
@@ -271,3 +279,138 @@ let it be absorbed silently into stage 3.
 `VaultEntryType` has `document` and `photo` **commented out**. The whole fixed-slot design rests on a
 vault backup being kilobytes. Enabling either makes the vault bulk data and invalidates §2.1 entirely.
 That enum is the place to notice, so the constraint belongs as a comment there too.
+
+---
+
+## 7. Migration and release scope
+
+Settled 2026-08-28. Records three decisions and the alternatives rejected to reach them.
+
+### 7.1 Release scope
+
+Ships in **v1.10.3**, branch `v1.10.3/bek-layering-refactor` off `release/v1.10.3`.
+
+§3's original "own branch off `develop`" was stale on its own terms: `develop` is **133 commits behind
+`release/v1.10.3` and zero ahead**. Branching there would have dropped every fix this refactor builds
+on — Bug 100 r1, Bug 94a's attestation padding, and the Bug 105 filing itself.
+
+The patch framing is a deliberate trade, not an oversight. Bug 105 is live, and its standalone remedy
+is the unattractive one §6.1 describes — refusing distribution above depth 0 closes the harm and opens
+a new observable difference between layers. Shipping the refactor instead of a patch that adds a tell
+is the better of two imperfect options. What it costs is stated in §7.2: a patch version implies
+downgrade is safe, and after this migration it is not.
+
+### 7.2 Compatibility — what is achievable and what is not
+
+Two directions, and they have opposite answers.
+
+**New build reads old data — free, and required regardless.** `BackupEncryptionKey.Payload` is a
+`Codable` struct sealed under the vault key; fields added as optional decode against existing
+ciphertext untouched.
+
+**Old build reads what the new build wrote — impossible for slot 0, by construction.** An old build
+keeps working only if the device-wide `BackupEncryptionKey` row still holds the real key. That row
+*is* Bug 105: `prepareBEKShards` reaches it through `fetchDecodedBEK`, which does `fetch(...).first`
+with no depth check (`Vault+Manager+Backup.swift:986`). Preserving it for downgrade preserves the
+exact artifact this refactor exists to remove. The two goals are one variable in opposite directions —
+no design resolves them.
+
+The conflict is narrower than it first looks. It is **only slot 0's BEK bytes**. Everything else is
+additive and downgrade-tolerant:
+
+| Piece | Old build's view | Verdict |
+|---|---|---|
+| Sibling slot file (depths ≥1, shard buffers, restore state) | never heard of it, ignores it | duress-layer state *unavailable*, not lost; re-upgrading restores it |
+| §2.3 visibility gate, §2.4 cap | behavioral, no persisted format | downgrade loses the gate, nothing else |
+| Slot 0's BEK | the thing that must stop being device-wide | **breaks — see §7.3** |
+
+**Add a `formatVersion` byte to the new file's sealed plaintext.** `ExportMetaSlotCodec` has none
+(`Vault+Manager+Backup.swift:815`) — a gap worth not repeating. This also argues for §2.2's
+file-based choice more strongly than §2.2 itself does: the project has **no
+`VersionedSchema`/`SchemaMigrationPlan` at all**, an absence already blocking the `GlobalShardConfig`
+removal (`RotationRegistry.swift:70`) and flagged again in `PQmigration.swift:308`. A file sidesteps
+the missing migration plan; a new `@Model` would sit on top of lightweight migration and hope.
+
+### 7.3 Tombstone the legacy row — do not delete it
+
+When slot 0's BEK moves into the slot file, keep the `BackupEncryptionKey` row and overwrite
+`encryptedPayload` with **same-length filler**.
+
+Deleting the row is itself a new tell — "this device once had a BEK and no longer does." A
+filler-filled row is indistinguishable from a real one on cold disk, which satisfies §2.2's
+eager-creation rule instead of fighting it.
+
+More importantly, a downgraded build then **fails closed at three of four sites**:
+
+| Site | Behavior on a filler row | Why it matters |
+|---|---|---|
+| `setupBEK()` (`:108`) | guards on `existing.isEmpty` — row *presence*, not decryptability — so it no-ops | blocks the real harm: minting a fresh BEK with a new `distributionID`, silently invalidating the genuine trustee distribution (Bug 105's second harm, arrived at from the other direction) |
+| `currentBEK()` (`:133`) | throws | no export under a wrong key |
+| `reconstructBEK` (`:494`) | uses `try`, not `try?` — decrypt failure propagates | reconstruction refuses |
+| `storePendingRestore` (`:703`) | uses `try?`, so `alreadyHasBEK` reads false | **soft spot** — a downgraded build still lets you *arm*. Arming, not completing; recoverable, but handle it deliberately rather than discover it |
+
+Net: downgrade degrades to *fails closed and says so*, rather than *works fine* or *silently destroys
+the distribution*. That is the honest ceiling, and it is what §7.1's patch framing actually buys.
+
+### 7.4 In-flight restores — adopt, do not dual-run
+
+A restore waits on trustees delivering shards in person, so it can sit armed for **days**. Losing that
+on update is a real harm, and the update must not cause it.
+
+**The destination is unambiguous.** A legacy in-flight restore is depth-0-destined by construction —
+`attemptBEKRestore` guards `currentDepth == 0` (`:741`). §2.3's attribution problem does not arise:
+no legacy restore can have been destined for anywhere else. So the in-flight state is **adopted into
+slot 0** and finished by the new mechanism. The old path is not kept alive to finish it.
+
+| Legacy state | Adopted as | Note |
+|---|---|---|
+| pending `.occbak` | slot 0's sealed backup contents | straight lift |
+| `ReconstructShard` rows | slot 0's shard buffer | **needs re-sealing** — sealed under `deriveRecoveryBufferKey()`, which is not depth-derived today (`ReconstructShard+Model.swift:52`) while §2.1 requires depth in the HKDF info |
+| completion at depth 0 | completion at slot 0 | same behavior, one path |
+
+The re-seal is the only step that is not a copy, and it needs the vault unlocked — so **adoption runs
+at the first depth-0 unlock after update, not at launch**.
+
+**Adopt the banked shards as-is; do not re-validate them against §2.3's gate.** They were banked
+before the gate existed, but they were depth-0-destined anyway and Bug 94 remedy 2's per-sender
+attestation already applied when they were banked. Re-validating could drop a shard from a trustee
+since hidden, delaying exactly the restore this is meant to protect.
+
+**Fallback:** if adoption cannot complete cleanly — vault key unavailable, malformed rows — refuse and
+tell the user to **re-arm**. Never fall back to the old rules. Re-arming is a visible one-time cost
+that reads identically at every depth; silently running the legacy path is not.
+
+### 7.5 Rejected alternatives
+
+**Dual-run: legacy restores finish under legacy rules, new arms use the new mechanism.** Rejected on
+three counts, worst first:
+
+- **The rule set becomes attacker-selectable, and attacker-pinnable.** A coercer who arms before
+  updating keeps every pre-refactor weakness on a patched device: no §2.3 gate, uncapped buffer
+  (Bug 96 item 2), depth-0 completion privilege. A downgrade attack in time rather than in version.
+- **Two mechanisms are two completion paths.** §6.3 notes `attemptBEKRestore`'s depth guard is the
+  only thing preventing a duress session from completing a depth-0-armed restore until stage 5.
+  Dual-running requires that guard to stay correct in two places that can disagree — and two fixes
+  this month each closed one tell while opening another.
+- **It is observable.** Legacy leaves a pending `.occbak` on disk; the new path has slotted contents.
+  Different artifacts, different timing. A coercer who can arm and watch learns which path he is on,
+  a proxy for device history, and a new conditional where §6.3 wants none.
+
+**Complete-then-migrate: defer the whole migration until any in-flight restore finishes.** Strictly
+worse than dual-run. Migration is gated on an event that may never happen, and arming is something a
+coercer can do (Bug 99) — so **he can pin the device on the vulnerable design indefinitely** by
+keeping a restore armed.
+
+**Keep depth 0's BEK in the legacy row, slot only depths ≥1.** This is the one option that delivers
+genuine downgrade safety, and it is still wrong: the row's presence then means *"depth 0 has a BEK"*
+while the file means *"some other depth does"* — two artifacts of different shapes, which is §6.3's
+"slot count must never vary" leak wearing a different hat.
+
+### 7.6 Consequences for the stage plan
+
+- Stage 1 gains the tombstone (§7.3) and the `formatVersion` byte (§7.2).
+- Stage 1 gains an adoption step (§7.4) that runs at first depth-0 unlock, with its own verify: a
+  restore armed on the prior build, with shards banked, completes after update without re-arming.
+- §4 gains a fourth open decision: **the `storePendingRestore` soft spot in §7.3** — whether a
+  downgraded build arming a restore against a tombstoned row is acceptable, or wants a guard that
+  distinguishes "no row" from "row present, undecryptable."
