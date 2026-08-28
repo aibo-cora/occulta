@@ -7686,17 +7686,28 @@ Bug 99 contains what a restore imports. This is the third piece of the same seam
 
 ## Bug 103 — An inbound message from a contact hidden at the current depth renders that contact's name, phone and email
 
-**Status:** **Open.** Filed 2026-08-27, traced from a question about whether inbound bundles are
-depth-filtered — asked while designing the per-layer restore in Bug 102, not while reading this code.
+**Status:** **Not a bug — duplicate of an accepted, documented limitation. Closed 2026-08-28.**
 
-**Target:** `release/v1.10.3`. This is a direct identity disclosure with no attacker capability
-required.
+Filed 2026-08-27 as High severity. It is a re-discovery of the residual recorded in
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, whose 2026-08-13
+inbound-path trace found this exact leak, evaluated five handlings of it, and closed the question:
+*"The flow is left exactly as it is… an accepted, documented limitation, not an oversight and not a
+deferred fix."* That decision is the authority; this entry is kept only because the trace below is
+accurate and the reasoning about why it cannot be fixed is worth having in two places.
 
-### Severity: High (deniability break — direct disclosure)
+**Severity, corrected: none — no change is warranted, and the obvious fix is harmful.** The original
+"High (deniability break)" rating is left visible in the history rather than quietly edited, because
+the misjudgement is the useful part: the leak is real and the rating was defensible in isolation, but
+the fix it implies makes the product strictly worse. See "Why the remedy was wrong" below.
 
-Everything else found this session leaks a length, a count, or an inference. This one prints the
-hidden contact's name, phone number and email on screen, in a duress session, to whoever is holding
-the phone.
+**Do not re-file this.** It has now been raised twice in two weeks (2026-08-13 and 2026-08-27) by
+tracing the inbound path without reading the oracle document. If a third trace finds it again, the
+answer is still no.
+
+### The leak, traced end to end — this part was and is correct
+
+The chain below was verified independently and matches the 2026-08-13 trace. Nothing here is
+disputed; what was wrong was the conclusion drawn from it.
 
 ### The chain, verified end to end
 
@@ -7717,46 +7728,76 @@ the phone.
 No step requires anything of an attacker. A contact sends a message, the phone is locked when it
 arrives, the user is coerced into a duress unlock, the queue drains and the sheet opens.
 
-### This was foreseen and not followed through
+### Why the remedy was wrong
 
-The `pendingFileData` doc comment says so directly:
+The filing proposed giving `Contact.Info` a depth check so a hidden sender renders its `"Anonymous"`
+fallback. It was amended on 2026-08-28 to note the check cannot be a SwiftData `#Predicate` —
+`isVisible(atDepth:)` decrypts `originDepth` and `visibleThroughDepth` and runs `DepthCodec.decode`
+over the plaintext, so it has to be a post-fetch guard. That amendment was correct about the
+mechanism and beside the point about the substance. **The remedy should not be implemented at all.**
 
-> So reaching `processInboundFile` does **not** imply depth 0. Anything downstream that needs depth
-> safety has to establish it for itself rather than inferring it from this path.
+It was implemented on 2026-08-28, reverted the same day, and never committed. The oracle document had
+already proposed, examined and rejected the identical change on 2026-08-13, for two reasons:
 
-That is exactly right, and `Contact.Info` is the downstream that did not. Worth recording as a pattern:
-a warning written at the boundary does not propagate to the views behind it, and nothing in the build
-enforces the follow-through. The comment reads as protection while being only a note.
+**1. "Anonymous" is the same tell wearing a different label.** The fallback fires only when no contact
+matches the identifier, and `identifyOwner` requires a match to succeed — so it is currently
+*unreachable* on this path at any depth. Adding the guard would make it reachable **only** at a duress
+depth. The signal moves from "this name is not in my contact list" to "the word Anonymous is on
+screen"; it does not go away. The implementation made this concrete and worse: it also added
+`deletionToken == nil` to the predicate, manufacturing a second way to reach a string that otherwise
+never appears.
 
-### Remedy
+**2. The identity was already disclosed by the transport, before Occulta ran.** Bundles arrive out of
+band — a messaging app, AirDrop, email — and that channel named the sender on the delivery screen
+before anyone tapped the file. In-app anonymisation conceals nothing an observer does not already
+have. The oracle document's word for it is theatre: it costs the legitimate user the sender's identity
+and buys no confidentiality.
 
-**Fix the view, not the processing.** Filtering earlier — refusing to process, or discarding on a
-duress unlock — reintroduces the precise oracle step 2's behaviour exists to remove. The boundary
-comment already says where the fix belongs.
+### Why refusing the bundle is worse, not better
 
-`Contact.Info` gains a visibility check against the current depth. It already falls back to
-`"Anonymous"` when no row matches, which is what a genuinely unknown or deleted sender renders, so a
-hidden sender becomes indistinguishable from an ordinary unknown one. No new observable.
+The obvious next instinct — refuse the bundle outright, accepting a tell in exchange for keeping the
+content unread — is the original `passSecurityControl` behaviour that the oracle document exists to
+remove (`b1f9045`). The asymmetry that decision turns on:
 
-**Amended 2026-08-28 — this is not a predicate, and cannot be one.** The original text called for
-"a visibility predicate on the query" and described the change as "a predicate." That is not
-implementable. `isVisible(atDepth:)` decrypts `originDepth` and `visibleThroughDepth` and runs
-`DepthCodec.decode` over the plaintext; a SwiftData `#Predicate` compiles to a query expression over
-stored properties and cannot call it. Every correct filter site in the codebase already does the
-only thing available — fetch with `Contact.Profile.descriptor`, then filter the result in memory
-(`ContactListFilter.visibleContacts`, `GroupDetailV3`, `Vault+Tab`, `mlkemEligibleContacts`).
+- **Refusal is adversary-controlled.** Key exchange is proximity-only, so a coercer with physical
+  control can force-pair a device and probe on demand. One rejection from a provably-paired identity
+  is close to conclusive; a second removes essentially all doubt. Repeatable, at a moment of the
+  coercer's choosing.
+- **The render leak is not adversary-controlled.** It requires a real, unaware third party to send
+  during the coercion window. Timing-bounded, chance-dependent, not repeatable on demand.
 
-So the fix is a post-fetch guard, not a query change: `Contact.Info` takes
-`@Environment(Manager.Security.self)` and gates `self.contacts.first` on
-`isVisible(atDepth: security.currentDepth)` before reading any field. Same end state, different
-mechanism. Anyone implementing the original wording would have found it doesn't compile; worth
-recording that the remedy was written without checking that the predicate could express the
-condition.
+Trading a chance leak for an on-demand one is the wrong direction even though refusal also hides the
+body. Refusal additionally identifies *which* contact is hidden, where the current behaviour does not
+single anyone out.
 
-**Left open deliberately: the message body.** Rendering the sender as `"Anonymous"` hides *who*, not
-*what*, and the text may name them. Suppressing the message outright reintroduces the oracle. This is
-a product judgement about a real trade — recorded rather than decided, because either answer is
-defensible and the wrong one is worse than the leak.
+### The exposure follows from an invariant, not an implementation choice
+
+Key exchange is proximity-only, so **openable ⟹ the sender is a known contact**. The duress view's
+purpose is to hide some known contacts. A message from one of them forces an inconsistency that has
+to surface somewhere, and the oracle document tabulates every handling: render the real name (sender
+absent from the list), render "Anonymous" (a string unreachable at depth 0), reject (the original
+oracle), silently queue until depth 0 ("nothing happens on tap" is itself duress-only), or fabricate
+an identity (still absent from the list, and now the app lies to its owner). All five leak.
+
+Closing it would require depth 0 to produce the same observable — messages from contacts not in the
+list, or files that sometimes do nothing when tapped — which contradicts the invariant. The app has no
+concept of a stranger, because it cannot decrypt anything from one.
+
+### What is actually still open
+
+Not this. The oracle document's closing paragraph separates two things this entry conflated:
+
+> And *content* confidentiality is separable from the identity leak — checking visibility before
+> decrypting would keep the message body unread even where "a message arrived, from someone" is
+> inferable. That option is not taken here, since the flow is unchanged, but it remains available and
+> is a different question from this one.
+
+Silent queueing is noted there as the least-bad alternative — it satisfies C1 properly, since
+visibility can be checked after `identifyOwner` and before decryption, and a coercer-paired contact
+would not trigger it because a contact created at depth N has `originDepth = N` and is visible there.
+It was not adopted, because it still trades a strong signal for a weaker one rather than removing one.
+That is the live question. It is about the body, not the name, and it should be raised against the
+oracle document rather than re-filed here.
 
 ### Scope: sweep completed 2026-08-28
 
@@ -7768,17 +7809,18 @@ one traced above. `Import+View.swift:284` renders the same three fields for a ba
 `struct Import`'s only reference is its own `#Preview` — it has no production presenter. Dead, and
 noted here because reviving that view would inherit the leak.
 
-**The pattern recurred independently, and the second instance is worse for the remedy.** The inbound
-identity-challenge path leaks the sender's name with no query involved at all, so no fix to
-`Contact.Info` touches it. Filed separately as **Bug 104**.
+**A second instance of the same accepted limitation.** The inbound identity-challenge path renders
+the sender's name with no query involved at all. Filed as **Bug 104**, and closed the same day for
+the same reason as this entry — it is the same residual in a second subsystem, not a second bug.
 
-**Latent — unfiltered, but not currently reachable with a hidden identifier.** `Contact.DetailsV2`
-(`ContactDetailV2.swift:16` and `:347`), `KeyExchange` (`KeyExchange.swift:18`) and
-`ComposableMessage`'s own write-mode query (`:16`) all replace the descriptor with a bare identifier
-predicate and decrypt `givenName`. `KeyExchange` is structurally identical to `Contact.Info`, down to
-the `?? "Anonymous"` fallback. All three are reached only through `ContactsListV2`'s
-`navigationDestination`, fed by rows that are already depth-filtered, and nothing appends to that
-path programmatically — so they are one navigation entry point away from being live, not live now.
+**Unfiltered, and correctly so.** `Contact.DetailsV2` (`ContactDetailV2.swift:16` and `:347`),
+`KeyExchange` (`KeyExchange.swift:18`) and `ComposableMessage`'s own write-mode query (`:16`) all
+replace the descriptor with a bare identifier predicate and decrypt `givenName`. `KeyExchange` is
+structurally identical to `Contact.Info`, down to the `?? "Anonymous"` fallback. All three are reached
+only through `ContactsListV2`'s `navigationDestination`, fed by rows that are already depth-filtered,
+and nothing appends to that path programmatically. The filing called these "latent"; they are not.
+A view that can only be entered with a visible contact's identifier needs no depth check of its own,
+and adding one would create the same duress-only observable described above. Left alone deliberately.
 
 **Dead, so unfiltered but unreachable.** The entire v1 contacts tree — `Contacts`, `Contact.Details`,
 v1 `Contact.Form`, `BusinessCardContactsView` — plus `ContactDetailV3` and `Import`. The live tab is
@@ -7789,30 +7831,38 @@ v1 `Contact.Form`, `BusinessCardContactsView` — plus `ContactDetailV3` and `Im
 `mlkemEligibleContacts`. `SecureModeSetupFlow`'s `sensitiveCount` counts only currently-visible
 contacts and renders no identity.
 
-**Restating the pattern one step wider.** The filing put it as "views render contacts without a depth
-predicate." The sweep says that is too narrow, in two ways: it is not a predicate (see the amended
-remedy), and it is not only views. Bug 104's leak happens in coordinator state before any view is
-involved. The general form is *any identifier arriving from an inbound path reaches an identity
-render with no depth check*. `Contact.Info` is merely where a query happened to sit.
+**The "pattern" is the design, not a defect.** The filing generalised this to "views render contacts
+without a depth predicate," and the 2026-08-28 amendment widened it further to "any identifier
+arriving from an inbound path reaches an identity render with no depth check." That statement is
+factually accurate and its implied conclusion is backwards: on the inbound path, the absence of a
+depth check *is* the decision — it is what keeps duress and depth-0 behaviour identical. The place
+depth filtering belongs is the lists a user picks from, and every one of those already has it.
 
-Note also that `Contact.Info`'s query does not filter `deletionToken` either, so a soft-deleted
-contact renders the same way. The same post-fetch guard would close both. `fetchContact(by:)`
-(`Contact+Manager.swift:413`), which feeds Bug 104, has the same omission.
+Note also that `Contact.Info`'s query does not filter `deletionToken`, so a soft-deleted contact
+renders the same way, and `fetchContact(by:)` (`Contact+Manager.swift:413`) omits it too. Recorded as
+an observation, not a defect: adding the filter is what makes the `"Anonymous"` fallback reachable,
+which is the harm described above. If a reason ever emerges to filter soft-deleted senders, it has to
+answer that first.
 
 ---
 
 ## Bug 104 — An inbound identity challenge from a contact hidden at the current depth renders that contact's name
 
-**Status:** **Open.** Filed 2026-08-28, found by the sweep Bug 103 asked for.
+**Status:** **Not a bug — same accepted limitation as Bug 103, in a second subsystem. Filed and
+closed 2026-08-28.**
 
-**Target:** `release/v1.10.3`. Same trigger and same absence of a depth check as Bug 103, in a second
-subsystem, and not closed by Bug 103's fix.
+Filed as High severity by the sweep Bug 103 asked for, hours before that sweep's premise was found to
+be wrong. It is the same residual: an inbound bundle from a contact hidden at the current depth
+renders that contact's name. The authority is the same —
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, decision of
+2026-08-13. Both of that decision's reasons apply here unchanged: suppressing the name creates a
+string reachable only under duress, and the transport that delivered the `.occ` already named the
+sender before the app ran.
 
-### Severity: High (deniability break — direct disclosure)
-
-Smaller than Bug 103 in what it prints: the given name only, not the phone number and email. Same in
-every other respect — no attacker capability required, and the sender is a contact the operator
-deliberately hid.
+**Severity, corrected: none.** Kept because the trace is accurate and because this path differs from
+Bug 103's in a way worth recording — see "Why this one is shaped differently" below, which was
+written as an argument for a separate fix and reads better now as an argument for why no fix belongs
+in either place.
 
 ### The chain
 
@@ -7831,38 +7881,44 @@ deliberately hid.
    "`<name>` is verifying your identity"; `:294`–`:295` prints it twice more in the verification
    result. Both are presented from `OccultaApp.swift:502` and `:513`.
 
-### Why this is not covered by Bug 103's fix, and needs a different shape
+### Why this one is shaped differently
 
-Bug 103's remedy is a post-fetch visibility guard inside `Contact.Info` — a view that owns a query.
-There is no query here. The name is decrypted in the coordinator, at inbound-processing time, and
-stored as a plain `String` in observable state; by the time a view sees it, the plaintext has already
-been captured and the `Contact.Profile` is gone. A guard placed in the view would have nothing left
-to check.
+Bug 103's proposed remedy was a post-fetch guard inside `Contact.Info` — a view that owns a query.
+There is no query here. The name is decrypted in the coordinator at inbound-processing time and
+stored as a plain `String` in observable state; by the time a view sees it, the plaintext has been
+captured and the `Contact.Profile` is gone. Any gate would have to sit at step 1 or 3 — the two
+`fetchContact(by:)` call sites, or once inside `handleInboundChallenge`.
 
-The check belongs at step 1 or 3 — either the two `fetchContact(by:)` call sites gate on
-`isVisible(atDepth: security.currentDepth)`, or `handleInboundChallenge` does it once for both. The
-latter is preferable: one site, and it cannot drift between the group and 1:1 branches the way two
-parallel call sites can.
+That difference was the original argument for filing this separately. It survives; the conclusion
+drawn from it does not. A gate in the coordinator produces exactly what a gate in the view produces:
+a rendered string that can only appear at a duress depth.
 
-**The fallback already exists.** `senderName` at `:167` is already `"Unknown"` for an empty given
-name, and `createChallenge` uses the same fallback at `:126`. So a hidden sender rendering as
-`"Unknown"` is a value the UI already produces for ordinary reasons — no new observable, exactly as
-in Bug 103.
+### The claim this entry originally made, and why it was wrong
 
-### Not an oracle, for the same reason Bug 103's remedy is not
+The filing asserted, under the heading "Not an oracle":
 
-Suppressing the *name* is a display change; it does not alter whether the bundle is processed,
-whether a response is signed, or anything the sender can observe. This is specifically not the
-removed `passSecurityControl` rejection, which was sender-dependent and restriction-gated — see
-`ContactManager.isSafeContact`'s doc comment and
-`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`. Do not "fix" this by
-declining to route the challenge; that would reopen the oracle.
+> Suppressing the *name* is a display change; it does not alter whether the bundle is processed,
+> whether a response is signed, or anything the sender can observe.
 
-### Left open, matching Bug 103
+That is the error, and it is worth leaving visible because it is an easy one to make twice. It
+reasons about what the *sender* can observe. The threat model here is a coercer **holding the
+device**, reading the screen. For that observer the display *is* the observable, and a display that
+differs by depth is a depth oracle regardless of whether any protocol behaviour changed.
 
-`contextNote` is attacker-supplied free text carried in the challenge and shown alongside the name.
-Rendering the sender as `"Unknown"` hides *who* and not *what*, and the note may name them. Same
-trade as Bug 103's message body, recorded rather than decided so the two are settled together.
+The supporting argument was wrong on its own terms too. The filing claimed `"Unknown"` is "a value the
+UI already produces for ordinary reasons," pointing at `senderName`'s empty-name fallback at `:167`.
+That fallback fires only for a contact with a blank given name — rare, and unrelated to depth. Gating
+on visibility would make `"Unknown"` a routine, duress-only outcome. Same mistake as Bug 103's
+`"Anonymous"`: a fallback that is nearly unreachable in practice is not cover, and making it reachable
+only under duress manufactures the signal it was meant to hide.
+
+### Also unchanged: `contextNote`
+
+`contextNote` is attacker-supplied free text carried in the challenge and rendered directly beneath
+the name (`IdentityChallenge+View.swift:227`, and `:299` in the outcome sheet). It was recorded as an
+open trade alongside Bug 103's message body. It stays open in the same sense and for the same reason:
+it is a *content* question, separable from the identity one, and it belongs to the thread the oracle
+document leaves available — checking visibility before decrypting — not to a display gate.
 
 ### Note on `.response`
 

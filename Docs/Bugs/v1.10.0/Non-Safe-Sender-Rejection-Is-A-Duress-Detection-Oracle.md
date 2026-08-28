@@ -402,3 +402,41 @@ confidentiality is separable from the identity leak — checking visibility befo
 keep the message body unread even where "a message arrived, from someone" is inferable. That option
 is not taken here, since the flow is unchanged, but it remains available and is a different
 question from this one.
+
+## 2026-08-28 — Re-filed twice as a new bug; the decision above stands
+
+The decision above was re-discovered and re-filed as a High-severity defect twice in two weeks, both
+times by tracing the inbound path without reading this document: **Bug 103** (2026-08-27, the `.occ`
+reader's `Contact.Info`) and **Bug 104** (2026-08-28, the identity-challenge coordinator's
+`senderName`). Both proposed the visibility gate rejected in the 2026-08-13 entry above, Bug 103's
+was implemented and reverted the same day without being committed, and both are now closed in
+`Docs/Features/Secure Mode/bugs.md` as duplicates of this decision.
+
+Recording it here because two independent re-discoveries in two weeks is a fact about the
+documentation, not about the code. The trace is easy to run and lands on a real leak; nothing in the
+inbound path points at this document, and `Contact.Info` looks exactly like an oversight. The
+`pendingFileData` comment warns that reaching `processInboundFile` does not imply depth 0, which
+correctly identifies the hazard and — read in isolation — reads as an invitation to add the gate
+downstream. It is not. Anyone arriving there should land here first.
+
+Three specific corrections drawn from those two filings, since each was a plausible-sounding argument
+for gating that does not survive:
+
+1. **"The fallback already exists, so it is not a new observable."** Both filings leaned on this —
+   `"Anonymous"` in `Contact.Info`, `"Unknown"` in the challenge coordinator. Both fallbacks are
+   effectively unreachable in practice: the first requires `identifyOwner` to match a contact the
+   query then fails to find, the second requires a contact with a blank given name. A string that
+   almost never appears is not cover. Gating makes it appear *only* under duress, which manufactures
+   the signal rather than hiding it.
+
+2. **"Suppressing a name is a display change, so it cannot be an oracle."** This reasons about what
+   the *sender* can observe. The observer that matters is holding the device and reading the screen.
+   A display that differs by depth is a depth oracle whether or not any protocol behaviour changed.
+
+3. **"Refuse the bundle instead — a tell, but with smaller consequences."** This is
+   `passSecurityControl`, removed in `b1f9045`, and the trade runs the wrong way: refusal is
+   adversary-controlled and repeatable on demand (proximity-only key exchange means a coercer with
+   physical control can force-pair and probe), while the render leak needs an unaware third party to
+   send during the window. Refusal also identifies *which* contact is hidden. It hides the body, which
+   is the one thing in its favour — and that is the separable content question in the paragraph
+   above, not a reason to reintroduce the rejection.
