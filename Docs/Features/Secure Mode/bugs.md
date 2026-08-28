@@ -7642,3 +7642,75 @@ layer — reintroducing the same observable as the first rejected fix.
 Bug 94 remedy 1 refuses to overwrite an existing BEK and explicitly does not cover the no-BEK device.
 Bug 99 contains what a restore imports. This is the third piece of the same seam: what a restore
 *installs*. All three are the no-BEK population, and none of the others closes this one.
+
+---
+
+## Bug 103 — An inbound message from a contact hidden at the current depth renders that contact's name, phone and email
+
+**Status:** **Open.** Filed 2026-08-27, traced from a question about whether inbound bundles are
+depth-filtered — asked while designing the per-layer restore in Bug 102, not while reading this code.
+
+**Target:** `release/v1.10.3`. This is a direct identity disclosure with no attacker capability
+required.
+
+### Severity: High (deniability break — direct disclosure)
+
+Everything else found this session leaks a length, a count, or an inference. This one prints the
+hidden contact's name, phone number and email on screen, in a duress session, to whoever is holding
+the phone.
+
+### The chain, verified end to end
+
+1. **Inbound processing has no depth filter.** `ContactManager.identifyOwner` resolves the sender
+   through `fetchAllContacts()`, which predicates on `deletionToken == nil` and nothing else. No
+   `isVisible(atDepth:)` appears anywhere in the inbound path; `currentDepth` is threaded only into
+   `ShardCustodyManager.handleInbound`, where it gates restore completion rather than filtering.
+2. **A duress unlock drains queued files, deliberately.** A file arriving while the app is locked is
+   queued as raw bytes and drained on *any* unlock (`OccultaApp.swift`, the `pendingFileData` drain).
+   Discarding it in duress was itself a detection oracle and was removed in `2958593`.
+3. **The reader renders the sender.** `processInboundFile` sets `openedFileContents`, the sheet
+   presents `ComposableMessage.Conversation(mode: .read(messageOwner:))`, and that view's body opens
+   with `Contact.Info(identifier: owner)`.
+4. **`Contact.Info` filters on nothing.** Its `init(identifier:)` replaces the type's default
+   `@Query(Contact.Profile.descriptor)` with a bare identifier predicate — no depth, and not even
+   `deletionToken` — then renders `givenName.decrypt()`, the first phone number and the first email.
+
+No step requires anything of an attacker. A contact sends a message, the phone is locked when it
+arrives, the user is coerced into a duress unlock, the queue drains and the sheet opens.
+
+### This was foreseen and not followed through
+
+The `pendingFileData` doc comment says so directly:
+
+> So reaching `processInboundFile` does **not** imply depth 0. Anything downstream that needs depth
+> safety has to establish it for itself rather than inferring it from this path.
+
+That is exactly right, and `Contact.Info` is the downstream that did not. Worth recording as a pattern:
+a warning written at the boundary does not propagate to the views behind it, and nothing in the build
+enforces the follow-through. The comment reads as protection while being only a note.
+
+### Remedy
+
+**Fix the view, not the processing.** Filtering earlier — refusing to process, or discarding on a
+duress unlock — reintroduces the precise oracle step 2's behaviour exists to remove. The boundary
+comment already says where the fix belongs.
+
+`Contact.Info`'s query gains a visibility predicate for the current depth. It already falls back to
+`"Anonymous"` when no row matches, which is what a genuinely unknown or deleted sender renders, so a
+hidden sender becomes indistinguishable from an ordinary unknown one. No new observable, and the
+change is a predicate.
+
+**Left open deliberately: the message body.** Rendering the sender as `"Anonymous"` hides *who*, not
+*what*, and the text may name them. Suppressing the message outright reintroduces the oracle. This is
+a product judgement about a real trade — recorded rather than decided, because either answer is
+defensible and the wrong one is worse than the leak.
+
+### Scope: this is one view, and only one path was traced
+
+Only the `.occ` reader was followed. The same question applies anywhere a sender or contact identifier
+reaches a view from an inbound path, and `Contact.Info` is a shared component with other call sites.
+A sweep is needed rather than a point fix — the finding is "views render contacts without a depth
+predicate," and this is the instance that happened to be traced.
+
+Note also that `Contact.Info`'s query does not filter `deletionToken` either, so a soft-deleted
+contact renders the same way. Not pursued here, but the same predicate would close both.
