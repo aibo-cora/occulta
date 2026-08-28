@@ -7734,22 +7734,67 @@ enforces the follow-through. The comment reads as protection while being only a 
 duress unlock — reintroduces the precise oracle step 2's behaviour exists to remove. The boundary
 comment already says where the fix belongs.
 
-`Contact.Info`'s query gains a visibility predicate for the current depth. It already falls back to
+`Contact.Info` gains a visibility check against the current depth. It already falls back to
 `"Anonymous"` when no row matches, which is what a genuinely unknown or deleted sender renders, so a
-hidden sender becomes indistinguishable from an ordinary unknown one. No new observable, and the
-change is a predicate.
+hidden sender becomes indistinguishable from an ordinary unknown one. No new observable.
+
+**Amended 2026-08-28 — this is not a predicate, and cannot be one.** The original text called for
+"a visibility predicate on the query" and described the change as "a predicate." That is not
+implementable. `isVisible(atDepth:)` decrypts `originDepth` and `visibleThroughDepth` and runs
+`DepthCodec.decode` over the plaintext; a SwiftData `#Predicate` compiles to a query expression over
+stored properties and cannot call it. Every correct filter site in the codebase already does the
+only thing available — fetch with `Contact.Profile.descriptor`, then filter the result in memory
+(`ContactListFilter.visibleContacts`, `GroupDetailV3`, `Vault+Tab`, `mlkemEligibleContacts`).
+
+So the fix is a post-fetch guard, not a query change: `Contact.Info` takes
+`@Environment(Manager.Security.self)` and gates `self.contacts.first` on
+`isVisible(atDepth: security.currentDepth)` before reading any field. Same end state, different
+mechanism. Anyone implementing the original wording would have found it doesn't compile; worth
+recording that the remedy was written without checking that the predicate could express the
+condition.
 
 **Left open deliberately: the message body.** Rendering the sender as `"Anonymous"` hides *who*, not
 *what*, and the text may name them. Suppressing the message outright reintroduces the oracle. This is
 a product judgement about a real trade — recorded rather than decided, because either answer is
 defensible and the wrong one is worse than the leak.
 
-### Scope: this is one view, and only one path was traced
+### Scope: sweep completed 2026-08-28
 
-Only the `.occ` reader was followed. The same question applies anywhere a sender or contact identifier
-reaches a view from an inbound path, and `Contact.Info` is a shared component with other call sites.
-A sweep is needed rather than a point fix — the finding is "views render contacts without a depth
-predicate," and this is the instance that happened to be traced.
+The filing called for a sweep rather than a point fix, on the grounds that `Contact.Info` is a shared
+component and only the `.occ` reader had been traced. The sweep was run. Results:
+
+**`Contact.Info` has two call sites, one of them dead.** `ComposableMessage.swift:209` is the live
+one traced above. `Import+View.swift:284` renders the same three fields for a basket owner, but
+`struct Import`'s only reference is its own `#Preview` — it has no production presenter. Dead, and
+noted here because reviving that view would inherit the leak.
+
+**The pattern recurred independently, and the second instance is worse for the remedy.** The inbound
+identity-challenge path leaks the sender's name with no query involved at all, so no fix to
+`Contact.Info` touches it. Filed separately as **Bug 104**.
+
+**Latent — unfiltered, but not currently reachable with a hidden identifier.** `Contact.DetailsV2`
+(`ContactDetailV2.swift:16` and `:347`), `KeyExchange` (`KeyExchange.swift:18`) and
+`ComposableMessage`'s own write-mode query (`:16`) all replace the descriptor with a bare identifier
+predicate and decrypt `givenName`. `KeyExchange` is structurally identical to `Contact.Info`, down to
+the `?? "Anonymous"` fallback. All three are reached only through `ContactsListV2`'s
+`navigationDestination`, fed by rows that are already depth-filtered, and nothing appends to that
+path programmatically — so they are one navigation entry point away from being live, not live now.
+
+**Dead, so unfiltered but unreachable.** The entire v1 contacts tree — `Contacts`, `Contact.Details`,
+v1 `Contact.Form`, `BusinessCardContactsView` — plus `ContactDetailV3` and `Import`. The live tab is
+`ContactsV2` (`OccultaApp.swift:526`).
+
+**Already correct.** `ContactsListV2`, `GroupDetailV3`, `Group+FormV3`, `Vault+Tab`,
+`ContactClassification`, `ShareRecipientPicker`, and both vault trustee screens via
+`mlkemEligibleContacts`. `SecureModeSetupFlow`'s `sensitiveCount` counts only currently-visible
+contacts and renders no identity.
+
+**Restating the pattern one step wider.** The filing put it as "views render contacts without a depth
+predicate." The sweep says that is too narrow, in two ways: it is not a predicate (see the amended
+remedy), and it is not only views. Bug 104's leak happens in coordinator state before any view is
+involved. The general form is *any identifier arriving from an inbound path reaches an identity
+render with no depth check*. `Contact.Info` is merely where a query happened to sit.
 
 Note also that `Contact.Info`'s query does not filter `deletionToken` either, so a soft-deleted
-contact renders the same way. Not pursued here, but the same predicate would close both.
+contact renders the same way. The same post-fetch guard would close both. `fetchContact(by:)`
+(`Contact+Manager.swift:413`), which feeds Bug 104, has the same omission.
