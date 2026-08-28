@@ -7342,8 +7342,13 @@ that is invisible from the UI layer.
 ### The escalation: these are not excluded from backup
 
 `RootView.excludeStoreFromBackup` covers the SQLite store and its `-wal`/`-shm` sidecars only. None of
-the three Application Support files — the pending `.occbak`, the shard file, or
-`backup-export-meta.dat` — is marked `isExcludedFromBackup`.
+the Application Support files written by this subsystem is marked `isExcludedFromBackup`.
+
+**As filed that was three files. Since remedy 2 shipped it is two** — the pending `.occbak` and
+`backup-export-meta.dat`. The shard file is gone, and its replacement rows sit inside the SQLite
+store, which the existing exclusion already covers. Remedy 2 therefore closed this half for shards as
+a side effect, which is one more reason it was the right shape. A legacy shard file may still exist
+transiently on a device upgrading mid-restore; the import path deletes it on first read or write.
 
 So they are copied into iTunes/Finder/iCloud device backups. The sealed contents remain unreadable
 off-device (the recovery buffer key is Secure Enclave-derived and device-bound), but existence and
@@ -7355,9 +7360,23 @@ This is the half worth fixing first. It is one line per file and needs no format
 
 ### Remedy
 
-1. **Exclude all three from backup.** Extend the existing exclusion to the pending `.occbak`, the
-   shard file, and the export-metadata file. Cheap, no format change, and it removes the off-device
-   copy that makes the rest of this worth attacking.
+1. **Exclude the remaining two from backup** — the pending `.occbak` and `backup-export-meta.dat`.
+   Cheap, no format change, and it removes the off-device copy that makes the rest of this worth
+   attacking.
+
+   **Apply it at every write, not once at launch.** `isExcludedFromBackup` is a `URLResourceValues`
+   attribute on the *file*, not on the path, so it does not survive the file being replaced — and
+   `storePendingRestore` writes a fresh file each time it arms, as does each export-metadata update.
+   Setting it during bootstrap would look correct, verify correct on the device it was tested on, and
+   silently lapse the first time either file is rewritten.
+
+   This is the same trap `excludeStoreFromBackup` already documents for a different reason: it is
+   re-called on every `reapplyFileProtection` because "sidecar files may be recreated by SQLite". Same
+   attribute, same lifetime problem, different files.
+
+   **Do not ship this alone — see Bug 101.** Excluding these two while an unmanaged, backed-up copy of
+   the same content accumulates in `Documents/Inbox` addresses the measurement and leaves the content.
+   One device session verifies both.
 2. **Move the BEK restore shards into the store, rather than padding the file.** Padding to a fixed
    32-slot array was the first answer here — the house pattern exists three times over
    (`verifierFillerArray`, `pinEnabledPerDepth`, and this file's own neighbour
@@ -7713,22 +7732,138 @@ enforces the follow-through. The comment reads as protection while being only a 
 duress unlock — reintroduces the precise oracle step 2's behaviour exists to remove. The boundary
 comment already says where the fix belongs.
 
-`Contact.Info`'s query gains a visibility predicate for the current depth. It already falls back to
+`Contact.Info` gains a visibility check against the current depth. It already falls back to
 `"Anonymous"` when no row matches, which is what a genuinely unknown or deleted sender renders, so a
-hidden sender becomes indistinguishable from an ordinary unknown one. No new observable, and the
-change is a predicate.
+hidden sender becomes indistinguishable from an ordinary unknown one. No new observable.
+
+**Amended 2026-08-28 — this is not a predicate, and cannot be one.** The original text called for
+"a visibility predicate on the query" and described the change as "a predicate." That is not
+implementable. `isVisible(atDepth:)` decrypts `originDepth` and `visibleThroughDepth` and runs
+`DepthCodec.decode` over the plaintext; a SwiftData `#Predicate` compiles to a query expression over
+stored properties and cannot call it. Every correct filter site in the codebase already does the
+only thing available — fetch with `Contact.Profile.descriptor`, then filter the result in memory
+(`ContactListFilter.visibleContacts`, `GroupDetailV3`, `Vault+Tab`, `mlkemEligibleContacts`).
+
+So the fix is a post-fetch guard, not a query change: `Contact.Info` takes
+`@Environment(Manager.Security.self)` and gates `self.contacts.first` on
+`isVisible(atDepth: security.currentDepth)` before reading any field. Same end state, different
+mechanism. Anyone implementing the original wording would have found it doesn't compile; worth
+recording that the remedy was written without checking that the predicate could express the
+condition.
 
 **Left open deliberately: the message body.** Rendering the sender as `"Anonymous"` hides *who*, not
 *what*, and the text may name them. Suppressing the message outright reintroduces the oracle. This is
 a product judgement about a real trade — recorded rather than decided, because either answer is
 defensible and the wrong one is worse than the leak.
 
-### Scope: this is one view, and only one path was traced
+### Scope: sweep completed 2026-08-28
 
-Only the `.occ` reader was followed. The same question applies anywhere a sender or contact identifier
-reaches a view from an inbound path, and `Contact.Info` is a shared component with other call sites.
-A sweep is needed rather than a point fix — the finding is "views render contacts without a depth
-predicate," and this is the instance that happened to be traced.
+The filing called for a sweep rather than a point fix, on the grounds that `Contact.Info` is a shared
+component and only the `.occ` reader had been traced. The sweep was run. Results:
+
+**`Contact.Info` has two call sites, one of them dead.** `ComposableMessage.swift:209` is the live
+one traced above. `Import+View.swift:284` renders the same three fields for a basket owner, but
+`struct Import`'s only reference is its own `#Preview` — it has no production presenter. Dead, and
+noted here because reviving that view would inherit the leak.
+
+**The pattern recurred independently, and the second instance is worse for the remedy.** The inbound
+identity-challenge path leaks the sender's name with no query involved at all, so no fix to
+`Contact.Info` touches it. Filed separately as **Bug 104**.
+
+**Latent — unfiltered, but not currently reachable with a hidden identifier.** `Contact.DetailsV2`
+(`ContactDetailV2.swift:16` and `:347`), `KeyExchange` (`KeyExchange.swift:18`) and
+`ComposableMessage`'s own write-mode query (`:16`) all replace the descriptor with a bare identifier
+predicate and decrypt `givenName`. `KeyExchange` is structurally identical to `Contact.Info`, down to
+the `?? "Anonymous"` fallback. All three are reached only through `ContactsListV2`'s
+`navigationDestination`, fed by rows that are already depth-filtered, and nothing appends to that
+path programmatically — so they are one navigation entry point away from being live, not live now.
+
+**Dead, so unfiltered but unreachable.** The entire v1 contacts tree — `Contacts`, `Contact.Details`,
+v1 `Contact.Form`, `BusinessCardContactsView` — plus `ContactDetailV3` and `Import`. The live tab is
+`ContactsV2` (`OccultaApp.swift:526`).
+
+**Already correct.** `ContactsListV2`, `GroupDetailV3`, `Group+FormV3`, `Vault+Tab`,
+`ContactClassification`, `ShareRecipientPicker`, and both vault trustee screens via
+`mlkemEligibleContacts`. `SecureModeSetupFlow`'s `sensitiveCount` counts only currently-visible
+contacts and renders no identity.
+
+**Restating the pattern one step wider.** The filing put it as "views render contacts without a depth
+predicate." The sweep says that is too narrow, in two ways: it is not a predicate (see the amended
+remedy), and it is not only views. Bug 104's leak happens in coordinator state before any view is
+involved. The general form is *any identifier arriving from an inbound path reaches an identity
+render with no depth check*. `Contact.Info` is merely where a query happened to sit.
 
 Note also that `Contact.Info`'s query does not filter `deletionToken` either, so a soft-deleted
-contact renders the same way. Not pursued here, but the same predicate would close both.
+contact renders the same way. The same post-fetch guard would close both. `fetchContact(by:)`
+(`Contact+Manager.swift:413`), which feeds Bug 104, has the same omission.
+
+---
+
+## Bug 104 — An inbound identity challenge from a contact hidden at the current depth renders that contact's name
+
+**Status:** **Open.** Filed 2026-08-28, found by the sweep Bug 103 asked for.
+
+**Target:** `release/v1.10.3`. Same trigger and same absence of a depth check as Bug 103, in a second
+subsystem, and not closed by Bug 103's fix.
+
+### Severity: High (deniability break — direct disclosure)
+
+Smaller than Bug 103 in what it prints: the given name only, not the phone number and email. Same in
+every other respect — no attacker capability required, and the sender is a contact the operator
+deliberately hid.
+
+### The chain
+
+1. **The inbound `.occ` pipeline resolves the sender with no filter.** Both identity-challenge
+   branches in `buildOwnedBasket` — `OccultaApp.swift:884` (group envelope) and `:925` (1:1
+   `decryptSealed`) — call `contactManager.fetchContact(by: ownerID)`. That predicates on the
+   identifier alone: no depth, and unlike `fetchAllContacts()` not even `deletionToken`
+   (`Contact+Manager.swift:413`).
+2. **A duress unlock drains queued files.** Identical to Bug 103 step 2 — the identity-challenge
+   branches sit inside `buildOwnedBasket`, which `processInboundFile` calls on the drain.
+3. **The coordinator decrypts the name into state.** `handleInboundChallenge` takes the resolved
+   `Contact.Profile` and computes `senderName` from `sender.givenName.decrypt()`
+   (`IdentityChallenge+Coordinator.swift:167`), storing it in `incomingChallenge` (via
+   `PendingApproval.challengerName`) or `verificationOutcome.contactName`.
+4. **Two sheets render it.** `IdentityChallenge+View.swift:223` prints
+   "`<name>` is verifying your identity"; `:294`–`:295` prints it twice more in the verification
+   result. Both are presented from `OccultaApp.swift:502` and `:513`.
+
+### Why this is not covered by Bug 103's fix, and needs a different shape
+
+Bug 103's remedy is a post-fetch visibility guard inside `Contact.Info` — a view that owns a query.
+There is no query here. The name is decrypted in the coordinator, at inbound-processing time, and
+stored as a plain `String` in observable state; by the time a view sees it, the plaintext has already
+been captured and the `Contact.Profile` is gone. A guard placed in the view would have nothing left
+to check.
+
+The check belongs at step 1 or 3 — either the two `fetchContact(by:)` call sites gate on
+`isVisible(atDepth: security.currentDepth)`, or `handleInboundChallenge` does it once for both. The
+latter is preferable: one site, and it cannot drift between the group and 1:1 branches the way two
+parallel call sites can.
+
+**The fallback already exists.** `senderName` at `:167` is already `"Unknown"` for an empty given
+name, and `createChallenge` uses the same fallback at `:126`. So a hidden sender rendering as
+`"Unknown"` is a value the UI already produces for ordinary reasons — no new observable, exactly as
+in Bug 103.
+
+### Not an oracle, for the same reason Bug 103's remedy is not
+
+Suppressing the *name* is a display change; it does not alter whether the bundle is processed,
+whether a response is signed, or anything the sender can observe. This is specifically not the
+removed `passSecurityControl` rejection, which was sender-dependent and restriction-gated — see
+`ContactManager.isSafeContact`'s doc comment and
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`. Do not "fix" this by
+declining to route the challenge; that would reopen the oracle.
+
+### Left open, matching Bug 103
+
+`contextNote` is attacker-supplied free text carried in the challenge and shown alongside the name.
+Rendering the sender as `"Unknown"` hides *who* and not *what*, and the note may name them. Same
+trade as Bug 103's message body, recorded rather than decided so the two are settled together.
+
+### Note on `.response`
+
+The `.response` branch also writes `verifiedAt[senderID]` before rendering
+(`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
+render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
