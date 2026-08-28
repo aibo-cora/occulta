@@ -6881,6 +6881,19 @@ entry. **Item 1 (the two traps) is fixed** — `importBackup` now range-checks `
 `createdAt` before either reaches the conversion that used to crash the process. **Items 2
 (unbounded shard file) and 3 (unzeroed export plaintext) remain open.**
 
+**Item 2 has a structural fix rather than a cap, 2026-08-27.** The shard *file* no longer exists —
+Bug 100 remedy 2 made restore shards `ReconstructShard` rows — so item 2 is now unbounded *rows*
+rather than an unbounded file. The count is still uncapped and the dedup scan still decrypts every
+buffered row on each arrival, so nothing here is fixed. But the cap this item asks for falls out of
+Bug 102's fixed-slot design for free: fixed width means a bounded shard count by construction rather
+than a numeric limit bolted on. Worth waiting for that rather than adding a cap now, *unless* Bug 102
+slips — the guard test `restoreShardBufferIsBounded` is already written as a `withKnownIssue` and will
+flip to a real assertion on its own when a bound appears.
+
+**One caution carried from that design work.** A cap plus a *shared* buffer would be a cross-layer
+denial channel — junk shards evicting real ones. Bug 102's per-depth arrangement is what makes a cap
+safe, which is another reason not to add one to the shared buffer first.
+
 **Target:** unset.
 
 ### Severity: Medium, rising to High in combination with Bug 94
@@ -7276,7 +7289,12 @@ binding rather than by anything about the UI.
 
 ## Bug 100 — The pending-restore files are a keyless progress counter and a vault-size estimate, and they leave the device in backups
 
-**Status:** **Open.** Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
+**Status:** **Remedy 2 fixed 2026-08-27; remedies 1 and 3 open.** Remedy 2 shipped as part of this
+branch — BEK restore shards are `ReconstructShard` rows and the shard file is gone, so the progress
+counter it leaked is gone with it. Remedy 1 (backup exclusion) and remedy 3 (`.occbak` padding) remain,
+and remedy 1 is now entangled with Bug 101, which found a further copy of the same content in
+`Documents/Inbox`. See also Bug 102: rows remove the length channel but still leave a row count, so
+fixed slots supersede them. Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
 reading the restore code — found by asking what an examiner sees, after the *same* number had just
 been removed from the UI for being too revealing.
 
