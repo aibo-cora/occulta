@@ -7798,3 +7798,74 @@ render with no depth check*. `Contact.Info` is merely where a query happened to 
 Note also that `Contact.Info`'s query does not filter `deletionToken` either, so a soft-deleted
 contact renders the same way. The same post-fetch guard would close both. `fetchContact(by:)`
 (`Contact+Manager.swift:413`), which feeds Bug 104, has the same omission.
+
+---
+
+## Bug 104 — An inbound identity challenge from a contact hidden at the current depth renders that contact's name
+
+**Status:** **Open.** Filed 2026-08-28, found by the sweep Bug 103 asked for.
+
+**Target:** `release/v1.10.3`. Same trigger and same absence of a depth check as Bug 103, in a second
+subsystem, and not closed by Bug 103's fix.
+
+### Severity: High (deniability break — direct disclosure)
+
+Smaller than Bug 103 in what it prints: the given name only, not the phone number and email. Same in
+every other respect — no attacker capability required, and the sender is a contact the operator
+deliberately hid.
+
+### The chain
+
+1. **The inbound `.occ` pipeline resolves the sender with no filter.** Both identity-challenge
+   branches in `buildOwnedBasket` — `OccultaApp.swift:884` (group envelope) and `:925` (1:1
+   `decryptSealed`) — call `contactManager.fetchContact(by: ownerID)`. That predicates on the
+   identifier alone: no depth, and unlike `fetchAllContacts()` not even `deletionToken`
+   (`Contact+Manager.swift:413`).
+2. **A duress unlock drains queued files.** Identical to Bug 103 step 2 — the identity-challenge
+   branches sit inside `buildOwnedBasket`, which `processInboundFile` calls on the drain.
+3. **The coordinator decrypts the name into state.** `handleInboundChallenge` takes the resolved
+   `Contact.Profile` and computes `senderName` from `sender.givenName.decrypt()`
+   (`IdentityChallenge+Coordinator.swift:167`), storing it in `incomingChallenge` (via
+   `PendingApproval.challengerName`) or `verificationOutcome.contactName`.
+4. **Two sheets render it.** `IdentityChallenge+View.swift:223` prints
+   "`<name>` is verifying your identity"; `:294`–`:295` prints it twice more in the verification
+   result. Both are presented from `OccultaApp.swift:502` and `:513`.
+
+### Why this is not covered by Bug 103's fix, and needs a different shape
+
+Bug 103's remedy is a post-fetch visibility guard inside `Contact.Info` — a view that owns a query.
+There is no query here. The name is decrypted in the coordinator, at inbound-processing time, and
+stored as a plain `String` in observable state; by the time a view sees it, the plaintext has already
+been captured and the `Contact.Profile` is gone. A guard placed in the view would have nothing left
+to check.
+
+The check belongs at step 1 or 3 — either the two `fetchContact(by:)` call sites gate on
+`isVisible(atDepth: security.currentDepth)`, or `handleInboundChallenge` does it once for both. The
+latter is preferable: one site, and it cannot drift between the group and 1:1 branches the way two
+parallel call sites can.
+
+**The fallback already exists.** `senderName` at `:167` is already `"Unknown"` for an empty given
+name, and `createChallenge` uses the same fallback at `:126`. So a hidden sender rendering as
+`"Unknown"` is a value the UI already produces for ordinary reasons — no new observable, exactly as
+in Bug 103.
+
+### Not an oracle, for the same reason Bug 103's remedy is not
+
+Suppressing the *name* is a display change; it does not alter whether the bundle is processed,
+whether a response is signed, or anything the sender can observe. This is specifically not the
+removed `passSecurityControl` rejection, which was sender-dependent and restriction-gated — see
+`ContactManager.isSafeContact`'s doc comment and
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`. Do not "fix" this by
+declining to route the challenge; that would reopen the oracle.
+
+### Left open, matching Bug 103
+
+`contextNote` is attacker-supplied free text carried in the challenge and shown alongside the name.
+Rendering the sender as `"Unknown"` hides *who* and not *what*, and the note may name them. Same
+trade as Bug 103's message body, recorded rather than decided so the two are settled together.
+
+### Note on `.response`
+
+The `.response` branch also writes `verifiedAt[senderID]` before rendering
+(`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
+render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
