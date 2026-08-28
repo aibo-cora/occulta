@@ -184,7 +184,8 @@ final class VaultEntry {
     var shardDistributionEncrypted: Data? = nil
 
     /// Encrypted `Int` depth stamp — the depth this entry was created at.
-    /// nil = never classified, visible at all depths.
+    /// nil = never classified (a legacy entry pre-dating this field); what that
+    ///       resolves to is caller-specific — see `isVisible(atDepth:whenUnclassified:)`.
     /// N   = visible only at exactly depth N (an exact match, not a ceiling —
     ///       see `Manager.Security.isEntryVisible` and
     ///       `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
@@ -228,5 +229,44 @@ final class VaultEntry {
         data.append(Data(bytes: &ts, count: 8))                 //  8 bytes
 
         return data                                             // 45 bytes total
+    }
+
+    // MARK: Visibility
+
+    /// Whether this entry is visible at `depth`, decoding `visibleThroughDepth` per
+    /// its documented semantics: a non-nil but undecryptable ceiling (sensitive
+    /// shell) is always hidden; a decodable ceiling is visible only at the exact
+    /// depth it's stamped with; nil (never classified) resolves to `whenUnclassified`,
+    /// since the two callers cannot safely share one answer for it — see below.
+    ///
+    /// Single source of truth for the decrypt/decode/compare logic — the part
+    /// `Bug 27` was about, and the part that must not fork. Only the nil case is a
+    /// deliberate, explicit, per-caller decision, not a shared default:
+    ///
+    ///   - `Manager.Security.isEntryVisible` (display) passes `false`. It only runs
+    ///     this check while `isRestricted` (an active duress depth), and a duress
+    ///     depth can currently only exist once `activateSecureMode` has run — its
+    ///     Step 8 stamps every nil entry to hidden before that depth becomes
+    ///     reachable, so nil can never actually reach this function while
+    ///     `isRestricted` is true *today*. `false` costs nothing now and defends
+    ///     the display path if a future alternate route to a duress depth ever
+    ///     bypasses Step 8 — this caller would rather fail closed than trust a
+    ///     guarantee made three call-frames away.
+    ///   - `VaultManager.entriesVisible(atDepth:)` (backup export, staleness
+    ///     counts) passes `true`. It has no `isRestricted` gate — it runs at the
+    ///     user's own real depth 0 unconditionally, and nil only exists in
+    ///     installs with entries that pre-date this field and have never
+    ///     activated Secure Mode. `false` here would make it silently and
+    ///     permanently drop those entries from every backup for that ordinary,
+    ///     non-duress user — the bug this function was introduced to fix.
+    ///
+    /// If Step 8's stamping guarantee ever needs a stronger backstop, add it at
+    /// the source (see the `assert` after that loop in `activateSecureMode`) —
+    /// don't make both callers share a single nil answer again to get it.
+    func isVisible(atDepth depth: Int, whenUnclassified: Bool) -> Bool {
+        guard let data = self.visibleThroughDepth else { return whenUnclassified }
+        guard let plain = data.decrypt(), let value = DepthCodec.decode(plain)
+        else { return false }
+        return value == depth
     }
 }

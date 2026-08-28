@@ -461,6 +461,44 @@ struct SecureModeWALPersistenceTests {
                 "sensitive contact visibleThroughDepth unchanged — Bug 37 regression in activation")
     }
 
+    /// Regression coverage for Bug 26: a pre-existing `VaultEntry` with a nil depth
+    /// stamp (created before the field existed) must not survive activation still
+    /// nil. `isEntryVisible` now fails closed on nil independently
+    /// (`whenUnclassified: false` — see `VaultEntry.isVisible`'s doc comment), but
+    /// that's a second line of defense, not a substitute for this: Step 8 is what's
+    /// actually supposed to stamp every entry hidden (depth 0) before a duress
+    /// depth exists. This is also the invariant the `assert` in
+    /// `Manager+Security.swift`'s Step 8 checks at the source; this test is what
+    /// would actually fail a CI run (in Release, asserts are compiled out) if that
+    /// invariant regressed.
+    @Test func activation_nilDepthVaultEntry_getsStampedHidden() async throws {
+        guard secureEnclaveAvailable() else {
+            print("⚠︎ Skipping — SE not available (simulator)")
+            return
+        }
+
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: nil)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let entriesAfter = try fetchAllVaultEntries(from: c.container)
+        let stampAfter    = entriesAfter.first { $0.id == entryID }?.visibleThroughDepth
+
+        #expect(stampAfter != nil,
+                "pre-existing nil-depth VaultEntry must be stamped during activation Step 8 (Bug 26)")
+        #expect(decodedStagedDepth(from: stampAfter, keyManager: c.keyManager) == 0,
+                """
+                a previously-nil VaultEntry must be stamped hidden (depth 0) once a duress \
+                depth exists — leaving it visible would resurface Bug 26.
+                """)
+    }
+
     // MARK: Deactivation
 
     /// Verifies that deactivation's Step 4 nil-assignment is flushed to the WAL.

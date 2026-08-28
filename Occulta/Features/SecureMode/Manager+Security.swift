@@ -668,12 +668,25 @@ extension Manager {
                 //   • non-nil but unreadable (Bug 27): corrupt/wrong-key ciphertext → treat as hidden.
                 //   • non-nil and readable: re-encrypt the existing value verbatim.
                 let hiddenData = DepthCodec.encode(0)
-                for entry in try vaultManager.fetchAllEntries() {
+                let allVaultEntries = try vaultManager.fetchAllEntries()
+                for entry in allVaultEntries {
                     let plain = entry.visibleThroughDepth.flatMap { $0.decrypt() } ?? hiddenData
                     entry.visibleThroughDepth = try AES.GCM.seal(
                         plain, using: stagedKey, authenticating: aad
                     ).combined
                 }
+                // isEntryVisible already fails closed on nil (whenUnclassified: false —
+                // see VaultEntry.isVisible's doc comment), but that only protects a
+                // display read; it says nothing about whether a nil entry's real
+                // classification survives once Secure Mode is active. This loop is what's
+                // supposed to guarantee no VaultEntry stays nil past this point. The
+                // assert catches a regression here directly (e.g. a re-added skip
+                // condition, or `.combined` unexpectedly nil) instead of only finding out
+                // indirectly, elsewhere, that this guarantee stopped holding.
+                assert(
+                    allVaultEntries.allSatisfy { $0.visibleThroughDepth != nil },
+                    "Step 8 must leave every VaultEntry with a non-nil depth stamp"
+                )
                 try vaultManager.modelContext.save()
 
                 // Re-key or purge Message.Draft rows — selective, matching §S7's
@@ -1615,17 +1628,20 @@ extension Manager {
         /// Returns true if the vault entry is visible at the current depth.
         ///
         /// Exact-depth match, not a ceiling: an entry is visible only at the exact
-        /// depth it was created at (`nil` = never classified, always visible — see
-        /// `VaultManager.addEntry`). Deliberately not `value >= currentDepth` — see
+        /// depth it was created at. Deliberately not `value >= currentDepth` — see
         /// `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
         /// for why a ceiling lets an entry created at a duress depth leak into every
         /// shallower depth, including the real depth 0.
+        ///
+        /// Passes `whenUnclassified: false`: this is the display path, gated by
+        /// `isRestricted` at the only call site (`Vault+Tab.visibleEntries`), so it
+        /// only ever runs at an active duress depth. A nil-depth entry can't reach
+        /// this today (Step 8 of `activateSecureMode` stamps every one before a
+        /// duress depth exists), but failing closed here doesn't depend on that
+        /// guarantee holding elsewhere — see `VaultEntry.isVisible`'s doc comment
+        /// for why the export path needs the opposite answer.
         func isEntryVisible(_ entry: VaultEntry) -> Bool {
-            guard let data = entry.visibleThroughDepth else { return true }
-            guard let decrypted = data.decrypt(),
-                  let value = DepthCodec.decode(decrypted)
-            else { return false }  // non-nil field that won't decrypt = sensitive shell; exclude
-            return value == self.currentDepth
+            entry.isVisible(atDepth: self.currentDepth, whenUnclassified: false)
         }
 
         // MARK: - Private

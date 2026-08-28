@@ -238,20 +238,15 @@ extension VaultManager {
         return result
     }
 
-    /// Vault entries whose decrypted `visibleThroughDepth` ceiling equals `depth`,
-    /// exactly. Mirrors `Manager.Security.isEntryVisible(_:)`'s semantics without
-    /// depending on `Manager.Security` — VaultManager has no dependency on Secure Mode
-    /// internals, and `visibleThroughDepth` is sealed under the ordinary local DB key,
-    /// not anything Secure-Mode-specific, so nothing here needs `isEntryVisible` doesn't
-    /// already have available through `Data.decrypt()`.
+    /// Vault entries visible at `depth`, per `VaultEntry.isVisible(atDepth:)`.
+    ///
+    /// Passes `whenUnclassified: true`: unlike the display path, this runs
+    /// unconditionally at the user's own real depth, including depth 0. nil only
+    /// occurs in installs with entries pre-dating this field that have never
+    /// activated Secure Mode — `false` here would silently and permanently drop
+    /// those entries from every backup export for that ordinary user.
     private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
-        try self.fetchAllEntries().filter { entry in
-            guard let sealed = entry.visibleThroughDepth,
-                  let plain  = sealed.decrypt(),
-                  let value  = DepthCodec.decode(plain)
-            else { return false }  // unreadable ceiling — exclude, same as isEntryVisible
-            return value == depth
-        }
+        try self.fetchAllEntries().filter { $0.isVisible(atDepth: depth, whenUnclassified: true) }
     }
 
     // MARK: - Import

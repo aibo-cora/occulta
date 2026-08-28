@@ -297,10 +297,12 @@ struct DepthFixedWidthMigrationTests {
         #expect(depth(deep.id)    == 12)
     }
 
-    /// `VaultEntry`'s nil means something `Contact.Profile`'s does not. `isEntryVisible`
-    /// reads nil as *visible at every depth* — the documented state for entries pre-dating
-    /// the field — so manufacturing a value here would change what the user sees, not just
-    /// the bytes. There is no backfill that owns this case either.
+    /// `VaultEntry`'s nil means something `Contact.Profile`'s does not: a legacy entry
+    /// pre-dating this field, not a gap to fill in. `VaultEntry.isVisible` resolves nil
+    /// per caller (`whenUnclassified:`) rather than to one fixed meaning, but every
+    /// caller needs the real absence of a stamp to survive migration untouched —
+    /// manufacturing a value here would change what at least one of them reports, not
+    /// just the bytes. There is no backfill that owns this case either.
     @Test("A nil vault stamp stays nil — it means visible, not missing")
     func nilVaultStampIsUntouched() throws {
         let context = ModelContext(try makeContainer())
