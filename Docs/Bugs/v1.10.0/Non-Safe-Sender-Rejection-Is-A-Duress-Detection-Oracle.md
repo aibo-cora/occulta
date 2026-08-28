@@ -440,3 +440,214 @@ for gating that does not survive:
    send during the window. Refusal also identifies *which* contact is hidden. It hides the body, which
    is the one thing in its favour — and that is the separable content question in the paragraph
    above, not a reason to reintroduce the rejection.
+
+A related proposal from the same session — an out-of-band "message ban" sent to contacts, asking
+their apps to stop messaging this user for the duration — attacks the right layer, since the residual
+needs a third party to send. It went through three rounds of refinement and is analysed in full in
+the next section.
+
+## 2026-08-28 — The message-ban proposal: prevention instead of concealment. Adopted in principle
+
+Every option in the 2026-08-13 table handles a hidden contact's message *after* it arrives. This
+proposal attacks the precondition instead: if sensitive contacts do not send during the coercion
+window, the residual never fires. That is the right layer to attack, and it is the first idea raised
+against this document that is not a variation on hiding something at render time. It is recorded in
+full — including the objections I raised against it and then withdrew — because the reasoning is
+reusable and because four plausible-sounding arguments against it turned out to be wrong.
+
+### The proposal, as finally specified
+
+1. The user believes coercion is possible and activates Secure Mode.
+2. At the end of activation the app presents a crafted bundle, encrypted per contact, carrying a
+   message-ban directive.
+3. The user sends it through a transport channel of their choosing.
+4. Recipients open what reads as an ordinary message — *"Please don't disturb me until further
+   notice"* — which carries the ban. The recipient's app enters its own Secure Mode **setup flow**
+   (their PINs, their choices — not remote execution), marks the sender sensitive, and optionally
+   offers other contacts. The stated reason for pulling the recipient into Secure Mode is that a
+   coercer may reach *their* device — a travelling partner, a joint stop — and the ban must be
+   concealed there too.
+5. After deactivation, a second bundle lifts the ban.
+
+Enforcement is on the recipient's device: their app declines to encrypt to the issuer until the lift.
+
+### Objections raised against it, and withdrawn
+
+Four were argued at length in this session and do not survive. Recorded with their refutations,
+because each sounded right and the same reasoning will be attempted again.
+
+**A — "the bundle is either your secret or your cover."** Argued that addressing the ban to sensitive
+contacts only makes it a manifest of the hidden set, while addressing it to everyone destroys the
+reply traffic that makes a coerced session look ordinary. The second half is backwards: a ban to all
+contacts *explains* the silence it creates — "why is nobody messaging you?" / "I asked them not to" —
+which is better cover than unexplained quiet. The first half survives only as an argument **for**
+all-contacts addressing: a selective recipient set is published in cleartext by the transport (your
+Signal shows which 7 of 40 people received it), and "why those seven" has no good answer under
+coercion. Address it to everyone.
+
+**B — "it manufactures a synchronised cross-device trace."** Argued that activation at time T plus a
+ban broadcast at time T is a correlated signal. This requires activation to be detectable, and the
+design specifically prevents that: `AppLayerConfig` fields are written unconditionally at first config
+creation, arrays are padded to constant length, and the layer store exists from first launch with
+timestamps tracking normal activity precisely so slot writes look ordinary. There is no activation
+timestamp for a ban to correlate against. What remains is generic and does not discriminate between
+options: going quiet shortly before being detained is suggestive in context, and that is equally true
+of a purely verbal arrangement.
+
+**C — "concealment on the recipient is defeated by the transport."** Argued by analogy with the
+2026-08-13 rejection of `"Anonymous"`: the delivery channel already showed who sent what. The analogy
+fails because that argument bites only when the published thing is incriminating. *"Please don't
+disturb me until further notice"* is not. People send it for holidays, deadlines, hospital, grief. So
+step 4's concealment is not defeated — it is merely unnecessary, which is a much weaker criticism and
+not grounds for rejection.
+
+**D — "the disclosure moves from artifacts to people."** Argued that every recipient learns the sender
+is preparing for coercion, and that humans, unlike padded fields, cannot be made forensically
+constant. Three premises were wrong. A coercer inspecting a recipient's device gets that recipient's
+duress PIN and a clean phone — which is exactly what the ban just gave them. What the recipient learns
+is a function of the prompt wording, which is a design parameter, not an inherent property: *"Alice
+has asked not to be disturbed — set up Secure Mode to keep your contacts private"* motivates the setup
+without mentioning coercion. And a recipient who fully cooperates with a coercer defeats every part
+of this system anyway, so it is not a cost the feature introduces.
+
+### What stands — limitations, not blockers
+
+- **Compliance is unverifiable.** No acknowledgement channel exists, and adding one would be another
+  artifact and another broadcast. The issuer must still plan as though the ban failed.
+- **Coverage is incomplete.** Contacts paired after issuance are not covered, non-Occulta contacts
+  cannot be, and anyone who ignores it still sends.
+- **The recipient makes an irreversible choice reactively.** Activation rotates their DB key and
+  deletes the old one, and requires a duress PIN they must remember. The setup offer should not be a
+  modal that fires the instant they open a message; offer it, let it wait.
+
+Together these make it a **mitigation, not a control**, and it must be documented as one. That is
+still worth having: it costs almost nothing once the requirements below are met.
+
+### Design requirements
+
+**1. Prompt wording carries generic privacy framing, never coercion framing.** The recipient-side
+justification for the setup flow is the only place this design can leak into a human, and the leak is
+entirely avoidable. Never "one of your contacts may be coerced."
+
+**2. Custody and recovery traffic must be exempt from enforcement.** Shard operations do not travel on
+a separate channel — they ride inside group bundles alongside messages, and a shard-only bundle
+signals "no basket" with an empty message field (`OccultaApp.swift`, the `recipShardOps` /
+`recipManifest` / `recipExpected` path). A naive "refuse to encrypt to this contact" therefore catches
+custody traffic in the same net, and your trustees cannot send you shards while the ban is up —
+closing the vault recovery path during precisely the window that motivated the ban. Enforcement has
+to be at message-content level, not bundle level.
+
+**3. The recipient's classification must be pinned to depth 0, not `currentDepth`.** Inbound
+processing is depth-independent by design (the subject of this document), but `saveClassification`
+writes `visibleThroughDepth` relative to `currentDepth`. A ban processed while the recipient sits at
+duress depth N would stamp the issuer with ceiling N — visible at depths 0…N, the opposite of hidden.
+The ban would silently do nothing, and only for the users who most needed it. The setup *prompt* is
+safe from this (a recipient with no Secure Mode cannot be at a duress depth), but the classification
+write is not.
+
+**4. The ban is keyed to the contact identifier, and a lift verifies against the contact's current
+unexpired key — not the key that issued the ban.** `reset(identity:)` expires a key while keeping the
+same `Contact.Profile` and identifier, since keys are a to-many relationship on the profile. So
+identity survives rotation, and keying the ban to the identifier makes it survive with it. Verifying a
+lift against the issuing key instead would strand every ban the moment a key rotates.
+
+**5. Every ban carries a mandatory expiry.** No unbounded bans. See below.
+
+### Lifting without leaving a trace
+
+An explicit lift bundle as the only mechanism creates a permanent-DoS class: lose the phone, rotate
+into a stranded state, be detained past the point of caring, and the recipient can never message the
+issuer again. It also makes step 5 a second broadcast in every case. Four mechanisms, in order of
+preference, with the bundle demoted to the exception:
+
+**1. Expiry, mandatory and default.** The ban carries a duration chosen at issuance and lapses
+silently. No message, no artifact, no second broadcast. This alone resolves every loss case — phone
+lost, key rotated, issuer detained indefinitely, issuer simply forgets — and it also self-heals the
+backup-restore case, where restoring a recipient's device from a snapshot taken during the ban would
+otherwise resurrect a lifted one.
+
+**A specific trap here.** The codebase's existing lesson (SEC-1, `lockoutAnchorUptimeEncrypted`) is
+that a stored `Date` compared against `Date.now` is bypassable by changing the device clock, so the
+PIN lockout deliberately uses `ProcessInfo.systemUptime`. **Do not apply that reasoning here.** It
+holds when the device holder is the adversary trying to escape a restriction; the ban's holder is a
+cooperating contact who, if they want to message early, can simply clear it locally (mechanism 3).
+Uptime would also actively break the feature, since it resets on reboot and a multi-week ban would
+not survive. Wall-clock is correct here, and someone will "fix" it to uptime by pattern-matching on
+SEC-1 unless this is written down.
+
+**2. Implicit lift on re-pairing.** A fresh UWB exchange with that contact clears the ban. Physical
+presence is the strongest available evidence that the ban should end, it is already this app's root
+of trust, and it produces no artifact beyond an exchange that was happening anyway. This falls out of
+requirement 4 for free: the new key becomes the contact's current key, so it can authorise the lift.
+
+**3. Local clear by the recipient.** The holder can clear it on their own device. This costs nothing
+in security — enforcement already runs on their device, under their control, and an old or modified
+build ignores the ban entirely — and it removes the permanent-DoS class outright.
+
+**4. Explicit lift bundle, for early lift only.** When the issuer wants to end a ban before expiry and
+cannot meet in person. The only mechanism that creates an artifact, and it is as innocuous as the ban
+itself ("you can reach me again"). No longer the default path, which is what step 5 originally
+proposed.
+
+**Loss and rotation, resolved:**
+
+| Scenario | Outcome |
+|---|---|
+| Issuer rotates key, same device | Identifier persists, ban persists, lift verifies against the new key |
+| Issuer loses phone, re-pairs with recipient | Re-pair clears the ban (mechanism 2) |
+| Issuer loses phone, never re-pairs | Ban is attached to a dead key nobody can message anyway — inert, and expires |
+| Issuer detained indefinitely | Expiry |
+| Recipient loses phone | Ban gone with the device; issuer's model was never verified anyway |
+| Recipient restores a backup from during the ban | Ban returns, then expires |
+
+### Do Not Disturb — kept as the complement, not the alternative
+
+A user-set quiet mode that silently queues *all* inbound and renders nothing, applied identically at
+every depth.
+
+**Not the same thing as the "silently queue until depth 0" row rejected in the 2026-08-13 table
+above, and the difference is the whole point.** That option queued *selectively* — only messages from
+contacts hidden at the current depth — which is why "nothing happens on tap" became an outcome
+reachable only under duress, and why it was rejected as trading a strong signal for a weaker one.
+DND queues unconditionally, for every sender, at every depth, on a switch the user set themselves.
+Nothing about it varies with depth, so there is no signal to weaken: it is a different mechanism that
+happens to share an implementation surface.
+
+It adds no depth-conditional observable — nothing to distinguish, so not an oracle —
+and "Do Not Disturb" is an ordinary feature, so its presence is cover rather than signal.
+
+**The switch is benign; the queue is not free.** An earlier draft of this section claimed DND needs no
+new stored state and therefore none of the `AppLayerConfig` discipline. That holds for the toggle,
+which conceals nothing and can sit in the clear. It does not hold for the queue. Inbound messages
+today render transiently and are **never written as `Contact.Message`** — Result 1's table above says
+so, and that transience is why the inbound path currently leaves so little behind. A quiet period
+turns that into deliberate persistence: inbound files held on disk for as long as the user leaves DND
+on, which may be weeks. That lands directly next to Bug 101, which found opened files sitting
+unsealed in `Documents/Inbox`.
+
+So DND carries one requirement of its own: **the queue must be sealed at rest, must not accumulate
+plaintext, and must have a defined bound and eviction rule.** An unbounded plaintext spool of
+everything received during a coercion-adjacent period is a worse artifact than the leak DND was meant
+to reduce. This is the part of DND that needs designing; the toggle is trivial.
+
+Its other limit is that a coercer can switch it off, after which the queue drains and renders. So it
+is weaker than a ban where a ban applies, and it covers exactly what a ban cannot:
+
+| | Ban | DND |
+|---|---|---|
+| Enforced on | sender's device | your device |
+| Needs others to cooperate | yes | no |
+| Contacts paired after issuance | not covered | covered |
+| Non-compliant or old builds | not covered | covered |
+| Between expiry and renewal | not covered | covered |
+| Available immediately after losing your phone | no — requires re-pairing everyone | yes |
+| Stops the message existing | yes | no, queues it |
+| Defeatable by the coercer holding your phone | no | yes, by toggling it off |
+
+The two fail in opposite directions, which is the argument for having both: the ban prevents traffic
+at the source but depends on other people and leaves coverage gaps; DND is unilateral and complete but
+only defers, and only until someone thinks to turn it off. Neither closes the residual alone, and
+neither creates a new observable.
+
+**Status: both worth building. Neither implemented. The residual documented on 2026-08-13 remains
+open in the meantime, and the flow described there is unchanged.**
