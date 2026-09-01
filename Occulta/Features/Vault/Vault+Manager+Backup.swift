@@ -640,13 +640,22 @@ extension VaultManager {
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("backup-import-cache.occbak")
 
-    /// Whether a restore file genuinely exists on disk — independent of depth, and
-    /// independent of the published `pendingRestoreActive`, which is deliberately
-    /// depth-gated for display (Bug 93). **Functional callers deciding whether to store
-    /// a shard, or whether to relax signature checking, must use this, never the
-    /// published property** — depth-gating `pendingRestoreActive` above depth 0 would
-    /// otherwise make a genuine, in-progress recovery silently stop accepting shards, or
-    /// reject a legitimate new-device handback outright instead of deferring it.
+    /// Whether a restore file genuinely exists on disk, checked directly rather than
+    /// read from the cached `pendingRestoreActive`.
+    ///
+    /// The two compute the same thing today — `pendingRestoreActive` is no longer
+    /// depth-gated (see `refreshPendingRestoreState`, which reversed that half of Bug 93)
+    /// — but they are not interchangeable, because they're kept in sync on different
+    /// schedules. `pendingRestoreActive` is `@Published` UI state, only synced from disk
+    /// at specific points: `refreshPendingRestoreState()` on unlock, and inline in
+    /// `storePendingRestore`/`attemptBEKRestore`. `storeRestoreShard` (and therefore
+    /// `acceptReturnedShard`) is explicitly designed to run *while the vault is locked*
+    /// (Bug 94 remedy 2) — a shard can arrive, and a genuine restore file can already
+    /// exist, before this process has ever unlocked and therefore before
+    /// `pendingRestoreActive` has ever been synced. **Functional callers deciding
+    /// whether to store a shard, or whether to relax signature checking, must use this
+    /// property, never the published one** — it has no such gap, since it reads the
+    /// filesystem directly on every access.
     var isRestorePending: Bool {
         FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
     }
