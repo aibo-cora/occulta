@@ -842,7 +842,7 @@ extension VaultManager {
         /// `clamping:` rather than a plain cast, which would trap outside range —
         /// exactly the class of bug fixed twice in `importBackup` (Bug 96).
         static func encodeSlot(_ meta: BackupExportMetadata?) -> Data {
-            guard let meta else { return Self.randomFiller() }
+            guard let meta else { return Data.randomBytes(Self.slotPlainSize) }
 
             var out = Data(capacity: Self.slotPlainSize)
             out.append(Self.presenceTag)
@@ -882,12 +882,6 @@ extension VaultManager {
                 shardCount:     shardCount,
                 entryCount:     entryCount
             )
-        }
-
-        private static func randomFiller() -> Data {
-            var bytes = [UInt8](repeating: 0, count: Self.slotPlainSize)
-            _ = SecRandomCopyBytes(kSecRandomDefault, Self.slotPlainSize, &bytes)
-            return Data(bytes)
         }
 
         private static func uuidBytes(_ id: UUID) -> Data {
