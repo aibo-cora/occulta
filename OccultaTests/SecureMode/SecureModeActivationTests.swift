@@ -471,12 +471,7 @@ struct SecureModeWALPersistenceTests {
     /// `Manager+Security.swift`'s Step 8 checks at the source; this test is what
     /// would actually fail a CI run (in Release, asserts are compiled out) if that
     /// invariant regressed.
-    @Test func activation_nilDepthVaultEntry_getsStampedHidden() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
+    @Test(.enabled(if: secureEnclaveAvailable())) func activation_nilDepthVaultEntry_getsStampedHidden() async throws {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
 

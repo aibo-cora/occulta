@@ -238,7 +238,7 @@ extension VaultManager {
         return result
     }
 
-    /// Vault entries visible at `depth`, per `VaultEntry.isVisible(atDepth:)`.
+    /// Vault entries visible at `depth`, per `VaultEntry.isVisible(atDepth:whenUnclassified:usingKey:)`.
     ///
     /// Derives the local DB hybrid key once and reuses it across every entry,
     /// rather than letting each entry's `.decrypt()` re-derive an identical key

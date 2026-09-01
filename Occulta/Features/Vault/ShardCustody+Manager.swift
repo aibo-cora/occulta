@@ -341,18 +341,23 @@ final class ShardCustodyManager {
     /// Owner side: `.distribute` / `.replace` from PendingShardDistribute rows.
     /// Trustee side: `.handback` for mismatch-fingerprint shards (signals key rotation).
     func buildShardOperations(for contactIdentifier: String, currentContactPublicKey: Data?) throws -> [OccultaBundle.ShardOperation] {
+        // Derived once and passed to both halves below — pendingDistributeOps and
+        // mismatchHandbackOps each independently derived this same shard custody key, so a
+        // single call here (invoked once per group member when encrypting a group bundle) was
+        // paying two Secure Enclave round trips for one key.
+        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
+            throw CustodyError.keyDerivationFailed
+        }
+
         var ops = [OccultaBundle.ShardOperation]()
-        ops += try self.pendingDistributeOps(for: contactIdentifier)
+        ops += try self.pendingDistributeOps(for: contactIdentifier, usingKey: custodyKey)
         if let pubKey = currentContactPublicKey {
-            ops += try self.mismatchHandbackOps(for: contactIdentifier, currentFP: Self.fingerprint(of: pubKey))
+            ops += try self.mismatchHandbackOps(for: contactIdentifier, currentFP: Self.fingerprint(of: pubKey), usingKey: custodyKey)
         }
         return ops
     }
 
-    private func pendingDistributeOps(for contactIdentifier: String) throws -> [OccultaBundle.ShardOperation] {
-        guard let custodyKey = try self.keyManager.deriveShardCustodyKey() else {
-            throw CustodyError.keyDerivationFailed
-        }
+    private func pendingDistributeOps(for contactIdentifier: String, usingKey custodyKey: SymmetricKey) throws -> [OccultaBundle.ShardOperation] {
         let rows = try self.modelContext.fetch(FetchDescriptor<PendingShardDistribute>())
         return rows.compactMap { row in
             guard let payload = try? self.openRow(row.encryptedPayload, as: PendingShardDistribute.Payload.self, using: custodyKey, id: row.id),
@@ -376,8 +381,8 @@ final class ShardCustodyManager {
     /// Each op carries an attestation when this device can produce one (Bug 94
     /// remedy 2) — `attestation(for:)` returns nil on any failure, which is the
     /// safe default: the op still goes out, just without a Branch B path.
-    private func mismatchHandbackOps(for contactIdentifier: String, currentFP: Data) throws -> [OccultaBundle.ShardOperation] {
-        let candidates = try self.decryptAllCustodyShards()
+    private func mismatchHandbackOps(for contactIdentifier: String, currentFP: Data, usingKey custodyKey: SymmetricKey) throws -> [OccultaBundle.ShardOperation] {
+        let candidates = try self.decryptAllCustodyShards(using: custodyKey)
             .filter { $0.payload.ownerContactIdentifier == contactIdentifier && $0.payload.ownerKeyFingerprint != currentFP }
         guard !candidates.isEmpty else { return [] }
 

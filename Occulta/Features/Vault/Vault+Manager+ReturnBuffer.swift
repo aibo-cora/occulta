@@ -73,7 +73,7 @@ extension VaultManager {
             )
 
             // ── 2. Opportunistic finalise ──────────────────────────────────
-            try? self.tryFinalizeReconstruction(entryID: entryID)
+            try? self.tryFinalizeReconstruction(entryID: entryID, usingKey: key)
         }
 
         // ── 3. BEK restore — store shard + attempt reconstruction ────────
@@ -105,6 +105,18 @@ extension VaultManager {
     /// On success, all buffer rows whose payload references this `entryID`
     /// are deleted in one save.
     func tryFinalizeReconstruction(entryID: UUID) throws {
+        guard let key = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        try self.tryFinalizeReconstruction(entryID: entryID, usingKey: key)
+    }
+
+    /// Same as `tryFinalizeReconstruction(entryID:)` but decrypts the buffered shards with an
+    /// already-derived recovery buffer key — for `acceptReturnedShard`'s per-entry branch,
+    /// which already holds this key from its own dup-check and insert a few lines earlier and
+    /// would otherwise pay a third redundant Secure Enclave round trip calling this. (The vault
+    /// key below is a separate, unrelated key — always derived here regardless.)
+    func tryFinalizeReconstruction(entryID: UUID, usingKey key: SymmetricKey) throws {
         guard self.isUnlocked else { return }
 
         let vaultKey    = try self.currentKey()
@@ -115,7 +127,7 @@ extension VaultManager {
         let metaPlaintext = try AES.GCM.open(metaBox, using: vaultKey, authenticating: entry.aad(for: .shardDistribution))
         let meta          = try JSONDecoder().decode(ShardDistributionMetadata.self, from: metaPlaintext)
 
-        let buffered = try self.decryptAllReconstructShards()
+        let buffered = try self.decryptAllReconstructShards(usingKey: key)
         let mine     = buffered.filter { $0.payload.entryID == entryID }
         guard mine.count >= meta.threshold else { return }
 
@@ -255,14 +267,15 @@ extension VaultManager {
     /// confirmation rather than this count is what gates an unsolicited restore.
     func storeRestoreShard(_ attribute: SignedAttribute, attestation: SignedAttribute?, senderIdentifier: String) throws {
         guard let entryID = attribute.entryID else { throw VaultError.decryptionFailed }
-        try? self.migrateLegacyRestoreShardFile()
 
-        // Derived once and reused below — decryptAllReconstructShards, insertReconstructRow,
-        // and bekRestoreRows all need this same recovery buffer key; deriving it three times
-        // here was three redundant Secure Enclave round trips for one shard delivery.
+        // Derived once and reused below — migrateLegacyRestoreShardFile, decryptAllReconstructShards,
+        // insertReconstructRow, and bekRestoreRows all need this same recovery buffer key; deriving
+        // it separately at each of those was four redundant Secure Enclave round trips for one
+        // shard delivery.
         guard let key = try self.keyManager.deriveRecoveryBufferKey() else {
             throw VaultError.keyDerivationFailed
         }
+        try? self.migrateLegacyRestoreShardFile(usingKey: key)
 
         let existing = try self.decryptAllReconstructShards(usingKey: key)
         if let dup = existing.first(where: {
@@ -295,7 +308,7 @@ extension VaultManager {
     /// `clearBEKRestoreShards(usingKey:)` on success and would otherwise re-derive the
     /// identical key for that second call. Not `private`: it's called from that other file.
     func loadRestoreShards(usingKey key: SymmetricKey) throws -> [AttestedShard] {
-        try? self.migrateLegacyRestoreShardFile()
+        try? self.migrateLegacyRestoreShardFile(usingKey: key)
         return try self.bekRestoreRows(usingKey: key).map {
             AttestedShard(
                 attribute:        $0.payload.signedAttribute,
@@ -338,16 +351,15 @@ extension VaultManager {
     /// so re-collecting means asking every one of them to hand back again.
     ///
     /// Called from the two entry points that read or write the buffer rather than from launch,
-    /// so it needs no ordering guarantee and runs exactly when the data is first wanted.
-    private func migrateLegacyRestoreShardFile() throws {
+    /// so it needs no ordering guarantee and runs exactly when the data is first wanted. Both
+    /// of those callers already derive the recovery buffer key for their own purposes, so this
+    /// takes it as a parameter rather than deriving a fourth, redundant copy of it.
+    private func migrateLegacyRestoreShardFile(usingKey bufferKey: SymmetricKey) throws {
         let url = Self.legacyRestoreShardsURL
         guard FileManager.default.fileExists(atPath: url.path) else { return }
 
         defer { try? FileManager.default.removeItem(at: url) }
 
-        guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
-            throw VaultError.keyDerivationFailed
-        }
         let combined = try Data(contentsOf: url)
         let box      = try AES.GCM.SealedBox(combined: combined)
         let plain    = try AES.GCM.open(box, using: bufferKey, authenticating: Self.legacyRestoreShardsAAD)
