@@ -53,7 +53,10 @@ extension VaultManager {
 
         // ── 1. Per-entry buffer ───────────────────────────────────────────
         if let entry = try? self.fetchEntry(by: entryID), entry.shardDistributionEncrypted != nil {
-            let existing = try self.decryptAllReconstructShards()
+            guard let key = try self.keyManager.deriveRecoveryBufferKey() else {
+                throw VaultError.keyDerivationFailed
+            }
+            let existing = try self.decryptAllReconstructShards(usingKey: key)
             if let dup = existing.first(where: {
                 $0.payload.entryID == entryID && $0.payload.senderIdentifier == senderIdentifier
             }) {
@@ -65,7 +68,8 @@ extension VaultManager {
                 entryID:          entryID,
                 attribute:        attribute,
                 attestation:      attestation,
-                senderIdentifier: senderIdentifier
+                senderIdentifier: senderIdentifier,
+                usingKey:         key
             )
 
             // ── 2. Opportunistic finalise ──────────────────────────────────
@@ -166,7 +170,25 @@ extension VaultManager {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw VaultError.keyDerivationFailed
         }
+        try self.insertReconstructRow(
+            entryID: entryID, attribute: attribute,
+            attestation: attestation, senderIdentifier: senderIdentifier,
+            usingKey: bufferKey
+        )
+    }
 
+    /// Same as `insertReconstructRow(entryID:attribute:attestation:senderIdentifier:)` but
+    /// decrypts with an already-derived key instead of deriving one fresh — for callers that
+    /// already hold the recovery buffer key and would otherwise pay a redundant Secure Enclave
+    /// round trip (see `storeRestoreShard`, which calls this alongside two other buffer
+    /// operations that all need the identical key).
+    private func insertReconstructRow(
+        entryID:          UUID,
+        attribute:        SignedAttribute,
+        attestation:      SignedAttribute?,
+        senderIdentifier: String,
+        usingKey bufferKey: SymmetricKey
+    ) throws {
         let rowID   = UUID()
         let aad     = Self.reconstructRowAAD(id: rowID)
         let payload = ReconstructShard.Payload(
@@ -206,7 +228,16 @@ extension VaultManager {
     /// invariant — `acceptReturnedShard`'s per-entry step already relies on it in the opposite
     /// direction to exclude these very shards.
     private func bekRestoreRows() throws -> [DecodedReconstructRow] {
-        try self.decryptAllReconstructShards().filter { row in
+        guard let key = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        return try self.bekRestoreRows(usingKey: key)
+    }
+
+    /// Same as `bekRestoreRows()` but decrypts with an already-derived key — see
+    /// `insertReconstructRow(...usingKey:)`'s doc comment for why this exists.
+    private func bekRestoreRows(usingKey key: SymmetricKey) throws -> [DecodedReconstructRow] {
+        try self.decryptAllReconstructShards(usingKey: key).filter { row in
             ((try? self.fetchEntry(by: row.payload.entryID)) ?? nil) == nil
         }
     }
@@ -226,7 +257,14 @@ extension VaultManager {
         guard let entryID = attribute.entryID else { throw VaultError.decryptionFailed }
         try? self.migrateLegacyRestoreShardFile()
 
-        let existing = try self.decryptAllReconstructShards()
+        // Derived once and reused below — decryptAllReconstructShards, insertReconstructRow,
+        // and bekRestoreRows all need this same recovery buffer key; deriving it three times
+        // here was three redundant Secure Enclave round trips for one shard delivery.
+        guard let key = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+
+        let existing = try self.decryptAllReconstructShards(usingKey: key)
         if let dup = existing.first(where: {
             $0.payload.entryID == entryID && $0.payload.senderIdentifier == senderIdentifier
         }) {
@@ -238,15 +276,27 @@ extension VaultManager {
             entryID:          entryID,
             attribute:        attribute,
             attestation:      attestation,
-            senderIdentifier: senderIdentifier
+            senderIdentifier: senderIdentifier,
+            usingKey:         key
         )
-        self.pendingRestoreShardCount = (try? self.bekRestoreRows().count) ?? 0
+        self.pendingRestoreShardCount = (try? self.bekRestoreRows(usingKey: key).count) ?? 0
     }
 
     /// Every BEK restore shard collected so far. Empty when none have arrived.
     func loadRestoreShards() throws -> [AttestedShard] {
+        guard let key = try self.keyManager.deriveRecoveryBufferKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        return try self.loadRestoreShards(usingKey: key)
+    }
+
+    /// Same as `loadRestoreShards()` but decrypts with an already-derived key — for
+    /// `attemptBEKRestore` (`Vault+Manager+Backup.swift`), which also calls
+    /// `clearBEKRestoreShards(usingKey:)` on success and would otherwise re-derive the
+    /// identical key for that second call. Not `private`: it's called from that other file.
+    func loadRestoreShards(usingKey key: SymmetricKey) throws -> [AttestedShard] {
         try? self.migrateLegacyRestoreShardFile()
-        return try self.bekRestoreRows().map {
+        return try self.bekRestoreRows(usingKey: key).map {
             AttestedShard(
                 attribute:        $0.payload.signedAttribute,
                 attestation:      $0.payload.attestation,
@@ -258,7 +308,14 @@ extension VaultManager {
     /// Drop every BEK restore shard. Called when a restore completes or is abandoned; leaves
     /// per-entry reconstruction rows untouched.
     func clearBEKRestoreShards() {
-        guard let rows = try? self.bekRestoreRows() else { return }
+        guard let key = try? self.keyManager.deriveRecoveryBufferKey() else { return }
+        self.clearBEKRestoreShards(usingKey: key)
+    }
+
+    /// Same as `clearBEKRestoreShards()` but decrypts with an already-derived key — see
+    /// `loadRestoreShards(usingKey:)`'s doc comment. Not `private` for the same reason.
+    func clearBEKRestoreShards(usingKey key: SymmetricKey) {
+        guard let rows = try? self.bekRestoreRows(usingKey: key) else { return }
         for row in rows { self.modelContext.delete(row.row) }
         try? self.modelContext.save()
         self.pendingRestoreShardCount = 0
@@ -302,7 +359,8 @@ extension VaultManager {
                 entryID:          entryID,
                 attribute:        shard.attribute,
                 attestation:      shard.attestation,
-                senderIdentifier: shard.senderIdentifier
+                senderIdentifier: shard.senderIdentifier,
+                usingKey:         bufferKey
             )
         }
     }
@@ -325,7 +383,12 @@ extension VaultManager {
         guard let bufferKey = try self.keyManager.deriveRecoveryBufferKey() else {
             throw VaultError.keyDerivationFailed
         }
+        return try self.decryptAllReconstructShards(usingKey: bufferKey)
+    }
 
+    /// Same as `decryptAllReconstructShards()` but decrypts with an already-derived key — see
+    /// `insertReconstructRow(...usingKey:)`'s doc comment for why this exists.
+    private func decryptAllReconstructShards(usingKey bufferKey: SymmetricKey) throws -> [DecodedReconstructRow] {
         let rows = try self.modelContext.fetch(FetchDescriptor<ReconstructShard>())
         var out  = [DecodedReconstructRow]()
         out.reserveCapacity(rows.count)

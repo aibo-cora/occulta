@@ -752,7 +752,12 @@ extension VaultManager {
         }
 
         guard let backupData = try? Data(contentsOf: Self.pendingRestoreURL) else { return }
-        guard let shards     = try? self.loadRestoreShards(), !shards.isEmpty else { return }
+
+        // Derived once and reused below for clearBEKRestoreShards(usingKey:) on success —
+        // loadRestoreShards() and clearBEKRestoreShards() would otherwise each independently
+        // re-derive the identical recovery buffer key.
+        guard let recoveryKey = try? self.keyManager.deriveRecoveryBufferKey() else { return }
+        guard let shards = try? self.loadRestoreShards(usingKey: recoveryKey), !shards.isEmpty else { return }
 
         // Update counter as a side effect (covers the on-unlock path).
         self.pendingRestoreShardCount = shards.count
@@ -778,7 +783,7 @@ extension VaultManager {
             }
 
             // Success — drop the buffered shards and the cached file, reset state.
-            self.clearBEKRestoreShards()
+            self.clearBEKRestoreShards(usingKey: recoveryKey)
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0
