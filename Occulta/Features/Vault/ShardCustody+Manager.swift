@@ -377,19 +377,46 @@ final class ShardCustodyManager {
     /// remedy 2) — `attestation(for:)` returns nil on any failure, which is the
     /// safe default: the op still goes out, just without a Branch B path.
     private func mismatchHandbackOps(for contactIdentifier: String, currentFP: Data) throws -> [OccultaBundle.ShardOperation] {
-        return try self.decryptAllCustodyShards()
+        let candidates = try self.decryptAllCustodyShards()
             .filter { $0.payload.ownerContactIdentifier == contactIdentifier && $0.payload.ownerKeyFingerprint != currentFP }
-            .map    { OccultaBundle.ShardOperation(
-                kind:        .handback,
-                attribute:   $0.payload.signedAttribute,
-                // Filler when this device cannot produce a real one, never nil. A real
-                // attestation and a missing one are ~260 encoded bytes apart, so leaving it
-                // nil would let a bundle be partitioned by which recipient is genuinely mid-
-                // recovery — see `attestationFiller`. Filler fails Branch B exactly as nil
-                // did, so the receive path is unchanged.
-                attestation: self.attestation(for: $0.payload)
-                             ?? Self.attestationFiller(entryID: $0.payload.signedAttribute.entryID)
-            ) }
+        guard !candidates.isEmpty else { return [] }
+
+        // Every candidate above shares this same owner, so their retained public keys are
+        // resolved once here — by fingerprint, since buffered shards can span more than one
+        // past rotation — instead of attestation(for:) re-fetching the owner and re-decrypting
+        // its keys on every call (was once per shard; a trustee holding shards across many
+        // entries redid the identical Enclave-backed lookup for each one).
+        let retainedKeysByFingerprint = self.retainedKeysByFingerprint(forOwner: contactIdentifier)
+
+        return candidates.map { OccultaBundle.ShardOperation(
+            kind:        .handback,
+            attribute:   $0.payload.signedAttribute,
+            // Filler when this device cannot produce a real one, never nil. A real
+            // attestation and a missing one are ~260 encoded bytes apart, so leaving it
+            // nil would let a bundle be partitioned by which recipient is genuinely mid-
+            // recovery — see `attestationFiller`. Filler fails Branch B exactly as nil
+            // did, so the receive path is unchanged.
+            attestation: self.attestation(for: $0.payload, retainedKeysByFingerprint: retainedKeysByFingerprint)
+                         ?? Self.attestationFiller(entryID: $0.payload.signedAttribute.entryID)
+        ) }
+    }
+
+    /// Every one of `ownerIdentifier`'s retained public keys, decrypted once and keyed by
+    /// fingerprint. See `mismatchHandbackOps`, the only caller — resolving this per owner
+    /// instead of per shard is the whole point.
+    private func retainedKeysByFingerprint(forOwner ownerIdentifier: String) -> [Data: Data] {
+        let contacts = (try? self.modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.identifier == ownerIdentifier })
+        )) ?? []
+        guard let owner = contacts.first else { return [:] }
+
+        let crypto = Manager.Crypto(keyManager: self.keyManager)
+        var result: [Data: Data] = [:]
+        for record in owner.contactPublicKeys ?? [] {
+            guard let material = try? crypto.decrypt(data: record.material) else { continue }
+            result[Self.fingerprint(of: material)] = material
+        }
+        return result
     }
 
     /// A random attribute shaped like a real `.attestation`, for ops that have no real one.
@@ -423,24 +450,14 @@ final class ShardCustodyManager {
     /// op falls back to Branch A only — never a reason to treat the shard as invalid
     /// here, since Branch A remains valid whenever the owner's identity hasn't
     /// rotated at all.
-    private func attestation(for payload: CustodyShard.Payload) -> SignedAttribute? {
-        guard let ownerIdentifier = payload.ownerContactIdentifier else { return nil }
-
-        let contacts = (try? self.modelContext.fetch(
-            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.identifier == ownerIdentifier })
-        )) ?? []
-        guard let owner = contacts.first else { return nil }
-
-        let crypto = Manager.Crypto(keyManager: self.keyManager)
-        let matchingKey = owner.contactPublicKeys?.first { record in
-            guard let material = try? crypto.decrypt(data: record.material) else { return false }
-            return Self.fingerprint(of: material) == payload.ownerKeyFingerprint
-        }
-        guard
-            let matchingKey,
-            let retainedOldKey = try? crypto.decrypt(data: matchingKey.material)
-        else { return nil }
-
+    ///
+    /// `retainedKeysByFingerprint` is resolved once per owner by `mismatchHandbackOps`,
+    /// not per shard — see its doc comment.
+    private func attestation(
+        for payload: CustodyShard.Payload,
+        retainedKeysByFingerprint: [Data: Data]
+    ) -> SignedAttribute? {
+        guard let retainedOldKey = retainedKeysByFingerprint[payload.ownerKeyFingerprint] else { return nil }
         guard payload.signedAttribute.verify(against: retainedOldKey) else { return nil }
 
         let hash      = Data(SHA256.hash(data: payload.signedAttribute.signingPayload()))
