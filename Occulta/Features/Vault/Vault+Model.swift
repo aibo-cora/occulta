@@ -17,6 +17,7 @@
 
 import Foundation
 import SwiftData
+import CryptoKit
 
 // MARK: - VaultEntryType
 
@@ -266,6 +267,18 @@ final class VaultEntry {
     func isVisible(atDepth depth: Int, whenUnclassified: Bool) -> Bool {
         guard let data = self.visibleThroughDepth else { return whenUnclassified }
         guard let plain = data.decrypt(), let value = DepthCodec.decode(plain)
+        else { return false }
+        return value == depth
+    }
+
+    /// Same as `isVisible(atDepth:whenUnclassified:)` but decrypts with an
+    /// already-derived key instead of deriving one fresh per call. For batch
+    /// callers (e.g. `VaultManager.entriesVisible(atDepth:)`) that would
+    /// otherwise pay a Secure Enclave round trip per entry for what is always
+    /// the same key — mirrors `Contact.Profile.isVisible(atDepth:usingKey:)`.
+    func isVisible(atDepth depth: Int, whenUnclassified: Bool, usingKey key: SymmetricKey) -> Bool {
+        guard let data = self.visibleThroughDepth else { return whenUnclassified }
+        guard let plain = data.decrypt(using: key), let value = DepthCodec.decode(plain)
         else { return false }
         return value == depth
     }

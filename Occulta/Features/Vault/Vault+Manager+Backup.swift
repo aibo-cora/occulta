@@ -240,13 +240,23 @@ extension VaultManager {
 
     /// Vault entries visible at `depth`, per `VaultEntry.isVisible(atDepth:)`.
     ///
+    /// Derives the local DB hybrid key once and reuses it across every entry,
+    /// rather than letting each entry's `.decrypt()` re-derive an identical key
+    /// via a fresh Secure Enclave round trip — this runs on every unlock and
+    /// every Vault tab appearance (`refreshBackupStaleness`), on the main actor.
+    ///
     /// Passes `whenUnclassified: true`: unlike the display path, this runs
     /// unconditionally at the user's own real depth, including depth 0. nil only
     /// occurs in installs with entries pre-dating this field that have never
     /// activated Secure Mode — `false` here would silently and permanently drop
     /// those entries from every backup export for that ordinary user.
     private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
-        try self.fetchAllEntries().filter { $0.isVisible(atDepth: depth, whenUnclassified: true) }
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        return try self.fetchAllEntries().filter {
+            $0.isVisible(atDepth: depth, whenUnclassified: true, usingKey: key)
+        }
     }
 
     // MARK: - Import

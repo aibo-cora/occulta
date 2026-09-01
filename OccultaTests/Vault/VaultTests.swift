@@ -362,7 +362,14 @@ private func secureEnclaveAvailable() -> Bool {
         #expect(!security.isEntryVisible(entry), "hidden at any other depth too, including deeper ones")
     }
 
-    @Test func isEntryVisible_legacyNilVisibleThroughDepth_alwaysVisible() throws {
+    /// `isEntryVisible` fails closed on nil (`whenUnclassified: false`) as defense-in-depth
+    /// for the display path — see `VaultEntry.isVisible`'s doc comment. This constructs the
+    /// nil-entry + restricted-depth combination directly, bypassing `activateSecureMode`
+    /// entirely; in production that combination shouldn't occur (Step 8 always stamps nil
+    /// away before a duress depth exists), but `isEntryVisible` doesn't get to assume that
+    /// guarantee held. `entriesVisible` (backup export), by contrast, passes `true` for this
+    /// same nil case — see `VaultBackupRoundTripTests` for that side.
+    @Test func isEntryVisible_legacyNilVisibleThroughDepth_hiddenAtRestrictedDepth() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext(), currentDepth: 0)
         let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
@@ -370,7 +377,8 @@ private func secureEnclaveAvailable() -> Bool {
 
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         security.applyVerifyState(for: .normal(depth: 3))
-        #expect(security.isEntryVisible(entry), "a row with no visibleThroughDepth (pre-dating this field) must stay visible")
+        #expect(!security.isEntryVisible(entry),
+                "a row with no visibleThroughDepth must fail closed at a restricted depth")
     }
 
     @Test func visibleEntries_endToEnd_exactMatchOnly() throws {

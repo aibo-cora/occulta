@@ -31,12 +31,17 @@ import SwiftData
 /// `Manager.Key()` — at the call site. No injection reaches it, so these are gated rather than
 /// rewritten.
 ///
-/// The failure is quiet, which is why it reached CI rather than a local run. `encrypt` returns
-/// nil rather than throwing when no key is available, so `addEntry` still succeeds and simply
-/// stamps a nil ceiling. `entriesVisible(atDepth:)` then excludes every nil-stamped entry, so
-/// the export comes back empty and anything asserting on what survives the round trip fails on
-/// a count. Tests that only assert the *file* is sealed never read the stamp and keep running
-/// on CI — hence the gating is per test, not per suite.
+/// The failure is quiet in one respect and loud in another. `addEntry`'s depth stamp goes
+/// through the bare `Data.encrypt()` extension (uninjectable); when no real key is available it
+/// returns nil rather than throwing, so `addEntry` still succeeds and simply stamps a nil
+/// ceiling — `entriesVisible(atDepth:whenUnclassified:)` treats that as included (a "never
+/// classified" row, not a gap), so this part stays quiet. But `entriesVisible` also derives the
+/// local DB key directly via the same uninjectable path, once, up front — on CI that derivation
+/// itself fails and `entriesVisible` throws, which `exportBackup` doesn't swallow. So any test
+/// that calls `exportBackup` at all fails loudly with a thrown error on CI, not just ones
+/// asserting on counts or content. Tests that never call `exportBackup` (e.g. only checking a
+/// pre-existing file's sealing) don't hit either path and keep running — hence the gating is
+/// per test, not per suite.
 private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
 }
@@ -200,8 +205,10 @@ struct VaultBackupRoundTripTests {
         let decodedDepth = restored.visibleThroughDepth?.decrypt().flatMap { DepthCodec.decode($0) }
         #expect(decodedDepth == 0, """
             The restored entry's ceiling decoded to \(String(describing: decodedDepth)), not 0. A \
-            nil or wrong ceiling means `isEntryVisible` reads it as visible at every depth — \
-            including duress ones — regardless of the depth it was hidden at when exported.
+            wrong (non-nil) ceiling would show or hide the entry at the wrong depth after \
+            restore; a nil ceiling would fail closed in the duress display path but still \
+            surface in every future backup export — either way, not the depth it was hidden at \
+            when exported.
             """)
     }
 
