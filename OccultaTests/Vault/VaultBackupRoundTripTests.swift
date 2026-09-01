@@ -133,7 +133,7 @@ struct VaultBackupRoundTripTests {
         }
     }
 
-    @Test("A backup is unreadable without the BEK")
+    @Test("A backup is unreadable without the BEK", .enabled(if: secureEnclaveAvailable()))
     func backupIsSealed() throws {
         let (vault, _) = try makeBackupReadyVault()
         _ = try vault.addEntry(label: "secret-label", content: Data("secret-body".utf8), type: .note)
@@ -255,7 +255,8 @@ struct VaultBackupRoundTripTests {
     /// explicit migration code. Constructs the old file by hand rather than trusting
     /// that the fallback path is exercised — the two prior tests never actually put an
     /// old-format file on disk.
-    @Test("An old single-record export-meta file degrades to nil, not a crash")
+    @Test("An old single-record export-meta file degrades to nil, not a crash",
+          .enabled(if: secureEnclaveAvailable()))
     func oldFormatFileDegradesGracefully() throws {
         let (vault, _) = try makeBackupReadyVault()
         let vaultKey = try vault.currentKey()

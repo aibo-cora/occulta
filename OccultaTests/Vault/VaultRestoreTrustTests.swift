@@ -117,7 +117,11 @@ private func bekBytes(of vault: VaultManager) throws -> Data {
 
 // MARK: - Bug 94
 
-@Suite("Bug 94 — restore must not trust attacker-supplied material", .serialized)
+// Every test in this suite goes through makeBackupReadyVault()/exportBackup()/addEntry(),
+// which stamp visibleThroughDepth through the bare, uninjectable Data.encrypt() extension
+// (Manager.Key(), not TestKeyManager) — no seam reaches it. Gated at the suite level rather
+// than per test since there is no test here that doesn't depend on this.
+@Suite("Bug 94 — restore must not trust attacker-supplied material", .serialized, .enabled(if: secureEnclaveAvailable()))
 @MainActor
 struct VaultRestoreTrustTests {
 
@@ -359,7 +363,9 @@ struct VaultRestoreTrustTests {
 /// above depth 0 (defer), and `refreshPendingRestoreState` must never publish real state
 /// above depth 0 (hide) — the two ship together, since deferring without hiding turns a
 /// disclosure into a self-contradicting oracle.
-@Suite("Bug 93 — recovery must not run or announce itself above depth 0", .serialized)
+// Same reason as VaultRestoreTrustTests above — every test here goes through
+// makeBackupReadyVault()/exportBackup(), which needs the real, uninjectable Manager.Key().
+@Suite("Bug 93 — recovery must not run or announce itself above depth 0", .serialized, .enabled(if: secureEnclaveAvailable()))
 @MainActor
 struct VaultRestoreDepthGatingTests {
 
