@@ -282,7 +282,7 @@ extension IdentityChallenge {
         private static func writeOCC(_ data: Data, kind: String) throws -> URL {
             let name = (UUID().uuidString.components(separatedBy: "-").last ?? "unknown") + ".occ"
             let url  = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-            try data.write(to: url)
+            try data.writeProtected(to: url)
             return url
         }
     }

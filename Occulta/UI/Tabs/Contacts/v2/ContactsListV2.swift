@@ -29,30 +29,15 @@ struct ContactsV2: View {
     }
 
     private var sortedGroups: [Group] {
-        let source = self.searchText.isEmpty ? self.groups : self.groups.filter {
-            ($0.readName() ?? "").localizedStandardContains(self.searchText)
-        }
-        return source.sorted { ($0.readName() ?? "") < ($1.readName() ?? "") }
+        ContactListFilter.sortedGroups(self.groups, matching: self.searchText)
     }
 
     private var visibleContacts: [Contact.Profile] {
-        self.contacts.filter { $0.isVisible(atDepth: self.security.currentDepth) }
+        ContactListFilter.visibleContacts(self.contacts, atDepth: self.security.currentDepth)
     }
 
     private var sortedContacts: [Contact.Profile] {
-        let source = self.searchText.isEmpty ? self.visibleContacts : self.visibleContacts.filter {
-            $0.givenName.decrypt().localizedStandardContains(self.searchText)
-            || $0.familyName.decrypt().localizedStandardContains(self.searchText)
-            || $0.organizationName.decrypt().localizedStandardContains(self.searchText)
-        }
-        
-        return source.sorted {
-            let lf = $0.familyName.decrypt(), rf = $1.familyName.decrypt()
-            
-            if !lf.isEmpty || !rf.isEmpty { return lf < rf }
-            
-            return $0.givenName.decrypt() < $1.givenName.decrypt()
-        }
+        ContactListFilter.sortedContacts(self.visibleContacts, matching: self.searchText)
     }
 
     var body: some View {
@@ -340,20 +325,35 @@ private struct TrustSummaryCard: View {
 
 // MARK: - Section Header
 
-private struct SectionHeaderV2: View {
-    let status: VerificationStatus
+struct SectionHeaderV2: View {
+    private let label: String
+    private let color: Color
+    private let dashed: Bool
+
+    init(status: VerificationStatus) {
+        self.label  = status.sectionLabel
+        self.color  = status.color
+        self.dashed = status == .pending
+    }
+
+    /// For sections that aren't keyed to a verification status — the picker's groups section.
+    init(label: String, color: Color = .secondary) {
+        self.label  = label
+        self.color  = color
+        self.dashed = false
+    }
 
     var body: some View {
         HStack(spacing: 6) {
-            if self.status == .pending {
+            if self.dashed {
                 Circle()
                     .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
                     .frame(width: 8, height: 8)
                     .foregroundStyle(.secondary)
             } else {
-                Circle().fill(self.status.color).frame(width: 8, height: 8)
+                Circle().fill(self.color).frame(width: 8, height: 8)
             }
-            Text(self.status.sectionLabel)
+            Text(self.label)
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .tracking(1.6)
         }
@@ -362,7 +362,7 @@ private struct SectionHeaderV2: View {
 
 // MARK: - Group Row
 
-private struct GroupRowV2: View {
+struct GroupRowV2: View {
     let group: Group
 
     private var name: String { self.group.readName() ?? "Unnamed Group" }

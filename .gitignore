@@ -33,3 +33,6 @@ Carthage/Build/
 
 # Claude
 .claude*
+
+# Consolidated open-limitations register — kept local, not tracked
+Docs/Audit/OPEN_LIMITATIONS.md

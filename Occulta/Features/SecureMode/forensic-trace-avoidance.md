@@ -265,19 +265,106 @@ The animation frame is captured before any app callback fires at all — before 
 
 ---
 
-### U6 — Share index filtered to depth-1 on lock
+### U6 — Share index removed; the extension no longer reads contacts
 
-The share extension reads `ShareIndex.sqlite` from the app group directly — it has no PIN prompt and no access to the main app's security state. `ContactManager+ShareIndex.swift`'s `syncShareIndex()` computes its filter depth at *call time* — `max(security.currentDepth, 1)` when `isSecureModeActive`, clamped so the extension never sees deeper than depth-1 even when the owner is authenticated at real depth 0; unfiltered when Secure Mode was never configured.
+**Resolved by deletion, 2026-08-16.** This section used to describe how `ShareIndex.sqlite` — a
+mirror of the contact list living in the App Group so the share extension could draw a recipient
+picker — was kept filtered to depth 1 at all times, since the extension has no PIN prompt and no
+access to the security state.
 
-**Investigated during the Bug 56 `AppScreen` doc pass: is this still correct?** The pre-Bug-56 design (Bug 6 / Bug 54A) additionally rebuilt the index whenever the app went `.inactive`, via `Manager.Security.handleInactive()`. That specific trigger, and the `shareIndexAllowedIDs` property it wrote, no longer exist — both were removed along with the rest of `Manager.Security`'s old screen-lifecycle code. Traced every remaining path that can change `currentDepth` or `isSecureModeActive` against every existing `syncShareIndex()` call site:
-- Unlock / duress-unlock — `PINEntry`'s `onAuthenticated`/`onDuress` (`OccultaApp.swift`).
-- Any contact mutation, including classification/sensitivity changes (`saveClassification`/`setVisibility` both end in `modelContext.save()`) — `NSManagedObjectContext.didSaveObjectsNotification` on `ContactManager`'s own context (`Contact+Manager.swift`).
-- `activateSecureMode` — `SecureModeSetupFlow.swift`.
-- `deactivateSecureMode` — `SecureModeDeactivateFlow.swift`.
+The picker moved into the main app (Bug 84), behind the PIN gate, where the authenticated depth is
+known. `syncShareIndex()`, its five call sites, and the `ShareableContact` model are gone, and
+`ShareSession.removeLegacyContactIndex` deletes the file and its `-wal`/`-shm` companions from the
+App Group on every foreground, so an upgrade does not leave the mirror behind. The rows were always
+AES-GCM sealed, but the file's existence, row count, sizes, and mtime are relationship metadata, and
+nothing reads them any more.
 
-No path was found that changes either value without going through one of these four — **the missing `.inactive` trigger was not an active leak**, contrary to this section's own initial read. `syncShareIndex()`'s `max(_, 1)` floor also means true depth-0-only content is excluded from the index unconditionally, from the moment Secure Mode is first configured, independent of staleness.
+What this retires: the entire class of defect where the mirror was written at the wrong depth —
+Bugs 6, 65, 66, 67, 68, and 69 — along with the reconciliation argument this section carried, which
+had to enumerate every path that could change `currentDepth` or `isSecureModeActive` and check each
+one against a `syncShareIndex()` call site. There is no longer a second copy to keep in agreement
+with the first.
 
-**Added anyway, as defense-in-depth, not a bug fix:** `OccultaApp.swift`'s `scenePhase` handler now also calls `syncShareIndex()` on `.inactive`. This hedges against (a) the theoretical async-dispatch gap between a contact save and its `.receive(on: DispatchQueue.main)`-deferred resync landing before backgrounding, and (b) any future code path that changes security state without routing through one of the four functions above. `ContactManager+ShareIndex.swift`'s doc comment (previously claiming a `scenePhase == .active` trigger that never existed) now accurately lists all five call sites.
+What remains in the App Group: `pending/<session-uuid>/`, holding files the user has explicitly
+chosen to share, sealed under the share-index SE key with `.completeFileProtection`, named
+positionally, swept after an hour. That key keeps its tag and HKDF info string — it still seals
+staged files and manifests, and changing either would strand it.
+
+One consequence worth recording here rather than only in the bug: the old `max(currentDepth, 1)`
+clamp meant a contact classified as real-only could not be reached from the iOS share sheet at any
+depth, including depth 0. The in-app picker runs at the authenticated depth, so that contact is now
+shareable — at depth 0, and only there.
+
+---
+
+## OS-Level Artifacts Outside the Container
+
+Added 2026-08-15. Every other section of this document covers artifacts *this app writes*, where
+key rotation (S1) and file protection (S3) apply. These two are different in kind: iOS writes them,
+they live outside the app container, and **cryptographic erasure cannot reach them** — a full
+deactivation and key rotation leaves both untouched. That makes them the weakest link in the
+document, and they were absent from it until now.
+
+| # | Measure | Severity | Status |
+|---|---------|----------|--------|
+| O1 | Sensitive text inputs excluded from the keyboard's dynamic lexicon | High | ✅ (residual: pre-existing entries) |
+| O2 | Sensitive copies are device-local and expiring | High | ✅ (residual: in-window readability) |
+
+### O1 — Keyboard dynamic lexicon
+
+**Scope:** vault label and content editor (`Vault+NewEntrySheet.swift`), shared contact text row
+(`ContactFormV2.swift`). **Layer:** `UITextInputTraits` via SwiftUI modifiers.
+
+iOS learns words typed into ordinary text inputs and stores them in the keyboard's dynamic lexicon
+at `/private/var/mobile/Library/Keyboard/*-dynamic-text.dat`. That file is outside the app
+container, is not covered by our `.completeFileProtection`, is encrypted under no Occulta key, and
+**survives deactivation and key rotation** — so a seed phrase typed into the vault was recoverable
+from a device image long after S1 had cryptographically erased the vault itself.
+
+**Measure:** `.autocorrectionDisabled()` on all three inputs — which maps to
+`UITextInputTraits.autocorrectionType = .no`, the standard mitigation for this vector (OWASP MASVS
+MSTG-STORAGE-5) — plus `.textInputAutocapitalization(.never)` on the content editor, where
+never-capitalize is also plain correctness, since seed phrases are lowercase.
+
+**Not affected: the PIN.** `PINEntry` is a custom `KeypadButton` grid and never raises the system
+keyboard, so no PIN digit has ever reached the lexicon.
+
+**Distinct from U5c.** That editor already carried `.privacySensitive(true)`, which addresses
+SwiftUI's redaction system — widgets, Lock Screen, Focus summaries. Orthogonal surface. Its presence
+is why this gap survived: the field looked handled.
+
+**Residual — words typed before this shipped are still in the lexicon, and nothing here removes
+them.** The lexicon is per-keyboard, not enumerable by the app, and has no API for selective
+deletion; it ages out only as the user types other things. The only user-side reset is
+Settings → General → Transfer or Reset iPhone → Reset → Reset Keyboard Dictionary, which is itself
+a conspicuous act. **Third-party keyboards are outside this measure entirely** — they receive
+keystrokes in their own process with their own storage, and `autocorrectionType` is advisory to
+them at best.
+
+---
+
+### O2 — System pasteboard and Universal Clipboard
+
+**Scope:** vault entry copy (`Vault+EntryDetail.swift`), signed message copy (`Sign.swift`),
+composed message copy (`ComposableMessage.swift`). **Layer:** `UIPasteboard.general`.
+
+`UIPasteboard.general` persists indefinitely, is readable by any app on the device, and — the part
+that matters most here — **syncs to the user's other Apple devices over Universal Clipboard unless
+`.localOnly` is set**. A decrypted vault entry assigned to `.string` therefore left the device over
+the network, which nothing else in this app does at all.
+
+**Measure:** all three sites go through `UIPasteboard.copySensitive(_:)`
+(`Occulta/Extensions/UIPasteboard.swift`), which sets `.localOnly: true` and a 120 s
+`.expirationDate`. A single entry point rather than three inline fixes, because the failure mode was
+precisely that one site already knew the pattern and the two carrying the more sensitive payloads
+did not.
+
+**Residual — the pasteboard is still readable by every app on the device for those 120 s**, and the
+expiry is enforced by the OS, not by us; a forensic image captured inside the window may contain the
+plaintext. `.localOnly` closes the cross-device hop, not on-device exposure.
+
+**Not a defect: pasting into another app moves plaintext beyond our reach.** That is what the copy
+button is for, and no measure here should try to prevent it.
 
 ---
 

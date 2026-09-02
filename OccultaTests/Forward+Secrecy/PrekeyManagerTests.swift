@@ -12,6 +12,14 @@ import Security
 
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 private extension String {
@@ -28,7 +36,7 @@ struct PrekeyManagerGenerationTests {
 
     let pm = Manager.PrekeyManager()
 
-    @Test func generateBatch_returnsDefaultCount() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_returnsDefaultCount() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -36,7 +44,7 @@ struct PrekeyManagerGenerationTests {
         #expect(prekeys.count == Manager.PrekeyManager.defaultBatchSize)
     }
 
-    @Test func generateBatch_customCount() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_customCount() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -44,7 +52,7 @@ struct PrekeyManagerGenerationTests {
         #expect(prekeys.count == 3)
     }
 
-    @Test func generateBatch_allPublicKeysAre65Bytes() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_allPublicKeysAre65Bytes() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -54,7 +62,7 @@ struct PrekeyManagerGenerationTests {
         }
     }
 
-    @Test func generateBatch_allIDsAreUnique() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_allIDsAreUnique() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -63,7 +71,7 @@ struct PrekeyManagerGenerationTests {
         #expect(ids.count == prekeys.count)
     }
 
-    @Test func generateBatch_allContactIDsMatchInput() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_allContactIDsMatchInput() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -71,7 +79,7 @@ struct PrekeyManagerGenerationTests {
         #expect(prekeys.allSatisfy { $0.contactID == cid })
     }
 
-    @Test func generateBatch_keysImmediatelyRetrievable() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_keysImmediatelyRetrievable() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -82,7 +90,7 @@ struct PrekeyManagerGenerationTests {
         }
     }
 
-    @Test func generateBatch_twoBatches_allKeysRetrievable() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func generateBatch_twoBatches_allKeysRetrievable() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -107,7 +115,7 @@ struct PrekeyManagerRetrievalTests {
         #expect(pm.retrievePrivateKey(for: phantom) == nil)
     }
 
-    @Test func retrievePrivateKey_nilAfterConsume() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func retrievePrivateKey_nilAfterConsume() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -117,7 +125,7 @@ struct PrekeyManagerRetrievalTests {
         #expect(pm.retrievePrivateKey(for: prekey) == nil)
     }
 
-    @Test func retrievePrivateKey_tempPrekeyPattern_works() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func retrievePrivateKey_tempPrekeyPattern_works() throws {
         // Verifies the contactID + id → SE tag reconstruction used in decrypt.
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
@@ -138,7 +146,7 @@ struct PrekeyManagerConsumptionTests {
 
     let pm = Manager.PrekeyManager()
 
-    @Test func consume_deletesKeyFromSE() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func consume_deletesKeyFromSE() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -149,7 +157,7 @@ struct PrekeyManagerConsumptionTests {
         #expect(pm.retrievePrivateKey(for: prekeys[0]) == nil)
     }
 
-    @Test func consume_isIdempotent() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func consume_isIdempotent() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -160,7 +168,7 @@ struct PrekeyManagerConsumptionTests {
         #expect(pm.consume(prekey: prekeys[0]) == 0)
     }
 
-    @Test func consume_onlyDeletesTargetKey() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func consume_onlyDeletesTargetKey() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -171,7 +179,7 @@ struct PrekeyManagerConsumptionTests {
         #expect(pm.retrievePrivateKey(for: prekeys[2]) != nil, "Sibling key must survive")
     }
 
-    @Test func secKeyLifetime_closurePattern_nocrash() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func secKeyLifetime_closurePattern_nocrash() throws {
         // Verifies the double-temp-Prekey pattern from ContactManager.decrypt.
         // SecKey released inside closure before consume() fires.
         let cid = String.testContactID()
@@ -204,7 +212,7 @@ struct PrekeyManagerDeletionTests {
 
     let pm = Manager.PrekeyManager()
 
-    @Test func deleteAllKeys_removesEntirePool() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deleteAllKeys_removesEntirePool() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }   // safety net if assertions throw
         let prekeys = try pm.generateBatch(contactID: cid, count: 3)
@@ -217,7 +225,7 @@ struct PrekeyManagerDeletionTests {
         #expect(pm.remainingCount(for: cid) == 0)
     }
 
-    @Test func deleteAllKeys_isContactScoped() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deleteAllKeys_isContactScoped() throws {
         let cid1 = String.testContactID() + ".one"
         let cid2 = String.testContactID() + ".two"
         defer { pm.deleteAllKeys(for: cid2) }
@@ -239,7 +247,7 @@ struct PrekeyManagerStockTests {
 
     let pm = Manager.PrekeyManager()
 
-    @Test func remainingCount_accurateAfterGeneration() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func remainingCount_accurateAfterGeneration() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -249,7 +257,7 @@ struct PrekeyManagerStockTests {
         #expect(pm.remainingCount(for: cid) == 5)
     }
 
-    @Test func remainingCount_decrementsAfterConsume() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func remainingCount_decrementsAfterConsume() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -258,7 +266,7 @@ struct PrekeyManagerStockTests {
         #expect(pm.remainingCount(for: cid) == 2)
     }
 
-    @Test func needsReplenishment_falseAtOrAboveThreshold() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func needsReplenishment_falseAtOrAboveThreshold() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 
@@ -266,7 +274,7 @@ struct PrekeyManagerStockTests {
         #expect(pm.needsReplenishment(for: cid) == false)
     }
 
-    @Test func needsReplenishment_trueBelowThreshold() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func needsReplenishment_trueBelowThreshold() throws {
         let cid = String.testContactID()
         defer { pm.deleteAllKeys(for: cid) }
 

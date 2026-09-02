@@ -14,6 +14,7 @@ import LocalAuthentication
 struct VaultShardHealth: View {
 
     @Environment(VaultManager.self) private var vault
+    @Environment(Manager.Security.self) private var security
     @Query private var entries: [VaultEntry]
 
     @State private var unlocking = false
@@ -201,7 +202,7 @@ struct VaultShardHealth: View {
         ) { success, _ in
             DispatchQueue.main.async {
                 self.unlocking = false
-                if success { self.vault.unlock(context: ctx) }
+                if success { self.vault.unlock(context: ctx, currentDepth: self.security.currentDepth) }
             }
         }
     }

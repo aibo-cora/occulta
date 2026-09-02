@@ -7,11 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		DE02DCE72ED0A90D0091D4D9 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE62ED0A90D0091D4D9 /* Crypto */; };
-		DE02DCE92ED0A90D0091D4D9 /* CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */; };
-		DE02DCEB2ED0A90D0091D4D9 /* _CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */; };
 		DE1C8BEA2F8EC10D00F0E248 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DE1C8BE02F8EC10C00F0E248 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		DE1D95602F7A66A800115AEE /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = DE1D955F2F7A66A800115AEE /* README.md */; };
 		DEC7D75F2EEF1B9000764947 /* QuickLook.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DEC7D75E2EEF1B9000764947 /* QuickLook.framework */; };
 		DEC7D76B2EEF1B9000764947 /* OccultaPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = DEC7D75C2EEF1B9000764947 /* OccultaPreview.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -83,7 +79,6 @@
 		DE1C8BF02F8EC17200F0E248 /* Exceptions for "Occulta" folder in "ShareExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Features/ShareExtension/ShareableContact.swift,
 				Features/ShareExtension/ShareIndexKeyManager.swift,
 				Features/ShareExtension/ShareManifest.swift,
 			);
@@ -99,6 +94,21 @@
 		DE8B24C72EEEBB4300B83B51 /* Exceptions for "Occulta" folder in "Occulta" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				"Features/contact-backup-analysis.md",
+				"Features/Forward+Secrecy/forward_secrecy_flow.md",
+				"Features/Forward+Secrecy/FORWARD_SECRECY_GUIDE.md",
+				"Features/SecureMode/classification-mockup.html",
+				"Features/SecureMode/forensic-trace-avoidance.md",
+				Features/SecureMode/LayerStore.md,
+				Features/SecureMode/plan.md,
+				Features/SecureMode/scenarios.md,
+				Features/SecureMode/SECURE_MODE_DECRYPT_CONTRACT.md,
+				"Features/SecureMode/secure-mode-architecture.html",
+				"Features/SecureMode/SecureMode+RotationContract.md",
+				"Features/ShareExtension/SHARE_EXTENSION_PLAN 16.32.42.md",
+				Features/Vault/SHARD_PROTOCOL_CASES.md,
+				Features/Vault/VAULT_BACKUP_GUIDE.md,
+				Features/Vault/VAULT_SSS_GUIDE.md,
 				Info.plist,
 			);
 			target = DEFFD8542E9D293500CA60F9 /* Occulta */;
@@ -178,9 +188,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				DE02DCE92ED0A90D0091D4D9 /* CryptoExtras in Frameworks */,
-				DE02DCE72ED0A90D0091D4D9 /* Crypto in Frameworks */,
-				DE02DCEB2ED0A90D0091D4D9 /* _CryptoExtras in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -303,11 +310,6 @@
 				DEFFD8812E9D349700CA60F9 /* Assets */,
 			);
 			name = Occulta;
-			packageProductDependencies = (
-				DE02DCE62ED0A90D0091D4D9 /* Crypto */,
-				DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */,
-				DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */,
-			);
 			productName = Occulta;
 			productReference = DEFFD8552E9D293500CA60F9 /* Occulta.app */;
 			productType = "com.apple.product-type.application";
@@ -396,9 +398,6 @@
 			);
 			mainGroup = DEFFD84C2E9D293500CA60F9;
 			minimizedProjectReferenceProxies = 1;
-			packageReferences = (
-				DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */,
-			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DEFFD8562E9D293500CA60F9 /* Products */;
 			projectDirPath = "";
@@ -432,7 +431,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				DE1D95602F7A66A800115AEE /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -520,7 +518,7 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
@@ -532,7 +530,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10.1;
+				MARKETING_VERSION = 1.10.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.ShareExtension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -552,7 +550,7 @@
 				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = ShareExtension/Info.plist;
@@ -564,7 +562,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10.1;
+				MARKETING_VERSION = 1.10.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.ShareExtension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -583,7 +581,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OccultaPreview/Info.plist;
@@ -597,7 +595,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10.1;
+				MARKETING_VERSION = 1.10.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.OccultaPreview";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -617,7 +615,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OccultaPreview/Info.plist;
@@ -631,7 +629,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.10.1;
+				MARKETING_VERSION = 1.10.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta.OccultaPreview";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -776,7 +774,7 @@
 				CODE_SIGN_ENTITLEMENTS = Occulta/Occulta.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				ENABLE_APP_SANDBOX = YES;
@@ -806,7 +804,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.10.1;
+				MARKETING_VERSION = 1.10.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -833,7 +831,7 @@
 				CODE_SIGN_ENTITLEMENTS = Occulta/Occulta.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = R6F5KHKKNX;
 				ENABLE_APP_SANDBOX = YES;
@@ -863,7 +861,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
-				MARKETING_VERSION = 1.10.1;
+				MARKETING_VERSION = 1.10.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.github.aibo-cora.occulta";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1050,35 +1048,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/apple/swift-crypto.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 4.1.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		DE02DCE62ED0A90D0091D4D9 /* Crypto */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */;
-			productName = Crypto;
-		};
-		DE02DCE82ED0A90D0091D4D9 /* CryptoExtras */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */;
-			productName = CryptoExtras;
-		};
-		DE02DCEA2ED0A90D0091D4D9 /* _CryptoExtras */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = DE02DCE52ED0A90D0091D4D9 /* XCRemoteSwiftPackageReference "swift-crypto" */;
-			productName = _CryptoExtras;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = DEFFD84D2E9D293500CA60F9 /* Project object */;
 }

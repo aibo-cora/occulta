@@ -103,6 +103,18 @@ extension Manager {
         ///
         /// This is the exact moment forward secrecy is established for a message.
         /// Matches on the full `"prekey.<contactID>.<uuid>"` tag — see ``retrievePrivateKey(for:)``.
+        ///
+        /// The status is inspected here rather than at the call sites, which both discard the
+        /// return value. A non-success means the private key is still in the Enclave and the
+        /// message that just opened has no forward secrecy — the one thing this function exists
+        /// to provide — so it must not pass unremarked.
+        ///
+        /// It stays best-effort in release, deliberately. By the time this runs the message is
+        /// already decrypted, so throwing would discard a legitimate message to report a
+        /// condition the user cannot act on, and a distinct user-visible error would be a new
+        /// surface for no gain. There is nothing to retry either: the failure modes are the
+        /// keychain being unavailable, which a second immediate call will not fix, and
+        /// `errSecItemNotFound`, which means the key is already gone.
         @discardableResult
         func consume(prekey: Prekey) -> Int {
             let query: [String: Any] = [
@@ -111,7 +123,15 @@ extension Manager {
                 kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
                 kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave
             ]
-            return SecItemDelete(query as CFDictionary) == errSecSuccess ? 1 : 0
+            let status = SecItemDelete(query as CFDictionary)
+
+            #if DEBUG
+            if status != errSecSuccess {
+                debugPrint("⚠️ Prekey \(prekey.id) survived consume (OSStatus \(status)) — forward secrecy NOT established for this message")
+            }
+            #endif
+
+            return status == errSecSuccess ? 1 : 0
         }
 
         /// Delete ALL SE private keys for a contact, regardless of sequence.

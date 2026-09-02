@@ -61,6 +61,17 @@ final class DraftStore {
         }
     }
 
+    /// Awaits the pending debounced save, if one is scheduled.
+    ///
+    /// Test-only seam, same rationale as `debounceDelay`: production code never needs
+    /// to observe when the write lands. Without it a test can only poll for the row to
+    /// appear, and `Message.Draft.find` re-derives the hybrid local key on every call —
+    /// so the poll loop becomes a Secure Enclave load generator competing with the rest
+    /// of the suite, and can burn its whole timeout on key derivations.
+    func awaitPendingSave() async {
+        await self.saveTask?.value
+    }
+
     /// Immediate, non-debounced save — for `.onDisappear`, where a 2s wait would
     /// risk losing state to backgrounding or termination before it fires.
     func flush(

@@ -18,6 +18,7 @@ import LocalAuthentication
 struct VaultRecoverySettings: View {
 
     @Environment(VaultManager.self) private var vault
+    @Environment(Manager.Security.self) private var security
     @State private var unlocking = false
 
     // Amber consistent with the rest of the vault UI.
@@ -34,6 +35,19 @@ struct VaultRecoverySettings: View {
         .navigationTitle("Vault Recovery")
         .navigationBarTitleDisplayMode(.large)
         .scrollIndicators(.hidden)
+        .onAppear {
+            // backupStaleness is depth-scoped; this view can be reached without ever
+            // visiting Vault+Tab first, so it must refresh its own copy rather than
+            // rely on that tab having already done it.
+            if self.vault.isUnlocked {
+                self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+            }
+        }
+        .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
+            if isUnlocked {
+                self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+            }
+        }
     }
 
     // MARK: - BEK
@@ -225,7 +239,7 @@ struct VaultRecoverySettings: View {
         ) { success, _ in
             DispatchQueue.main.async {
                 self.unlocking = false
-                if success { self.vault.unlock(context: ctx) }
+                if success { self.vault.unlock(context: ctx, currentDepth: self.security.currentDepth) }
             }
         }
     }

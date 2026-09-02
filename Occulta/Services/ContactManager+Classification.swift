@@ -24,13 +24,35 @@ extension ContactManager {
         guard let contact = try? self.modelContext.fetch(descriptor).first,
               let data    = contact.visibleThroughDepth,
               let plain   = data.decrypt(),
-              let value   = try? JSONDecoder().decode(Int.self, from: plain)
+              let value   = DepthCodec.decode(plain)
         else { return false }
         return value == self.security.currentDepth
     }
 
     /// Returns true if the contact is visible at the current depth.
     /// Unknown contacts return false — conservative default.
+    ///
+    /// **Intentionally has no production callers. Do not wire it back into the inbound path.**
+    ///
+    /// It used to back `passSecurityControl` in `OccultaApp`, which rejected any inbound bundle
+    /// from a contact not visible at the current depth. That rejection was itself a
+    /// duress-detection oracle: it is reachable *only* when `isRestricted == true`, so a coercer
+    /// who sends a probe from an identity they know is paired with the device learns whether
+    /// Secure Mode is active — one probe is close to conclusive, two remove essentially all
+    /// doubt. Removed in `b1f9045` ("no bundle is ever rejected for restriction state"), with
+    /// `2958593` making the queued-file drain behave identically on a duress unlock so the two
+    /// paths could not differ either. Full reasoning, including the content-confidentiality cost
+    /// that was accepted in exchange, is in
+    /// `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
+    ///
+    /// Kept, with its tests, because the semantics are still the right definition of "visible to
+    /// me right now" and a future caller may legitimately need them — but any use that can
+    /// produce a *sender-dependent, restriction-gated* observable reopens that oracle. Read the
+    /// doc before adding one.
+    ///
+    /// Note this is not the same as UI-side visibility filtering, which is alive and correct:
+    /// `ContactsListV2`, `GroupDetailV3`, `Vault+Tab` and `ContactClassification` all filter on
+    /// `isVisible(atDepth:)`. What was removed is rejecting *inbound bundles* on that basis.
     func isSafeContact(_ identifier: String) -> Bool {
         let descriptor = FetchDescriptor<Contact.Profile>(
             predicate: #Predicate { $0.identifier == identifier && $0.deletionToken == nil }
@@ -50,7 +72,7 @@ extension ContactManager {
         guard let contact = try? self.modelContext.fetch(descriptor).first,
               let data    = contact.globalTrusteeDepth,
               let plain   = data.decrypt(),
-              let value   = try? JSONDecoder().decode(Int.self, from: plain)
+              let value   = DepthCodec.decode(plain)
         else { return false }
         return value == self.security.currentDepth
     }
@@ -117,7 +139,7 @@ extension ContactManager {
         for contact in contacts {
             guard contact.isVisible(atDepth: depth) else { continue }
             let depthValue = safeIDs.contains(contact.identifier) ? Int.max : depth
-            contact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            contact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             if depthValue != Int.max { hiddenIdentifiers.insert(contact.identifier) }
         }
         for identifier in hiddenIdentifiers {
@@ -146,7 +168,7 @@ extension ContactManager {
         )
         guard let contact = try? self.modelContext.fetch(descriptor).first else { return }
         let depth = self.security.currentDepth
-        contact.visibleThroughDepth = try JSONEncoder().encode(
+        contact.visibleThroughDepth = try DepthCodec.encode(
             isSensitive ? depth : Int.max
         ).encrypt()
 
@@ -173,7 +195,7 @@ extension ContactManager {
         for contact in contacts {
             guard contact.isVisible(atDepth: depth) else { continue }
             let value = selectedIDs.contains(contact.identifier) ? depth : -1
-            contact.globalTrusteeDepth = try JSONEncoder().encode(value).encrypt()
+            contact.globalTrusteeDepth = try DepthCodec.encode(value).encrypt()
         }
         try self.modelContext.save()
     }
@@ -251,14 +273,14 @@ extension ContactManager {
         // before this field was added — any blob contact had a finite visibleThroughDepth.
         let depth = record.visibleThroughDepth ?? 0
         restored.visibleThroughDepth = try AES.GCM.seal(
-            JSONEncoder().encode(depth), using: stagedKey, authenticating: aad
+            DepthCodec.encode(depth), using: stagedKey, authenticating: aad
         ).combined
 
         // Same restore for the global-trustee stamp. Falls back to -1 (not a trustee)
         // for blobs written before this field was added.
         let trusteeDepth = record.globalTrusteeDepth ?? -1
         restored.globalTrusteeDepth = try AES.GCM.seal(
-            JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+            DepthCodec.encode(trusteeDepth), using: stagedKey, authenticating: aad
         ).combined
 
         // Write the originDepth sentinel directly, not restored from the blob — a
@@ -266,7 +288,7 @@ extension ContactManager {
         // Step 4 short-circuit), so anything reaching this function has originDepth == 0
         // by construction. There is no captured value to restore here.
         restored.originDepth = try AES.GCM.seal(
-            JSONEncoder().encode(0), using: stagedKey, authenticating: aad
+            DepthCodec.encode(0), using: stagedKey, authenticating: aad
         ).combined
 
         if let attrs = record.signedAttributes, !attrs.isEmpty {

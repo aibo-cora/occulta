@@ -29,6 +29,7 @@ final class InMemoryLayerStoreBackend: LayerStoreBackend {
 
     var exists: Bool { self.stored != nil }
 
-    // Non-persistent — never stale.
-    var modificationDate: Date? { nil }
+    /// Defaults to `nil` — non-persistent, therefore never stale, which is what every
+    /// existing test relies on. Settable so the maintenance-cadence tests can age the file.
+    var modificationDate: Date? = nil
 }

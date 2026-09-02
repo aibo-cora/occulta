@@ -36,28 +36,6 @@ private func secureEnclaveAvailable() -> Bool {
     (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
 }
 
-/// Polls `condition` until it's true or `timeout` elapses, instead of a single fixed
-/// sleep. Needed because these tests run as part of the full suite alongside many other
-/// suites that also hit the real Secure Enclave in parallel — observed contention in
-/// that scenario has pushed otherwise-sub-second SE-touching tests elsewhere in this
-/// target to 17s+. The timeout here is generous specifically to absorb that; a poll
-/// (rather than one long fixed sleep) still lets the common case — no contention —
-/// return almost immediately. Only used for "this must eventually become true"
-/// assertions; "this must never happen" checks use a fixed wait instead, since there's
-/// no positive condition to poll for, and no amount of contention-induced delay can
-/// turn a correct "nothing was written" into a false pass.
-private func waitUntil(
-    timeout: Duration = .seconds(30),
-    poll: Duration = .milliseconds(100),
-    _ condition: () -> Bool
-) async {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if condition() { return }
-        try? await Task.sleep(for: poll)
-    }
-}
-
 @MainActor
 @Suite("DraftStore — stale isSensitive race")
 struct DraftStoreRaceTests {
@@ -130,7 +108,7 @@ struct DraftStoreRaceTests {
             modelContext: context
         )
 
-        await waitUntil { Message.Draft.find(recipientID: recipientID, in: context) != nil }
+        await store.awaitPendingSave()
 
         #expect(Message.Draft.find(recipientID: recipientID, in: context) != nil,
                 "a draft to a never-sensitive contact must still be written after the debounce")
@@ -198,7 +176,7 @@ struct DraftStoreRaceTests {
             try await Task.sleep(for: .milliseconds(20))
         }
 
-        await waitUntil { Message.Draft.find(recipientID: recipientID, in: context) != nil }
+        await store.awaitPendingSave()
 
         #expect(counter.count == 1,
                 "isSensitive should be evaluated exactly once for the one debounce window that survives, not once per keystroke — got \(counter.count) calls")

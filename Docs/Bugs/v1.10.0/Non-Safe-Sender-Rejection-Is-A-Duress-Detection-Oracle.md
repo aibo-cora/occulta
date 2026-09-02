@@ -2,6 +2,23 @@
 
 **Status: fixed** — the full design is implemented (`d0d75b5`, `314cf18`, `b1f9045`, `2958593`), with one gap found and fixed by a subsequent security review (`4da8531`) and one accepted, bounded residual documented (see "Security review" near the bottom). No bundle is ever rejected for restriction state anymore, for any contact, real or duress-origin, existing or newly-paired, on either unlock path (already-unlocked live receipt or queued-while-locked drain via C2). The rejection-based detection oracle — both the active-tester and passive-receipt variants as originally scoped — is closed. The active-tester variant closes with zero residual risk: the coercer is always the author of what gets decrypted back to them, so there's no information asymmetry to protect. What remains is narrower and different in kind, and was a deliberate, explicit trade, not an oversight: a timing-bounded **content-confidentiality** risk for the passive variant only (a real, unaware third party's message rendering on screen during a coercion window) — see "Final design" near the bottom for that residual-risk discussion. Not a detection oracle in the original sense, since there's no longer any sender-dependent rejection signal for a coercer to read. Separately, `originDepth`'s own backfill for contacts predating this release has a bounded, accepted residual — see "Security review" near the bottom. A 2026-08-07 pass verified the "wording parity" open question below is already satisfied by the shipped code and closed one adjacent gap found while verifying it — see "2026-08-07 — Wording parity verified..." near the bottom. Found while scoping shard-custody items 4–5 (`Shard-Custody-Not-Cleaned-Up-On-Contact-Deletion.md`) — surfaced when checking whether a coercer-controlled second device sending a real shard could be used to detect duress mode.
 
+## Note for anyone auditing `isSafeContact` (added 2026-08-13)
+
+`ContactManager.isSafeContact` still exists, still has tests asserting its semantics, and has
+**zero production call sites**. That is the intended end state of this fix, not a regression — it
+was the helper `passSecurityControl` was built on, and `passSecurityControl` is what had to go.
+
+Recording it because the shape is misleading: a well-tested helper with no callers reads as
+something that got dropped by accident, and the obvious "fix" is to call it again from the inbound
+path. That would restore the oracle described below. A doc comment on the function now says so and
+points here.
+
+Not to be confused with UI-side visibility filtering, which is untouched and correct —
+`ContactsListV2`, `GroupDetailV3`, `Vault+Tab` and `ContactClassification` all filter on
+`isVisible(atDepth:)`. What this fix removed is rejecting *inbound bundles* on restriction state.
+
+---
+
 ## The mechanism
 
 `passSecurityControl` (`OccultaApp.swift:733`):
@@ -66,8 +83,8 @@ This is the same underlying tension already identified from the opposite directi
 ## Open questions — not yet decided
 
 - ~~**Silent drop instead of a surfaced error?**~~ **Decided 2026-08-07: no — keep the surfaced alert in all cases.** See "Wording parity verified" below: the two failure categories already produce identical, surfaced error text, and that was judged sufficient cover for a single observation. Silent-drop-everywhere was considered and rejected as a broader behavior change (legitimate users lose feedback for ordinary misdirected/corrupted files at real depth 0 too) than this pass's scope called for.
-- **Is there any way to make the two failure categories statistically indistinguishable**, not just textually identical? E.g., could real depth-0 mode be made to occasionally reject a known contact's message for unrelated legitimate reasons at a similar rate, so a duress-depth rejection isn't categorically anomalous? Untested, and may not be achievable without cost elsewhere. **Still fully open** — this is now the primary residual gap for the passive-receipt variant above: identical wording defeats a single observation, not a pattern noticed over extended physical control (one contact's messages consistently failing while others' don't).
-- **How much of this can actually be closed, versus accepted as a residual limit** on what this app's threat model can defend against (an adversary with physical control who can force live protocol tests, as opposed to only inspecting data at rest)? Worth an explicit decision rather than leaving it implicitly unresolved. Still open.
+- ~~**Is there any way to make the two failure categories statistically indistinguishable**, not just textually identical? E.g., could real depth-0 mode be made to occasionally reject a known contact's message for unrelated legitimate reasons at a similar rate, so a duress-depth rejection isn't categorically anomalous?~~ **Superseded 2026-08-13 — the mechanism this asks about no longer exists.** It presumes a depth-conditional *rejection*, and `passSecurityControl`'s removal deleted the only one. A full inbound-path trace found no depth-correlated rejection anywhere. It also found that the live residual is a different shape entirely — a *presence* signal, not a failure signal — which needs a different question. See "2026-08-13 — Full inbound-path trace" at the bottom.
+- ~~**How much of this can actually be closed, versus accepted as a residual limit** on what this app's threat model can defend against (an adversary with physical control who can force live protocol tests, as opposed to only inspecting data at rest)?~~ **Answered 2026-08-13 for the surviving case: residual limit, structurally.** The rejection oracle was fixable because rejection was one choice among several; the presence oracle that replaced it is not, and an out-of-band transport names the sender before the app is involved. Decision and full option analysis in "2026-08-13 — Full inbound-path trace" at the bottom. The general form of the question — other mechanisms, other surfaces — stays open.
 
 No fix to the core oracle is scoped here — this needs a decision on direction before any implementation is attempted.
 
@@ -255,8 +272,271 @@ Extends the `originDepth` design above to its logical conclusion, reached by wor
 
 **Net effect on the rejection-based detection oracle: fully closed, not partially.** There is no longer any scenario where a fingerprint-matched, known sender's bundle is accepted at depth 0 and rejected at a duress depth — the condition C3 depended on doesn't exist anymore. What remains is a narrower, different kind of risk — not a detection oracle (proving duress mode exists), but a **content-confidentiality** risk specific to the passive variant: a real, sensitive contact's genuinely new message can render on screen during a coercion window, once, at the moment it arrives.
 
-**Implementation detail to get right, not yet resolved:** the immediate receipt-time reveal (`openedFileContents`) should be unconditional now, but the *stored* message/thread afterward should still respect the contact's normal depth-visibility classification for any *later* browsing — this is a one-time reveal at the moment of arrival, not a permanent reclassification of that thread as visible-at-this-depth going forward. Needs to be deliberate at implementation time so a coercer doesn't gain standing access to the thread in the message list after the initial popup closes.
+**Implementation detail to get right, not yet resolved** *(2026-08-13: still unresolved, but currently unreachable — nothing in the app persists messages. `Contact.Message` is in the schema and never constructed, and `Docs/Features/Message Persistence/FINDINGS.md` is exploratory with received-message history deferred. Cross-referenced there, at D-08, so it surfaces when that work is scoped rather than being rediscovered afterwards.)*: the immediate receipt-time reveal (`openedFileContents`) should be unconditional now, but the *stored* message/thread afterward should still respect the contact's normal depth-visibility classification for any *later* browsing — this is a one-time reveal at the moment of arrival, not a permanent reclassification of that thread as visible-at-this-depth going forward. Needs to be deliberate at implementation time so a coercer doesn't gain standing access to the thread in the message list after the initial popup closes.
 
 **`handleReplace`'s missing ownership check (flagged earlier as a prerequisite for the duress-origin case alone) is now a hard blocker for the whole design, not a narrower one.** With `passSecurityControl` gone entirely, *any* known contact — not just duress-origin ones — can reach shard-mutation code paths under restriction. `ShardCustody+Manager.swift:148`'s `handleReplace` deletes by `oldID` alone with no check that the replacing sender owns the shard being replaced. This must land before or alongside this change, not after.
 
 **Scope, final:** this closes the entire rejection-based oracle (both variants, unconditionally) and narrows the remaining risk to a single, deliberately accepted, timing-bounded content-exposure case — a real sensitive contact's new message during the passive variant. The `handleReplace` fix and the `originDepth` migration plan scoped earlier both still apply, now motivated by the full design rather than half of it.
+
+---
+
+## 2026-08-13 — Full inbound-path trace: the rejection oracle is gone, a presence oracle is not
+
+Prompted by noticing that Open question #2 presumes a depth-conditional rejection, while
+`passSecurityControl` — the only thing that produced one — was deleted in `b1f9045`. The question
+had not been revisited after its own fix landed, so it was unclear whether anything still leaked
+that way. Traced every branch reachable from an inbound `.occ` file, from receipt to display.
+
+### Result 1 — no depth-correlated rejection survives
+
+| Stage | Depth-dependent? |
+|---|---|
+| `processInboundFile` error branches | No — every branch is bundle-shape or crypto failure |
+| `buildOwnedBasket` | No depth or restriction check anywhere; branches on group vs 1:1, identity-challenge, shard ops, empty message |
+| `identifyOwner` | No — `fetchAllContacts()` filters on `deletionToken` only, so a hidden contact still matches as sender |
+| `ShardCustodyManager.handleInbound` | No depth references in the file |
+| `IdentityChallenge` inbound handlers | Same — none |
+| Message persistence | Not persisted; inbound messages render transiently and are never written as `Contact.Message` |
+
+Nothing on this path fails, or succeeds, differently because of the current depth. The
+rejection-based oracle is closed in fact, not just in intent — which is what the status line at the
+top already claimed, now verified rather than asserted.
+
+### Result 2 — a presence oracle survives, and it is a different shape
+
+The read sheet renders `Contact.Info(identifier: owner)`
+(`ComposableMessage.swift:209`), which resolves the sender's name through a `@Query` filtered on
+identifier alone. No visibility filter; `Contact.Profile.descriptor` is not depth-aware either. And
+per Result 1, `identifyOwner` happily matches a contact hidden at the current depth.
+
+Put together:
+
+- **At depth 0**, every message that opens is from a contact present in the list. A contact hidden
+  at depth 0 cannot be the sender of an openable message, because hiding is a ceiling and 0 is the
+  floor.
+- **At a duress depth**, a message can open and display **with the sender's real name** while that
+  contact is absent from the contact list.
+
+"A message from someone who is not in my contacts" is an outcome reachable **only** at a duress
+depth. A coercer holding the phone reads the name off the sheet and checks the list. No probe, no
+force-pairing, no repeated sampling.
+
+### Why this is worse than the residual currently recorded
+
+The status line describes what remains as "a timing-bounded content-confidentiality risk … a real,
+unaware third party's message rendering on screen during a coercion window", and characterises it
+as "not a detection oracle in the original sense".
+
+The content leaking is indeed the accepted trade. The **name rendering while the contact does not
+appear in the list** is a detection signal sitting on top of it, and it was not separated out. It
+is also strictly easier to exploit than the oracle this document was opened about: that one needed
+either a coercer-controlled device or a pattern observed over time, whereas this needs one
+inbound message and a glance at two screens.
+
+### Decision, 2026-08-13 — accepted as a documented limitation, flow unchanged
+
+Open question #2 asked how to make two failure categories statistically indistinguishable. There
+are no longer two failure categories. The candidate that replaced it — have the read sheet resolve
+sender identity through the same visibility filter the contact list uses, showing `Contact.Info`'s
+"Anonymous" fallback for a hidden sender — was proposed, examined, and **rejected**. Two reasons,
+the second decisive.
+
+**1. "Anonymous" is the same tell wearing a different label.** That fallback fires only when no
+contact matches the identifier, and `identifyOwner` requires a match to succeed — so it is
+currently unreachable on this path at any depth. Adding the filter would make it reachable *only*
+at a duress depth. The signal moves from "this name is not in my contact list" to "the word
+Anonymous is on screen"; it does not go away.
+
+**2. The identity was already disclosed by the transport, before Occulta ran.** Bundles arrive out
+of band — through a messaging app, AirDrop, email, whatever the two parties chose. That channel is
+outside this app's control and has already mapped the sender to a name, handle or nickname on the
+delivery screen. Anyone holding the phone saw who sent the file before tapping it. In-app
+anonymisation therefore conceals nothing an observer does not already have; it is theatre that
+costs the legitimate user the sender's identity in exchange for no confidentiality.
+
+### Why no other option closes it either
+
+The exposure follows from an invariant, not an implementation choice. Key exchange is
+proximity-only, so:
+
+> **openable ⟹ the sender is a known contact**
+
+The duress view's purpose is to hide some known contacts. A message from one of them forces an
+inconsistency that has to surface somewhere:
+
+| Handling | What still leaks |
+|---|---|
+| Render the real name | Sender absent from the contact list — the presence oracle |
+| Render "Anonymous" | A string unreachable at depth 0 — same oracle, and see (2) above |
+| Reject with an error | The original `passSecurityControl` oracle this document opened on |
+| Silently queue until depth 0 | "Nothing happens on tap" is itself only reachable under duress |
+| Render a fabricated identity | Still absent from the list, and now the app is lying to its owner |
+
+Closing it would require depth 0 to produce the same observable — messages from contacts not in
+the list, or files that sometimes do nothing when tapped. That contradicts the invariant above: the
+app has no concept of a stranger, because it cannot decrypt anything from one.
+
+Silent queueing deserves a note as the least-bad of the alternatives, since it also satisfies C1
+properly — visibility can be checked after `identifyOwner` and before decryption, so sensitive
+content is never decrypted under duress — and a coercer-paired contact would not trigger it, since
+a contact created at depth N gets `ceiling = N` and `originDepth = N` and is visible there. It is
+still a depth-conditional difference in observable behaviour, so it trades a strong signal for a
+weaker one rather than removing it. Not adopted; recorded so the next person evaluating it has the
+analysis rather than the idea alone.
+
+### What was decided
+
+**The flow is left exactly as it is.** A message from a contact hidden at the current depth opens
+and displays with the sender's name, as it does today. This is an accepted, documented limitation,
+not an oversight and not a deferred fix.
+
+This answers open question #3 ("how much can actually be closed, versus accepted as a residual
+limit") for this specific case: it is a residual limit, and structurally so. The rejection oracle
+was fixable because rejection was one implementation choice among several. This is not — it falls
+out of proximity-only key exchange plus per-depth contact hiding, compounded by an out-of-band
+transport that names the sender before the app is involved.
+
+Two things remain true and worth keeping in view. The exposure needs a real third party to send
+during the coercion window, which is timing-bounded and not adversary-controlled. And *content*
+confidentiality is separable from the identity leak — checking visibility before decrypting would
+keep the message body unread even where "a message arrived, from someone" is inferable. That option
+is not taken here, since the flow is unchanged, but it remains available and is a different
+question from this one.
+
+## 2026-08-28 — Re-filed twice as a new bug; the decision above stands
+
+The decision above was re-discovered and re-filed as a High-severity defect twice in two weeks, both
+times by tracing the inbound path without reading this document: **Bug 103** (2026-08-27, the `.occ`
+reader's `Contact.Info`) and **Bug 104** (2026-08-28, the identity-challenge coordinator's
+`senderName`). Both proposed the visibility gate rejected in the 2026-08-13 entry above, Bug 103's
+was implemented and reverted the same day without being committed, and both are now closed in
+`Docs/Features/Secure Mode/bugs.md` as duplicates of this decision.
+
+Recording it here because two independent re-discoveries in two weeks is a fact about the
+documentation, not about the code. The trace is easy to run and lands on a real leak; nothing in the
+inbound path points at this document, and `Contact.Info` looks exactly like an oversight. The
+`pendingFileData` comment warns that reaching `processInboundFile` does not imply depth 0, which
+correctly identifies the hazard and — read in isolation — reads as an invitation to add the gate
+downstream. It is not. Anyone arriving there should land here first.
+
+Three specific corrections drawn from those two filings, since each was a plausible-sounding argument
+for gating that does not survive:
+
+1. **"The fallback already exists, so it is not a new observable."** Both filings leaned on this —
+   `"Anonymous"` in `Contact.Info`, `"Unknown"` in the challenge coordinator. Both fallbacks are
+   effectively unreachable in practice: the first requires `identifyOwner` to match a contact the
+   query then fails to find, the second requires a contact with a blank given name. A string that
+   almost never appears is not cover. Gating makes it appear *only* under duress, which manufactures
+   the signal rather than hiding it.
+
+2. **"Suppressing a name is a display change, so it cannot be an oracle."** This reasons about what
+   the *sender* can observe. The observer that matters is holding the device and reading the screen.
+   A display that differs by depth is a depth oracle whether or not any protocol behaviour changed.
+
+3. **"Refuse the bundle instead — a tell, but with smaller consequences."** This is
+   `passSecurityControl`, removed in `b1f9045`, and the trade runs the wrong way: refusal is
+   adversary-controlled and repeatable on demand (proximity-only key exchange means a coercer with
+   physical control can force-pair and probe), while the render leak needs an unaware third party to
+   send during the window. Refusal also identifies *which* contact is hidden. It hides the body, which
+   is the one thing in its favour — and that is the separable content question in the paragraph
+   above, not a reason to reintroduce the rejection.
+
+A related proposal from the same session — an out-of-band "message ban" sent to contacts, asking
+their apps to stop messaging this user for the duration — attacks the right layer, since the residual
+needs a third party to send. It went through three rounds of refinement and is analysed in full in
+the next section.
+
+## 2026-08-28 — The message-ban proposal: prevention instead of concealment. Adopted in principle
+
+Every option in the 2026-08-13 table handles a hidden contact's message *after* it arrives. This
+proposal attacks the precondition instead: if sensitive contacts do not send during the coercion
+window, the residual never fires. That is the right layer to attack, and it is the first idea raised
+against this document that is not a variation on hiding something at render time. It is recorded in
+full — including the objections I raised against it and then withdrew — because the reasoning is
+reusable and because four plausible-sounding arguments against it turned out to be wrong.
+
+### The proposal, as finally specified
+
+1. The user believes coercion is possible and activates Secure Mode.
+2. At the end of activation the app presents a crafted bundle, encrypted per contact, carrying a
+   message-ban directive.
+3. The user sends it through a transport channel of their choosing.
+4. Recipients open what reads as an ordinary message — *"Please don't disturb me until further
+   notice"* — which carries the ban. The recipient's app enters its own Secure Mode **setup flow**
+   (their PINs, their choices — not remote execution), marks the sender sensitive, and optionally
+   offers other contacts. The stated reason for pulling the recipient into Secure Mode is that a
+   coercer may reach *their* device — a travelling partner, a joint stop — and the ban must be
+   concealed there too.
+5. After deactivation, a second bundle lifts the ban.
+
+Enforcement is on the recipient's device: their app declines to encrypt to the issuer until the lift.
+
+### Objections raised against it, and withdrawn
+
+Four were argued at length in this session and do not survive. Recorded with their refutations,
+because each sounded right and the same reasoning will be attempted again.
+
+**A — "the bundle is either your secret or your cover."** Argued that addressing the ban to sensitive
+contacts only makes it a manifest of the hidden set, while addressing it to everyone destroys the
+reply traffic that makes a coerced session look ordinary. The second half is backwards: a ban to all
+contacts *explains* the silence it creates — "why is nobody messaging you?" / "I asked them not to" —
+which is better cover than unexplained quiet. The first half survives only as an argument **for**
+all-contacts addressing: a selective recipient set is published in cleartext by the transport (your
+Signal shows which 7 of 40 people received it), and "why those seven" has no good answer under
+coercion. Address it to everyone.
+
+**B — "it manufactures a synchronised cross-device trace."** Argued that activation at time T plus a
+ban broadcast at time T is a correlated signal. This requires activation to be detectable, and the
+design specifically prevents that: `AppLayerConfig` fields are written unconditionally at first config
+creation, arrays are padded to constant length, and the layer store exists from first launch with
+timestamps tracking normal activity precisely so slot writes look ordinary. There is no activation
+timestamp for a ban to correlate against. What remains is generic and does not discriminate between
+options: going quiet shortly before being detained is suggestive in context, and that is equally true
+of a purely verbal arrangement.
+
+**C — "concealment on the recipient is defeated by the transport."** Argued by analogy with the
+2026-08-13 rejection of `"Anonymous"`: the delivery channel already showed who sent what. The analogy
+fails because that argument bites only when the published thing is incriminating. *"Please don't
+disturb me until further notice"* is not. People send it for holidays, deadlines, hospital, grief. So
+step 4's concealment is not defeated — it is merely unnecessary, which is a much weaker criticism and
+not grounds for rejection.
+
+**D — "the disclosure moves from artifacts to people."** Argued that every recipient learns the sender
+is preparing for coercion, and that humans, unlike padded fields, cannot be made forensically
+constant. Three premises were wrong. A coercer inspecting a recipient's device gets that recipient's
+duress PIN and a clean phone — which is exactly what the ban just gave them. What the recipient learns
+is a function of the prompt wording, which is a design parameter, not an inherent property: *"Alice
+has asked not to be disturbed — set up Secure Mode to keep your contacts private"* motivates the setup
+without mentioning coercion. And a recipient who fully cooperates with a coercer defeats every part
+of this system anyway, so it is not a cost the feature introduces.
+
+### What stands — limitations, not blockers
+
+- **Compliance is unverifiable.** No acknowledgement channel exists, and adding one would be another
+  artifact and another broadcast. The issuer must still plan as though the ban failed.
+- **Coverage is incomplete.** Contacts paired after issuance are not covered, non-Occulta contacts
+  cannot be, and anyone who ignores it still sends.
+- **The recipient makes an irreversible choice reactively.** Activation rotates their DB key and
+  deletes the old one, and requires a duress PIN they must remember. The setup offer should not be a
+  modal that fires the instant they open a message; offer it, let it wait.
+
+Together these make it a **mitigation, not a control**, and it must be documented as one. That is
+still worth having: it costs almost nothing once the requirements below are met.
+
+### Design, requirements and lifting — extracted
+
+The full design now lives in its own tracker entries, so this document keeps the decision and the
+reasoning about depth observables while the build detail has one home:
+
+- `Docs/Features/Message Ban/FINDINGS.md` — flow, eight design requirements (including custody-traffic
+  exemption and pinning the recipient's classification to depth 0), the layered lift mechanism, the
+  loss-and-rotation matrix, accepted limitations, and one open question about outbound-bundle
+  recipient padding.
+- `Docs/Features/Do Not Disturb/FINDINGS.md` — why it is not the "silently queue until depth 0" row
+  rejected above, and the queue-persistence requirement that is the real work in it.
+
+Both entries open by restating that the leak they mitigate is the accepted limitation decided here,
+not an open bug, so that extracting them does not seed a third re-filing.
+
+**Status: both worth building, neither implemented. The residual documented on 2026-08-13 remains
+open in the meantime, and the flow described there is unchanged.**

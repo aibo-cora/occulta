@@ -32,17 +32,31 @@ jobs:
           xcrun simctl boot "iPhone 17" || true
           xcrun simctl bootstatus "iPhone 17" -b
 
+      # xcpretty (last released 2018) only matches XCTest's Objective-C selector
+      # format, so it parsed this suite — 42 of 44 test files are Swift Testing —
+      # as zero tests and reported zero failures. xcbeautify has dedicated
+      # SwiftTesting capture groups that feed its JUnit report.
+      - name: Install xcbeautify
+        run: brew list xcbeautify >/dev/null 2>&1 || brew install xcbeautify
+
       - name: Run unit tests
         timeout-minutes: 20
         run: |
+          # pipefail so a test failure fails the step: without it the step takes
+          # xcbeautify's status and a red suite reports green. It makes xcbeautify's
+          # own status fail the step too, which is intended — if the formatter cannot
+          # run, the JUnit report below is missing and the results are unreadable.
+          set -o pipefail
           xcodebuild test \
             -project Occulta.xcodeproj \
             -scheme OccultaTests \
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+            -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             -parallel-testing-enabled NO \
             -skip-testing:OccultaTests/KeychainMigrationSETests \
-            2>&1 | tee xcodebuild.log | xcpretty --report junit --output test-results.xml || true
+            2>&1 | tee xcodebuild.log \
+            | xcbeautify --report junit --report-path . --junit-report-filename test-results.xml
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -52,6 +66,7 @@ jobs:
           path: |
             test-results.xml
             xcodebuild.log
+            TestResults.xcresult
 
       - name: Publish test report
         uses: dorny/test-reporter@v1

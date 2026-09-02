@@ -120,6 +120,18 @@ struct OccultaBundle: Codable {
         /// `version` field — stored only in `Contact.Profile.maxBundleVersion` as
         /// byte 0x07.
         case senderSignatureCapable
+        /// Capability watermark: contact's build verifies `senderEphemeralSignature` over a
+        /// domain-separated payload — `"occulta-sender-ephemeral-v1" ‖ ephemeralPublicKey` —
+        /// rather than over the bare ephemeral public key. Never written to the wire `version`
+        /// field; stored only in `Contact.Profile.maxBundleVersion` as byte 0x08.
+        ///
+        /// This tier exists because the change is not backward compatible in the sending
+        /// direction. A 1.10.0/1.10.1 receiver verifies against the bare key, so a prefixed
+        /// signature fails there and the message is rejected outright. We therefore prefix only
+        /// for recipients known to be at this tier, and keep signing bare for everyone below —
+        /// see `wrapRecipient`. Receivers accept both forms; see
+        /// `verifySenderEphemeralSignature`.
+        case prefixedSenderSignatureCapable
         /// A version string this build does not understand.
         /// Never written to the wire — only produced by `init(from:)` when an
         /// inbound bundle carries an unknown raw value. Decryption aborts
@@ -136,6 +148,7 @@ struct OccultaBundle: Codable {
             case .groupCapable:     return "1.9.0"
             case .groupShardCapable: return "1.9.1"
             case .senderSignatureCapable: return "1.10.0"
+            case .prefixedSenderSignatureCapable: return "1.10.2"
             default:                return nil
             }
         }
@@ -148,6 +161,7 @@ struct OccultaBundle: Codable {
             case .groupCapable:      return 0x05
             case .groupShardCapable: return 0x06
             case .senderSignatureCapable: return 0x07
+            case .prefixedSenderSignatureCapable: return 0x08
             default:                 return nil
             }
         }
@@ -174,12 +188,21 @@ struct OccultaBundle: Codable {
         /// order matters: the highest tier a contact could possibly qualify for must
         /// be checked first.
         private static let known: [Version] = [
+            .prefixedSenderSignatureCapable, // 1.10.2+ — domain-separated ephemeral signature
             .senderSignatureCapable, // 1.10.0+ — signs FS-mode group recipients' ephemeral key
             .groupShardCapable, // 1.9.1+  — per-recipient shard fields on RecipientPayload
             .groupCapable,      // 1.9.0+  — can process group bundles (Mode.group)
             .v4,                // 1.8.2+  — binary wire format (no base64 inflation)
             .v3fs,              // 0.0.0+  — per-contact prekeys, floor/fallback tier
         ]
+
+        /// The most capable tier this build understands. `known` is descending, so this
+        /// tracks automatically when a tier is added above the current top.
+        static var mostCapable: Version { Self.known.first ?? .v3fs }
+
+        /// The highest wire byte this build can map to a tier. A recorded byte above this
+        /// came from a build newer than ours — see `ContactManager.bundleVersionState`.
+        static var highestKnownWireByte: UInt8 { Self.known.compactMap(\.wireByte).max() ?? 0 }
 
         /// The highest capability level a contact running `appVersion` can handle.
         static func max(forAppVersion appVersion: String) -> Version {
@@ -312,15 +335,22 @@ struct OccultaBundle: Codable {
         let attribute: SignedAttribute?
         /// A single shard ID. Non-nil for `.replace` (old shard to delete).
         let attributeID: UUID?
+        /// Trustee's vouching signature, category `.attestation`. Only ever set on
+        /// `.handback`, and only when the trustee's own check against a retained
+        /// old owner key succeeded — see Bug 94 remedy 2. `nil` means "verify
+        /// `attribute` directly against the owner's current identity" (Branch A).
+        let attestation: SignedAttribute?
 
         init(
             kind: Kind,
             attribute: SignedAttribute? = nil,
-            attributeID: UUID? = nil
+            attributeID: UUID? = nil,
+            attestation: SignedAttribute? = nil
         ) {
             self.kind        = kind
             self.attribute   = attribute
             self.attributeID = attributeID
+            self.attestation = attestation
         }
     }
 

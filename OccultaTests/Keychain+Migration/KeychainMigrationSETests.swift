@@ -35,6 +35,22 @@ final class KeychainMigrationSETests: XCTestCase {
 
     // MARK: - Lifecycle
 
+    // This gate is compile-time on purpose. Do not "fix" it into a runtime
+    // `secureEnclaveAvailable()` check — that was tried on 2026-08-15 and reverted.
+    //
+    // The tempting argument is that a Simulator on bare-metal Apple Silicon does reach the
+    // Enclave, so a runtime check would let these six run instead of being permanently
+    // unrunnable (§8 of SECURITY_CHECKLIST.md carves them out by name for exactly that
+    // reason). The premise is true and the conclusion does not follow: Enclave *key
+    // creation* works in the Simulator — an SE-key probe returns true there, and
+    // `testKeyCreatedWithAccessGroupIsDiscoverable` passes — but `SecItemUpdate` cannot add
+    // `kSecAttrAccessGroup` to an SE-protected key, returning -25303 (`errSecNoSuchAttr`).
+    //
+    // That update *is* the thing this suite exists to verify. So under a runtime gate the
+    // suite runs and reports two failures whose message is "the migration strategy is
+    // unviable" — the loudest possible false alarm, and precisely the wrong-reason failure
+    // the header warns about. Enclave availability is not the predicate; Simulator keychain
+    // fidelity is, and there is no runtime probe for it short of the assertion itself.
     override func setUpWithError() throws {
         try super.setUpWithError()
         #if targetEnvironment(simulator)

@@ -40,6 +40,17 @@ struct GroupRecipient {
     /// report "not attempted".
     let shardMetadataAttempted: Bool
 
+    /// Whether this recipient's build verifies `senderEphemeralSignature` over the
+    /// domain-separated payload rather than the bare ephemeral public key — i.e. whether
+    /// their tier is at least `.prefixedSenderSignatureCapable`.
+    ///
+    /// Resolved by the caller, like every other field here; this type carries decisions, it
+    /// does not make them. Defaults to `false`, which is both the backward-compatible answer
+    /// and the safe one for a caller that forgets: signing bare is understood by every build
+    /// that understands the signature at all, whereas prefixing for a recipient who cannot
+    /// verify it renders the message unopenable.
+    let prefixesEphemeralSignature: Bool
+
     init(
         publicKey: Data,
         quantumMaterial: QuantumKeyMaterial?,
@@ -50,7 +61,8 @@ struct GroupRecipient {
         custodyManifestCount: Int = 0,
         expectedShards: [UUID] = [],
         expectedShardsCount: Int = 0,
-        shardMetadataAttempted: Bool = false
+        shardMetadataAttempted: Bool = false,
+        prefixesEphemeralSignature: Bool = false
     ) {
         self.publicKey              = publicKey
         self.quantumMaterial         = quantumMaterial
@@ -62,6 +74,7 @@ struct GroupRecipient {
         self.expectedShards          = expectedShards
         self.expectedShardsCount     = expectedShardsCount
         self.shardMetadataAttempted  = shardMetadataAttempted
+        self.prefixesEphemeralSignature = prefixesEphemeralSignature
     }
 }
 
@@ -204,7 +217,15 @@ extension Manager.Crypto {
         let senderEphemeralSignature: Data
         switch secrecyContext.mode {
         case .forwardSecret, .forwardSecretNoPQ:
-            senderEphemeralSignature = try self.keyManager.signData(secrecyContext.ephemeralPublicKey)
+            // Domain-separated only for recipients who can verify it that way. Prefixing
+            // unconditionally would make every message unopenable by 1.10.0/1.10.1, which
+            // verify against the bare key — a break in the one direction we cannot patch,
+            // since those installs are already deployed. See `.prefixedSenderSignatureCapable`.
+            senderEphemeralSignature = try self.keyManager.signData(
+                r.prefixesEphemeralSignature
+                    ? Self.ephemeralSignaturePayload(secrecyContext.ephemeralPublicKey)
+                    : secrecyContext.ephemeralPublicKey
+            )
         case .longTermFallback, .longTermNoPQ, .group, .unsupported:
             senderEphemeralSignature = Self.randomEphemeralSignatureFiller()
         }
@@ -229,11 +250,43 @@ extension Manager.Crypto {
         return OccultaBundle.Recipient(secrecyContext: secrecyContext, wrappedPayload: wrappedPayload)
     }
 
+    /// Domain-separation prefix for `senderEphemeralSignature`.
+    ///
+    /// Every other use of the identity key carries one — `"occulta-identity-challenge-v1"` for
+    /// challenges, `"occulta-signed-attribute-v2"` for vault attributes — and this one did not.
+    /// A signature records nothing about the context that produced it; only the bytes decide,
+    /// so two sites that can produce identical bytes produce interchangeable signatures. The
+    /// bare form collided with nothing in practice, because an X9.63 point starts `0x04` while
+    /// both prefixes start with ASCII `o`, but the collision space was exactly "65-byte P-256
+    /// public key" — a shape this app handles constantly — and the safety was one call site
+    /// deep. See §3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`.
+    static let ephemeralSignatureDomain = Data("occulta-sender-ephemeral-v1".utf8)
+
+    /// The bytes signed for a domain-separated `senderEphemeralSignature`.
+    /// Shared with `verifySenderEphemeralSignature` so the two cannot drift.
+    static func ephemeralSignaturePayload(_ ephemeralPublicKey: Data) -> Data {
+        var payload = Self.ephemeralSignatureDomain
+        payload.append(ephemeralPublicKey)
+        return payload
+    }
+
     /// Random bytes matching the maximum size of a DER-encoded P-256 ECDSA signature
     /// (SEQUENCE of two up-to-33-byte INTEGERs + headers = 72 bytes). Real signatures
     /// can be a byte or two shorter when `r`/`s` don't need their padding byte — the
     /// same residual size variance already accepted elsewhere for DER signatures in
     /// this codebase (see `GroupShardGatingTests`).
+    ///
+    /// ⚠️ That variance is not actually residual here, and the reason is load-bearing:
+    /// `RecipientPayload` is JSON-encoded, `JSONEncoder` emits `Data` as base64, and 70, 71
+    /// and 72 bytes all base64 to exactly 96 characters — they share a 24-group boundary. So
+    /// FS and fallback slots come out byte-identical in size, not merely close, and a
+    /// mixed-mode group send leaks nothing through `wrappedPayload` length.
+    ///
+    /// The uniformity therefore comes from base64 grouping, not from this length. If
+    /// `RecipientPayload` ever moves off `JSONEncoder` — this codebase already has a binary
+    /// encoder in `WireHandle`, used for v4 baskets — the 70/71/72 spread becomes directly
+    /// observable and this filler stops doing its job. Pad to the real signature's length at
+    /// that point, or keep the encoding.
     private static func randomEphemeralSignatureFiller() -> Data {
         var rng = SystemRandomNumberGenerator()
         return Data((0..<72).map { _ in UInt8.random(in: 0...255, using: &rng) })

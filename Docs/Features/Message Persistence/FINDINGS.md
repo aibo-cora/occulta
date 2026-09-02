@@ -7,6 +7,12 @@
 
 **Authoritative framework:** `Occulta/Features/SecureMode/forensic-trace-avoidance.md` already documents this exact class of problem in depth (blob forensics, SQLite forensics, keychain forensics, UI tells, content gating) for contacts and vault entries. Findings below are written against that doc's existing severity scale and measures (`C1`/`C2`/`S5`/`S7`/`S8`/`K1` etc., cited directly below) rather than reinventing the framework — message persistence should extend it, not sit beside it.
 
+**Two constraints from Secure Mode that post-date this document — read before scoping.** D-08's
+premise was invalidated by `2958593` (inbound files are now processed on a duress unlock, not
+discarded), and the oracle document that change belongs to leaves one unresolved requirement about
+stored threads. Both are recorded inline at D-08. They matter here more than anywhere else, because
+this feature is the first thing in the app that would persist message content at all.
+
 **Problem statement:** Nothing survives past the current view. Composing a message and navigating away loses it; receiving a message shows it once and discards it; nothing tells the user something arrived while the app was closed. Fixing this means persisting message content for the first time anywhere in the app — which raises a forensic question this doc exists to work through carefully before any schema is written: does persisting messages create a way to detect the existence of a contact someone has hidden?
 
 ---
@@ -55,6 +61,32 @@ What *does* reference a contact — `ShardRecord.contactIdentifier` — lives em
 ### D-08 · C2's unconditional duress-discard must be preserved exactly, not "improved" for plausibility
 
 Traced `pendingFileData`'s handling in `OccultaApp.swift` directly: when the app is locked and a `.occ` file arrives, the raw encrypted bytes are queued with no processing (`:458`). `PINEntry(onAuthenticated:onDuress:)` (`:312-322`) wires `onDuress: { self.pendingFileData = nil; ... }` — an unconditional, sender-agnostic discard, confirmed to match `forensic-trace-avoidance.md` §C2 exactly ("Option B" — content never crosses the depth boundary because it's never decrypted until depth is confirmed normal). This is a deliberate design choice, not a gap: the team already chose maximum safety over plausibility (a duress session shows zero new messages arriving, even from ordinary non-sensitive contacts, rather than risk any differential handling by sender). **Message persistence must not touch this gate.** No `Contact.Message` row gets inserted for anything received while locked or under duress — insertion only ever happens from `processInboundFile`, which §C2 confirms only runs after normal-PIN unlock.
+
+> **⚠ CORRECTION 2026-08-13 — the premise above no longer holds, and building on it would leak.**
+>
+> `2958593` ("C2: process pendingFileData on duress unlock instead of discarding it") removed the
+> unconditional discard. `onDuress` (`OccultaApp.swift:396`) now only syncs the share index and
+> calls `pinDidSucceed()`; the queued file is drained by the shared `.onChange(of: appScreen.phase)`
+> handler, which fires on **any** unlock. So `processInboundFile` runs after a duress unlock too,
+> and "it only runs after normal-PIN unlock" is false.
+>
+> That was deliberate, not an accident: the discard was itself the last place where duress state
+> produced different behaviour from a normal unlock, which made it part of the detection oracle
+> documented in `Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`.
+> Restoring it would reopen that.
+>
+> **What this means for this feature.** The conclusion D-08 draws — treat `processInboundFile` as
+> implicitly depth-0-safe and insert rows there — is now exactly the wrong instruction. It would
+> persist messages received during a coerced session. Insertion must be gated on the depth at
+> insert time, independently of which code path reached it, per D-09's stamping rule. The gate that
+> used to do this for you is gone.
+>
+> Related constraint from the same source, still unresolved and currently invisible because nothing
+> persists: the receipt-time reveal is a **one-time** display, not a reclassification of that thread
+> as visible at the current depth. A stored thread must still respect the contact's normal
+> depth-visibility for any later browsing, or a coercer gains standing access to it in the message
+> list after the initial sheet closes. See "2026-08-08 — Final design" in that document,
+> "Implementation detail to get right".
 
 ### D-09 · New-message depth-stamping at insert time is the natural implementation mistake
 

@@ -43,9 +43,46 @@ extension Contact.Profile {
         self.thumbnailImageData      = try reencrypt(data: self.thumbnailImageData,      to: newKey, aad: aad)
         self.forwardSecrecyEncrypted = try reencrypt(data: self.forwardSecrecyEncrypted, to: newKey, aad: aad)
         self.signedAttributes        = try reencrypt(data: self.signedAttributes,        to: newKey, aad: aad)
-        self.visibleThroughDepth     = try reencrypt(data: self.visibleThroughDepth,     to: newKey, aad: aad)
-        self.globalTrusteeDepth      = try reencrypt(data: self.globalTrusteeDepth,      to: newKey, aad: aad)
-        self.originDepth             = try reencrypt(data: self.originDepth,             to: newKey, aad: aad)
+        // Preserving, for the same reason as `deletionToken` below — Bug 87.
+        //
+        // `reencrypt(data:)` returns nil for anything it cannot decrypt, and nil is *not* a
+        // neutral value for these three. `isVisible` reads a nil ceiling as "visible at every
+        // depth", so nil-ing a stranded `visibleThroughDepth` un-hides exactly the contact it
+        // was hiding; the launch backfill then re-stamps it to `Int.max`, cementing that.
+        // A nil `originDepth` likewise stops confining a duress-origin contact, dropping it
+        // through to a ceiling check that was never meant to protect it.
+        //
+        // Preserving the stranded ciphertext keeps `isVisible`'s fail-closed reading intact:
+        // present-but-unreadable stays hidden, which is the safe direction and the one S7
+        // already documents for vault entries.
+        self.visibleThroughDepth     = try reencryptPreserving(data: self.visibleThroughDepth, to: newKey, aad: aad)
+        self.globalTrusteeDepth      = try reencryptPreserving(data: self.globalTrusteeDepth,  to: newKey, aad: aad)
+        self.originDepth             = try reencryptPreserving(data: self.originDepth,         to: newKey, aad: aad)
+
+        // Preserving, NOT the nil-on-failure helper — and the reason is security, not data.
+        //
+        // This field gates a receive-side authentication check: an unsigned forward-secret
+        // bundle is rejected only when `resolveTargetVersion` says the sender can sign
+        // (`Contact+Manager.swift:1727`). A value that will not decrypt currently reads as
+        // `.v3fs`, which is not `senderSignatureCapable`, so the check is skipped — Bug 80.
+        //
+        // Fixing that needs "present but unreadable" to stay distinguishable from "never seen".
+        // Clearing to nil here — which an earlier version of this line did — collapses the two
+        // and destroys the only evidence that distinction rests on, permanently, for exactly
+        // the installs that have the vulnerability. Preserving the stranded ciphertext keeps
+        // the option open.
+        //
+        // The misleading "they need to update" message this used to produce is fixed at the
+        // reading site instead (`ContactManager.hasReadableBundleVersion`), which is where it
+        // always belonged.
+        self.maxBundleVersion        = try reencryptPreserving(data: self.maxBundleVersion, to: newKey, aad: aad)
+
+        // Preserving, NOT the nil-on-failure helper above. Only this field's nil/non-nil status
+        // is meaningful — content is a fixed sentinel — and `fetchAllContacts` filters on
+        // `deletionToken == nil`. Clearing an unreadable token would therefore un-delete the
+        // contact: every row soft-deleted before this field was re-keyed carries a stranded
+        // token, and they would all silently reappear on the next rotation.
+        self.deletionToken           = try reencryptPreserving(data: self.deletionToken,  to: newKey, aad: aad)
 
         // ── Relationship fields ──────────────────────────────────────────────────
         for phone in (self.phoneNumbers ?? []) {
@@ -116,5 +153,18 @@ extension Contact.Profile {
     private func reencrypt(data: Data?, to newKey: SymmetricKey, aad: Data) throws -> Data? {
         guard let data, let plain = data.decrypt() else { return nil }
         return try AES.GCM.seal(plain, using: newKey, authenticating: aad).combined
+    }
+
+    /// Re-encrypt a raw Data ciphertext, returning the original bytes unchanged when they
+    /// cannot be read — the `reencrypt(string:to:aad:)` convention rather than the
+    /// `reencrypt(data:to:aad:)` one.
+    ///
+    /// For fields whose *presence* carries meaning independently of their content, where
+    /// clearing an unreadable value would change behaviour rather than just lose a value.
+    /// `deletionToken` is the case that motivated this: nil there means "not deleted".
+    private func reencryptPreserving(data: Data?, to newKey: SymmetricKey, aad: Data) throws -> Data? {
+        guard let data else { return nil }
+        guard let plain = data.decrypt() else { return data }
+        return try AES.GCM.seal(plain, using: newKey, authenticating: aad).combined ?? data
     }
 }

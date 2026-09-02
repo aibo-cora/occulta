@@ -121,7 +121,26 @@ extension Manager {
         static var slotCiphertextSize: Int { slotPlaintextSize + 28 }
 
         private static let hkdfInfo = Data("layer-store-key".utf8)
-        private static let maxAge: TimeInterval = 86_400  // 24 h
+
+        /// Maintenance-rewrite threshold, drawn once per process from an 18–30 h window.
+        ///
+        /// A fixed 24 h cadence turns the store file's own modification timestamp into a
+        /// usable signal: a write landing off-cadence is distinguishable from routine
+        /// maintenance, which is what lets an activation be inferred from two filesystem
+        /// captures (Bug 71). A threshold that varies means one observed write time implies
+        /// much less about whether it was routine.
+        ///
+        /// **Drawn once per launch, not per call.** `maintain()` runs on every foreground, so
+        /// a fresh draw each time would let the lowest draw win and collapse the window back
+        /// toward its 18 h floor. Per-launch keeps the whole window in play.
+        ///
+        /// Not key material — cadence obfuscation only, so the system RNG is sufficient here
+        /// and `SecRandomCopyBytes` (used for slot selection in this same file) would be noise.
+        ///
+        /// Reduces the signal; does not remove it. A write still happened, and the jitter
+        /// window bounds rather than hides when. The other half of Bug 71's remedy —
+        /// opportunistic writes during ordinary use — is not implemented.
+        static let maxAge: TimeInterval = .random(in: 18 * 3_600 ... 30 * 3_600)
 
         // MARK: - Init
 

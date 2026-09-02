@@ -121,7 +121,7 @@ Android is not supported.
 
 ## Requirements
 
-- iOS 17.0+
+- iOS 18.6+
 - iPhone with U1 or U2 chip (required for UWB key exchange)
 - iOS 26+ for post-quantum hybrid key exchange
 
@@ -141,7 +141,7 @@ Build and run on a physical device. The Secure Enclave and UWB are not available
 
 ## Contributing
 
-Contributions are welcome. Please read `CODE_GENERATION_GUIDELINES.md` and `CRYPTO_REVIEW_CHECKLIST.md` before submitting any code that touches cryptographic operations.
+Contributions are welcome. Please read [`Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md`](Docs/Audit/CRYPTO_REVIEW_CHECKLIST.md) before submitting any code that touches cryptographic operations — it lists what a change to a crypto path has to answer, and the review block it must ship with.
 
 ---
 

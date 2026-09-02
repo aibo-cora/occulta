@@ -23,6 +23,20 @@ struct DatabaseMigration {
         case encryptionFailed(field: String, contactID: String)
         case hybridKeyUnavailable
         case legacyKeyUnavailable
+
+        /// Legacy decryption *threw* rather than returning nil.
+        ///
+        /// The two are not interchangeable and only this one occurs in practice:
+        /// `decryptLegacy` surfaces an AES-GCM tag mismatch as a thrown
+        /// `CryptoKitError.authenticationFailure`, so `guard let … else { throw
+        /// legacyDecryptionFailed }` never fires for it and the field and contact were
+        /// being discarded in exactly the failure mode that happens. See Bug 90.
+        ///
+        /// `alreadyV2` is the diagnostic that matters: it records whether the field could
+        /// be read with the *current* key, which means it had already been migrated and
+        /// this row is half-converted — Bug 90's second defect, observed rather than
+        /// inferred.
+        case legacyDecryptionThrew(field: String, contactID: String, alreadyV2: Bool, underlying: Error)
     }
 
     /// Run the v1 → v2 migration for all contacts in the given context.
@@ -44,21 +58,37 @@ struct DatabaseMigration {
         let contacts = try modelContext.fetch(descriptor)
 
         for contact in contacts {
-            if contact.deletionToken == nil {
-                #if DEBUG
-                let debugName = contact.givenName.decrypt()
-                #endif
+            // One contact's failure must not end the pass (Bug 90). Before this, a bare
+            // `try` here meant the first row whose legacy ciphertext would not authenticate
+            // stopped every row after it, permanently — and the rows after it may be
+            // perfectly migratable, which is what made it a bug rather than a row with
+            // unrecoverable data.
+            do {
+                if contact.deletionToken == nil {
+                    try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+                }
+                // Soft-deleted rows: skip re-encryption but advance the scheme marker
+                // so they are never fetched again on subsequent launches.
+                //
+                // Inside the `do` deliberately: a throwing save must roll back too.
+                contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+                try modelContext.save()
+            } catch {
+                // Discard this contact's partial mutation. `migrateContact` assigns field by
+                // field, so a throw partway leaves earlier fields already converted on the
+                // live object; without this the next contact's `save()` would commit them and
+                // create exactly the half-converted row this fix exists to repair.
+                //
+                // Safe because `migrate()` suspends autosave for the whole sequence and this
+                // migration runs first, so nothing else has pending changes on this context —
+                // correct by ordering, which is why it is written down here.
+                modelContext.rollback()
 
-                try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
-
-                #if DEBUG
-                debugPrint("Migrated contact to v2 encryption scheme, contact - \(debugName)")
-                #endif
+                // The marker is deliberately not advanced: the row stays at v1 and is retried
+                // next launch. Marking it v2 would collapse "not yet migrated" into "migrated"
+                // and destroy the only evidence that a retry is possible — the same reasoning
+                // as Bug 80's `reencryptPreserving`.
             }
-            // Soft-deleted rows: skip re-encryption but advance the scheme marker
-            // so they are never fetched again on subsequent launches.
-            contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
-            try modelContext.save()
         }
     }
 
@@ -73,16 +103,22 @@ struct DatabaseMigration {
     /// Idempotent: the predicate only matches remaining nil rows, so already-backfilled
     /// contacts are skipped on subsequent launches.
     ///
+    /// Excludes soft-deleted rows (Bug 97): a deleted row with a nil stamp is left for
+    /// `migrateScrubDeletedDepthStamps` to handle with keyless random bytes. Stamping it
+    /// here instead would seal a fresh value under the *current* key on a row whose other
+    /// fields don't decrypt under it — the exact asymmetry Bug 88's keyless-filler remedy
+    /// was written to avoid.
+    ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateSafeContactVisibilityBackfill(modelContext: ModelContext) throws {
         let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.visibleThroughDepth == nil }
+            predicate: #Predicate { $0.visibleThroughDepth == nil && $0.deletionToken == nil }
         )
         let contacts = try modelContext.fetch(descriptor)
         guard !contacts.isEmpty else { return }
 
         for contact in contacts {
-            contact.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+            contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
         }
         try modelContext.save()
     }
@@ -94,16 +130,19 @@ struct DatabaseMigration {
     ///
     /// Idempotent: the predicate only matches remaining nil rows.
     ///
+    /// Excludes soft-deleted rows (Bug 97) — see `migrateSafeContactVisibilityBackfill`'s
+    /// doc comment for why.
+    ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateGlobalTrusteeDepthBackfill(modelContext: ModelContext) throws {
         let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.globalTrusteeDepth == nil }
+            predicate: #Predicate { $0.globalTrusteeDepth == nil && $0.deletionToken == nil }
         )
         let contacts = try modelContext.fetch(descriptor)
         guard !contacts.isEmpty else { return }
 
         for contact in contacts {
-            contact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            contact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
         }
         try modelContext.save()
     }
@@ -120,18 +159,140 @@ struct DatabaseMigration {
     ///
     /// Idempotent: the predicate only matches remaining nil rows.
     ///
+    /// Excludes soft-deleted rows (Bug 97) — see `migrateSafeContactVisibilityBackfill`'s
+    /// doc comment for why.
+    ///
     /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
     static func migrateOriginDepthBackfill(modelContext: ModelContext) throws {
         let descriptor = FetchDescriptor<Contact.Profile>(
-            predicate: #Predicate { $0.originDepth == nil }
+            predicate: #Predicate { $0.originDepth == nil && $0.deletionToken == nil }
         )
         let contacts = try modelContext.fetch(descriptor)
         guard !contacts.isEmpty else { return }
 
         for contact in contacts {
-            contact.originDepth = try JSONEncoder().encode(0).encrypt()
+            contact.originDepth = try DepthCodec.encode(0).encrypt()
         }
         try modelContext.save()
+    }
+
+    /// Converts any remaining legacy JSON depth plaintexts to `DepthCodec`'s fixed-width
+    /// format, so every row's ciphertext is the same length regardless of value (Bug 85).
+    ///
+    /// Runs at launch rather than inside rotation, and that is the point: rotation only
+    /// happens on devices that use Secure Mode, so a format transition riding it would
+    /// leave the format mix correlated with the very secret the fix exists to hide. A
+    /// launch pass runs identically on every install, which is what restores uniformity
+    /// as the innocent baseline.
+    ///
+    /// Four cases are deliberately left byte-identical rather than rewritten:
+    ///
+    /// - **Absent (nil).** For `Contact.Profile` the three backfills above own that case, so
+    ///   this pass must run after them and must not manufacture a value of its own. For
+    ///   `VaultEntry` nil is a legitimate steady state rather than a gap — `isEntryVisible`
+    ///   reads it as "visible at every depth" for entries pre-dating the field — so
+    ///   inventing a value there would change what the user sees. Either way: leave it.
+    /// - **Undecryptable.** This is the important one. `isVisible` fails *closed* on a
+    ///   ciphertext it cannot read — "non-nil field that won't decrypt = sensitive shell;
+    ///   exclude" — so a stranded row is currently *hidden*. Resolving it to a default
+    ///   here would persist that default, and the only permissive default available
+    ///   (`Int.max`) means visible at every duress depth. That is Bug 87's failure mode;
+    ///   written into a migration it would fire on every stranded row at once instead of
+    ///   one per rotation. Preserving the bytes keeps the fail-closed reading intact.
+    /// - **Already fixed-width.** Makes the pass idempotent across launches.
+    /// - **Would not survive the round-trip.** A belt-and-braces guard: the value is only
+    ///   rewritten when decoding the re-encoded form reproduces it exactly, so the pass
+    ///   can never quietly change a value it did not fully understand.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateDepthFieldsToFixedWidth(modelContext: ModelContext) throws {
+        // Live rows only. A soft-deleted row's stamps belong to
+        // `migrateScrubDeletedDepthStamps`, which replaces the value outright rather than
+        // converting it; normalising one here first would hand that pass a row it can no
+        // longer tell apart from an already-scrubbed one (Bug 89).
+        let contacts = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken == nil })
+        )
+        var didChange = false
+
+        for contact in contacts {
+            if let rewritten = try Self.fixedWidthRewrite(of: contact.visibleThroughDepth) {
+                contact.visibleThroughDepth = rewritten
+                didChange = true
+            }
+            if let rewritten = try Self.fixedWidthRewrite(of: contact.globalTrusteeDepth) {
+                contact.globalTrusteeDepth = rewritten
+                didChange = true
+            }
+            if let rewritten = try Self.fixedWidthRewrite(of: contact.originDepth) {
+                contact.originDepth = rewritten
+                didChange = true
+            }
+        }
+
+        // VaultEntry carries the same kind of stamp under the same local DB key. Its range
+        // is narrower — no Int.max sentinel, only a depth — so the leak is the second-order
+        // one: a depth of 10 or more is two JSON bytes where a smaller one is one. Same
+        // defect, same fix.
+        for entry in try modelContext.fetch(FetchDescriptor<VaultEntry>()) {
+            if let rewritten = try Self.fixedWidthRewrite(of: entry.visibleThroughDepth) {
+                entry.visibleThroughDepth = rewritten
+                didChange = true
+            }
+        }
+
+        // AppLayerConfig's two scalar depths. Only the scalars: the padded arrays on the
+        // same model are Bug 86, where the format and `fillerSize` have to change together
+        // and a sequence number does not fit a depth's one-byte payload at all.
+        //
+        // These are also written rarely — `coercerBaseDepth` only on a coercion event — so
+        // without this pass they would sit in the old format almost indefinitely, unlike
+        // fields that any classification change rewrites.
+        for config in try modelContext.fetch(FetchDescriptor<AppLayerConfig>()) {
+            if let rewritten = try Self.fixedWidthRewrite(of: config.persistedDepth) {
+                config.persistedDepth = rewritten
+                didChange = true
+            }
+            if let rewritten = try Self.fixedWidthRewrite(of: config.coercerBaseDepth) {
+                config.coercerBaseDepth = rewritten
+                didChange = true
+            }
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
+
+    /// The fixed-width re-encryption of `field`, or nil when it must be left untouched.
+    /// Every nil return is a case the migration is required not to rewrite — see
+    /// `migrateDepthFieldsToFixedWidth`.
+    private static func fixedWidthRewrite(of field: Data?) throws -> Data? {
+        if case .converted(let sealed) = try Self.rewriteOutcome(of: field) { return sealed }
+        return nil
+    }
+
+    /// Why a field was or was not rewritten. Every non-`converted` case is one the migration
+    /// is required not to touch — the distinction exists so a device can report *which*,
+    /// since "nothing changed" has six very different causes and they are not equally benign.
+    enum DepthRewriteOutcome {
+        case converted(Data)
+        case absent             // nil — the backfills own it, or VaultEntry's "visible" state
+        case undecryptable      // present but the key cannot read it — leave the bytes alone
+        case undecodable        // decrypts, but neither format parses
+        case alreadyFixedWidth  // nothing to do; keeps the pass idempotent
+        case wouldNotRoundTrip  // the value would not survive re-encoding — refuse to guess
+        case sealFailed         // decoded fine, but could not be re-encrypted
+    }
+
+    static func rewriteOutcome(of field: Data?) throws -> DepthRewriteOutcome {
+        guard let field                             else { return .absent }
+        guard let plain = field.decrypt()           else { return .undecryptable }
+        guard let value = DepthCodec.decode(plain)  else { return .undecodable }
+        let reencoded = DepthCodec.encode(value)
+        guard reencoded != plain                    else { return .alreadyFixedWidth }
+        guard DepthCodec.decode(reencoded) == value else { return .wouldNotRoundTrip }
+        guard let sealed = try reencoded.encrypt()  else { return .sealFailed }
+        return .converted(sealed)
     }
 
     /// One-time consolidation onto a single trustee mechanism: reads any existing
@@ -163,7 +324,7 @@ struct DatabaseMigration {
             let trusteeIDs = Set(payload.trusteeIDs)
             let contacts = try modelContext.fetch(FetchDescriptor<Contact.Profile>())
             for contact in contacts where trusteeIDs.contains(contact.identifier) {
-                contact.globalTrusteeDepth = try JSONEncoder().encode(0).encrypt()
+                contact.globalTrusteeDepth = try DepthCodec.encode(0).encrypt()
             }
         }
 
@@ -261,6 +422,118 @@ struct DatabaseMigration {
     /// Re-encrypt a base64-encoded ciphertext string from v1 → v2.
     ///
     /// Empty strings are preserved as-is (they represent empty plaintext).
+
+    /// Brings the depth stamps of already-soft-deleted rows in line with the rest of their
+    /// own row (Bug 89).
+    ///
+    /// The repair half. `ContactManager.deleteContact` scrubs these at deletion time, so this
+    /// covers only rows deleted before that shipped — nothing else will ever rewrite them,
+    /// because rotation skips soft-deleted rows and the fixed-width pass now excludes them.
+    ///
+    /// **What "scrubbed" means depends on the row, and that is the whole design.** The tell
+    /// is never the value in the field; it is a stamp whose readability disagrees with the
+    /// rest of the row it sits on:
+    ///
+    /// - **Readable row** (deleted, no rotation since). Its name fields still decrypt, so
+    ///   three stamps that did not would not read as concealment but as evidence something
+    ///   was deliberately destroyed — the trace this project must not leave. Re-seal the
+    ///   benign value instead: `Int.max` / `-1` / `0`, what an ordinary contact holds on a
+    ///   device that never activated Secure Mode.
+    /// - **Stranded row** (a rotation has happened since deletion). Every other field on it
+    ///   is unreadable, so a stamp that decrypts cleanly is the outlier. Random bytes at the
+    ///   uniform length. A stamp already sealed under the superseded key is *already*
+    ///   consistent and is left byte-identical; only nil or legacy-width fields are rewritten,
+    ///   since those leak through length (Bug 85) even when nothing can read them.
+    ///
+    /// Readability is decided per row by `deletionToken`, which is the ideal oracle: it is set
+    /// on exactly this population, always encrypted, and its plaintext is the known constant
+    /// `Data([1])` — so it confirms a *correct* decrypt rather than merely a non-throwing one.
+    ///
+    /// Idempotent in both branches, so it does not rewrite on every launch.
+    ///
+    /// - Parameter modelContext: The SwiftData context to fetch and save contacts.
+    static func migrateScrubDeletedDepthStamps(modelContext: ModelContext) throws {
+        let deleted = try modelContext.fetch(
+            FetchDescriptor<Contact.Profile>(predicate: #Predicate { $0.deletionToken != nil })
+        )
+        var didChange = false
+
+        for contact in deleted {
+            let readable = contact.deletionToken?.decrypt() == Data([1])
+
+            if let scrubbed = try Self.scrubbedStamp(
+                contact.visibleThroughDepth, benign: Int.max, rowIsReadable: readable
+            ) {
+                contact.visibleThroughDepth = scrubbed
+                didChange = true
+            }
+            if let scrubbed = try Self.scrubbedStamp(
+                contact.globalTrusteeDepth, benign: -1, rowIsReadable: readable
+            ) {
+                contact.globalTrusteeDepth = scrubbed
+                didChange = true
+            }
+            if let scrubbed = try Self.scrubbedStamp(
+                contact.originDepth, benign: 0, rowIsReadable: readable
+            ) {
+                contact.originDepth = scrubbed
+                didChange = true
+            }
+        }
+
+        if didChange { try modelContext.save() }
+    }
+
+    /// The replacement for one depth stamp, or nil to leave the field byte-identical.
+    ///
+    /// Applied per field, not per row: a deleted row can legitimately have one stamp readable
+    /// and the others stranded. Historically this was guaranteed — the three backfills didn't
+    /// filter `deletionToken`, so an ordinary launch could stamp one field of an already-
+    /// deleted row under the current key while leaving the others untouched (Bug 97, fixed
+    /// 2026-08-24: all three now exclude deleted rows). `rowIsReadable` decides the *target*
+    /// state for the row; each field is then moved to it independently.
+    ///
+    /// A nil stamp is replaced in both branches — nil is its own tell (S6). In the readable
+    /// branch it becomes a sealed benign value, matching a live row; in the stranded branch,
+    /// random bytes at the uniform length.
+    private static func scrubbedStamp(
+        _ field: Data?,
+        benign: Int,
+        rowIsReadable: Bool
+    ) throws -> Data? {
+        guard rowIsReadable else {
+            // Already sealed at the uniform length — unreadable here, and unreadable is
+            // exactly what this row's other fields are. Nothing to do.
+            guard field?.count != DepthCodec.sealedSize else { return nil }
+            return Data.randomBytes(DepthCodec.sealedSize)
+        }
+
+        // Both conditions matter. The value has to be benign, and it has to be fixed-width:
+        // a legacy-format stamp can already decode to the benign value while still leaking
+        // through its length, and the fixed-width pass no longer visits deleted rows.
+        if let field, field.count == DepthCodec.sealedSize,
+           let plain = field.decrypt(), DepthCodec.decode(plain) == benign {
+            return nil
+        }
+        return try DepthCodec.encode(benign).encrypt()
+    }
+
+    /// Builds the error for a legacy decryption that threw, probing whether the field is
+    /// readable with the **current** key on the way.
+    ///
+    /// That probe is the whole diagnostic. A field that fails the legacy key but succeeds
+    /// the current one was already migrated, which means this row is half-converted and
+    /// Bug 90's second defect has actually fired here — rather than being a hazard the code
+    /// merely permits. It decides whether a fix needs resume-mode for mixed rows or only
+    /// needs to stop creating them.
+    private static func legacyThrew(
+        _ ciphertext: Data, field: String, id: String, new: CryptoProtocol, error: Error
+    ) -> MigrationError {
+        let alreadyV2 = ((try? new.decrypt(data: ciphertext)) ?? nil) != nil
+        return .legacyDecryptionThrew(field: field, contactID: id,
+                                      alreadyV2: alreadyV2, underlying: error)
+    }
+
     private static func reencryptString(_ base64: String, field: String, id: String, legacy: CryptoProtocol, new: CryptoProtocol) throws -> String {
         guard !base64.isEmpty else { return "" }
 
@@ -271,7 +544,19 @@ struct DatabaseMigration {
         // Empty ciphertext data means the field was empty when encrypted.
         guard !ciphertext.isEmpty else { return "" }
 
-        guard let plaintext = try legacy.decryptLegacy(data: ciphertext) else {
+        let decrypted: Data?
+        do {
+            decrypted = try legacy.decryptLegacy(data: ciphertext)
+        } catch {
+            let failure = Self.legacyThrew(ciphertext, field: field, id: id, new: new, error: error)
+            // Resume: this field was already converted by an earlier run that failed partway
+            // (Bug 90). It is correct as it stands, so return it untouched rather than
+            // throwing — that is what lets a half-migrated row finish instead of being stuck
+            // forever on the field it already converted.
+            if case .legacyDecryptionThrew(_, _, alreadyV2: true, _) = failure { return base64 }
+            throw failure
+        }
+        guard let plaintext = decrypted else {
             throw MigrationError.legacyDecryptionFailed(field: field, contactID: id)
         }
 
@@ -294,7 +579,16 @@ struct DatabaseMigration {
     ) throws -> Data? {
         guard let data, !data.isEmpty else { return nil }
 
-        guard let plaintext = try legacy.decryptLegacy(data: data) else {
+        let decrypted: Data?
+        do {
+            decrypted = try legacy.decryptLegacy(data: data)
+        } catch {
+            let failure = Self.legacyThrew(data, field: field, id: id, new: new, error: error)
+            // Resume — see reencryptString.
+            if case .legacyDecryptionThrew(_, _, alreadyV2: true, _) = failure { return data }
+            throw failure
+        }
+        guard let plaintext = decrypted else {
             throw MigrationError.legacyDecryptionFailed(field: field, contactID: id)
         }
 

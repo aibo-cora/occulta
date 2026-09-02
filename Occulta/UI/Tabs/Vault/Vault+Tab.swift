@@ -142,10 +142,23 @@ struct VaultTab: View {
                 if isUnlocked && self.postRestoreActionNeeded {
                     self.showPostRestoreSheet = true
                 }
+                // backupStaleness is depth-scoped and VaultManager has no way to know
+                // currentDepth on its own — refresh it here, where both vault and
+                // security are in scope, rather than inside unlock() itself.
+                if isUnlocked {
+                    self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                }
             }
             .onChange(of: self.postRestoreActionNeeded) { _, newValue in
                 if newValue && self.vault.isUnlocked {
                     self.showPostRestoreSheet = true
+                }
+            }
+            .onAppear {
+                // Covers returning to this tab while already unlocked, when the
+                // isUnlocked transition above never fires.
+                if self.vault.isUnlocked {
+                    self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
                 }
             }
         }
@@ -246,12 +259,15 @@ struct VaultTab: View {
                                 .font(.system(size: 16))
                                 .foregroundStyle(Color.occultaAccent)
                         }
+                        // No count, and that omission is what lets this render at every depth.
+                        // A climbing tally is a live report on real depth-0 activity and would
+                        // contradict itself in a duress session, where collection continues but
+                        // reconstruction never fires. A static line claims no progress, so it
+                        // reads the same as a real recovery still waiting on trustees it has not
+                        // met — see `refreshPendingRestoreState`.
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Restoring your vault")
+                            Text("Recovery in progress…")
                                 .font(.system(size: 16, weight: .medium))
-                            Text("\(self.vault.pendingRestoreShardCount) recovery pieces collected")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(Color.occultaAccent)
                         }
                         Spacer()
                     }
@@ -267,7 +283,12 @@ struct VaultTab: View {
                             .foregroundStyle(Color.occultaAccent)
                     }
                 } footer: {
-                    Text("Open Occulta near your trustees to collect recovery pieces.")
+                    // Names no mechanism, for the same reason the restore confirmation does not:
+                    // this section renders at every depth now, so "your trustees" would tell
+                    // whoever is holding the phone that the recovery is split among specific
+                    // people and that proximity to them is what advances it. The real user still
+                    // gets the one instruction that matters — be near them with the app open.
+                    Text("Recovery continues when Occulta is open near the people helping you.")
                         .font(.system(size: 10, design: .monospaced))
                 }
             }
@@ -485,7 +506,7 @@ struct VaultTab: View {
 
     private func startExport() {
         do {
-            let data = try vault.exportBackup()
+            let data = try vault.exportBackup(currentDepth: self.security.currentDepth)
             let url  = VaultManager.tempBackupURL()
             try data.write(to: url, options: .completeFileProtection)
             BackupPickerPresenter.present(fileURL: url) {
@@ -505,7 +526,7 @@ struct VaultTab: View {
             DispatchQueue.main.async {
                 self.unlocking = false
                 
-                if success { self.vault.unlock(context: ctx) }
+                if success { self.vault.unlock(context: ctx, currentDepth: self.security.currentDepth) }
             }
         }
     }

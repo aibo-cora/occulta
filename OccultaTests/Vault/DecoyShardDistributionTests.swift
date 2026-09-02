@@ -91,7 +91,7 @@ struct DecoyShardDistributionTests {
         #expect(contacts.isGlobalTrustee(trustee2.identifier))
 
         // A decoy vault entry, stamped visible only at this exact duress depth.
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vault.addEntry(
             label: "decoy note", content: Data("decoy".utf8), type: .note,
             currentDepth: security.currentDepth

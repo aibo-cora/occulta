@@ -325,10 +325,7 @@ extension ComposableMessage {
                         .clipShape(RoundedRectangle(cornerRadius: 18))
                         .contextMenu {
                             Button {
-                                UIPasteboard.general.setItems(
-                                    [[UIPasteboard.typeAutomatic: text]],
-                                    options: [.expirationDate: Date().addingTimeInterval(120)]
-                                )
+                                UIPasteboard.general.copySensitive(text)
                                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                             } label: {
                                 Label("Copy", systemImage: "doc.on.doc")

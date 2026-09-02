@@ -18,6 +18,14 @@ import CryptoKit
 import Foundation
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Version capability mapping
 
 @Suite("Version — capability mapping")
@@ -81,9 +89,15 @@ struct VersionCapabilityTests {
     // a newer capability tier must not silently lose an older, unrelated capability
     // check just because that check's case list wasn't updated.
     @Test func max_senderSignatureCapableRange_returnsSenderSignatureCapable() {
+        // The range is now closed at the top: 1.10.2 opened
+        // `.prefixedSenderSignatureCapable` above it.
         #expect(OccultaBundle.Version.max(forAppVersion: "1.10.0") == .senderSignatureCapable)
         #expect(OccultaBundle.Version.max(forAppVersion: "1.10.1") == .senderSignatureCapable)
-        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .senderSignatureCapable)
+        // Anything far enough ahead lands on whatever the newest tier happens to be. Asserting
+        // the specific case here is what made this test need editing when a tier was added;
+        // asserting the property does not.
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0") == .mostCapable)
+        #expect(OccultaBundle.Version.max(forAppVersion: "2.0.0").isAtLeast(.senderSignatureCapable))
     }
 
     @Test func wireByte_senderSignatureCapable_is0x07() {
@@ -219,7 +233,7 @@ struct ModeDecodingTests {
 
     let pm = Manager.PrekeyManager()
 
-    @Test func fsBundle_v4Binary_survivesRoundTrip() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func fsBundle_v4Binary_survivesRoundTrip() throws {
         // A 1.9.0 sender seals with a prekey (FS path). A 1.8.x recipient must
         // be able to decode the binary envelope and derive the same session key.
         let contactID = "compat.\(UUID().uuidString)"
@@ -458,7 +472,7 @@ struct ModeDecodingTests {
 
     // MARK: 1.8.x → 1.9.0 (old non-group format received by 1.9.0 device)
 
-    @Test func crossVersion_olderSender_nonGroupBundle_opensOn_1_9_0() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func crossVersion_olderSender_nonGroupBundle_opensOn_1_9_0() throws {
         let senderKM    = TestKeyManager()
         let recipientKM = TestKeyManager()
         let senderPub   = try senderKM.retrieveIdentity()

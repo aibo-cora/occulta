@@ -65,13 +65,88 @@ For multi-step tasks, state a brief plan:
 
 ## Build & Test
 
-This is a native Xcode project with no external package manager (no CocoaPods, SPM, or Carthage).
+A native Xcode project with **no** package dependencies — no SPM, CocoaPods, or Carthage. All
+crypto is CryptoKit and Security.framework, ML-KEM included.
+
+The one SPM dependency (`apple/swift-crypto` 4.2.0, pulling `apple/swift-asn1`) was removed on
+`release/v1.10.3`, 2026-08-14. Nothing imported it: on Apple platforms swift-crypto's `Crypto`
+module compiles to nothing but `@_exported import CryptoKit`, so the single `import Crypto` was an
+alias for a framework the file already imported. The five vendored BoringSSL resource bundles came
+from the `CryptoExtras`/`_CryptoExtras` products, which were linked to the app target and imported
+by zero files. A re-archive confirms zero bundles and zero BoringSSL symbols; see §7 of
+`Docs/Audit/SECURITY_CHECKLIST.md`.
 
 - **Open:** `open Occulta.xcodeproj`
 - **Build/Run:** Cmd+R in Xcode, targeting a physical iPhone 11+ (U1 chip required for NearbyInteraction)
 - **Test all:** Cmd+U in Xcode, or via CLI:
 
-**Requirements:** iOS 16.0+, Xcode 16+. Physical device needed for Secure Enclave and NearbyInteraction; unit tests use `TestKeyManager` to bypass SE.
+  ```
+  xcodebuild -project Occulta.xcodeproj -scheme OccultaTests \
+    -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
+  ```
+
+  **The scheme must be `OccultaTests`, not `Occulta`.** The `Occulta` scheme has no test action,
+  and `xcodebuild -list` does not even show `OccultaTests` — it reports only the two schemes marked
+  shared in the container, so the one you need is absent from the listing that is supposed to tell
+  you what exists. Passing `-scheme Occulta` fails with "not currently configured for the test
+  action", which reads like a project-level problem rather than a wrong scheme name.
+
+  Narrow a run with `-only-testing:OccultaTests/<SuiteStructName>` — the *struct* name, not the
+  `@Suite("…")` display string. `test-without-building` is unavailable here for the same
+  scheme-configuration reason, so an iterated run pays the build each time.
+
+  Swift Testing failures print as a bare `Test case '…' failed` with no reason attached, and the
+  detail does not reach stdout. Read it from the `.xcresult` the run prints at the end, or split
+  the assertion into its own `@Test` and bisect — often faster than fighting `xcresulttool`.
+
+**Requirements:** `IPHONEOS_DEPLOYMENT_TARGET` is **18.6** across all ten build configurations;
+Xcode 26.2 / iOS SDK 26.2 at the last release. Physical device needed for NearbyInteraction.
+
+Note the deployment target and the availability gates are different things: ML-KEM is behind
+`#available(iOS 26, *)` in `PQProvider`, so the post-quantum path is live only on iOS 26+ and the
+classical-only modes exist for everything between 18.6 and that.
+
+**Secure Enclave and the test suite.** Some tests inject `TestKeyManager` and run anywhere; **270
+of 806** need a real Enclave, because `Group`'s crypto, `reencryptAllFields` and the prekey store
+go through `Manager.Key()` directly with no injection seam. (Both re-measured 2026-08-16: gated by
+counting `@Test` declarations carrying `secureEnclaveAvailable()` directly or by their enclosing
+suite, total by counting unique test cases in a full local run — 771 `@Test` plus 36 XCTest cases
+declared. Re-measure rather than trusting either; they have drifted every time. The gated figure
+once read "roughly 146" against a real 260, and the total sat at 742 while the suite had grown
+past 770.) Those carry
+`.enabled(if: secureEnclaveAvailable())` and report as **skipped** where one is unavailable —
+notably on GitHub-hosted CI runners, which are VMs. A Simulator on bare-metal Apple Silicon does
+have Enclave access and runs the full suite.
+
+**With one exception, and it is not about the Enclave.** `KeychainMigrationSETests` (6 XCTest cases)
+stays behind a compile-time `#if targetEnvironment(simulator)` skip and is device-only. The
+Simulator *does* create SE keys there — the tempting "just gate it on `secureEnclaveAvailable()`"
+was tried on 2026-08-15 and reverted — but `SecItemUpdate` cannot add `kSecAttrAccessGroup` to an
+SE-protected key in the Simulator, returning `-25303 errSecNoSuchAttr`, and that update is the
+entire subject of the suite. A runtime gate turns six honest skips into two failures announcing
+that the keychain migration strategy is unviable. Enclave availability is not the predicate;
+Simulator keychain fidelity is. So a full local run's pass condition is **exactly 6 skips, all in
+that suite** — any other skip means the host lacked an Enclave.
+
+**Do not construct `Manager.Key` inside a synchronous XCTest `setUpWithError`.** The project builds
+with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so `Manager.Key` is implicitly main-actor-isolated
+and its `deinit` hops executors; releasing one from that context crashes the test process
+(`swift_task_deinitOnExecutorImpl` → malloc "pointer being freed was not allocated"). The failure is
+disguised: xcodebuild relaunches per test and reports a green **"Executed 0 tests"**, so a suite can
+stop running entirely and still look fine. The 23 Swift Testing files that call
+`secureEnclaveAvailable()` are unaffected, reaching it from a task context.
+
+**A separate and worse problem: 112 tests still skip the old way** — `print("⚠︎ Skipping"); return`
+— which reports as **passed**, not skipped. So the suite's green count overstates what actually
+ran, and unlike the gated tests the shortfall is invisible. Prefer injecting a key manager; where
+there is no seam, use `.enabled(if: secureEnclaveAvailable())` so the cost stays visible. Do not
+add more of the legacy form.
+
+So **a green CI run is not a passing test suite**: it verifies the parts that do not touch key
+material. Before tagging a release, run the full suite locally on a host with an Enclave and
+confirm the skip count is zero — see the Testing Gate in `Docs/Audit/SECURITY_CHECKLIST.md`. When
+adding a test that needs real key material, prefer injecting a key manager over gating it; gate it
+only where no seam exists.
 
 ## Architecture
 
@@ -91,3 +166,8 @@ Unit tests for all implementations
 - `develop` — integration branch; PRs target this
 - `release/v*` — release branches
 - Feature branches prefixed `v1.*.0/`
+
+The current release branch was renamed `release/v1.11.0` → `release/v1.10.3` on 2026-08-16, when
+its contents were re-scoped as a patch. References to the old name in commit messages and PR titles
+predate that; the docs were updated to the new name, so a dated entry reading "on
+`release/v1.10.3`, 2026-08-14" is the same branch under its earlier name, not a contradiction.

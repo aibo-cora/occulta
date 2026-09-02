@@ -55,24 +55,11 @@ class ContactManager {
 
     @ObservationIgnored
     let security: Manager.Security
-    @ObservationIgnored
-    private var cancellables = Set<AnyCancellable>()
 
     init(modelContainer: ModelContainer, security: Manager.Security) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
-
-        NotificationCenter.default
-            .publisher(
-                for: NSManagedObjectContext.didSaveObjectsNotification,
-                object: self.modelExecutor.modelContext
-            )
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.syncShareIndex()
-            }
-            .store(in: &self.cancellables)
     }
     
     var dateFormatter: DateFormatter {
@@ -204,14 +191,14 @@ class ContactManager {
             // Depth 0 imports are safe contacts → Int.max (visible everywhere).
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
-            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
-            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
-            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -391,14 +378,14 @@ class ContactManager {
             // Depth 0 contacts are safe by default → Int.max (visible everywhere).
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
-            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
-            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
-            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -480,6 +467,23 @@ class ContactManager {
         if softDeleted.count >= 50, let victim = softDeleted.first {
             self.modelContext.delete(victim)
         }
+
+        // Scrub the three depth stamps before marking the row deleted, sealed under the same
+        // key the rest of the row already uses (Bug 89).
+        //
+        // Soft-deleted rows are the one population rotation never re-keys — `fetchAllContacts`
+        // filters `deletionToken == nil` — so whatever these hold at deletion time is what a
+        // forensic examiner reads for as long as the row survives, and the true values name
+        // the layer the contact lived in.
+        //
+        // Sealed benign values rather than random bytes: until the next rotation this row's
+        // other fields still decrypt, so three that did not would not read as concealment but
+        // as evidence something was deliberately destroyed. `Int.max` / `-1` / `0` are what an
+        // ordinary contact holds on a device that never activated Secure Mode, which is the
+        // baseline this has to blend into. Written unconditionally — no branch on secret state.
+        contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
+        contact.globalTrusteeDepth  = try DepthCodec.encode(-1).encrypt()
+        contact.originDepth         = try DepthCodec.encode(0).encrypt()
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -1089,7 +1093,8 @@ extension ContactManager {
                     publicKey:       recipientMaterial,
                     quantumMaterial: quantumMaterial,
                     contactPrekey:   contactPrekey,
-                    pendingBatch:    outboundBatch
+                    pendingBatch:    outboundBatch,
+                    prefixesEphemeralSignature: targetVersion.isAtLeast(.prefixedSenderSignatureCapable)
                 )]
             )
             let encodedBundle = try bundle.encoded(version: .v4)
@@ -1148,6 +1153,9 @@ private struct PendingGroupRecipient {
     /// the empty arrays above carry no meaning and must not be sent as a real
     /// "zero" signal.
     let shardMetadataAttempted: Bool
+    /// Whether this member's build verifies the domain-separated ephemeral signature.
+    /// Resolved per member, since a group's members can be on different builds.
+    let prefixesEphemeralSignature: Bool
 }
 
 extension ContactManager {
@@ -1226,7 +1234,13 @@ extension ContactManager {
 
             let pendingBatch = try contact.loadPendingBatch()
 
-            let memberIsShardCapable = Self.resolveTargetVersion(for: contact, using: cryptoOps) == .groupShardCapable
+            // `isAtLeast`, not `==`. Equality asks "is this contact exactly at the shard tier",
+            // which stops being the right question the moment a tier is added above it — and
+            // one was, in 1.10.0. Every contact on 1.10.0+ resolves to `.senderSignatureCapable`
+            // and failed this check, so shard operations, custody manifests and expected-shard
+            // lists were silently dropped for exactly the contacts most likely to support them.
+            let memberVersion = Self.resolveTargetVersion(for: contact, using: cryptoOps)
+            let memberIsShardCapable = memberVersion.isAtLeast(.groupShardCapable)
             let canReceiveShardContent = memberIsShardCapable && quantumMaterial != nil && contactPrekey != nil
 
             var realOps: [OccultaBundle.ShardOperation] = []
@@ -1268,7 +1282,8 @@ extension ContactManager {
                 realShardOperations:    realOps,
                 realCustodyManifest:    realManifest,
                 realExpectedShards:     realExpected,
-                shardMetadataAttempted: metadataAttempted
+                shardMetadataAttempted: metadataAttempted,
+                prefixesEphemeralSignature: memberVersion.isAtLeast(.prefixedSenderSignatureCapable)
             )
         }
 
@@ -1291,7 +1306,8 @@ extension ContactManager {
                 custodyManifestCount:   manifestCount,
                 expectedShards:         paddedExpected,
                 expectedShardsCount:    expectedCount,
-                shardMetadataAttempted: p.shardMetadataAttempted
+                shardMetadataAttempted: p.shardMetadataAttempted,
+                prefixesEphemeralSignature: p.prefixesEphemeralSignature
             )
         }
 
@@ -1325,6 +1341,14 @@ extension ContactManager {
     /// `.shard` attributes are already near-constant size (fixed label, fixed-length
     /// share, near-constant signature) — so filler and real entries aren't
     /// distinguishable by size within the array.
+    ///
+    /// **Every optional member of a real op has to be filled here, not omitted.** This is
+    /// tier padding's blind spot: it equalises the op *count* per recipient, and the sealed
+    /// payload's length then still varies with what those ops contain. `attestation` (Bug 94
+    /// remedy 2) is ~260 encoded bytes and `entryID` ~50, so a filler missing either is a
+    /// keyless per-recipient distinguisher in a bundle whose `wrappedPayload` lengths are
+    /// cleartext. The sending side keeps its half of this by filling `attestation` on every
+    /// real op too — see `ShardCustodyManager.attestationFiller`.
     private static func paddedShardOperations(
         _ real: [OccultaBundle.ShardOperation],
         to tier: Int
@@ -1334,14 +1358,37 @@ extension ContactManager {
         return padded
     }
 
-    private static func fillerShardOperation() -> OccultaBundle.ShardOperation {
+    /// Not `private`: `ShardOperationPaddingTests` encodes this against a real attested
+    /// handback op to catch the next field that gets added to one and not the other, which
+    /// is the mistake this function has now made twice.
+    ///
+    /// Two residuals it does not close, both pre-dating the attestation field and both far
+    /// below the ~260 bytes that one was. `kind` is `.unsupported` (11 bytes) against a real
+    /// `.handback` (8) or `.distribute` (10), and that spelling is load-bearing — it is what
+    /// makes the receiver skip the op. And a real `.replace` carries an `attributeID` no
+    /// other op has; matching it would mean giving filler one too, which would make filler
+    /// the outlier against the far more common `.distribute`.
+    static func fillerShardOperation() -> OccultaBundle.ShardOperation {
         let filler = SignedAttribute(
             label:     "vault-shard",
             value:     Data((0..<33).map { _ in UInt8.random(in: .min ... .max) }),
             category:  .shard,
-            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) })
+            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }),
+            // Real `.shard` attributes always carry one; nil here is a ~50-byte tell.
+            entryID:   UUID()
         )
-        return OccultaBundle.ShardOperation(kind: .unsupported, attribute: filler)
+        let fillerAttestation = SignedAttribute(
+            label:     "shard-attestation",
+            value:     Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }),
+            category:  .attestation,
+            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }),
+            entryID:   filler.entryID
+        )
+        return OccultaBundle.ShardOperation(
+            kind:        .unsupported,
+            attribute:   filler,
+            attestation: fillerAttestation
+        )
     }
 }
 
@@ -1428,13 +1475,67 @@ extension ContactManager {
 
     /// Resolve the wire format version to use when sending to a contact.
     /// Reads the encrypted `maxBundleVersion` byte and maps it back to a `Version`.
+    /// The three distinguishable states of `Contact.Profile.maxBundleVersion`.
+    ///
+    /// `resolveTargetVersion` flattens `.unrecorded` and `.unreadable` into `.v3fs`, which is
+    /// right for send-path callers — they want a tier, not its provenance. The signature gate
+    /// in `openGroup`, the high-water mark in `updateMaxVersion`, and the group-eligibility
+    /// message all need the distinction; Bug 80 existed because it was not available to them.
+    enum BundleVersionState {
+        /// No bundle has ever been received from this contact.
+        case unrecorded
+        /// A tier was recorded and still decrypts.
+        case readable(OccultaBundle.Version)
+        /// A tier was recorded but was stranded by a key rotation and cannot be read.
+        case unreadable
+    }
+
+    /// One decrypt, all three answers. Every caller below is built on this so that asking
+    /// "which tier?" and "was it readable?" costs a single Secure Enclave round trip rather
+    /// than one each — `Manager.Crypto` re-derives the hybrid key on every `decrypt` call.
+    private static func bundleVersionState(
+        for contact: Contact.Profile,
+        decrypting decrypt: (Data) -> Data?
+    ) -> BundleVersionState {
+        guard let encoded = contact.maxBundleVersion else { return .unrecorded }
+        guard let raw = decrypt(encoded), let byte = raw.first else { return .unreadable }
+        if let known = WireHandle.byteToVersion(byte) { return .readable(known) }
+
+        // A byte we cannot map is either newer than this build or junk, and the two must not
+        // be treated alike. Mapping both to `.v3fs` — as this did until 2026-08-12 — reads
+        // "newer than I understand" as "older than everything", which fails *open* on the
+        // signature gate in `openGroup`: a contact whose build post-dates ours is recorded as
+        // unable to sign, so an unsigned forward-secret bundle from them is accepted.
+        //
+        // Above the highest byte we know means a newer build, so assume our own top tier. That
+        // is right for every consumer, not just the gate: the send paths pick our newest format
+        // for them, and group eligibility says yes — both correct for a contact ahead of us. It
+        // also gives the `updateMaxVersion` high-water mark a real floor, so a later low claim
+        // cannot walk the tier back down.
+        //
+        // Below it, an unmappable byte is legacy or corrupt, not future, and stays at the floor.
+        // `WireHandle.byteToVersion` deliberately keeps returning nil for both — only the
+        // interpretation lives here.
+        return .readable(byte > OccultaBundle.Version.highestKnownWireByte
+                         ? OccultaBundle.Version.mostCapable
+                         : .v3fs)
+    }
+
+    static func bundleVersionState(for contact: Contact.Profile, using crypto: Manager.Crypto) -> BundleVersionState {
+        Self.bundleVersionState(for: contact) { try? crypto.decrypt(data: $0) }
+    }
+
+    /// Key-taking variant, for callers classifying many contacts in one pass — derive once,
+    /// pass the same key to every call. Mirrors `Contact.Profile.isVisible(atDepth:usingKey:)`.
+    static func bundleVersionState(for contact: Contact.Profile, using key: SymmetricKey) -> BundleVersionState {
+        Self.bundleVersionState(for: contact) { $0.decrypt(using: key) }
+    }
+
     static func resolveTargetVersion(for contact: Contact.Profile, using crypto: Manager.Crypto) -> OccultaBundle.Version {
-        guard
-            let enc  = contact.maxBundleVersion,
-            let raw  = try? crypto.decrypt(data: enc),
-            let byte = raw.first
-        else { return .v3fs }
-        return WireHandle.byteToVersion(byte) ?? .v3fs
+        guard case .readable(let version) = Self.bundleVersionState(for: contact, using: crypto) else {
+            return .v3fs
+        }
+        return version
     }
 
     private func verifyConsistency(for bundle: OccultaBundle) throws {
@@ -1563,7 +1664,10 @@ extension ContactManager {
         try self.modelContext.save()
 
         #if DEBUG
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
+        // contact across a session, without putting a plaintext name in the console — the
+        // identifier is already ciphertext and is never decrypted here.
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
         #endif
 
         return (decodedPayload, sender.identifier)
@@ -1616,10 +1720,59 @@ extension ContactManager {
         }
     }
 
-    private func updateMaxVersion(from appVersion: String?, for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws {
+    /// Records the sender's capability tier as a **high-water mark** — it may rise, never fall.
+    ///
+    /// `appVersion` comes from the sealed payload, so it is authenticated only by the session
+    /// key. In FS mode that key carries no sender identity (finding #8,
+    /// SecurityReview2026-07-24), so whoever can build an FS bundle can also choose this value.
+    /// Overwriting unconditionally — as this did until 2026-08-12 — made the
+    /// `senderEphemeralSignature` gate in `openGroup` bypassable in two messages: claim an old
+    /// `appVersion` in a signed bundle to lower the recorded tier, then send an unsigned one
+    /// and watch the gate skip. Capability reflects an installed build and only moves upward in
+    /// practice, so refusing to lower it costs nothing real and closes that path.
+    ///
+    /// A **stranded** marker (present, unreadable) is treated as the top tier rather than as
+    /// unknown. `resolveTargetVersion` would report `.v3fs` for it, which any claim clears —
+    /// letting an attacker convert "we cannot prove they are incapable" into a recorded "they
+    /// are incapable" and reopen the gate. The cost is that a genuinely pre-1.10.0 contact
+    /// whose marker was stranded stays gated until they update; that is the same interop trade
+    /// the fail-closed check in `openGroup` makes, kept consistent here so the two cannot
+    /// disagree.
+    /// Not `private` so the high-water-mark rule can be unit tested directly; it is the
+    /// security-relevant half of this function and asserting it through a full bundle round
+    /// trip would test the transport more than the rule.
+    func updateMaxVersion(from appVersion: String?, for sender: Contact.Profile, using cryptoOps: Manager.Crypto) throws {
         guard let appVersion else { return }
         let maxVersion = OccultaBundle.Version.max(forAppVersion: appVersion)
         guard let byte = maxVersion.wireByte else { return }
+
+        // The floor is what makes this a high-water mark: a claim below it is ignored, so a
+        // contact's recorded tier can rise but never fall.
+        //
+        // `.unreadable` pinning the floor at `.senderSignatureCapable` is Bug 81's mechanism,
+        // and it is easy to read as unrelated. A stranded marker means we cannot know whether
+        // this contact signs, so `openGroup`'s gate rejects their unsigned FS bundles; letting a
+        // *claimed* low version overwrite the stranded marker would reopen Bug 80, since an
+        // attacker could then claim 1.9.0 to switch the requirement off. The consequence is that
+        // a genuine 1.9.x contact can never clear this floor, so their marker stays stranded and
+        // they stay blocked — permanently, and with no action available to either side until
+        // they reach 1.10.0. That is one decision, not two: the thing that keeps Bug 80 closed
+        // is the same thing that keeps Bug 81 open.
+        //
+        // Pinned to the tier the gate keys off, deliberately, not to the newest tier. Raising it
+        // as tiers are added would widen Bug 81 to every version below the new top.
+        //
+        // See also Bug 83: monotonicity is safe for capability decisions but not for decisions
+        // that change what we put on the wire.
+        let floor: OccultaBundle.Version
+        switch Self.bundleVersionState(for: sender, using: cryptoOps) {
+        case .unreadable:            floor = .senderSignatureCapable
+        case .readable(let current): floor = current
+        case .unrecorded:            floor = .v3fs
+        }
+
+        guard maxVersion.isAtLeast(floor) else { return }
+
         sender.maxBundleVersion = try cryptoOps.encrypt(data: Data([byte]))
     }
 
@@ -1722,18 +1875,44 @@ extension ContactManager {
         // for that mode, verified inside findAndOpenRecipientSlot if present. Require it
         // only once this contact has previously demonstrated (via appVersion) that their
         // build produces one; older contacts can't, so their absence is accepted as before.
+        //
+        // Fails closed on a stranded marker (Bug 80). `resolveTargetVersion` reports `.v3fs`
+        // both when a contact has never been seen and when their recorded version was
+        // stranded by a pre-1.10.2 key rotation — and `.v3fs` is not
+        // `senderSignatureCapable`, so a stranded marker silently skipped this check on
+        // every install that had ever activated Secure Mode. Absence still accepts (a contact
+        // we have genuinely never heard from cannot be assumed capable, and rejecting would
+        // break first contact); unreadable-but-present now rejects, because it means we
+        // cannot establish that the sender is incapable, and this check is the only thing
+        // binding an FS-mode bundle to the sender's identity.
         let isFSMode = recipientMode == .forwardSecret || recipientMode == .forwardSecretNoPQ
-        if isFSMode, recipientPayload.senderEphemeralSignature == nil,
-           Self.resolveTargetVersion(for: sender, using: cryptoOps).isAtLeast(.senderSignatureCapable) {
-            throw GroupDecryptError.missingSenderEphemeralSignature
+        
+        if isFSMode, recipientPayload.senderEphemeralSignature == nil {
+            switch Self.bundleVersionState(for: sender, using: cryptoOps) {
+            case .readable(let version) where version.isAtLeast(.senderSignatureCapable):
+                // Known to sign, and did not — treat as a forgery signal.
+                throw GroupDecryptError.missingSenderEphemeralSignature
+            case .unreadable:
+                // Capability unknowable (stranded marker). Same rejection, different cause, and
+                // the caller needs to be able to tell them apart to say anything useful.
+                throw GroupDecryptError.senderSignatureCapabilityUnknown
+            case .readable, .unrecorded:
+                break
+            }
         }
 
-        // ── 4. Prekey management ─────────────────────────────────────────
+        // ── 4. Prekey bookkeeping ────────────────────────────────────────
+        // The prekey itself is already gone — `findAndOpenRecipientSlot` consumes it the moment
+        // the slot opens, so that a rejection between there and here cannot leave it alive in
+        // the Enclave (§2.2). `consumable` reports what was consumed; what remains for this
+        // block is the model-side bookkeeping, which deliberately stays behind the gates above
+        // so a rejected bundle cannot drive it.
         #if DEBUG
-        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumable: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
+        debugPrint("Opening group bundle, recipient mode: \(recipientMode), consumed: \(consumable != nil), sender pending batch: \(sender.hasPendingBatch)")
         #endif
-        if let consumable {
-            prekeyManager.consume(prekey: consumable)
+        if consumable != nil {
+            // They used one of our prekeys, which is cryptographic proof they received the
+            // batch we have been attaching to every outbound message.
             try sender.clearPendingBatch()
         } else if !sender.hasPendingBatch {
             try self.generateAndStoreFreshBatch(for: sender, using: prekeyManager)
@@ -1766,7 +1945,8 @@ extension ContactManager {
         try self.modelContext.save()
 
         #if DEBUG
-        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        // Identifier prefix, not the decrypted name — see the same log on the direct path.
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
         #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }

@@ -26,6 +26,14 @@ import Security
 import SwiftData
 @testable import Occulta
 
+/// True when this host can derive the real hybrid local DB key. False on GitHub-hosted CI
+/// runners, which are VMs with no Secure Enclave. Tests gated on this report as *skipped*
+/// rather than silently passing, so the size of the untested surface stays visible.
+private func secureEnclaveAvailable() -> Bool {
+    (try? Manager.Key().createHybridLocalEncryptionKey()) != nil
+}
+
+
 // MARK: - Helpers
 
 private func makeSenderKeyPair() -> (privateKey: SecKey, publicKey: Data) {
@@ -80,7 +88,7 @@ private func makeSecurityContainer() throws -> ModelContainer {
     /// identifyOwner(of:) must not consume prekeys when no contact matches the
     /// bundle fingerprint. If someone accidentally moves consume() into the
     /// identification path, the remaining count would drop and this test breaks.
-    @Test func identifyOwner_isPrekeySafe_noMatch() throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func identifyOwner_isPrekeySafe_noMatch() throws {
         let contactID = "duress.noMatch.\(UUID().uuidString)"
         defer { pm.deleteAllKeys(for: contactID) }
 

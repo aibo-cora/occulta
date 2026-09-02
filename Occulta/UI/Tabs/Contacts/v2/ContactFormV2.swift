@@ -235,6 +235,10 @@ private struct FormFieldRowV2: View {
                 .frame(minWidth: 50, alignment: .leading)
             TextField(self.placeholder, text: self.$text)
                 .tint(Color.occultaAccent)
+                // Contact names and company names are PII we encrypt at rest; without this
+                // they are also learned by the iOS keyboard, which stores them outside the
+                // app container in the clear. Capitalization is left alone — these are names.
+                .autocorrectionDisabled()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
