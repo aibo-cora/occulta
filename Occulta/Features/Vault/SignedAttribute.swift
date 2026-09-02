@@ -53,6 +53,12 @@ struct SignedAttribute: Codable, Identifiable {
         case crypto
         /// An SSS vault-key shard delivered to a trusted contact (Issue #34).
         case shard
+        /// A trustee's vouching signature over `SHA256(signingPayload())` of a
+        /// `.shard` attribute they hold, made with the trustee's *current* identity
+        /// key. Lets a rotated-identity owner accept a shard their new device
+        /// structurally cannot verify — the trustee checked it against their own
+        /// retained copy of the owner's old key instead (Bug 94 remedy 2).
+        case attestation
         case other
     }
 
@@ -200,4 +206,43 @@ struct SignedAttribute: Codable, Identifiable {
             &error
         )
     }
+}
+
+// MARK: - AttestedShard
+
+/// A `.shard` attribute together with who delivered it and, when the sender's
+/// identity has rotated since original distribution, the trustee's attestation
+/// vouching for it.
+///
+/// Threading `senderIdentifier` through storage is the load-bearing piece of
+/// Bug 94 remedy 2: reconstruction counts *distinct senders*, not distinct
+/// `SignedAttribute.id`s, so one identity cannot self-attest a whole group of
+/// fabricated shares.
+///
+/// **This raises the floor to two senders, not to `threshold`.** The BEK restore
+/// path cannot do better, and the reason is worth keeping: on the device that
+/// needs it — one with no BEK of its own — the owner's chosen `threshold` does
+/// not survive anywhere. It lives in the BEK payload's `ShardDistributionMetadata`,
+/// which that device does not have, and it is not part of what a trustee is given,
+/// so it cannot be recovered from them either. Reading it out of the `.occbak`
+/// would be reading it from whoever authored the file. So the only floor left is
+/// `ShamirSecretSharing.reconstruct`'s own `shares.count >= 2`. What actually gates
+/// an unsolicited restore is the depth-0 confirmation in `OccultaApp`, not this
+/// count. Do not build on this as if it were `threshold`-strength.
+/// See `Docs/Features/Secure Mode/bugs.md`, Bug 94.
+struct AttestedShard: Codable {
+    /// The owner-signed shard. Verifies directly against the owner's current
+    /// identity (Branch A, unrotated case) or is accompanied by `attestation`
+    /// (Branch B, rotated case).
+    let attribute: SignedAttribute
+    /// Present only on the rotated-identity path: the trustee's own signature,
+    /// category `.attestation`, over `SHA256(attribute.signingPayload())`.
+    let attestation: SignedAttribute?
+    /// The contact identifier this shard arrived from, as resolved by the
+    /// *receiving* device's own lookup — never sender-asserted. See
+    /// `ShardCustodyManager.handleInbound`'s callers in `OccultaApp.swift`,
+    /// where `senderIdentifier` comes from `contactManager.openGroup(...)`
+    /// resolving the decrypting key against the receiver's own contacts, not
+    /// from anything the bundle's payload claims.
+    let senderIdentifier: String
 }

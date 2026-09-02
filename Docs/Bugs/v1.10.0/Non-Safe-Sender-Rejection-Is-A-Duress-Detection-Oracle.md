@@ -402,3 +402,141 @@ confidentiality is separable from the identity leak — checking visibility befo
 keep the message body unread even where "a message arrived, from someone" is inferable. That option
 is not taken here, since the flow is unchanged, but it remains available and is a different
 question from this one.
+
+## 2026-08-28 — Re-filed twice as a new bug; the decision above stands
+
+The decision above was re-discovered and re-filed as a High-severity defect twice in two weeks, both
+times by tracing the inbound path without reading this document: **Bug 103** (2026-08-27, the `.occ`
+reader's `Contact.Info`) and **Bug 104** (2026-08-28, the identity-challenge coordinator's
+`senderName`). Both proposed the visibility gate rejected in the 2026-08-13 entry above, Bug 103's
+was implemented and reverted the same day without being committed, and both are now closed in
+`Docs/Features/Secure Mode/bugs.md` as duplicates of this decision.
+
+Recording it here because two independent re-discoveries in two weeks is a fact about the
+documentation, not about the code. The trace is easy to run and lands on a real leak; nothing in the
+inbound path points at this document, and `Contact.Info` looks exactly like an oversight. The
+`pendingFileData` comment warns that reaching `processInboundFile` does not imply depth 0, which
+correctly identifies the hazard and — read in isolation — reads as an invitation to add the gate
+downstream. It is not. Anyone arriving there should land here first.
+
+Three specific corrections drawn from those two filings, since each was a plausible-sounding argument
+for gating that does not survive:
+
+1. **"The fallback already exists, so it is not a new observable."** Both filings leaned on this —
+   `"Anonymous"` in `Contact.Info`, `"Unknown"` in the challenge coordinator. Both fallbacks are
+   effectively unreachable in practice: the first requires `identifyOwner` to match a contact the
+   query then fails to find, the second requires a contact with a blank given name. A string that
+   almost never appears is not cover. Gating makes it appear *only* under duress, which manufactures
+   the signal rather than hiding it.
+
+2. **"Suppressing a name is a display change, so it cannot be an oracle."** This reasons about what
+   the *sender* can observe. The observer that matters is holding the device and reading the screen.
+   A display that differs by depth is a depth oracle whether or not any protocol behaviour changed.
+
+3. **"Refuse the bundle instead — a tell, but with smaller consequences."** This is
+   `passSecurityControl`, removed in `b1f9045`, and the trade runs the wrong way: refusal is
+   adversary-controlled and repeatable on demand (proximity-only key exchange means a coercer with
+   physical control can force-pair and probe), while the render leak needs an unaware third party to
+   send during the window. Refusal also identifies *which* contact is hidden. It hides the body, which
+   is the one thing in its favour — and that is the separable content question in the paragraph
+   above, not a reason to reintroduce the rejection.
+
+A related proposal from the same session — an out-of-band "message ban" sent to contacts, asking
+their apps to stop messaging this user for the duration — attacks the right layer, since the residual
+needs a third party to send. It went through three rounds of refinement and is analysed in full in
+the next section.
+
+## 2026-08-28 — The message-ban proposal: prevention instead of concealment. Adopted in principle
+
+Every option in the 2026-08-13 table handles a hidden contact's message *after* it arrives. This
+proposal attacks the precondition instead: if sensitive contacts do not send during the coercion
+window, the residual never fires. That is the right layer to attack, and it is the first idea raised
+against this document that is not a variation on hiding something at render time. It is recorded in
+full — including the objections I raised against it and then withdrew — because the reasoning is
+reusable and because four plausible-sounding arguments against it turned out to be wrong.
+
+### The proposal, as finally specified
+
+1. The user believes coercion is possible and activates Secure Mode.
+2. At the end of activation the app presents a crafted bundle, encrypted per contact, carrying a
+   message-ban directive.
+3. The user sends it through a transport channel of their choosing.
+4. Recipients open what reads as an ordinary message — *"Please don't disturb me until further
+   notice"* — which carries the ban. The recipient's app enters its own Secure Mode **setup flow**
+   (their PINs, their choices — not remote execution), marks the sender sensitive, and optionally
+   offers other contacts. The stated reason for pulling the recipient into Secure Mode is that a
+   coercer may reach *their* device — a travelling partner, a joint stop — and the ban must be
+   concealed there too.
+5. After deactivation, a second bundle lifts the ban.
+
+Enforcement is on the recipient's device: their app declines to encrypt to the issuer until the lift.
+
+### Objections raised against it, and withdrawn
+
+Four were argued at length in this session and do not survive. Recorded with their refutations,
+because each sounded right and the same reasoning will be attempted again.
+
+**A — "the bundle is either your secret or your cover."** Argued that addressing the ban to sensitive
+contacts only makes it a manifest of the hidden set, while addressing it to everyone destroys the
+reply traffic that makes a coerced session look ordinary. The second half is backwards: a ban to all
+contacts *explains* the silence it creates — "why is nobody messaging you?" / "I asked them not to" —
+which is better cover than unexplained quiet. The first half survives only as an argument **for**
+all-contacts addressing: a selective recipient set is published in cleartext by the transport (your
+Signal shows which 7 of 40 people received it), and "why those seven" has no good answer under
+coercion. Address it to everyone.
+
+**B — "it manufactures a synchronised cross-device trace."** Argued that activation at time T plus a
+ban broadcast at time T is a correlated signal. This requires activation to be detectable, and the
+design specifically prevents that: `AppLayerConfig` fields are written unconditionally at first config
+creation, arrays are padded to constant length, and the layer store exists from first launch with
+timestamps tracking normal activity precisely so slot writes look ordinary. There is no activation
+timestamp for a ban to correlate against. What remains is generic and does not discriminate between
+options: going quiet shortly before being detained is suggestive in context, and that is equally true
+of a purely verbal arrangement.
+
+**C — "concealment on the recipient is defeated by the transport."** Argued by analogy with the
+2026-08-13 rejection of `"Anonymous"`: the delivery channel already showed who sent what. The analogy
+fails because that argument bites only when the published thing is incriminating. *"Please don't
+disturb me until further notice"* is not. People send it for holidays, deadlines, hospital, grief. So
+step 4's concealment is not defeated — it is merely unnecessary, which is a much weaker criticism and
+not grounds for rejection.
+
+**D — "the disclosure moves from artifacts to people."** Argued that every recipient learns the sender
+is preparing for coercion, and that humans, unlike padded fields, cannot be made forensically
+constant. Three premises were wrong. A coercer inspecting a recipient's device gets that recipient's
+duress PIN and a clean phone — which is exactly what the ban just gave them. What the recipient learns
+is a function of the prompt wording, which is a design parameter, not an inherent property: *"Alice
+has asked not to be disturbed — set up Secure Mode to keep your contacts private"* motivates the setup
+without mentioning coercion. And a recipient who fully cooperates with a coercer defeats every part
+of this system anyway, so it is not a cost the feature introduces.
+
+### What stands — limitations, not blockers
+
+- **Compliance is unverifiable.** No acknowledgement channel exists, and adding one would be another
+  artifact and another broadcast. The issuer must still plan as though the ban failed.
+- **Coverage is incomplete.** Contacts paired after issuance are not covered, non-Occulta contacts
+  cannot be, and anyone who ignores it still sends.
+- **The recipient makes an irreversible choice reactively.** Activation rotates their DB key and
+  deletes the old one, and requires a duress PIN they must remember. The setup offer should not be a
+  modal that fires the instant they open a message; offer it, let it wait.
+
+Together these make it a **mitigation, not a control**, and it must be documented as one. That is
+still worth having: it costs almost nothing once the requirements below are met.
+
+### Design, requirements and lifting — extracted
+
+The full design now lives in its own tracker entries, so this document keeps the decision and the
+reasoning about depth observables while the build detail has one home:
+
+- `Docs/Features/Message Ban/FINDINGS.md` — flow, eight design requirements (including custody-traffic
+  exemption and pinning the recipient's classification to depth 0), the layered lift mechanism, the
+  loss-and-rotation matrix, accepted limitations, and one open question about outbound-bundle
+  recipient padding.
+- `Docs/Features/Do Not Disturb/FINDINGS.md` — why it is not the "silently queue until depth 0" row
+  rejected above, and the queue-persistence requirement that is the real work in it.
+
+Both entries open by restating that the leak they mitigate is the accepted limitation decided here,
+not an open bug, so that extracting them does not seed a third re-filing.
+
+**Status: both worth building, neither implemented. The residual documented on 2026-08-13 remains
+open in the meantime, and the flow described there is unchanged.**

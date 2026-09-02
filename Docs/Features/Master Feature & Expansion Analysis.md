@@ -337,6 +337,16 @@ Occulta registers as an iOS Credential Provider (`ASCredentialProviderExtension`
 **iOS constraint:** iOS 17 floor for third-party passkey provisioning/assertion. User must enable Occulta in Settings → Passwords; `LAContext` biometrics work in-extension; no network entitlement on the extension. Self-attestation only (standard for consumer providers).
 
 > **Ruling (July 2026):** The extension holds no plaintext secrets (SE signs; DB fields decrypt on demand under biometric), has no network entitlement, and no IPC beyond the ASAuthorization API — phishing resistance is inherited from WebAuthn origin binding. Medium-high lift: the extension, RP record model, and Settings UX are real work, though zero new cryptography. **Priority: Mid-term.**
+>
+> **Addendum (August 14, 2026) — the relying-party surface includes smart accounts, folded here from Expansion I.** Passkey smart wallets are ordinary WebAuthn relying parties: the wallet's web app issues the challenge, the authenticator returns an assertion, and the assertion is verified *on-chain* through the P-256 precompile — RIP-7212 on L2s, and EIP-7951 on Ethereum L1 since Fusaka activated 3 December 2025. **An Occulta-provided passkey therefore signs for an ERC-4337 account with no chain-specific code in Occulta at all** — no per-chain payload decoder, no QR transport, nothing beyond the extension this entry already describes. That is why Expansion I was removed rather than kept alongside this one; see its August 14 addendum.
+>
+> **The device-bound argument above is sharper here than against password managers, and should be made in those terms.** A cloud-synced passkey that protects a website login costs an account the relying party can usually help recover. The same synced key in front of a self-custody smart account protects assets directly: no recovery desk, no chargeback, no counterparty. The contrast is also concrete rather than hypothetical — Coinbase Smart Wallet ships passkey signing at over a million accounts, backed by iCloud Keychain by default, so the comparison is against a real product's real default. **And unlike most of this document, there is no closed-loop problem:** the relying party verifies a standard WebAuthn assertion and needs no Occulta, no prior UWB exchange, and no knowledge that Occulta exists.
+>
+> **The same property cuts the other way, and this is a precondition rather than a caveat.** Non-exportability is the selling point and the failure mode: for a login, losing the only passkey is an inconvenience; for a sole-signer smart account it is permanent asset loss. This entry's open problem — RP-record coverage across a user's own devices, `ROADMAP.md` R4 §1 — stops being a UX gap at that point and becomes the whole risk. **Do not ship this surface until either guardian-escrowed recovery of the RP-record vault (R4 §3) covers it, or the product claim is explicitly "a second signer alongside the one you already have, never the sole signer."** Stated up front, as policy, rather than discovered by a user who has lost a phone.
+>
+> **What does not transfer from Expansion I: the display.** A credential provider receives an opaque challenge — for a smart account, a userOp hash — so Occulta cannot render what is being authorized and inherits the same blind-signing weakness as every other passkey wallet. Expansion I's decode-and-display was the one claim this path cannot match, and it died with that entry. No positioning for `#20` may imply otherwise.
+>
+> **Lift unchanged.** Nothing above adds engineering to this entry; it adds an audience, a sharper argument, and one shipping precondition.
 
 ---
 
@@ -383,17 +393,29 @@ Two already-verified contacts, over an authenticated session (in person or an ex
 **Category:** Crypto / Security
 **Audience:** Applies wherever a signed artifact must remain unforgeable for decades — revocation certs (#19), the per-device revocation broadcast introduced by Multi-Device Contacts' narrowed scope (#18), and any future document-signing or audit-log artifact
 
-Dual-signature format for artifacts whose validity must outlive ECDSA's quantum horizon. Every such artifact carries both an SE ECDSA P-256 signature (unchanged, mandatory root) and an ML-DSA-87 (FIPS 204) signature under a distinct domain prefix; verification requires **both**. If `SecureEnclave.MLDSA` exists in the target iOS SDK, use it; if SE support covers only ML-KEM (true as of the last check — verify against current CryptoKit headers before scoping), hold the ML-DSA private key software-side, wrapped under the hybrid local DB key. This does not weaken the SE-custody rule the way sole software custody would: forgery still requires the SE (ECDSA is always required), so the ML-DSA half only *adds* unforgeability — the same both-must-hold logic as the existing hybrid KEM construction and the same protection class as the already-accepted ML-KEM shared-secret storage.
+Dual-signature format for artifacts whose validity must outlive ECDSA's quantum horizon. Every such artifact carries both an SE ECDSA P-256 signature (unchanged, mandatory root) and an ML-DSA-87 (FIPS 204) signature under a distinct domain prefix; verification requires **both**. If `SecureEnclave.MLDSA` exists in the target iOS SDK, use it — ~~if SE support covers only ML-KEM (true as of the last check — verify against current CryptoKit headers before scoping), hold the ML-DSA private key software-side, wrapped under the hybrid local DB key~~ **it does exist, from iOS 26; verified 2026-08-14 against the SDK's own interface file (see the August 14 addendum below). The software-custody fallback is dead text and must not be implemented.** This does not weaken the SE-custody rule the way sole software custody would: forgery still requires the SE (ECDSA is always required), so the ML-DSA half only *adds* unforgeability — the same both-must-hold logic as the existing hybrid KEM construction and the same protection class as the already-accepted ML-KEM shared-secret storage.
 
 **Why new:** "Harvest now, forge later" is the one PQ threat the existing ML-KEM work doesn't touch — a signed contract or notarized document must remain unforgeable for decades.
 
 **Security model fit:** No server. SE remains the mandatory signing root. No metadata change (signatures travel where signatures already travel). PQ strengthened — the first feature to extend PQ from confidentiality to authenticity.
 
-**iOS constraint:** Gated on SDK verification of SE ML-DSA support. ML-DSA-87 signatures run ~4.6 KB — irrelevant for documents, but worth noting against #21's padding buckets if ever used on the wire. New domain prefixes only, per IDENTITY_CHALLENGE_PROTOCOL's domain-separation mandate — never modify existing signing paths.
+**iOS constraint:** ~~Gated on SDK verification of SE ML-DSA support.~~ **Gate met — SE ML-DSA ships from iOS 26 (verified 2026-08-14).** iOS 26 floor, the same availability tier as the shipped ML-KEM path, so no new gating pattern is needed. ML-DSA-87 signatures run ~4.6 KB — irrelevant for documents, but worth noting against #21's padding buckets if ever used on the wire; **ML-DSA-65 (~3.3 KB signature, ~1.95 KB public key) is equally SE-backed and is a size option this entry did not consider.** New domain prefixes only, per IDENTITY_CHALLENGE_PROTOCOL's domain-separation mandate — never modify existing signing paths. **FIPS 204 carries its own context string, which CryptoKit exposes as `signature(for:context:)`; which of the two is authoritative needs an explicit ruling rather than using both by default — see the August 14 addendum.**
 
 > **Ruling (July 2026):** Software ML-DSA key compromise still can't forge anything (needs the SE) — worst case equals today's status quo. Run CRYPTO_REVIEW_CHECKLIST §4 on cross-protocol separation for every new prefix. Medium lift, gated on SDK support. **Priority: Mid-term.**
 >
-> **Addendum (August 9, 2026) — scope limit: this defends quantum, not SE extraction.** The ruling above establishes that software ML-DSA compromise alone can't forge. The converse is not stated and matters: the ML-DSA private key is held *"wrapped under the hybrid local DB key,"* which is itself SE-derived (`Key+Manager.swift:468`) — so **SE key extraction unwraps the ML-DSA half too.** Hybrid signatures put the second lock's key inside the first lock. That is fine against the threat this feature is for (Shor breaks P-256 from the public key; AES-256 survives Grover), but it means `#23` adds *zero* defence against a hardware SE compromise. Anything relying on `#23` for SE-extraction resistance is relying on the wrong control — the surviving defences there are locally-observed state and physical presence, not signatures. Raised while scoping Verified Payment Cards; see [Payment Cards/FINDINGS.md](Payment%20Cards/FINDINGS.md) threat model, "If the identity key itself is recovered."
+> **Addendum (August 9, 2026) — scope limit: this defends quantum, not SE extraction.** The ruling above establishes that software ML-DSA compromise alone can't forge. The converse is not stated and matters: the ML-DSA private key is held *"wrapped under the hybrid local DB key,"* which is itself SE-derived (`Key+Manager.swift:468`) — so **SE key extraction unwraps the ML-DSA half too.** Hybrid signatures put the second lock's key inside the first lock. That is fine against the threat this feature is for (Shor breaks P-256 from the public key; AES-256 survives Grover), but it means `#23` adds *zero* defence against a hardware SE compromise. Anything relying on `#23` for SE-extraction resistance is relying on the wrong control — the surviving defences there are locally-observed state and physical presence, not signatures. Raised while scoping Verified Payment Cards; see [Payment Cards/FINDINGS.md](Payment%20Cards/FINDINGS.md) threat model, "If the identity key itself is recovered." **Mechanism voided 2026-08-14 — see immediately below; the conclusion survives on different grounds.**
+>
+> **Addendum (August 14, 2026) — the SDK gate is met, and the August 9 mechanism is void.** `SecureEnclave.MLDSA65` and `SecureEnclave.MLDSA87` both exist, `@available(iOS 26.0, *)`, in the SDK this project already builds against. Verified by reading the interface file directly rather than documentation: `iPhoneOS26.2.sdk/System/Library/Frameworks/CryptoKit.framework/Modules/CryptoKit.swiftmodule/arm64e-apple-ios.swiftinterface`, Xcode 26.2 (17C52). Each exposes `PrivateKey` with `publicKey`, an SE-wrapped `dataRepresentation`, `init(accessControl:authenticationContext:)`, `init(dataRepresentation:authenticationContext:)`, `signature(for:)` and `signature(for:context:)`. The app already uses the sibling construct — `SecureEnclave.MLKEM1024.PrivateKey()` at `PQProvider.swift:96`, same availability tier.
+>
+> **What the August 9 addendum got wrong.** Its premise — the ML-DSA private key *"wrapped under the hybrid local DB key"* — describes a fallback that never needed to be taken. There is no software-held ML-DSA private key, no wrapping under the DB key, and therefore no "second lock's key inside the first lock." **Its conclusion survives on different grounds and should be restated that way:** both keys live in the same Secure Enclave, so a hardware SE compromise still takes both, and `#23` still adds zero defence against SE extraction. Everything else that premise implied is withdrawn — no new exportable secret, no new key-at-rest surface, and no interaction with local-DB key rotation on Secure Mode activation or deactivation.
+>
+> **Three capabilities the July entry ruled out that are now available.** (1) **Biometric-gated post-quantum signing** — `accessControl:` takes a `SecAccessControl`, so the key can be created with `.biometryCurrentSet + .devicePasscode` exactly as the vault key is (`Key+Manager.swift:655`) and driven by a pre-evaluated `LAContext` as `retrieveVaultPrivateKey(context:)` already does. Under software custody there was no biometric gate available at all. This bears directly on **Payment Cards D-09**: a single dedicated `SecureEnclave.MLDSA` payment key would deliver the biometric gate and PQ authenticity together, rather than deferring both. (2) **Native domain separation** via FIPS 204's context string, which makes separation an algorithm parameter instead of a hand-rolled prefix — and creates the ruling obligation recorded in the iOS constraint above. (3) **A parameter-set choice** — ML-DSA-65 is SE-backed too, and is the smaller wire option.
+>
+> **Regated.** The gate is no longer SDK support; it is **artifact availability**. Nothing on this list currently needs a signature to survive decades: `#19` is positioning-only (2026-07-22), `#18` is narrowed to a data-model fix (2026-07-10), `#26` is held pending gate zero (2026-08-14), and Expansion D was removed in May. **`#28` (Sealed Evidence Journal) and `#24` (Signed Destruction Receipts) are the only genuine long-lived artifacts, and both are unbuilt** — build `#23` when one of them is being built, not before. Priority unchanged at **Mid-term**.
+>
+> **Also now on the table, and previously believed impossible:** an SE-resident ML-DSA identity half established at the UWB ceremony. `#23` as scoped deliberately never touches live signing paths, so it does nothing about post-quantum *impersonation* — an adversary who derives the P-256 private key from the public key every contact holds can sign challenge responses and bundles as the owner. That gap has no fix inside this entry's scope, but it is no longer blocked on hardware. Not a recommendation; a protocol change, and it needs its own pass.
+>
+> **Why the stale claim survived four months:** the July entry's *"true as of the last check"* was never re-verified against an interface file, and a symbol search for `SecureEnclave.*` does not find these types — they are declared as `extension CryptoKit.SecureEnclave { public enum MLDSA87 … }`, so the nested name never appears on a line containing `SecureEnclave`. Whoever re-checks a CryptoKit availability claim should read the interface file, not grep it.
 
 ---
 
@@ -441,9 +463,9 @@ Optional pass before basket assembly: Vision framework detects faces (`VNDetectF
 | 4 | Serverless Passkey Provider (#20) | Very high | Med-high | Mid-term |
 | 5 | Mutual-Contact Discovery (#22) | Medium | Low-med | Near-mid |
 | 6 | Signed Destruction Receipts (#24) | Medium | Low-med | Near-mid |
-| 7 | Hybrid PQ Signatures (#23) | Med-high | Medium (SDK-gated) | Mid-term |
+| 7 | Hybrid PQ Signatures (#23) | Med-high | Medium (~~SDK-gated~~ — SDK gate met 2026-08-14; gated on artifact availability) | Mid-term |
 | 8 | Visual PII Redaction (#25) | Medium | Low-med | Near-mid |
-| 9 | Air-Gapped SE Wallet Signer (Expansion I) | High potential | High | Exploratory |
+| 9 | Air-Gapped SE Wallet Signer (Expansion I) | ~~High potential~~ **Removed 2026-08-14** | High | ~~Exploratory~~ — see Expansion I's August 14 addendum |
 
 **Top 3 of this pass:**
 1. **Owner Device Set (#18)** — kills the single biggest adoption objection ("what if I lose my phone") using ceremony code already shipped.
@@ -614,6 +636,28 @@ With only one category of scenario left after custody's removal, the picker no l
 
 ---
 
+### 30. Hardware-Bound Recovery Guardians for Smart Accounts
+**Added August 14, 2026 (filed on the removal of Expansion I, which carried this as a sub-clause)**
+**Category:** Authentication / Crypto
+**Community demand:** **None found.** The documented complaints about smart-account recovery are that users never configure guardians, that configured guardians are unresponsive, and that seed phrases get lost. Guardian *authenticity* — the thing this addresses — appears nowhere in that list. Recorded as a gap in the evidence, not as a demand signal, and the ruling below is written accordingly.
+**Audience:** Narrow — self-custody holders using ERC-4337 or Safe accounts with a guardian set
+
+A smart account's recovery quorum is drawn from Occulta contacts, each co-signing recovery operations with a **dedicated** SE key — never the identity key, per `CRYPTO_REVIEW_CHECKLIST` §4, since a guardian signs digests chosen elsewhere. On-chain verification is available: RIP-7212 on major L2s and EIP-7951 on Ethereum L1 since Fusaka (3 December 2025) make P-256 signatures cheap to verify, so an SE key can be a guardian signer directly.
+
+**The obvious argument for this does not survive, and should not be used.** Expansion I framed the value as guardians *"actually met in person… rather than addresses configured and hoped-correct."* That is the precondition paradox recorded as D-18 in [Payment Cards/FINDINGS.md](Payment%20Cards/FINDINGS.md), applied to a new object: guardian enrollment is a **one-time event**, so anyone able to run a UWB ceremony with a prospective guardian is standing next to them and can simply read the address off their screen or scan their QR — the free practice the payments pass found the sophisticated cohort already uses. Physical proximity is being spent where a substitute is already available and already recommended.
+
+**What survives is a different property, and it is the one to lead with: no member of the quorum has a remote compromise path.** Argent-style guardians are EOAs or other wallets — seed-phrase-backed, phishable, SIM-swappable, remotely stealable. An Occulta guardian's key is SE-bound and non-exportable, so an attacker cannot obtain the ability to co-sign without physical possession of that guardian's device *and* their biometrics. Since compromising K guardians **is** the attack on any social-recovery scheme, a quorum with no remote path for any member is a categorical difference rather than a degree, and scanning a QR in person does not produce it — that verifies enrollment once and leaves the guardian phishable forever after.
+
+**Why new / overlap declaration:** Distinct from Serverless Social Recovery (#16), which reconstructs Occulta's *own* vault key from SSS shards — a different object, different mechanism, no chain. Distinct from Guardian Revocation Certificates (#19, downgraded), which revokes an Occulta key rather than recovering an external account. Sub-clause of Expansion I, filed separately on that entry's removal (2026-08-14) because it does not depend on the air-gapped signer that entry was built around.
+
+**Mostly not new engineering, if #20 ships first.** With Occulta registered as a credential provider, a guardian's key is already a WebAuthn passkey the account's guardian module can verify through the same precompile path — enrollment becomes "add my Occulta passkey as a guardian signer," with no bespoke Occulta protocol. Absent #20, this needs a dedicated guardian-key type, a way to publish its public key to the owner, and a recovery-coordination flow.
+
+**iOS constraint:** None novel — SE digest signing and basket distribution both ship. The real constraints are outside the app: the wallet's guardian module must accept a P-256 signer, and recovery coordination is out-of-band with no automatic channel, the same transport reality recorded in [Multi-Device Contacts/FINDINGS.md](Multi-Device%20Contacts/FINDINGS.md) Session 10 — every bundle is a manual share sheet.
+
+> **Ruling (August 14, 2026):** **Exploratory, gated on evidence — do not schedule.** The surviving argument is real and non-substitutable, but three things are missing and none is an engineering problem. There is no demand signal for guardian authenticity. The closed loop is wider than most items here: K guardians must each install Occulta, meet the owner, and be reachable at recovery time. And the contract half — a guardian module accepting P-256 signers — is smart-contract work this project should not do and has no business maintaining. **Gate zero, in the pattern set by Payment Cards:** find one self-custody holder who has configured guardians, and ask whether they would have preferred their guardians be unphishable. If that comes back flat, shelving is the correct outcome rather than a failure. If it comes back positive, sequence behind #20, which reduces this to positioning plus an enrollment flow.
+
+---
+
 ## Section 1 Summary Table
 
 | Rank | Feature | Status | Audience | Phase |
@@ -638,6 +682,7 @@ With only one category of scenario left after custody's removal, the picker no l
 | 27 | Anti-Scam Family Circle | **Keep** | Broad | Near-term (with #15) |
 | 28 | Sealed Evidence Journal | **Keep** | Narrow-medium | Phase 2 |
 | 29 | Situational Contact Actions ("Trust Check" Picker) | **Shipped — v1.10.0** | Broad | Shipped |
+| 30 | Hardware-Bound Recovery Guardians | **Exploratory — gated on evidence, not scheduled** | Narrow | Behind #20 if the gate passes |
 | 1 | Wi-Fi Aware Basket Delivery | Removed | — | — |
 | 4 | YubiKey NFC Second Factor | Deferred | — | — |
 | 5 | Contact Compromise Detection | Removed | — | — |
@@ -871,6 +916,20 @@ Occulta as a fully offline hardware-wallet-grade signer for chains that verify s
 **iOS constraint:** iOS 16+ (SE digest signing, AVFoundation QR). Per-chain payload decoding is where the real lift lives; blind-signing must be refused (display-or-decline policy); s-normalization required for chains enforcing canonical signatures.
 
 > **Ruling (July 2026):** A malicious transaction presented for signing is mitigated by mandatory decode-and-display consent and per-wallet key isolation — worst case bounds to one wallet's assets, never Occulta identity/contacts. WalletConnect-style online pairing is explicitly out — QR/file only. High lift. **Priority: Exploratory.**
+>
+> **Addendum (August 14, 2026) — removed. The enabling fact was stale when written, and its adoption inverts the premise.**
+>
+> **The entry is stale on its own trigger.** It frames the opportunity as *"RIP-7212 precompile L2s (Base, Optimism, Polygon)."* P-256 verification reached Ethereum **L1 mainnet** as EIP-7951 in the Fusaka upgrade, activated **3 December 2025** — seven months before this entry was drafted. Precompile at `0x100`, 3450 gas, interface-compatible with the L2 RIP-7212 implementations and fixing security issues found in them. Avalanche has it via ACP-204. The opportunity was never L2-scoped.
+>
+> **The premise is inverted.** EIP-7951's own rationale states its purpose: to verify *"signatures generated by modern secure hardware including Apple Secure Enclave, Android Keystore, and FIDO2/WebAuthn devices."* The precompile exists to make passkeys work as wallet signers — which is exactly what this entry proposes Occulta become. Wide P-256 support is therefore not a tailwind; it is the mechanism by which this use case was commoditized, and the incumbents got there first at scale: Coinbase Smart Wallet shipped passkey signing in June 2024 and passed one million accounts by August 2025 (270,000 in a single day), with Safe, Argent and Eco shipping passkey signers alongside. An iPhone is already a P-256 smart-account signer with no additional app installed. **This is the same shape as three rulings already made in this document** — Expansion B removed because HID Mobile Access shipped it, G removed because Aura shipped it, D removed on verifier adoption.
+>
+> **What survives, with its cost stated.** (1) **Device-bound versus synced** — passkeys backed by iCloud Keychain are cloud-synced software keys, while an SE key is `ThisDeviceOnly` and non-exportable. Real, but *verbatim the argument `#20` already makes*, and `#20` is the cheaper and more general build. (2) **Physically-verified guardians** — genuinely unique; no wallet can offer guardians met at ≤ 25 cm. But it inherits the closed-loop critique that removed D, E and `#12`, and this entry does not address that co-signing is an on-chain operation: each guardian needs Occulta, a prior UWB exchange, *and* a funded chain account. (3) **Decode-and-display** — the one thing the passkey path cannot do, since a WebAuthn signer receives an opaque challenge and therefore blind-signs userOp hashes by construction.
+>
+> **`#20` subsumes most of this entry at a fraction of the lift.** An `ASCredentialProviderExtension` can already be the passkey behind an ERC-4337 smart account: the relying party is the wallet's web app, the artifact is a standard WebAuthn assertion, and on-chain verification of those assertions is production practice in passkey wallets today (Coinbase's `WebAuthn.sol`, Daimo's `p256-verifier` — named from prior knowledge, not verified against source in this pass). That path needs no QR plumbing and no per-chain payload decoder, which is where this entry itself locates "the real lift." What it loses is item (3): the display.
+>
+> **A caveat on the air gap, for whoever revisits this.** An iPhone running an app that declines to use the network is a *policy* air gap, not a physical one. It competes against Keystone and Ledger, which carry no radio — a weaker position than "hardware-wallet-grade" implies. It also means adding an attacker-supplied-digest signing surface to the same device that holds the contact graph, the vault, and duress state; per-wallet key isolation bounds the asset loss but does not remove that surface.
+>
+> **Disposition.** Removed from the expansion list as written. The device-bound signer argument belongs in `#20`. Physically-verified wallet guardians are filed as **`#30`** (same day), where the enrollment argument this entry made is rejected on the precondition paradox and replaced with the one that survives — a quorum in which no member has a remote compromise path. If anything exploratory is retained, retain the display — *"the signer that will not blind-sign"* is the only defensible product claim left, and it is small.
 
 ---
 
@@ -886,7 +945,7 @@ Occulta as a fully offline hardware-wallet-grade signer for chains that verify s
 | G | Asset Provenance | Downstream of A only | Every market has entrenched incumbents; not standalone |
 | D | Document Signing / Notarization | Removed | — |
 | E | M-of-N Authorization | Removed | — |
-| I | Air-Gapped SE Smart-Wallet Signer | **Keep — Exploratory** | High-lift, high-potential; crypto asset holders; strictly air-gapped, dedicated per-wallet SE keys, no overlap with Occulta identity |
+| I | Air-Gapped SE Smart-Wallet Signer | **Removed 2026-08-14** | P-256 verification reached L1 with EIP-7951 (Fusaka, 3 Dec 2025), and the precompile exists to make passkeys work as wallet signers — so its adoption commoditizes this entry rather than enabling it. Survivors: the device-bound argument folds into #20, which subsumes most of the build; physically-verified guardians filed as #30. See the August 14 addendum |
 
 ---
 
@@ -960,8 +1019,8 @@ No iOS app currently offers all three. Shipping them as a named feature set ("Pr
 
 | Item | Rationale |
 |------|-----------|
-| Serverless Passkey Provider (#20) | Opens the mainstream password-manager market; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor |
-| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for the per-device revocation broadcast (#18, narrowed scope) and any future signed artifact; gated on confirming SE ML-DSA support in the target SDK. (No longer paired with #19 — downgraded 2026-07-22, no revocation cert remains to sign) |
+| Serverless Passkey Provider (#20) | Opens the mainstream password-manager market **and, since 2026-08-14, passkey smart accounts — same extension, no chain-specific code (folded from the removed Expansion I)**; medium-high lift (Credential Provider extension + RP record model + Settings UX); iOS 17 floor. **Shipping precondition for the smart-account surface:** guardian-escrowed RP-record recovery (`ROADMAP.md` R4 §3) must cover it, or it ships as a second signer only — a sole non-exportable signer makes device loss permanent asset loss |
+| Hybrid PQ Signatures (#23) | Extends PQ from confidentiality to authenticity for the per-device revocation broadcast (#18, narrowed scope) and any future signed artifact; ~~gated on confirming SE ML-DSA support in the target SDK~~ **SDK gate met 2026-08-14 — `SecureEnclave.MLDSA65`/`MLDSA87` ship from iOS 26, so this row no longer belongs under a platform gate. Regated on artifact availability: only #28 and #24 need decades-long unforgeability, and both are unbuilt.** (No longer paired with #19 — downgraded 2026-07-22, no revocation cert remains to sign) |
 
 ### Ongoing — Positioning (no engineering)
 
@@ -980,7 +1039,7 @@ These are not buildable as near-term targets. Direct enterprise sales requires c
 | Anonymous Credentials (H) | Don't build ZK. Implement W3C VC / SD-JWT as a privacy-preserving credential holder with SE binding and no platform intermediary. EU Digital Identity Wallet rollout (2–3 years) is the concrete trigger. |
 | Physical Access Control (B) | Downstream of A only. HID Mobile Access already owns this market as a standalone product. |
 | Asset Provenance (G) | Downstream of A only. Every market segment has entrenched incumbents that work with a browser. |
-| Air-Gapped SE Smart-Wallet Signer (I) | Exploratory, high lift. Strictly air-gapped, dedicated per-wallet SE keys with no overlap with Occulta identity/contacts; real work is per-chain payload decoding and a mandatory display-or-decline consent flow. |
+| Air-Gapped SE Smart-Wallet Signer (I) | ~~Exploratory, high lift. Strictly air-gapped, dedicated per-wallet SE keys with no overlap with Occulta identity/contacts; real work is per-chain payload decoding and a mandatory display-or-decline consent flow.~~ **Removed 2026-08-14** — commoditized by the P-256 precompile it depended on; `#20` subsumes most of the build without the per-chain decoder. See Expansion I's August 14 addendum. |
 
 ---
 

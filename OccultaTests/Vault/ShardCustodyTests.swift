@@ -177,7 +177,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     try makeAlice().vault,
+            currentDepth: 0
         )
 
         #expect(try custodyShardCount(in: container) == 1)
@@ -200,7 +201,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  imposterPub,
             senderIdentifier: "imposter",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     try makeAlice().vault,
+            currentDepth: 0
         )
 
         #expect(try custodyShardCount(in: container) == 0)
@@ -221,7 +223,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     try makeAlice().vault,
+            currentDepth: 0
         )
         #expect(try custodyShardCount(in: container) == 1)
 
@@ -233,7 +236,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     try makeAlice().vault,
+            currentDepth: 0
         )
 
         // Old row replaced by new — count is still 1, but the surviving row carries newAttr.
@@ -256,7 +260,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     try makeAlice().vault,
+            currentDepth: 0
         )
         #expect(try custodyShardCount(in: container) == 1)
 
@@ -270,7 +275,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  malloryPub,
             senderIdentifier: "mallory",
-            vaultManager:     try makeAlice().vault
+            vaultManager:     try makeAlice().vault,
+            currentDepth: 0
         )
 
         // Mallory's own shard is stored, but Alice's must survive untouched — Mallory
@@ -304,7 +310,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     aliceVault
+            vaultManager:     aliceVault,
+            currentDepth: 0
         )
         #expect(try custodyShardCount(in: container) == 1)
 
@@ -327,7 +334,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     aliceVault
+            vaultManager:     aliceVault,
+            currentDepth: 0
         )
         #expect(try custodyShardCount(in: container) == 1)
 
@@ -352,7 +360,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
             expectedShards:   nil,
             senderPublicKey:  alicePub,
             senderIdentifier: "alice",
-            vaultManager:     aliceVault
+            vaultManager:     aliceVault,
+            currentDepth: 0
         )
         #expect(try custodyShardCount(in: container) == 1)
 
@@ -371,13 +380,13 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test(".respond inserts a ReconstructShard and the row decrypts under the buffer key")
     func acceptInsertsRow() throws {
         let (vault, alice, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vault.addEntry(label: "seed", content: Data("payload".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
         // Simulate a .respond bundle delivering one shard back to Alice.
-        try vault.acceptReturnedShard(attrs[0])
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 1)
 
@@ -397,11 +406,11 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("Wrong id in AAD invalidates GCM tag — payload no longer decrypts")
     func aadBindingHolds() throws {
         let (vault, alice, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
         let entry      = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
-        try vault.acceptReturnedShard(attrs[0])
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
         guard let bufferKey = try alice.deriveRecoveryBufferKey() else {
             Issue.record("expected recovery buffer key"); return
@@ -424,14 +433,14 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("Below threshold: tryFinalizeReconstruction is a no-op")
     func belowThresholdNoop() throws {
         let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vault.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
         let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
         // Forget the wrap so legacy unwrap can't satisfy reconstruction; only
         // shards can recover. Then deliver only ONE shard (k=2, below threshold).
-        try vault.acceptReturnedShard(attrs[0])
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
         try vault.tryFinalizeReconstruction(entryID: entry.id)
 
         #expect(try reconstructShardCount(in: container) == 1, "buffer row remains since threshold not met")
@@ -440,13 +449,13 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("At threshold: tryFinalizeReconstruction succeeds and clears the buffer")
     func atThresholdFinalizes() throws {
         let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vault.addEntry(label: "seed", content: Data("plaintext".utf8), type: .seedPhrase)
         let recipients = try makeProfiles(count: 3)
         let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs[0])
-        try vault.acceptReturnedShard(attrs[1])
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
         // accept on the last shard auto-triggers finalisation.
 
         #expect(try reconstructShardCount(in: container) == 0, "buffer must be empty after finalisation")
@@ -457,7 +466,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("Multi-entry isolation: shards from one entry do not satisfy another's threshold")
     func multiEntryIsolation() throws {
         let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
 
         let entry1 = try vault.addEntry(label: "alpha", content: Data("a".utf8), type: .seedPhrase)
         let entry2 = try vault.addEntry(label: "beta",  content: Data("b".utf8), type: .seedPhrase)
@@ -467,14 +476,14 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 2, recipients: recipients)
 
         // Deliver one shard for each entry — each entry has 1/2.
-        try vault.acceptReturnedShard(attrs1[0])
-        try vault.acceptReturnedShard(attrs2[0])
+        try vault.acceptReturnedShard(attrs1[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 2,
                 "two entries, two distinct buffered shards, neither at threshold")
 
         // Push entry1 to threshold; entry2 stays at 1/2.
-        try vault.acceptReturnedShard(attrs1[1])
+        try vault.acceptReturnedShard(attrs1[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 1,
                 "entry1 finalised → only entry2's single shard remains")
@@ -483,13 +492,13 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("acceptReturnedShard ignores duplicate attrID")
     func duplicateAttrDeduplicated() throws {
         let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
         let entry = try vault.addEntry(label: "seed", content: Data(), type: .seedPhrase)
         let recipients = try makeProfiles(count: 2)
         let attrs = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs[0])
-        try vault.acceptReturnedShard(attrs[0])  // duplicate
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)  // duplicate
 
         // Threshold k=2; only one unique shard buffered → no finalise.
         #expect(try reconstructShardCount(in: container) == 1)
@@ -498,7 +507,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("tryFinalizeAllReconstructions sweeps all entries that hit threshold")
     func sweepFinalisesAll() throws {
         let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
 
         let entry1 = try vault.addEntry(label: "alpha", content: Data("a".utf8), type: .seedPhrase)
         let entry2 = try vault.addEntry(label: "beta",  content: Data("b".utf8), type: .seedPhrase)
@@ -510,15 +519,15 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Lock so opportunistic finalisation does NOT fire on accept.
         vault.lock()
 
-        try vault.acceptReturnedShard(attrs1[0])
-        try vault.acceptReturnedShard(attrs1[1])
-        try vault.acceptReturnedShard(attrs2[0])
-        try vault.acceptReturnedShard(attrs2[1])
+        try vault.acceptReturnedShard(attrs1[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs1[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 4, "all rows still buffered while locked")
 
         // Unlock — sweep should drain both entries.
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
 
         #expect(try reconstructShardCount(in: container) == 0,
                 "unlock-time sweep finalises every entry that crossed threshold")
@@ -527,7 +536,7 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("cancelReconstruction drops only rows for the targeted entry")
     func cancelDropsTargetedRows() throws {
         let (vault, _, container) = try makeAlice()
-        vault.unlock(context: LAContext())
+        vault.unlock(context: LAContext(), currentDepth: 0)
 
         let entry1 = try vault.addEntry(label: "alpha", content: Data(), type: .seedPhrase)
         let entry2 = try vault.addEntry(label: "beta",  content: Data(), type: .seedPhrase)
@@ -536,9 +545,9 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let attrs1 = try vault.prepareShards(for: entry1.id, threshold: 3, recipients: recipients)
         let attrs2 = try vault.prepareShards(for: entry2.id, threshold: 3, recipients: recipients)
 
-        try vault.acceptReturnedShard(attrs1[0])
-        try vault.acceptReturnedShard(attrs2[0])
-        try vault.acceptReturnedShard(attrs2[1])
+        try vault.acceptReturnedShard(attrs1[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
+        try vault.acceptReturnedShard(attrs2[1], attestation: nil, senderIdentifier: recipients[1].identifier, currentDepth: 0)
 
         try vault.cancelReconstruction(entryID: entry2.id)
 

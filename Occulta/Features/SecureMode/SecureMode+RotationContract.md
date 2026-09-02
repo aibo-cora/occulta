@@ -29,6 +29,17 @@ These must hold **at all times** between any two successful app launches:
 
 **This section exists because I8 has been broken four times, and every time the same way.**
 
+> **This section is prose, and prose has already drifted from the thing it describes.** The
+> enforcement column below claimed `Message.Draft` had no name tripwire, and "Adding a new model"
+> told the reader to add one — after commit `8a431ac` had added it. Both corrected 2026-08-16. That
+> is the same failure mode as the bugs this section exists to prevent, one level up: a
+> hand-maintained list of what is covered, with nothing checking it against reality.
+>
+> A proposal to make this section executable — one field list per type used by production, a type
+> registry checked against the app's `Schema` literal, and explicit decrypting/encrypting keys — is
+> scoped in [`Docs/Features/Secure Mode/ROTATION_COVERAGE.md`](../../../Docs/Features/Secure%20Mode/ROTATION_COVERAGE.md).
+> Until that lands, the tables below are the contract and must be updated by hand.
+
 The rotation stages a new local DB key, re-encrypts, commits, then deletes the superseded key.
 Anything not re-encrypted in between is sealed under a key that no longer exists — permanently,
 because the hybrid key needs a Secure Enclave half that is non-exportable. There is no repair
@@ -62,7 +73,7 @@ asked *"is every model in **both** paths?"* either.
 | `Contact.Profile.Key` | `material`, `acquiredAt`, `owner`, `expiredOn`, `quantumKeyMaterialEncrypted` | `reencryptKeyRecords` | `EncryptedFieldCoverageTests` |
 | `Group` | `encryptedID`, `encryptedName`, `encryptedCreatedAt`, all 32 depths of membership | `Group.reencrypt(from:to:)` | `EncryptedFieldCoverageTests` + `GroupKeyRotationTests` |
 | `AppLayerConfig` | `persistedDepth`, `pinEnabled`, `coercerBaseDepth`, `lockoutCountEncrypted`, `lockoutAnchorUptimeEncrypted`, `pinEnabledPerDepth` | `AppLayerConfig.reencrypt(from:to:)` | `EncryptedFieldCoverageTests` + `AppLayerConfigRotationTests` |
-| `Message.Draft` | `encryptedRecipientID`, `encryptedContent` | `Message.Draft.reKeyOrPurgeAll` | `DraftKeyRotationTests` — **no name tripwire**, see below |
+| `Message.Draft` | `encryptedRecipientID`, `encryptedContent` | `Message.Draft.reKeyOrPurgeAll` | `DraftKeyRotationTests` + name tripwire (~~none~~ added in `8a431ac`) |
 | `VaultEntry` | `visibleThroughDepth` only | inline loop in both paths | `SecureModeActivationTests` |
 
 ### Sealed under a key that never rotates — must **not** be added to the rotation
@@ -100,9 +111,10 @@ is already ciphertext from the bundle path. Verify before assuming, if it is eve
 1. Everything above, plus:
 2. **Add it to both paths.** Activation's Step 8 and deactivation's Step 6b. A model in one path
    only is the `Message.Draft` bug.
-3. Add it to `EncryptedFieldCoverageTests` so a future field on it cannot be missed. `Message.Draft`
-   is currently absent from that file — it is covered by behavioural tests only, which catch a
-   missing *call* but not a missing *field*.
+3. Add it to `EncryptedFieldCoverageTests` so a future field on it cannot be missed. A model covered
+   by behavioural tests only catches a missing *call* but not a missing *field*. (`Message.Draft`
+   was the standing example of that gap; it was closed in `8a431ac`, and this instruction went
+   stale until 2026-08-16 — see the note below.)
 4. Mind the ordering. Anything that resolves an identifier through a decrypt of another model
    must run before that model is re-keyed. Drafts are re-keyed before groups in both paths for
    exactly this reason: `Group.readID()` decrypts with the *canonical* key, which is still the

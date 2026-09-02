@@ -219,12 +219,12 @@ struct GlobalTrusteeDepthBackfillTests {
         #expect(legacy?.globalTrusteeDepth != nil, "legacy nil row must be backfilled")
         #expect(
             legacy?.globalTrusteeDepth.flatMap { $0.decrypt() }
-                .flatMap { try? JSONDecoder().decode(Int.self, from: $0) } == -1,
+                .flatMap { DepthCodec.decode($0) } == -1,
             "backfilled value must be the -1 sentinel"
         )
         #expect(
             stamped?.globalTrusteeDepth.flatMap { $0.decrypt() }
-                .flatMap { try? JSONDecoder().decode(Int.self, from: $0) } == 3,
+                .flatMap { DepthCodec.decode($0) } == 3,
             "an already-stamped row must not be overwritten by the backfill"
         )
     }

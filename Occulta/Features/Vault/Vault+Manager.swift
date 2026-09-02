@@ -159,7 +159,14 @@ final class VaultManager {
     /// The caller (a view or coordinator) evaluates the biometric policy via
     /// LAContext.evaluatePolicy before calling unlock. VaultManager stores only
     /// the context reference — no key material is held.
-    func unlock(context: LAContext) {
+    ///
+    /// `currentDepth` has no default — a forgotten argument must be a compile error,
+    /// not a silent leak of restore state into whichever depth happened to call this
+    /// (Bug 93). Required specifically because `attemptBEKRestore` must never run as
+    /// though it's at depth 0 by accident. `refreshPendingRestoreState` no longer takes
+    /// a depth at all: its published state is deliberately uniform across layers, and
+    /// deferral in `attemptBEKRestore` is what keeps that safe.
+    func unlock(context: LAContext, currentDepth: Int) {
         self.authContext = context
         self.resetInactivityTimer()
         // Drain reconstruction buffer entries that crossed threshold while locked.
@@ -168,11 +175,16 @@ final class VaultManager {
         self.drainPendingShardStatusUpdates()
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
-        self.refreshBackupStaleness()
+        // backupStaleness is refreshed by the views that display it (Vault+Tab,
+        // VaultRecoverySettings), not here. currentDepth is available in this scope
+        // now (added for Bug 93, below) — that's no longer why staleness stays external.
+        // It's left where it already is, tested and working, rather than consolidated
+        // here without a reason tied to this fix (see refreshBackupStaleness's own
+        // doc comment for why it must never be computed from the wrong depth).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
         self.refreshPendingRestoreState()
-        self.attemptBEKRestore()
+        self.attemptBEKRestore(currentDepth: currentDepth)
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.
@@ -210,7 +222,7 @@ final class VaultManager {
 
         // Stamp depth ceiling — always encrypted, never nil.
         // Depth 0 entries get encrypt(0): real-layer items hidden from all duress views.
-        entry.visibleThroughDepth = try JSONEncoder().encode(currentDepth).encrypt()
+        entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)

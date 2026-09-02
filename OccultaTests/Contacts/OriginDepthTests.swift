@@ -184,7 +184,7 @@ struct OriginDepthCreationTests {
 
         let saved = try cm.fetchAllContacts().first { $0.identifier.decrypt() == draft.identifier }
         #expect(saved != nil)
-        let decoded = saved?.originDepth.flatMap { $0.decrypt() }.flatMap { try? JSONDecoder().decode(Int.self, from: $0) }
+        let decoded = saved?.originDepth.flatMap { $0.decrypt() }.flatMap { DepthCodec.decode($0) }
         #expect(decoded == 0, "a contact created at the real depth must be stamped with the 0 sentinel")
     }
 
@@ -196,7 +196,7 @@ struct OriginDepthCreationTests {
 
         let saved = try cm.fetchAllContacts().first { $0.identifier.decrypt() == draft.identifier }
         #expect(saved != nil)
-        let decoded = saved?.originDepth.flatMap { $0.decrypt() }.flatMap { try? JSONDecoder().decode(Int.self, from: $0) }
+        let decoded = saved?.originDepth.flatMap { $0.decrypt() }.flatMap { DepthCodec.decode($0) }
         #expect(decoded == 2, "a contact created while at duress depth 2 must be stamped originDepth = 2")
         #expect(saved!.isVisible(atDepth: 2))
         #expect(saved!.isVisible(atDepth: 3))
@@ -228,12 +228,12 @@ struct OriginDepthBackfillTests {
         #expect(legacy?.originDepth != nil, "legacy nil row must be backfilled")
         #expect(
             legacy?.originDepth.flatMap { $0.decrypt() }
-                .flatMap { try? JSONDecoder().decode(Int.self, from: $0) } == 0,
+                .flatMap { DepthCodec.decode($0) } == 0,
             "backfilled value must be the 0 sentinel"
         )
         #expect(
             stamped?.originDepth.flatMap { $0.decrypt() }
-                .flatMap { try? JSONDecoder().decode(Int.self, from: $0) } == 3,
+                .flatMap { DepthCodec.decode($0) } == 3,
             "an already-stamped row must not be overwritten by the backfill"
         )
     }

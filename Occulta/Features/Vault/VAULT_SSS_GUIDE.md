@@ -350,9 +350,23 @@ arriving shard becomes one `ReconstructShard` row, sealed under the recovery
 buffer key with AAD = `id` (id-only). The plaintext columns carry no
 identifying information.
 
-Sealed payload: `{ entryID, attrID, signedAttribute }`. The `entryID` lives
-inside the seal so a forensic reader cannot tell which entries are mid-recovery
-or how many shards have arrived per entry.
+Sealed payload: `{ entryID, attrID, signedAttribute, senderIdentifier, attestation }`.
+The `entryID` lives inside the seal so a forensic reader cannot tell which entries
+are mid-recovery or how many shards have arrived per entry.
+
+`senderIdentifier` and `attestation` were added by Bug 94 remedy 2 — see *Handback
+verification* below. `senderIdentifier` is the receiver's own resolution of who sent
+the bundle, never sender-asserted, and at most one row is kept per
+`(entryID, senderIdentifier)` so a threshold-reaching group requires distinct
+senders rather than distinct `SignedAttribute.id`s.
+
+**BEK restore shards live here too, since 2026-08-27** (Bug 100 remedy 2). They
+previously had their own sealed file, whose length divided out to the number of
+recovery pieces collected — AES-GCM is length-preserving and the elements are
+near-constant size. A row belongs to the BEK path when its `entryID` resolves to no
+`VaultEntry`, because BEK shards carry the `distributionID` and no `VaultEntry.id`
+is ever one. Every other consumer keys off a `VaultEntry.id`, so those rows are
+inert to all of them.
 
 ### Why a separate model from CustodyShard
 
@@ -361,6 +375,11 @@ Different roles, different keys, different lifecycles. CustodyShard is custody
 is a self-recovery receive buffer, sealed under the recovery buffer key, transient.
 Keeping them as distinct types means the type system enforces "you cannot decrypt
 one with the other" and a stray cleanup query cannot accidentally cross-contaminate.
+
+Note the same three criteria are what admitted BEK restore shards *into* this model
+rather than giving them one of their own: they seal under the same recovery buffer
+key, they are the same kind of transient receive buffer, and this payload already
+carries every field they need. The test is the criteria, not the label.
 
 ### Lifecycle
 
@@ -553,9 +572,37 @@ Bob's app responds automatically, with no separate scheduling model:
 2. **Deliver** — mismatch shards are included as `.handback(signedAttribute)` in
    every outbound bundle to Alice. Bob does not delete these rows pre-emptively.
    `encryptBundle` enforces ML-KEM when `.handback` ops are present.
-3. **Alice receives `.handback`** — `acceptReturnedShard` stores each shard in the
-   `ReconstructShard` buffer (sealed under the recovery buffer key, no biometric).
-   `tryFinalizeReconstruction` is triggered opportunistically.
+3. **Alice receives `.handback`** — `handleHandback` verifies it first (see below),
+   then `acceptReturnedShard` stores each shard in the `ReconstructShard` buffer
+   (sealed under the recovery buffer key, no biometric). `tryFinalizeReconstruction`
+   is triggered opportunistically.
+
+### Handback verification: two branches
+
+Added by Bug 94 remedy 2 and absent from earlier drafts of this document.
+
+**Branch A — direct.** The shard verifies against Alice's *own current* identity key.
+This is the ordinary case: Alice still holds the key that signed the shard.
+
+**Branch B — trustee attestation.** Alice's device cannot verify the shard, because
+Secure Enclave identity keys are non-exportable and die with the device they were
+created on — which is precisely the situation a new-device recovery is in. So Bob
+verifies it instead, against his own retained copy of Alice's *old* public key
+(`Contact.Profile.Key`'s history is append-only), and vouches with his current
+identity, which Alice's new device can check because it just re-paired with him over
+UWB. `attestation(for:)` returns nil on any failure, which is the safe default: the
+op still goes out and simply has no Branch B path.
+
+Only a Branch B-verified attestation is carried into storage. Since Bug 94a every op
+ships an attestation — a real one where it exists and same-sized random filler
+otherwise — so `op.attestation` is no longer evidence of anything on its own.
+
+**Why the filler.** `attestation` is roughly 260 encoded bytes, and
+`Recipient.wrappedPayload` lengths are cleartext in a group bundle. Tier padding
+equalises the op *count* per recipient and nothing equalises their encoded size, so
+an optional field present on some recipients and absent on others partitions the
+bundle by who is genuinely mid-recovery. Same reasoning as `wrapRecipient`'s
+`randomEphemeralSignatureFiller`.
 4. **Cleanup** — when Alice successfully redistributes (sends `.distribute` with her
    new fingerprint), `handleDistribute` detects the fingerprint change and deletes
    all mismatch-fingerprint shards for Alice's contact. No explicit acknowledgement
@@ -892,3 +939,30 @@ possible from it.
 - **GF(2⁸) arithmetic timing:** `gfMul` and `gfInv` contain data-dependent
   branches. On Apple Silicon this is acceptable for SSS (not key derivation),
   but the implementation is not formally constant-time.
+
+---
+
+## Secure Mode: the dimension this document was written without
+
+**Added 2026-08-27**, and the same note appears in `VAULT_BACKUP_GUIDE.md` for the
+same reason. Nothing above mentions depth or duress. Contacts, vault entries, group
+membership, PIN gates and the layer arrays are all depth-partitioned; the shard
+protocol described here is not, and neither was the thinking behind it.
+
+That gap is the shared root of Bugs 99, 100, 102 and 103. None was found by reading
+this document or the code it describes — each came from asking what a specific
+observation looks like from inside a duress session.
+
+**The one that touches this document most directly is Bug 103.** *Inbound bundle
+processing order*, above, describes the sequence faithfully and does not mention that
+it runs at whatever depth the app happens to be at. `identifyOwner` resolves senders
+through `fetchAllContacts()`, which predicates on `deletionToken` alone — there is no
+visibility check anywhere in the inbound path. The consequence is not in this
+subsystem at all: the reader view renders the sender's name, phone and email, so an
+inbound message from a contact hidden at the current depth displays that contact to
+whoever is holding the phone.
+
+**The rule to apply when extending anything here:** a duress session must produce only
+observations a real session also produces. Silence qualifies. Anything a coercer can
+trigger on demand and then watch does not, and the shard protocol is unusually rich in
+those — arming, collecting, completing, and every acknowledgement in between.

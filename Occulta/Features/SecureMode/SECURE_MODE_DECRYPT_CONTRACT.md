@@ -28,7 +28,7 @@ A contact or vault entry that fails to decrypt must be treated identically to on
 
 | Call site | How it fetches | Guarded by | Status |
 |---|---|---|---|
-| `ContactManager+ShareIndex._syncShareIndex` | `fetchAllContacts()` filtered by `shareIndexAllowedIDs` | In restricted mode: `shareIndexAllowedIDs` is populated from `safeContactIDs(atDepth:)` which calls `isVisible` — corrupted contacts excluded. In normal mode: `shareIndexAllowedIDs` is nil → all contacts used. A corrupted contact would appear in the share index with an empty display name (not a security issue — no sensitive data exposed, just a blank entry). | ⚠️ acceptable |
+| `ShareRecipientPicker` | `@Query(Contact.Profile.descriptor)` filtered by `ContactListFilter.visibleContacts(_:atDepth:)` | `isVisible(atDepth:)` at `security.currentDepth` — a contact whose `visibleThroughDepth` will not decrypt is excluded outright, since a non-nil field that fails to decrypt cannot be ruled out as sensitive. The picker only runs from the `.unlocked` phase, so the depth is authenticated. A corrupted contact that *is* visible renders with a blank name rather than being hidden — no sensitive data exposed. | ⚠️ acceptable |
 
 ---
 

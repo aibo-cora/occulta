@@ -50,6 +50,9 @@ struct VaultNewEntrySheet: View {
                                 )
                                 .font(.system(size: 13, design: .monospaced))
                                 .tint(.occultaAccent)
+                                // Same lexicon concern as the content editor below. Left
+                                // capitalizing, since a label is a name the user reads back.
+                                .autocorrectionDisabled()
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
@@ -76,6 +79,15 @@ struct VaultNewEntrySheet: View {
                                         .scrollContentBackground(.hidden)
                                         .tint(.occultaAccent)
                                         .privacySensitive(true)
+                                        // Keeps what is typed here out of the iOS dynamic
+                                        // lexicon, which lives outside the app container and
+                                        // is covered by neither our encryption nor our file
+                                        // protection class. `privacySensitive` above is a
+                                        // different vector — it redacts in system snapshots.
+                                        // Never-capitalize is also correctness: seed phrases
+                                        // are lowercase.
+                                        .autocorrectionDisabled()
+                                        .textInputAutocapitalization(.never)
                                 }
                             }
                             .padding(.horizontal, 14)

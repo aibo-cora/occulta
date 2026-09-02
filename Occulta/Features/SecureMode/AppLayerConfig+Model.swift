@@ -155,7 +155,7 @@ final class AppLayerConfig {
     func readBlobSlot(at depth: Int, using key: SymmetricKey) -> Int? {
         guard depth < self.sealedBlobSlots.count,
               let decrypted = self.sealedBlobSlots[depth].decrypt(using: key),
-              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value     = LayerArrayCodec.decode(decrypted)
         else { return nil }
         return value
     }
@@ -165,7 +165,7 @@ final class AppLayerConfig {
         // encrypt(data: Data?) overload when input is nil. Treat nil as a key failure
         // and throw rather than silently skipping: a missing blob slot means deactivation
         // will never find the blob and sensitive contacts will be permanently lost.
-        guard let encrypted = try JSONEncoder().encode(slot).encrypt(using: key) else {
+        guard let encrypted = try LayerArrayCodec.encode(slot).encrypt(using: key) else {
             throw CocoaError(.coderValueNotFound)
         }
         self.ensurePadded()
@@ -187,7 +187,7 @@ final class AppLayerConfig {
     func readSequenceNumber(at depth: Int, using key: SymmetricKey) -> Int? {
         guard depth < self.layerSequenceNumbers.count,
               let decrypted = self.layerSequenceNumbers[depth].decrypt(using: key),
-              let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+              let value     = LayerArrayCodec.decode(decrypted)
         else { return nil }
         return value
     }
@@ -196,7 +196,7 @@ final class AppLayerConfig {
         // Same invariant as writeBlobSlot — nil from encrypt() is a key failure, not a
         // valid code path for non-nil input. Throw so activation aborts rather than
         // succeeding silently with missing deactivation metadata.
-        guard let encrypted = try JSONEncoder().encode(seqNum).encrypt(using: key) else {
+        guard let encrypted = try LayerArrayCodec.encode(seqNum).encrypt(using: key) else {
             throw CocoaError(.coderValueNotFound)
         }
         self.ensurePadded()
@@ -366,7 +366,13 @@ final class AppLayerConfig {
 
     private static let paddedArrayCount = 32  // Manager.LayerStore.slotCount
     /// Byte size of random filler for blob-slot and sequence-number arrays.
-    private static let fillerSize = 30
+    ///
+    /// **Derived from the codec, never a literal.** A hardcoded 30 sitting beside a format
+    /// that produced 29 for a single-digit slot index and 37–38 for a sequence number is
+    /// Bug 86 in its entirety: array *length* was constant, element length was not, and the
+    /// arrays are indexed by depth, so any element differing from the filler named an
+    /// occupied depth. Deriving it is what makes that drift unrepeatable.
+    private static let fillerSize = LayerArrayCodec.sealedSize
     /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize (53).
     static let verifierFillerSize = 53
 
@@ -378,7 +384,7 @@ final class AppLayerConfig {
             self.layerSequenceNumbers.append(Self.randomFiller())
         }
         while self.pinEnabledPerDepth.count < Self.paddedArrayCount {
-            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? Self.randomFiller())
+            self.pinEnabledPerDepth.append((try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? Self.pinEnabledFiller())
         }
     }
 
@@ -392,11 +398,42 @@ final class AppLayerConfig {
     }
 
     private static func randomFiller() -> Data {
+        Self.randomBytes(count: Self.fillerSize)
+    }
+
+    /// Correctly-sized random filler for the blob-metadata arrays.
+    ///
+    /// Exposed for the fixed-width migration, which has to resize *filler* as well as real
+    /// entries — filler is precisely what changes size, and it is indistinguishable from an
+    /// unreadable real entry, which is how `readBlobSlot` tells absence from presence.
+    static func blobArrayFiller() -> Data { Self.randomFiller() }
+
+    /// Sealed size of one `pinEnabledPerDepth` entry: JSON `UInt8` is one byte, plus
+    /// AES-GCM's nonce(12) and tag(16).
+    ///
+    /// This array's own constant, deliberately **not** `fillerSize`. Its fallback used to
+    /// borrow the blob arrays' filler size, which made an entry written when `encrypt()`
+    /// failed a 30-byte outlier among 29-byte real entries — the exact size tell this
+    /// array's `UInt8`-not-`Bool` encoding exists to prevent, arriving through the back
+    /// door. The coupling also meant the outlier would grow to 4 bytes the moment
+    /// `fillerSize` moved for Bug 86's blob arrays, silently, as a side effect of fixing a
+    /// different array. See Bug 86.
+    static let pinEnabledEntrySize = 1 + 28
+
+    /// Correctly-sized random bytes for a `pinEnabledPerDepth` slot whose real ciphertext
+    /// could not be produced. Reachable in practice, not only in theory: the device locking
+    /// part-way through `pinEnabledFillerArray()`'s map leaves earlier entries sealed at 29
+    /// bytes and the rest falling back here.
+    private static func pinEnabledFiller() -> Data {
+        Self.randomBytes(count: Self.pinEnabledEntrySize)
+    }
+
+    private static func randomBytes(count: Int) -> Data {
         // SystemRandomNumberGenerator uses arc4random_buf under the hood, seeded by the
         // kernel at boot — always available on any running iOS device. Unlike SecRandomCopyBytes
         // it has no error return, so no throws cascade into non-throwing call sites.
         var rng = SystemRandomNumberGenerator()
-        return Data((0..<fillerSize).map { _ in UInt8.random(in: 0...255, using: &rng) })
+        return Data((0..<count).map { _ in UInt8.random(in: 0...255, using: &rng) })
     }
 
     static func verifierFiller() -> Data {
@@ -422,7 +459,7 @@ final class AppLayerConfig {
     /// vs `"false"` (5 bytes) would differ by one byte without any decryption.
     static func pinEnabledFillerArray() -> [Data] {
         (0..<paddedArrayCount).map { _ in
-            (try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? randomFiller()
+            (try? JSONEncoder().encode(UInt8(1)).encrypt()) ?? pinEnabledFiller()
         }
     }
 
@@ -441,13 +478,13 @@ final class AppLayerConfig {
         guard
             let data      = self.persistedDepth,
             let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+            let value     = DepthCodec.decode(decrypted)
         else { return 0 }
         return value
     }
 
     func writePersistedDepth(_ depth: Int) throws {
-        self.persistedDepth = try JSONEncoder().encode(depth).encrypt()
+        self.persistedDepth = try DepthCodec.encode(depth).encrypt()
     }
 
     // MARK: - PIN enabled (per depth)
@@ -494,13 +531,13 @@ final class AppLayerConfig {
         guard
             let data      = self.coercerBaseDepth,
             let decrypted = data.decrypt(),
-            let value     = try? JSONDecoder().decode(Int.self, from: decrypted)
+            let value     = DepthCodec.decode(decrypted)
         else { return 0 }
         return value
     }
 
     func writeCoercerBaseDepth(_ depth: Int) throws {
-        self.coercerBaseDepth = try JSONEncoder().encode(depth).encrypt()
+        self.coercerBaseDepth = try DepthCodec.encode(depth).encrypt()
     }
 
     // MARK: - Lockout counter

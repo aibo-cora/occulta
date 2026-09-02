@@ -38,7 +38,7 @@ struct BackupExportEducationView: View {
                     iconColor: VaultEntryType.cat(light: (0x5A, 0x4A, 0xB0), dark: (0xB8, 0xA8, 0xFF)),
                     bgColor:   VaultEntryType.cat(light: (0xEE, 0xED, 0xFE), dark: (0x1e, 0x1c, 0x38)),
                     title: "What the file contains",
-                    body: "All your vault entries — labels, types, and content — sealed under a key that only your trustees can reconstruct together."
+                    body: "Every vault entry currently visible — labels, types, and content — sealed under a key that only your trustees can reconstruct together."
                 )
 
                 // What it does NOT contain
@@ -56,7 +56,7 @@ struct BackupExportEducationView: View {
                     iconColor: VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66)),
                     bgColor:   VaultEntryType.cat(light: (0xFF, 0xF3, 0xCD), dark: (0x2D, 0x22, 0x00)),
                     title: "Backup file + k trustee pieces = full vault access",
-                    body: "Anyone who obtains this file and collects enough recovery pieces from your trustees can decrypt your entire vault. Store it somewhere your trustees cannot access."
+                    body: "Anyone who obtains this file and collects enough recovery pieces from your trustees can decrypt every entry it contains. Store it somewhere your trustees cannot access."
                 )
 
                 // Storage guidance

@@ -118,6 +118,8 @@ Three changes applied together:
 - **Lock handler** — on `scenePhase == .inactive` when `requiresPIN && appLockEnabled`, immediately rebuild the share index filtered to depth-1 (`safeContactIDs(atDepth: 1)`). Sensitive contacts are removed from the index before the app suspends.
 - **Foreground handler** — when `isLocked == true` (PIN not yet entered) or `isRestricted == true` (duress mode), apply depth-1 filtering instead of writing all contacts. Only after a successful PIN entry (`onNormal`) does the index expand to all contacts.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 7 — Hard-delete inside staged key rollback scope causes irrecoverable data loss
@@ -1873,23 +1875,51 @@ At depth N+1 (Bug 47 coercer after `reEnablePIN`): `coercerBaseDepth = N+1` — 
 
 ## Bug 62 — `pinCollision` "Activation Failed" alert is a forensic tell; enables coercer PIN oracle at duress depth
 
-**Status:** Open
+**Status:** **Open — root scenario fixed, escalation gaps remain.** Re-examined 2026-08-26: the
+bug's actual root — a single, accidental `pinCollision` during ordinary setup, revealing that
+something is already configured to a coercer who was led to believe otherwise — is fully closed by
+the Resolution's silent-dismiss + dummy-blob-write fix, on one occurrence, no repeated guessing
+needed. What's left (Gaps 1a, 2, 3) all target a narrower, more deliberate escalation: a coercer who
+already suspects collisions carry meaning and tries to exploit that on purpose. See *The root
+scenario* below.
 
-### Severity: High (forensic)
+### Severity: High (forensic) — root scenario closed; remaining gaps are lower-likelihood escalations
 
 `SummaryView` catches `pinCollision` in the generic `catch` block and shows an "Activation Failed" alert. A device with no Secure Mode active has no existing verifiers, so it can never produce a `pinCollision` during activation — any PIN the user proposes will succeed. A device with Secure Mode active can produce a collision when the proposed duress PIN matches an existing verifier. Seeing "Activation Failed" (as opposed to a wrong-entry-PIN error, which would have been caught earlier in the flow) confirms that protected verifiers already exist on the device. The alert directly reveals that Secure Mode is running.
 
 Compare with `invalidStateTransition`, which is silently dismissed: that arm was added in Bug 24 precisely for tell-avoidance — the same principle must apply to `pinCollision`.
 
-### PIN oracle attack
+### The root scenario — clarified 2026-08-26
 
-A coercer at depth 1 with `state = .duress` (no prior activation from this depth) can exploit the collision signal as a binary oracle to identify the master PIN:
+The bug's actual root is simpler than the oracle framing below makes it sound, and worth stating
+plainly: **a coercer routed to a duress layer is shown a device that looks completely unprotected —
+that's the whole point of a decoy layer. If they then decide to set up Secure Mode themselves,
+believing they're configuring it for the first time, and the PIN they happen to propose collides
+with an existing verifier anywhere in the real layer stack, `pinCollision` fires — on the first,
+completely ordinary, non-adversarial attempt.** No deliberate guessing needed. Under the belief the
+coercer was given (nothing is configured), a collision is logically impossible — there's nothing to
+collide with. So the mere existence of a failure that can only happen when something already exists
+is proof, in one interaction, that the device isn't what it appeared to be. That's the tell, and it
+doesn't require the coercer to understand verifiers, oracles, or anything about how the app works —
+just to notice that "set up fresh" unexpectedly failed.
+
+**This is exactly what the Resolution below closes, fully, on a single occurrence** — not just for a
+sequence of deliberate guesses. The silent-dismiss fix makes collision and success produce the
+identical UI outcome; the dummy-blob-write fix (Gap 1) makes them identical at the disk level too.
+So the root scenario is closed as of the Resolution landing, independent of everything below it.
+
+### PIN oracle attack — an escalation on top of the root scenario, not the root scenario itself
+
+Distinct from the above: a coercer who *already suspects*, through some channel other than the now-
+silenced alert, that collisions carry meaning, and who deliberately exploits that by probing multiple
+candidates on purpose. A coercer at depth 1 with `state = .duress` (no prior activation from this
+depth) can attempt to use the collision as a binary oracle to identify the master PIN:
 
 1. Open the activation flow, confirm their PIN ("1111"), propose candidate PIN X.
 2. "Activation Failed" → X collides with an existing verifier. Because `sealedNormalVerifiers[0]` holds the master normal PIN, X = master PIN — found.
 3. No alert (flow dismisses normally) → X is not in use. A new layer is created at depth 2.
 
-Each successful probe creates a new layer and transitions `state` to `.normal` (Bug 58 fix), after which `invalidStateTransition` blocks further activation attempts from depth 1. Each colliding probe leaks whether the proposed PIN is the master PIN. With `pinCollision` silently dismissed the coercer receives no signal — successful activation and a collision are indistinguishable from the UI.
+Each successful probe creates a new layer and transitions `state` to `.normal` (Bug 58 fix), after which `invalidStateTransition` blocks further activation attempts from depth 1. Each colliding probe leaks whether the proposed PIN is the master PIN. With `pinCollision` silently dismissed the coercer receives no signal — successful activation and a collision are indistinguishable from the UI, so **this specific version of the attack no longer works at all** once the Resolution below lands; it's preserved here as the reasoning that motivated Gap 1, and because Gap 1a and Gap 2 both target residual, more speculative versions of a coercer trying to reconstruct this signal some other way.
 
 ### Root Cause
 
@@ -1967,7 +1997,13 @@ does not remove the signal, only bounds it.
 
 ---
 
-#### Gap 2 — Rate limit proposal is flawed
+#### Gap 2 — Rate limit proposal is flawed, and re-examined 2026-08-26: it targets a narrower threat than it sounds like, and its own replacement has the same class of problem it was proposed to fix
+
+**Scope, clarified first:** this gap does not defend the bug's root scenario (a single accidental
+collision during ordinary setup) — that's fully closed by the Resolution above, on one occurrence,
+with no attempt count involved. Gap 2 only matters for the PIN-oracle escalation: a coercer
+deliberately trying many candidates on purpose, via some channel other than the now-silenced alert.
+That's a narrower and more speculative population than the bug's main case.
 
 The original Option A (N activations per 24-hour window) was inadequate on multiple dimensions:
 
@@ -1976,7 +2012,31 @@ The original Option A (N activations per 24-hour window) was inadequate on multi
 - **Non-colliding probes create real state.** Each successful (non-colliding) probe creates a real new layer: new verifiers, new blob slot entry, new cryptographic artefacts that accumulate indefinitely. The rate limit constrains collision probes but not layer proliferation.
 - **Clock manipulation.** iOS system time is controllable in some jailbreak or MDM-adjacent scenarios; a 24-hour window tied to wall time is not robust.
 
-**Better framing:** a **session-scoped limit** (1–2 activation attempts per authenticated session at a given depth) is invisible to a legitimate user and makes brute-forcing impractical given the physical access requirement per session. This requires no persistent counter and is not vulnerable to clock manipulation.
+**Better framing, originally proposed:** a **session-scoped limit** (1–2 activation attempts per authenticated session at a given depth) is invisible to a legitimate user and makes brute-forcing impractical given the physical access requirement per session. This requires no persistent counter and is not vulnerable to clock manipulation.
+
+**Re-examined 2026-08-26 — the session-scoped proposal assumes the wrong adversary.** "Requires a
+fresh unlock to get another attempt" is a real cost against an attacker who has the *device* without
+the *owner* — someone who stole or seized it and doesn't control re-authentication. That is not
+Secure Mode's threat model. The threat model here is a coercer with the compliant owner physically
+present, directing them to enter PINs on command — which is the entire premise of a duress PIN
+existing at all. For that adversary, "lock it, unlock it again" costs nothing; a session-scoped limit
+resets on exactly the thing a coercer can trivially compel for free.
+
+**What it still buys, and what it doesn't.** Exhaustive brute force — cycling the full PIN space
+(10⁴-10⁶ candidates) at 1-2 guesses per relock, even at a generous 10-15 seconds per cycle — adds up
+to weeks or months of continuous relocking, genuinely impractical inside an hours-long coercion
+window. But a small number of *targeted*, plausible guesses (birthdate, anniversary, repeated
+digits) costs a compliant victim's coercer almost nothing to cycle through, ten or twenty relocks at
+most. The doc's own acceptance-criteria section (below) already names targeted guessing as the more
+realistic scenario, not exhaustive brute force — so the fix as proposed is strongest against the
+attack that's least likely and weakest against the one already flagged as most likely.
+
+**No replacement design yet.** A limit that survives a compliant-victim relock cycle needs to persist
+across the session boundary — which walks straight back into the same "counter is observable"
+objection that got the original 24-hour proposal rejected. Persistent-enough-to-survive-relock,
+forensically invisible, and not itself the tell appear to pull against each other; no shape has been
+found yet that satisfies all three. This is now a blocking design question, the same shape as Gap 3's
+below, not an implementation task.
 
 ---
 
@@ -2160,6 +2220,8 @@ self.contactManager.syncShareIndex()
 
 When Secure Mode is active the share index is always restricted to the depth-1 (duress) view, regardless of the authenticated depth of the main app. When inactive all contacts are written as before.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 66 — Scene phase handlers fight PIN-entry share index updates and use wrong depth
@@ -2186,6 +2248,8 @@ The share index was treated as something to be corrected reactively at scene bou
 
 Both handlers' share index logic removed. The `.active` handler retains `cleanupPendingSessions()`, which genuinely belongs there. The `.inactive` handler is now empty. Share index correctness is owned entirely by `onAuthenticated`, `onDuress`, `activateSecureMode`, and `deactivateSecureMode`.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 67 — `activateSecureMode` and `deactivateSecureMode` do not sync share index
@@ -2211,6 +2275,8 @@ Both functions call `contactManager.shareIndexAllowedIDs = ...` and `contactMana
 - `activateSecureMode`: `safeContactIDs(atDepth: max(self.currentDepth, 1))` — restricts to at least the depth-1 view immediately after activation.
 - `deactivateSecureMode` (full path): corrected in Bug 68 below.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 68 — `deactivateSecureMode` cascade path sets `shareIndexAllowedIDs = nil` while Secure Mode remains active
@@ -2243,6 +2309,8 @@ contactManager.syncShareIndex()
 After full deactivation: `isSecureModeActive = false` → `nil` ✓  
 After cascade deactivation: `isSecureModeActive = true`, `currentDepth = 1` → `safeContactIDs(atDepth: 1)` ✓
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 69 — Cold launch with `pinEnabled = false, isSecureModeActive = true` leaves share index uninitialized
@@ -2285,11 +2353,24 @@ contactManager.syncShareIndex()
 
 `currentDepth` is correctly restored from `persistedDepth` at this point (Bug 50), so `safeContactIDs` produces the correct depth-filtered set before any contact mutation can trigger a sync.
 
+
+**Retired by the removal of the share index, 2026-08-16.** The `ShareIndex.sqlite` mirror this entry constrains no longer exists — the recipient picker moved into the main app, behind the PIN gate (Bug 84). The fix described above was correct for the design it was written against; it is recorded here as history, not as live behaviour.
 ---
 
 ## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
 
-**Status:** Open
+**Status:** **Fixed, re-examined and closed 2026-08-26.** Fix 2 (carry lockout fields through
+rotation) is implemented and was independently unnecessary; see "Reconciled 2026-08-15" at the
+bottom of this entry. **Fix 1 (backup exclusion) was already implemented** —
+`RootView.excludeStoreFromBackup(url:)` has shipped since `a320e3b` (2026-06-09), called at init
+and on every save, using `isExcludedFromBackup`, Apple's standard mechanism that covers both iCloud
+and local iTunes/Finder backups; no separate entitlement needed. What was actually missing was
+verification, not code: zero automated coverage existed. `OccultaTests/BackupExclusionTests.swift`
+now covers it — the store file gets excluded, both `-wal`/`-shm` sidecars get excluded when present,
+and a sidecar created *after* the first call still ends up covered once the function runs again
+(the exact recovery `reapplyFileProtection()` depends on for SQLite-recreated sidecars). A real
+iTunes/Finder backup-and-restore cycle is out-of-process and not exercisable from a unit test; these
+tests pin the contract the fix actually relies on instead.
 
 ### Severity: High
 
@@ -2310,19 +2391,67 @@ The SwiftData store is excluded from iCloud backup (`isExcludedFromBackup = true
 
 A second, independent path: key rotation in `activateSecureMode` and `deactivateSecureMode` re-encrypts contact and vault fields under the staged key but does not re-encrypt `lockoutCountEncrypted` or `lockoutExpiryEncrypted`. After rotation those fields are encrypted under the superseded canonical key and decode as `return 0` / `return nil` (see `AppLayerConfig+Model.swift` fallback). An in-progress lockout is silently reset by any activation or deactivation cycle. This angle is independent of backup and is documented in the repo audit as SEC-2.
 
-### Resolution (pending)
+> **Stale as of 2026-08-15 — do not act on this paragraph.** The rotation does re-encrypt both
+> fields, the second field is not called `lockoutExpiryEncrypted`, and there is no in-progress
+> lockout at rotation time to reset. See "Reconciled 2026-08-15" below. The backup path in the
+> symptom above is unaffected and remains the live half of this bug.
 
-Two independent fixes required:
+### Resolution — both fixes done as of 2026-08-26
 
-**1. Verify `isExcludedFromBackup` covers local backups.** Confirm that `excludeStoreFromBackup(url:)` (added in `a320e3b`) prevents the database from appearing in a wired iTunes/Finder backup, not just iCloud. If local backup exclusion requires a different entitlement or API call, apply it.
+Two independent fixes were required; both are now in place.
 
-**2. Carry lockout fields through key rotation.** In the re-encryption loops of `activateSecureMode` and `deactivateSecureMode`, re-encrypt `lockoutCountEncrypted` and `lockoutExpiryEncrypted` under the staged key alongside the other `AppLayerConfig` fields. A test asserting that a lockout in progress at activation time is still active and unexpired after deactivation should be added.
+**1. `isExcludedFromBackup` covers local backups — confirmed, not just assumed.** It's Apple's
+standard resource value, documented to exclude a file from both iCloud and local (wired)
+iTunes/Finder backups with no separate entitlement — so there was never a real ambiguity here to
+resolve by API choice. `excludeStoreFromBackup(url:)` (`a320e3b`) applies it to the store and its
+`-wal`/`-shm` sidecars, called at `RootView` init and on every `reapplyFileProtection()`. What had
+never been done was writing it down as a verified contract: `OccultaTests/BackupExclusionTests.swift`
+(2026-08-26) now asserts the flag actually lands on all three files, including the case where a
+sidecar is created *after* the first call — matching why `reapplyFileProtection()` re-invokes this
+on every save instead of once at launch.
+
+**2. Carry lockout fields through key rotation — done, and shown unnecessary.** See "Reconciled
+2026-08-15" below: `AppLayerConfig.reencrypt(from:to:)` already reseals both fields as a side effect
+of the Bug 76 sweep, and it turns out no rotation can ever observe an in-progress lockout in the
+first place, since `verify()` resets the counters on every match and blocks before any verifier scan
+while a lockout delay is outstanding.
+
+### Reconciled 2026-08-15 — fix 2 is done, was never needed, and named a field that no longer exists
+
+Three separate documents disagreed about this half of the bug. Resolved by reading the code rather
+than by picking between them; **fix 1 is the entire remaining scope of Bug 70.**
+
+**Fix 2 is implemented.** `AppLayerConfig.reencrypt(from:to:)` reseals both lockout fields
+(`AppLayerConfig+Model.swift:314-315`), so they are carried through every rotation. It arrived in
+`182920b` on `release/v1.10.2` — the **Bug 76** fix — which re-keyed `AppLayerConfig` wholesale and
+picked these up as part of that sweep. Nobody fixed Bug 70; Bug 76 covered it in passing, which is
+why no document records it.
+
+**Fix 2 was also unnecessary, and `SecurityReview2026-07-24` item #7 was right to retract it** —
+though for a reason worth stating more precisely than the retraction did. Every rotation path is
+gated behind a successful PIN verification, and `verify()` calls `resetCounters()` on every match
+(`Manager+Security.swift:1135` normal, `:1145` duress). A lockout in progress cannot coexist with a
+rotation either, because `verify()` returns `.locked(until:)` before reaching any verifier scan while
+the delay is outstanding (`:1121-1124`). So at the moment any rotation runs, both fields are already
+zero by construction. There has never been an in-progress lockout for a rotation to preserve.
+
+**Both this entry and the retraction name `lockoutExpiryEncrypted`, which does not exist.** The field
+is `lockoutAnchorUptimeEncrypted` — a boot-anchored monotonic value, not a wall-clock expiry. It was
+renamed by the **SEC-1** fix (2026-08-05) that closed the clock-rollback bypass, which is the same
+audit item this entry's own root cause section cites. A `grep` for the old name returns nothing,
+which is the confusing way to discover this.
+
+**What this did not touch, as of 2026-08-15 — since closed.** Rotation carrying the fields correctly
+was always irrelevant to an adversary who replaces the whole database file with an earlier copy —
+that's fix 1's territory, not fix 2's. At the time this was written fix 1 was implemented but had no
+test confirming it; see *Resolution* above for the 2026-08-26 close.
 
 ---
 
 ## Bug 71 — Layer store file modification timestamp correlates with activation events
 
-**Status:** Open
+**Status:** Open — **mitigation 2 (cadence jitter) implemented 2026-08-15**; mitigation 1
+(opportunistic writes) still open. See "Implementation status" at the bottom.
 
 ### Severity: Low (forensic)
 
@@ -2346,6 +2475,30 @@ Two complementary mitigations:
 **2. Jitter the 24-hour cadence.** Replace the fixed `86_400 s` threshold in `LayerStore.maxAge` with a randomised window (e.g., 18–30 hours) so the maintenance cadence itself is not fingerprintable.
 
 Both mitigations reduce the signal strength; neither eliminates it. The residual risk — a write occurred, time unknown within the jitter window — is acceptable given that the file content is cryptographically opaque.
+
+### Implementation status — 2026-08-15
+
+**Mitigation 2 (jitter) is implemented.** `Manager.LayerStore.maxAge` is now
+`.random(in: 18 * 3_600 ... 30 * 3_600)` instead of a fixed `86_400`
+(`SecureMode+LayerStore.swift`). Covered by `LayerStoreMaintenanceTests` — window bounds,
+in-process stability, and that `maintain()` honours the threshold in both directions.
+
+**One design point worth recording, because the obvious implementation is wrong.** The draw is a
+`static let`, evaluated **once per process**, not per `maintain()` call. `maintain()` runs on every
+foreground, so a fresh draw each time would let the *lowest* draw win — with a handful of calls
+between hour 18 and hour 30, the write lands near the 18 h floor almost every time and the jitter
+window collapses to a point. Per-launch keeps the whole window in play.
+
+**A deterministic derivation was considered and rejected.** Deriving the threshold from the file's
+own mtime would make it stable across calls without any per-process state, which is tidier — but it
+hands the examiner the threshold too, since they hold the mtime. They could then compute exactly when
+the next maintenance write was due and flag anything early as an activation. That defeats the entire
+purpose; the property needed is unpredictability *to the examiner*, not merely variation.
+
+**Mitigation 1 (opportunistic writes) is not implemented**, so the residual is larger than the final
+design intends: writes still cluster around the maintenance cadence rather than being buried in
+general write density. The jitter widens the window an examiner must accept; it does not add cover
+traffic.
 
 ---
 
@@ -2390,7 +2543,7 @@ func randomSlot(excluding excluded: Set<Int> = []) -> Int {
 
 ## Bug 73 — Group duress membership shared across all duress depths, breaking multi-layer decoys
 
-**Status:** Closed (Fixed) — implemented and verified on `release/v1.9.1` (34/34 Group tests passing, including new regression coverage for depth-1/2/3 independence). Not yet committed/pushed.
+**Status:** Closed (Fixed) — implemented and verified on `release/v1.9.1` (34/34 Group tests passing, including new regression coverage for depth-1/2/3 independence). ~~Not yet committed/pushed.~~ **Corrected 2026-08-15:** committed as `8924df6` and merged to `develop` via `aee66b9` (PR #64). The trailing sentence had been left as written at the time of the fix and read, months later, as though the work were still sitting uncommitted.
 
 **Target:** v1.9.1
 
@@ -2461,7 +2614,7 @@ Given the negligible magnitude, this is low priority and can be deferred.
 
 ## Bug 74 — Eager `deeperMemberSlots` migration caused launch crash/freeze; reverted to lazy-only
 
-**Status:** Closed (Reverted) — v1.9.1 shipped with the eager migration; a follow-up patch removes it.
+**Status:** Closed (Reverted) — v1.9.1 shipped with the eager migration; a follow-up patch removes it. **Confirmed landed 2026-08-15:** `654aaba`, "Revert eager group deeper-slot migration — caused launch crash and freeze". Note this removed only the *eager migration*; `deeperMemberSlots` itself is intact and correct (`Group+Model.swift:50`), since it is the Bug 73 mechanism. Migration remains lazy-only, which is the state the Decision section below settled on.
 
 **Target:** v1.9.2 (or next patch)
 
@@ -3387,6 +3540,15 @@ not in the field — a message from a contact running 1.9.0 failed to open with
 
 **Target:** post-1.10.2, if the affected population turns out to matter.
 
+**Priority reviewed 2026-08-16 — remains an accepted limitation, and is *not* a release blocker.**
+It was briefly promoted to P0 in the open-limitations register when Bug 82a was re-rated out of that
+slot; the promotion was made by elimination, without re-reading this entry, and is withdrawn. The
+narrowing facts below all still hold — the band is exactly 1.9.x, the gate is per-contact, fallback
+sends are unaffected, and one message from the contact after they reach 1.10.0+ repairs the marker
+permanently. Severity per affected pair stays **High** (permanent, silent, unrepairable by the
+recipient); priority is **P1**. The population that would justify more is the one this project has
+no telemetry to measure, which is the same reasoning that re-rated 82a — applied consistently.
+
 ### The decision, and why it is defensible
 
 Ship the fail-closed gate. Contacts on **1.9.0 ≤ version < 1.10.0** cannot have their forward-secret
@@ -3473,6 +3635,35 @@ user-facing copy on a release branch for a self-limiting cost.
 
 Revisit only if 1.9.x adoption turns out to be stickier than expected, or if users report
 distrusting contacts over this.
+
+### Shipped 2026-08-16 — the decline above is reversed
+
+The candidate string is in the build (`OccultaApp.swift:666`), verbatim as written above. Nothing
+in the analysis changed; only the cost side did.
+
+**What the decline actually rested on** was *"not worth changing user-facing copy on a release
+branch for a self-limiting cost"* — a statement about marginal cost on `release/v1.10.2`, not about
+the wording, which the same section had already judged strictly better on three counts: it leaks
+nothing, it is true in both cases, and its advice is diagnostic. That marginal cost is now lower:
+1.10.3 is touching user-facing surfaces regardless, and the change is one appended sentence at one
+call site with no test pinning the old text.
+
+**The invariant is untouched, and that is the thing to check on any future edit.** The oracle came
+from the two cases producing *different* text; both still resolve to a single string, emitted
+identically whether the marker was unreadable or the signature was simply absent. Length is not the
+leak. The `⚠️` comment at `OccultaApp.swift:626` still forbids splitting, and now also explains why
+adding the advice back did not reopen anything.
+
+**What this buys, restated because it is easy to read as cosmetic.** The population that sees this
+message is overwhelmingly benign — contacts on 1.9.x, not attackers — and until now they were
+being shown an unexplained security refusal about someone who had done nothing wrong. The sharp
+harm named above was a user withdrawing from a safe channel on that basis. The restored sentence
+also gives the user a cheap disambiguation the app deliberately refuses to perform itself: against
+a forgery, *"ask them to update"* comes back *"I'm already on the latest version."*
+
+The self-limiting argument still holds, and now cuts the other way as well — as the 1.9.x
+population drains, the advice costs less and less, because there is progressively less benign
+traffic for it to be wrong about.
 
 ### What was considered and not taken
 
@@ -3578,6 +3769,14 @@ decision, not a security one, and it should be taken with the population figure 
 
 ### Regardless of which remedy is chosen
 
+> **Stale as of 2026-08-16 — superseded twice over; do not act on this paragraph.** It was written
+> before `f7c41f1` made the failure legible, and before the 2026-08-14 amendment collapsed the two
+> strings into one to close a duress oracle. Both events are recorded at the top of this entry. The
+> current behaviour is a single deliberate string at `OccultaApp.swift:664-666`, not an opaque error
+> code. A reader reaching this section first — as happened on 2026-08-16, producing a wrong P0
+> rating in the open-limitations register — will conclude there is unfixed work here. There is not;
+> there is a *declined candidate*, recorded in the amendment above.
+
 The failure is currently opaque: `GroupDecryptError: 7` in a log, with no user-facing explanation.
 It should say what the group-eligibility screen already says — that this contact needs to update
 Occulta, or can be verified to restore messaging. A silent, permanent message failure is worse
@@ -3585,26 +3784,65 @@ than the vulnerability it is guarding against, because the user cannot even see 
 
 ---
 
-## Bug 82 — A contact key re-exchange makes every in-flight message from that contact permanently undecryptable
+## Bug 82 — A contact identity-key change makes earlier messages from that contact permanently undecryptable
 
-**Status:** **Accepted for v1.10.2 — shipping as-is, decided 2026-08-13.** Deferred on
-likelihood: a contact re-exchanging keys *while a message from them is in flight* is a narrow
-window, and the loss is availability rather than confidentiality. Not rejected — the remedy
-below stands, and the tradeoff it carries still needs deciding rather than defaulting.
+**Status:** **Re-filed as a split, 2026-08-15**, after the original likelihood argument was
+challenged and the stated trigger turned out to be wrong. The two halves have different
+frequencies, different consequences, and very different fix costs, and bundling them produced
+both an inflated likelihood claim and an over-large remedy.
+
+- **82a — fallback-mode half.** Open. **Re-rated 2026-08-16 from High/P0 to Medium/P1** and
+  re-scoped to the *unopened*-bundle case; the retained-archive justification did not survive
+  challenge. See "Re-rated 2026-08-16" below. Needs no prekey work to fix.
+- **82b — forward-secret half.** Accepted, deferred. This is the narrow unopened-message race
+  the original entry described, and its fix is the expensive one.
 
 Found 2026-08-13 while scoping the §2.2 prekey finding in
-`Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback-mode half has been there for as
-long as `resolveSenderPublicKey` has, and the signature half arrived with 1.10.0. Not introduced
-by this release.
+`Docs/Audit/SECURITY_CHECKLIST.md`. Pre-existing: the fallback half has been there for as long as
+`resolveSenderPublicKey` has, and the signature half arrived with 1.10.0. Not introduced by that
+release. The original entry is preserved in git history.
 
-**Target:** post-1.10.2.
+### Correction — the trigger this was filed under does not occur
 
-**Consequence of deferring, given §2.2 is being fixed by consuming at open:** when this does
-occur, the in-flight message is lost *and* its prekey is destroyed rather than left alive. That
-is the strictly safer of the two failures — the message was already unrecoverable, and burning
-the key removes the forward-secrecy exposure that §2.2 was about — but it is worth stating
-plainly, because it means fixing §2.2 first makes this bug's blast radius slightly larger and
-its forward-secrecy consequence smaller.
+The original entry said this "lands on ordinary use: a contact reinstalling the app and
+re-exchanging keys is a normal thing to do, not an edge case." That is wrong, and it was the
+load-bearing likelihood claim.
+
+`Manager.Key.retrievePrivateKey()` (`Key+Manager.swift:163`) is retrieve-or-create: it returns
+the existing Enclave key on `errSecSuccess` and only calls `create()` on `errSecItemNotFound`.
+Keychain items survive app deletion on iOS, and `WhenUnlockedThisDeviceOnly` does not change
+that. So a reinstall destroys the SwiftData store — the contact list is gone and the user must
+re-exchange to rebuild it — but the **identity key is unchanged**, and peers receive the same
+material.
+
+That matters because `update(key:for:)` (`Contact+Manager.swift:525`) appends unconditionally and
+computes `keyRotated` only to decide whether to emit `contactKeyRotated`. A re-exchange with
+unchanged material appends a record holding identical bytes, so `last(where:)` returns the same
+key and nothing breaks. **This bug requires the key material to actually change.**
+
+⚠️ The keychain-survives-uninstall behaviour is the fact everything here rests on and has not been
+confirmed on-device for this app. Confirm before relying on the frequency numbers below.
+
+### What actually changes an identity key
+
+Four events, all device-level rather than app-level:
+
+| Cause | Frequency |
+|---|---|
+| New iPhone | The device-replacement cycle — D-19 prices it at every 2–3 years per relationship per side |
+| Restore to new hardware from backup | Same; the SE key is non-migratable and `ThisDeviceOnly` is not in the backup |
+| In-app Erase All Data — `Manager.Key().deleteAllKeys()` (`Manager+App.swift:28`) | Panic-wipe path only |
+| Erase All Content and Settings | Rare |
+
+Not reinstall, and not anything in ordinary use. So the event is **rarer than originally claimed
+but certain** — every relationship reaches it, on a hardware cycle, from both sides.
+
+**This is D-19's event.** Device replacement forces a new identity because identity *is* the
+Enclave key, cross-device sync is intentionally absent, and the no-self-vouching rule requires a
+new device's key to be established by physical exchange rather than vouched for by the old one.
+D-19 is that moment's authenticity face — a legitimate "I replaced my phone" is indistinguishable
+from an attacker saying it — and this bug is its availability face. They should be scoped
+together, not separately.
 
 ### What happens
 
@@ -3616,11 +3854,13 @@ sender.contactPublicKeys?.last(where: { $0.expiredOn == nil })
 
 `Contact+Manager.swift:1633`. The newest non-expired record, and nothing else.
 
-The model keeps the rest. `saveKey` **appends** a new `Contact.Profile.Key` when a contact
-re-exchanges (`:565`) and emits `contactKeyRotated` when the fingerprint actually changed
-(`:574`). Nothing deletes the superseded record, and `expiredOn` is written only by
-`reset(identity:)` (`:588`). So the full history is sitting in the store, and this line never
-looks at it.
+The model keeps the rest. `update(key:for:)` **appends** a new `Contact.Profile.Key` when a contact
+re-exchanges (`Contact+Manager.swift:552`) and emits `contactKeyRotated` when the fingerprint
+actually changed (`:561`). Nothing deletes the superseded record, and `expiredOn` is written only by
+`reset(identity:)` (`:576`). So the full history is sitting in the store, and this line never
+looks at it. **Corrected 2026-08-26: this function was never named `saveKey`** — that name doesn't
+appear anywhere in this file's git history; it has always been `update(key:for:)`, matching the
+reference two paragraphs up.
 
 Any message sealed **before** the re-exchange was built against the old key. After the
 re-exchange we resolve the new one, and every check that depends on the sender's identity
@@ -3633,41 +3873,152 @@ That single value feeds three separate consumers on the inbound path, and all th
 | Consumer | Where | Failure |
 |---|---|---|
 | Fallback-mode wrapping key — `ECDH(ourLongTermPriv, theirLongTermPub)` | `deriveInboundKey` → `deriveSessionKey(using:quantumMaterial:)` | Key cannot be derived, the slot never opens, `recipientSlotNotFound` |
-| `verifySenderEphemeralSignature` | `Crypto+Manager+GroupDecrypt.swift:105` | `senderEphemeralSignatureMismatch` |
-| `senderProof` HMAC over the sender's public key | `Contact+Manager.swift:1856` | `senderProofMismatch` |
+| `verifySenderEphemeralSignature` | `Crypto+Manager+GroupDecrypt.swift:199`, throw site `:141-145` | `senderEphemeralSignatureMismatch` |
+| `senderProof` HMAC over the sender's public key | `Contact+Manager.swift:1882-1885` | `senderProofMismatch` |
 
 So this is not only "forward-secret messages fail to verify". **Fallback-mode messages become
 undecryptable outright**, because the sender's identity key is load-bearing in that mode's key
-derivation. The 1:1 path resolves the sender the same way (`:1565`) and fails identically.
+derivation. The 1:1 path resolves the sender the same way (`:1564`) and fails identically.
 
 There is no healing path. The resolution never widens, so re-opening the same file fails the
 same way forever. The messages are lost, not delayed.
 
+### Why the two halves are different bugs
+
+The split is not administrative — the modes differ in whether a bundle can be opened twice, and
+that changes both the exposure and the fix.
+
+| | 82a — fallback (`.longTermFallback` / `.longTermNoPQ`) | 82b — forward-secret |
+|---|---|---|
+| Wrapping key | `ECDH(ourLongTermPriv, theirLongTermPub)` — deterministic, consumes nothing | Prekey ECDH — prekey consumed on open |
+| Re-openable? | **Yes, indefinitely** | No. Single-use by design, independent of this bug |
+| Exposure window | Every retained bundle, including ones already read | Only bundles sealed and never opened |
+| Failure | Slot never opens — **undecryptable** | Opens, then `senderEphemeralSignatureMismatch` |
+| When this mode is used | First message ever to a contact (no batch yet), and prekey exhaustion | Steady state once a batch exists |
+
+**82a is the one the original likelihood argument missed.** Because fallback bundles re-open
+forever and the app has no message history, re-opening the `.occ` is the only way to re-read
+anything — and the README positions the bundle as the durable artifact ("share the bundle however
+you want"). So when a contact replaces their phone, every fallback bundle they ever sent stops
+opening, retroactively, including the first message of the relationship. That is not a race; it
+is an archive break at a scheduled moment.
+
+Unknown, and unknowable without telemetry this project has deliberately declined: how many
+recipients actually retain `.occ` files rather than decrypting and saving the plaintext. The
+"keep the encrypted container" habit is plausible for the legal/medical persona but is not
+evidenced.
+
+**82b is the race as originally described**, and the pushback on it is fair. Its window is
+"sealed but never opened" — though note that with no inbox, a bundle sits in Mail or Files until
+the recipient acts, and the re-exchange is triggered by something unrelated to the message, so
+the window is measured in however long a file goes unopened rather than in transit time.
+
 ### Severity
 
 Availability, not confidentiality — nothing is exposed, and a forged bundle is no more likely to
-be accepted than before. But the loss is silent and permanent, and it lands on ordinary use: a
-contact reinstalling the app and re-exchanging keys is a normal thing to do, not an edge case.
+be accepted than before. Both halves are silent and permanent. 82a additionally reaches data the
+user believes they already have.
 
-### Interaction with the §2.2 prekey finding
+### Re-rated 2026-08-16 — High/P0 → Medium/P1, and re-scoped to unopened bundles
 
-The forward-secret half of this is one of the three throw sites that currently leave a prekey
-unconsumed, and it is the **only** one reachable without an attacker. That matters for how §2.2
-gets fixed: any remedy there that consumes the prekey on rejection would, in this scenario, also
-destroy the prekey a legitimate message was sealed to — turning a lost message into a lost
-message *and* a burned key. Fixing this first confines that cost to genuinely forged bundles.
+Challenged by the release owner: *"I am still not convinced this is a bug. Are we worried that the
+few bundles encrypted by our long-term identity key will no longer be readable? In a perfect
+scenario, bundles are in forward secrecy mode."* The challenge largely holds, and the entry above
+overstated the case.
 
-### Remedy
+**Measured, not assumed — how often fallback actually fires.** `defaultBatchSize = 15`; the UWB
+exchange carries **no** prekeys (zero references in `Exchange+Manager.swift`); batches are generated
+only on the receive side (`Contact+Manager.swift:1586`, `:1867`). So the long-term path is taken in
+exactly two places: **the first message in each direction of a relationship**, and roughly **1 in 16**
+during sustained one-way flow. A clear minority of traffic.
 
-Resolve a candidate **set** rather than a single key. Try the current key first, exactly as
-today, and walk back through the older records only when it fails — the common path keeps its
-present cost, and the extra work happens only where the code currently gives up. Whichever
-candidate succeeds must then be used for the rest of the bundle: the key that opened the slot
-has to be the same key `senderProof` is checked against, or the mismatch just moves.
+**What the challenge defeats — the retained-archive framing.** The headline claim was that a key
+change breaks *"every fallback bundle they ever sent, retroactively."* True mechanically, but its
+severity rests entirely on recipients keeping `.occ` files rather than decrypting and saving the
+content — which this entry already conceded is *"unknown, and unknowable without telemetry this
+project has deliberately declined."* An unevidenced habit cannot carry a P0.
 
-Bound the candidate count. `findAndOpenRecipientSlot` already loops over recipient slots, so
-adding candidates makes fallback mode O(slots × keys) trial decryptions, and Bug 74 is the
-standing reminder that Secure Enclave round trips have a ceiling.
+**The sharper form of the objection, which is the one that matters.** Forward-secret bundles are
+already single-use: the prekey is deleted on successful open, so an FS `.occ` cannot be re-opened at
+all. That means the **only** re-openable archive in this app is the fallback bundles — and that
+re-openability is an *artifact of the mode*, not a designed feature. 82a therefore destroys an
+accidental archive, not a promised one, and paying for it has to be justified on something else.
+
+**A note on the reasoning, since it will be re-derived.** "Forward secrecy" does not itself mean old
+messages should be unreadable to their owner — it means a long-term key compromise does not expose
+past session keys, a statement about an adversary's retrospective reach. Signal has forward secrecy
+and a fully readable history. The conclusion happens to hold *here* for a different reason:
+prekey-on-open deletion. Do not generalise the principle; cite the mechanism.
+
+**What survives, and it is the whole remaining case: unopened bundles.** A recipient with unread
+`.occ` files from a contact who then replaces their device loses those messages on the next open.
+No retention habit is involved — this is content the user has never seen. It is narrow, needing a
+device-replacement event to coincide with an unopened backlog, but it specifically includes the
+**relationship-opening message in each direction**, which is always fallback and is exactly the kind
+left sitting while two people arrange to meet.
+
+**A live alternative: make fallback ephemeral on purpose.** The app's posture is currently
+inconsistent — FS bundles single-use, fallback bundles permanent — and 82a is an inelegant accident
+that makes them consistent. Deciding that retained `.occ` re-openability was never a promise is a
+defensible product position, and it would mean **not** fixing 82a for the archive case at all. It
+does not cover the unopened case, which is wrong under either posture.
+
+**Consequence for the fix, which the challenge sharpens rather than removes.** The remedy accepts
+superseded keys in `deriveInboundKey`, and that weakens rotation as a revocation lever. With the
+benefit now scoped to unopened bundles rather than whole archives, the `expiredOn` /
+merely-superseded distinction below stops being a nicety and becomes the condition on which the fix
+is worth shipping at all. Do not implement the candidate walk-back without it.
+
+**Net:** still a real defect, still worth the small fix, no longer a release blocker. Bugs 81 and
+81-b take the P0 slots — they block legitimate messages permanently with no device-replacement
+precondition.
+
+### Remedy — 82a
+
+Resolve a candidate **set** rather than a single key, in `deriveInboundKey` only. Try the current
+key first, exactly as today, and walk back through the older unexpired records only when it fails,
+so the common path keeps its present cost.
+
+This half needs **no prekey work**: fallback slots consume nothing, so a failed candidate leaves
+no state behind and the §2.2 `defer` is never armed. It touches neither
+`findAndOpenRecipientSlot`'s exit contract nor the signature path.
+
+The one constraint that still applies: whichever candidate opens the slot must be the key
+`senderProof` is checked against at `Contact+Manager.swift:1882-1885`, or the mismatch just moves from
+derivation to proof. So the winning key has to be returned upward, not discarded.
+
+Bound the candidate count — fallback derivation costs an SE ECDH per candidate per slot, and Bug
+74 is the standing reminder that Enclave round trips have a ceiling.
+
+### Remedy — 82b, and why it is deferred
+
+The naive fix is wrong in a way worth recording, because it is the obvious one: looping over
+candidates by *re-calling* `findAndOpenRecipientSlot` cannot work in FS mode.
+
+FS mode's wrapping key never involves the sender's long-term identity (finding #8,
+`SecurityReview2026-07-24`), so the slot opens on the **first** attempt regardless of which
+candidate key is passed. `usedPrekey` is set, the signature check fails, and §2.2's `defer`
+consumes the prekey on the way out. The second attempt then finds no prekey, opens nothing, and
+returns `recipientSlotNotFound`. The retry is dead, and the first attempt destroyed the key the
+legitimate message was sealed to.
+
+A correct fix therefore has to try the candidates **at the signature check**, inside
+`findAndOpenRecipientSlot`, before either returning or throwing — modifying the function whose
+exit contract was rewritten for §2.2 in 1.10.2, to guard the less likely half. That cost against
+that likelihood is why it is deferred.
+
+### Interaction with the §2.2 prekey finding — the honest cost of deferring 82b
+
+The FS half is one of the three throw sites §2.2 addressed, and the **only** one reachable
+without an attacker. §2.2 shipped in 1.10.2 by consuming the prekey the moment the slot opens,
+accepted on the reasoning that rejections are attacker-driven.
+
+Deferring 82b leaves that reasoning incomplete: when a contact replaces their device, an unopened
+FS bundle both fails *and* burns its prekey, with no attacker involved. The blast radius is a lost
+message plus a destroyed key rather than a lost message alone. That is still the fail-secure
+direction — the message was unrecoverable either way, and the key is gone rather than exposed —
+but the original claim that fixing this "confines that cost to genuinely forged bundles" does not
+hold while 82b is open. Fixing 82a does **not** address this; only 82b does.
 
 ### The tradeoff this makes, which is the real decision
 
@@ -3685,16 +4036,26 @@ currently ignores it:
 
 Today `resolveSenderPublicKey` treats the two identically by looking at neither.
 
+`reset(identity:)` is user-reachable — `TrustCheckV2.swift:182` and the v1 contact form — so the
+revocation lever exists in the UI. What is not established is whether a user who rotates *because
+of* a compromise knows to reach for it rather than simply re-exchanging. That is a copy question,
+and it is what makes accepting superseded keys safe or unsafe in practice.
+
 ---
 
 ## Bug 83 — A contact who downgrades below 1.10.2 permanently stops receiving our forward-secret group messages
 
-**Status:** **Open — accepted for v1.10.2.** Introduced by this release, alongside the
-`.prefixedSenderSignatureCapable` tier (§3.6 of `Docs/Audit/SECURITY_CHECKLIST.md`). Filed
-2026-08-13. Deferred on likelihood, not on cost: the App Store does not offer downgrades, so
-this needs TestFlight or a device restore onto an older build.
+**Status:** **Open — accepted for v1.10.2, still unfixed and still absent from `release/v1.10.3`.**
+Introduced by 1.10.2, alongside the `.prefixedSenderSignatureCapable` tier (§3.6 of
+`Docs/Audit/SECURITY_CHECKLIST.md`). Filed 2026-08-13. Deferred on likelihood, not on cost: the App
+Store does not offer downgrades, so this needs TestFlight or a device restore onto an older build.
 
-**Target:** post-1.10.2.
+**Target: not 1.10.2 or 1.10.3 — a later release, same as Bug 82a.** "Post-1.10.2" was accurate when
+written but is now ambiguous: the branch once bound for 1.11.0 was re-cut and shipped as the 1.10.3
+patch (`b34277f`, 2026-08-16) without this fix, so the deferral has already outlived one full
+release. `updateMaxVersion`'s own code comment still cites this bug live — *"See also Bug 83:
+monotonicity is safe for capability decisions but not for decisions that change what we put on the
+wire"* — confirming the deferral, not a fix, is still the current state.
 
 ### What happens
 
@@ -3702,7 +4063,7 @@ this needs TestFlight or a device restore onto an older build.
 `.prefixedSenderSignatureCapable`, and over the bare ephemeral public key for everyone below.
 The tier comes from `Contact.Profile.maxBundleVersion`, which is a **high-water mark**:
 `updateMaxVersion` writes only when the claimed tier clears the recorded one
-(`Contact+Manager.swift:1718`), so the marker rises and never falls.
+(`Contact+Manager.swift:1722-1724`), so the marker rises and never falls.
 
 If a contact recorded at `0x08` moves back to 1.10.0 or 1.10.1, nothing walks that marker down —
 their subsequent bundles claim 1.10.0, `.senderSignatureCapable.isAtLeast(.prefixedSenderSignatureCapable)`
@@ -3746,3 +4107,3982 @@ what happens when a field is missed there).
 Cheaper alternative if the extra field is unwelcome: drop the tier entirely and prefix
 unconditionally once 1.10.0 and 1.10.1 are out of circulation, retiring the bare arm in
 `verifySenderEphemeralSignature` at the same time. That is the end state either way.
+
+---
+
+## Bug 84 — Share-extension handoff runs the whole outbound encryption before the PIN, and its transport sheet presents over the PIN gate
+
+**Status:** **Closed (Fixed)** 2026-08-16, by candidate 2 below — the picker moved into the app.
+Filed 2026-08-15 from a report against `release/v1.10.3` (named `release/v1.11.0` at the time).
+
+### Severity: High
+
+Reported symptom: with the PIN enabled and Secure Mode inactive, encrypting a photo through the
+Share Extension puts the transport-channel sheet **on top of** the PIN entry view. The reporter's
+reading — that the PIN must come first, and arguably before the contact is chosen at all — is
+correct, and the visible z-order is the smaller half of it.
+
+Two independent defects stack here. Either one alone produces a wrong flow.
+
+---
+
+#### Part A — `case "share"` has no lock gate (original omission, not a regression)
+
+`handleOpenURL` treats the two `occulta://` hosts differently:
+
+- `case "inbound"` falls through to the gate at `OccultaApp.swift:557` — while
+  `appScreen.phase != .unlocked` the raw bytes are parked in `pendingFileData` and drained by the
+  `.onChange(of: appScreen.phase)` handler after any unlock.
+- `case "share"` (`OccultaApp.swift:506`) calls `processShareSession(sessionID:)` **immediately,
+  with no phase check**.
+
+So the entire outbound pipeline runs pre-authentication: manifest decrypt, EXIF strip,
+`buildShardOperations`, `encryptBundle`, `.occ` write, and finally `self.shareResult = …`, which
+raises the `UIActivityViewController` sheet.
+
+This is not a read-only path. `encryptBundle` calls `configureForwardSecrecy()`, pops a prekey via
+`popOldestPrekeyData()`, and commits with `try self.modelContext.save()`
+(`Contact+Manager.swift:1041-1053`, `:1090`). Someone holding the device — with iOS unlocked but
+Occulta gated — can burn real-layer prekeys, advance forward-secrecy state, produce an `.occ`
+genuinely signed by the owner's identity key, and send it anywhere the share sheet reaches, without
+ever entering a PIN.
+
+**Under Secure Mode it is worse.** `currentDepth` is only set by `verify()`; with `pinEnabled` true
+it stays 0 until a PIN is entered (`Manager+Security.swift:245` restores `persistedDepth` only when
+the gate is down). A pre-PIN share session therefore encrypts on the **real** layer no matter which
+PIN is entered afterwards, and the prekey/FS mutation it commits is a depth-0 write with no
+authentication behind it.
+
+The recipient list itself is not newly exposed — the picker reads `ShareIndex.sqlite`, which Bugs 6
+and 65 already constrain to the depth-1 view whenever the app is locked.
+
+Never gated: this path dates to `0e4042f`, the commit that introduced the extension.
+
+**Also in this class:** the `.occbak` branch at `OccultaApp.swift:549` calls
+`vaultManager.storePendingRestore(data)` before the same gate.
+
+---
+
+#### Part B — the PIN gate is underlappable again (regression of Bug 1, Incident A)
+
+Bug 1's first fix replaced the `.overlay` with a `.fullScreenCover` precisely so iOS modal
+presentations could not render above the gate. Commit `8b95ee5` ("Refactor screen lifecycle into
+AppScreen — fixes Bug 56") removed that cover and made `PINEntry` an ordinary in-tree branch of
+`phaseContent` (`OccultaApp.swift:396-423`). The comment it deleted stated the invariant that is now
+broken:
+
+> `fullScreenCover` rather than overlay: a UIKit modal presentation stacks above any existing
+> sheets, so it cannot be underlapped by conversation or identity-challenge sheets triggered while
+> locked.
+
+Six root-level presentations hang off the same view that renders `PINEntry` — `openedFileContents`,
+`shareResult`, the three identity-challenge sheets (`OccultaApp.swift:274-322`) — plus the error
+`.alert`. Any of them set while `phase == .pinRequired` presents over the gate. `shareResult` is the
+one Part A reaches today; `processShareSession`'s failure path is the alert equivalent, putting
+"Failed to encrypt shared content" over the PIN screen.
+
+A straight revert is not available: the `fullScreenCover`'s async presentation window is what caused
+Bug 56. The invariant has to be re-established without it.
+
+---
+
+### Why the fix cannot live in the extension
+
+The reporter's stronger proposal — show the PIN *before* the contact picker — is the right ordering,
+but the extension is the wrong process for it. Verifiers live in `AppLayerConfig` inside the main
+SwiftData store, sealed with `Manager.Key`'s local DB key; the lockout counter and wipe threshold
+live there too. `ShareViewController`'s header names the boundary: the extension links no
+`Manager.Key`, `Manager.Crypto`, or `ContactManager`, and carries only `ShareIndexKeyManager`.
+Prompting for a PIN there means duplicating verifier and lockout logic across that boundary — a
+worse trade than the bug.
+
+### Candidate fixes (not yet chosen)
+
+1. **Gate the session, keep the picker where it is.** Queue the share `sessionID` the way
+   `pendingFileData` is queued and drain it on `.unlocked`. Contact choice stays pre-PIN but reads
+   an index Bug 6 already restricts; no crypto, no prekey burn, and no transport sheet until the PIN
+   is in. The drain must run identically at every depth, for the reason `pendingFileData`'s own
+   comment gives.
+2. **Move the picker into the main app.** Extension collects attachments and hands off; the app does
+   PIN → picker → encrypt → transport. This is the reporter's ordering, and it retires
+   `ShareIndex.sqlite` along with the shared root of Bugs 6, 65, 66, 67, 68, and 69. Costs a context
+   switch into Occulta before the recipient is chosen.
+3. **Re-establish the z-order invariant** — required under either of the above. Suppressing the
+   sheet/alert items while `phase != .unlocked` keeps Bug 56 fixed and Bug 1 fixed at the same time.
+
+---
+
+### Resolution
+
+**Part B first.** All six sheets and the error alert moved inside the `.unlocked` branch of
+`phaseContent`, which is where they belong — every one is a view onto unlocked content. The
+`fullScreenCover` was *not* restored; its async presentation window is what caused Bug 56. Leaving
+`.unlocked` now tears the branch down and dismisses whatever is on screen, so the phase handler also
+clears `openedFileContents` and `shareResult` — their state outlives the branch, and a warm return
+past the grace period would otherwise re-present a finished sheet over freshly re-authenticated
+content. One deliberate consequence: an error raised while locked no longer alerts over the PIN
+screen. `showError` survives and fires once unlocked, which is what Bug 24's rule requires.
+
+**Part A by removing the entry point, not by gating it.** `case "share"` records the session id and
+returns. The picker sheet hangs off `.unlocked`, so a session that arrives at the PIN gate waits
+there with nothing decrypted and no key material touched. `pendingShareSession` is deliberately
+*not* cleared on re-lock — it is queued intent, the same shape as `pendingFileData`, and clearing it
+would discard a share the user staged.
+
+Recipient choice is now `ShareRecipientPicker`, composed from the contacts tab's own
+`ContactRowV2`, `GroupRowV2`, `SectionHeaderV2`, and a new `ContactListFilter` holding the filtering
+and sort order lifted out of `ContactsV2`. Groups are selectable for the first time; the picker
+hides those whose membership is empty at the current depth so it cannot offer a recipient
+`encryptGroupBundle` would reject.
+
+`ShareIndex.sqlite`, `ShareableContact`, and `syncShareIndex()` with all five call sites are gone,
+and `ShareSession.removeLegacyContactIndex` sweeps the file out of the App Group on every
+foreground. See the notes appended to Bugs 6, 65, 66, 67, 68, and 69.
+
+### What the new coverage found on its way in
+
+`ShareSession` exists so this path can be tested at all — the lifecycle used to be a private method
+on a SwiftUI `View`, and a path no test can reach is a path where a missing PIN gate survives
+review. The first EXIF test written against it failed, and not because of the fixture:
+
+`stripEXIF` passed an empty properties dictionary to `CGImageDestinationAddImageFromSource`. That
+argument is a set of **overrides** onto the metadata the source already carries, so an empty
+dictionary means *override nothing* — every byte of EXIF and GPS was copied into the output
+untouched. Every photo shared through the extension since the feature landed carried its capture
+location and time to the recipient, while `SHARE_EXTENSION_PLAN` invariant 7 and the security
+checklist both recorded the strip as done. Removal requires naming each dictionary with `kCFNull`,
+which it now does for Exif, ExifAux, GPS, IPTC, TIFF, and MakerApple; orientation is carried over
+explicitly, since dropping the TIFF dictionary wholesale lays portrait photos on their side.
+
+Already-sent bundles cannot be recalled. This is worth a release note rather than a silent fix.
+
+The general lesson is the one this entry opened with: a function named for a security property is
+not evidence the property holds, and neither is a checklist line citing the function.
+
+---
+
+## Bug 85 — `visibleThroughDepth` ciphertext length partitions safe from sensitive contacts, with no key
+
+**Status:** **Fixed 2026-08-19, device-verified.** Filed 2026-08-16 while scoping rotation-coverage
+step 3, from a question about whether the field is ever nil. Found by measurement, not by reading —
+the doc comment on the field asserts the opposite and is why it survived. This entry's status label
+sat stale as "Open" for several sessions after the fix actually shipped and was confirmed on a live
+device (all depth fields one length) — caught during a release-readiness check, corrected 2026-08-24.
+`DepthCodec.encode`/`.decode` (`DepthCodec.swift`) is now the sole write path for
+`visibleThroughDepth`, `.globalTrusteeDepth` and `.originDepth` across `Manager+Security.swift`,
+`Contact+Manager.swift`, `ContactManager+Classification.swift` and `PQmigration.swift` — fixed-width
+two-byte plaintext, sealed length constant regardless of value. `DepthCodecTests` covers the codec
+directly; `DeletedDepthStampScrubTests` and the migration tests cover the rows it reaches.
+
+**Target:** — (closed).
+
+### Severity: Critical (forensic)
+
+The first **passive, keyless, row-level** distinguisher found in this codebase. Every other tracked
+tell is weaker: Bug 71's is a timestamp correlation, Bug 62's Gap 1a gives a *count* to an examiner
+who already holds the SE key. This one names individual rows to anyone holding the database file.
+
+### What happens
+
+`Contact.Profile.visibleThroughDepth` stores `try JSONEncoder().encode(depthValue).encrypt()`.
+`JSONEncoder` is variable-length and AES-GCM is length-preserving — `.combined` is
+nonce(12) ∥ ciphertext(plaintext length) ∥ tag(16), so ciphertext length is plaintext + 28.
+
+Measured (`xcrun swift`, 2026-08-16):
+
+| Value written | Meaning | Plaintext | Ciphertext |
+|---|---|---|---|
+| `Int.max` | always visible — **safe** | **19 bytes** | **47 bytes** |
+| `0`–`9` | hidden at that duress depth — **sensitive** | 1 byte | **29 bytes** |
+| `10`–`31` | hidden at depth ≥ 10 | 2 bytes | 30 bytes |
+
+`Int.max` is not an edge case: it is the default for every new contact
+(`Contact+Manager.swift:194, :381`), the value written for every contact marked safe
+(`ContactManager+Classification.swift:142, :171`), and the legacy backfill
+(`PQmigration.swift:85`, `Manager+Security.swift:524`).
+
+So the column length is a two-value classifier over exactly the safe/sensitive partition. No
+clamping exists at any write site: `saveClassification` writes
+`safeIDs.contains(contact.identifier) ? Int.max : depth` and `setVisibility` writes
+`isSensitive ? depth : Int.max`, both encoded raw.
+
+### Reproduction
+
+Against the store file, with no key, no PIN, no Secure Enclave and no decryption. Column and table
+names follow Core Data's convention, which SwiftData inherits:
+
+```sql
+SELECT length(ZVISIBLETHROUGHDEPTH) AS n, COUNT(*) FROM ZPROFILE GROUP BY n;
+```
+
+`n = 47` are safe contacts. `n = 29` (or 30) are hidden ones. The principle does not depend on the
+exact column name — any inspection of that BLOB's length works.
+
+### What it leaks
+
+Both of the things the feature exists to hide:
+
+1. **That Secure Mode is configured.** An install that never classified anyone is uniformly 47
+   bytes, because every contact carries the `Int.max` default. Mixed lengths arise only once
+   contacts are classified, which happens only through the activation flow. Uniformity is the
+   innocent baseline, and the deviation from it is the tell.
+2. **Which specific contacts are hidden**, row by row, by name of row rather than in aggregate.
+
+### Why this contradicts a stated invariant
+
+`forensic-trace-avoidance.md` S5 — *"Sensitive contacts remain in DB; page slack covered by S1 +
+S2"* — rests entirely on the row being indistinguishable at the SQLite layer. Hard deletion was
+removed (Bug 13) on the strength of that premise. This defeats it directly rather than degrading it.
+
+### Root cause, and why it survived
+
+Variable-length plaintext under a length-preserving cipher, with a sentinel (`Int.max`) whose JSON
+form is 19× the size of an ordinary depth.
+
+It survived multiple audits because the field's own doc comment states the opposite
+(`Contact+Model.swift:81`):
+
+> All values are AES-GCM of a 1-byte JSON integer → identical ciphertext size.
+
+That is true for `0`–`9` and false for `Int.max`, which is the commonest value in the table. Anyone
+checking this property read the comment and moved on. **The comment is a security claim the code
+does not implement, and it should be corrected immediately and separately from the format fix** —
+whatever is decided about the format, nothing should keep asserting a property that is not there.
+
+### Scope — one field
+
+Checked the siblings; none has the same shape:
+
+| Field | Values written | Uniform? |
+|---|---|---|
+| `Contact.Profile.globalTrusteeDepth` | `-1` sentinel (2 bytes), small ints | Near-uniform; no `Int.max` |
+| `Contact.Profile.originDepth` | small depths only | Uniform |
+| `VaultEntry.visibleThroughDepth` | `currentDepth`, `encode(0)` | Uniform |
+
+Only `Contact.Profile.visibleThroughDepth` carries a large sentinel, and only there does the length
+split map exactly onto safe-versus-sensitive.
+
+**Second-order, minor:** depths ≥ 10 are 2 bytes, so a 30-byte row is hidden at depth 10 or deeper.
+Negligible beside the main partition, but it is the same defect and any fix should cover it.
+
+### Why this is not a one-line fix
+
+The obvious change — a fixed-width encoding, e.g. one byte with `0xFF` for always-visible — is a
+**wire-format change to an encrypted field at rest**, which is the exact shape that produced Bugs
+75, 76 and 77. It needs a read path accepting both formats, a normalisation pass so existing rows
+converge, and assurance the pass cannot strand values.
+
+**Partial normalisation reintroduces the leak in a new form.** `saveClassification` skips contacts
+already hidden (`guard contact.isVisible(atDepth: depth) else { continue }`), so it does not rewrite
+every row. A mix of 47-byte legacy, 29-byte legacy and fixed-width new rows is still a partition,
+just a three-way one.
+
+Rotation *does* touch every contact's `visibleThroughDepth`, so an activation is the natural
+normalisation point. But that means the leak persists until the user next activates — on exactly
+the devices that already have it, and with no way to prompt them without itself being a tell.
+
+### Remedies to weigh
+
+1. **Fixed-width plaintext.** One byte, `0xFF` = always visible, `0…31` = depth ceiling. Uniform 29
+   bytes for every row, and it also closes the depth ≥ 10 variance. Needs the dual-format read and
+   the normalisation pass above.
+2. **Pad before sealing.** Keep the JSON, pad the plaintext to a fixed length, strip on read. Less
+   elegant, same migration problem, but a smaller diff at the write sites.
+3. **Normalise inside the rotation.** Fold the format change into `reencryptAllFields` so it happens
+   wherever rotation already runs. Attractive — that path already rewrites the field — but it means
+   a format migration riding the code path with the worst failure history in the project, and it
+   still leaves never-activated devices untouched.
+
+Whichever is chosen, the guard is a test asserting **every** row's ciphertext length is identical
+regardless of visibility — a check no existing test makes, and the one that would have caught this.
+
+---
+
+## Bug 86 — `AppLayerConfig`'s padded arrays name the occupied depths by element length, with no key
+
+**Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while checking whether Bug 85's codec could be
+reused for the other depth-shaped fields.
+
+Both arrays now use `LayerArrayCodec` — tag byte plus a 4-byte big-endian `UInt32`, 33 bytes sealed
+for every value either holds — and `fillerSize` is `LayerArrayCodec.sealedSize` rather than a
+literal, which is what makes the drift unrepeatable. `pinEnabledPerDepth` was severed from that
+constant first, in its own commit, because moving `fillerSize` would otherwise have widened its
+fallback outlier from 1 byte to 4 as a side effect.
+
+The conversion runs in `Manager.Security.init` rather than `DatabaseMigration`: that context owns
+the `AppLayerConfig` row, so no second context's cached copy can overwrite the result. It derives the
+SE key once and aborts entirely if that fails, uses only the in-memory key for all 64 elements, and
+saves exactly once — the three properties recorded under "The migration hazard".
+
+The SE key is now seeded at first launch (`bd0160b`), so deriving it in the pass cannot mint a key as
+a side effect. That removed the branch this fix was otherwise going to need, and the tell that made
+the branch necessary.
+
+All four Phase 0 reproductions flipped from recording expected failures to passing, and their
+`withKnownIssue` wrappers were removed. Suite: 844 passed, 0 failed, 0 expected failures. Found by measurement, and the fix is materially riskier than Bug 85's —
+see "Why this one can lose user data". **Amended the same day** — a third array turned out to have a
+narrower version of the same defect on one path, plus a functional failure alongside it; see
+"Amendment" below. The scope table's `pinEnabledPerDepth` row was corrected accordingly.
+
+**The amendment is fixed** (2026-08-19); the two array defects this entry was opened for are not. The
+amendment was separable because it needed neither a format change, a `fillerSize` change, nor a
+migration — see the note at the end of that section. Remaining scope is therefore **two** arrays, not
+three: `sealedBlobSlots` and `layerSequenceNumbers`. The design for them is settled — see "Settled
+design" — and the reason the third is excluded is recorded with it.
+
+**Target:** unset. Sequenced after Bug 85's format decision, since both want the same fixed-width
+treatment and the same migration point.
+
+### Severity: Critical (forensic)
+
+Stronger than Bug 85 in the way that matters most: Bug 85 says nothing until at least one contact has
+been classified, whereas this marks an occupied depth from the moment a layer is created, names
+*which* depth, and does so whether or not the address book was ever touched.
+
+Weaker in one respect: extraction is not Bug 85's single SQL function. It needs the column's archive
+parsed — a dozen lines of stdlib Python, still passive, still keyless. See "Reproduction".
+
+### What happens
+
+`ensurePadded()` (`AppLayerConfig+Model.swift:373`) pads three arrays to 32 entries so that, in the
+field's own words (`:45`), *"array length is forensically constant"*. Filler is `fillerSize = 30`
+random bytes (`:369`).
+
+Two of the three arrays store values whose sealed length is not 30.
+
+**`layerSequenceNumbers[depth]`** holds `JSONEncoder().encode(seqNum).encrypt(using: blobKey)`, and
+`randomSequenceNumber()` (`Manager+Security.swift`) returns `Int(UInt32)` — the full 32-bit range.
+AES-GCM is length-preserving, so sealed length is decimal digits + 28.
+
+Measured (`xcrun swift`, 2026-08-18) over 2,000,000 uniform `UInt32` draws:
+
+| Sealed length | Share of real entries |
+|---|---|
+| 32–36 bytes | 2.3% |
+| 37 bytes | 21.0% |
+| **38 bytes** | **76.7%** |
+| **30 bytes — collides with filler** | **0.0000021%** |
+
+A real entry is indistinguishable from filler only when its sequence number happens to have exactly
+two digits: 90 values out of 2³², about 1 in 48 million. Every other occupied depth is identifiable
+from element length alone.
+
+**`sealedBlobSlots[depth]`** holds `encode(slot).encrypt(...)` where `randomSlot()` returns 0–31 —
+29 bytes for slots 0–9, 30 for 10–31. A 29-byte element proves a layer exists at that depth, which
+happens for 10 of 32 slots (~31%). One-sided and weaker, but the same defect.
+
+### Reproduction
+
+A `[Data]` property is not a child table. Verified 2026-08-18 against a minimal SwiftData model: the
+column is a single `BLOB` holding an `NSKeyedArchiver` binary plist with element order preserved.
+
+```python
+import plistlib
+d    = plistlib.load(open('blob.bin', 'rb'))
+objs = d['$objects']
+root = objs[d['$top']['root'].data]
+print([len(objs[u.data]) for u in root['NS.objects']])
+```
+
+Against a store seeded with one 38-byte entry at index 7 among 31 fillers, this returned
+`[30]*7 + [38] + [30]*24` — the occupied depth named by its index. No key, no PIN, no Enclave, no
+decryption.
+
+### What it leaks
+
+1. **That Secure Mode is configured**, without needing any contact to have been classified. Writing
+   a layer at any depth stamps both arrays.
+2. **Which depths are occupied**, by array index — the nesting structure of the duress layers.
+
+As in Bug 85, uniformity is the innocent baseline: a never-activated install has all 32 entries at
+exactly 30 bytes, and the deviation is the signal.
+
+### Why this contradicts a stated invariant
+
+`:45` claims the padding makes the array *forensically constant*. Constant array **length** was
+achieved. Constant **element** length was not, and element length is what carries the information.
+
+### Root cause, and why it survived
+
+One constant, `fillerSize = 30`, serving two arrays whose real entries are not 30 bytes. It reads
+like it was derived from a two-digit value — correct for slots 10–31, wrong for slots 0–9, and wrong
+for essentially every sequence number.
+
+It survived because the reasoning that would have caught it is written down in the same file, on the
+array that gets it right (`:50`–`:55`):
+
+> A forensic examiner could identify the disabled slot by size alone — without the SE key and
+> without decryption.
+
+That is the comment explaining why `pinEnabledPerDepth` encodes `UInt8` rather than `Bool`. The
+hazard was understood, documented, and then not applied to the two sibling arrays padded by the same
+function three lines away.
+
+### Scope — two of five padded arrays
+
+| Array | Real entry | Filler | Uniform? |
+|---|---|---|---|
+| `sealedBlobSlots` | 29 or 30 | 30 | **No** — 29 proves occupancy |
+| `layerSequenceNumbers` | 29–38; ~98% are 37–38 | 30 | **No** — essentially always distinguishable |
+| `pinEnabledPerDepth` | 29 (`UInt8`) | 29 (encrypted `1`) | Yes — one path was not, now fixed |
+| `sealedNormalVerifiers` | 53 (`PINManager.verifierSize` = 12 + sentinel + 16) | 53 | Yes, by design |
+| `sealedDuressVerifiers` | 53 | 53 | Yes, by design |
+
+The verifier arrays are correct by explicit construction, which is what makes the two broken ones an
+inconsistency rather than an oversight of the whole design.
+
+### Amendment (2026-08-18): the third array has one path that breaks it too
+
+`pinEnabledPerDepth` was credited above as correct by design, and its steady-state writer is —
+`writePinEnabled` encodes `UInt8(1)`/`UInt8(0)`, one byte either way. But the legacy-upgrade path in
+`Manager+Security.swift:227` writes a **`Bool`** into the same array:
+
+```swift
+if !config.readPinEnabledLegacy(), persistedDepth < array.count,
+   let encrypted = try? JSONEncoder().encode(false).encrypt() {
+    array[persistedDepth] = encrypted
+}
+```
+
+Measured (`xcrun swift`, 2026-08-18):
+
+| Written | JSON | Plaintext | Sealed |
+|---|---|---|---|
+| `UInt8(1)` / `UInt8(0)` — normal writer | `1` / `0` | 1 byte | **29 bytes** |
+| `false` — this path | `false` | 5 bytes | **33 bytes** |
+| random filler fallback | — | — | 30 bytes |
+
+So a 33-byte entry is unique in the array and marks both that the PIN gate was disabled and the
+depth at which it was. This is the exact hazard the array's own doc comment exists to prevent, quoted
+word for word:
+
+> A `Bool` encoding would produce `"true"` (4 bytes) vs `"false"` (5 bytes); AES-GCM does not pad, so
+> the sealed box sizes would differ by one byte. A forensic examiner could identify the disabled slot
+> by size alone — without the SE key and without decryption.
+
+The comment is on `pinEnabledPerDepth`. The violation is a `Bool` written into `pinEnabledPerDepth`.
+
+**And the write does not work either.** `readPinEnabled(at:)` decodes `UInt8.self`; decoding the
+plaintext `false` as `UInt8` returns nil, so the guard falls through to `else { return true }`.
+Measured: `try? JSONDecoder().decode(UInt8.self, from: encode(false))` → `nil`.
+
+The block's own comment states the intent — *"if the old scalar was `false`, record that at the
+persisted depth so the gate stays down after the upgrade"* — and the gate does not stay down. It
+comes back up on every read, because the value is unreadable by the only reader.
+
+Note the functional direction is the safe one: an unreadable entry falls back to "PIN required", so
+this costs a user their disabled-gate preference rather than dropping a gate that should be up. The
+forensic direction is not safe: the 33-byte entry announces exactly the state the failed write was
+trying to record.
+
+Reachable only on installs predating per-layer PIN tracking whose legacy scalar was `false` — but
+those are precisely the installs an upgrade release exists to carry forward.
+
+**Fixed 2026-08-19.** The path now routes through `writePinEnabled` instead of hand-rolling the
+encode, which corrects the size and makes the value readable in one change — `writePinEnabled`
+encodes `UInt8` like every other writer, so the disabled entry is 29 bytes like its neighbours and
+`readPinEnabled` can parse it.
+
+This landed ahead of the rest of the entry because it is genuinely separable: no format change, no
+`fillerSize` change, no migration, and it touches neither array that sits under the SE Secure Mode
+key. None of the hazards in "The migration hazard" apply to it.
+
+`LayerArrayUniformityTests.legacyPinGateUpgradeIsUniformAndReadable` was written as a reproduction —
+driving `Manager.Security.init` with a pre-upgrade row rather than replicating the write, so the
+defect was confirmed reachable through the real path — and now passes with its `withKnownIssue`
+wrapper removed. It stays as the regression guard. The other three tests in that file still record
+expected failures, which is the accurate picture: one of the four defects is closed.
+
+**Still open in this array, separately:** `pinEnabledFillerArray()` falls back to `randomFiller()`
+(30 bytes) if `encrypt()` fails, against 29-byte real entries. That only arises when key derivation
+is unavailable, in which case little else works either, so it is noted rather than rated.
+
+**Also variable, separately:** the scalars `persistedDepth` (`:450`) and `coercerBaseDepth` (`:503`)
+encode a raw depth, so they are 29 bytes below depth 10 and 30 at or above it. Single-valued, so they
+partition nothing — they only distinguish depth ≥ 10. Minor, same defect, worth folding into the
+same fix.
+
+### Why this one can lose user data
+
+`layerSequenceNumbers` is not inert metadata. It is validated on pop
+(`SecureMode+LayerStore.swift`, `Error.sequenceNumberMismatch`), and a mismatch is caught in
+`deactivateSecureMode` with the payload replaced by an empty one. The existing comment there
+(`Manager+Security.swift:776`) states the consequence plainly:
+
+> Blob corrupted, overwritten by `maintain()`, or seqnum mismatch. Sensitive contacts unrecoverable;
+> safe contacts in DB are intact.
+
+So a format change to this array that fails to round-trip an existing value does not degrade a
+privacy property — it **permanently destroys every sensitive contact sealed in that layer**. This
+raises the bar well above Bug 85's: the dual-format read is not a nicety here, it is the difference
+between a fix and data loss, and it needs a test that pops a layer written in the old format.
+
+### Settled design (2026-08-19)
+
+**Scope: two arrays.** `sealedBlobSlots` and `layerSequenceNumbers`. `pinEnabledPerDepth` is
+deliberately *excluded* now that its one defect is fixed — see "Why the third array is not in scope".
+
+**One codec at one width**, sized by the widest value any of the two holds:
+
+| Array | Values | Needs |
+|---|---|---|
+| `sealedBlobSlots` | slot index 0–31 | 1 byte |
+| `layerSequenceNumbers` | `Int(UInt32)`, full 32-bit | **4 bytes** |
+
+```
+byte 0     0xFF                format tag
+bytes 1–4  UInt32 big-endian   payload
+```
+
+Five plaintext bytes → **33 sealed**. `fillerSize` becomes `LayerArrayCodec.sealedSize`, computed as
+`1 + payloadWidth + 28`, never a literal.
+
+**Why one width rather than one per array.** This bug *is* a drift between a format and a filler
+constant. Two widths means two constants and two chances to drift again. The cost is 3 wasted bytes
+per slot entry — 96 bytes across the whole array — against removing the failure mode entirely.
+
+**Why a tag byte.** The read path must accept legacy JSON for as long as un-migrated rows exist, and
+a legacy sequence-number plaintext can be any length from 1 to 10 bytes, so length alone cannot
+separate the formats. Legacy plaintexts are JSON integers, hence ASCII, hence they begin with `-`
+(0x2D) or a digit (0x30–0x39); `0xFF` cannot begin one. Same discriminator as `DepthCodec`, for the
+same reason.
+
+**`DepthCodec` stays separate at 2 bytes.** Unifying would mean re-migrating the seven depth fields
+already converted and correct, which is churn and risk on working code. Cross-field uniformity
+between a column and an array element buys nothing — nobody compares them.
+
+### Why the third array is not in scope
+
+`pinEnabledPerDepth` was the third broken array; its `Bool` path is fixed and every writer now
+encodes `UInt8` (`writePinEnabled`, `reencrypt`'s fallback, `ensurePadded`, `pinEnabledFillerArray`).
+Three reasons to leave it alone rather than fold it into the new codec:
+
+1. It is correct. Touching it is churn on working code.
+2. It is under the **local DB key**, while the two in scope are under the **SE Secure Mode key**, so
+   they cannot share a migration pass anyway — the tidiness of one shared constant does not buy a
+   shared pass.
+3. **It already implements the principle this fix is trying to establish.** Its filler is not a
+   hardcoded size; it is literally `encode(UInt8(1)).encrypt()`, so the filler *is* the encoding and
+   the two cannot drift apart. That is exactly why it is correct, and exactly what `fillerSize = 30`
+   fails to do for the other two.
+
+**The two in scope cannot copy that trick, and the reason is semantic rather than technical.** For
+`pinEnabledPerDepth`, "no entry" is not a state — every depth has a gate, defaulting to `true` — so
+encrypting `1` as filler is honest. For the blob arrays, "no layer at this depth" *is* the state
+filler represents, and it must be indistinguishable from a real entry to someone without the key. Any
+real encryption would decode to some slot index. So those two need **random** filler, sized from the
+codec.
+
+**Still open in `pinEnabledPerDepth`, separately:** `pinEnabledFillerArray()` falls back to
+`randomFiller()` (30 bytes) against 29-byte real entries when `encrypt()` fails. Only reachable when
+key derivation is unavailable, in which case little else works either.
+
+The guard remains a test asserting that **every element of every padded array has identical length**,
+evaluated after a real write at some depth, since all five arrays are trivially uniform before one.
+
+### The migration hazard: no key means "everything looks like filler"
+
+**This is the most dangerous part of the fix and it is not the format change.**
+
+Two facts combine badly.
+
+**First, the three arrays are under two different keys.** `pinEnabledPerDepth` is sealed with the
+ambient local DB key. `sealedBlobSlots` and `layerSequenceNumbers` are sealed under
+`AppLayerConfig.blobMetadataKey(from: seKey)`, derived from the **SE Secure Mode key** — which is why
+`RotationRegistry` records that blob metadata *"must stay out"* of the rotation. So the conversion is
+two passes with different key requirements, not one uniform sweep.
+
+**Second, filler and an unreadable real entry are indistinguishable.** That is by design: it is
+exactly how `readBlobSlot(at:)` tells "no layer here" from "layer here" — it attempts decryption and
+treats failure as absence. There is no marker to inspect.
+
+Those two together mean the pass *cannot* use Bug 85's skip-on-undecryptable rule. Filler is
+precisely what has to change size, so undecryptable elements must be rewritten as fresh filler.
+
+That is safe when the key is good: an element that will not decrypt under a known-good key is either
+filler or a layer that is already lost, since `readBlobSlot` returning nil already sends
+`deactivateSecureMode` down its empty-payload path. Overwriting it destroys nothing that still worked.
+
+**It is catastrophic when the key is absent.** If `deriveSecureModeKey()` fails and the pass runs
+anyway, every element in both arrays looks undecryptable, all 32 entries of each are replaced with
+filler, and every layer's blob slot and sequence number are gone at once. Deactivation can then pop
+no blob at any depth: sensitive contacts unrecoverable, for every layer, on a device where nothing
+was wrong a moment earlier.
+
+**The guard is structural, not a value check.** Derive the SE key up front and abort the entire pass
+if it fails — nothing staged, nothing written, no partial rewrite. This is the same shape as Bug 78's
+fix, which moved a key derivation to the top of activation precisely so that a key failure would be
+inert rather than half-applied, and the reasoning transfers verbatim.
+
+#### What actually guarantees the key is there — and what does not
+
+Checked rather than assumed, 2026-08-19, because the guard above rests entirely on it.
+
+**Nothing caches.** `createHybridLocalEncryptionKey()` performs an SE ECDH plus two Keychain reads on
+*every call*; `deriveSecureModeKey()` performs a Keychain read plus an SE key exchange on every call.
+Every item involved is stored `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — **not**
+`AfterFirstUnlock`. So each call requires the device to be unlocked *at that moment*, not merely
+unlocked once since boot.
+
+**Launch time is protected by configuration, not by design.** No `UIBackgroundModes` is declared in
+any Info.plist, so iOS will not background-launch the app; `App.init()` — where `migrate()` runs —
+is reached from a user tap, which implies an unlocked device. The Share extension neither builds a
+`ModelContainer` nor calls `DatabaseMigration`. That holds today, and nothing asserts it: declaring
+a background mode in a later release would silently remove this protection with no test failing.
+
+**The gap this leaves is a device lock *during* the pass**, which auto-lock makes ordinary rather
+than exotic. Because every `.encrypt()`/`.decrypt()` re-derives from the Keychain, calls made after
+the lock fail while earlier ones succeeded — a partially-applied pass, which for these two arrays is
+the wipe described above.
+
+So "derive up front and abort" is necessary but **not sufficient**, and the stronger rule is:
+
+> Derive the SE key once, then use that in-memory `SymmetricKey` for **every** element read and
+> write. Never call ambient `.encrypt()`/`.decrypt()` inside the loop.
+
+An in-memory `SymmetricKey` survives a device lock; a Keychain read does not. The array API already
+supports this — `writeBlobSlot(_:at:using:)` and `writeSequenceNumber(_:at:using:)` take the key
+explicitly, so this costs nothing to honour.
+
+**But holding the key is only half of it, and not the half that carries the guarantee.** A device
+lock takes away two things, not one. The SQLite store, WAL and SHM files are stamped
+`FileProtectionType.complete` at init and re-stamped after every save (`OccultaApp.swift:73`, S3 in
+`forensic-trace-avoidance.md`). `NSFileProtectionComplete` means the OS encrypts those files while
+the device is locked — inaccessible **to the app itself**, not merely to an examiner. So an
+in-memory key keeps the crypto working right up to the moment the pass tries to persist, and then
+the write fails anyway.
+
+Which is survivable, and the reason is the shape of the write rather than the key:
+
+> Mutate every element in memory, then call `save()` **exactly once**, at the end. Never per element.
+> And suspend `autosaveEnabled` for the duration, or the first half of that sentence is not true.
+
+SQLite transactions are atomic, so the pass either commits in full or not at all. A lock mid-pass
+means the save fails, nothing is persisted, and the next launch retries from the original bytes. The
+in-memory key is what makes a *complete* result available at that single save; the single save is
+what makes a partial result impossible. Saving per element would defeat it entirely — holding the
+key would not help, and the result would be a half-converted array with mismatched element sizes,
+which is this bug again in a new shape.
+
+So the full requirement is four things, of which the key is only the first:
+
+1. Derive the SE key **once**, into an in-memory `SymmetricKey`.
+2. Fetch the config and materialise the arrays into locals early, so nothing lazy-faults from a file
+   that may since have become unreadable. (Belt-and-braces — SwiftData's faulting behaviour here has
+   not been verified in detail.)
+3. Do all 32 elements' crypto in memory, with the held key.
+4. Assign back and `save()` exactly once, with `autosaveEnabled = false` for the pass.
+
+**On (4), corrected 2026-08-20.** The autosave half was missing when this was first written, and
+without it the rest does not hold: a RunLoop- or backgrounding-triggered autosave can commit a
+partially-applied pass before the function decides whether to, so "one save at the end" is a property
+of the code only while autosave is suspended. Three other multi-step sequences here already suspend
+it for exactly this reason — `activateSecureMode`, `deactivateSecureMode`, and `Message.Draft`'s
+purge — and all three restore it with `defer`, which is what marks `true` as the normal state.
+
+`pinEnabledPerDepth` is exempt from (1) and does not need it: its writer and filler both go through
+ambient `encrypt()`, and a per-element failure there is benign — an unreadable entry reads back as
+`true` (gate up), which is its documented fallback. It is **not** exempt from (4).
+
+Bug 85's shipped pass already satisfies (4) — `migrateDepthFieldsToFixedWidth` accumulates into
+`didChange` and saves once at the end. That was written for idempotence, not for lock-safety, and
+gets lock-safety for free.
+
+**For contrast, the Bug 85 pass is already safe under this.** `migrateDepthFieldsToFixedWidth` uses
+ambient calls, so a mid-pass lock makes them return nil, `fixedWidthRewrite` skips the row, and the
+pass simply converts fewer rows and retries on the next launch. It costs progress, not data. That is
+the skip-on-undecryptable rule covering a case it was not written for.
+
+Note what this means for verification: a test can prove the guard works once it exists, but it cannot
+prove the guard is present on every path that reaches the rewrite, nor that no future background mode
+undermines the launch-time assumption. Those want a review of the code's shape, not another assertion.
+
+### Test plan
+
+Phase 0 is committed ahead of any fix, in `LayerArrayUniformityTests.swift`, wrapped in
+`withKnownIssue` so the suite stays green while this is open and each test flips to failing the day
+it is fixed. All four record an expected failure today, which is the executable reproduction:
+
+- blob-slot elements are not one length (29 against 30-byte filler)
+- sequence-number elements are not one length (37–38 against 30)
+- `fillerSize` does not match what either writer produces
+- the `pinEnabledPerDepth` upgrade path writes an oversized entry *and* one `readPinEnabled` cannot
+  parse — confirmed reachable by driving `Manager.Security.init`, not merely by reading the code
+
+The first three need no Secure Enclave: `writeBlobSlot` and `writeSequenceNumber` take their key
+explicitly, so they run on CI runners.
+
+Phase 1, with the codec: round-trip across the `UInt32` range including boundaries, legacy JSON still
+decoding, and `fillerSize == codec.sealedSize` — trivially true once derived, and there to fail the
+day someone re-hardcodes it, which is how this bug happened.
+
+Phase 2, with the migration, in rising order of what they protect:
+
+1. **No SE key → the pass is a complete no-op.** The guard above.
+2. Filler resizes and real entries survive: a written slot and sequence number read back identically,
+   and all 32 elements end one length.
+3. **The blob still pops after migration** — activate, migrate, deactivate, assert the sensitive
+   contacts come back. Everything else checks bytes; this checks that what the bytes are *for* still
+   works, and it is the direct guard on "sensitive contacts unrecoverable".
+
+---
+
+## Bug 87 — A stranded `visibleThroughDepth` is un-hidden by rotation, in both directions
+
+**Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while writing Bug 85's migration guards. Found by
+asking what a normalisation pass must do with a row it cannot decrypt, then discovering the shipped
+rotation paths already answer that question wrongly.
+
+Both halves were fixed as remedy 1. Activation's three depth fields moved to `reencryptPreserving`,
+so a stranded ceiling is no longer nil-ed into "visible everywhere". Deactivation now separates
+*absent* from *undecryptable*: absent still resolves to `Int.max` (never classified, per S6), while
+undecryptable resolves to `0` — hidden at every duress depth, still visible to the real user at depth
+0, which is the fail-safe S7 already states for vault entries.
+
+Guarded by `StrandedCeilingRotationTests`, verified non-vacuous by stashing the fix and confirming
+both reproductions fail without it, with a third test asserting a readable ceiling is untouched by
+the new fallback.
+
+**Target:** unset, but this is separable from Bug 85 and much smaller — the fix is a fallback change
+in two places, with no wire-format implications.
+
+### Severity: High (security, not forensic)
+
+Different in kind from Bugs 85 and 86. Those are passive distinguishers that leak *metadata* about
+hidden contacts. This one makes a contact the user marked sensitive **visible to a coercer at every
+duress depth** — not a leak about the protection, but the protection itself failing open.
+
+Rated High rather than Critical only because it needs a precondition: the contact's
+`visibleThroughDepth` ciphertext must already be unreadable. Bugs 85 and 86 need no precondition at
+all. If stranded ciphertext turns out to be common rather than exceptional, this is Critical.
+
+### What happens
+
+`isVisible(atDepth:)` fails **closed** — a non-nil ceiling that will not decrypt excludes the
+contact, per its own comment: *"non-nil field that won't decrypt = sensitive shell; exclude"*
+(`Contact+Model.swift:212`). So while a contact's ceiling is stranded, it is correctly hidden.
+
+Both halves of a rotation cycle destroy that state, by different mechanisms, and both land on
+*visible everywhere*.
+
+**Deactivation** (`Manager+Security.swift:838`) resolves an unreadable ceiling to `Int.max` and then
+persists it:
+
+```swift
+let contactDepth: Int = {
+    guard let data = profile.visibleThroughDepth,
+          let plain = data.decrypt(),
+          let value = DepthCodec.decode(plain)
+    else { return Int.max }          // ← unreadable → "safe"
+    return value
+}()
+…
+profile.visibleThroughDepth = try AES.GCM.seal(DepthCodec.encode(contactDepth), …)
+```
+
+The comment above it reads *"undecryptable or absent → Int.max (safe / never classified)"*, which is
+the defect stated out loud: **absent** means genuinely never classified, **undecryptable** means the
+value is unknown. Collapsing the two resolves an unknown to the most permissive value available.
+
+**Activation** (Step 8, `Manager+Security.swift:556`) reaches the same outcome through
+`reencryptAllFields`, whose `reencrypt(data:)` helper returns nil for anything it cannot decrypt —
+deliberately, so callers reinitialise. And `isVisible` treats nil as *visible*:
+
+```swift
+guard let data = self.visibleThroughDepth else { return true }
+```
+
+So activation nils the stranded ceiling and the contact becomes visible at every depth. The nil does
+not even persist as nil: `migrateSafeContactVisibilityBackfill` re-stamps it to `Int.max` on the next
+launch, cementing the same end state deactivation reaches directly.
+
+### Why this is the one pattern the file already guards against elsewhere
+
+`reencryptAllFields` has a second helper, `reencryptPreserving`, for exactly this hazard. It is used
+on precisely two fields, and the reasoning on one of them is a sentence-for-sentence match for
+`visibleThroughDepth`'s situation (`Contact+Model+Reencrypt.swift:70`):
+
+> Clearing an unreadable token would therefore un-delete the contact: every row soft-deleted before
+> this field was re-keyed carries a stranded token, and they would all silently reappear on the next
+> rotation.
+
+Substitute *un-hide* for *un-delete* and it describes this bug. `deletionToken` gets
+`reencryptPreserving` because clearing it un-deletes; `maxBundleVersion` gets it because of Bug 80.
+`visibleThroughDepth` gets the nil-ing helper, one line below, even though clearing it un-hides.
+
+The consequence was also already known. Bug 78's fix comment (`Manager+Security.swift:385`) says:
+
+> Losing `visibleThroughDepth` alone drops the Secure Mode visibility ceiling for the whole address
+> book.
+
+Bug 78 addressed the *whole-key outage* case by deriving the key up front so nothing is touched. It
+did not address a *single field* that fails to decrypt while the key is perfectly healthy, which is
+the case here.
+
+### Why the vault gets this right and contacts do not
+
+`forensic-trace-avoidance.md` S7 handles the identical situation for `VaultEntry`, and states the
+principle:
+
+> **Non-nil, unreadable** (Bug 27 — corrupt or wrong-key ciphertext) — treated as `encode(0)` under
+> staged key. Fail-safe to hidden: an entry that is invisible in duress mode is a UX inconvenience;
+> one that is visible is a security failure.
+
+Vault entries fail closed. Contacts fail open. Only the vault side has the reasoning written down,
+and it is the correct reasoning for both.
+
+### Reproduction
+
+1. Classify a contact as sensitive at depth 0 (`visibleThroughDepth = encode(0)`).
+2. Corrupt its `visibleThroughDepth` ciphertext, or strand it under a key no longer canonical.
+3. Confirm it is hidden: `isVisible(atDepth:)` returns false at every depth.
+4. Activate, then deactivate Secure Mode.
+5. `visibleThroughDepth` now decodes to `Int.max`. The contact is visible at every duress depth.
+
+### Remedies to weigh
+
+1. **Fail closed in both paths.** Deactivation's fallback becomes the current depth (hidden at the
+   next layer) rather than `Int.max`; activation switches `visibleThroughDepth` — and, for the same
+   reason, `globalTrusteeDepth` and `originDepth` — to `reencryptPreserving`. Matches S7 and matches
+   `deletionToken`. Smallest diff, and the fallback direction stops contradicting `isVisible`.
+2. **Preserve rather than resolve.** Leave stranded bytes byte-identical everywhere, so the state
+   stays exactly what `isVisible` already interprets correctly, and no path invents a value. Cleanest
+   semantically; needs a check that a permanently stranded field cannot wedge a later rotation.
+3. **Make nil unreachable and fail closed on it.** Reverse `isVisible`'s nil branch to return false.
+   Rejected as stated: nil is the documented never-classified default (S6) and reversing it would
+   hide every contact on a pre-backfill install.
+
+The guard is a test that a contact with an unreadable ceiling is still hidden **after** a full
+activate/deactivate cycle — the property `unreadableCeilingFailsClosed` in `DepthCodecTests` asserts
+only before one. Note this bug is why Bug 85's normalisation pass must skip rows it cannot decrypt:
+the same fail-open default, written into a migration, would do this to every stranded row at once
+instead of only on rotation.
+
+## Bug 88 — Vault backup ignores `visibleThroughDepth` in both directions
+
+**Status:** **Fixed 2026-08-25, both halves, per remedy 4.** Filed 2026-08-19 while confirming, on
+request, how vault export/import behave under Secure Mode. Found by tracing
+`exportBackup`/`importBackup` for any reference to depth or Secure Mode and finding none.
+**Export half — fixed 2026-08-24.** `exportBackup(currentDepth:)` now filters to
+`visibleThroughDepth == currentDepth`, no default parameter, no wire format change — matching
+remedy 4 exactly as designed. Staleness metadata moved to a 32-slot fixed-width array (one per
+depth) as part of the same work, guarded by a dedicated cross-depth-isolation test. The export
+education screen's "all your vault entries" / "your entire vault" wording was also corrected — it
+overclaimed once export became depth-scoped. **Import half — fixed 2026-08-25**, once Bug 93's
+deferral (also fixed 2026-08-25) made "stamp with the current depth" safe on the automatic
+restore-on-unlock path. `importBackup(_:currentDepth:)` now stamps every restored entry the same
+way `addEntry` does. `importRestoresDepthCeiling` (`VaultBackupRoundTripTests.swift`) asserts the
+restored ceiling decodes to the exact depth imported at; its `withKnownIssue` wrapper is gone.
+
+**Target:** unset.
+
+### Severity: Critical (security)
+
+No precondition at all — unlike Bug 87, which needs stranded ciphertext first. Any export performed
+while at a duress depth dumps the entire real vault, decrypted, into the resulting file. This is the
+same class of failure as Bug 87 (the depth-visibility protection failing open rather than leaking
+metadata about it), but reachable by ordinary use of a shipped, user-facing feature rather than by a
+corruption precondition, and it hands the coercer a portable, permanent copy rather than a
+transient on-screen view.
+
+### What happens, as originally found — both halves fixed (export 2026-08-24, import 2026-08-25)
+
+**Export ignored depth entirely.** `exportBackup()` called `fetchAllEntries()`
+(`Vault+Manager.swift:270`), an unfiltered fetch with no `visibleThroughDepth`
+predicate and no reference to `currentDepth`. It decrypted and serialized every entry — this code
+no longer exists; `exportBackup(currentDepth:)` (`Vault+Manager+Backup.swift:176`) now filters via
+`entriesVisible(atDepth:)` instead, per remedy 4 below. Kept here as the original finding:
+
+```swift
+let entries = try self.fetchAllEntries()
+…
+for entry in entries {
+    let labelPayload = try self.decryptLabelPayload(for: entry)
+    let content      = try self.decryptContent(for: entry)
+    backupEntries.append(VaultBackupEntry(…))   // Vault+Manager+Backup.swift:178-193
+}
+```
+
+The depth gate that exists — `Manager.Security.isEntryVisible(_:)` — is consulted by exactly one
+call site in the whole codebase, the vault list's `visibleEntries` (`Vault+Tab.swift:199-201`):
+
+```swift
+private var visibleEntries: [VaultEntry] {
+    return self.entries.filter { self.security.isEntryVisible($0) }
+}
+```
+
+`exportBackup` and `importBackup` never call it, and a repo-wide search for `secureMode` /
+`isSecureModeEnabled` under `Features/Vault` and `UI/Tabs/Vault` returns zero matches. `addEntry`
+stamps every entry with an encrypted depth ceiling specifically so it can be hidden
+(`Vault+Manager.swift:211-213`, *"Depth 0 entries get encrypt(0): real-layer items hidden from all
+duress views"*) — the export path simply never asks.
+
+`VaultBackupEntry` (`Vault+Manager+Backup.swift:56-62`) doesn't even have a field for it, so the
+classification isn't just unfiltered, it's unrepresentable in the backup format.
+
+**Import erased depth classification on the way back in — fixed 2026-08-25.**
+`importBackup(_ data: Data)` (as it was) built a fresh `VaultEntry` per restored row and set `id`
+and `createdAt` from the backup, but never touched `visibleThroughDepth`:
+
+```swift
+let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
+entry.id        = backupEntry.id
+entry.createdAt = backupEntry.createdAt
+// visibleThroughDepth left at its model default
+```
+
+The model default is `nil` (`Vault+Model.swift:194`), and `isEntryVisible` treats `nil` as *always
+visible* (`Manager+Security.swift:1515`). So a restored entry — even one that was created and hidden
+at real depth 0 — became visible at every depth, including any duress depth, until the user
+manually re-classified it. `VAULT_BACKUP_GUIDE.md`'s description of import behaving "exactly as if
+the entries were created new" was inaccurate here: `addEntry` always stamps a concrete depth
+(`Vault+Manager.swift:213`, "always encrypted, never nil"); `importBackup` used to stamp nothing.
+Now `importBackup(_ data: Data, currentDepth: Int)` (`Vault+Manager+Backup.swift:268-354`) stamps
+`entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()` right after
+`createdAt`, mirroring `addEntry` exactly — see *The import fix itself* below.
+
+### Reproduction (as originally filed — neither step reproduces after the 2026-08-25 fix)
+
+1. At real depth 0, create a vault entry (`visibleThroughDepth = encode(0)`).
+2. Enter the duress PIN to reach a decoy depth > 0. Confirm the entry is absent from the vault list.
+3. From that duress depth, tap Export backup. The resulting `.occbak` file, once decrypted with the
+   BEK, contains the depth-0 entry's plaintext label and content.
+4. Separately: import any `.occbak` file on a fresh device. Every restored entry is visible at every
+   depth, including duress ones, regardless of the depth it was hidden at when exported.
+
+### Correction: vault entries are exact-match, not a ceiling
+
+Worth stating before the remedies, because it is easy to design the wrong fix from the wrong model.
+`isEntryVisible` is `value == currentDepth`, **not** `value >= currentDepth`, and the doc comment
+says why: a ceiling let an entry created at a duress depth leak upward into every shallower depth
+including the real one (`Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`).
+
+So vault depths are *partitioned*, not nested. There is no "layers below" for a vault entry — each
+depth is an island. Contacts use a ceiling and do nest; vault entries do not, and reasoning about one
+from the other produces a design that enforces a hierarchy which does not exist.
+
+### Remedy 4 — one file per layer, and no format change at all *(preferred)*
+
+Falls out of exact-match, and is simpler than the three below.
+
+- **Export at depth N** writes only `{entries with depth == N}` — which at any depth is exactly "what
+  is visible here". Rebased to 0, though see below: there is nothing to rebase.
+- **Import at depth M** stamps every restored entry with M.
+
+Because every entry in a file comes from one layer, **the file never needs to record depth**, and
+`VaultBackupEntry` does not change. No `version: 1 → 2`, no migration story for existing `.occbak`
+files — an old file has no depth to restore, and stamping it with the current depth is the correct
+reading of that.
+
+Both halves close at once, and by construction rather than by a rule someone must keep honouring: an
+export cannot leak another layer because it never read one, and an import cannot produce an
+always-visible entry because it always stamps.
+
+**Full restore is one file per layer, imported at each layer.** That sounds like a cost and mostly is
+not: re-establishing the layers on a restored device is manual anyway — Secure Mode has to be
+configured and each duress PIN set before those layers exist — so importing that layer's file while
+already standing in it is one extra step, not a separate chore.
+
+**The one real cost, and it needs UI rather than code.** Today export at depth 0 writes everything;
+under this rule it writes the depth-0 layer only. A user with layered entries would back up less than
+they think, silently. The export screen should say what it captured — "12 entries from this layer" —
+rather than letting "backup" be read as "everything".
+
+**The import half is live, and its caller is not the UI.** Checked 2026-08-22. `importBackup` has one
+production caller — `attemptBEKRestore(currentDepth:)` (`Vault+Manager+Backup.swift:712`) — reached
+from `unlock(context:currentDepth:)` (`Vault+Manager.swift:167`) and from
+`acceptReturnedShard(_:currentDepth:)` (`Vault+Manager+ReturnBuffer.swift:38`). So the import defect
+is not latent behind an unshipped screen: it runs **automatically on every vault unlock** once shard
+recovery reaches threshold, which is the primary way entries come back after a lost device.
+
+That broke the "stamp with M" rule for this path, because nobody chose M — it was whatever depth the
+unlock happened to land in. **Bug 93 covered it, and is now fixed (2026-08-25, all four harms):**
+`attemptBEKRestore` defers completion to depth 0 and never fires with any other value, so "stamp
+with the current depth" is now safe on the automatic path — the gate this paragraph describes is
+lifted; see the Status line above. The export half was done independently, as planned here; the
+import half is what's left.
+
+**The import fix itself — built 2026-08-25.** One line, mirroring what `addEntry` already does
+(`Vault+Manager.swift:223`) — `entry.visibleThroughDepth =
+try DepthCodec.encode(currentDepth).encrypt()`, added right after `entry.createdAt` is set inside
+`importBackup`'s per-entry loop. `importBackup` gained a required `currentDepth: Int` parameter, no
+default; its one call site (`attemptBEKRestore`, above) already had `currentDepth == 0` in scope by
+the time it got there, asserted two lines earlier by its own guard, so the call site change was a
+one-line addition. `importRestoresDepthCeiling` now asserts the restored ceiling decodes to the
+exact depth imported at (not just non-nil), and its `withKnownIssue` wrapper is gone. All six
+`importBackup` call sites across production and tests updated; full affected-suite run green.
+
+**Rejected while designing this:** a single depth-0 export carrying every layer with its depth, so a
+full restore is one pass. It restores layer structure in one go, but the file then describes every
+layer, needs the format bump, and adds asymmetric export behaviour to reason about. The restore
+convenience it buys is small once you account for the layers having to be re-created manually
+regardless.
+
+### Remedies originally weighed
+
+1. **Filter export by `isEntryVisible` at the current depth**, matching the vault list. Simplest, but
+   changes what "backup" means — a duress-depth export would silently produce a partial (decoy-only)
+   file rather than failing or warning, which could itself read as suspicious to a coercer, or could
+   surprise a legitimate user who only ever uses depth 0 but layers entries.
+2. **Block export outright while `currentDepth > 0`.** Removes the leak with a hard rule instead of a
+   filter, at the cost of a duress-depth session being unable to produce even a decoy backup — which
+   Secure Mode elsewhere goes out of its way to make behaviorally normal.
+3. **Carry `visibleThroughDepth` in `VaultBackupEntry` and gate export the same way**, so a full
+   export still contains every entry (matching current behavior for legitimate depth-0 backup/
+   restore use) but only ever from a `currentDepth == 0` session, and import restores the original
+   ceiling instead of defaulting to always-visible. Closest to preserving today's real-depth backup
+   utility while closing both the export leak and the import regression in one change; needs a wire
+   format bump (`version: 1` → `2`) and a migration note for existing `.occbak` files, which have no
+   ceiling field to restore from.
+
+No test exercised `exportBackup` or `importBackup` at all when this was filed — a repo-wide search
+for both names under `OccultaTests/` returned zero matches. **`VaultBackupRoundTripTests.swift` now
+covers both, as real assertions**: `exportExcludesHiddenEntries` guards the export half;
+`importRestoresDepthCeiling` guards the import half, `withKnownIssue` wrapper removed once the
+import fix landed.
+
+
+---
+
+## Bug 89 — Bug 85's fix does not reach soft-deleted rows, leaving its classifier alive there
+
+**Status:** **Fixed 2026-08-20**, then **superseded by Bug 89a on 2026-08-26** — the fix described
+below never fired on a readable row, and its "no deletion-time hook" conclusion was wrong. Read this
+entry for the length leak and Bug 89a for the value leak and the shipped behaviour. Found 2026-08-19
+on a live device, in the `⚠️` line Bug 85's own DEBUG diagnostic prints. Not a regression from that
+fix — an area it did not cover.
+
+`migrateScrubDeletedDepthStamps` writes `Data.randomBytes(DepthCodec.sealedSize)` into any depth
+stamp of a soft-deleted row that is not already that length — no key, no decryption, idempotent by
+length. `DepthCodec` gained `sealedSize` so the length comes from the format rather than from a
+number observed in a log, which is the lesson of `fillerSize = 30`.
+
+One pass, no deletion-time hook: see the remedy for why prevention is unnecessary here.
+
+Guarded by `DeletedDepthStampScrubTests`, including the property the bug is actually about — after
+the pass, live and soft-deleted rows are one length. `DepthCodecTests` asserts that for live rows
+only, which is why this survived Bug 85's fix.
+
+**Target:** unset. Small and independent of Bugs 86 and 87.
+
+### Severity: Medium (forensic)
+
+Lower than Bug 85 on two counts. It cannot name *which* contact is hidden, only that classification
+happened at all; and it is confined to rows whose content is already cryptographically erased.
+
+It is still a deniability break, because "was Secure Mode ever configured" is exactly the question
+the feature exists to leave unanswerable.
+
+### What happens
+
+Activation's Step 8 re-encrypts `allProfiles = try contactManager.fetchAllContacts()`, and that
+fetch filters `deletionToken == nil`. **Soft-deleted rows are never re-keyed.** Once the old key is
+deleted at the end of a rotation their fields are permanently unreadable — which is S1 working as
+designed: the row survives for forensic uniformity (hard deletion was removed in Bug 13), the content
+does not.
+
+`migrateDepthFieldsToFixedWidth` then correctly refuses to touch them, because a row it cannot
+decrypt is left byte-identical (Bug 87). So live rows converge on the fixed-width 30 bytes and
+soft-deleted rows keep whatever legacy length they had when they were last written.
+
+Measured on a device, 14 rows, 7 live and 7 soft-deleted:
+
+```
+Contact.visibleThroughDepth outcomes: UNDECRYPTABLE=7 alreadyFixedWidth=7
+Contact.visibleThroughDepth   [29, 30, 47] over 14 rows
+Contact.originDepth           [29, 30] over 14 rows
+```
+
+`originDepth` shows no 47 while `visibleThroughDepth` does, which is what the two fields' ranges
+predict — `originDepth` never holds `Int.max`. The split is real, not an artifact of the logging.
+
+### What it leaks
+
+Legacy length still encodes the classification a row carried when last written: 47 is `Int.max`
+(safe or never classified), 29 is a small depth. A 29-byte stranded row can only have been produced
+by one of two writes, and **both imply Secure Mode was configured** — a classification
+(`saveClassification`/`setVisibility`), or creation while already at a duress depth
+(`Contact+Manager.swift:193`, `currentDepth == 0 ? Int.max : currentDepth`).
+
+So mixed lengths *among the stranded rows* are evidence the feature was used. An install that never
+classified anything has uniform 47s there.
+
+### What it does NOT leak, and why the first analysis was wrong
+
+The first reading of this was that it made **soft-deleted rows distinguishable from live ones**,
+since live rows now converge on 30. That was wrong, and worth recording because the mistake is an
+easy one to repeat.
+
+`deletionToken` is a nullable column whose nil/non-nil status is directly observable with no key —
+that is not incidental, it is how the app itself partitions the table (`fetchAllContacts` filters on
+`deletionToken == nil`, evaluated against a NULL column), and the field's own doc says only its
+nil/non-nil status is meaningful at the query layer. A coercer can already run
+`WHERE ZDELETIONTOKEN IS NULL` and get the live count exactly.
+
+Ciphertext length adds nothing to a partition that a NULL check already gives away. The argument had
+been built on an ambiguity that does not exist. The lesson: before rating a length as a
+distinguisher, check whether the same partition is already available through a plainer channel.
+
+### Remedy — a one-time repair, and nothing else
+
+**This is a purely historical defect. There is no prevention half, and adding one would be churn.**
+
+A row becomes a length outlier only if it has legacy-format stamps *and* is stranded so the
+fixed-width pass cannot convert them. The first condition is now unreachable: every write path
+produces fixed-width — creation, classification, the three backfills, rotation, blob restore. So a
+contact deleted from now on already carries 30-byte stamps *before* anything can strand it, and when
+a later rotation skips it, it is already uniform.
+
+Only rows written in legacy format and stranded before the fixed-width migration ran are affected.
+Repair those and the class is closed permanently.
+
+Worth recording because it is an easy mistake to make twice: an earlier draft of this remedy added a
+scrub to `deleteContact`, on the reasoning that fixing a state where it is created beats repairing it
+later. That reasoning is sound in general and wrong here — at deletion the stamps are *already* 30
+bytes, so the scrub replaced good bytes with random ones of the same length and achieved nothing.
+Without this paragraph the one-time pass reads as incomplete and someone adds the hook back.
+
+**The repair:** a launch pass over rows where `deletionToken != nil`, writing
+`Data.randomBytes(DepthCodec.sealedSize)` into any depth stamp not already at that length.
+
+The `deletionToken` test is what makes this safe, and it is the whole design:
+
+- **Soft-deleted row** — content is already erased by rotation, by design. There is nothing left to
+  preserve, so overwriting loses nothing. The app has no undelete path: soft-deleted rows are never
+  shown in any view, and the 50-row cap hard-deletes to make room.
+- **Live row** — an unreadable ceiling still means something: `isVisible` fails closed and treats it
+  as hidden. Overwriting it is Bug 87 exactly, and must not happen.
+
+Same rule the rest of this work follows — never resolve an unknown that still carries meaning — with
+the observation that for an erased row the unknown no longer carries any.
+
+**Random, not a fresh encryption — and this reverses an earlier recommendation.** The first version
+of this remedy proposed writing a real `encrypt(Int.max)`, reasoning by analogy with
+`pinEnabledPerDepth`, whose filler is deliberately real ciphertext, *"indistinguishable from a real
+entry where the gate is up"*. The analogy was applied without checking which way the population ran.
+
+Filler has to blend into its neighbours. In `pinEnabledPerDepth` the neighbours are live entries that
+all decrypt, so real ciphertext blends and random would stand out. On a stranded soft-deleted row the
+neighbours are fields that **all fail to decrypt**, so a field that decrypts cleanly is the outlier —
+and worse, it tells an incoherent story. A fully stranded row reads as "rotation erased this". A row
+whose name will not decrypt but whose depth field will says something wrote here *after* the erasure,
+which points at the normalisation itself.
+
+Random keeps the story coherent, and drops the key requirement entirely: nothing is encrypted, and
+decryptability never has to be tested, so the pass cannot be blocked by an unavailable key. That is
+the hazard Bug 86's array migration has to manage, avoided here rather than handled.
+
+**Out of scope: live stranded rows.** A live row with an unreadable ceiling also keeps its legacy
+length — your device has two — but they are not this bug's to fix. `isVisible` fails closed on such a
+ceiling, so it still means *hidden*, and overwriting it is Bug 87 exactly. They resolve on the next
+activate/deactivate instead: deactivation resolves an unreadable ceiling to `0` and re-seals it at
+the uniform length, which is Bug 87's fix already shipped.
+
+**It also normalises the mixed rows.** The three backfills
+(`migrateSafeContactVisibilityBackfill` and its siblings) do **not** filter `deletionToken`, so a
+soft-deleted row whose field was nil got it stamped under the current key while its other fields
+stayed stranded. Those rows are already half-readable today, which is the same incoherence described
+above, arrived at accidentally. Overwriting all three fields makes them uniformly unreadable.
+
+**On the write itself being a trace.** Considered and rejected as a reason not to do this.
+`Contact.Profile` declares no `Date` field, and SQLite keeps no per-row or per-field modification
+time, so there is no timestamp to recover. The only per-row trace is Core Data's `Z_OPT`, an
+optimistic-locking counter rather than a clock; after the pass every soft-deleted row has been
+scrubbed, so their counters move together and there is no scrubbed-versus-unscrubbed split to read.
+Whatever it suggests, it suggests about rows `deletionToken` already flags. Set against that,
+declining to act leaves a 29-byte value that says a contact was classified as sensitive — a concrete
+inference about the feature, traded away for a hypothetical one with no channel.
+
+**Note the interaction with the 50-row cap.** Soft-deleted rows are capped at 50, with one
+hard-deleted to make room when full, so the affected population is bounded and churns. That limits
+the exposure but does not remove it: a device that classified contacts and then deleted some will
+carry the signal until those rows age out.
+
+### Guard
+
+A test asserting that after the migration **every** row's depth fields are one length, including
+soft-deleted rows — the current assertion only holds for live ones, which is why this survived. The
+device diagnostic already reports it; the suite does not.
+
+---
+
+## Bug 89a — Bug 89's scrub never fires on the rows that leak, and leaves the depth value itself readable
+
+**Status:** **Fixed 2026-08-26.** Found the same day by a security review of `release/v1.10.3`, in
+the code Bug 89 shipped. A defect in that fix, not an area it did not cover — the distinction Bug 89
+itself was careful to draw about Bug 85.
+
+**Target:** `release/v1.10.3`. Blocks the release: this is a live deniability break, not a residue.
+
+### Severity: High (forensic)
+
+Higher than Bug 89, which it supersedes in scope. Bug 89 leaked a *length*, and from it the
+inference "classification happened at all". This leaks the **value**: `originDepth` names the duress
+layer a contact was created in and `visibleThroughDepth` says it was deliberately hidden from every
+cover story. That is not "was Secure Mode configured" but "here is the depth of a layer you have not
+admitted exists", recovered from a row the user believes they deleted.
+
+### What happens
+
+Three faults compose, and each one alone would have been enough to keep the true value on disk.
+
+**1. The predicate is inverted.** `scrubbedStamp` skipped any field already at
+`DepthCodec.sealedSize`:
+
+```swift
+guard field?.count != DepthCodec.sealedSize else { return nil }
+```
+
+`sealedSize` is 30, which is by construction the length of *every* stamp the current codec writes.
+So a readable stamp — the only kind that leaks a value — was always skipped, and only legacy-width
+stranded ones (29/47), which leak nothing but their length, were ever rewritten. The guard was
+written as an idempotency check ("already scrubbed") and silently doubles as "already sealed",
+because random filler and real ciphertext are the same length by design. Length cannot separate
+those two states, so it cannot be the predicate for either.
+
+**2. The pass that runs first removes the remaining evidence.**
+`migrateDepthFieldsToFixedWidth` fetched `FetchDescriptor<Contact.Profile>()` with no
+`deletionToken` filter, and runs at `OccultaApp.swift:168`, before the scrub at `:178` — an ordering
+the comment there states deliberately. Any legacy-width stamp on a soft-deleted row it *could* read
+was converted to 30 bytes one pass earlier, and then skipped permanently by fault 1.
+
+**3. The deletion-time half was never built.** Bug 89's entry says *"One pass, no deletion-time
+hook: see the remedy for why prevention is unnecessary here"*, and the shipped doc comment on
+`migrateScrubDeletedDepthStamps` went further, asserting `deleteContact` *"scrubs these at deletion
+time from now on, so this exists only for rows deleted before that shipped"*. It never did.
+`deleteContact` set `deletionToken`, purged drafts, prekeys and group membership, and left all three
+depth stamps untouched. So the affected population was never historical — **it grew with every
+deletion.**
+
+### Why the "random, not a fresh encryption" reasoning was wrong
+
+Bug 89's remedy reversed an earlier proposal to write a real `encrypt(Int.max)`, on the grounds that
+*"on a stranded soft-deleted row the neighbours are fields that all fail to decrypt, so a field that
+decrypts cleanly is the outlier"*. That argument is correct, and it is the right instinct — filler
+has to blend into its neighbours. It was applied to the wrong population.
+
+**Soft-deleted and stranded are not the same set.** A row is stranded only once a rotation has
+happened *since* its deletion, because rotation is what abandons the key its fields were sealed
+under. A row deleted since the last rotation is soft-deleted and fully readable: its name, its
+`deletionToken`, everything. On that row the neighbours all decrypt, so random bytes are the outlier
+— and they tell the same incoherent story in reverse, one the earlier analysis named precisely
+without noticing it cuts both ways. Three fields that will not decrypt on a row whose every other
+field will does not read as erasure. It reads as *deliberate destruction*, which points at the
+scrub itself and is a worse trace than the value it was hiding.
+
+The lesson generalises past this bug: **the tell is never the value in the field, it is a field
+whose readability disagrees with the row it sits on.** Neither "always random" nor "always sealed"
+can be right, because the target state is a property of the row, not of the format.
+
+### Remedy
+
+**Scrub at deletion time, and make the migration a pure repair pass.** `deleteContact` now seals the
+benign triple before marking the row deleted, under the same key the rest of the row already uses:
+
+| Field | Value | Why |
+| --- | --- | --- |
+| `visibleThroughDepth` | `Int.max` | Visible at every duress depth — an ordinary contact. Also the backfill's own default, so it is the modal value on any install |
+| `globalTrusteeDepth` | `-1` | The codec's dedicated "not a trustee" sentinel |
+| `originDepth` | `0` | Born in the real session; `isVisible` only branches on `origin > 0` |
+
+Written unconditionally, so there is no branch on secret state. Note **not** `visibleThroughDepth =
+0`: that is the incriminating value, the one that marks a contact hidden from every cover story, and
+it is also what Bug 87's fail-closed reading resolves an unreadable ceiling *to*. The benign value
+and the fail-closed value point in opposite directions here, which is worth stating because the two
+are easy to conflate.
+
+Doing this at deletion time rather than in a migration also means there is never a window in which
+the true value sits on disk on an already-deleted row.
+
+**The migration keys on the row, not on length.** `scrubbedStamp` now takes the benign value and a
+`rowIsReadable` flag: readable rows get the sealed benign value, stranded rows keep the key-free
+random-bytes path, and a stamp already sealed under a superseded key is left byte-identical because
+it is *already* consistent with its neighbours. Idempotent in both branches, and the readable branch
+requires fixed width as well as a benign value — a legacy-format stamp can already decode to
+`Int.max` while still leaking through its length (Bug 85).
+
+**`deletionToken` is the readability oracle.** It is the right one on three counts: it is set on
+exactly this population, it is always encrypted, and its plaintext is the known constant `Data([1])`
+— so it confirms a *correct* decrypt rather than a merely non-throwing one. It also tracks the row's
+bulk state rather than a stray field, which matters for the Bug 97 population, where one stamp can
+be current-key while the names are stranded. Probing an individual stamp would misread those rows
+and re-seal all three into readability against stranded neighbours.
+
+**`migrateDepthFieldsToFixedWidth` fetches live rows only**, so it stops feeding fault 1.
+
+**On losing the key-free property.** Bug 89 valued that the pass *"cannot be blocked by an
+unavailable key"*. The readable branch necessarily gives that up — it exists to write values that
+decrypt. It degrades rather than breaking: with no key, `deletionToken` will not decrypt, every row
+reads as stranded, and the pass falls back to exactly the old key-free length normalisation.
+
+**Page hygiene needed no new work.** `PRAGMA secure_delete = ON` (`OccultaApp.swift:210`) zeroes the
+freed page holding the pre-scrub ciphertext rather than leaving it in the freelist, and
+`deleteContact` already calls `checkpointStore()` after its save, so the WAL frame is flushed. The
+scrub is placed before that save and is covered by both.
+
+### Residual, accepted
+
+Every scrubbed row now reads identically. An examiner holding the key and comparing the live
+population against the deleted one has a weak distributional signal: live contacts vary across
+depths, deleted ones are uniformly ordinary. Accepted rather than closed. Sampling the benign value
+from the live distribution would flatten it and would risk writing a value that names a real layer,
+which is a strictly worse trade. The values chosen are also what an install that never activated
+Secure Mode holds, so the population blends into the innocent baseline rather than into itself.
+
+### Guard
+
+`ScrubMatchesRowReadabilityTests` covers both branches: a readable row's stamps decode to the benign
+triple and still decrypt afterwards, a stranded row's do neither, the readable branch is idempotent,
+and a readable legacy-width stamp is rewritten even when its value is already benign.
+`FixedWidthPassExcludesDeletedRowsTests` pins the fetch filter in both directions.
+`DeleteContactScrubsStampsTests` covers the deletion-time control — the one that keeps the
+population from growing. All three fail against the pre-fix code.
+
+Bug 89's own suite is unchanged and still passes: its fixtures use a `deletionToken` that does not
+decrypt, so those rows take the stranded branch, which is the behaviour it was written to assert.
+
+---
+
+## Bug 90 — One unmigratable contact permanently blocks every v1 contact after it, and can leave a half-migrated row behind
+
+**Status:** **Fixed 2026-08-20.** Found 2026-08-19 on a live device reporting
+`Migration error: authenticationFailure` on every launch alongside seven contacts whose fields no
+longer decrypt.
+
+All three parts landed together, because the first two are unsafe apart: isolating per contact
+without discarding the partial mutation would have made the corruption reliable rather than
+incidental. Per-contact `do/catch` with `modelContext.rollback()`, failures left at `v1` so they are
+retried; resume, so a field already converted by an earlier partial run is left untouched instead of
+throwing; and `autosaveEnabled = false` across the migrations (`c5c32d3`) so the rollback has
+something to roll back.
+
+Guarded by `MigrateToV2ResilienceTests`, which asserts through a **fresh** `ModelContext` rather than
+the in-memory object — `rollback()` discards the context's pending changes, but an already
+materialised reference can still hold the mutated value, and only what reached disk matters.
+
+**Target:** unset. Independent of Bugs 85–88; this is the v1→v2 scheme migration, not the depth work.
+
+### Severity: High (data availability, and a corruption path)
+
+The blocking half is certain and permanent. The corruption half needs a partial mutation to reach
+disk, which the current call sequence makes possible rather than hypothetical — see "The second
+defect".
+
+### The first defect: one bad row stops the rest, forever
+
+`migrateToV2` fetches every contact still marked `v1_identityDerived` and migrates them in a loop:
+
+```swift
+for contact in contacts {
+    if contact.deletionToken == nil {
+        try self.migrateContact(contact, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
+    }
+    contact.encryptionScheme = EncryptionScheme.v2_hybridPQ.rawValue
+    try modelContext.save()
+}
+```
+
+`try` propagates out of the loop, so the **first** contact whose legacy ciphertext will not
+authenticate ends the whole pass. Three consequences compound:
+
+1. Every v1 contact *after* it is never processed — however many that is, and however recoverable
+   they individually were.
+2. The scheme marker is advanced *after* the migrate call, so the failing row stays `v1` and is
+   retried on the next launch, where it fails identically. The block is permanent, not transient.
+3. The fetch has no `sortBy`, so which contacts end up stranded depends on SwiftData's return order
+   — arbitrary, and not necessarily stable between launches.
+
+`OccultaApp.migrate()` catches and logs, so the app carries on and the failure is invisible outside a
+DEBUG build. Contacts left at v1 have their fields read with v2 crypto, fail to decrypt, and are then
+excluded from every view because `isVisible` fails closed — so they read as "gone" rather than as
+"broken".
+
+**One unrecoverable row strands an unbounded number of recoverable ones.** That is the defect; the
+first row's own data may well be genuinely unreadable, and nothing can fix that.
+
+### The second defect: the partial row can be committed by a later migration
+
+`migrateContact` assigns field by field — fourteen scalar strings, then images, then the forward
+secrecy blob, then relationships — mutating the model object in place as it goes. A throw on, say,
+`jobTitle` leaves the preceding fields already re-encrypted to v2 **on the live object**.
+
+That alone would be harmless, because the failing contact's `save()` is never reached. But
+`OccultaApp.migrate()` creates **one** `ModelContext` and passes it to every migration in sequence:
+
+```swift
+let context = ModelContext(self.sharedModelContainer)
+do { try DatabaseMigration.migrateToV2(modelContext: context, …) } catch { … }
+do { try DatabaseMigration.migrateSafeContactVisibilityBackfill(modelContext: context) } catch { … }
+…
+```
+
+The backfills and the fixed-width pass all call `save()` on that same context. So the partially
+mutated contact — dirty, and still holding v2 ciphertext in some fields and v1 in others — is
+committed by the next migration that saves anything.
+
+The row then has mixed-scheme fields with `encryptionScheme` still reading `v1`, and nothing records
+which fields are which. The next launch tries the legacy key against all of them, fails on the first
+already-converted field, and throws again.
+
+### Remedy
+
+1. **Isolate per contact.** Wrap the `migrateContact` call in its own `do/catch`, count failures, and
+   continue. Leave a failed row at `v1` rather than advancing its marker — collapsing "not yet
+   migrated" into "migrated" would destroy the only evidence that a retry is possible, the same
+   reasoning as Bug 80's `reencryptPreserving`.
+2. **Do not let a partial mutation escape.** Either give `migrateToV2` its own `ModelContext` so a
+   discarded context discards the partial row, or build the new values locally and assign them only
+   once every field has succeeded. The second is better: it makes atomicity a property of the
+   function rather than of how the caller happens to sequence contexts.
+3. **Report counts**, not just the first error. The current log gives one `authenticationFailure` and
+   no indication of how many rows are affected or whether the rest would have succeeded.
+
+### Adjacent, not part of this bug
+
+`migrateToV2` decrypts and logs a contact's given name under `#if DEBUG`
+(`let debugName = contact.givenName.decrypt()`). DEBUG-only, but it is a contact name in the console,
+which is the one thing the rest of this subsystem's logging is careful never to emit.
+
+### Guard
+
+No test exercises `migrateToV2` with a contact that fails to decrypt. The two properties to pin are
+that a failing row does not stop the ones after it, and that a failing row leaves **no** field
+changed — asserted after a subsequent migration has saved on the same context, since that is the
+path that commits it.
+
+---
+
+## Bug 91 — Three rules govern what `Contact.Draft` may carry, and none is written down or enforced
+
+**Status:** **Open.** Noticed 2026-08-19 while weighing whether `Contact.Draft` could serve as the
+carrier type for Bug 90's atomicity refactor. **Substantially rewritten 2026-08-20** — the first
+version framed this as "`Draft` should mirror `Contact.Profile` and does not", which is wrong, and
+wrong in a direction that would cause harm if acted on. See "Why mirroring would be a bug".
+
+**Target:** unset.
+
+### Severity: Low, and the risk is future rather than present
+
+Every field that must be carried today **is** carried. Nothing is currently lost. What is missing is
+any statement of the rules, and anything that fails when they are broken — and the field list was
+arrived at by patching three times after the fact, once after data had already been lost (Bug 23).
+
+### The three rules
+
+`Contact.Draft` sits at the intersection of three paths with different requirements. Each field it
+omits is omitted for one of these reasons, and the reasons are not interchangeable:
+
+| Rule | Applies to | Why |
+|---|---|---|
+| **Carry on `LayerContact`** | anything deactivation *overwrites* | the value must be captured at activation or the restore writes a fallback over it |
+| **Set fresh at creation** | anything the import path should re-derive | a newly created contact has no history to preserve |
+| **Never on `Draft`** | anything that must not leave the device | `Draft` is a wire format, not just a model carrier |
+
+**The first rule is narrower than it looks.** A field needs a source in the blob only if
+`restoreContact` writes it. It writes exactly six things: everything `save(contact: record.draft)`
+assigns, plus `visibleThroughDepth`, `globalTrusteeDepth`, `originDepth` and `signedAttributes`.
+Everything else survives untouched on the row, because a blob-sealed row is never deleted and
+`save`'s update branch only assigns what `Draft` carries. That is why `forwardSecrecyEncrypted` and
+`maxBundleVersion` are safely absent — nothing overwrites them.
+
+That also explains the three fields bolted onto `LayerContact`. They are not there because `Draft` is
+deficient; they are there because deactivation rewrites them and needs the captured value. Bug 23 was
+exactly that: without the captured ceiling, restore wrote its `?? 0` fallback over a real
+classification.
+
+### Why mirroring would be a bug
+
+`Contact.Draft` is the **shared-contacts wire format**. `Import+View.swift:292` filters received
+basket files for `format == .contacts` and decodes `[Contact.Draft]` out of them, so a `Draft` is
+something that arrives from another person's device.
+
+Putting the depth stamps on `Draft` to "complete the mirror" would therefore put them in every
+shared-contacts file. `visibleThroughDepth` would tell the recipient **which of your contacts you
+marked sensitive** — the exact secret Secure Mode exists to protect, handed to someone else in a file
+you deliberately sent them. `signedAttributes` and `globalTrusteeDepth` are private in the same way,
+and `deletionToken` on `Draft` would let an import resurrect a deleted contact while
+`encryptionScheme` would let it claim a scheme it is not in.
+
+So `Draft`'s omissions are load-bearing. The first version of this entry recommended removing them.
+
+### The exposure is latent, not live
+
+Checked 2026-08-20: **nothing in production writes a `.contacts` file.** `format: .contacts` is
+constructed only inside `#Preview` blocks. The app can receive shared-contacts files and never sends
+one — the read side, the `Format` case in `Transfers.swift` and the whole import UI exist, but the
+write side was never implemented.
+
+That is why this is filed rather than fixed, and why it is worth filing at all: the rule needs to be
+written down **before** someone builds the send side. Whatever `Draft` carries on the day that lands
+is what leaves the device.
+
+### `originDepth` is the model
+
+It is absent from both `Draft` and `LayerContact` *deliberately*, with a comment explaining that a
+duress-origin contact is exempt from blob-sealing entirely and so can never reach the struct. That is
+what a considered omission looks like. The others are correct, but they do not look like that, and
+nothing distinguishes "correct by reasoning" from "not yet noticed".
+
+### Remedy
+
+1. **Write the three rules down**, on `Contact.Draft` itself. They are currently distributed across
+   `restoreContact`'s assignments, `save(contact:)`'s create branch, and an unstated assumption about
+   what a wire format may carry.
+2. **Make them enforced rather than remembered.** The project already has the pattern:
+   `EncryptedFieldCoverageTests` drives `Contact.Profile`'s coverage from a probe table with an
+   `unprobedFields` tripwire, so a newly added stored property fails a test until someone classifies
+   it. The same shape here would require every `Profile` property to be classified against the three
+   rules above, with a reason.
+
+The tripwire matters most for the third rule. Violating the first is a data-loss hazard that a blob
+round-trip test would catch; violating the third is a privacy leak into a file the user hands to
+someone else, and nothing would catch it at all.
+
+### Not a carrier for Bug 90
+
+Recorded because it was the question that surfaced this. `Draft` cannot serve as the compute-phase
+carrier for Bug 90's two-phase refactor: it lacks `forwardSecrecyEncrypted`, its `identifier` and
+`status` are `let` so it cannot be mutated in place, and its relationship children are value types
+while `Profile`'s are `@Model` classes — so applying them back still requires pairing by identity,
+which is the part of that refactor where a mistake would hide.
+
+---
+
+## Bug 92 — A backup file is readable from any layer, because the BEK is not layered
+
+**Status:** **Open — re-examined 2026-08-26, scenario narrower than originally filed.** Separated out
+of Bug 88's design discussion, 2026-08-20, on noticing that fixing the export leak does not stop a
+coerced session reading a backup file it *finds*. **That specific in-app scenario no longer reaches**
+— see *Re-examined* below, added after Bugs 93 and 94 (both filed and fixed after this one) turned
+out to close the only code path that ever calls `importBackup`. The remaining exposure is real but
+different: raw key extraction outside the app, not a coerced PIN entry inside it. Severity re-rated
+accordingly.
+
+**Target:** unset. Independent of Bug 88 — that one needs no format change and should not wait for
+this.
+
+### Severity: Medium (security) — re-rated 2026-08-26 from High, see *Re-examined* below
+
+**Original reasoning, preserved:** Bug 88 needs someone to tap Export. This needs a backup file to
+exist and be reachable — on the device, in Files, in iCloud. Weaker, but ordinary: backups are made
+to be kept somewhere. **That comparison was about reachability, not about what a coercer can do once
+they've reached it** — the second half turned out to be much narrower than assumed; see below.
+
+### What happens, as originally found
+
+The vault key comes from `deriveVaultKey(context:)` — a dedicated SE key gated on biometrics, with
+**no depth input** — and nothing in the backup path references depth at all. So there is one BEK per
+device, identical at every layer. That part is still true and is the whole reason a fix is still
+worth building — see *Re-examined* just below for what it does and doesn't currently let a coercer
+do about it.
+
+A backup file is sealed with it. A duress session has it. Therefore a coerced session can decrypt any
+backup file it can reach, including one exported from the real layer, and read entries the vault UI
+would never show it because `isEntryVisible` filters them.
+
+Bug 88's remedy stops an export from *containing* other layers. It does not stop this: the file is a
+depth-bypassing artifact wherever it is stored.
+
+### Re-examined 2026-08-26 — the in-app path this severity was rated on doesn't reach
+
+Asked directly: how would a coercer actually get the app to decrypt a *found* file using the
+device's own BEK? Traced every caller of `importBackup` — there is exactly one, inside
+`attemptBEKRestore`'s shard-reconstruction branch (`Vault+Manager+Backup.swift:721-753`). Two things
+built after this bug was filed, for unrelated reasons, close that path off for the population that
+matters:
+
+- **A device that already has a BEK** — the realistic target, someone who actually finished setting
+  up backup — never reaches `importBackup` at all. `storePendingRestore` (Bug 93's own two-signal
+  check) refuses to arm a newly-found file outright whenever `alreadyHasBEK` is true, before writing
+  anything. Dead end at every depth, immediately.
+- **A device with no BEK yet** can arm a found file, but completion still requires genuine trustee
+  shards reaching threshold, and `attemptBEKRestore` only ever completes at depth 0 (Bug 93's
+  deferral). So even here, a coercer sitting in a duress session watching this happen never sees the
+  result — the decrypted entries only surface later, to the real owner, at their own next real
+  unlock. "A coerced session can decrypt any backup file it can reach" does not hold even in this
+  narrower case: nothing is ever displayed to the coerced session at all.
+
+So the scenario this bug's High rating was based on — sit in duress, open a found file, read what
+comes back — isn't reachable through the shipped UI today. **That doesn't make the underlying defect
+harmless, it changes what kind of attacker can reach it:**
+
+1. **Raw BEK extraction outside the app, then offline decryption** — device forensics, a jailbreak, a
+   memory-dump exploit, or any other compromise that gets the BEK bytes directly rather than through
+   the app's gated flows. None of the in-app guards above are barriers once the key is out, because
+   none of that code is being run. This is what the PIN-combined derivation actually defends
+   against: a leaked or forensically-extracted BEK alone still isn't sufficient, because the PIN —
+   knowledge, not stored material — isn't part of what was extracted.
+2. **A found file plus genuinely cooperating trustees, landing at the real owner's own later
+   depth-0 unlock.** Not really coercion-shaped — closer to "someone else's old backup, someone
+   else's real trustees, enough time" — and the result reaches the real layer for the real owner,
+   never a coercer's view.
+
+Neither of these is a duress-specific, PIN-coercion attack. The layering fix is still worth building
+— the BEK genuinely is layer-blind, and that's a real design gap for anything that *does* get raw key
+access — but the urgency is that of a device-compromise defense-in-depth measure, not a PIN-coercion
+mitigation, which is why the severity below is re-rated rather than left at High.
+
+### Why the obvious keys do not work
+
+- **The BEK alone** is what we have — layer-blind by construction.
+- **A layer key derived from the SE Secure Mode key** does not help: a duress session holds that key,
+  so it could derive every layer's key.
+- **A layer key derived from PIN *verifiers*** does not help either, for the same reason — the
+  verifiers live in `AppLayerConfig`'s arrays under that same SE key.
+
+### The one input a coerced session does not hold
+
+**The PIN itself.** It is knowledge, not stored material. Verifiers let a candidate be checked; they
+do not yield the PIN. A coercer at depth N knows the PIN they forced — correct, that layer is the
+decoy — and does not know the real PIN.
+
+That makes it the first input in this subsystem a coerced session genuinely cannot derive, and the
+basis for the fix:
+
+```
+stretched = slowKDF(PIN, perFileSalt, high cost)
+fileKey   = HKDF(ikm: BEK ‖ stretched, salt: perFileSalt, info: "occulta.backup.v2")
+```
+
+**Combined, not substituted.** The BEK alone is layer-blind; the PIN alone is six digits. Together an
+attacker needs BEK access *and* PIN knowledge, which come from different places — the device or the
+shards for one, the user's memory for the other.
+
+### The number this turns on
+
+`PINEntry.swift:70` sets `pinLength = 6`, so the space is 10⁶. **A repo-wide search finds no slow
+KDF** — only HKDF, which is fast by design and correct for high-entropy inputs. Deriving a file key
+from a 6-digit PIN with HKDF gives an attacker holding the device a few minutes of work.
+
+So this fix has a hard dependency that does not exist in the codebase yet: a deliberately expensive
+KDF for the PIN. **Skipping it produces a design that looks layered and is not**, which is worse than
+not doing it, because the file would then be treated as protected.
+
+### File format
+
+The salt must be readable before the key can be derived, so it cannot live inside the sealed JSON.
+Today the layout is:
+
+```
+OCBK | nonce(12) | ciphertext | tag(16)
+└─plaintext─┘ └──────── AES-GCM sealed ────────┘
+```
+
+It becomes `OCBK | version(1) | salt(N) | nonce(12) | ciphertext | tag(16)`. **No `Codable` struct
+changes** — `VaultBackup` and `VaultBackupEntry` are untouched.
+
+**Note the trap this exposes.** `VaultBackup.version` lives *inside* the encrypted JSON, so reading
+it requires decrypting, which requires already knowing the scheme and salt. It therefore cannot
+version anything that affects decryption — which is precisely this change. The discriminator has to
+be in the plaintext envelope. Keeping the magic and adding a version byte is preferred over a second
+magic string: a reader can then say "this is an Occulta backup, but a newer one" rather than "unknown
+file", and it leaves room for a third scheme.
+
+### Two costs to decide before building
+
+**Recovery gains a second factor.** The shard system exists so a lost device does not lose the vault.
+Under this, shards alone stop being sufficient — the PIN is needed too. Defensible for a PIN the user
+knows, but it is a new way to permanently lose a backup and belongs in the recovery UI rather than
+being discovered.
+
+**PIN rotation orphans old files.** A file sealed under the old PIN needs the old PIN forever.
+Storing a wrapped key to avoid that would put the material back on the device and undo the benefit,
+so the honest answer is that rotation means re-exporting — which the existing staleness tracking
+already has somewhere to say so.
+
+### Rejected: invalidating old files on re-activation
+
+Considered folding an activation-scoped nonce into the derivation so that re-activating with the same
+PIN makes old files unreadable, forcing a re-export. Rejected.
+
+A backup exists for the case where everything else has gone wrong; tying its readability to an
+unrelated later event means a user can re-activate, lose the device, and find the backup
+cryptographically dead with every shard intact and the right PIN in hand. It buys no confidentiality
+either — a leaked file is already out, and re-keying afterwards does not reach it.
+
+The goal underneath it is freshness, and `refreshBackupStaleness()` / `BackupStalenessReport` already
+serve that. *"This file is stale, re-export"* is recoverable; *"this file is dead"* is not.
+
+### Reconciled with Bug 102, 2026-08-28 — not a duplicate, and each needs the other
+
+Both entries open with the same sentence: the BEK is not layered. They diverge immediately, and
+neither subsumes the other.
+
+| | Bug 92 (this) | Bug 102 |
+| --- | --- | --- |
+| Harm | A backup *file* decrypts at any layer | In-app operations at a duress depth act on the *real* key |
+| Attacker | Holds raw BEK bytes, obtained outside the app | Uses the app normally, in a duress session |
+| Fix | Derive the file key from BEK ‖ slow-KDF(PIN) | Give each layer its own BEK |
+| Blocker | No slow KDF exists in the codebase | Storage-format change, staged |
+
+**Per-depth BEKs do not fix this bug**, and the reason is already stated above under *Why the obvious
+keys do not work*. Bug 102's slots would all be sealed under the vault key, which is not
+depth-derived — so an attacker who extracts key material gets every slot, exactly as they get the one
+BEK today. Layering the storage changes what the *app* will act on; it changes nothing about what
+falls out of a device dump.
+
+**And the converse: this bug supplies an input Bug 102's design is missing.** That design separates
+its per-depth slots by code discipline for the BEK field — only convention stops a duress session
+decrypting slot 0, because it holds the vault key. Its own §2.1 concedes this and calls the asymmetry
+out. The PIN is the only input in this subsystem a coerced session does not hold, so a
+PIN-combined derivation is what would make that separation cryptographic rather than conventional.
+Whether to adopt it there, or to accept convention and say so plainly, is a decision the refactor has
+to make rather than inherit.
+
+**Bug 105 may have restored the in-app route this entry's severity was re-rated away from.** The
+2026-08-26 re-rating turned on there being no way for a coercer to make the app decrypt a found file.
+Bug 105 does not do that — but it hands a coercer threshold shares of the real BEK through ordinary
+UI at a duress depth, from which the BEK reconstructs offline, after which any real-layer `.occbak`
+he obtains (Bugs 100 and 101 supply the routes) decrypts. That is this bug's harm reached without a
+jailbreak, forensic extraction or a memory dump — the three things the re-rating rested on.
+**Re-rate deliberately after Bug 105 is settled**, rather than leaving Medium standing on reasoning
+that predates it.
+
+### Guard
+
+`VaultBackupRoundTripTests` already pins that a backup carries no plaintext label or content, and
+that entries survive a round trip — both of which must hold across the envelope change. What it
+cannot yet assert is the property this bug is about: **a file exported at one layer must not decrypt
+at another.** That test is the fix's acceptance criterion.
+
+Note that criterion is satisfiable two ways, and only one of them is real. Per-depth BEKs make it
+pass for a caller going through the app; only the PIN-combined derivation makes it pass for someone
+holding the storage. A test written against the app's own API cannot tell those apart, so it should
+assert on raw key material rather than on a decrypt call.
+
+
+---
+
+## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
+
+**Status:** **Fixed 2026-08-25, all four harms.** Filed 2026-08-22 while checking, for Bug 88's fix
+plan, whether `pendingRestoreActive` is depth-aware. It was not, and neither was anything else in the
+recovery path. Built in five parts, each committed separately: **A** — `currentDepth` threaded
+through `unlock(context:)` and the `OccultaApp.swift → ShardCustodyManager.handleInbound →
+handleHandback` / `acceptReturnedShard` chain. **B** — `refreshPendingRestoreState` and
+`attemptBEKRestore` both force published state false/defer above depth 0; `isRestorePending` added
+as the always-truthful signal for the two functional consumers (`acceptReturnedShard`,
+`handleHandback`) that must keep absorbing shards and relaxing signature checks regardless of depth.
+**C** — a distinct `showBackupNotice` alert for `alreadyProcessed`, separate from the generic
+`showError`, so a legitimate user sees a neutral acknowledgment rather than an "Error" dialog. **D**
+— the on-disk filenames renamed from `pending-restore.occbak` / `pending-restore-shards.dat` to
+`backup-import-cache.occbak` / `backup-import-cache-shards.dat`, closing harm 3 independent of the
+other four parts. **E** — dedicated tests for all three `storePendingRestore` outcomes, which
+surfaced and fixed a real ordering bug: the pending-file branch wrote a second file's bytes to disk
+*before* checking whether one was already pending, so a different `.occbak` could silently replace a
+genuine in-flight restore while the caller still saw the same reassuring `alreadyProcessed`. **A
+fourth harm, found the same day in review** (a coercer could distinguish the three
+`storePendingRestore` outcomes by which duress response they got, without ever seeing depth 0) **was
+fixed same-day too** — see *Harm 4, found after the fix* below. See *The design, settled* below for
+the shape all five parts implement, and *Guard* for what covers it now.
+
+**Target:** met. **Bug 88's import-side remedy depended on this** — see *Relationship to Bug 88*;
+that remedy can now proceed.
+
+### Severity: High (security), with the same shape of precondition as Bug 92
+
+Needs a pending restore to exist: a `.occbak` awaiting shard recovery. That is not an edge case — it
+is the ordinary state of a device being rebuilt after loss, which is the exact situation the shard
+system exists for, and the exact situation a user is most likely to be carrying a partly-configured
+device around in.
+
+**"No BEK yet" is not only the lost-device case.** Checked 2026-08-25:
+`Manager.Key.retrievePrivateKey()` (`Key+Manager.swift:163`) does `SecItemCopyMatching` against a
+fixed, hardcoded tag before ever calling `create()`, and keychain items survive an app delete on the
+same device by default — nothing here deletes them first. So the identity key persists across a plain
+uninstall/reinstall; only the SwiftData database (Application Support) is wiped. That means "no BEK
+yet" covers three distinct starting states, not one: a genuinely new device, the same device erased
+("Erase All Content and Settings"), or the same device with the app merely reinstalled. **This bug's
+exposure is identical across all three** — it has nothing to do with whether the identity key
+happens to have rotated, only with there being a pending restore and no depth awareness anywhere in
+the path. The distinction matters for Bug 94's remedy, not this one; noted here so the precondition
+isn't misread as narrower than it is.
+
+### What happens
+
+`refreshPendingRestoreState()` (`Vault+Manager+Backup.swift:546`) sets the published state from a
+file's existence and a shard count. No depth input:
+
+```swift
+func refreshPendingRestoreState() {
+    self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
+    self.pendingRestoreShardCount = self.pendingRestoreActive
+        ? ((try? self.loadRestoreShards())?.count ?? 0)
+        : 0
+}
+```
+
+`Vault+Tab.swift:238` renders it unconditionally — no `isSecureModeActive` check, no `currentDepth`
+check:
+
+```swift
+if self.vault.pendingRestoreActive {
+    …
+    Text("Restoring your vault")
+    Text("\(self.vault.pendingRestoreShardCount) recovery pieces collected")
+}
+```
+
+And `attemptBEKRestore()` (`Vault+Manager+Backup.swift:589`) guards on `isUnlocked` and
+`pendingRestoreActive` and nothing else, then calls `importBackup`:
+
+```swift
+guard self.isUnlocked, self.pendingRestoreActive else { return }
+```
+
+It is reached from `unlock(context:)` (`Vault+Manager.swift:175`) — **every unlock, at every depth** —
+and from `acceptReturnedShard` (`Vault+Manager+ReturnBuffer.swift:85`) whenever a shard arrives.
+
+So the whole depth-blind surface is:
+
+| Surface | Depth-aware? |
+|---|---|
+| `refreshPendingRestoreState()` | No — file existence only |
+| `pendingRestoreActive` / `pendingRestoreShardCount` | No |
+| "Restoring your vault" banner, `Vault+Tab.swift:238` | No |
+| `attemptBEKRestore()` on unlock and on shard arrival | No |
+| `postRestoreActionNeeded` → `VaultPostRestoreSheet`, `Vault+Tab.swift:142` | No |
+
+### Three harms, and they are not the same one
+
+**1. Disclosure to a coerced session.** A coercer holding the phone at a duress depth reads
+*"Restoring your vault — 3 recovery pieces collected"*, watches the counter climb as trustees hand
+shards back, and is then shown a post-restore sheet offering to set up backup. The duress layer is
+supposed to be a complete, boring, plausible device; instead it volunteers that a vault exists, that
+trustees exist, that recovery is inbound, and roughly how close it is. It also gives the coercer a
+reason to wait rather than give up.
+
+**2. The restore completes into the duress layer.** Combined with Bug 88's import half —
+`importBackup` never sets `visibleThroughDepth`, and `isEntryVisible` reads nil as visible at every
+depth — the recovered entries become visible immediately in the coercer's view. **A coerced session
+watches the real vault arrive.** Neither bug alone does that: Bug 88 needs someone to reach an
+import, and this is what reaches it, automatically, unprompted.
+
+**3. The filenames are self-describing, with no live session required at all.** Checked 2026-08-25.
+`Vault+Manager+Backup.swift:586-591` writes the two restore files as literally
+`pending-restore.occbak` and `pending-restore-shards.dat`, unobfuscated, sitting in Application
+Support. Harms 1 and 2 both need a live coerced session at the *duress* depth. This one needs
+neither a coercer nor any depth at all — a forensic examiner, a border search, or anyone else with
+filesystem access to a seized or extracted device reads the filenames without decrypting anything and
+learns a recovery is in progress, purely from `ls`. Compare `backup-export-meta.dat`
+(`Vault+Manager+Backup.swift:813`, already noted in Bug 96 item 4's "self-describing artifacts") —
+that name at least has a plausible cover story, since exports are ordinary. These two name the
+*mechanism* directly: not "this app made a backup," but "this device is mid-recovery, right now."
+Any fix that only addresses the live-UI banner (harms 1 and 2) leaves this open — it needs the
+restore files themselves to stop naming what they are, independent of whatever the deferral design
+ends up being.
+
+### What is *not* wrong with it today
+
+Worth stating so the fix is not misjudged. The banner is **not currently a duress oracle**. It shows
+the same thing at every depth, so a coercer cannot compare it against a real-layer view they never
+see, and its presence is fully explained by facts they can already observe. The defect today is
+disclosure and misdelivery, not a tell.
+
+### Relationship to Bug 88
+
+Bug 88's import remedy is *"import at depth M stamps every restored entry with M"*. That is correct
+for a user-initiated import — the user chose the moment and the layer. It is wrong for this path,
+because **nobody chose the moment**: the restore fires on whatever unlock happens to complete the
+shard threshold. Stamping current depth would file a recovered real-layer backup into whichever
+duress layer the user happened to unlock into, silently and unrecoverably in place.
+
+The fix is to defer: `attemptBEKRestore` no-ops above depth 0 the way it already no-ops while
+locked, and completes on the next depth-0 unlock. Shards continue to be collected and stored
+meanwhile — storage is silent and `storeRestoreShard` already works while locked — so nothing is
+lost, only postponed.
+
+**But a deferral alone converts harm 1 into a genuine oracle.** A coercer who can see
+*"5 recovery pieces collected"* and then watches the threshold pass with nothing happening has found
+a view that contradicts itself, and self-contradiction inside a single view is exactly what an
+observer can catch. The requirement is not that the duress view match the real one — the coercer
+never sees the real one — but that **the duress view be internally coherent**. So the deferral and
+the surface-hiding are one change, not two: above depth 0 the recovery machinery must both decline to
+run *and* decline to announce itself, leaving a layer that looks like a device with nothing pending.
+
+### The design, settled and built 2026-08-25
+
+Neither shape originally proposed was quite right. Accept-silently-always leaves a real gap for the
+"already armed, still pending" case (below). Per-layer state solves it but needs new storage the
+problem doesn't actually require. The answer that fell out of walking concrete scenarios end to end:
+
+**Depth has to reach three places it doesn't today.** `unlock(context:)` gains a required
+`currentDepth: Int` parameter — its three call sites (`Vault+Tab.swift`, `VaultRecoverySettings.swift`,
+`VaultShardHealth.swift`) all pass `security.currentDepth`; the last of the three doesn't have
+`Manager.Security` in its environment yet and needs it added. The `acceptReturnedShard` path is
+reached from `OccultaApp.swift`'s inbound-bundle handling, which already holds `self.security`
+directly (confirmed before assuming it) — depth threads down through `ShardCustodyManager.handleInbound`
+into `acceptReturnedShard` from there.
+
+**`refreshPendingRestoreState` and `attemptBEKRestore` both gain the same guard.** Above depth 0, the
+published state is forced to `false`/`0` regardless of what's actually on disk — not "hidden if
+something's pending," genuinely false, so a coercer watching across multiple unlocks sees the same
+nothing every time. `attemptBEKRestore` additionally refuses to complete above depth 0, matching the
+"defer and hide together" requirement above — deferral alone (without the state-forcing) is what
+turns harm 1 into a self-contradicting oracle; this is why they ship as one change.
+
+**`storePendingRestore` gets a new check, and it resolves the open question.** Not "is this exact
+file already known" — "does any restore state already exist," pending or completed:
+
+```
+pending file already exists (recovery armed, not yet complete)  →  true
+        OR
+a BEK already exists (recovery already completed)               →  true
+```
+
+Both halves reuse state that's already there — the pending file's mere presence, and remedy 1's
+existing `fetchDecodedBEK` check — so this needs **no new persisted history**. If either is true: at
+depth 0, show the real, specific truth ("still restoring" or "already set up"); above depth 0, show
+a single flat acknowledgment — *"this backup file has already been processed"* — true in either
+sub-case, since it doesn't claim which one. If neither is true (genuinely nothing has happened yet):
+depth 0 starts the live progress UI as it does today; above depth 0, silent accept, file written,
+nothing shown.
+
+**Why "any restore state" rather than "this exact file" is the right framing, not a shortcut.** It
+means the message is never a lie — a *different* `.occbak` shown while one is already pending or
+done gets the same honest "already processed," rather than needing file-identity tracking (hashing,
+persisted history) to stay truthful. It also matches the constraint that already existed
+independently: accepting a second, conflicting restore target mid-flight is its own hazard, so
+refusing it is correct behavior regardless of the forensic question.
+
+**The first implementation of that refusal only half-honored it, and Part E's tests caught the
+other half.** `storePendingRestore`'s pending-file branch wrote the incoming file's bytes to disk
+*before* checking whether one was already pending, throwing `alreadyProcessed` only afterward — so
+a second, different `.occbak` silently replaced a genuine in-flight restore, while the caller saw
+the identical reassuring message either way. Writing the dedicated "already pending" test surfaced
+it directly: assert the throw, then assert the bytes on disk are still the *first* file's, and the
+original code failed that second assertion. Fixed to check-then-refuse, symmetric with the
+BEK-exists branch beside it, which already refused before writing. This is the same "other
+population" Bug 94 still flags open (no BEK exists yet, so remedy 1's overwrite refusal never
+applied here) — worth the cross-reference since it's the same shape of hazard, one layer earlier.
+
+**Two pieces flagged as unresolved, both since closed:**
+
+1. The message's display surface reuses the existing `showError`/`errorMessage` pattern in
+   `OccultaApp.swift`, rather than needing new UI: a second `@State` pair (`showBackupNotice` /
+   `backupNoticeMessage`) and a second `.alert`, placed the same way inside the `.unlocked` branch
+   for the same Bug 84/56 reason, wired via a `catch VaultManager.BackupError.alreadyProcessed`
+   clause ahead of the generic `catch`.
+2. Checked directly: `BackupError` has no `LocalizedError` conformance, so
+   `error.localizedDescription` on `.invalidFormat` already produces Swift's generic, non-revealing
+   fallback string — identical at every depth, via the same generic `showError` alert. No fourth
+   case; the malformed-file path was already depth-safe before this work started.
+
+**Why the legitimate user isn't burdened by any of this.** A real recovery, done by the actual owner,
+has no reason to be initiated from a duress PIN in the first place — she would naturally do her own
+recovery at her real depth, which is exactly the path that shows her everything. The constraint only
+becomes visible in the adversarial case: a coercer forcing the duress PIN and trying the file anyway,
+which is precisely where "tell them nothing true or false" is the correct behavior.
+
+### Harm 4, found after the fix, 2026-08-25 — fixed same day
+
+Found while walking a proposal to relax the depth-0 completion gate (rejected — see below). The
+proposal's justification ("silence in duress reads as a tell") turned out to be correct, just not for
+the reason it was raised for.
+
+**Duress's response to opening a `.occbak` was not uniform across the two-signal check's three
+states.** A genuinely new file (nothing pending, no BEK) was accepted silently — no alert of any kind.
+A file opened while one was already pending, or while a BEK already existed, showed the flat
+`alreadyProcessed` acknowledgment (Part C). Those were two different observable outcomes, and the
+difference between them **leaks which of the three states is true, without ever needing to compare
+against depth 0** — a coercer who tries more than one `.occbak` against the same duress session sees
+some produce an alert and some produce nothing, which is the two-signal distinction read straight off
+the UI. And even with a single file: an adversary specifically probing for a decoy layer doesn't need
+to see the victim's real depth at all — they can install the same shipped app, test it themselves with
+no coercion involved, learn independently that opening a `.occbak` is *supposed* to produce some
+acknowledgment, and then notice its absence on the victim's device. "The coercer never sees depth 0"
+is not the same claim as "the coercer has no way to know what normal behavior looks like," and the
+original design conflated the two.
+
+**This was narrower than it first looked, and doesn't reopen harms 1 or 2.** There are two different
+surfaces bundled under "what does duress show," and only one of them was fixable this way:
+
+- **The one-time file-open acknowledgment** (this harm) — whether *anything at all* is shown the
+  moment a `.occbak` is opened. **Fixed:** `OccultaApp.swift`'s `.occbak` handling now shows the same
+  "Backup file received" acknowledgment above depth 0 for all three states — fresh accept, already
+  pending, already done — via a local `do`/`catch` around `storePendingRestore` rather than the
+  now-removed outer `catch VaultManager.BackupError.alreadyProcessed` clause. The wording is
+  deliberately vague: it has to stay true whichever of the three actually happened, so it can't imply
+  completion or duplication. Depth 0 keeps its differentiated, truthful behavior unchanged — silent +
+  live banner for fresh, the existing "already been processed" wording for pending/done — since this
+  constraint is about duress's internal consistency, not about matching depth 0.
+
+  **Superseded 2026-08-27, and both halves of this bullet were rebuilt.** The acknowledgment is
+  gone entirely and the banner below is now depth-uniform. The paragraph above scoped depth 0 out
+  rather than clearing it, and the distinction was lost afterwards — the divergence got cited later
+  as a settled decision when it had only ever been declared out of scope.
+
+  **The comparison this fix ran was duress-against-duress:** can someone read the device's state by
+  trying several files in one duress session? No. The comparison nobody ran was
+  duress-against-real, which is the one a coercer can actually make. They open any `.occbak` —
+  their own will do — and read which session they are in off the reply: depth 0 said "already been
+  processed" on any device with a vault, or stayed silent on one without, where duress said
+  "Backup file received". The repo is public, so the baseline needed to interpret that is too.
+
+  **It could not be closed from the duress side.** Depth 0 varied its reply on whether a BEK
+  exists, and duress is deliberately blind to that, because surfacing real-layer state is a worse
+  leak than this one. Removing the message from duress alone — the obvious move — inverts the tell
+  rather than removing it: silence-versus-speech is legible at a glance, where a wording difference
+  at least needs prior knowledge. That is also roughly where this design started, before this harm
+  replaced it.
+
+  **So the acknowledgment was removed rather than harmonised.** The confirmation the user already
+  tapped (Bug 94 remedy 3) is the receipt for a fresh accept, and the banner is the durable signal.
+  A malformed file still errors at both depths; that branch turns on the file's own bytes, not on
+  vault state or depth.
+
+  **Cost, accepted:** on a device that already has a backup configured, opening another one now
+  does nothing visible at all, where it used to say why. That is the price of the uniformity.
+
+  **And that price is conditional on the architecture, not permanent — see Bug 102.** Depth 0 had to
+  vary its reply on whether a BEK exists, and duress could not, only because there is one BEK for the
+  whole device. With a per-layer recovery subsystem each layer answers truthfully about its own state,
+  and that answer is identical to what a real session in that layer would give. The acknowledgment
+  should come back if that lands. Recorded here so this reads as "correct for the current design"
+  rather than as a settled conclusion about what the user is allowed to be told.
+
+- **The ongoing progress banner** — was the persistent, updating shard count in the vault tab.
+  Originally judged un-unifiable: showing it in duress was harm 1 outright (direct disclosure that a
+  recovery is inbound), and fabricating a plausible, consistently-timed counter that tracks nothing
+  real is a harder and riskier build than the problem it solves — wrong timing or an inconsistency
+  across repeat checks is itself a tell, and a worse one.
+
+  **Revised 2026-08-27: the banner is now shown at every depth, and the count is gone.** That
+  reasoning was sound but attached to the wrong part. What could not be shown in duress was the
+  *number* — a live tally is a report on real depth-0 activity, and it would visibly climb during a
+  duress session, since shard collection is depth-independent (`storeRestoreShard`) even though
+  reconstruction is not. Dropping it leaves "Recovery in progress…", which claims no progress, so it
+  cannot contradict itself across repeated unlocks and reads the same as a real recovery still
+  waiting on trustees it has not met.
+
+  Neither horn of the original objection applies to the static form: it is real state rather than a
+  fabrication, so there is no timing to get wrong, and it is identical in both layers, so there is
+  nothing to compare. What it does concede is that duress advertises an event whose result only ever
+  lands at depth 0 — accepted, because a recovery that visibly never finishes is an ordinary thing
+  for one to do, and because the alternative was leaving a divergence a coercer can read in one move.
+
+  This reverses half of "defer and hide together". **Deferral is what makes it safe and stays
+  load-bearing:** `attemptBEKRestore` still refuses above depth 0, now pinned by
+  `pendingRestoreNeverCompletesAboveDepthZero`. `refreshPendingRestoreState` no longer takes a depth
+  at all, and the test that required it to publish false above depth 0 is inverted to require
+  uniformity.
+
+**The rejected proposal, for the record.** Allowing `attemptBEKRestore` to complete above depth 0
+when no BEK exists yet was suggested on the theory that a coercer would need cooperating trustees to
+reach threshold, so there was no real risk. Traced through `handleHandback`
+(`ShardCustody+Manager.swift:201-219`): once `isRestorePending` is true, signature verification on
+incoming shard attributes is skipped entirely — deliberate, for the rotated-key new-device case — so
+nothing checks that a shard came from a real, previously-established trustee at all. A coercer with
+physical access to the victim's phone (no-BEK state only — Bug 94's still-open "other population")
+can set up their own vault on their own device, export their own `.occbak`, deliver it and their own
+self-authored shard attributes through the same file/bundle-open channel used for everything else, and
+reach threshold using entirely self-supplied material — no real trustees needed. Today the depth-0
+completion gate stops this cold: nothing completes while the coercer is watching. Relaxing it for the
+no-BEK case would make this exact attack succeed live, in front of them, instead. Kept as built.
+
+### Guard
+
+Updated 2026-08-25, Part E: `VaultRestoreDepthGatingTests` (`VaultRestoreTrustTests.swift`) covers
+the depth surface directly — `genuineRestoreCompletesAtDepthZero`, `genuineRestoreDoesNotComplete
+AboveDepthZero`, `shardsStillAccumulateAboveDepthZero`, `publishedStateIsForcedFalseAboveDepthZero`.
+`VaultRestoreTrustTests` covers all three `storePendingRestore` outcomes by name —
+`storePendingRestoreAcceptsAGenuinelyNewFile`, `storePendingRestoreRefusesWhenBEKAlreadyExists`,
+`storePendingRestoreRefusesWithoutOverwritingWhenAlreadyPending` — the last of which is what caught
+the write-ordering bug above. Filenames are asserted directly in `VaultRestoreTrustTests.swift`'s
+own path constants (`backup-import-cache.occbak` / `-shards.dat`), which fail to compile-match if
+production and test ever drift.
+
+**Harm 4's fix has no automated coverage.** `storePendingRestore` itself is unchanged by that fix —
+it still throws `alreadyProcessed` for two of the three states and returns normally for the third,
+exactly as `VaultRestoreTrustTests`' three outcome tests already assert, and those tests remain
+correct descriptions of the underlying function. What changed is `OccultaApp.swift`'s UI wiring
+around that call, which none of the `VaultManager`-level tests reach at all — they call
+`storePendingRestore` directly, not through the app's file-open handling. Verified by reading the
+resulting code path for all three states rather than by a test; a SwiftUI-level test that opens a
+`.occbak` through the app and asserts on `showBackupNotice`/`backupNoticeMessage` would close this
+gap if one is added later.
+
+Acceptance criteria, matching *The design, settled*:
+
+- ✅ A restore reaching threshold at depth > 0 must leave `pendingRestoreActive` false to the UI, must
+  not insert entries, and must complete on the next depth-0 unlock with the entries stamped 0.
+- ✅ A genuinely new `.occbak`, no prior restore state, opened above depth 0: silent write to the
+  pending-restore file, `pendingRestoreActive` stays false. Superseded in spirit by Harm 4's fix below
+  (the file-open response is no longer silent), but the underlying storage behavior this criterion was
+  really about — no live count, no state change visible above depth 0 — still holds.
+- ✅ A `.occbak` opened above depth 0 while a restore is already pending *or* already completed (BEK
+  exists): the flat acknowledgment shown, never the live count, and identical whichever of the two
+  underlying states is true.
+- ✅ The same two cases at depth 0 show the real, specific state — this is not a security requirement,
+  it is the difference between the depth-0 and duress paths that makes the whole design coherent.
+- ✅ Harm 3 needs its own criterion, independent of any UI behavior: the on-disk filenames must not
+  name the mechanism, regardless of the above.
+- ✅ **Harm 4:** all three `storePendingRestore` outcomes produce the same one-time acknowledgment
+  above depth 0 — never silence for one and an alert for the others — so trying multiple files against
+  the same duress session never produces a distinguishable pattern. No automated test; see *Guard*.
+
+### Noted in passing, not filed
+
+`handleHandback` (`ShardCustody+Manager.swift:207`) relaxes shard signature verification whenever
+`pendingRestoreActive` — deliberate, for the rotated-key new-device case, and documented as such.
+It is not depth-related, but it is a second behaviour that changes based on this same unguarded flag,
+and it should be re-read once the flag becomes depth-aware.
+
+
+---
+
+## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
+
+**Status:** **All three remedies in as of 2026-08-26.** Remedy 1 fixed 2026-08-24; remedy 2 (trustee
+attestation) built and tested 2026-08-26; **remedy 3 (explicit confirmation) built 2026-08-26**, when
+a security review of `release/v1.10.3` established that it is not the optional third of three but the
+only control that actually gates this attack — see *Remedy 3, and why the threshold cannot be
+enforced* below. Filed 2026-08-22 during a critical read of the
+export/import mechanism, requested after Bug 93. Found by asking what `ownerIdentity: nil` actually
+gives up. **Remedy 1 (overwrite refusal) is in** — `reconstructBEK` now refuses before touching
+Shamir, GCM, or `persistBEKPayload` whenever a BEK row already exists, closing the *destructive* half
+unconditionally. **Remedy 2 closes "the other population" below** — the no-BEK-yet population, most
+users most of the time, is no longer able to have a fully attacker-controlled vault silently planted
+by any known contact. **Remedy 2's first-pass design had a critical gap** — a naive implementation let
+a single attacker self-attest a full threshold's worth of forged shares, reintroducing this bug's
+exact severity through the new mechanism — found and closed before any code was written; see
+*Implementation, worked out and stress-tested* below for the corrected design, now built exactly as
+specified there and covered by `ShardHandbackAttestationTests.swift` (9 tests, including the specific
+single-attacker case the review caught). **Remedy 3 (explicit confirmation before an automatic import
+mutates the vault) is the only piece of the original three-part remedy still open** — kept as
+defense-in-depth on top of remedy 2, not load-bearing on its own; see *Remedy* below.
+
+**A consequence of remedy 1, found and closed the same day.** Every group `reconstructBEK` sees
+on an existing-BEK device now fails immediately via `bekAlreadyPresent` — so the "success" branch
+in `attemptBEKRestore` that clears `pendingRestoreActive` and deletes the restore files can never
+run. Without a further change, one hostile `.occbak` would leave the device stuck in "restoring"
+state permanently: the banner never clears (Bug 93's surface), and every future shard arrival
+keeps appending to a file nothing can ever read successfully again (Bug 96's growth item).
+`attemptBEKRestore` now checks for an existing BEK *before* touching the shard file at all, and
+if one exists, clears `pendingRestoreActive` and deletes both restore files immediately rather
+than letting every group fail one at a time. Because `acceptReturnedShard` calls
+`attemptBEKRestore()` synchronously right after every `storeRestoreShard()`, this bounds growth
+on an existing-BEK device to roughly one shard per arming cycle in real usage — see Bug 96's
+entry for what this does and does not resolve there.
+
+**Target:** unset. **Independent of Bugs 88, 92 and 93** — those are about depth. This one survives
+all three being fixed.
+
+### Severity: Critical (security)
+
+Preconditions are two, and both are ordinary: the user opens one attacker-supplied `.occbak`, and the
+attacker is an established contact able to send `.occ` bundles. No confirmation prompt exists
+anywhere in the flow to interrupt either half.
+
+### The circular argument
+
+`attemptBEKRestore` (`Vault+Manager+Backup.swift:721`) reconstructs with signature verification
+switched off:
+
+```swift
+try self.reconstructBEK(shards: group, backupData: backupData, ownerIdentity: nil)
+```
+
+`reconstructBEK`'s doc comment states the substitute: *"Pass nil on new-device path (old key
+non-migratable); GCM tag substitutes."* And the GCM tag does prove something — that the reconstructed
+BEK opens `backupData`.
+
+**But on this path the attacker supplies both.** They generate a BEK, seal their own `VaultBackup`
+JSON under it, Shamir-split it, and send the shares. The tag then proves their shards match their
+file, which is true and worthless. The ECDSA check against the owner's identity is the only thing on
+this path that binds the material to *this device*, and it is the thing being skipped.
+
+### The chain, end to end
+
+**1 — The file is armed with no confirmation, and above the Secure Mode gate.**
+`OccultaApp.swift:645-660` routes any `.occbak` into `storePendingRestore`, which validates four
+magic bytes and — since Bug 93 — the two-signal check (refuses if a BEK already exists or a restore
+is already pending) and nothing else about the file's actual contents or provenance:
+
+```swift
+if fileLocation.pathExtension == "occbak" {
+    let currentDepth = self.security.currentDepth
+    do {
+        try self.vaultManager.storePendingRestore(data, currentDepth: currentDepth)
+        …
+    } catch VaultManager.BackupError.alreadyProcessed { … }
+    return
+}
+
+// Secure Mode gate: if the app is locked, queue raw bytes without any processing.
+if self.appScreen.phase != .unlocked { … }
+```
+
+The `return` is still *above* the lock check, so a `.occbak` arms a pending restore while the app is
+locked — unlike every other inbound file type, which is queued unprocessed. Bug 93's additions
+(depth threading, the two-signal check, the acknowledgment UI) changed what gets displayed and when
+completion is allowed to run; they did not add any check on the file's contents, so this step is
+otherwise unchanged from when this bug was filed.
+
+**2 — Forged shards are accepted, twice over.** `handleHandback`
+(`ShardCustody+Manager.swift:201`) hard-rejects a bad signature *except* during a pending restore:
+
+```swift
+guard vaultManager.isRestorePending else { throw CustodyError.signatureRejected }
+```
+
+**Renamed from `pendingRestoreActive` by Bug 93 (2026-08-25), same behavior.** Bug 93 needed
+`pendingRestoreActive` to start lying above depth 0 for display, and split off `isRestorePending` as
+an always-truthful twin specifically so this gate — a functional check, not a display one — would
+keep working exactly as before. Confirmed against the actual diff: `isRestorePending` reads identically
+to how `pendingRestoreActive` behaved pre-Bug-93, at every depth. **This bug's exploitability is
+unchanged; only the name in this quote was stale.**
+
+Then `acceptReturnedShard` (`Vault+Manager+ReturnBuffer.swift:38`) performs what its own
+documentation calls *"Best-effort signature verification"* — it logs under `#if DEBUG` and continues
+regardless. Step 1 of its documented steps enforces nothing in any build. It validates
+`category == .shard` and a non-nil `entryID`, and **never checks that `entryID` names a distribution
+this device ever created.**
+
+`.handback` is also the only `ShardOperation.Kind` whose handler receives neither `senderPublicKey`
+nor `senderIdentifier` — `handleDistribute` and `handleReplace` both take them.
+
+**3 — Reconstruction "validates."** Shamir returns the attacker's BEK; `AES.GCM.open` on the
+attacker's file succeeds; the guard passes.
+
+**4 — The real BEK is deleted.** `persistBEKPayload` (`Vault+Manager+Backup.swift:1005-1008`) is
+delete-and-replace:
+
+```swift
+let existing = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
+for row in existing { self.modelContext.delete(row) }
+self.modelContext.insert(BackupEncryptionKey(id: rowID, encryptedPayload: combined))
+```
+
+Every genuine backup file sealed under the old BEK becomes permanently unrestorable, and the
+trustees' real shards now reconstruct a key that matches nothing on the device.
+
+**5 — Entries are inserted.** `importBackup` writes the attacker's rows into the user's vault.
+
+**Nothing guards on the device already having a BEK.** `attemptBEKRestore`'s only preconditions are
+`isUnlocked` and `pendingRestoreActive`. An established device with a healthy vault runs all five
+steps.
+
+### The other population: no BEK yet, and remedy 1 does not reach it
+
+Checked 2026-08-22, asking whether "refuse to overwrite an existing BEK" (remedy 1, below) is a
+complete fix. It is not — it protects exactly the population that already has something to lose, and
+does nothing for the population that doesn't yet, which given `setupBEK()`'s single opt-in caller
+(`Vault+ShardSetup.swift:553`, `.backup` mode only) is most users most of the time, and permanently
+for anyone who never turns the feature on.
+
+Steps 1, 2, 3 and 5 above do not depend on step 4 (the overwrite) at all. On a device with no BEK row,
+`fetchDecodedBEK` returns `nil`, step 3's reconstruction still "validates" against the attacker's own
+file, and step 5 still inserts. **Nothing is destroyed, because nothing existed — but a working,
+plausible, attacker-controlled vault is planted where none was, silently, with no anomaly for the
+user to ever notice.** That is arguably worse than the overwrite case: overwriting at least breaks
+something a user might go looking for; planting creates something they have no reason to.
+
+**The attacker does not need to be a trustee.** `handleHandback` checks a signature (skippable, see
+above) and nothing else — there is no `ShardRecord` to check the sender against, because none exists
+until a BEK does. And `ShamirSecretSharing.reconstruct` only requires `shares.count >= 2`
+(`ShamirSecretSharing.swift:137`). So the minimal attack is: any existing contact — not specifically
+someone the victim ever entrusted with recovery — sends one hostile `.occbak` (sealed under a BEK of
+their choosing) plus two forged `SignedAttribute` `.handback` ops forming a valid 2-of-2 split of
+that same BEK, sharing one `entryID`. `identifyOwner(for:)` (`Contact+Manager.swift:1501`) does still
+require the sender to be a *known* contact — an unrelated stranger's bundle never decrypts — but nothing
+requires that contact to be a trustee.
+
+**Remedy 1 does not cover this population, by construction — only remedy 2 does**, since it is the
+only mechanism capable of asking "is this genuinely the owner's own material" rather than "does
+something already exist to protect." Any acceptance criterion for this bug that stops at "an existing
+BEK cannot be overwritten" is incomplete.
+
+### Remedy
+
+Three changes, smallest first. The first closes the *overwrite* sub-case only — see above for the
+sub-case it leaves fully open.
+
+1. **Refuse to overwrite an existing BEK row during restore.** A device that already holds a BEK is
+   not a fresh restore target. Kills step 4 with no format change and no new state. Does not help a
+   device with no BEK — see above.
+2. **Verify against the owner's current identity when possible; accept a trustee's attestation when
+   it isn't — never an unconditional skip.** See below; this is not a looser version of the ECDSA
+   check, it is a second, different mechanism for the one case the check structurally cannot cover.
+3. **Require explicit confirmation before an automatic import mutates the vault.** Bug 93 already
+   establishes that this path runs unprompted on unlock.
+
+### Why remedy 2 can't just be "verify more strictly"
+
+Worth spelling out, because the natural first read of remedy 2 — check the signature whenever
+possible — undersells what the rotated branch actually needs.
+
+**A single shard cannot be authenticated in isolation, on either path.** `SignedAttribute.signature`
+is the *owner's* signature over the shard, made at `prepareBEKShards` time by whatever SE identity key
+existed on the device that split the BEK. Checking it needs that same key's public half. On an
+unrotated device, `retrieveIdentity()` returns it — the check is real and remedy 2's first half
+applies directly. **On a genuinely new device it does not, structurally, because SE keys are
+non-exportable and die with the device they were created on.** There is no looser version of an
+ECDSA check that recovers a public key which no longer exists anywhere reachable — tightening the
+check cannot help a device that has nothing to check against.
+
+**"Unrotated" is broader than "never lost the device," and this matters for scope, not just for
+wording.** Checked 2026-08-25 against `Manager.Key.retrievePrivateKey()` (`Key+Manager.swift:163`):
+it looks the identity key up under a fixed, hardcoded keychain tag before ever creating one, and
+keychain items survive a plain app delete on the same device — only the SwiftData database gets
+wiped on uninstall. So the same-device-reinstall population — no BEK, but the identity key intact —
+is `retrieveIdentity()`-unrotated in every sense that matters here, and Branch A authenticates its
+returning shards correctly with zero new mechanism. **Attestation is load-bearing only for the
+remaining two starting states: a genuinely new physical device, or the same device deliberately
+erased.** Both are real and both need it — but the population this remedy has to cover is narrower
+than "any recovery with no BEK yet" (Bug 93's precondition) suggests on its own.
+
+The other candidate oracle doesn't help either. The GCM tag on the backup file is the only signal
+that survives rotation, but it operates on a **reconstructed group**, not a single share — Shamir
+shares are information-theoretically indistinguishable from random individually, which is what makes
+secret sharing work at all. So there is no per-shard test available on the new-device path, only a
+post-hoc one on the whole group (see Bug 95, which is what a forged share does to that group).
+
+**The rotated case needs a different kind of trust anchor, not a weaker version of the same one.**
+Not a new one, either — Occulta already has what's needed, just not applied here. **The trustee is
+the anchor.** `Contact.Profile.Key` is append-only (`Contact+Manager.swift:552`, `update(key:for:)`):
+when Bob re-pairs with the owner's new device over UWB — which has to happen anyway, or none of his
+bundles decrypt on that device at all — his contact record for the owner gains a new key without
+deleting the old one. He still holds the exact public key that originally signed his `CustodyShard`,
+long after the owner's own device has lost the ability to verify against it. **Bob can perform the
+check the owner's device structurally cannot, using data that was never his to lose.**
+
+So the fix is not a new channel for the shard to travel over. It already travels over an ordinary
+bundle, authenticated the ordinary way, to a contact the owner's new device re-paired with over UWB
+regardless. The fix is what the trustee attaches to it: a fresh signature, made with *his own current*
+identity key, attesting that he checked the share's original signature against his own retained copy
+of the owner's old key before sending it. The owner's device cannot check the old signature. It can
+check this one — the same way it already checks anything else from a contact it has UWB-established.
+
+### The design: trustee attestation
+
+Two other designs were considered and rejected before this one, recorded so they are not
+re-proposed without re-deriving why they were wrong.
+
+**Rejected: a dedicated live exchange session for the shard specifically.** The instinct was to reuse
+`ExchangeManager`'s `NISession`/`MCSession` machinery (`Exchange+Manager.swift:30`) as a new, separate
+ceremony for handing back a shard. Redundant: the proximity anchor it would provide already exists,
+upstream, in the ordinary re-pairing required for Bob's bundle to decrypt on the owner's new device at
+all. A second session would re-prove something already proven.
+
+**Rejected: asking the owner to enumerate her trustees at recovery time.** The instinct was that since
+the device has no local record of who held what (`shardMetadata: nil` on reconstruction — Gap 2
+below), only the owner's own memory could supply it. Wrong premise: the record was never the owner's
+alone to lose. The trustee's own contact history survives exactly where the owner's identity does not,
+and an owner-supplied list adds nothing an honest trustee's attestation doesn't already prove, while
+adding a step a coerced or careless owner could get wrong.
+
+**What attestation actually closes.** It is self-limiting to genuine trustees by construction — to
+attest, Bob needs both a real `CustodyShard` and a matching historical key for the owner, neither of
+which an arbitrary contact (the population identified above, in "The other population") was ever
+given. There is nothing to fake possessing. This closes that population's attack categorically, not by
+raising the cost of it.
+
+**What it does not close, and why that is not a gap in this design.** Nothing cryptographically forces
+a trustee to have actually performed the check before signing an attestation — it is a claim, not a
+proof the claim's process ran. A single dishonest or compromised trustee could sign an attestation
+over fabricated bytes. But one fabricated share, mixed with k−1 genuine ones, simply fails to
+reconstruct anything that opens the target file — Shamir does not degrade gracefully. Defeating this
+needs k or more trustees dishonest *and* colluding, which is the same assumption every k-of-n
+threshold scheme already rests on. Attestation is not required to improve on that baseline; nothing
+built on top of Shamir sharing is.
+
+**Kept as cheap defense-in-depth: do not silently auto-arm the file.** Attestation closes the shard
+side outright, which means the file side matters less than it did — but a colluding-majority attacker
+who also controls what `.occbak` gets tested against is a strictly worse position for the owner than
+one who does not. Moving `storePendingRestore`'s trigger behind a deliberate "restore my vault, pick
+your backup file" action, instead of the current silent handler on any inbound file, costs little and
+narrows that residual case further. Not load-bearing on its own — see "The other population" above for
+why a confirmation step alone cannot stop an attacker who supplies both sides.
+
+### Implementation, worked out and stress-tested 2026-08-26
+
+**"Defeating this needs k or more trustees dishonest and colluding," above, is not automatic from
+attestation existing — it is a property of one specific mechanism, and a first-pass design of that
+mechanism didn't actually have it.** Recorded in full because the failure mode is exactly the kind
+this bug is about: a check that looks like it closes the population but doesn't.
+
+**The flaw a naive Branch B has.** The obvious shape — accept a shard whenever its signature fails
+direct verification but an attestation from a known contact vouches for it — only checks that *some*
+known contact signed *something*. It never independently verifies the original `attribute.signature`
+against anything. Nothing stops the attester and the "original signer" from being the same party: a
+single known contact (not a trustee, never given a real share) can invent their own fake
+`SignedAttribute` with an observable target `entryID`, sign an attestation over it with their own
+current key, and have it verify cleanly — because it genuinely is their own signature over their own
+fabricated data. Nothing stops them minting `threshold`-many distinct fake `SignedAttribute.id`s this
+way, all sharing the target `entryID`. `ShamirSecretSharing.reconstruct` only checks
+`shares.count >= threshold` and distinct x-coordinates — it does not check who sent them. One attacker,
+alone, reconstructs a key of their choosing. That is Bug 94's original severity, relocated into the new
+code path, not the "k colluding trustees" bound this design is supposed to provide.
+
+**The fix: enforce distinct senders, not just distinct share IDs, toward any threshold.**
+
+1. The attestation is a `SignedAttribute` with a new `.attestation` category, signed by the trustee's
+   current identity key over `SHA256(attribute.signingPayload())` — a hash, not the raw payload, so the
+   attestation doesn't carry a second copy of the raw shard bytes (`signingPayload()` includes `value`,
+   the actual GF(2^8) shard material) alongside the original in the same message.
+2. `handleHandback` accepts via **Branch A** (`attribute.verify(against: ownKey)` — can only ever be
+   genuine; forging it means breaking ECDSA or stealing the SE key, so no dedup is needed for this
+   branch) or **Branch B** (`attestation.verify(against: senderPublicKey)`, the hash matches, `entryID`
+   matches).
+3. Every stored share — both the per-entry `ReconstructShard` buffer and the BEK-restore shard file —
+   carries `senderIdentifier` alongside the attribute and attestation. Storage keeps **at most one
+   share per `(entryID, senderIdentifier)`**, replacing rather than accumulating on a repeat from the
+   same sender. Reconstruction then structurally requires `threshold` *distinct senders*, because
+   that's what the stored count now actually reflects — restoring the bound the design always claimed.
+4. **Dedup key is `senderIdentifier` (the contact record), not `senderPublicKey`'s fingerprint.**
+   Stress-tested this choice rather than assuming it: keying on the raw public key would let a single
+   hostile trustee reinstall the app or use a second device, generate a fresh identity key, re-pair with
+   the owner as "the same contact" (`Contact.Profile.Key`'s history is append-only — nothing marks an
+   old key as the *only* valid one), and hold two fingerprints that both count — a cheaper Sybil than
+   establishing a second contact relationship. `senderIdentifier` stays stable across a trustee's own
+   legitimate key rotation, correctly counting them once.
+5. **`senderIdentifier` is receiver-derived, not sender-asserted — checked directly, not assumed.**
+   Traced both call sites (`OccultaApp.swift:835-864` group path, `:885-909` 1:1 path): `ownerID` comes
+   from the *receiving* device's own `contactManager.openGroup(...)`, and `senderPublicKey` is looked up
+   *from* that resolved `ownerID` via `currentPublicKey(forIdentifier:)` — the lookup runs
+   identifier-on-file → key, not key → sender-claimed-identifier. An attacker can't assert a different
+   name across bundles; whichever contact the decrypting key actually resolves to on the receiver's own
+   records is what `senderIdentifier` will be, every time. This is what makes step 3's dedup sound —
+   had this gone the other way, the whole mechanism would need a different anchor.
+6. **BEK-shard and per-entry-PEK-shard storage need different gates, not one flag loosened
+   uniformly.** A per-entry share can be gated precisely: the device already knows locally which
+   entries have an outstanding distribution (`VaultEntry.shardDistributionEncrypted != nil`), so gate
+   on that rather than the old global flag — more precise *and* safer than today, where the buffer
+   insert is otherwise ungated on anything but `category == .shard`. A BEK share can't be gated that
+   precisely: a fresh device doesn't know the expected `distributionID` before reconstruction succeeds
+   (it lives inside the encrypted BEK payload), so `isRestorePending` has to stay as that gate — an
+   earlier pass proposed dropping it everywhere, which was wrong for this branch specifically. Gap 1's
+   bootstrap-window removal still holds for the per-entry case, where a precise gate now exists to
+   replace it.
+
+**What stays explicitly out of scope, on purpose:** a genuinely-established, otherwise-legitimate
+trustee still overwriting their own stored share with poisoned material — remedy 2 authenticates
+provenance, not correctness, and error-correction against a bad-but-genuinely-sent share is Bug 95's
+territory, not this one's. Sybil identities via *separate* contact relationships (distinct from the
+same-trustee-multiple-keys case step 4 closes) — the app already treats an established contact,
+however recently added, as its baseline trust unit everywhere else; closing that boundary isn't this
+fix's job.
+
+**Built and tested 2026-08-26**, exactly as specified above — `SignedAttribute.Category.attestation`,
+`AttestedShard`, `OccultaBundle.ShardOperation.attestation`, `handleHandback`'s Branch A/B, the
+per-`(entryID, senderIdentifier)` storage cap in both `acceptReturnedShard` and `storeRestoreShard`,
+and the trustee-side `attestation(for:)` builder. `ShardHandbackAttestationTests.swift` covers both
+directions: the owner-side accept/reject logic (including the single-attacker-cannot-reach-threshold
+case this review caught) and the trustee-side building path end to end, including the
+no-matching-retained-key fallback to no-attestation-at-all rather than a fabricated one. Full
+affected-suite regression passes clean.
+
+### The gate is too narrow even for the mechanism it already has
+
+Traced 2026-08-22, prompted by asking whether an owner-identity rotation could be closed out
+afterward by re-signing what trustees already hold. It can't be done in place — that would move the
+raw share value between devices again — but the trustee side already contains most of what a clean
+reissue needs, and two separate gaps stop it from finishing.
+
+**The trustee side already self-triggers on rotation.** `buildShardOperations` calls
+`mismatchHandbackOps(for:currentFP:)` with whatever fingerprint the trustee currently has on file for
+the owner. The moment a trustee re-pairs with the owner's new device — updating their own contact
+record — their *next ordinary outbound bundle* compares that fresh fingerprint against
+`CustodyShard.payload.ownerKeyFingerprint` (captured at original distribution), finds a mismatch, and
+offers the stale shard back as `.handback`, unprompted. This is not hypothetical machinery to build —
+it already runs.
+
+**Gap 1 — `handleHandback` only accepts a mismatch during an active restore.** Its guard is
+`vaultManager.isRestorePending` (renamed from `pendingRestoreActive` by Bug 93, 2026-08-25 — same
+behavior, see *The chain, end to end* above). Once the owner has already recovered, that check is
+false, so any *later* mismatch-handback — from a trustee who re-pairs after the fact, which is the
+ordinary case, since not every trustee is available at the moment of bootstrap — is hard-rejected
+with `CustodyError.signatureRejected`. There is no accept-and-reconcile path for a trustee returning
+a stale shard as routine hygiene outside the bootstrap window.
+
+**Gap 2 — re-examined 2026-08-26, and the claim as originally written doesn't hold.** The reasoning
+up to the redistribution decision is still right: `reconstructBEK` clears `shardMetadata: nil` on
+success, so a freshly-recovered owner has no record of who held what, `distributeBEKShards`'s
+existing-vs-new-trustee split reads every trustee as new off that empty map, and redistribution
+issues plain `.distribute`. **But the conclusion — that `.distribute`'s handler never cleans up the
+stale shard — is wrong.** Checked directly: `handleDistribute`
+(`ShardCustody+Manager.swift:116-144`) calls `deleteMismatchShards(for:newFingerprint:)` at line 142,
+unconditionally, on every accepted `.distribute`, using the fingerprint of whoever just signed the
+incoming shard. `git log` traces this call to `0f5392a` (2026-05-04, the original manifest-based
+reconciliation protocol) — nearly four months before this bug was filed, so this was never a
+regression introduced alongside the rest of Bug 94's finding; the doc's claim was incorrect from the
+moment it was written, not something that changed later. **So a post-recovery `.distribute` to a
+trustee already holding a stale shard for that owner does get cleaned up**, the same way `.replace`
+does — Gap 2 does not need its own fix.
+
+**Net effect on Gap 1 alone: a trustee's stale shard is only orphaned between recovery and their
+next re-pairing** — not permanently, as originally written, since redistribution's `.distribute`
+already cleans it up once it arrives. In that window, offering it back gets hard-rejected; a repeating
+rejected-handshake pattern between the same two identities in that window is still worth weighing
+against this project's forensic-trace standard, the same way B4 is, but it is bounded, not indefinite.
+
+**Gap 1 resolves as a side effect of remedy 2's design, not as a separate fix.** Once
+`handleHandback`'s acceptance condition is "verifies directly (Branch A) or carries a valid trustee
+attestation" rather than "verifies directly or `isRestorePending` is true," there is no global flag
+left to scope in the first place. The attestation check is safe to run on *any* incoming handback,
+bootstrap or routine hygiene alike, because it is self-limiting to genuine trustees regardless of
+when it arrives. The tension with remedy 3 that an earlier version of this entry raised here doesn't
+apply once the accept condition stops being a flag at all.
+
+**Constraint on any fix touching the `.occbak` handler.** The extension is shared with the Secure
+Mode layer store by design — `forensic-trace-avoidance.md` **B4**, *"Vault backups use the same
+`.occbak` extension and are indistinguishable at the filesystem level"* — and the OCBK magic check in
+`storePendingRestore` is what keeps a blob out of the restore path. All three remedies above route
+through that handler. None may make the two formats distinguishable to an examiner, and none may
+surface a user-visible response to a file that fails the magic check.
+
+### Why this shape recurred
+
+The rationale for `ownerIdentity: nil` is genuine — a new device's SE identity key has rotated, so
+old shards cannot verify against it, and no amount of stricter checking recovers a key that no longer
+exists. But the fix routed *around* the problem instead of solving the rotated case on its own terms:
+the check was removed for every device on the path, including those whose key never rotated, rather
+than being paired with a mechanism that actually covers rotation. **The unrotated case needs the
+existing check enforced; the rotated case needs a different anchor — the trustee's own attestation —
+not a skipped one.** This is the same failure mode as Bug 80's stranded `maxBundleVersion` and Bug
+81's fail-closed gate: an exception written for one state applied unconditionally instead of being
+scoped to it.
+
+### Guard
+
+`VaultBackupRoundTripTests` covers the honest round trip; `VaultRestoreTrustTests` covers remedy 1
+(overwrite refusal). `ShardHandbackAttestationTests.swift` (2026-08-26, 9 tests) covers remedy 2
+directly — this is the suite that actually exercises the population remedy 1's own tests don't reach.
+
+Acceptance criteria, and which test covers each:
+
+- ✅ A device holding a BEK must reject a restore that would replace it —
+  `foreignShardsCannotReplaceExistingBEK` (`VaultRestoreTrustTests`, pre-existing).
+- ✅ A device with no BEK must reject reconstruction from shards that carry neither a valid direct
+  signature nor a valid trustee attestation — `noAttestationRejected`.
+- ✅ A rotated-identity share must be accepted on its attestation, never on the direct signature or
+  the GCM tag alone — `branchBAttestationAccepted`, `attestationWrongSenderRejected`,
+  `attestationHashMismatchRejected`.
+- ✅ A contact who was never given a real share must be unable to produce an accepted attestation
+  under any circumstance — `noMatchingRetainedKeyProducesNoAttestation` (no retained key → no
+  attestation, not a fabricated one) combined with `singleSenderCannotReachThresholdAlone` (even a
+  self-consistent fabricated attribute+attestation pair from one identity cannot single-handedly
+  reach threshold).
+- ✅ **The specific vulnerability this review caught**: a lone attacker must not be able to
+  self-attest a full threshold's worth of forged shares — `singleSenderCannotReachThresholdAlone`
+  directly, `sameSenderReplacesNotAccumulates` for the underlying storage mechanism.
+- ✅ The trustee-side builder must produce a working attestation when it genuinely can, and decline
+  cleanly when it can't — `trusteeBuildsAttestationOnFingerprintMismatch`,
+  `noMatchingRetainedKeyProducesNoAttestation`.
+- ✅ None of the above may produce a crash or a silent insert — implicit in every test above asserting
+  an exact `reconstructShardCount`, not just "no crash."
+- ✅ A mismatch-handback arriving after recovery has already completed must be reconcilable on the
+  same attestation check, not rejected for arriving outside a bootstrap window — resolved by
+  construction: `handleHandback`'s accept condition is no longer a flag (`isRestorePending`/
+  `pendingRestoreActive`) at all, so there is no bootstrap window left to fall outside of. No
+  dedicated test beyond the Branch A/B tests above, since there is no separate code path left to
+  test differently.
+
+Explicitly out of scope for this bug's guard, and inherent to any k-of-n scheme rather than a defect
+in this one: k or more genuinely-held trustee shards being dishonest and colluding.
+
+### Remedy 3, and why the threshold cannot be enforced
+
+Added 2026-08-26, from a security review of `release/v1.10.3`. Remedy 3 was carried as the soft third
+of three — nice to have once the cryptographic remedies were in. That reading was wrong, and the
+reason matters more than the remedy.
+
+**What remedy 2 actually delivers is a floor of two distinct senders, not `threshold`.** The one-row-
+per-`senderIdentifier` rule is real and does what it says: one identity cannot self-attest a group.
+But nothing on the BEK path checks the *count* against the owner's chosen `k`. `attemptBEKRestore`
+groups by `entryID` and hands the group to `reconstructBEK` with `ownerIdentity: nil`, so the only
+floor left is `ShamirSecretSharing.reconstruct`'s own `shares.count >= 2`. An attacker authors the
+`.occbak`, generates its BEK, and splits that BEK with `k = 2` — so two paired identities suffice
+regardless of what the victim's real distribution used. Two devices, or one enrolled twice.
+
+**And the check cannot be added, which is the part worth recording.** Enforcing a threshold requires
+knowing the owner's `k` on a device that has no BEK — a fresh install or a new phone, which is
+precisely the population remedy 2 exists for. That value survives in exactly three places, and none
+of them is available there:
+
+| Where `k` lives | Why it does not help |
+| --- | --- |
+| The BEK payload's `ShardDistributionMetadata` | The restoring device has no BEK. That is the precondition for being on this path at all |
+| The `.occbak` file | Authored by the attacker. Reading `k` from it is reading the constraint from the party it constrains |
+| The trustees | `prepareBEKShards` records `threshold` in the *owner's* payload. A trustee is given a share and never learns `k` |
+
+So a threshold check here would be theatre: either unenforceable or self-asserted. Recording this so
+the "just enforce the threshold" fix is not re-proposed — it looks obviously correct until you ask
+where the number comes from.
+
+**What actually gates the attack is the victim opening and accepting the file**, which is remedy 3.
+There was previously no confirmation at all — `storePendingRestore` armed on the strength of opening
+a file, and arming is not inert: it makes the device accept BEK shards from contacts and, once enough
+arrive, import the file's entries into the real-layer vault with no further prompt. A confirmation
+now precedes arming.
+
+**At every depth, and the first attempt at this got it wrong.** The prompt was initially scoped to
+depth 0, reasoning that a confirmation above it would be the distinguishable response Bug 93 harm 4
+exists to prevent. That misreads which half of the interaction harm 4 constrains. The
+*acknowledgment* has to vary with the outcome — fresh accept, already pending, already done — and is
+therefore the thing that must be flattened above depth 0. The *prompt* is raised before
+`storePendingRestore` runs and cannot vary with the outcome at all: same text, same buttons, same
+order, in all three cases. Making it uniform across depths satisfies harm 4 completely.
+
+Scoping it to depth 0 also introduced a leak of its own, in the opposite direction to the one being
+avoided. Its **absence** would tell whoever is holding the phone that they are not at depth 0 — that
+they are in a duress layer. The app is open source, so the baseline behaviour that comparison needs is
+public. A control that only fires in the real session is a depth oracle for anyone who knows the app.
+
+The acknowledgment split is unchanged and still lives where it belongs, now in `armPendingRestore`:
+uniform "Backup file received." above depth 0, differentiated and truthful at depth 0.
+
+**The staged file carries the depth it was opened at**, rather than re-reading `currentDepth` when
+the user confirms, so a depth change while the prompt is up cannot arm a file against a depth it was
+never offered for.
+
+The three doc comments that asserted the stronger property — `AttestedShard`, `storeRestoreShard`,
+`ReconstructShard.Payload` — now state the real one and why it cannot be stronger. `ReconstructShard`
+also notes the contrast worth keeping straight: the *per-entry* path does reach the entry's real
+threshold, because that entry is one this device split itself, so its distribution is on hand and
+every shard is verified against the owner identity. Only the BEK path is limited this way.
+
+**Not covered by a test.** The confirmation is view state in `OccultaApp`. Needs a manual device
+check: open a `.occbak` at depth 0 and again at a duress depth, confirm the prompt is identical in
+both — text, buttons, order — and that declining leaves nothing armed at either. Same standing
+limitation as Bug 93 harm 4's acknowledgment.
+
+---
+
+## Bug 94a — Remedy 2's attestation field is not padded, so slot size names the trustee who is mid-recovery
+
+**Status:** **Fixed 2026-08-26**, same day as the code it reports on. Found by a security review of
+`release/v1.10.3`, in remedy 2 itself.
+
+**Target:** `release/v1.10.3`.
+
+### Severity: Medium (forensic)
+
+No key material is exposed and nothing is forged. What leaks is the shape of a relationship: which
+member of a group send is genuinely holding shards for the sender, and that the sender's identity key
+has rotated — i.e. that they are mid-device-recovery. In a duress-depth send, where the member list
+is deliberately populated with contacts visible at that depth, this separates real trustees from
+cover members by file size alone.
+
+### What happens
+
+Remedy 2 added `ShardOperation.attestation` and populated it in `mismatchHandbackOps`.
+`ContactManager.fillerShardOperation` was not touched, so filler went out with `attestation: nil` —
+and `SignedAttribute` uses synthesized `Codable`, which omits a nil optional's key entirely rather
+than writing null. A populated attestation is roughly 260 bytes of JSON. Filler also carried
+`entryID: nil` where every real `.shard` attribute binds one, worth about 50 more.
+
+`ShardPadding` equalises the op **count** per recipient. Nothing equalises their encoded size. Each
+recipient's `RecipientPayload` is JSON-encoded and sealed with AES-GCM, which is length-preserving,
+and `GroupEnvelope`/`Recipient.wrappedPayload` travel as a cleartext JSON TLV block — so per-recipient
+byte lengths are readable straight out of a `.occ` with no key. That is not an inference; it is what
+`ShardPadding`'s own doc comment says the scheme exists to prevent.
+
+`fillerShardOperation`'s doc comment meanwhile still asserted the invariant it no longer held:
+*"filler and real entries aren't distinguishable by size within the array."*
+
+### Why the existing test did not catch it
+
+`GroupShardGatingTests.mixedGroupSendsToAllWithUniformSlotSize` asserts exactly the right property —
+both recipients' `wrappedPayload` within a tight tolerance — and passed throughout. It sends a
+`.distribute` op, and `attestation` is only ever set on `.handback`. The invariant was guarded on the
+one op kind that could not exhibit the defect.
+
+Its fixture had a second problem in the same direction: `makeSignedShardAttr` built `.shard`
+attributes with `entryID: nil`, which production never produces (`prepareBEKShards` binds the
+distributionID; per-entry splits bind the entry id). The fixture was ~50 bytes smaller than anything
+real, so it also could not have caught the `entryID` half.
+
+### Remedy
+
+**Fill the field, do not omit it** — the pattern this codebase already uses for exactly this class.
+`wrapRecipient` gives fallback-mode recipients a random `senderEphemeralSignature` of the right size
+for the same reason, and its comment names the same failure: *"otherwise this field's mere
+presence/size would let a mixed-mode group send distinguish FS from fallback recipients by
+RecipientPayload size alone."* Same shape as `verifierFillerArray`, `pinEnabledFillerArray`, and tier
+padding itself.
+
+So every outbound op now ships an attestation: real where one exists, `attestationFiller` otherwise —
+on `.distribute`, on `.replace`, on a `.handback` whose `attestation(for:)` returned nil, and on
+padding filler. Filler matches the real thing field for field: 32-byte value, 72-byte DER-shaped
+signature, same label, non-nil `entryID`.
+
+Behaviour is unchanged on receive. `handleDistribute`/`handleReplace` never read the field. A filler
+attestation fails Branch B exactly as a nil did, so a shard that needed a real one is still rejected;
+`noMatchingRetainedKeyProducesNoAttestation` now asserts that directly rather than asserting nil.
+`handleHandback` carries forward only a Branch B-*verified* attestation, so filler never reaches the
+recovery buffer.
+
+**Two residuals, both documented at the call site and neither scaling with content.** `kind`'s
+spelling — `.unsupported` (11 bytes) against `.handback` (8) — cannot be normalised without breaking
+the receiver's skip. And a real `.replace` carries an `attributeID` no other op has; giving filler one
+would make filler the outlier against the far more common `.distribute`, so the more common shape
+wins.
+
+### Guard
+
+`ShardOperationPaddingTests` encodes filler against a real attested handback and bounds the delta,
+sampled over 200 encodes rather than measured once — `Date` encodes as a variable-length `Double` and
+each op carries two, which is the same jitter that made the neighbouring test fail one run in three
+before its bound was widened. A second test pins the specific omissions (`attestation` non-nil,
+`attribute.entryID` non-nil, matching entryIDs) so they cannot return via a tidied nil default.
+
+`fillerShardOperation` is no longer `private`, solely so the first test can reach it. The general
+lesson is in its doc comment: **every optional member a real op can carry has to be filled here**,
+because tier padding equalises count and nothing equalises size.
+
+---
+
+## Bug 95 — One poisoned shard permanently blocks legitimate vault recovery
+
+**Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
+2026-08-26** against Bug 93's depth-gating: `attemptBEKRestore` now guards `currentDepth == 0` before
+the grouping/reconstruction loop this bug lives in (`Vault+Manager+Backup.swift:723`) — not a fix,
+just confirmation that the vulnerable code only ever runs at the one depth recovery was always meant
+to complete at, same reachability as before.
+
+**Target:** unset.
+
+### Severity: High (availability)
+
+Needs a pending restore and knowledge of the `distributionID`. **Any trustee has the latter** — it is
+the `entryID` on the shard they hold — so the attacker set is exactly the people the user chose to
+trust with recovery, which is the set this system already assumes may be partly hostile.
+
+### What happens
+
+`ShamirSecretSharing.reconstruct` (`ShamirSecretSharing.swift:136`) interpolates over **every share
+passed to it**. There is no subset search and no try-all-k-combinations:
+
+```swift
+let xCoords = shares.map { $0[0] }
+for byteIdx in 0..<32 {
+    let yCoords = shares.map { $0[byteIdx + 1] }
+    secret[byteIdx] = Self.lagrange(xCoords: xCoords, yCoords: yCoords)
+}
+```
+
+`attemptBEKRestore` groups by `entryID` and hands the whole group in:
+
+```swift
+groups[eid, default: []].append(shard)
+…
+try self.reconstructBEK(shards: group, backupData: backupData, ownerIdentity: nil)
+```
+
+So one bogus 33-byte share carrying the real `distributionID` and a fresh x-coordinate merges with
+the legitimate shares. Lagrange returns garbage, the GCM open fails, `continue`. The poisoned shard
+is persisted in `pending-restore-shards.dat`, **no UI can clear it**, and every subsequent unlock
+retries the same doomed group. Recovery is permanently dead.
+
+Bug 94's signature bypass widens the attacker set beyond trustees to anyone who learns a
+`distributionID`.
+
+### What is already right
+
+Worth recording so the fix is not misaimed at the arithmetic. `reconstruct` **does** close the
+obvious attacks:
+
+```swift
+guard !xCoords.contains(0)                else { throw Error.invalidShareFormat }
+guard Set(xCoords).count == xCoords.count else { throw Error.duplicateXCoordinate }
+```
+
+x = 0 is the secret itself, and a duplicate x would corrupt interpolation. Both are rejected. The gap
+is not a flaw in the field arithmetic — it is that a well-formed share with a fresh x is
+indistinguishable from a genuine one **once signature verification has been skipped**, and that
+`attemptBEKRestore` treats a group as all-or-nothing.
+
+### Remedy
+
+- **Verify shard signatures** (Bug 94, remedy 2). A forged share never enters the group. This is the
+  real fix; the two below are defence in depth.
+- **Try k-subsets rather than the whole group** when the full group fails, bounded by a sane cap.
+  `reconstruct` already rejects malformed input cheaply, and the GCM tag is a clean oracle for which
+  subset is right. Cost is combinatorial — cap it, and prefer the signature fix.
+- **Give the user a way to discard a pending restore.** There is currently no path to delete
+  `pending-restore.occbak` or `pending-restore-shards.dat` from the UI, so any wedged restore is
+  permanent regardless of cause. This is worth doing on its own.
+
+### Guard
+
+No test touches the recovery path at all (see Bug 93). Acceptance criterion: a group containing one
+forged share must still recover from the genuine ones, or must be discardable.
+
+---
+
+## Bug 96 — Restore-path robustness: two traps on decoded content, unbounded growth, and vault plaintext left unzeroed
+
+**Status:** **Partially fixed 2026-08-24.** Filed 2026-08-22 alongside Bugs 94 and 95. Grouped
+because all four are robustness rather than access-control defects, and none is worth its own
+entry. **Item 1 (the two traps) is fixed** — `importBackup` now range-checks `entryType` and
+`createdAt` before either reaches the conversion that used to crash the process. **Items 2
+(unbounded shard file) and 3 (unzeroed export plaintext) remain open.**
+
+**Item 2 has a structural fix rather than a cap, 2026-08-27.** The shard *file* no longer exists —
+Bug 100 remedy 2 made restore shards `ReconstructShard` rows — so item 2 is now unbounded *rows*
+rather than an unbounded file. The count is still uncapped and the dedup scan still decrypts every
+buffered row on each arrival, so nothing here is fixed. But the cap this item asks for falls out of
+Bug 102's fixed-slot design for free: fixed width means a bounded shard count by construction rather
+than a numeric limit bolted on. Worth waiting for that rather than adding a cap now, *unless* Bug 102
+slips — the guard test `restoreShardBufferIsBounded` is already written as a `withKnownIssue` and will
+flip to a real assertion on its own when a bound appears.
+
+**One caution carried from that design work.** A cap plus a *shared* buffer would be a cross-layer
+denial channel — junk shards evicting real ones. Bug 102's per-depth arrangement is what makes a cap
+safe, which is another reason not to add one to the shared buffer first.
+
+**Target:** unset.
+
+### Severity: Medium, rising to High in combination with Bug 94
+
+Two of these need the BEK to reach. Bug 94 hands an attacker the BEK, so they should be read as
+amplifiers of it rather than as independently gated.
+
+### 1 — Two traps reachable from decoded backup content — **fixed 2026-08-24**
+
+`importBackup` (`Vault+Manager+Backup.swift:268`, this trapping form no longer present — the fixed
+guards live at `:295` and `:308`):
+
+```swift
+let entryType = VaultEntryType(rawValue: UInt8(backupEntry.entryType)) ?? .note
+```
+
+`backupEntry.entryType` is `Int` from JSON. `VaultEntryType` is `UInt8`-backed with three cases. The
+`?? .note` guards the `rawValue:` lookup — but `UInt8(300)` or `UInt8(-1)` **traps before it is
+reached**. The nil-coalescing is on the wrong conversion.
+
+`VaultEntry.aad(for:)` (`Vault+Model.swift:227`):
+
+```swift
+var ts = UInt64(self.createdAt.timeIntervalSince1970).bigEndian
+```
+
+`UInt64` of a negative `Double` traps. Any `createdAt` before 1970 in a backup crashes the app.
+
+**Why this is not merely a robustness nit.** `attemptBEKRestore` runs on every unlock, and the
+pending-restore file is deleted *only after* `importBackup` returns. A trap is not an `Error`, so the
+`catch … continue` does not catch it. Under Bug 94 an attacker who can craft a file can therefore
+choose a **permanent crash on every vault unlock** in place of the entry injection.
+
+Fix: validate the `Int` range before converting, and reject a non-representable `createdAt` at
+import rather than at AAD construction.
+
+### 2 — Unbounded shard file and unbounded group count — **narrowed 2026-08-24, and downgraded to nice-to-have**
+
+`storeRestoreShard` deduplicates by `SignedAttribute.id` only, and the attacker picks fresh UUIDs:
+
+```swift
+guard !shards.contains(where: { $0.id == attribute.id }) else { return }
+```
+
+The file grows without limit, is fully read, GCM-opened and JSON-decoded on every unlock, and each
+distinct attacker-chosen `entryID` creates another group to run Shamir plus GCM against.
+`storePendingRestore` likewise accepts a file of any size and writes it to Application Support.
+
+**Resolved for the existing-BEK population, as a side effect of Bug 94's remedy 1.** Every group on
+that population now fails immediately via `bekAlreadyPresent`, and `attemptBEKRestore` checks for
+that up front rather than letting the shard file grow while every group fails one at a time — see
+Bug 94's entry. Because `acceptReturnedShard` calls `attemptBEKRestore()` synchronously right after
+`storeRestoreShard()`, real-world growth on that population is now bounded to roughly one shard per
+arming cycle, not a numeric cap.
+
+**Still open for the no-BEK population**, which has no equivalent early-out — there is no BEK to
+detect, and that device may legitimately need shards trickling in from real trustees over time, so
+there is no way to distinguish "not enough shards yet" from "never going to get enough" the way the
+existing-BEK case can. A count cap remains the only cheap defense there until Bug 94 remedy 2
+(trustee attestation) lands.
+
+**Downgraded from "fix" to "nice to have," on reconsideration of actual cost.** The original framing
+overstated urgency: reaching a size that meaningfully hurts (multi-second stalls, real memory
+pressure) needs several orders of magnitude beyond what one reproduction test showed (300 forged
+shards ≈ 1 second to store) — and getting there requires the attacker to deliver that many *distinct
+inbound bundles* through the ordinary messaging pipeline, which has its own cost on both ends and is
+a pre-existing, general flood surface this fix would not touch regardless of what the bundles
+contain. A cap here still costs nothing to add and is still worth doing, but it is not the
+same order of urgency as the trap fixes were, and should not be prioritized as if it were.
+
+`storePendingRestore` accepting a file of unbounded size is unaffected by any of the above and
+remains open — a separate concern from the shard-count question.
+
+### 3 — The entire vault plaintext is left in freed heap on export
+
+The file header states the discipline (`Vault+Manager+Backup.swift:8-9`):
+
+> *"BEK bytes only exist in memory during an active operation and are zeroed via defer where they
+> appear as raw `[UInt8]` or `Data` buffers."*
+
+It is honoured precisely for 32-byte keys in `setupBEK`, `rotateBEK`, `prepareBEKShards` and
+`reconstructBEK`. Meanwhile `exportBackup` builds `backupEntries` — every label and every content
+blob in the vault, decrypted — and then `JSONEncoder().encode(backup)`. **Neither is zeroed.**
+
+Guarding the key while leaving what the key protects is the wrong way round. `JSONEncoder`'s internal
+buffers cannot be reached, which limits how complete any fix can be, but the two named buffers can
+be — and the discipline as written promises more than it delivers.
+
+### 4 — Minor, recorded so they are not rediscovered
+
+- **`VaultBackup.version` is decorative.** It is decoded and never read; `importBackup` accepts any
+  value. Same root cause as Bug 92's note — it lives inside the ciphertext, so it cannot gate
+  anything about decryption.
+- **`bekSetupState` reports `.notSetup` after a successful restore.** `reconstructBEK` sets
+  `shardMetadata: nil`, so `bekShardMetadata()` returns nil and the state collapses to `.notSetup`
+  while a BEK plainly exists. Intentional per the comment (*"redistribution prompt handles
+  rebuild"*), but the state asserts something false and `exportBackup` then throws `belowThreshold`
+  without explaining why.
+- **Self-describing artifacts.** `pending-restore.occbak`, `pending-restore-shards.dat`,
+  `backup-export-meta.dat`, and the `vault.postRestoreActionNeeded` `UserDefaults` key. Contents are
+  sealed; names and existence are not. `backup-export-meta.dat`'s mere presence proves an export was
+  performed on this device.
+
+
+---
+
+## Bug 97 — Depth-field backfills stamp deleted rows with current-key material, the exact pattern rejected elsewhere in this file
+
+**Status:** **Fixed 2026-08-24.** Filed 2026-08-22, confirming a note carried since Bug 89 rather than
+acting on it unverified. Re-checked against current code before filing. All three predicates now
+carry `&& $0.deletionToken == nil`, matching the remedy exactly. `scrubbedStamp`'s doc comment
+(`PQmigration.swift:467`) — the one this entry quoted as evidence — is updated to record the gap as
+historical rather than live. `DeletedRowBackfillExclusionTests` covers the exclusion, the still-works
+case for live rows, and composition with Bug 89's scrub.
+
+**Target:** unset. Sibling to Bug 89 (closed) — that fixed the *classifier* left behind by legacy
+lengths; this is a *live* backfill still writing fresh stamps onto deleted rows on every launch.
+
+### Severity: Medium (forensic trace)
+
+No user action needed — the three backfills below run unconditionally on every launch, per their
+own doc comments (`PQmigration.swift:95-116`).
+
+### What happens
+
+`migrateSafeContactVisibilityBackfill`, `migrateGlobalTrusteeDepthBackfill`, and the sibling for
+`originDepth` (`PQmigration.swift:105`, `:126`, `:147`) each match purely on the field being `nil`:
+
+```swift
+let descriptor = FetchDescriptor<Contact.Profile>(
+    predicate: #Predicate { $0.visibleThroughDepth == nil }
+)
+…
+for contact in contacts {
+    contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
+}
+```
+
+No `deletionToken == nil` filter. A soft-deleted row whose depth field happens to be `nil` — plausible
+for anything deleted before the "never nil" creation-time invariant existed — gets sealed with a
+**fresh value under the current key** by ordinary backfill logic, indistinguishable from a live
+contact's stamp being written.
+
+`migrateScrubDeletedDepthStamps`'s own doc comment already names this precisely
+(`PQmigration.swift:458`): *"a deleted row can legitimately have one stamp readable and the others
+stranded, because the backfills do not filter `deletionToken`"* — the fix for Bug 89 was written
+knowing this, and scoped around it rather than closing it, because the scrub only touches rows *after*
+this has already happened, once. It does not stop it happening again on the next contact deleted with
+a `nil` stamp.
+
+### Why this is the pattern already rejected here
+
+Directly contradicts a design decision made earlier in this same file, for the same class of field:
+*"I don't like the idea of encrypting any field with current key of profiles that have been
+stranded. It smells like a tell"* — the reasoning behind Bug 88's keyless-filler remedy. A deleted
+row's neighbours (its other fields) don't decrypt under the current key; a fresh current-key stamp on
+one field of that row is exactly the asymmetry that reasoning was written to avoid. The backfills
+predate that design conversation and were never revisited against it.
+
+### Remedy
+
+Add `deletionToken == nil` to each of the three predicates. A deleted row with a `nil` depth field
+should be left for `migrateScrubDeletedDepthStamps` to handle — keyless random bytes at the uniform
+length, which is already the correct answer for exactly this state, per Bug 89's fix.
+
+### Guard
+
+None of `DepthCodecTests`, `DeletedDepthStampScrubTests`, or `MigrateToV2ResilienceTests` construct a
+deleted row with a nil depth field ahead of the backfill pass — the gap has no reproduction yet.
+
+---
+
+## Bug 98 — The field-coverage tripwire is two different strengths, and the class of bug it exists to catch has no coverage at all
+
+**Status:** **Open.** Filed 2026-08-22, confirming a note carried since the Bug 76/77 tripwire work
+rather than acting on it unverified.
+
+**Target:** unset.
+
+### Severity: Low (process gap — nothing is exploitable, a future addition could ship unreviewed)
+
+### What happens
+
+`EncryptedFieldCoverageTests.swift` documents its own history at the top of the file: *"previously
+the tripwire was silenced by adding a name to a list… now an entry must carry a key path and a probe
+value, so silencing the tripwire is the same [cost as fixing it]."* That upgrade — from a bare name
+list to the `probes`/`unprobedFields` table — was applied to `Contact.Profile` and `AppLayerConfig`
+— `7e811b5` for `Contact.Profile` (2026-08-17), `4dc6e9d` for `AppLayerConfig` (2026-08-18). It was
+not applied everywhere the file has a tripwire.
+
+**`Group`'s tripwire is still the old form** (`:409-416`):
+
+```swift
+@Test("Group has no unreviewed stored properties", .enabled(if: secureEnclaveAvailable()))
+func groupPropertiesReviewed() throws {
+    let expected: Set<String> = [
+        "encryptedID", "encryptedName", "encryptedCreatedAt",
+        "realMemberSlots", "duressMemberSlots", "deeperMemberSlots",
+    ]
+    #expect(storedPropertyNames(of: try Group(name: "probe")) == expected, "\(tripwireGuidance)")
+}
+```
+
+A new stored property is caught, but the fix the test invites is adding its name to `expected` — no
+proof that the field was actually classified for rotation, unlike the table-driven form.
+
+**`Message.Draft`'s tripwire is the same weaker form** (`:424-436`, doc comment at `:419-421`), and its own doc comment already
+names the limit: *"Its fields were never stranded by a field omission — the whole model was skipped
+by one of the two rotation paths — so this tripwire would not have caught that bug."* Correct, and
+also true of `Group`'s: a name-list tripwire catches an added field, not a field routed to the wrong
+handling.
+
+**`VaultEntry` has no coverage test in this file at all.** No `vaultEntryPropertiesReviewed`, no
+name list, nothing — confirmed by absence, not by a weaker form. This is the model where the
+consequence is most concrete: `visibleThroughDepth` on `Contact.Profile` is exactly the field family
+Bugs 85, 87 and 89 were about, and `VaultEntry.visibleThroughDepth` (`Vault+Model.swift:194`) is the
+same hazard on the sibling model. Bug 87's fix added rotation-composition tests for the existing
+field; nothing would flag a *new* `VaultEntry` stored property that needs the same scrutiny.
+
+`Contact.Draft`'s absence is already recorded — Bug 91's remedy proposes the table-driven form for
+it specifically. This entry is about the three gaps Bug 91 does not cover: `Group`, `Message.Draft`,
+and `VaultEntry`.
+
+### Remedy
+
+1. Port `Group` and `Message.Draft` to the `probes`/`unprobedFields` table form, matching
+   `Contact.Profile` and `AppLayerConfig`.
+2. Add the same coverage for `VaultEntry`.
+
+Not a design question — the pattern exists twice already; this is applying it to what it was left
+off of.
+
+### Checked and not filed alongside this
+
+Three functions named `randomBytes` exist (`AppLayerConfig+Model.swift:431`,
+`IdentityChallenge+Manager.swift:520`, `Passphrase+Manager.swift:93`). Read side by side, they are
+not the same function under three names: one is deliberately non-throwing
+(`SystemRandomNumberGenerator`, with a comment explaining why the call site cannot cascade a throw),
+one throws on `SecRandomCopyBytes` failure, and one falls back to `SystemRandomNumberGenerator`
+silently rather than throwing. Three different failure-handling contracts for three different call
+sites — consolidating them would be a behavioural decision, not a naming cleanup, so this is not
+filed as a bug.
+
+---
+
+## Bug 99 — A coercer who supplies his own trustees can test whether the phone is in duress, because a restore completes in one layer and not the other
+
+**Status:** **Open.** Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
+asking what an attacker who owns the trustee set can do, rather than what one who does not can.
+
+**Target:** `release/v1.10.3`.
+
+### Severity: High (deniability break)
+
+Not a disclosure of vault contents. It answers the one question the whole layering system exists to
+leave unanswerable — *am I being shown the real phone?* — on demand, repeatably, with equipment the
+attacker already has.
+
+### The attack
+
+The victim is coerced, gives the duress PIN, and no restore is pending. The coercer has two phones.
+
+1. Pair both with the victim's phone over UWB. He is already holding it, so this is free.
+2. Author a `.occbak` on his own device, generate its BEK, and Shamir-split it at **k = 2** across
+   his two phones. He chooses `k`, so two is the entire cost.
+3. Open the file on the victim's phone and accept the confirmation. It arms, and the banner appears
+   — identical in both layers since Bug 93's follow-up, so nothing is learned yet.
+4. Both phones hand back their shards immediately. `handleHandback` takes them through Branch B: the
+   attestation verifies against `senderPublicKey`, and he controls the shard and the attestation
+   alike. `storeRestoreShard` banks them, because shard collection is depth-independent by design.
+5. **Wait.**
+
+At depth 0 `attemptBEKRestore` fires on the next unlock, reconstructs his BEK, imports his entries,
+and clears the banner. Above depth 0 nothing happens, ever. He establishes the baseline once on his
+own phone and then reads the victim's answer off it.
+
+### Why the standing reasoning does not cover this
+
+Two arguments in this file assume the attacker cannot make shards arrive.
+
+**"A duress session is short and shard handback needs UWB proximity with a trustee."** True of the
+victim's trustees. Irrelevant here — **he is the trustee**, standing next to the phone, delivering on
+demand. The premise fails exactly when the attacker supplies the trustee set, which costs him one
+extra handset.
+
+**"Deferral is what makes showing the banner in duress safe."** It is what stops a *completion* in
+duress, and that is still worth having. But deferral is itself the observable: completing in one
+layer and not the other is the signal. The control that protects the vault is the same control that
+answers his question.
+
+Bug 93's follow-up did not create this — before it, duress showed no banner at all, which was a
+cheaper version of the same tell requiring no shard delivery. It raised the price from "arm and
+glance" to "arm, pair two phones, deliver a full shard set, wait." That is a real increase and not a
+close.
+
+### Remedy: complete at the depth the file was armed at
+
+Not "complete in either layer" — that has a hole. A *genuine* backup armed at depth 0 contains
+depth-0 entries; if it completed at duress depth 2, `importBackup` would stamp them 2 and the real
+vault would materialise in the layer the coercer is reading. Worse than the oracle, because it hands
+over the data instead of revealing the lie.
+
+Binding completion to the arming depth removes the conditional behaviour instead:
+
+- The attacker arms in duress, so it completes in duress. His entries appear, exactly as his baseline
+  predicts.
+- A backup armed at depth 0 still only completes at depth 0, so a duress session can never finish it.
+
+Both layers then read the same from an observer's seat — *arm here, deliver shards, it completes
+here* — because the condition is "same depth as arming", which is symmetric rather than
+depth-privileged.
+
+**The edge case is symmetric too.** If a restore is already pending when he arms, his file is refused
+(`alreadyProcessed`) and his shards cannot reconstruct a BEK he did not split. His test returns "no
+completion" — which is equally what depth 0 returns in that state, so it distinguishes nothing.
+
+### This is better than deferral for containment, not merely equal
+
+Vault entries are **exact-match** partitioned, not nested like contacts — `isEntryVisible` and
+`entriesVisible(atDepth:)` both compare `value == depth`. So an entry imported at duress depth 2 is
+visible **only** at depth 2.
+
+That inverts the intuition. Deferral does not prevent his injection; it delays it and then delivers
+it into the *real* layer at the next depth-0 unlock. Completing where the file was armed quarantines
+it in the duress layer, where it is his own data sitting in his own cover story.
+
+Recorded because the analysis leading here got this backwards first, by applying the contact rule
+(`value >= depth`) to vault entries. The exact-match property is what makes the remedy work, and it
+is the thing easiest to misremember, since the two models sit side by side under one name.
+
+### What it does not change
+
+`BackupEncryptionKey` is not depth-scoped — one row per device. His BEK becomes the device's BEK
+whichever layer completes, so a later export at depth 0 is readable by him. Unchanged by this
+remedy, and already confined by Bug 94 remedy 1 to devices that have no BEK yet, which is also the
+only case where his restore can proceed at all.
+
+### Requirements
+
+**The arming depth has to be persisted, and sealed.** It must go through `DepthCodec` under the
+recovery buffer key like every other depth stamp. A plaintext integer naming a layer is precisely
+what Bug 93 harm 3 took out of those filenames, and storing one raw would put it straight back.
+Fixed-width matters for the same reason it does everywhere else: a JSON `Int` is one byte at depth 0
+and three at 253, and AES-GCM preserves that difference.
+
+**Where it lives falls out of Bug 100.** The first two designs considered here — a sealed sidecar
+file, then a header folded into the shard file — were both working around the shard file's existence.
+It should not exist: `ReconstructShard` is already a SwiftData model doing this exact job for
+per-entry recovery, sealed under the same recovery buffer key with a per-row AAD, and
+`acceptReturnedShard` writes rows for one path and a file for the other with no stated reason for the
+split. Once BEK restore shards are a model too (Bug 100 remedy 2), the arming depth is simply a field
+on that model.
+
+That removes the cleanup-parity hazard this entry would otherwise carry. A sidecar can go stale
+independently of the file it describes, and a stale one silently mis-gates the next restore; one row
+has one lifecycle and cannot drift from itself. **Build Bug 100 remedy 2 first** — this remedy is
+smaller and safer on the other side of it.
+
+**The deferral guard changes shape rather than disappearing.**
+`pendingRestoreNeverCompletesAboveDepthZero` becomes "does not complete at a depth other than the one
+it was armed at". Something still has to stop a duress session finishing a depth-0-armed restore —
+that is the assertion that protects the genuine backup.
+
+### Superseded in part by Bug 102's wider framing
+
+**Amended 2026-08-27.** The arming-depth binding is the right fix *within the current architecture*,
+and remains worth building as an interim: it closes the oracle and contains the injection better than
+deferral does. But it is a binding bolted onto a device-wide subsystem.
+
+Bug 102, restated, layers the recovery subsystem itself. There the oracle closes because arming and
+completing are genuinely one per-layer operation rather than a masked depth-0 privilege, and shards
+self-route by `distributionID` with no depth binding at all. What survives of this entry in that world
+is only the tag on the pending `.occbak`, which stays a file and so still needs to say which layer
+armed it.
+
+Build order if both are wanted: this one now, Bug 102 when a minor release can carry it.
+
+### Supersedes
+
+- "Defer and hide together" (Bug 93) — hiding is already gone; this replaces deferral's depth-0
+  privilege with an arming-depth binding.
+- The "unlikely to receive shards during a duress window" reasoning, wherever it appears. It holds
+  only for an attacker who does not bring his own trustees.
+
+### The limit this puts on the guarantee, stated plainly
+
+Even with the remedy, recovery-related deniability holds against a coercer who cannot supply his own
+trustees. It is worth writing down that this was ever in question, because it bounds what the
+surrounding fixes buy: they close the cheap tells, and the expensive one is closed by the arming-depth
+binding rather than by anything about the UI.
+
+---
+
+## Bug 100 — The pending-restore files are a keyless progress counter and a vault-size estimate, and they leave the device in backups
+
+**Status:** **Remedies 1 and 2 fixed 2026-08-27; remedy 3 open.** Remedy 2 shipped as part of this
+branch — BEK restore shards are `ReconstructShard` rows and the shard file is gone, so the progress
+counter it leaked is gone with it. Remedy 1 shipped too — both remaining Application Support files
+are now marked `isExcludedFromBackup` at each write, guarded by a test that rewrites the file rather
+than checking it once. **It does not stand alone: Bug 101 found the same content, unsealed, in
+`Documents/Inbox`, and that copy is still there.** Remedy 3 (`.occbak` padding) remains and is moot
+if Bug 102 slots the backup contents. See also Bug 102: rows remove the length channel but still leave a row count, so
+fixed slots supersede them. Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
+reading the restore code — found by asking what an examiner sees, after the *same* number had just
+been removed from the UI for being too revealing.
+
+**Target:** unset. Independent of Bug 99, though both concern the same two files.
+
+### Severity: Medium (forensic)
+
+No contents are exposed. Both payloads stay sealed — the `.occbak` under the BEK, the shard file
+under the SE-derived recovery buffer key — and neither opens off-device. What leaks is metadata about
+a recovery: that one is under way, roughly how large, and how far along.
+
+### What leaks, and from where
+
+Two files in Application Support, both `.completeFileProtection`, both length-preserving because
+AES-GCM is:
+
+**`backup-import-cache-shards.dat` is a shard counter.** It holds `[AttestedShard]` JSON, appended to
+as each shard arrives. Every element adds a near-constant chunk — a `SignedAttribute` with a
+fixed-size share and signature, plus a sender identifier — so `ls -l` divides out to *n*. That is the
+count of recovery pieces collected, available without a key.
+
+There is a second-order channel in the same number. `handleHandback` carries forward only a Branch
+B-verified attestation, so an element is roughly 260 bytes larger when the shard arrived by the
+rotated-identity path. The file length therefore also weakly counts how many shards came in that way
+— i.e. indicates that the owner's identity key rotated, which means a device recovery rather than a
+routine one.
+
+**`backup-import-cache.occbak` is a vault-size estimate.** It is stored as delivered, so its length
+tracks the size of the vault it was exported from. Presence plus length says a recovery of roughly
+this magnitude is in progress. Since `exportBackup` is depth-scoped, for a genuine file that size
+reflects one specific depth's entry count.
+
+### Why this is filed now rather than accepted quietly
+
+The shard count is the exact number removed from the vault tab in Bug 93's follow-up, on the grounds
+that a live tally is a report on real depth-0 activity that would visibly climb during a duress
+session. That reasoning was accepted for the banner. It applies unchanged to the file, and the file
+was never looked at — the UI stopped showing the number while the filesystem kept publishing it, more
+durably and to a wider audience.
+
+Worth recording as a pattern rather than an incident: a value can be removed from a screen and remain
+fully readable in the artifact behind it. The banner fix is not wrong, it is just incomplete in a way
+that is invisible from the UI layer.
+
+### The escalation: these are not excluded from backup
+
+`RootView.excludeStoreFromBackup` covers the SQLite store and its `-wal`/`-shm` sidecars only. None of
+the Application Support files written by this subsystem is marked `isExcludedFromBackup`.
+
+**As filed that was three files. Since remedy 2 shipped it is two** — the pending `.occbak` and
+`backup-export-meta.dat`. The shard file is gone, and its replacement rows sit inside the SQLite
+store, which the existing exclusion already covers. Remedy 2 therefore closed this half for shards as
+a side effect, which is one more reason it was the right shape. A legacy shard file may still exist
+transiently on a device upgrading mid-restore; the import path deletes it on first read or write.
+
+So they are copied into iTunes/Finder/iCloud device backups. The sealed contents remain unreadable
+off-device (the recovery buffer key is Secure Enclave-derived and device-bound), but existence and
+length are not sealed and travel with the copy. A device backup is a far softer target than the device
+itself: it can be obtained without the passcode prompt that `.completeFileProtection` depends on, held
+indefinitely, and examined at leisure.
+
+This is the half worth fixing first. It is one line per file and needs no format change.
+
+### Remedy
+
+1. **Exclude the remaining two from backup** — the pending `.occbak` and `backup-export-meta.dat`.
+   Cheap, no format change, and it removes the off-device copy that makes the rest of this worth
+   attacking.
+
+   **Apply it at every write, not once at launch.** `isExcludedFromBackup` is a `URLResourceValues`
+   attribute on the *file*, not on the path, so it does not survive the file being replaced — and
+   `storePendingRestore` writes a fresh file each time it arms, as does each export-metadata update.
+   Setting it during bootstrap would look correct, verify correct on the device it was tested on, and
+   silently lapse the first time either file is rewritten.
+
+   This is the same trap `excludeStoreFromBackup` already documents for a different reason: it is
+   re-called on every `reapplyFileProtection` because "sidecar files may be recreated by SQLite". Same
+   attribute, same lifetime problem, different files.
+
+   **Do not ship this alone — see Bug 101.** Excluding these two while an unmanaged, backed-up copy of
+   the same content accumulates in `Documents/Inbox` addresses the measurement and leaves the content.
+   One device session verifies both.
+2. **Move the BEK restore shards into the store, rather than padding the file.** Padding to a fixed
+   32-slot array was the first answer here — the house pattern exists three times over
+   (`verifierFillerArray`, `pinEnabledPerDepth`, and this file's own neighbour
+   `backup-export-meta.dat`). It is the wrong one, because the file should not exist.
+
+   `ReconstructShard` is already a SwiftData `@Model` doing this precise job for per-entry recovery:
+   a sealed `SignedAttribute` plus sender identifier, under `deriveRecoveryBufferKey()`, with AAD
+   bound to the row id. `acceptReturnedShard` writes rows in step 1 and a file in step 3 — the same
+   data, the same key, the same lifecycle, through two mechanisms. No comment anywhere gives a reason
+   for the split; `storeRestoreShard`'s "safe while locked" note is about which key it uses, not
+   where it writes, and applies equally to a row.
+
+   A sibling model gets four things at once: the length channel and its Branch B sub-channel
+   disappear rather than being padded around; remedy 1 covers it for free, since the store is already
+   excluded from backup; deletion goes through `PRAGMA secure_delete` page zeroing instead of a plain
+   unlink; and `RotationRegistryTests` forces an explicit rotation classification, because it asserts
+   every model in `OccultaApp.schema` is classified.
+
+   **What it does not do, stated so the claim is not oversold:** an examiner who opens the store can
+   still count rows. What changes is the bar — from `ls -l` on a file whose length divides cleanly by
+   a near-constant element size, to opening SQLite and querying a store shared by eighteen models
+   plus freelist and WAL, whose own size decomposes into nothing. A reduction, not an elimination.
+
+   Bug 99 depends on this. Note the arming depth is *not* simply a field on that model, as first
+   assumed: at arming time no shard rows exist yet, and a depth written onto a shard row as it
+   arrives is the arrival depth, not the arming depth. See Bug 99's build plan for where it actually
+   has to live.
+
+   **Required under Bug 102's per-layer design too, not just this one.** Restore shards belong in
+   rows whether or not recovery is layered — and under layering they need no depth field at all,
+   because a shard already self-identifies by `distributionID`.
+3. **Pad the `.occbak` cache to a coarse tier.** `ShardPadding.tier(for:)`'s doubling ladder is the
+   existing idiom. Bounded at 2× worst case, so the disk cost is understood rather than open-ended.
+   Lower priority than the first two: the magnitude signal is weaker than the progress signal, and for
+   an attacker-supplied file it describes the attacker's own file rather than the victim's vault.
+
+   **This one stays a file, and that is not inconsistency with remedy 2.** A `.occbak` can be large —
+   photo and video attachments — and is memory-mapped deliberately (`.mappedIfSafe`, citing the
+   unbounded inbound-read finding in SecurityReview2026-07-24). A multi-megabyte attacker-supplied
+   blob does not belong in SQLite: it bloats the store, and the store's residue handling is tuned for
+   small rows. The distinction is size and access pattern, not principle.
+
+### Already correct, for contrast
+
+`backup-export-meta.dat` is 32 fixed-width slots with random filler, so its length is constant
+whatever the export history holds. The pattern this entry asks for is not new — it is applied one
+file over and was not carried across.
+
+---
+
+## Bug 101 — Every file opened through "Open in Occulta" is likely still sitting in `Documents/Inbox`, unsealed and backed up
+
+**Status:** **Open, one fact unverified — see Confirm first.** Filed 2026-08-27, found while scoping
+Bug 100's backup exclusion. Not found by reading the restore code: found by asking which copy of an
+opened file the exclusion would actually cover, and discovering there is one more copy than the code
+accounts for.
+
+**Target:** unset until the device check below settles the severity.
+
+### Severity: High if confirmed (contents, not metadata)
+
+Bug 100 is about a file's *length* revealing progress. This is the file itself. If confirmed, every
+`.occbak` and `.occ` ever handed to the app this way is retained indefinitely in the backed-up
+directory, as delivered.
+
+Note the `.occ`/`.occbak` payloads are themselves sealed, so this is not plaintext exposure. What
+leaks is the same class Bug 100 covers — existence, count, size, timestamps, one artifact per file
+ever received — except accumulated forever and copied off-device, rather than transient and confined
+to a pending restore.
+
+### Confirm first
+
+Two facts are established from the tree. The third is inferred and decides the severity.
+
+**Established.** `LSSupportsOpeningDocumentsInPlace` is not declared in `Occulta/Info.plist`. Absent,
+it defaults to `NO`, and the system hands a document-opening app a copy in `Documents/Inbox/` rather
+than the original in place.
+
+**Established.** The string `Inbox` appears in zero Swift files. Nothing enumerates that directory and
+nothing deletes from it. `FileManager.clearTemporaryDirectory()` clears `tmp/`, which is a different
+directory and not backed up in the first place. The cleanup at `OccultaApp.swift`'s `handleOpenURL`
+runs only when `openedThroughShareExtension` is true — the App Group `.occ` handoff — so a `.occbak`
+arriving by any other route has nothing remove anything.
+
+**Inferred, and the thing to check on device.** Which entry points actually produce that copy. The
+code calls `startAccessingSecurityScopedResource()`, which implies at least one path delivers a
+security-scoped original rather than a copy, so the two mechanisms plainly coexist here. Open a
+`.occbak` from the Files app and again from another app's share sheet, then list `Documents/Inbox`.
+Everything below is conditional on that listing being non-empty.
+
+### Why this was missed
+
+The three files Bug 100 enumerates are all ones this code writes deliberately, so reading the backup
+path finds them. This copy is made by the system, on the app's behalf, because of a key that is not
+in the plist — it is invisible from the Swift sources, and the only trace of the decision is an
+absence. Worth recording as a search pattern: an artifact created by a missing declaration cannot be
+found by reading the code that would have created it.
+
+### Remedy
+
+1. **Declare `LSSupportsOpeningDocumentsInPlace`.** The preferred fix: no copy is made at all, and
+   the existing `startAccessingSecurityScopedResource()` handling in `handleOpenURL` is already
+   written for exactly that. Verify both entry points still open afterwards — in-place opening is a
+   different contract, not just a flag.
+2. **Sweep `Documents/Inbox` on launch**, and delete the copy after reading it on the paths that
+   still produce one. Needed regardless of (1): existing installs have whatever has already
+   accumulated, and (1) changes future behaviour only.
+3. **Then apply Bug 100 remedy 1** to the Application Support files. Excluding those from backup while
+   an unmanaged, backed-up copy of the same content sits in `Documents/` is a half-measure — which is
+   how this was found.
+
+### Relationship to Bug 100
+
+Independent, and this one ranks higher. Bug 100 is metadata about a restore in flight, cleaned when it
+completes. This is retained content, accumulating across every file ever opened, in the directory iOS
+backs up by default. Same investigation, unrelated remedies.
+
+---
+
+## Bug 102 — The BEK has no layer concept, so a restore completing in duress hands the coercer the device's real backup key
+
+**Status:** **Open.** Filed 2026-08-27. Found by asking whether Bug 99's arming-depth remedy also
+contains the *key* a restore installs, not just the entries it imports. It does not.
+
+**Target:** unset. Larger than the entries it sits beside — see Remedy.
+
+### Severity: High
+
+Not a deniability break on its own. It is a durable compromise of the real layer reached from a
+duress session, and it survives the coercion.
+
+### What is not depth-scoped
+
+`BackupEncryptionKey` declares exactly two fields, `id` and `encryptedPayload`. There is no depth
+stamp. `fetchDecodedBEK` reads `fetch(FetchDescriptor<BackupEncryptionKey>()).first` — no predicate,
+no filter, take the single row. It is sealed under the vault key, which is one key for every depth;
+vault *entries* carry individual depth stamps, the key they are sealed under does not.
+
+So there is one BEK per device, readable and writable from any layer.
+
+This is genuinely surprising in a codebase where contacts, vault entries, group membership, PIN gates
+and layer arrays are all depth-partitioned, and nothing anywhere states it. Recorded plainly for that
+reason: the next reader is likely to assume it is layered, and the reader after that is likely to
+"fix" it into a per-depth form without knowing what that breaks (see Remedy).
+
+### Why Bug 99's remedy does not cover it
+
+That remedy binds completion to the depth the file was armed at, and `importBackup` stamps every
+restored entry with that depth. Entries are therefore contained — an attacker's rows land in his own
+cover story and never reach depth 0, which is a genuine improvement on deferral.
+
+The BEK is a different object. `reconstructBEK` persists it through `persistBEKPayload`, whose
+`Payload` carries `bekBytes`, `distributionID` and `shardMetadata` — and no depth. There is no field
+for the arming depth to stamp, so the binding has nothing to bind. **Bug 99 contains the contents and
+not the key that came with them.**
+
+### Three consequences, all on the no-BEK device
+
+The population is exactly the one Bug 94 remedy 1 does not cover: a device with no BEK yet, which is
+a fresh install or a new phone — and also the only population where a restore can proceed at all.
+
+1. **His key becomes the device's key.** Every backup exported afterwards, from any depth, is sealed
+   under a key he generated. Latent rather than immediate: it pays off only when a file crosses his
+   path — a device backup, iCloud Drive, mail, a shared computer. Bug 101 is one such path.
+2. **Real trustees are stranded.** They still hold shards for the BEK that this one replaced. If they
+   were ever needed they would reconstruct a key matching nothing on the device. This is precisely
+   the harm Bug 94 remedy 1 exists to prevent, arriving through the gap that remedy leaves open by
+   design.
+3. **The vault lists his phones as trustees.** `shardMetadata` rides inside the BEK payload, so
+   `bekShardMetadata()` returns his distribution. Shard health, trustee counts and `bekSetupState`
+   all describe his set, and `exportBackup` permits an export because his metadata reports the
+   threshold met. The user has a backup they believe is protected and recoverable, whose recovery
+   depends entirely on the attacker's handsets.
+
+### Remedy: layer the recovery subsystem, of which the BEK is one part
+
+**Restated 2026-08-27, wider than first filed.** This entry began as "give the BEK a depth." The
+better framing came out of asking why the afternoon's UI work had been necessary at all, and it
+reframes Bugs 99, 100 and part of 93 as symptoms of one cause.
+
+**The cause: recovery is device-wide in an app that is layered everywhere else.** One BEK, one pending
+file, one shard buffer, plus a depth-0 privilege bolted on so the real layer wins. The two layers
+therefore genuinely behave differently, and every fix so far has flattened a *symptom* of that —
+uniform confirmation, uniform banner, deleted acknowledgment. Each makes the UI misrepresent the
+asymmetry slightly less. None removes it.
+
+Make recovery per-layer and the asymmetry stops existing, so the symptoms go with it rather than being
+suppressed one at a time.
+
+**The routing is already in the data.** A shard carries `entryID = distributionID`, and each depth's
+BEK would carry its own `distributionID` — so an arriving shard *self-identifies* which layer it
+belongs to. No depth field on the shard, and no arming-depth binding needed for shards at all.
+
+**What it subsumes**
+
+- **Bug 102** as originally scoped. A restore in duress installs the duress layer's BEK. Depth 0's key
+  is untouched, real trustees are not stranded, the vault does not list the attacker's phones.
+- **Bug 99's oracle.** He arms in duress, it completes in duress — indistinguishable from real,
+  because it is the same operation rather than a masked one.
+- **Part of Bug 93's follow-up, by reverting it.** With per-layer state, each layer can answer
+  truthfully about *its own* BEK, and that answer is exactly what a real session in that layer would
+  give. The file-open acknowledgment deleted on 2026-08-27 can come back. What was recorded there as
+  the accepted cost of uniformity was only a cost because the state was shared.
+
+**What it does not remove**
+
+- **Row and file counts still leak layer count.** N BEK rows, or N pending files, says N layers have
+  backups configured — countable without decrypting. Needs the fixed-slot padded-array treatment of
+  `pinEnabledPerDepth` and `verifierFillerArray`, not a naive one-row-per-depth table.
+- **Bug 99's binding survives in reduced form**, for the pending `.occbak` alone. That file is bulk
+  data and stays a file (Bug 100), so unless it is slotted per depth too it still needs a depth tag
+  saying which layer armed it.
+- **Bug 100 remedy 2 is superseded rather than required.** Rows were the right answer against the
+  file, and the file-to-rows migration still earns its keep for devices upgrading now. But rows leave
+  a count — an examiner who opens the store can still `SELECT count(*)` — where a fixed-slot array
+  leaves nothing to count. Rows are the interim; slots are where this lands.
+
+### The shape: one array, not several
+
+**One fixed-width array of fixed-count slots, one slot per depth.** Each slot carries, as separately
+sealed fields:
+
+| Field | Sealed under | Why not shared |
+| --- | --- | --- |
+| BEK record | vault key | it protects backup contents |
+| Collected restore shards | recovery buffer key | shards arrive during inbound processing, which happens while the vault is locked |
+| Arming depth (Bug 99) | recovery buffer key | written at arming, read at completion |
+
+**Two keys do not force two containers.** Preserving a sealed blob never requires its key: a shard
+arriving at a locked vault rewrites its slot's shard field and copies the BEK field's ciphertext
+through untouched. One array is also better than two — one artifact of constant size rather than two
+to pad, clean up and explain.
+
+**Every sealed field's AAD must bind its slot index.** Without it, lifting slot 2's ciphertext into
+slot 0 moves a duress layer's BEK into the real one. Same discipline `reconstructRowAAD` applies to
+row ids and the export-metadata file applies to its depth slots.
+
+**Bug 96 closes for free.** Fixed width means a cap on shards per depth, which is exactly what that
+entry's unbounded-growth `withKnownIssue` asks for. A cap is inherent to the shape rather than bolted
+on.
+
+### Where it lives: `AppLayerConfig`, and the constraint that settles it
+
+`AppLayerConfig` already holds fixed-width padded per-depth arrays — `pinEnabledPerDepth`, the
+verifier arrays, the blob metadata arrays — is already classified in `RotationRegistry`, and **already
+exists on every install**. `Manager.Security`'s constructor seeds the row at first launch for the
+reason this design has to respect anyway:
+
+> its absence would be a forensic tell that the feature was never used
+
+**An earlier draft of this entry ruled `AppLayerConfig` out**, on the grounds that a device which
+never configured Secure Mode has no row and that this is the main restore population. That was wrong,
+and wrong twice — the same claim was used to reject it as a home for Bug 99's arming depth. It came
+from reading `requireConfig()`'s `.notConfigured` throw as evidence the row can be absent, when that
+throw guards a case the bootstrap makes unreachable. Recorded because the mistake is repeatable:
+where a state is *handled* says nothing about whether it *occurs*.
+
+**Eager creation is a constraint on this design, not a detail.** The same constructor applies it twice
+— to the config row, and to the Secure Mode SE key, where the argument is sharper still, since
+keychain items carry `kSecAttrCreationDate` and lazy creation leaks not just whether a PIN was ever
+configured but when. Any per-depth BEK structure must therefore exist from first launch, fully padded,
+on every install — including ones that never configure Secure Mode and never run a restore. A
+structure that appears when backup is first set up would reintroduce exactly the tell the surrounding
+code went to trouble to remove.
+
+**Cost, stated honestly.** This is a large change to a security-critical subsystem, and it is not a
+patch-release change. It also means part of what shipped on `release/v1.10.3` is correct for the
+current architecture and would be undone by the better one — specifically the deleted acknowledgment.
+That is recorded rather than left to be discovered.
+
+### The original remedy, for reference
+
+Narrower: give the BEK a depth and stop there.
+
+The direction is right and more consistent than what exists — `exportBackup(currentDepth:)` is already
+depth-scoped, so a per-depth key is the shape the rest of the feature implies. It is not small:
+
+- **Shard distribution becomes per-depth.** Either each layer carries its own trustee set, or there
+  is an explicit, written decision that layers share one and what that means when a duress layer
+  distributes.
+- **Row count would leak layer count.** One row says nothing; N rows says N layers have backups
+  configured, readable by counting without decrypting anything. This needs the fixed-slot padded-array
+  treatment already used by `pinEnabledPerDepth` and `verifierFillerArray`, not a naive one-row-per-
+  depth table.
+
+### Two rejected fixes, recorded because both look correct
+
+**"Don't persist a BEK when the restore completes above depth 0."** Tidy, small, and wrong. After the
+identical action the vault would report *backup ready* in one layer and *not set up* in the other —
+`bekSetupState` is read straight into the vault tab. That is a new depth oracle bought to close a
+different problem, the same trade the depth-0-only restore confirmation made before it was corrected.
+
+**"Stamp the BEK row with the arming depth and filter `fetchDecodedBEK`."** Closer, but it is
+per-depth BEK with the hard parts omitted: it still leaves one row, so whichever layer wrote last owns
+the device's only key, and the filter turns a missing row into "no backup configured" for every other
+layer — reintroducing the same observable as the first rejected fix.
+
+### Reconciled with Bug 92, 2026-08-28
+
+Bug 92 shares this entry's premise — the BEK is not layered — and is not a duplicate of it. It
+addresses the *offline* consequence (a file decrypts at any layer for someone holding extracted key
+material); this addresses the *in-app* one (duress-depth operations act on the real key).
+
+**Neither fix covers the other's harm.** Per-depth slots would still all be sealed under the vault
+key, which is not depth-derived, so a device dump yields every slot — this entry's remedy does
+nothing for Bug 92. And a PIN-combined file key does not stop a duress session installing or
+distributing the real BEK, so Bug 92's remedy does nothing for this one.
+
+**Bug 92 does supply something this design needs.** §2.1 of `BEK_LAYERING_REFACTOR.md` concedes that
+the BEK field's slot separation is code discipline rather than cryptography, because the vault key
+opens every slot. Bug 92's insight — the PIN is the only input in this subsystem a coerced session
+does not hold — is the available answer. Adopting it here, or accepting convention and documenting
+that plainly, is an open decision for this refactor rather than something to inherit silently. It
+carries Bug 92's hard dependency with it: no slow KDF exists in the codebase, and a PIN-derived key
+without one is a design that looks layered and is not.
+
+### Relationship to the entries around it
+
+Bug 94 remedy 1 refuses to overwrite an existing BEK and explicitly does not cover the no-BEK device.
+Bug 99 contains what a restore imports. This is the third piece of the same seam: what a restore
+*installs*. All three are the no-BEK population, and none of the others closes this one.
+
+---
+
+## Bug 103 — An inbound message from a contact hidden at the current depth renders that contact's name, phone and email
+
+**Status:** **Not a bug — duplicate of an accepted, documented limitation. Closed 2026-08-28.**
+
+Filed 2026-08-27 as High severity. It is a re-discovery of the residual recorded in
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, whose 2026-08-13
+inbound-path trace found this exact leak, evaluated five handlings of it, and closed the question:
+*"The flow is left exactly as it is… an accepted, documented limitation, not an oversight and not a
+deferred fix."* That decision is the authority; this entry is kept only because the trace below is
+accurate and the reasoning about why it cannot be fixed is worth having in two places.
+
+**Severity, corrected: none — no change is warranted, and the obvious fix is harmful.** The original
+"High (deniability break)" rating is left visible in the history rather than quietly edited, because
+the misjudgement is the useful part: the leak is real and the rating was defensible in isolation, but
+the fix it implies makes the product strictly worse. See "Why the remedy was wrong" below.
+
+**Do not re-file this.** It has now been raised twice in two weeks (2026-08-13 and 2026-08-27) by
+tracing the inbound path without reading the oracle document. If a third trace finds it again, the
+answer is still no.
+
+### The leak, traced end to end — this part was and is correct
+
+The chain below was verified independently and matches the 2026-08-13 trace. Nothing here is
+disputed; what was wrong was the conclusion drawn from it.
+
+### The chain, verified end to end
+
+1. **Inbound processing has no depth filter.** `ContactManager.identifyOwner` resolves the sender
+   through `fetchAllContacts()`, which predicates on `deletionToken == nil` and nothing else. No
+   `isVisible(atDepth:)` appears anywhere in the inbound path; `currentDepth` is threaded only into
+   `ShardCustodyManager.handleInbound`, where it gates restore completion rather than filtering.
+2. **A duress unlock drains queued files, deliberately.** A file arriving while the app is locked is
+   queued as raw bytes and drained on *any* unlock (`OccultaApp.swift`, the `pendingFileData` drain).
+   Discarding it in duress was itself a detection oracle and was removed in `2958593`.
+3. **The reader renders the sender.** `processInboundFile` sets `openedFileContents`, the sheet
+   presents `ComposableMessage.Conversation(mode: .read(messageOwner:))`, and that view's body opens
+   with `Contact.Info(identifier: owner)`.
+4. **`Contact.Info` filters on nothing.** Its `init(identifier:)` replaces the type's default
+   `@Query(Contact.Profile.descriptor)` with a bare identifier predicate — no depth, and not even
+   `deletionToken` — then renders `givenName.decrypt()`, the first phone number and the first email.
+
+No step requires anything of an attacker. A contact sends a message, the phone is locked when it
+arrives, the user is coerced into a duress unlock, the queue drains and the sheet opens.
+
+### Why the remedy was wrong
+
+The filing proposed giving `Contact.Info` a depth check so a hidden sender renders its `"Anonymous"`
+fallback. It was amended on 2026-08-28 to note the check cannot be a SwiftData `#Predicate` —
+`isVisible(atDepth:)` decrypts `originDepth` and `visibleThroughDepth` and runs `DepthCodec.decode`
+over the plaintext, so it has to be a post-fetch guard. That amendment was correct about the
+mechanism and beside the point about the substance. **The remedy should not be implemented at all.**
+
+It was implemented on 2026-08-28, reverted the same day, and never committed. The oracle document had
+already proposed, examined and rejected the identical change on 2026-08-13, for two reasons:
+
+**1. "Anonymous" is the same tell wearing a different label.** The fallback fires only when no contact
+matches the identifier, and `identifyOwner` requires a match to succeed — so it is currently
+*unreachable* on this path at any depth. Adding the guard would make it reachable **only** at a duress
+depth. The signal moves from "this name is not in my contact list" to "the word Anonymous is on
+screen"; it does not go away. The implementation made this concrete and worse: it also added
+`deletionToken == nil` to the predicate, manufacturing a second way to reach a string that otherwise
+never appears.
+
+**2. The identity was already disclosed by the transport, before Occulta ran.** Bundles arrive out of
+band — a messaging app, AirDrop, email — and that channel named the sender on the delivery screen
+before anyone tapped the file. In-app anonymisation conceals nothing an observer does not already
+have. The oracle document's word for it is theatre: it costs the legitimate user the sender's identity
+and buys no confidentiality.
+
+### Why refusing the bundle is worse, not better
+
+The obvious next instinct — refuse the bundle outright, accepting a tell in exchange for keeping the
+content unread — is the original `passSecurityControl` behaviour that the oracle document exists to
+remove (`b1f9045`). The asymmetry that decision turns on:
+
+- **Refusal is adversary-controlled.** Key exchange is proximity-only, so a coercer with physical
+  control can force-pair a device and probe on demand. One rejection from a provably-paired identity
+  is close to conclusive; a second removes essentially all doubt. Repeatable, at a moment of the
+  coercer's choosing.
+- **The render leak is not adversary-controlled.** It requires a real, unaware third party to send
+  during the coercion window. Timing-bounded, chance-dependent, not repeatable on demand.
+
+Trading a chance leak for an on-demand one is the wrong direction even though refusal also hides the
+body. Refusal additionally identifies *which* contact is hidden, where the current behaviour does not
+single anyone out.
+
+### The exposure follows from an invariant, not an implementation choice
+
+Key exchange is proximity-only, so **openable ⟹ the sender is a known contact**. The duress view's
+purpose is to hide some known contacts. A message from one of them forces an inconsistency that has
+to surface somewhere, and the oracle document tabulates every handling: render the real name (sender
+absent from the list), render "Anonymous" (a string unreachable at depth 0), reject (the original
+oracle), silently queue until depth 0 ("nothing happens on tap" is itself duress-only), or fabricate
+an identity (still absent from the list, and now the app lies to its owner). All five leak.
+
+Closing it would require depth 0 to produce the same observable — messages from contacts not in the
+list, or files that sometimes do nothing when tapped — which contradicts the invariant. The app has no
+concept of a stranger, because it cannot decrypt anything from one.
+
+### What is actually still open
+
+Not this. The oracle document's closing paragraph separates two things this entry conflated:
+
+> And *content* confidentiality is separable from the identity leak — checking visibility before
+> decrypting would keep the message body unread even where "a message arrived, from someone" is
+> inferable. That option is not taken here, since the flow is unchanged, but it remains available and
+> is a different question from this one.
+
+Silent queueing is noted there as the least-bad alternative — it satisfies C1 properly, since
+visibility can be checked after `identifyOwner` and before decryption, and a coercer-paired contact
+would not trigger it because a contact created at depth N has `originDepth = N` and is visible there.
+It was not adopted, because it still trades a strong signal for a weaker one rather than removing one.
+That is the live question. It is about the body, not the name, and it should be raised against the
+oracle document rather than re-filed here.
+
+### Scope: sweep completed 2026-08-28
+
+The filing called for a sweep rather than a point fix, on the grounds that `Contact.Info` is a shared
+component and only the `.occ` reader had been traced. The sweep was run. Results:
+
+**`Contact.Info` has two call sites, one of them dead.** `ComposableMessage.swift:209` is the live
+one traced above. `Import+View.swift:284` renders the same three fields for a basket owner, but
+`struct Import`'s only reference is its own `#Preview` — it has no production presenter. Dead, and
+noted here because reviving that view would inherit the leak.
+
+**A second instance of the same accepted limitation.** The inbound identity-challenge path renders
+the sender's name with no query involved at all. Filed as **Bug 104**, and closed the same day for
+the same reason as this entry — it is the same residual in a second subsystem, not a second bug.
+
+**Unfiltered, and correctly so.** `Contact.DetailsV2` (`ContactDetailV2.swift:16` and `:347`),
+`KeyExchange` (`KeyExchange.swift:18`) and `ComposableMessage`'s own write-mode query (`:16`) all
+replace the descriptor with a bare identifier predicate and decrypt `givenName`. `KeyExchange` is
+structurally identical to `Contact.Info`, down to the `?? "Anonymous"` fallback. All three are reached
+only through `ContactsListV2`'s `navigationDestination`, fed by rows that are already depth-filtered,
+and nothing appends to that path programmatically. The filing called these "latent"; they are not.
+A view that can only be entered with a visible contact's identifier needs no depth check of its own,
+and adding one would create the same duress-only observable described above. Left alone deliberately.
+
+**Dead, so unfiltered but unreachable.** The entire v1 contacts tree — `Contacts`, `Contact.Details`,
+v1 `Contact.Form`, `BusinessCardContactsView` — plus `ContactDetailV3` and `Import`. The live tab is
+`ContactsV2` (`OccultaApp.swift:526`).
+
+**Already correct.** `ContactsListV2`, `GroupDetailV3`, `Group+FormV3`, `Vault+Tab`,
+`ContactClassification`, `ShareRecipientPicker`, and both vault trustee screens via
+`mlkemEligibleContacts`. `SecureModeSetupFlow`'s `sensitiveCount` counts only currently-visible
+contacts and renders no identity.
+
+**The "pattern" is the design, not a defect.** The filing generalised this to "views render contacts
+without a depth predicate," and the 2026-08-28 amendment widened it further to "any identifier
+arriving from an inbound path reaches an identity render with no depth check." That statement is
+factually accurate and its implied conclusion is backwards: on the inbound path, the absence of a
+depth check *is* the decision — it is what keeps duress and depth-0 behaviour identical. The place
+depth filtering belongs is the lists a user picks from, and every one of those already has it.
+
+Note also that `Contact.Info`'s query does not filter `deletionToken`, so a soft-deleted contact
+renders the same way, and `fetchContact(by:)` (`Contact+Manager.swift:413`) omits it too. Recorded as
+an observation, not a defect: adding the filter is what makes the `"Anonymous"` fallback reachable,
+which is the harm described above. If a reason ever emerges to filter soft-deleted senders, it has to
+answer that first.
+
+---
+
+## Bug 104 — An inbound identity challenge from a contact hidden at the current depth renders that contact's name
+
+**Status:** **Not a bug — same accepted limitation as Bug 103, in a second subsystem. Filed and
+closed 2026-08-28.**
+
+Filed as High severity by the sweep Bug 103 asked for, hours before that sweep's premise was found to
+be wrong. It is the same residual: an inbound bundle from a contact hidden at the current depth
+renders that contact's name. The authority is the same —
+`Docs/Bugs/v1.10.0/Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle.md`, decision of
+2026-08-13. Both of that decision's reasons apply here unchanged: suppressing the name creates a
+string reachable only under duress, and the transport that delivered the `.occ` already named the
+sender before the app ran.
+
+**Severity, corrected: none.** Kept because the trace is accurate and because this path differs from
+Bug 103's in a way worth recording — see "Why this one is shaped differently" below, which was
+written as an argument for a separate fix and reads better now as an argument for why no fix belongs
+in either place.
+
+### The chain
+
+1. **The inbound `.occ` pipeline resolves the sender with no filter.** Both identity-challenge
+   branches in `buildOwnedBasket` — `OccultaApp.swift:884` (group envelope) and `:925` (1:1
+   `decryptSealed`) — call `contactManager.fetchContact(by: ownerID)`. That predicates on the
+   identifier alone: no depth, and unlike `fetchAllContacts()` not even `deletionToken`
+   (`Contact+Manager.swift:413`).
+2. **A duress unlock drains queued files.** Identical to Bug 103 step 2 — the identity-challenge
+   branches sit inside `buildOwnedBasket`, which `processInboundFile` calls on the drain.
+3. **The coordinator decrypts the name into state.** `handleInboundChallenge` takes the resolved
+   `Contact.Profile` and computes `senderName` from `sender.givenName.decrypt()`
+   (`IdentityChallenge+Coordinator.swift:167`), storing it in `incomingChallenge` (via
+   `PendingApproval.challengerName`) or `verificationOutcome.contactName`.
+4. **Two sheets render it.** `IdentityChallenge+View.swift:223` prints
+   "`<name>` is verifying your identity"; `:294`–`:295` prints it twice more in the verification
+   result. Both are presented from `OccultaApp.swift:502` and `:513`.
+
+### Why this one is shaped differently
+
+Bug 103's proposed remedy was a post-fetch guard inside `Contact.Info` — a view that owns a query.
+There is no query here. The name is decrypted in the coordinator at inbound-processing time and
+stored as a plain `String` in observable state; by the time a view sees it, the plaintext has been
+captured and the `Contact.Profile` is gone. Any gate would have to sit at step 1 or 3 — the two
+`fetchContact(by:)` call sites, or once inside `handleInboundChallenge`.
+
+That difference was the original argument for filing this separately. It survives; the conclusion
+drawn from it does not. A gate in the coordinator produces exactly what a gate in the view produces:
+a rendered string that can only appear at a duress depth.
+
+### The claim this entry originally made, and why it was wrong
+
+The filing asserted, under the heading "Not an oracle":
+
+> Suppressing the *name* is a display change; it does not alter whether the bundle is processed,
+> whether a response is signed, or anything the sender can observe.
+
+That is the error, and it is worth leaving visible because it is an easy one to make twice. It
+reasons about what the *sender* can observe. The threat model here is a coercer **holding the
+device**, reading the screen. For that observer the display *is* the observable, and a display that
+differs by depth is a depth oracle regardless of whether any protocol behaviour changed.
+
+The supporting argument was wrong on its own terms too. The filing claimed `"Unknown"` is "a value the
+UI already produces for ordinary reasons," pointing at `senderName`'s empty-name fallback at `:167`.
+That fallback fires only for a contact with a blank given name — rare, and unrelated to depth. Gating
+on visibility would make `"Unknown"` a routine, duress-only outcome. Same mistake as Bug 103's
+`"Anonymous"`: a fallback that is nearly unreachable in practice is not cover, and making it reachable
+only under duress manufactures the signal it was meant to hide.
+
+### Also unchanged: `contextNote`
+
+`contextNote` is attacker-supplied free text carried in the challenge and rendered directly beneath
+the name (`IdentityChallenge+View.swift:227`, and `:299` in the outcome sheet). It was recorded as an
+open trade alongside Bug 103's message body. It stays open in the same sense and for the same reason:
+it is a *content* question, separable from the identity one, and it belongs to the thread the oracle
+document leaves available — checking visibility before decrypting — not to a display gate.
+
+### Note on `.response`
+
+The `.response` branch also writes `verifiedAt[senderID]` before rendering
+(`IdentityChallenge+Coordinator.swift:194`). That is in-memory state keyed by identifier, not a
+render, and is out of scope here — but any future UI reading `verifiedAt` inherits the same question.
+
+---
+
+## Bug 105 — A duress layer can distribute shares of the real BEK, through ordinary UI
+
+**Status:** **Open.** Filed 2026-08-28, found while scoping `BEK_LAYERING_REFACTOR.md` — by asking
+whether shard *distribution* is depth-gated, having already established that restore is not.
+
+**Target:** `release/v1.10.3`. Reachable on shipped code with no attacker-supplied file, no shard
+delivery, and no restore.
+
+### Severity: High
+
+A durable compromise of the real layer, reached from a duress session, that survives the coercion. The
+same class as Bug 102 and arrived at more cheaply — every step is legitimate app behaviour.
+
+### What happens
+
+`prepareBEKShards` has no depth gate. It reads the one device-wide BEK through
+`fetchDecodedBEK(vaultKey:)` and splits *that* key, whatever depth the caller is at.
+`Vault+ShardSetup.swift` contains **zero** references to `currentDepth` or `isVisible`.
+
+So at a duress depth a coercer opens the backup shard setup, picks trustees, and distributes. The
+shares he receives are shares of the owner's **real** backup key.
+
+### Why it is easy to miss
+
+**The trustee picker is correctly depth-filtered.** `mlkemEligibleContacts` applies
+`isVisible(atDepth: security.currentDepth)`, so a duress session offers only that layer's contacts —
+which reads as the flow being depth-aware. It is filtering the wrong axis. The contacts are per-layer;
+the key they are handed shares of is not.
+
+That is the entire thesis of Bug 102 in one screen: everything *around* recovery is layered, and
+recovery is not.
+
+### Two harms
+
+1. **He holds threshold shares of the real BEK.** Latent rather than immediate — it pays off when he
+   obtains any `.occbak`, via a device backup, iCloud, or Bug 101's `Documents/Inbox` copy. Note
+   `exportBackup` at a duress depth exports only that depth's entries, so the file he can make himself
+   is not the one he wants; he needs one of the owner's.
+2. **The owner's trustee list is replaced, immediately.** `prepareBEKShards` reuses the existing
+   `distributionID` and **overwrites** `shardMetadata` with the new distribution. Genuine trustees
+   still hold valid shares — same key, same distributionID — but the device's record of who holds what
+   is gone. `bekSetupState`, shard health and trustee counts all report his set. The owner's real
+   recovery now appears to depend on the attacker's handsets.
+
+### Reconciled with Bug 92, 2026-08-28
+
+Bug 92 shares this entry's premise — the BEK is not layered — and is not a duplicate of it. It
+addresses the *offline* consequence (a file decrypts at any layer for someone holding extracted key
+material); this addresses the *in-app* one (duress-depth operations act on the real key).
+
+**Neither fix covers the other's harm.** Per-depth slots would still all be sealed under the vault
+key, which is not depth-derived, so a device dump yields every slot — this entry's remedy does
+nothing for Bug 92. And a PIN-combined file key does not stop a duress session installing or
+distributing the real BEK, so Bug 92's remedy does nothing for this one.
+
+**Bug 92 does supply something this design needs.** §2.1 of `BEK_LAYERING_REFACTOR.md` concedes that
+the BEK field's slot separation is code discipline rather than cryptography, because the vault key
+opens every slot. Bug 92's insight — the PIN is the only input in this subsystem a coerced session
+does not hold — is the available answer. Adopting it here, or accepting convention and documenting
+that plainly, is an open decision for this refactor rather than something to inherit silently. It
+carries Bug 92's hard dependency with it: no slow KDF exists in the codebase, and a PIN-derived key
+without one is a design that looks layered and is not.
+
+### Relationship to the entries around it
+
+- **Bug 102** — same root cause, and this is the sharpest demonstration of it. Harm 2 here is Bug 102's
+  consequence 3, reached without any restore. It also settles that entry's open design question
+  empirically: *may a duress layer distribute?* It can today, and it distributes the real key.
+- **Bug 94 remedy 1** refuses to overwrite an existing BEK during a restore, precisely so a stranger's
+  material cannot strand the owner's trustees. This reaches the same end through distribution instead,
+  which that remedy does not cover.
+- **Bugs 100 and 101** supply the missing half of harm 1 — a copy of a real-layer `.occbak` that leaves
+  the device.
+- **Bugs 103 and 104** are the same omission at the view layer rather than the key layer: a depth
+  dimension that exists in the data model and was not applied at the boundary being written.
+
+### Remedy
+
+**Short term, and independent of the refactor:** gate distribution on depth. The narrow form is to
+refuse `prepareBEKShards` above depth 0 — but that is depth-conditional behaviour a coercer can
+observe (the setup flow works in one layer and not another), which is the trap two fixes already fell
+into this week. See Bug 93's follow-up and Bug 94 remedy 3.
+
+The honest short-term options are therefore both unattractive, and the choice should be made
+deliberately rather than by picking the smaller diff:
+
+- **Refuse above depth 0** — closes the harm, adds an observable difference between layers.
+- **Allow it, but distribute the layer's own key** — which requires the layer to *have* one, i.e. the
+  refactor.
+
+**Structurally:** `BEK_LAYERING_REFACTOR.md`. Once each layer holds its own BEK, distributing at a
+duress depth distributes that layer's key to that layer's contacts, and the operation is correct
+rather than merely permitted. That is the only version where the flow works identically in every layer
+because it *is* the same flow, not a suppressed one.
+
+### Guard
+
+No test covers distribution at a non-zero depth. `Vault+ShardSetup.swift` has no depth-aware tests at
+all, which is consistent with the code having no depth awareness to test.

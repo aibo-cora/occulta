@@ -55,24 +55,11 @@ class ContactManager {
 
     @ObservationIgnored
     let security: Manager.Security
-    @ObservationIgnored
-    private var cancellables = Set<AnyCancellable>()
 
     init(modelContainer: ModelContainer, security: Manager.Security) {
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer = modelContainer
         self.security = security
-
-        NotificationCenter.default
-            .publisher(
-                for: NSManagedObjectContext.didSaveObjectsNotification,
-                object: self.modelExecutor.modelContext
-            )
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.syncShareIndex()
-            }
-            .store(in: &self.cancellables)
     }
     
     var dateFormatter: DateFormatter {
@@ -204,14 +191,14 @@ class ContactManager {
             // Depth 0 imports are safe contacts → Int.max (visible everywhere).
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
-            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
-            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
-            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
         }
 
@@ -391,14 +378,14 @@ class ContactManager {
             // Depth 0 contacts are safe by default → Int.max (visible everywhere).
             // Depth N > 0 contacts are stamped with N (hidden from deeper layers).
             let depthValue = currentDepth == 0 ? Int.max : currentDepth
-            newContact.visibleThroughDepth = try JSONEncoder().encode(depthValue).encrypt()
+            newContact.visibleThroughDepth = try DepthCodec.encode(depthValue).encrypt()
             // globalTrusteeDepth is always encrypted, never nil — -1 (not a trustee)
             // until explicitly marked one via VaultGlobalTrustees.
-            newContact.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+            newContact.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
             // originDepth is always encrypted, never nil — currentDepth directly, no
             // ternary needed: 0 already means "real depth, no confinement" (the sentinel),
             // and any N > 0 means "born at duress depth N" (see Contact.Profile.originDepth).
-            newContact.originDepth = try JSONEncoder().encode(currentDepth).encrypt()
+            newContact.originDepth = try DepthCodec.encode(currentDepth).encrypt()
             self.modelContext.insert(newContact)
 
             for key in contact.contactPublicKeys {
@@ -480,6 +467,23 @@ class ContactManager {
         if softDeleted.count >= 50, let victim = softDeleted.first {
             self.modelContext.delete(victim)
         }
+
+        // Scrub the three depth stamps before marking the row deleted, sealed under the same
+        // key the rest of the row already uses (Bug 89).
+        //
+        // Soft-deleted rows are the one population rotation never re-keys — `fetchAllContacts`
+        // filters `deletionToken == nil` — so whatever these hold at deletion time is what a
+        // forensic examiner reads for as long as the row survives, and the true values name
+        // the layer the contact lived in.
+        //
+        // Sealed benign values rather than random bytes: until the next rotation this row's
+        // other fields still decrypt, so three that did not would not read as concealment but
+        // as evidence something was deliberately destroyed. `Int.max` / `-1` / `0` are what an
+        // ordinary contact holds on a device that never activated Secure Mode, which is the
+        // baseline this has to blend into. Written unconditionally — no branch on secret state.
+        contact.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
+        contact.globalTrusteeDepth  = try DepthCodec.encode(-1).encrypt()
+        contact.originDepth         = try DepthCodec.encode(0).encrypt()
 
         contact.deletionToken = try Data([1]).encrypt()
         Message.Draft.purge(recipientID: identifier, in: self.modelContext)
@@ -1337,6 +1341,14 @@ extension ContactManager {
     /// `.shard` attributes are already near-constant size (fixed label, fixed-length
     /// share, near-constant signature) — so filler and real entries aren't
     /// distinguishable by size within the array.
+    ///
+    /// **Every optional member of a real op has to be filled here, not omitted.** This is
+    /// tier padding's blind spot: it equalises the op *count* per recipient, and the sealed
+    /// payload's length then still varies with what those ops contain. `attestation` (Bug 94
+    /// remedy 2) is ~260 encoded bytes and `entryID` ~50, so a filler missing either is a
+    /// keyless per-recipient distinguisher in a bundle whose `wrappedPayload` lengths are
+    /// cleartext. The sending side keeps its half of this by filling `attestation` on every
+    /// real op too — see `ShardCustodyManager.attestationFiller`.
     private static func paddedShardOperations(
         _ real: [OccultaBundle.ShardOperation],
         to tier: Int
@@ -1346,14 +1358,37 @@ extension ContactManager {
         return padded
     }
 
-    private static func fillerShardOperation() -> OccultaBundle.ShardOperation {
+    /// Not `private`: `ShardOperationPaddingTests` encodes this against a real attested
+    /// handback op to catch the next field that gets added to one and not the other, which
+    /// is the mistake this function has now made twice.
+    ///
+    /// Two residuals it does not close, both pre-dating the attestation field and both far
+    /// below the ~260 bytes that one was. `kind` is `.unsupported` (11 bytes) against a real
+    /// `.handback` (8) or `.distribute` (10), and that spelling is load-bearing — it is what
+    /// makes the receiver skip the op. And a real `.replace` carries an `attributeID` no
+    /// other op has; matching it would mean giving filler one too, which would make filler
+    /// the outlier against the far more common `.distribute`.
+    static func fillerShardOperation() -> OccultaBundle.ShardOperation {
         let filler = SignedAttribute(
             label:     "vault-shard",
             value:     Data((0..<33).map { _ in UInt8.random(in: .min ... .max) }),
             category:  .shard,
-            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) })
+            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }),
+            // Real `.shard` attributes always carry one; nil here is a ~50-byte tell.
+            entryID:   UUID()
         )
-        return OccultaBundle.ShardOperation(kind: .unsupported, attribute: filler)
+        let fillerAttestation = SignedAttribute(
+            label:     "shard-attestation",
+            value:     Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }),
+            category:  .attestation,
+            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }),
+            entryID:   filler.entryID
+        )
+        return OccultaBundle.ShardOperation(
+            kind:        .unsupported,
+            attribute:   filler,
+            attestation: fillerAttestation
+        )
     }
 }
 
@@ -1629,7 +1664,10 @@ extension ContactManager {
         try self.modelContext.save()
 
         #if DEBUG
-        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        // Identifier prefix, not the decrypted name. Enough to correlate lines about the same
+        // contact across a session, without putting a plaintext name in the console — the
+        // identifier is already ciphertext and is never decrypted here.
+        debugPrint("Saved after decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
         #endif
 
         return (decodedPayload, sender.identifier)
@@ -1907,7 +1945,8 @@ extension ContactManager {
         try self.modelContext.save()
 
         #if DEBUG
-        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.givenName.decrypt()), pending batch: \(sender.hasPendingBatch)")
+        // Identifier prefix, not the decrypted name — see the same log on the direct path.
+        debugPrint("Saved after group decrypt. Inbound prekeys now: \(sender.availableInboundPrekeyCount), sender: \(sender.identifier.prefix(12))…, pending batch: \(sender.hasPendingBatch)")
         #endif
 
         guard let groupID = decoded.groupID else { throw GroupDecryptError.missingGroupID }

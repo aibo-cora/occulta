@@ -355,21 +355,31 @@ Documents every meaningful user flow and state permutation. Use this as the refe
 
 ## 10. Share Extension
 
+**Superseded 2026-08-16.** Scenarios 10.1–10.4 described how `ShareIndex.sqlite` had to be filtered
+for each depth and lock state, because the extension drew the recipient picker itself with no gate
+of its own. The picker moved into the main app (Bug 84): it is presented only from the `.unlocked`
+phase and reads contacts at `security.currentDepth` through `ContactListFilter`, so the depth is
+authenticated rather than inferred. The extension stages files and knows nothing about contacts.
+
 ### 10.1 Share extension — app locked
 **Pre-state:** `SM`, locked
-**Result:** On `scenePhase == .inactive` with `requiresPIN && security.pinEnabled`, share index rebuilt with `safeContactIDs(atDepth: 1)`. Sensitive contacts removed before app suspends. Extension reads depth-1 index. (Bug 6 fix)
+**Result:** Session is staged and queued. The picker is not presented; nothing is decrypted and no
+key material moves until a PIN is entered.
 
 ### 10.2 Share extension — app unlocked depth 0
 **Pre-state:** `SM`, `depth:0`, unlocked
-**Result:** Index contains all contacts. Extension shows full recipient list.
+**Result:** Every contact, including those classified real-only — which the old
+`max(currentDepth, 1)` clamp made unshareable from the share sheet at any depth. Groups too.
 
-### 10.3 Share extension — app unlocked depth N
+### 10.3 Share extension — app unlocked depth N > 0
 **Pre-state:** `SM`, `depth:N`, unlocked
-**Result:** `syncShareIndex` on `onNormal` passes `safeContactIDs()` at depth N. Extension shows only depth-N-visible contacts.
+**Result:** Exactly the depth-N view, contacts and groups alike. A group whose membership is empty
+at depth N is not offered.
 
 ### 10.4 Share extension — app returns to foreground while locked
 **Pre-state:** `SM`, locked, app foregrounded
-**Result:** `handleActive()` — `isLocked = true` → share index rebuilt with depth-1 filter before any content is displayed. Index stays filtered until successful PIN entry. (Bug 6 fix)
+**Result:** PIN gate first. The queued session survives the re-lock and presents its picker once the
+PIN is answered.
 
 ---
 

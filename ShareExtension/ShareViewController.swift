@@ -2,17 +2,21 @@
 //  ShareViewController.swift
 //  ShareExtension
 //
-//  Share extension entry point: contact picker → file intake → manifest write → handoff.
+//  Share extension entry point: file intake → manifest write → handoff.
 //  Extension only — never linked by the main app.
 //
 //  Security boundary: this process NEVER links Manager.Key, Manager.Crypto,
 //  ContactManager, PrekeyManager, PQProvider, or OccultaBundle. The only crypto
-//  it performs is ShareIndexKeyManager's AES-GCM for the contact index and manifest.
+//  it performs is ShareIndexKeyManager's AES-GCM for the staged files and manifest.
+//
+//  It does not choose the recipient. Picking one here meant the app received what looked
+//  like a finished instruction and executed it — the reason the outbound pipeline ran with
+//  no PIN entered (Bug 84 Part A), and the reason a mirror of the contact list had to live
+//  in the App Group at all (Bugs 6, 65-69). The main app owns the picker now, behind its
+//  own gate, where the depth is known.
 //
 
 import UIKit
-import SwiftUI
-import SwiftData
 import UniformTypeIdentifiers
 
 class ShareViewController: UIViewController {
@@ -36,123 +40,26 @@ class ShareViewController: UIViewController {
         // routes through the encrypt-for-recipient picker.
         if self.tryHandoffInboundOCC() { return }
 
-        self.showContactPicker()
+        self.showStagingIndicator()
+
+        Task { await self.processAttachments() }
     }
 
-    // MARK: - Phase 1: Contact Picker
-
-    private func showContactPicker() {
-        let contacts = self.loadContacts()
-
-        if contacts.isEmpty {
-            self.showEmptyState()
-            return
-        }
-
-        let picker = ContactPickerView(contacts: contacts) { [weak self] selected in
-            self?.handleContactSelected(selected, allContacts: contacts)
-        } onCancel: { [weak self] in
-            self?.cancel()
-        }
-
-        let host = UIHostingController(rootView: picker)
-        self.addChild(host)
-        host.view.frame = self.view.bounds
-        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        self.view.addSubview(host.view)
-        host.didMove(toParent: self)
-    }
-
-    private func showEmptyState() {
-        let label = UILabel()
-        label.text = "Open Occulta to set up your contacts."
-        label.textAlignment = .center
-        label.textColor = .secondaryLabel
-        label.numberOfLines = 0
-        label.translatesAutoresizingMaskIntoConstraints = false
-        self.view.addSubview(label)
+    /// The extension has nothing to ask the user, so it shows only that work is under way.
+    /// Staging a large attachment is not instant, and `completeRequest` fires from the
+    /// handoff — this is on screen for that window.
+    private func showStagingIndicator() {
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.startAnimating()
+        self.view.addSubview(spinner)
         NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: self.view.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: self.view.centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: self.view.leadingAnchor, constant: 32),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: self.view.trailingAnchor, constant: -32)
+            spinner.centerXAnchor.constraint(equalTo: self.view.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: self.view.centerYAnchor)
         ])
     }
 
-    /// Fetch all contacts from the shared SwiftData store, decrypt in memory.
-    ///
-    /// Opens the store read-only, decrypts each record's identifier and display name,
-    /// and returns plain structs. Decrypted Data buffers are zeroed before returning.
-    private func loadContacts() -> [DecryptedContact] {
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
-        else { return [] }
-
-        let storeURL = containerURL.appendingPathComponent("ShareIndex.sqlite")
-        guard FileManager.default.fileExists(atPath: storeURL.path) else { return [] }
-
-        let config = ModelConfiguration(
-            schema: Schema([ShareableContact.self]),
-            url: storeURL,
-            cloudKitDatabase: .none
-        )
-
-        guard
-            let container = try? ModelContainer(for: ShareableContact.self, configurations: config)
-        else { return [] }
-
-        let context = ModelContext(container)
-        let descriptor = FetchDescriptor<ShareableContact>()
-        guard let records = try? context.fetch(descriptor) else { return [] }
-
-        var results: [DecryptedContact] = []
-
-        for record in records {
-            guard
-                var idData = try? self.shareKeyManager.decrypt(data: record.encryptedIdentifier),
-                var nameData = try? self.shareKeyManager.decrypt(data: record.encryptedDisplayName),
-                let identifier = String(data: idData, encoding: .utf8),
-                let displayName = String(data: nameData, encoding: .utf8)
-            else { continue }
-
-            results.append(DecryptedContact(identifier: identifier, displayName: displayName))
-
-            // Zero the decrypted Data buffers immediately after extracting strings.
-            // Swift Strings may copy the bytes (small-string optimization stores inline
-            // on the stack), but zeroing the Data buffer is the best we can do.
-            _ = idData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            _ = nameData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            idData = Data()
-            nameData = Data()
-        }
-
-        return results
-    }
-
-    /// After picker selection, zero the full contact list and retain only the selected ID.
-    ///
-    /// The plan requires zeroing all decrypted contact data immediately after selection.
-    /// Swift String doesn't support in-place zeroing (COW, small-string optimization),
-    /// so reassigning to "" releases the heap reference — best effort.
-    private func handleContactSelected(_ selected: DecryptedContact, allContacts: [DecryptedContact]) {
-        let selectedIdentifier = selected.identifier
-
-        // Zero all contact strings. Reassigning to "" releases the original String's
-        // backing storage. This doesn't guarantee the memory is overwritten (Swift runtime
-        // may defer deallocation), but it drops all references immediately.
-        var mutableContacts = allContacts
-        for i in mutableContacts.indices {
-            mutableContacts[i].identifier = ""
-            mutableContacts[i].displayName = ""
-        }
-        mutableContacts = []
-
-        Task {
-            await self.processAttachments(contactIdentifier: selectedIdentifier)
-        }
-    }
-
-    // MARK: - Phase 2: File Intake
+    // MARK: - File Intake
 
     /// Copy all shared attachments to the session directory in the shared container.
     ///
@@ -163,7 +70,7 @@ class ShareViewController: UIViewController {
     ///
     /// Files are named 0.tmp, 1.tmp, etc. — original filenames are recorded only
     /// inside the encrypted manifest. Filesystem inspection reveals no filename metadata.
-    private func processAttachments(contactIdentifier: String) async {
+    private func processAttachments() async {
         guard let containerURL = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
         else {
@@ -237,18 +144,15 @@ class ShareViewController: UIViewController {
             }
         }
 
-        // Phase 3: Write encrypted manifest and hand off to main app
+        // Write encrypted manifest and hand off to main app
         do {
-            let manifest = ShareManifest(
-                contactIdentifier: contactIdentifier,
-                files: fileEntries,
-                createdAt: Date()
-            )
+            let manifest = ShareManifest(files: fileEntries, createdAt: Date())
 
             var manifestData = try JSONEncoder().encode(manifest)
             let encryptedManifest = try self.shareKeyManager.encrypt(data: manifestData)
 
-            // Zero plaintext manifest — it contains the contact identifier (relationship metadata).
+            // Zero plaintext manifest. It no longer carries a recipient, but it still lists
+            // original file extensions, and it stays encrypted for that reason.
             _ = manifestData.withUnsafeMutableBytes { buffer in
                 memset(buffer.baseAddress!, 0, buffer.count)
             }
@@ -520,62 +424,9 @@ class ShareViewController: UIViewController {
 
     // MARK: - Types
 
-    struct DecryptedContact: Identifiable {
-        var identifier: String
-        var displayName: String
-        var id: String { self.identifier }
-    }
-
     enum ShareError: Error {
         case noData
         case fileTooLarge
         case cancelled
-    }
-}
-
-// MARK: - Contact Picker SwiftUI View
-
-private struct ContactPickerView: View {
-    let contacts: [ShareViewController.DecryptedContact]
-    let onSelect: (ShareViewController.DecryptedContact) -> Void
-    let onCancel: () -> Void
-
-    @State private var searchText = ""
-
-    private var filtered: [ShareViewController.DecryptedContact] {
-        if self.searchText.isEmpty { return self.contacts }
-
-        return self.contacts.filter {
-            $0.displayName.localizedCaseInsensitiveContains(self.searchText)
-        }
-    }
-
-    var body: some View {
-        NavigationView {
-            List(self.filtered) { contact in
-                Button {
-                    self.onSelect(contact)
-                } label: {
-                    Text(contact.displayName)
-                        .foregroundStyle(.primary)
-                }
-            }
-            .searchable(text: self.$searchText, prompt: "Search contacts")
-            .navigationTitle("Encrypt for")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: self.onCancel)
-                }
-            }
-        }
-    }
-}
-
-#Preview {
-    ContactPickerView(contacts: [ShareViewController.DecryptedContact(identifier: UUID().uuidString, displayName: "Alex")]) { onSelect in
-
-    } onCancel: {
-
     }
 }

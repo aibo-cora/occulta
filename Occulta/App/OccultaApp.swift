@@ -31,27 +31,36 @@ struct OccultaApp: App {
     /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
     private let storeURL: URL
 
+    /// Every persisted model. Extracted from `init()` so `RotationRegistryTests` can assert
+    /// that each entry is classified as either re-keyed by a Secure Mode rotation or
+    /// deliberately outside it — see `RotationRegistry`.
+    ///
+    /// This array is the anchor for that check precisely because it is load-bearing: the app
+    /// cannot launch without it, so a new model cannot be added to the store without appearing
+    /// here. A test fixture listing the same types could silently fall behind; this cannot.
+    static let schema = Schema([
+        Contact.Profile.self,
+        Contact.Profile.PhoneNumber.self,
+        Contact.Profile.EmailAddress.self,
+        Contact.Profile.PostalAddress.self,
+        Contact.Profile.URLAddress.self,
+        Contact.Profile.Key.self,
+        Contact.Message.self,
+        Message.Draft.self,
+        VaultEntry.self,
+        CustodyShard.self,
+        ReconstructShard.self,
+        PendingShardDistribute.self,
+        PendingShardStatusUpdate.self,
+        PotentiallyLostShard.self,
+        GlobalShardConfig.self,
+        BackupEncryptionKey.self,
+        AppLayerConfig.self,
+        Group.self,
+    ])
+
     init() {
-        let schema = Schema([
-            Contact.Profile.self,
-            Contact.Profile.PhoneNumber.self,
-            Contact.Profile.EmailAddress.self,
-            Contact.Profile.PostalAddress.self,
-            Contact.Profile.URLAddress.self,
-            Contact.Profile.Key.self,
-            Contact.Message.self,
-            Message.Draft.self,
-            VaultEntry.self,
-            CustodyShard.self,
-            ReconstructShard.self,
-            PendingShardDistribute.self,
-            PendingShardStatusUpdate.self,
-            PotentiallyLostShard.self,
-            GlobalShardConfig.self,
-            BackupEncryptionKey.self,
-            AppLayerConfig.self,
-            Group.self,
-        ])
+        let schema = Self.schema
 
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
         let sharedModelContainer: ModelContainer
@@ -62,9 +71,11 @@ struct OccultaApp: App {
         }
         let url = modelConfiguration.url
         let attrs: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.complete]
+        
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path)
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-wal")
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: url.path + "-shm")
+        
         RootView.excludeStoreFromBackup(url: url)
 
         self.storeURL = url
@@ -77,6 +88,7 @@ struct OccultaApp: App {
         if FeatureFlags.isEnabled(.secureMode) {
             security.maintainLayerStore()
         }
+        
         self.security = security
 
         let contactManager = ContactManager(modelContainer: sharedModelContainer, security: security)
@@ -99,6 +111,19 @@ struct OccultaApp: App {
         let context = ModelContext(self.sharedModelContainer)
         let legacyCrypto = LegacyCryptoManager()
         let newCrypto = Manager.Crypto()
+
+        // Every migration below relies on its own explicit save() being the only write it
+        // makes — `migrateDepthFieldsToFixedWidth` accumulates into `didChange` and saves
+        // once at the end precisely so a failure part-way leaves the original bytes for the
+        // next launch. A RunLoop- or backgrounding-triggered autosave breaks that: it can
+        // commit a partially-applied pass before the function decides whether to.
+        //
+        // Same idiom and same reason as `activateSecureMode`, `deactivateSecureMode` and
+        // `Message.Draft`'s purge, all of which suspend autosave for a multi-step sequence
+        // and restore it after. Doing it once here covers every migration rather than asking
+        // each to defend itself.
+        context.autosaveEnabled = false
+        defer { context.autosaveEnabled = true }
 
         do {
             try DatabaseMigration.migrateToV2(modelContext: context, legacyCrypto: legacyCrypto, newCrypto: newCrypto)
@@ -136,6 +161,27 @@ struct OccultaApp: App {
             debugPrint("originDepth backfill error: \(error)")
             #endif
         }
+
+        // Must run after the three backfills above: they own the nil case, and this pass
+        // deliberately leaves nil alone rather than manufacturing a value of its own.
+        do {
+            try DatabaseMigration.migrateDepthFieldsToFixedWidth(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("depth field fixed-width normalisation error: \(error)")
+            #endif
+        }
+
+        // After the fixed-width pass, not before: that pass converts what it can read, and
+        // this one scrubs what is left on rows whose content is already erased (Bug 89).
+        do {
+            try DatabaseMigration.migrateScrubDeletedDepthStamps(modelContext: context)
+        } catch {
+            #if DEBUG
+            debugPrint("soft-deleted depth stamp scrub error: \(error)")
+            #endif
+        }
+
 
         do {
             try DatabaseMigration.migrateGlobalShardConfigToPerContact(
@@ -197,7 +243,7 @@ struct OccultaApp: App {
 
 // MARK: - Root View
 
-private struct RootView: View {
+struct RootView: View {
 
     let storeURL: URL
 
@@ -229,8 +275,23 @@ private struct RootView: View {
     // Error feedback
     @State private var showError = false
     @State private var errorMessage = ""
+    // Backup-file acknowledgment (Bug 93) — deliberately separate from showError/
+    // errorMessage: "already processed" is not a failure, and reusing the "Error" alert
+    // title for it would be a strange thing to show a legitimate user even though it's
+    // harmless at a duress depth.
+    /// A `.occbak` held until the user confirms.
+    @State private var pendingRestoreFile: Data?
+    @State private var showRestoreConfirmation = false
     /// Encrypted `.occ` file ready for sharing via UIActivityViewController.
     @State private var shareResult: ShareResult?
+    /// A share-extension session staged in the App Group, waiting for the user to pick who it
+    /// gets encrypted for.
+    ///
+    /// Queued intent, not a presentation: it is set straight from `onOpenURL` at any phase and
+    /// is deliberately **not** cleared when the app re-locks, so a share that arrives while the
+    /// PIN gate is up presents its picker once the PIN is answered. Nothing is decrypted and no
+    /// key material moves until a recipient is chosen — which is the whole of Bug 84 Part A.
+    @State private var pendingShareSession: PendingShareSession?
 
     // MARK: Body
 
@@ -266,60 +327,6 @@ private struct RootView: View {
             }
             // onOpenURL must be on the outermost container so it fires in all phases.
             .onOpenURL { url in self.handleOpenURL(url) }
-            .alert("Error", isPresented: self.$showError) {
-                Button("OK") { }
-            } message: {
-                Text(self.errorMessage)
-            }
-            .sheet(item: self.$openedFileContents) {
-                /// Dismiss
-            } content: { data in
-                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
-                    .map { AttachmentManager(contactKey: $0) }
-                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
-                    .onDisappear {
-                        data.basket.files.forEach { file in
-                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
-                        }
-                    }
-            }
-            .sheet(item: self.$shareResult) { result in
-                ShareActivityView(url: result.url)
-                    .onDisappear {
-                        try? FileManager.default.removeItem(at: result.url)
-                    }
-            }
-            // Identity-challenge outbound share (challenge OR response `.occ`).
-            .sheet(item: Binding(
-                get: { self.identityChallenge.outboundShare },
-                set: { self.identityChallenge.outboundShare = $0 }
-            )) { share in
-                ShareActivityView(url: share.url)
-                    .onDisappear {
-                        try? FileManager.default.removeItem(at: share.url)
-                    }
-            }
-            // Identity-challenge responder approval sheet.
-            .sheet(item: Binding(
-                get: { self.identityChallenge.incomingChallenge },
-                set: { self.identityChallenge.incomingChallenge = $0 }
-            )) { incoming in
-                IdentityChallenge.IncomingChallengeSheet(
-                    incoming:  incoming,
-                    onApprove: { self.identityChallenge.approvePending() },
-                    onDecline: { self.identityChallenge.declinePending() }
-                )
-            }
-            // Identity-challenge verification result on the challenger side.
-            .sheet(item: Binding(
-                get: { self.identityChallenge.verificationOutcome },
-                set: { self.identityChallenge.verificationOutcome = $0 }
-            )) { outcome in
-                IdentityChallenge.VerificationResultSheet(
-                    outcome:   outcome,
-                    onDismiss: { self.identityChallenge.verificationOutcome = nil }
-                )
-            }
             // Drain any file queued while locked when the app unlocks (PIN entry or
             // grace-period auto-unlock). Processes identically regardless of which PIN
             // succeeded — passSecurityControl's removal (Non-Safe-Sender-Rejection-Is-A-
@@ -327,7 +334,16 @@ private struct RootView: View {
             // left to differ on, so a duress unlock draining this the same way as a
             // normal one introduces no new signal.
             .onChange(of: self.appScreen.phase) { _, newPhase in
-                guard newPhase == .unlocked else { return }
+                guard newPhase == .unlocked else {
+                    // Leaving .unlocked (grace expired on a warm return) tears down the
+                    // branch that owns the presentations, dismissing anything on screen.
+                    // Their item state outlives the branch, so clear it here — otherwise
+                    // the next unlock re-presents a sheet the user already finished with,
+                    // over content they have only just re-authenticated to.
+                    self.openedFileContents = nil
+                    self.shareResult = nil
+                    return
+                }
                 // `applyVerifyState` sets `currentDepth` before `pinDidSucceed()` flips the
                 // phase (PINEntry.swift:253), so the depth read here is the authenticated one.
                 self.purgeOrphanedGroupsIfAtRealDepth()
@@ -346,14 +362,6 @@ private struct RootView: View {
                 switch newPhase {
                 case .active:
                     self.contactManager.cleanupPendingSessions()
-                case .inactive:
-                    // Defense-in-depth, not a correctness fix — syncShareIndex() already
-                    // runs after every contact mutation, unlock/duress-unlock, activate,
-                    // and deactivate, which cover every path that changes currentDepth or
-                    // isSecureModeActive today. This re-asserts the already-correct index
-                    // right before backgrounding, hedging against any future path that
-                    // changes security state without going through one of those four.
-                    self.contactManager.syncShareIndex()
                 default:
                     break
                 }
@@ -400,24 +408,112 @@ private struct RootView: View {
             Color.clear.ignoresSafeArea()
         case .pinRequired:
             PINEntry(
-                onAuthenticated: { _ in
-                    self.appScreen.pinDidSucceed()
-                    self.contactManager.syncShareIndex()
-                },
-                onDuress: {
-                    self.contactManager.syncShareIndex()
-                    self.appScreen.pinDidSucceed()
-                }
+                onAuthenticated: { _ in self.appScreen.pinDidSucceed() },
+                onDuress:        { self.appScreen.pinDidSucceed() }
             )
             .environment(self.security)
             // pinViewAppeared() is called here (not inside PINEntry) so the UIKit
             // cover is removed as soon as PINEntry is on screen.
             .onAppear { self.appScreen.pinViewAppeared() }
         case .unlocked:
-            if !self.hasCompleted {
-                OnboardingView()
-            } else {
-                self.tabContent
+            SwiftUI.Group {
+                if !self.hasCompleted {
+                    OnboardingView()
+                } else {
+                    self.tabContent
+                }
+            }
+            // Every modal presentation lives here, inside the .unlocked branch, and not on
+            // the outer view. A `.sheet` or `.alert` attached above this switch attaches to
+            // the same host as PINEntry, and a UIKit modal renders over it — which is how
+            // Bug 1's "messages visible over the PIN lock" came back as Bug 84 Part B once
+            // `8b95ee5` replaced the fullScreenCover with this in-tree branch. Do not move
+            // these back out, and do not reintroduce the cover: its async presentation
+            // window is what caused Bug 56.
+            .alert("Error", isPresented: self.$showError) {
+                Button("OK") { }
+            } message: {
+                Text(self.errorMessage)
+            }
+            // Wording is load-bearing three ways. It names no mechanism — "trustees" and
+            // "shards" would tell whoever raised this prompt that a distributed-secret scheme
+            // exists and that other people hold pieces, which is a lead a coercer does not
+            // otherwise get from this screen. It leads with the consequence rather than the
+            // process, because the risk is that an unrequested file plants someone else's
+            // entries and hands its author a key to every future backup. And the button says
+            // Accept, not Restore, because tapping it restores nothing now — it arms something
+            // that may complete days later or never.
+            .alert("Restore from this backup?", isPresented: self.$showRestoreConfirmation) {
+                Button("Cancel", role: .cancel) { self.pendingRestoreFile = nil }
+                Button("Accept", role: .destructive) { self.armPendingRestore() }
+            } message: {
+                Text("""
+                    This will replace your vault with the contents of this file once enough \
+                    recovery pieces arrive. Only continue if you requested it.
+                    """)
+            }
+            .sheet(item: self.$openedFileContents) {
+                /// Dismiss
+            } content: { data in
+                let manager = (try? self.contactManager.fileEncryptionKey(for: data.owner))
+                    .map { AttachmentManager(contactKey: $0) }
+                ComposableMessage.Conversation(mode: .read(messageOwner: data.owner), messages: .constant(data.basket.files), attachmentManager: manager)
+                    .onDisappear {
+                        data.basket.files.forEach { file in
+                            if let url = file.url { try? FileManager.default.removeItem(at: url) }
+                        }
+                    }
+            }
+            .sheet(item: self.$shareResult) { result in
+                ShareActivityView(url: result.url)
+                    .onDisappear {
+                        try? FileManager.default.removeItem(at: result.url)
+                    }
+            }
+            // Recipient choice for a staged share-extension session. Reachable only from
+            // here, which is why it cannot run before the PIN.
+            .sheet(item: self.$pendingShareSession) { session in
+                ShareRecipientPicker { recipient in
+                    self.pendingShareSession = nil
+                    self.encryptShareSession(session.id, to: recipient)
+                } onCancel: {
+                    self.pendingShareSession = nil
+                    if let container = ShareSession.sharedContainer {
+                        ShareSession.delete(id: session.id, in: container)
+                    }
+                }
+                .environment(self.security)
+            }
+            // Identity-challenge outbound share (challenge OR response `.occ`).
+            .sheet(item: Binding(
+                get: { self.identityChallenge.outboundShare },
+                set: { self.identityChallenge.outboundShare = $0 }
+            )) { share in
+                ShareActivityView(url: share.url)
+                    .onDisappear {
+                        try? FileManager.default.removeItem(at: share.url)
+                    }
+            }
+            // Identity-challenge responder approval sheet.
+            .sheet(item: Binding(
+                get: { self.identityChallenge.incomingChallenge },
+                set: { self.identityChallenge.incomingChallenge = $0 }
+            )) { incoming in
+                IdentityChallenge.IncomingChallengeSheet(
+                    incoming:  incoming,
+                    onApprove: { self.identityChallenge.approvePending() },
+                    onDecline: { self.identityChallenge.declinePending() }
+                )
+            }
+            // Identity-challenge verification result on the challenger side.
+            .sheet(item: Binding(
+                get: { self.identityChallenge.verificationOutcome },
+                set: { self.identityChallenge.verificationOutcome = $0 }
+            )) { outcome in
+                IdentityChallenge.VerificationResultSheet(
+                    outcome:   outcome,
+                    onDismiss: { self.identityChallenge.verificationOutcome = nil }
+                )
             }
         }
     }
@@ -504,7 +600,12 @@ private struct RootView: View {
                 openedThroughShareExtension = true
 
             case "share":
-                self.processShareSession(sessionID: sessionID)
+                // Queue only. The extension has staged encrypted files and a manifest that
+                // no longer names a recipient; nothing here reads them. The picker sheet is
+                // attached to the .unlocked branch, so a session arriving at the PIN gate
+                // waits there instead of running the outbound pipeline pre-authentication
+                // (Bug 84 Part A).
+                self.pendingShareSession = PendingShareSession(id: sessionID)
                 return
 
             default:
@@ -545,9 +646,23 @@ private struct RootView: View {
                     try Data(contentsOf: fileLocation, options: .mappedIfSafe)
                 }.value
 
-                // .occbak — vault backup restore file.
+                // .occbak — vault backup restore file. Opening one only stages it; arming
+                // happens in `armPendingRestore`, behind the confirmation below.
                 if fileLocation.pathExtension == "occbak" {
-                    try self.vaultManager.storePendingRestore(data)
+                    // Confirm before arming. Arming is not inert: it makes the device accept BEK
+                    // shards from contacts and, once enough arrive, import the file's entries
+                    // into the real-layer vault with no further prompt. Opening a file must not
+                    // be enough to start that on its own — a device with no BEK of its own
+                    // (fresh install, new phone) will reconstruct whatever key the file's shards
+                    // rebuild, and nothing in the file authenticates who authored it.
+                    //
+                    // At every depth. The prompt is raised before `storePendingRestore` runs, so
+                    // it cannot vary with the outcome — identical text, identical buttons,
+                    // whichever of the three cases the file turns out to be. Showing it only at
+                    // depth 0 would be the leak: its *absence* would tell whoever is holding the
+                    // phone that they are in a duress layer.
+                    self.pendingRestoreFile = data
+                    self.showRestoreConfirmation = true
                     return
                 }
 
@@ -560,10 +675,48 @@ private struct RootView: View {
                 }
 
                 await self.processInboundFile(data)
+                // BackupError.alreadyProcessed is handled locally in the .occbak branch above —
+                // storePendingRestore is its only source, so no case reaches this far.
             } catch {
                 self.errorMessage = "There was an error. \(error.localizedDescription)"
                 self.showError = true
             }
+        }
+    }
+
+    /// Arms the confirmed `.occbak` for restore.
+    ///
+    /// **Silent on every outcome, at every depth**, and that uniformity is the point. The
+    /// three outcomes — fresh accept, restore already pending, BEK already present — used to
+    /// be distinguishable at depth 0 ("already been processed" versus silence) while duress
+    /// flattened them into one string. Bug 93 harm 4 had compared duress against duress and
+    /// stopped there; the comparison that matters is duress against real, because that is the
+    /// one a coercer can run. They open any `.occbak` — their own will do — and read which
+    /// session they are in off the reply, against a baseline that is public because the app is.
+    ///
+    /// It could not be closed from the duress side. Depth 0 varied its reply on whether a BEK
+    /// exists, and duress is deliberately blind to that. So the acknowledgment is gone
+    /// entirely rather than harmonised: the confirmation the user already tapped is the
+    /// receipt for a fresh accept, and the vault tab's "Recovery in progress…" — now rendered
+    /// at every depth — is the durable one.
+    ///
+    /// What is lost: on a device that already has a backup configured, opening another one now
+    /// does nothing visible at all, where it used to say why. That case is the price of the
+    /// uniformity and is recorded in Bug 93 rather than hidden here.
+    ///
+    /// A malformed file still reports an error at both depths. That branch turns on the file's
+    /// own bytes, not on vault state or depth, so it distinguishes nothing about the session.
+    private func armPendingRestore() {
+        guard let pending = self.pendingRestoreFile else { return }
+        self.pendingRestoreFile = nil
+
+        do {
+            try self.vaultManager.storePendingRestore(pending)
+        } catch VaultManager.BackupError.alreadyProcessed {
+            // Deliberately indistinguishable from a fresh accept — see above.
+        } catch {
+            self.errorMessage = "There was an error. \(error.localizedDescription)"
+            self.showError = true
         }
     }
 
@@ -605,18 +758,30 @@ private struct RootView: View {
         // undo it: the stranded ciphertext is preserved on purpose (see Bug 80), so the tell
         // outlives the feature it reveals.
         //
-        // **This is not a clear win, and the losses are real.**
+        // **The advice lives inside the single string (restored 2026-08-16).**
         //
-        // Bug 81 argued for the split and the argument was sound: "ask this contact to update"
-        // is actionable, and the overwhelmingly likely cause of a refusal is a contact still on
-        // 1.9.x rather than an attack. That advice is now gone, and every benign
-        // old-contact refusal reads as a security event. Alarm fatigue is the mild version of
-        // the cost; the sharp version is a user coming to distrust a contact who did nothing
-        // wrong, and withdrawing from a channel that was safe.
+        // Bug 81 argued for splitting the strings so the UI could say "ask this contact to
+        // update" — actionable, and describing the overwhelmingly likely cause of a refusal: a
+        // contact still on 1.9.x rather than an attack. The collapse took that advice out along
+        // with the oracle, and the cost was real — every benign old-contact refusal read as a
+        // security event. Alarm fatigue is the mild version; the sharp version is a user coming
+        // to distrust a contact who did nothing wrong and withdrawing from a channel that was
+        // safe.
         //
-        // The advice is not gone from the app, only from here: the group-eligibility screen
-        // still says "Needs to update Occulta" for exactly these contacts, which is where a
-        // user goes when they want to know why someone is unreachable.
+        // The leak was the two cases producing *different* text, not the mention of updates. One
+        // string carries both meanings, so the advice returns without reopening anything: the
+        // sentence below is emitted identically whether the marker was unreadable or the
+        // signature was simply absent, and an observer learns nothing from seeing it.
+        //
+        // It is deliberately diagnostic rather than explanatory. Followed in the benign case it
+        // ends the problem — one message from that contact once they are on 1.10.0+ repairs the
+        // marker permanently. Followed against a forgery it returns "I'm already on the latest
+        // version", which is information the user did not have, arriving without the app having
+        // accused anyone. Both suggested actions work against a 1.9.x contact, since the
+        // identity challenge rides on `.v3fs`/`.longTermFallback`.
+        //
+        // The group-eligibility screen carries the same advice for exactly these contacts, which
+        // is where a user goes when they want to know why someone is unreachable.
         //
         // Note this resolves *opposite* to the same question on that screen, which collapses
         // toward the innocuous label rather than the alarming one. Not an inconsistency — the
@@ -632,7 +797,7 @@ private struct RootView: View {
         // No duress state is recoverable from it.
         } catch GroupDecryptError.senderSignatureCapabilityUnknown,
                 GroupDecryptError.missingSenderEphemeralSignature {
-            self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened."
+            self.errorMessage = "Occulta couldn't confirm this message came from this contact, so it wasn't opened. They may be using an older version — ask them to update, or verify them another way."
             self.showError = true
         } catch {
             self.errorMessage = "There was an error. \(error.localizedDescription)"
@@ -737,7 +902,8 @@ private struct RootView: View {
                             expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
+                            vaultManager:     self.vaultManager,
+                            currentDepth:     self.security.currentDepth
                         )
                     }
 
@@ -781,7 +947,8 @@ private struct RootView: View {
                             expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
                             senderIdentifier: ownerID,
-                            vaultManager:     self.vaultManager
+                            vaultManager:     self.vaultManager,
+                            currentDepth:     self.security.currentDepth
                         )
                     }
 
@@ -859,124 +1026,69 @@ private struct RootView: View {
 
     // MARK: Share Extension Processing
 
-    private enum ShareSessionError: Error, LocalizedError {
-        case staleSession
-
-        var errorDescription: String? {
-            switch self {
-            case .staleSession: return "This share session has expired. Please share the content again."
-            }
-        }
-    }
-
-    /// Process a share session handed off from the extension via `occulta://share?session=<uuid>`.
+    /// Encrypt a staged share session for the recipient the user just picked, and present the
+    /// result for transport.
     ///
-    /// Reads the encrypted manifest, EXIF-strips images, encrypts via the full FS path,
-    /// and presents the resulting `.occ` file for sharing. The entire flow is wrapped in
-    /// do/catch — any failure deletes the session directory immediately.
-    private func processShareSession(sessionID: String) {
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.occulta.shared")
-        else { return }
+    /// Runs only from `ShareRecipientPicker`'s selection callback, which is reachable only from
+    /// the `.unlocked` phase. Before Bug 84 this body ran straight off `onOpenURL`, so
+    /// `encryptBundle`'s prekey pop and its `modelContext.save()` committed at whatever depth the
+    /// process happened to hold — depth 0 on a cold launch — with no PIN entered.
+    private func encryptShareSession(_ sessionID: String, to recipient: ShareRecipientPicker.Recipient) {
+        guard let container = ShareSession.sharedContainer else { return }
 
-        let sessionDir = containerURL
-            .appendingPathComponent("pending")
-            .appendingPathComponent(sessionID)
+        // Covers the success path and every throw below. `ShareSession.load` also deletes on its
+        // own failures; deleting twice is harmless, and neither caller may skip it.
+        defer { ShareSession.delete(id: sessionID, in: container) }
 
         do {
-            // 1. Read and decrypt manifest
-            let manifestURL = sessionDir.appendingPathComponent("manifest.enc")
-            let keyManager = ShareIndexKeyManager()
-            var manifestData = try keyManager.decrypt(data: Data(contentsOf: manifestURL))
-            let manifest = try JSONDecoder().decode(ShareManifest.self, from: manifestData)
+            var files = try ShareSession.load(
+                id: sessionID, in: container, keyManager: ShareIndexKeyManager()
+            )
 
-            // Reject stale sessions — same 1-hour cutoff cleanupPendingSessions uses.
-            // Correctness/robustness, not a security boundary (the session directory
-            // only exists inside this app's own App Group container): guards against a
-            // stale or already-processed session being unexpectedly reprocessed, e.g. a
-            // re-tapped notification or duplicate deep-link delivery
-            // (SecurityReview2026-07-24, finding #11).
-            guard manifest.createdAt > Date().addingTimeInterval(-3600) else {
-                throw ShareSessionError.staleSession
-            }
-
-            // Zero manifest plaintext — contains contact identifier (relationship metadata)
-            _ = manifestData.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            manifestData = Data()
-
-            // 2. Build files — EXIF strip images before encryption (in main app, not extension)
-            var files: [Occulta.File] = []
-            // Safety net for every exit from this do block, not just the success path
-            // below: a throw anywhere after files starts accumulating decrypted content
-            // (encryptBundle, a later loop iteration's decrypt/EXIF-strip) previously left
-            // that plaintext un-zeroed on the heap — the catch block only deleted the
-            // on-disk session directory. A defer here runs on the success path too (right
-            // after the explicit zero below, so it finds an already-empty array — harmless)
-            // and on any throw, whatever files currently holds.
+            // files holds decrypted attachment content. Zero it on every exit from here on —
+            // the success path included, where it is dead the moment the bundle is sealed.
             defer {
                 for i in files.indices {
                     _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
                 }
             }
 
-            for entry in manifest.files {
-                let fileURL = sessionDir.appendingPathComponent(entry.filename)
-                var ciphertext = try Data(contentsOf: fileURL)
-                var content = try keyManager.decrypt(data: ciphertext)
-                _ = ciphertext.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                ciphertext = Data()
+            let basket = Basket(files: files, date: Date())
+            let occData: Data
 
-                // Strip EXIF/GPS/camera metadata from images before encryption.
-                // If stripping fails (e.g. unsupported format), the original data is used —
-                // metadata stays inside the encrypted payload, visible only to the recipient.
-                if UTType(entry.uti)?.conforms(to: .image) == true {
-                    if let stripped = self.stripEXIF(from: content, uti: entry.uti) {
-                        _ = content.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-                        content = stripped
-                    }
-                }
+            switch recipient {
+            case .contact(let contactID):
+                let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
+                let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
+                let custody    = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
+                let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
 
-                let metadata = Occulta.File.Metadata(
-                    name: UUID().uuidString,
-                    extension: entry.fileExtension
+                occData = try self.contactManager.encryptBundle(
+                    basket:          basket,
+                    for:             contactID,
+                    shardOperations: shardOps.isEmpty ? nil : shardOps,
+                    custodyManifest: custody,
+                    expectedShards:  expected
                 )
-                files.append(Occulta.File(content: content, format: .file(metadata)))
+
+            case .group(let groupID):
+                // Depth filtering of the membership is encryptGroupBundle's own — it reads
+                // members(atDepth: currentDepth) and re-filters by each member's isVisible.
+                occData = try self.contactManager.encryptGroupBundle(
+                    basket:              basket,
+                    groupID:             groupID,
+                    shardCustodyManager: self.shardCustodyManager,
+                    vaultManager:        self.vaultManager
+                )
             }
 
-            // 3. Encrypt via the full FS path — same as in-app messages
-            let basket    = Basket(files: files, date: Date())
-            let contactID = manifest.contactIdentifier
-            let contactPub = try? self.contactManager.currentPublicKey(forIdentifier: contactID)
-            let shardOps   = try self.shardCustodyManager.buildShardOperations(for: contactID, currentContactPublicKey: contactPub)
-            let manifest_  = try? self.shardCustodyManager.buildCustodyManifest(for: contactID)
-            let expected   = try? self.shardCustodyManager.buildExpectedShards(for: contactID, vaultManager: self.vaultManager)
-
-            let occData = try self.contactManager.encryptBundle(
-                basket:          basket,
-                for:             contactID,
-                shardOperations: shardOps.isEmpty ? nil : shardOps,
-                custodyManifest: manifest_,
-                expectedShards:  expected
-            )
-            for i in files.indices {
-                _ = files[i].content?.withUnsafeMutableBytes { memset($0.baseAddress!, 0, $0.count) }
-            }
-            files = []
-
-            // 4. Write .occ file
             let occID = UUID().uuidString.components(separatedBy: "-").last ?? "shared"
             let occURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("\(occID).occ")
             try occData.writeProtected(to: occURL)
 
-            // 5. Delete session directory — plaintext no longer needed
-            try FileManager.default.removeItem(at: sessionDir)
-
-            // 6. Present share sheet
             self.shareResult = ShareResult(url: occURL)
         } catch {
-            // Plaintext cleanup on ANY failure — non-negotiable
-            try? FileManager.default.removeItem(at: sessionDir)
             self.errorMessage = "Failed to encrypt shared content. \(error.localizedDescription)"
             self.showError = true
         }
@@ -1011,21 +1123,6 @@ private struct RootView: View {
         }
     }
 
-    /// Strip EXIF, GPS, camera metadata from image data using CGImageSource/CGImageDestination.
-    private func stripEXIF(from imageData: Data, uti: String) -> Data? {
-        guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
-
-        let destData = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            destData, uti as CFString, 1, nil
-        ) else { return nil }
-
-        // Empty properties dictionary strips all metadata
-        CGImageDestinationAddImageFromSource(destination, source, 0, [:] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-
-        return destData as Data
-    }
 }
 
 // MARK: - Tabs
@@ -1069,6 +1166,12 @@ enum Tabs: String, Hashable {
 private struct ShareResult: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+/// A staged share-extension session awaiting a recipient. `id` is the session UUID string,
+/// already validated as a UUID by `handleOpenURL` before it reaches a path component.
+private struct PendingShareSession: Identifiable {
+    let id: String
 }
 
 /// Wraps `UIActivityViewController` for SwiftUI. Presents the system share sheet

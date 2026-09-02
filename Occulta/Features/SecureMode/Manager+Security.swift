@@ -168,6 +168,23 @@ extension Manager {
             // isRestricted = false. All properties stay at defaults.
             guard enabled else { return }
 
+            // Bootstrap: ensure the Secure Mode SE key exists from the very first launch.
+            //
+            // Same reasoning as the config row below, applied to the one piece of this
+            // subsystem that was still created lazily. `deriveSecureModeKey()` creates the
+            // key on first use, and its only callers are `configurePIN` and the rotation
+            // paths — so on an install that never set a PIN, the key simply does not exist.
+            // Keychain items carry `kSecAttrCreationDate`, so lazy creation leaks not just
+            // *whether* a PIN was ever configured but *when*. Creating it here makes both
+            // facts uniform across installs: every device has it, dated at first launch.
+            //
+            // Deliberately discarding the result — this is a create-if-absent, not a use.
+            // Nothing anywhere treats a nil return as "Secure Mode was never configured";
+            // all call sites read it as a derivation failure, so seeding it changes no
+            // behaviour. Silent and cheap: the key is `.privateKeyUsage` only, with no
+            // biometry flag and no LAContext, so there is no prompt.
+            _ = try? self.keyManager.deriveSecureModeKey()
+
             // Bootstrap: ensure the config row exists from the very first launch.
             // AppLayerConfig must always be present regardless of whether a PIN or
             // Secure Mode has ever been configured — its absence would be a forensic
@@ -201,6 +218,14 @@ extension Manager {
                 try? context.save()
             }
 
+            // Bug 86: convert the blob-metadata arrays to the fixed-width format.
+            //
+            // Here rather than in `DatabaseMigration` for two reasons. This context owns the
+            // AppLayerConfig row, so there is no second context whose cached copy could
+            // overwrite the result. And the SE key is seeded just above, so deriving it
+            // costs nothing and cannot mint a key as a side effect.
+            self.migrateBlobMetadataArrays(config: config, context: context)
+
             // Migration: populate verifier arrays from scalar fields on first launch after
             // the multi-layer upgrade. Scalars remain as nil/non-nil flags for requiresPIN
             // and isSecureModeActive; arrays are the source of truth for verify() scanning.
@@ -222,12 +247,17 @@ extension Manager {
             // at the persisted depth so the gate stays down after the upgrade.
             let persistedDepth = config.readPersistedDepth()
             if config.pinEnabledPerDepth.isEmpty {
-                var array = AppLayerConfig.pinEnabledFillerArray()
-                if !config.readPinEnabledLegacy(), persistedDepth < array.count,
-                   let encrypted = try? JSONEncoder().encode(false).encrypt() {
-                    array[persistedDepth] = encrypted
+                config.pinEnabledPerDepth = AppLayerConfig.pinEnabledFillerArray()
+                // Through writePinEnabled, not a hand-rolled encode. It encodes UInt8, which
+                // this array's whole design depends on: a Bool seals to 33 bytes ("false")
+                // against every other entry's 29, so the disabled depth would be identifiable
+                // by size alone — the exact hazard `pinEnabledFillerArray`'s doc comment
+                // exists to prevent. `readPinEnabled` also decodes UInt8, so a Bool plaintext
+                // was unreadable and fell back to `true`, meaning the gate this branch is
+                // trying to keep down came straight back up. See Bug 86's amendment.
+                if !config.readPinEnabledLegacy(), persistedDepth < config.pinEnabledPerDepth.count {
+                    try? config.writePinEnabled(false, at: persistedDepth)
                 }
-                config.pinEnabledPerDepth = array
                 try? context.save()
             }
 
@@ -269,6 +299,74 @@ extension Manager {
             DispatchQueue.global(qos: .background).async {
                 store.maintain()
             }
+        }
+
+        /// Converts `sealedBlobSlots` and `layerSequenceNumbers` to `LayerArrayCodec`'s
+        /// fixed-width format, resizing filler to match (Bug 86).
+        ///
+        /// Three properties carry the safety here, and all three are load-bearing.
+        ///
+        /// **The key is derived once, up front, and failure aborts the whole pass.** Filler
+        /// and an unreadable real entry are indistinguishable — that is exactly how
+        /// `readBlobSlot` tells absence from presence — so the pass has to rewrite
+        /// undecryptable elements as fresh filler, filler being what changes size. Without a
+        /// good key every element looks undecryptable, all 32 entries of both arrays become
+        /// filler, and every layer's blob metadata is destroyed at once on a device where
+        /// nothing was wrong a moment earlier.
+        ///
+        /// **Every element uses that one in-memory key**, never an ambient `encrypt()`. A
+        /// derived `SymmetricKey` survives a device lock; a Keychain read does not, and
+        /// these items are `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`.
+        ///
+        /// **One `save()`, at the end.** SQLite transactions are atomic, so a lock mid-pass
+        /// means the save fails and the next launch retries from the original bytes. Saving
+        /// per element would defeat both properties above: the result would be a
+        /// half-converted array with mismatched element sizes, which is this bug in a new
+        /// shape. The in-memory key is what makes a complete result available at that single
+        /// save; the single save is what makes a partial result impossible.
+        private func migrateBlobMetadataArrays(config: AppLayerConfig, context: ModelContext) {
+            // The single save() below is what makes this pass all-or-nothing; an autosave
+            // firing mid-pass would commit a partially-converted array and defeat it. Same
+            // idiom as the rotation paths in this file.
+            context.autosaveEnabled = false
+            defer { context.autosaveEnabled = true }
+
+            guard let seKey = try? self.keyManager.deriveSecureModeKey() else { return }
+            let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
+
+            var didChange = false
+
+            func converted(_ elements: [Data]) -> [Data] {
+                elements.map { element in
+                    guard let plain = element.decrypt(using: blobKey),
+                          let value = LayerArrayCodec.decode(plain)
+                    else {
+                        // Filler, or a layer already lost — `readBlobSlot` returns nil for
+                        // it either way, so deactivation already treats it as absent and
+                        // replacing it destroys nothing that still worked. Left alone when
+                        // it is already the right size, so the pass is idempotent rather
+                        // than re-randomising all 32 entries on every launch.
+                        guard element.count != LayerArrayCodec.sealedSize else { return element }
+                        didChange = true
+                        return AppLayerConfig.blobArrayFiller()
+                    }
+                    let reencoded = LayerArrayCodec.encode(value)
+                    guard reencoded != plain else { return element }   // already converted
+                    guard let sealed = (try? reencoded.encrypt(using: blobKey)) ?? nil else {
+                        return element    // never replace a readable entry with filler
+                    }
+                    didChange = true
+                    return sealed
+                }
+            }
+
+            let slots = converted(config.sealedBlobSlots)
+            let seqs  = converted(config.layerSequenceNumbers)
+
+            guard didChange else { return }
+            config.sealedBlobSlots      = slots
+            config.layerSequenceNumbers = seqs
+            try? context.save()
         }
 
         /// Rewrites the no-op layer store file on a background thread.
@@ -461,7 +559,7 @@ extension Manager {
                     let originDepth: Int = {
                         guard let data = profile.originDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return 0 }
                         return value
                     }()
@@ -477,7 +575,7 @@ extension Manager {
                     let contactDepth: Int = {
                         guard let data = profile.visibleThroughDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return Int.max }
                         return value
                     }()
@@ -497,7 +595,7 @@ extension Manager {
                         let trusteeDepth: Int = {
                             guard let data = profile.globalTrusteeDepth,
                                   let plain = data.decrypt(),
-                                  let value = try? JSONDecoder().decode(Int.self, from: plain)
+                                  let value = DepthCodec.decode(plain)
                             else { return -1 }
                             return value
                         }()
@@ -521,13 +619,13 @@ extension Manager {
                 // originDepth (should be a no-op — creation and the backfill migrations
                 // already keep all three fields non-nil) ───────────────────────────────
                 for profile in safeProfiles where profile.visibleThroughDepth == nil {
-                    profile.visibleThroughDepth = try JSONEncoder().encode(Int.max).encrypt()
+                    profile.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
                 }
                 for profile in safeProfiles where profile.globalTrusteeDepth == nil {
-                    profile.globalTrusteeDepth = try JSONEncoder().encode(-1).encrypt()
+                    profile.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
                 }
                 for profile in safeProfiles where profile.originDepth == nil {
-                    profile.originDepth = try JSONEncoder().encode(0).encrypt()
+                    profile.originDepth = try DepthCodec.encode(0).encrypt()
                 }
 
                 // ── Step 6: Push blob ────────────────────────────────────────────────
@@ -569,13 +667,26 @@ extension Manager {
                 //   • nil depth (Bug 26): pre-existing entry never stamped → hide at all duress depths.
                 //   • non-nil but unreadable (Bug 27): corrupt/wrong-key ciphertext → treat as hidden.
                 //   • non-nil and readable: re-encrypt the existing value verbatim.
-                let hiddenData = try JSONEncoder().encode(0)
-                for entry in try vaultManager.fetchAllEntries() {
+                let hiddenData = DepthCodec.encode(0)
+                let allVaultEntries = try vaultManager.fetchAllEntries()
+                for entry in allVaultEntries {
                     let plain = entry.visibleThroughDepth.flatMap { $0.decrypt() } ?? hiddenData
                     entry.visibleThroughDepth = try AES.GCM.seal(
                         plain, using: stagedKey, authenticating: aad
                     ).combined
                 }
+                // isEntryVisible already fails closed on nil (whenUnclassified: false —
+                // see VaultEntry.isVisible's doc comment), but that only protects a
+                // display read; it says nothing about whether a nil entry's real
+                // classification survives once Secure Mode is active. This loop is what's
+                // supposed to guarantee no VaultEntry stays nil past this point. The
+                // assert catches a regression here directly (e.g. a re-added skip
+                // condition, or `.combined` unexpectedly nil) instead of only finding out
+                // indirectly, elsewhere, that this guarantee stopped holding.
+                assert(
+                    allVaultEntries.allSatisfy { $0.visibleThroughDepth != nil },
+                    "Step 8 must leave every VaultEntry with a non-nil depth stamp"
+                )
                 try vaultManager.modelContext.save()
 
                 // Re-key or purge Message.Draft rows — selective, matching §S7's
@@ -833,13 +944,24 @@ extension Manager {
                 for profile in try contactManager.fetchAllContacts() {
                     // Decode the contact's current classification BEFORE re-encrypting
                     // other fields — this still uses the active OLD canonical key.
-                    // Same fallback as activateSecureMode's own classification step:
-                    // undecryptable or absent → Int.max (safe / never classified).
+                    //
+                    // Absent and undecryptable are deliberately NOT the same fallback here
+                    // (Bug 87). Absent means never classified, so Int.max — safe — is right.
+                    // Undecryptable means the value is *unknown*, and this loop re-seals
+                    // whatever it decides into a readable field: resolving an unknown to
+                    // Int.max persists "visible at every duress depth" for a contact that
+                    // `isVisible` was correctly keeping hidden, irreversibly, because the
+                    // original ciphertext is then gone.
+                    //
+                    // 0 is the fail-safe: hidden at every duress depth, still visible to the
+                    // real user at depth 0. Same principle S7 states for vault entries — an
+                    // entry invisible in duress mode is an inconvenience, one that is visible
+                    // is a security failure.
                     let contactDepth: Int = {
-                        guard let data = profile.visibleThroughDepth,
-                              let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
-                        else { return Int.max }
+                        guard let data = profile.visibleThroughDepth else { return Int.max }
+                        guard let plain = data.decrypt(),
+                              let value = DepthCodec.decode(plain)
+                        else { return 0 }
                         return value
                     }()
                     // Same preserve-real-value treatment for the global-trustee stamp —
@@ -847,7 +969,7 @@ extension Manager {
                     let trusteeDepth: Int = {
                         guard let data = profile.globalTrusteeDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return -1 }
                         return value
                     }()
@@ -861,7 +983,7 @@ extension Manager {
                     let originDepth: Int = {
                         guard let data = profile.originDepth,
                               let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return 0 }
                         return value
                     }()
@@ -875,15 +997,15 @@ extension Manager {
                     // literal nil here would make them stand out against that baseline instead
                     // of blending into it. See forensic-trace-avoidance.md S6.
                     profile.visibleThroughDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(contactDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(contactDepth), using: stagedKey, authenticating: aad
                     ).combined
                     // Same non-nil invariant applies to the global-trustee stamp.
                     profile.globalTrusteeDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(trusteeDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(trusteeDepth), using: stagedKey, authenticating: aad
                     ).combined
                     // Same non-nil invariant applies to the duress-origin stamp.
                     profile.originDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(originDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(originDepth), using: stagedKey, authenticating: aad
                     ).combined
                 }
                 // Flush re-encrypted contacts to the WAL before the staged key is committed.
@@ -919,12 +1041,12 @@ extension Manager {
                     // hidden, matching activateSecureMode's own fallback for this field.
                     let entryDepth: Int = {
                         guard let plain = data.decrypt(),
-                              let value = try? JSONDecoder().decode(Int.self, from: plain)
+                              let value = DepthCodec.decode(plain)
                         else { return 0 }
                         return value
                     }()
                     entry.visibleThroughDepth = try AES.GCM.seal(
-                        JSONEncoder().encode(entryDepth), using: stagedKey, authenticating: aad
+                        DepthCodec.encode(entryDepth), using: stagedKey, authenticating: aad
                     ).combined
                 }
                 if !allVaultEntries.isEmpty {
@@ -1506,17 +1628,20 @@ extension Manager {
         /// Returns true if the vault entry is visible at the current depth.
         ///
         /// Exact-depth match, not a ceiling: an entry is visible only at the exact
-        /// depth it was created at (`nil` = never classified, always visible — see
-        /// `VaultManager.addEntry`). Deliberately not `value >= currentDepth` — see
+        /// depth it was created at. Deliberately not `value >= currentDepth` — see
         /// `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
         /// for why a ceiling lets an entry created at a duress depth leak into every
         /// shallower depth, including the real depth 0.
+        ///
+        /// Passes `whenUnclassified: false`: this is the display path, gated by
+        /// `isRestricted` at the only call site (`Vault+Tab.visibleEntries`), so it
+        /// only ever runs at an active duress depth. A nil-depth entry can't reach
+        /// this today (Step 8 of `activateSecureMode` stamps every one before a
+        /// duress depth exists), but failing closed here doesn't depend on that
+        /// guarantee holding elsewhere — see `VaultEntry.isVisible`'s doc comment
+        /// for why the export path needs the opposite answer.
         func isEntryVisible(_ entry: VaultEntry) -> Bool {
-            guard let data = entry.visibleThroughDepth else { return true }
-            guard let decrypted = data.decrypt(),
-                  let value = try? JSONDecoder().decode(Int.self, from: decrypted)
-            else { return false }  // non-nil field that won't decrypt = sensitive shell; exclude
-            return value == self.currentDepth
+            entry.isVisible(atDepth: self.currentDepth, whenUnclassified: false)
         }
 
         // MARK: - Private

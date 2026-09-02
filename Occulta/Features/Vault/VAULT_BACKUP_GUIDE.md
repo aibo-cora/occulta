@@ -466,8 +466,18 @@ reconstruction is attempted after every shard arrival; success means done.
 ### Implementation status
 
 Implemented as the "Recovery in Progress" section in `Vault+Tab.swift`. Spinner
-header, received-count subtitle, footer guidance. Section disappears when
+header, static subtitle, footer guidance. Section disappears when
 `pendingRestoreActive` transitions to `false` after successful `attemptBEKRestore`.
+
+**Updated 2026-08-27: no count, and shown at every depth.** The subtitle used to
+read "N recovery pieces collected". A live tally is a report on real depth-0
+activity, and it climbs during a duress session — shard collection is
+depth-independent by design even though reconstruction is not. Static text claims
+no progress, so it cannot contradict itself across repeated unlocks and reads the
+same as a real recovery still waiting on trustees it has not met. Dropping the
+count is what makes it safe to render the section at every depth, which in turn
+removes a difference between layers that was readable in one glance. See
+`Docs/Features/Secure Mode/bugs.md`, Bug 93's follow-up.
 
 ---
 
@@ -514,7 +524,7 @@ without attempting decryption.
 | Backup row in vault list (graduated appearance, 3 states) | ✅ |
 | BEK shard setup view (`VaultShardSetup(mode: .backup)`) | ✅ |
 | BEK shard collection via auto-handback on contact key re-exchange | ✅ |
-| Pending restore: `pending-restore.occbak` + shard file + vault-list progress section | ✅ |
+| Pending restore: `backup-import-cache.occbak` + `ReconstructShard` rows + vault-list progress section | ✅ |
 | BEK reconstruction (Shamir.combine + GCM oracle) + re-wrap under new device vaultKey | ✅ |
 | `VaultBackup` / `VaultBackupEntry` Codable models | ✅ |
 | Export: unwrap encryptedBEK + decrypt all entries + AES-GCM seal | ✅ |
@@ -529,3 +539,51 @@ without attempting decryption.
 | BEK rotation (`rotateBEK()`) | ✅ |
 | Recovery dashboard (count-based; per-trustee status infeasible — see Recovery dashboard section) | ✅ |
 | Future: macOS companion app sync | 🔲 |
+
+---
+
+## Secure Mode: the dimension this document was written without
+
+**Added 2026-08-27.** Every section above describes backup and restore as though
+there is one user, one vault and one key. There is not. Contacts, vault entries,
+group membership, PIN gates and the layer arrays are all depth-partitioned, and
+this subsystem is not. That absence is not cosmetic — it is the shared root of
+Bugs 99, 100, 102 and 103, all filed in one afternoon, none of which was found by
+reading this code.
+
+Recording it here because the gap is invisible from inside the feature. Nothing
+above is wrong on its own terms; it simply answers questions that were never asked
+with a duress layer in the room.
+
+### What is not layered today
+
+| Thing | Scope | Consequence |
+|---|---|---|
+| `BackupEncryptionKey` | one row, device-wide, no depth stamp | a restore completing in duress installs the device's real backup key (Bug 102) |
+| Pending `.occbak` | one file, device-wide | a restore armed in one layer blocks every other layer from arming (Bug 102) |
+| Restore shard buffer | `ReconstructShard` rows, no depth | shards cannot be attributed to a layer before reconstruction |
+| Completion | depth 0 only | completes in one layer and not the other, which is a coercer-triggerable test (Bug 99) |
+
+Restored entries *are* stamped, by `importBackup(_:currentDepth:)`, and vault
+entries are exact-match rather than nested — so an entry restored at depth 2 is
+visible only at depth 2. The contents are layered. The key and the machinery around
+them are not.
+
+### The constraint every UI decision here runs into
+
+A duress session must produce only observations a real session also produces.
+Silence qualifies, because real sessions fall silent constantly. Anything a coercer
+can *trigger on demand and then watch* is a potential tell, and the recovery flow is
+unusually rich in those: opening a file, arming, collecting, completing.
+
+That constraint is why the file-open acknowledgment was removed and why the
+progress section carries no number. Both are correct for the current architecture
+and both are conditional on it — under a per-layer design each layer could answer
+truthfully about itself, and the acknowledgment should come back. See Bug 102.
+
+### Before changing anything in this document's scope
+
+Ask what the change looks like from a duress session, and specifically whether a
+coercer can cause the difference rather than merely wait for it. The findings this
+session all came from asking a new question, not from re-reading the code — so
+absence of a known issue in an area is weak evidence about that area.

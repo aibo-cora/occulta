@@ -9,7 +9,7 @@
 //
 //  Scope: this model handles per-entry PEK recovery. BEK restore shards that
 //  arrive during device recovery are stored in a separate encrypted file
-//  (pending-restore-shards.dat) to isolate their lifecycle from per-entry
+//  (backup-import-cache-shards.dat) to isolate their lifecycle from per-entry
 //  cleanup. See VAULT_BACKUP_GUIDE.md and Vault+Manager+Backup.swift.
 //
 //  Privacy model — encryption at rest:
@@ -77,9 +77,19 @@ final class ReconstructShard {
     /// `entryID` is needed to group shards toward the correct entry's threshold.
     /// `attrID` lets us deduplicate within an entry's group (one shard per
     /// trustee, identified by the SignedAttribute.id from the original split).
+    /// `senderIdentifier`/`attestation` are Bug 94 remedy 2: at most one stored
+    /// row per (entryID, senderIdentifier) is kept, so a threshold-reaching group
+    /// requires distinct senders, not just distinct attrIDs.
+    ///
+    /// Unlike the BEK path, a per-entry group *does* reach the entry's real threshold:
+    /// the entry is one this device split itself, so its `shardDistributionEncrypted`
+    /// is on hand and `tryFinalizeReconstruction` verifies every shard against the
+    /// owner identity. `AttestedShard` documents why the BEK path cannot do the same.
     struct Payload: Codable {
         let entryID: UUID
         let attrID:  UUID
-        let signedAttribute: SignedAttribute
+        let signedAttribute:  SignedAttribute
+        let senderIdentifier: String
+        let attestation:      SignedAttribute?
     }
 }

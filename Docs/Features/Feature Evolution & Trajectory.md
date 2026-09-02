@@ -183,6 +183,67 @@ These are architectural gaps and logical extensions identified from the trajecto
 
 ---
 
+### 8. Passive Re-Verification on Re-Encounter
+
+**Problem:** The identity ceremony happens once, at first contact, and is never repeated. Every competitor's manual verification step (Signal safety numbers, Threema/Briar QR scans) suffers the same failure — checked once, if ever, then forgotten. Usability studies put opt-in completion at 14–25%.
+
+**Solution:** Whenever two already-paired contacts come back within UWB range, silently re-attest that their pinned keys still match. Surface an alert only on mismatch. "No alert" must never be allowed to read as "actively verified" in the UI — the absence of a warning is not itself a positive signal.
+
+**Why it matters:** Converts a rare, low-completion opt-in event into a frequent, near-zero-friction, high-coverage check, for free — Occulta already opens a UWB session on every re-encounter.
+
+**Prerequisite:** None. Reuses the existing UWB ranging + identity challenge primitives on every re-encounter, not just first contact.
+
+**Trade-off:** Only covers people physically re-encountered; remote-only contacts still need an explicit manual re-verify path.
+
+---
+
+### 9. Correlated Vault Trustee Warning
+
+**Problem:** Shamir-based Vault recovery doesn't check whether a user's chosen trustees are mutually connected. If they are, coercing or socially engineering one likely compromises the rest of the threshold set.
+
+**Solution:** A local-only heuristic over the existing contact graph flags correlated trustee sets before a threshold is even set, computed entirely on-device with nothing transmitted. Support reshare after any trustee's device changes.
+
+**Why it matters:** No consumer Shamir tool — Ledger, Vault12, Cypherock included — ships this today. It strengthens the existing Vault/Shamir cluster (v1.6–v1.7) rather than adding new attack surface.
+
+**Prerequisite:** Existing Shamir SSS infrastructure + local contact graph. Needs a proactive-secret-sharing protocol for reshare; the heuristic itself must not leak relationship data anywhere.
+
+---
+
+### 10. Stealth Vault Recovery Ritual
+
+**Problem:** Reconstructing a Vault from trustees is inherently observable to those trustees — contacting several people to rebuild a secret can itself broadcast "something has gone wrong" at exactly the moment that's most dangerous to reveal.
+
+**Solution:** Make the reconstruction flow behaviorally indistinguishable from an ordinary proximity tap or check-in, not a labeled "emergency recovery."
+
+**Why it matters:** Extends the duress cluster's core principle — statistical indistinguishability from the real thing — to the one part of the Vault/Shamir design that still looks like a distress flare from the trustee's side.
+
+**Prerequisite:** Existing Shamir Vault + trustee custody flow (v1.6–v1.7). Complements the planned Shamir Dead Man's Switch (Phase 2 roadmap) — same reconstruction path, same need for a non-alarming ritual.
+
+**Trade-off:** Harder to reason about and test than a clearly-labeled flow; needs real threat-modeling with people who'd use it under duress, not just internal design review.
+
+---
+
+### Positioning & Audit Ideas (from Opportunity Map, August 2026)
+
+Sourced from a competitive research pass reading twelve encryption competitors' whitepapers, audits, and public failures against Occulta's architecture. None require new engineering beyond an audit engagement — but per that research's own conclusion, every claim below should ship with proof (an audit, a citation, a working demo), not rest on the architecture being sound in principle.
+
+| Item | Note |
+|------|------|
+| Name "integrity-fail-closed" as a property | Signal's 2026 integrity paper found hijacked sessions inject messages while safety numbers still verify — false confidence. Occulta's inverse (a hijacked identity can't produce a valid bundle at all) deserves a name — but only after an independent audit confirms the property holds under the same attack class. |
+| Disclose what the transport still sees | A `.occ` bundle sent over email or iMessage is still logged by that channel's own server. State this plainly per channel at send time rather than letting the channel-agnostic pitch imply more than it delivers. Costs one line of UI copy. |
+| Reconsider the "32 layers" headline number | An adversary who already knows Secure Mode exists may not be deterred by a layer count, and the real mitigation for physical coercion is procedural (safe words, check-in protocols), not the cryptography alone — say so. Commission an audit that specifically tries to distinguish real state from decoy layers by file size, timing, or padding before repeating the number publicly. |
+| Publish an audited "nothing to enumerate" claim | Occulta has no contact-discovery API by construction — the exact surface that let researchers enumerate 3.5B WhatsApp accounts without breaking any encryption. Worth an independently audited, falsifiable claim rather than a policy promise. |
+| Formalize the no-roster group model academically | Matrix/MLS, Signal groups, and Session's swarms all require a server to hold group membership or sender-key state; a 2025 paper already compares those four. Occulta's local-only, no-server-roster group model is a distinct, unexamined category worth the same formal treatment. |
+| Say plainly the company's survival isn't a dependency | Keybase died from an acquihire, not a crypto break, and took the service down with it. Every competitor reviewed depends on an ongoing business or homeserver operator to keep verifying identity or delivering messages. Costs nothing to start saying — it's already true. |
+
+---
+
+### Noted and rejected: cross-device cert vouching
+
+The same research pass proposed "second-device enrollment over UWB" — a user's two devices cross-signing each other via a tap ceremony so contacts accept the new device transitively, without re-meeting it. This is the "Owner Device Set" design already proposed and rejected for [Multi-Device Contacts R1](Multi-Device%20Contacts/ROADMAP.md): a single coerced cert ceremony between a user's own two devices would silently extend trust to an attacker's device across that user's entire contact graph, with no physical tell for any contact to notice (ROADMAP.md, "Why not a device-to-device ceremony"; [FINDINGS.md](Multi-Device%20Contacts/FINDINGS.md), Design Sessions 3–4). Not re-added here — the standing invariant holds: no mechanism may grant trust to a new key except a fresh physical UWB exchange with each contact directly; only revocation may travel by signature alone.
+
+---
+
 ## The Bigger Pattern
 
 Occulta is executing a depth-first strategy: build one thing with absolute correctness, then extend it precisely. Every feature traces back to the same primitive — physically-verified identity bound to a Secure Enclave key. The roadmap hasn't chased growth; it's chased the hardest problems of the original use case.
