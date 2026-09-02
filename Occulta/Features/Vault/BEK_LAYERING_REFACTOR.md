@@ -163,9 +163,31 @@ in §7.
 
 ## 4. Open decisions — settle before stage 1
 
-1. **Per-depth shard distribution.** Does each layer carry its own trustee set? May a duress layer
-   distribute at all? What does a trustee see when holding shards for two of the owner's layers? This
-   shapes the slot record, so it cannot be deferred.
+1. **Per-depth shard distribution — settled 2026-09-02.** Does each layer carry its own trustee set?
+   May a duress layer distribute at all? What does a trustee see when holding shards for two of the
+   owner's layers? Resolved without new design — each sub-question falls out of §2.1 and §6.3 plus the
+   trustee data model already in place:
+
+   - **Own trustee set per layer: yes, for free.** `shardMetadata` already lives inside the BEK
+     payload; once the BEK is slotted per depth (§2.1), `shardMetadata` becomes per-depth
+     automatically. The contact picker feeding `prepareBEKShards(threshold:recipients:)`
+     (`Vault+Manager+Backup.swift:368`) already filters by `isVisible(atDepth:)`. The only thing that
+     was ever device-wide was the key itself — Bug 105's exact finding.
+   - **Duress-layer distribution: allowed uniformly at every depth, never gated to depth 0.** Refusing
+     it above depth 0 is exactly the depth-conditional behavior §6.3 forbids, and is the same trap two
+     other fixes fell into this week. Once the BEK is depth-scoped, distributing at depth N distributes
+     depth N's own decoy key — nothing left to leak, so refusal buys no security and only adds a tell.
+   - **Same trustee holding shards for two layers: already handled, nothing depth-aware needed on the
+     trustee side.** `visibleThroughDepth` is a ceiling (`value >= depth`), so one contact visible at
+     both depth 0 and depth 2 is the normal case, not an edge case. `CustodyShard`
+     (`CustodyShard+Model.swift`) stores shards keyed by an opaque row id with no contact or generation
+     linkage in plaintext, and already tolerates multiple live shards from one owner — old PEK
+     rotations sit inert beside current ones. A trustee designated at both depths just accumulates two
+     rows, indistinguishable from two ordinary rotations. The trustee's device should never need to
+     know the owner uses depths at all.
+
+   Net: nothing new to build for this decision specifically — it is a consequence of §2.1 + §6.3 + the
+   existing trustee model, not a separate mechanism.
 2. **Slot size cap for backup contents.** Fixed slots cap vault backup size. Pick the cap and enforce
    it at **export**, with a clear failure — not at restore, when the user has no vault left.
 3. **Drop versus defer for non-shard payloads** behind the §2.3 gate. Shards retry; messages do not.
