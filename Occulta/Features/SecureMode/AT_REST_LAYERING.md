@@ -1,8 +1,8 @@
 # At-Rest Layering — Decision Framing
 
-**Status:** framing only, no decision taken. §5 question 1 carries a recommendation (build, S5 before
-S8), not a decision — pending the release owner, and pending §3a's legal claim being checked rather
-than assumed. **Compiled:** 2026-09-02.
+**Status:** §5 question 1 decided by the release owner 2026-09-02 — build, S5 (contacts) before S8
+(vault). §3a remains an unverified legal claim, not a basis for this decision — the owner's call did
+not rest on it. **Compiled:** 2026-09-02.
 **Owner entries:** `forensic-trace-avoidance.md` S5 (contacts) and S8 (vault entries) — the two
 accepted gaps this decision would close or knowingly re-accept.
 **Downstream:** `Occulta/Features/Vault/BEK_LAYERING_REFACTOR.md` §2.1, §2.2, and open decision §4.2.
@@ -112,17 +112,18 @@ exists.
 
 ## 4. Candidates
 
-**Contacts (S5).** Design B is already specified and deferred: sensitive contacts become unreadable
-shells in the DB, the blob is the sole readable copy, loaded into memory on normal unlock and wiped on
-lock. `LayerStore.md` notes the infrastructure already supports it — no new file, no new key, four
-named steps. If S8 is built, this is the recommended pilot for the same lifecycle pattern — see §5.1.
+**Contacts (S5) — build, first, per §5.1.** Design B is already specified and deferred: sensitive
+contacts become unreadable shells in the DB, the blob is the sole readable copy, loaded into memory on
+normal unlock and wiped on lock. `LayerStore.md` notes the infrastructure already supports it — no new
+file, no new key, four named steps. Pilots the lifecycle S8 needs.
 
-**Vault entries (S8).** Three candidates, unchanged from the original framing — §5.1's recommendation
-picks one, but the decision is still open:
-1. Leave as-is; re-accept the gap explicitly. Available regardless of how §3a resolves.
-2. Decoy row padding — S8 already called this "complexity without a strong attacker model."
-3. A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical copy — and,
-   per §3, a natural host for the BEK record too, since both already answer to the same key.
+**Vault entries (S8) — build, via candidate 3, per §5.1.** Candidates 1 and 2 are superseded by that
+decision, kept here for the record:
+1. ~~Leave as-is; re-accept the gap explicitly.~~
+2. ~~Decoy row padding~~ — S8 already called this "complexity without a strong attacker model."
+3. **Chosen.** A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical
+   copy — and, per §3, a natural host for the BEK record too, since both already answer to the same
+   key.
 
 **BEK and backup contents — resolves into two containers, not one, and not the sibling file
 `BEK_LAYERING_REFACTOR.md` §2.2 proposes.** That proposal predates this framing and priced the BEK as
@@ -144,21 +145,16 @@ Same key domain as the shard buffer, so likely the same container once that's de
 
 ## 5. Open questions
 
-1. **Does the vault get storage layering at all, or is S8 re-accepted? Open — release owner's call,
-   not settled here.**
+1. **Decided by the release owner, 2026-09-02: build, via candidate 3 (§4).** Independent of §3a,
+   which stays unverified and unresolved — not the basis for this decision.
 
-   **5.1 — Recommendation, not a decision.** Build, sequencing S5's Design B first or alongside rather
-   than after — but this rests partly on §3a, which is a flagged, unverified legal claim, not a
-   finding, and the recommendation should be read that way. If §3a doesn't hold up, S8 may be exactly
-   as "accepted, Medium" as it already reads, and re-accepting it (candidate 1) is a legitimate call.
-
-   Independent of §3a, worth weighing on its own: the risky, unproven part of candidate 3 isn't the
-   file mechanism (`LayerStore` already ships) — it's the "unreadable shell in the DB, canonical copy
-   in the sealed file, loaded to memory on unlock, wiped on lock, merged with live rows in the UI"
-   lifecycle, which has never been built anywhere in this codebase. Contacts' Design B is that exact
-   pattern, already specified in four named steps, needs no new container or key, and has sat
-   deferred. *If* S8 is built, piloting the lifecycle on S5 first, rather than making the vault the
-   first real test of an unproven pattern, is worth doing regardless of how urgent S8 turns out to be.
+   **5.1 — Build order, also decided: S5 (contacts) before S8 (vault).** The risky, unproven part of
+   candidate 3 isn't the file mechanism (`LayerStore` already ships) — it's the "unreadable shell in
+   the DB, canonical copy in the sealed file, loaded to memory on unlock, wiped on lock, merged with
+   live rows in the UI" lifecycle, which has never been built anywhere in this codebase. Contacts'
+   Design B is that exact pattern, already specified in four named steps, needs no new container or
+   key, and has sat deferred. Piloting the lifecycle on S5 first, rather than making the vault the
+   first real test of an unproven pattern, is the agreed order.
 2. **Settled by §3's key-domain trace, not still open as a free choice:** two containers, split by
    key — vault-key-gated (entries + BEK record) and recovery-buffer-key-gated (shard buffer + restore
    state + `CustodyShard`) — not one shared instance and not one file per consumer.
