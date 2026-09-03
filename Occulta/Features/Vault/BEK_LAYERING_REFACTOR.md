@@ -75,12 +75,18 @@ depth-derived and making it so touches every vault entry. State the asymmetry ra
 both halves are equally protected.
 
 **This is Bug 92's subject, and it has a remedy.** The vault key opens every slot, so the BEK field is
-separated by convention: only the code declining to read slot 0 at depth 2 keeps them apart, and a
-device dump yields all of them regardless. Bug 92 identifies the one input a coerced session does not
-hold — the PIN, which is knowledge rather than stored material — and proposes
-`fileKey = HKDF(BEK ‖ slowKDF(PIN, salt))`. Adopting that here would make the separation
-cryptographic. **Open decision, see §4.4**, and note it carries a hard dependency: no slow KDF exists
-in the codebase, and a PIN-derived key without one is a design that looks layered and is not.
+separated by convention: only the code declining to read slot 0 at depth 2 keeps them apart. **Not
+only a cold-disk risk** — a coercer who compels biometric auth causes `deriveVaultKey` to hand the
+derived `SymmetricKey` to the app process, in ordinary memory, for the duration it's used. Extracting
+it from there needs forensic tooling (jailbreak + debugger, or GrayKey/Cellebrite-class extraction),
+not a break of the Enclave itself — the private key never leaves it — but this project's own threat
+model already assumes exactly that capability for the local DB key (`forensic-trace-avoidance.md` S1).
+With the vault key alone, a coercer at depth 2 could in principle decrypt every other slot's BEK
+record, including `shardMetadata` — trustee counts and identities — at depths they were never meant to
+see. Bug 92 identifies the one input a coerced session does not hold — the PIN, which is knowledge
+rather than stored material — and proposes `fileKey = HKDF(BEK ‖ slowKDF(PIN, salt))`. **Open
+decision, see §4.4** — split there into two applications with different costs, and the "slow KDF"
+framing itself doesn't fit this codebase's own architecture; see §4.4 for why.
 
 ### 2.2 Where it lives
 
@@ -193,14 +199,51 @@ in §7.
 3. **Drop versus defer for non-shard payloads** behind the §2.3 gate. Shards retry; messages do not.
    Deferring means storing the bundle, which is a cross-layer container again unless slotted.
 
-4. **Convention or cryptography for the BEK field's slot separation** (§2.1, Bug 92). Adopting
-   PIN-combined derivation requires first adding a slow KDF, and changes the recovery contract —
-   shards alone stop being sufficient, and PIN rotation orphans old backup files. Accepting
-   convention is defensible; accepting it silently is not.
+4. **Convention or cryptography for the BEK field's slot separation** (§2.1, Bug 92) — **re-examined
+   2026-09-02, splits into two applications with different blockers and different costs.** The prior
+   framing ("hard-blocked, no slow KDF exists") doesn't fit this codebase's own architecture and should
+   be dropped:
 
-4a. **The `storePendingRestore` tombstone soft spot** — §7.3. A downgraded build can still *arm* a
-   restore against a tombstoned row, because that one site uses `try?` where its siblings use `try`.
-   Accept it, or add a guard distinguishing "no row" from "row present, undecryptable."
+   **Why not a slow KDF.** `PIN+Manager.swift`'s existing verifier derivation is
+   `HKDF(seKey, info: label ∥ pin)` — deliberately fast. `plan.md` records that PBKDF2 was tried for
+   this exact purpose and removed: *"on-device code execution defeats any KDF regardless of iteration
+   count... the 6-digit PIN space is brute-forceable in minutes on GPU independent of iteration
+   count,"* with *"SE key prevents all off-device attacks"* doing the actual work instead. A slow KDF
+   defends against an attacker with only the ciphertext and unlimited offline compute; binding
+   derivation to the SE key removes that attacker entirely, since no candidate key is computable
+   without the Enclave present. The same shipped pattern — HKDF over an SE key, PIN folded into the
+   `info` parameter — is the fit here too, not a new primitive.
+
+   **The live per-depth slot (§2.1's BEK record) — looks buildable now.** Binding each slot's key to
+   that depth's own PIN, the same way verifiers already are, closes the "vault key opens every slot"
+   risk above: a session at depth 2 only ever holds depth 2's PIN, so it cannot derive depth 0's slot
+   key even with the vault key in hand — and neither can the app's own code, since PINs are checked
+   against stored verifiers, never held in memory for a depth the session isn't at. This touches only
+   local storage. It does **not** touch Shamir reconstruction (which splits raw `bekBytes`, independent
+   of how any device seals them locally) or restore UX on a fresh device (which derives its own slot
+   key under its own new PIN) — so neither of the costs below applies to this half.
+
+   **The exported `.occbak` file (Bug 92's original proposal) — same mechanism, real recovery-contract
+   cost, decide separately.** Folding the PIN into the *file's* wrapping key means a restorer needs
+   both the Shamir-reconstructed `bekBytes` and the PIN that was active on the original device at
+   export time — shards alone stop being sufficient, and rotating a PIN orphans every export made under
+   the old one. Worth doing for the same reason as the live slot, but the cost is real and this half
+   should not be adopted silently just because the live-slot half is now unblocked.
+
+5. **A trustee-count cap for `shardMetadata` — not previously named, found 2026-09-02.**
+   `ShardDistributionMetadata.shards: [ShardRecord]` is variable-length, one record per trustee.
+   Different depths will legitimately have different trustee counts — a duress layer the user never
+   bothered setting up a decoy backup for has zero. Unpadded, that's a length leak of the same shape
+   §2.4 already closes for the shard buffer: a near-empty `shardMetadata` compresses to a shorter
+   plaintext than a fully-populated one, before the slot's outer padding ever gets a chance to hide it,
+   unless `shardMetadata` itself is padded to a fixed maximum trustee count first. Needs a number, same
+   as §4.2 — a separate cap from that one, since this lives in the vault-key-gated container (§2.1),
+   not the backup-contents file.
+
+6. **The `storePendingRestore` tombstone soft spot** — §7.3. Unrelated to item 5 above, just adjacent
+   in the list. A downgraded build can still *arm* a restore against a tombstoned row, because that
+   one site uses `try?` where its siblings use `try`. Accept it, or add a guard distinguishing "no row"
+   from "row present, undecryptable."
 
 ---
 
@@ -433,6 +476,6 @@ while the file means *"some other depth does"* — two artifacts of different sh
 - Stage 1 gains the tombstone (§7.3) and the `formatVersion` byte (§7.2).
 - Stage 1 gains an adoption step (§7.4) that runs at first depth-0 unlock, with its own verify: a
   restore armed on the prior build, with shards banked, completes after update without re-arming.
-- §4 gains a fourth open decision: **the `storePendingRestore` soft spot in §7.3** — whether a
+- §4 gains an open decision (now item 6): **the `storePendingRestore` soft spot in §7.3** — whether a
   downgraded build arming a restore against a tombstoned row is acceptable, or wants a guard that
   distinguishes "no row" from "row present, undecryptable."
