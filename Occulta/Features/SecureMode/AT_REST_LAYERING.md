@@ -1,6 +1,7 @@
 # At-Rest Layering — Decision Framing
 
-**Status:** framing only, no decision taken. **Compiled:** 2026-09-02.
+**Status:** §5 question 1 settled 2026-09-02 — build. Questions 2–5 not yet settled. **Compiled:**
+2026-09-02.
 **Owner entries:** `forensic-trace-avoidance.md` S5 (contacts) and S8 (vault entries) — the two
 accepted gaps this decision would close or knowingly re-accept.
 **Downstream:** `Occulta/Features/Vault/BEK_LAYERING_REFACTOR.md` §2.1, §2.2, and open decision §4.2.
@@ -109,16 +110,19 @@ metadata detail.
 
 ## 4. Candidates
 
-**Contacts (S5).** Design B is already specified and deferred: sensitive contacts become unreadable
-shells in the DB, the blob is the sole readable copy, loaded into memory on normal unlock and wiped on
-lock. `LayerStore.md` notes the infrastructure already supports it; the named work is four steps.
+**Contacts (S5) — build first, per §5 question 1.** Design B is already specified and deferred:
+sensitive contacts become unreadable shells in the DB, the blob is the sole readable copy, loaded into
+memory on normal unlock and wiped on lock. `LayerStore.md` notes the infrastructure already supports
+it — no new file, no new key, four named steps. The pilot for the lifecycle pattern vault entries need.
 
-**Vault entries (S8).** Three, from that entry plus this framing:
-1. Leave as-is; re-accept the gap explicitly — weakened by §3a's reasoning, still an available option.
-2. Decoy row padding — S8 calls this "complexity without a strong attacker model."
-3. A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical copy —
-   **and, per §3, the natural host for the BEK record too**, since both already answer to the same
-   key. Not a second consumer bolted on afterward; one file with two record types from the start.
+**Vault entries (S8) — build, via option 3.** Was three candidates; 1 and 2 are superseded by §5
+question 1's decision:
+1. ~~Leave as-is~~ — rejected; §3a's reasoning holds.
+2. ~~Decoy row padding~~ — not chosen; S8 already called this "complexity without a strong attacker
+   model," and that judgment doesn't change just because the leak is now taken more seriously.
+3. **Chosen.** A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical
+   copy — **and, per §3, the natural host for the BEK record too**, since both already answer to the
+   same key. One file with two record types from the start, built after S5's Design B lands.
 
 **BEK and backup contents — resolves into two containers, not one, and not the sibling file
 `BEK_LAYERING_REFACTOR.md` §2.2 proposes.** That proposal predates this framing and priced the BEK as
@@ -140,8 +144,20 @@ Same key domain as the shard buffer, so likely the same container once that's de
 
 ## 5. Open questions
 
-1. **Does the vault get storage layering at all**, or is S8 re-accepted given §3a? Everything else
-   follows.
+1. **Settled 2026-09-02: yes, build.** §3a's re-rating stands — for this app's actual users, "duress
+   PIN + forced biometrics" is closer to the default coercion pattern than a stacked edge case, so S8's
+   accepted-Medium rating undersells it. The failure isn't a passive metadata leak; it's the UI actively
+   showing "No entries yet" to a coercer holding a working extraction tool.
+
+   **Sequencing, not just scope: build S5's Design B in the same effort, first or alongside — not
+   after.** The risky, unproven part of candidate 3 isn't the file mechanism (`LayerStore` already
+   ships) — it's the "unreadable shell in the DB, canonical copy in the sealed file, loaded to memory
+   on unlock, wiped on lock, merged with live rows in the UI" lifecycle, which has never been built
+   anywhere in this codebase. Contacts' Design B is that exact pattern, already specified in four named
+   steps, needs no new container or key (`LayerStore.md` — it upgrades the existing contact blob), and
+   has sat deferred. Building vault entries alone makes the vault — more frequently accessed, directly
+   edited by the user, higher cost if the memory lifecycle has a bug — the first real test of a pattern
+   that's never run in production. Pilot it on the cheap, already-designed case first.
 2. **Settled by §3's key-domain trace, not still open as a free choice:** two containers, split by
    key — vault-key-gated (entries + BEK record) and recovery-buffer-key-gated (shard buffer + restore
    state + `CustodyShard`) — not one shared instance and not one file per consumer.
