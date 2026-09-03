@@ -53,15 +53,6 @@ struct VaultShardSetup: View {
         self.selectedIDs != self.snapshotIDs || self.threshold != self.snapshotThreshold
     }
 
-    /// The trustee cap only applies to BEK distribution — `shardMetadata` is sealed
-    /// inside the per-depth vault-key-gated slot and must be padded to a fixed
-    /// maximum (`VaultManager.maxBEKTrustees`). Per-entry PEK distribution has no
-    /// such shared-slot constraint, so it stays uncapped here.
-    private var isBackupMode: Bool {
-        if case .backup = self.mode { return true }
-        return false
-    }
-
     var body: some View {
         let meta       = self.fetchDistributionMeta()
         let contacts   = self.mlkemContacts
@@ -158,9 +149,7 @@ struct VaultShardSetup: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(selected.isEmpty
                          ? "No trustees yet"
-                         : (self.isBackupMode
-                            ? "\(selected.count) / \(VaultManager.maxBEKTrustees) trustees"
-                            : "\(selected.count) \(selected.count == 1 ? "trustee" : "trustees")"))
+                         : "\(selected.count) \(selected.count == 1 ? "trustee" : "trustees")")
                         .font(.system(size: 16, weight: .semibold))
 
                     Text(selected.count < 2
@@ -290,11 +279,8 @@ struct VaultShardSetup: View {
         let sel    = self.selectedIDs.contains(contact.identifier)
         let record = self.shardRecord(for: contact.identifier, in: meta)
         // A contact is selectable if he has no shard record yet, or their shard
-        // is in an active (non-revoked/non-lost) state — and, in backup mode, if
-        // selecting them wouldn't exceed maxBEKTrustees. Already-selected contacts
-        // stay selectable so they can be deselected at the cap.
-        let atTrusteeCap = self.isBackupMode && !sel && self.selectedIDs.count >= VaultManager.maxBEKTrustees
-        let isSelectable = (record.map { Self.activeStatuses.contains($0.status) } ?? true) && !atTrusteeCap
+        // is in an active (non-revoked/non-lost) state.
+        let isSelectable = record.map { Self.activeStatuses.contains($0.status) } ?? true
 
         return Button {
             guard isSelectable else { return }
