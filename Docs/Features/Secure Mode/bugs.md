@@ -6843,13 +6843,29 @@ the grouping/reconstruction loop this bug lives in (`Vault+Manager+Backup.swift:
 just confirmation that the vulnerable code only ever runs at the one depth recovery was always meant
 to complete at, same reachability as before.
 
+**Re-verified again 2026-09-02, against Bug 94 remedy 2 — does not close this, and Bug 94's own entry
+already says so** (`"remedy 2 authenticates provenance, not correctness, and error-correction against
+a bad-but-genuinely-sent share is Bug 95's territory, not this one's"`), but this entry never recorded
+the cross-reference even though both landed the same day. Traced `handleHandback`
+(`ShardCustody+Manager.swift:219-255`) directly rather than relying on that note: Branch A/B
+authentication plus per-`(entryID, senderIdentifier)` dedup closes Bug 94's actual scenario — one
+unauthenticated party unilaterally minting `threshold`-many fake shares to reconstruct a key of their
+choosing. It narrows this bug's population (a share must now come from a sender who can pass Branch A
+or B, and dedup caps any one sender to a single stored share) but does not touch the mechanism this
+bug is about: `ShamirSecretSharing.reconstruct` still does no subset search, so one fabricated-but-
+properly-authenticated share mixed with k−1 genuine ones still poisons the whole group, and there is
+still no UI path to discard a wedged restore. Same defect, narrower population, unchanged remedy.
+
 **Target:** unset.
 
 ### Severity: High (availability)
 
 Needs a pending restore and knowledge of the `distributionID`. **Any trustee has the latter** — it is
 the `entryID` on the shard they hold — so the attacker set is exactly the people the user chose to
-trust with recovery, which is the set this system already assumes may be partly hostile.
+trust with recovery, which is the set this system already assumes may be partly hostile. Post-remedy-2,
+narrow this to: a trustee (or any contact able to construct a Branch A/B credential) submitting one
+fabricated share during a pending restore — still that same population, since knowledge of the
+`distributionID` was already effectively trustee-scoped before remedy 2 shipped.
 
 ### What happens
 
