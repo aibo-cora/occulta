@@ -51,7 +51,7 @@ envelope is not negotiable — it is what makes an occupied slot indistinguishab
 budget. This codebase already chose "yes" for contacts, and that pattern is the one to copy rather
 than inventing a per-entry byte cap discovered at export.
 
-## 3. The constraint that shapes every option: two protection domains
+## 3. The constraint that shapes every option: three protection domains, not two
 
 `LayerStore.md` excludes vault per-entry keys deliberately, and the reasoning generalises to vault
 content as a whole:
@@ -59,16 +59,53 @@ content as a whole:
 > Storing them would widen the attack surface since a store compromise requires only the SE Secure
 > Mode key, bypassing the biometric gate that otherwise protects vault content (Bug 8).
 
-The blob key is `HKDF(seKey_secureMode, info: "blob-key")` — no biometric gate. Vault content sits
-under a separate SE key requiring a fresh biometric evaluation. **Putting vault entries into the
-existing store collapses those domains and strictly downgrades vault protection.** It is also why S8
-is rated below S5: a duress-PIN-only coercer cannot open the vault at all, so the row-count tell needs
-duress PIN *and* forced biometrics to be reachable.
+Verified directly in `Key+Manager.swift` rather than taken from prose — the domains are not two, they
+are three, and one of them cuts across the BEK/vault line in a way worth exploiting:
 
-**Consequence for the plan:** "use one mechanism for vault, BEK and import" holds — but as *one
-mechanism, separate instances under separate keys*, not one container. Shared: slot geometry, fixed
-plaintext size, eager creation, full-regeneration-on-write, capacity estimation and its UI. Not
-shared: the key, the file, or the lifecycle.
+| Key | Derived by | Biometric gate | Seals today |
+|---|---|---|---|
+| Secure-Mode key | (existing) | No | Contact `LayerStore`, local DB key |
+| **Vault key** | `deriveVaultKey(context: LAContext)` | **Yes** | Vault entry content (`VaultManager.currentKey()` calls this directly) — **and, per `BEK_LAYERING_REFACTOR.md` §2.1's own table, the BEK record itself** |
+| Recovery buffer / shard custody key | `deriveRecoveryBufferKey()` — no `LAContext` parameter | **No** | `CustodyShard` rows, the shard buffer, restore/arming state |
+
+**Putting vault entries into the existing (Secure-Mode-keyed) store collapses domains 1 and 2 and
+strictly downgrades vault protection.** It is also why S8 is rated below S5: a duress-PIN-only coercer
+cannot open the vault at all, so the row-count tell needs duress PIN *and* forced biometrics to be
+reachable — see §3a below for why that bar may be lower than it looks for this app's actual threat
+model.
+
+**But the BEK record is already vault-key-sealed** — the same gate as vault entry content, not the
+same gate as the shard buffer it sits beside in §2.1's own per-depth slot. The shard buffer and
+restore/arming state are recovery-buffer-key-sealed deliberately, and must stay that way: shards
+arrive over ordinary messaging, asynchronously, and gating their receipt behind a Face ID prompt would
+be a real UX regression, not just a stricter default.
+
+**Consequence for the plan:** "use one mechanism for vault, BEK and import" holds, but resolves into
+*two* shared containers rather than one, split by key domain, not by feature:
+- **Vault-key-gated:** sensitive vault entries (new, if built) + the BEK record — same gate, natural
+  co-tenants of one `LayerStore`-shaped file.
+- **Recovery-buffer-key-gated:** the shard buffer + restore/arming state — a second, separate
+  `LayerStore`-shaped file, kept unlockable without biometrics on purpose.
+
+The exported `.occbak` backup does not join either. Its contents are sealed under the **BEK itself**,
+not the vault key — necessarily, since a backup must open on a brand-new device that reconstructed the
+BEK from Shamir shares and has no biometric enrollment history for this install at all. The vault key
+is device-bound; the BEK is the thing designed to survive the device being gone. One exists to protect
+the device you still have, the other to survive losing it — they cannot share a key without breaking
+one of those two purposes.
+
+### 3a. Is "duress PIN + forced biometrics" actually the high bar S8 assumes?
+
+Worth naming since it changes how urgent this is, not just how it should be built. S8's downgrade
+rests on that compound attack being harder than PIN coercion alone. For this app's stated threat model
+— journalists, activists, people crossing borders under threat — that ordering may be backwards:
+biometric unlock is compellable under a lower legal bar than a memorized PIN in multiple jurisdictions
+(biometrics are frequently not treated as testimonial the way a passcode is). A border-checkpoint
+coercion scenario forcing both the app's duress PIN and Face ID is closer to the default pattern for
+that population than a stacked edge case. If that reasoning holds, S8's "Medium, accepted" rating
+undersells the gap for the users this app is actually built for — the UI would be actively showing
+"No entries yet" to a coercer holding a working extraction tool, not merely omitting a low-probability
+metadata detail.
 
 ## 4. Candidates
 
@@ -77,29 +114,45 @@ shells in the DB, the blob is the sole readable copy, loaded into memory on norm
 lock. `LayerStore.md` notes the infrastructure already supports it; the named work is four steps.
 
 **Vault entries (S8).** Three, from that entry plus this framing:
-1. Leave as-is; re-accept the gap explicitly, on the elevated-attacker argument.
+1. Leave as-is; re-accept the gap explicitly — weakened by §3a's reasoning, still an available option.
 2. Decoy row padding — S8 calls this "complexity without a strong attacker model."
-3. A second `LayerStore` instance keyed under the vault's biometric-gated SE key, holding sensitive
-   entries as the canonical copy. Preserves §3's separation; reuses the shipped mechanism.
+3. A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical copy —
+   **and, per §3, the natural host for the BEK record too**, since both already answer to the same
+   key. Not a second consumer bolted on afterward; one file with two record types from the start.
 
-**BEK and backup contents.** Consumers of whichever shape wins, rather than the new sibling file
-`BEK_LAYERING_REFACTOR.md` §2.2 proposes. That proposal predates this framing and did not weigh
-`LayerStore` as the host — worth re-deciding, noting §2.2's own objection (bulk content must stay out
-of `AppLayerConfig`, since SwiftData loads the whole row on every `requireConfig()`) applies to that
-row, not to a `LayerStore`-shaped file.
+**BEK and backup contents — resolves into two containers, not one, and not the sibling file
+`BEK_LAYERING_REFACTOR.md` §2.2 proposes.** That proposal predates this framing and priced the BEK as
+a single unit; §3's key-domain trace splits it:
+- The **BEK record** joins option 3 above — vault-key-gated, alongside vault entries.
+- The **shard buffer and restore/arming state** get their own recovery-buffer-key-gated
+  `LayerStore`-shaped file — deliberately not biometric-gated, so shard receipt keeps working without
+  an interactive unlock.
+- The **exported `.occbak`** stays outside both, BEK-sealed, for the portability reason in §3.
 
-`CustodyShard` is a fourth consumer already waiting: `LayerStore.md` records its duress-mode
-accessibility as an explicitly deferred decision, and BEK §2.3–§2.4 needs the same answer.
+§2.2's own objection (bulk content must stay out of `AppLayerConfig`, since SwiftData loads the whole
+row on every `requireConfig()`) still applies to whichever of the two new files ends up holding the
+larger payloads — likely the recovery-buffer one, since shard buffers are the more variable-sized
+piece.
+
+`CustodyShard` is a further consumer of the recovery-buffer-gated file: `LayerStore.md` records its
+duress-mode accessibility as an explicitly deferred decision, and BEK §2.3–§2.4 needs the same answer.
+Same key domain as the shard buffer, so likely the same container once that's decided.
 
 ## 5. Open questions
 
-1. **Does the vault get storage layering at all**, or is S8 re-accepted? Everything else follows.
-2. **If yes — one shared instance under the vault SE key, or per-consumer instances?** More instances
-   means more fixed-size files to justify; each is eagerly created and permanently present.
-3. **What is the vault slot budget?** 32 KB holds ~30 contacts with ML-KEM material; vault entries are
-   far smaller, so the same 32 KB is a generous starting point — but it must be picked against the
-   §6.5 tripwire (`VaultEntryType.document`/`.photo` stay commented out, or this design breaks).
-4. **Does the BEK move into this mechanism**, superseding §2.2's sibling file?
+1. **Does the vault get storage layering at all**, or is S8 re-accepted given §3a? Everything else
+   follows.
+2. **Settled by §3's key-domain trace, not still open as a free choice:** two containers, split by
+   key — vault-key-gated (entries + BEK record) and recovery-buffer-key-gated (shard buffer + restore
+   state + `CustodyShard`) — not one shared instance and not one file per consumer.
+3. **What is the vault-key-gated slot's budget?** Now two payload types compete for it (vault entries,
+   BEK record), not one. 32 KB holds ~30 contacts with ML-KEM material; both vault entries and a BEK
+   record are far smaller, so 32 KB is still a generous starting point — but it must be picked against
+   the §6.5 tripwire (`VaultEntryType.document`/`.photo` stay commented out, or this design breaks).
+4. **Superseded by §3/§4** — the BEK does move into this mechanism, split across the two containers
+   above rather than one sibling file. What's still open: exact record layout within each slot, and
+   whether the recovery-buffer file's size is dominated by the shard buffer or by `CustodyShard` once
+   that consumer is folded in.
 5. **Sequencing against Bug 105**, which is live on shipped code and was the reason the BEK work was
    compressed into a patch release. If the BEK refactor now waits behind this, 105 needs a deliberate
    interim answer — accept it documented, or take the remedy the BEK doc dislikes (refusing
