@@ -40,12 +40,24 @@ extension VaultManager {
         /// failure — the caller shows a neutral, depth-safe acknowledgment rather than
         /// the generic error path. See Bug 93.
         case alreadyProcessed
+        /// `recipients.count` exceeds `maxBEKTrustees`. Checked before any I/O.
+        case tooManyTrustees
     }
 
     // MARK: - Wire format constants
 
     private static let backupMagic:   Data = Data("OCBK".utf8)
     private static let backupFileAAD: Data = Data("occulta-backup-v1".utf8)
+
+    /// Cap on BEK trustees, distinct from any per-entry PEK distribution cap.
+    /// `shardMetadata` (threshold + one `ShardRecord` per trustee) is sealed inside
+    /// the BEK record in the per-depth vault-key-gated slot — see
+    /// `VAULT_KEY_LAYERING.md` §8 item 3 — so its size must be padded to a fixed
+    /// maximum rather than left to grow with however many trustees the owner picks.
+    /// 10 comfortably exceeds any realistic Shamir trustee count while keeping that
+    /// padding cost negligible; the cryptographic ceiling (`UInt8` x-coordinates in
+    /// `ShamirSecretSharing`) is 255 and is not the number this is sized against.
+    static let maxBEKTrustees: Int = 10
 
     // MARK: - Transient models
 
@@ -366,6 +378,10 @@ extension VaultManager {
     /// per recipient in the same order as `recipients`. The caller feeds these into
     /// `distributeBEKShards` or the .occ basket pipeline.
     func prepareBEKShards(threshold: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
+        guard recipients.count <= Self.maxBEKTrustees else {
+            throw BackupError.tooManyTrustees
+        }
+
         let vaultKey = try self.currentKey()
 
         guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {

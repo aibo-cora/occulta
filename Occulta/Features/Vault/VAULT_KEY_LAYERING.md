@@ -236,15 +236,28 @@ container's Stage 1 needs, is in §9.
    both vault entries and a BEK record are far smaller, so 32 KB is a generous starting point — but
    must be picked against §10's tripwire, and only matters once §6's build order reaches vault entries.
 
-3. **A trustee-count cap for `shardMetadata` — found 2026-09-02, not previously named.**
-   `ShardDistributionMetadata.shards: [ShardRecord]` is variable-length, one record per trustee.
-   `prepareBEKShards`/`distributeBEKShards` bound `recipients.count` at nowhere today. Different depths
-   will legitimately have different trustee counts — a duress layer never set up for backup has zero.
-   Unpadded, that's a length leak of the same shape closed elsewhere in this design: a near-empty
-   `shardMetadata` compresses shorter than a full one, before the container's outer padding gets a
-   chance to hide it. A realistic cap (5–10 covers any real Shamir threshold use — the cryptographic
-   ceiling, confirmed in `ShamirSecretSharing.swift`, is 255 shares via `UInt8` x-coordinates, far past
-   what's relevant) also firmly bounds the BEK record's worst case for item 2's budget.
+3. **A trustee-count cap for `shardMetadata` — settled 2026-09-04, cap = 10.**
+   `ShardDistributionMetadata.shards: [ShardRecord]` is variable-length, one record per trustee, and
+   was unbounded — `prepareBEKShards`/`distributeBEKShards` didn't check `recipients.count` anywhere.
+   Different depths legitimately have different trustee counts — a duress layer never set up for
+   backup has zero — so unpadded, that's a length leak of the same shape closed elsewhere in this
+   design: a near-empty `shardMetadata` compresses shorter than a full one, before the container's
+   outer padding gets a chance to hide it.
+
+   **10**, comfortably above any realistic Shamir trustee count (consumer social-recovery schemes
+   typically run 3–9 guardians) while keeping the padding cost negligible in this container. The
+   cryptographic ceiling — confirmed in `ShamirSecretSharing.swift`, `UInt8` x-coordinates — is 255
+   shares and was never the number this was sized against.
+
+   **Enforced, not just documented:** `VaultManager.maxBEKTrustees` (`Vault+Manager+Backup.swift`),
+   checked in `prepareBEKShards` before any I/O (`BackupError.tooManyTrustees`) — the authoritative
+   gate, reachable by any caller, not only the UI. `Vault+ShardSetup.swift` enforces it a second way,
+   as the graceful path: unselected trustee rows disable once the cap is hit (reusing the existing
+   dim-for-unselectable pattern already used for revoked/lost shards) and the trustee count reads
+   `N / 10` in backup mode, so the cap is visible before anyone can hit it as an error — the same
+   "see the budget as you spend it" pattern `LayerStore` already uses for contacts. Scoped to
+   `.backup` mode only: per-entry PEK distribution has no shared-slot constraint and stays uncapped.
+   Covered by `BEKTrusteeCapTests.swift` (`atCapSucceeds`, `overCapThrows`) — both passing.
 
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
    applications with different blockers and costs:
