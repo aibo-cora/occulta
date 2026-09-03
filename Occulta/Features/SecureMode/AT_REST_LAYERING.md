@@ -1,7 +1,8 @@
 # At-Rest Layering — Decision Framing
 
-**Status:** §5 question 1 settled 2026-09-02 — build. Questions 2–5 not yet settled. **Compiled:**
-2026-09-02.
+**Status:** framing only, no decision taken. §5 question 1 carries a recommendation (build, S5 before
+S8), not a decision — pending the release owner, and pending §3a's legal claim being checked rather
+than assumed. **Compiled:** 2026-09-02.
 **Owner entries:** `forensic-trace-avoidance.md` S5 (contacts) and S8 (vault entries) — the two
 accepted gaps this decision would close or knowingly re-accept.
 **Downstream:** `Occulta/Features/Vault/BEK_LAYERING_REFACTOR.md` §2.1, §2.2, and open decision §4.2.
@@ -95,34 +96,33 @@ is device-bound; the BEK is the thing designed to survive the device being gone.
 the device you still have, the other to survive losing it — they cannot share a key without breaking
 one of those two purposes.
 
-### 3a. Is "duress PIN + forced biometrics" actually the high bar S8 assumes?
+### 3a. Is "duress PIN + forced biometrics" actually the high bar S8 assumes? — unverified claim, not a finding
 
-Worth naming since it changes how urgent this is, not just how it should be built. S8's downgrade
-rests on that compound attack being harder than PIN coercion alone. For this app's stated threat model
-— journalists, activists, people crossing borders under threat — that ordering may be backwards:
-biometric unlock is compellable under a lower legal bar than a memorized PIN in multiple jurisdictions
-(biometrics are frequently not treated as testimonial the way a passcode is). A border-checkpoint
-coercion scenario forcing both the app's duress PIN and Face ID is closer to the default pattern for
-that population than a stacked edge case. If that reasoning holds, S8's "Medium, accepted" rating
-undersells the gap for the users this app is actually built for — the UI would be actively showing
-"No entries yet" to a coercer holding a working extraction tool, not merely omitting a low-probability
-metadata detail.
+Raised as a question, not settled here. S8's downgrade rests on that compound attack being harder than
+PIN coercion alone. The counter-argument — that biometric unlock is compellable under a lower legal bar
+than a memorized PIN in some jurisdictions, so the compound attack may be closer to the default
+coercion pattern than a stacked edge case for this app's stated threat model — is a **legal claim**,
+not a technical one, and it has not been checked against actual counsel or jurisdiction-specific
+sourcing. It should be routed through the same counsel pass `Docs/Audit/OPEN_LIMITATIONS.md` Section E
+already queues for duress/coercer language, not treated as established reasoning on the strength of it
+sounding plausible. What *is* verified, independent of this claim: the failure mode itself — the UI
+showing "No entries yet" while the raw DB holds N rows — is real and already documented in S8 regardless
+of how the legal question resolves. The claim only affects *how urgent* the gap is rated, not whether it
+exists.
 
 ## 4. Candidates
 
-**Contacts (S5) — build first, per §5 question 1.** Design B is already specified and deferred:
-sensitive contacts become unreadable shells in the DB, the blob is the sole readable copy, loaded into
-memory on normal unlock and wiped on lock. `LayerStore.md` notes the infrastructure already supports
-it — no new file, no new key, four named steps. The pilot for the lifecycle pattern vault entries need.
+**Contacts (S5).** Design B is already specified and deferred: sensitive contacts become unreadable
+shells in the DB, the blob is the sole readable copy, loaded into memory on normal unlock and wiped on
+lock. `LayerStore.md` notes the infrastructure already supports it — no new file, no new key, four
+named steps. If S8 is built, this is the recommended pilot for the same lifecycle pattern — see §5.1.
 
-**Vault entries (S8) — build, via option 3.** Was three candidates; 1 and 2 are superseded by §5
-question 1's decision:
-1. ~~Leave as-is~~ — rejected; §3a's reasoning holds.
-2. ~~Decoy row padding~~ — not chosen; S8 already called this "complexity without a strong attacker
-   model," and that judgment doesn't change just because the leak is now taken more seriously.
-3. **Chosen.** A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical
-   copy — **and, per §3, the natural host for the BEK record too**, since both already answer to the
-   same key. One file with two record types from the start, built after S5's Design B lands.
+**Vault entries (S8).** Three candidates, unchanged from the original framing — §5.1's recommendation
+picks one, but the decision is still open:
+1. Leave as-is; re-accept the gap explicitly. Available regardless of how §3a resolves.
+2. Decoy row padding — S8 already called this "complexity without a strong attacker model."
+3. A vault-key-gated `LayerStore` instance, holding sensitive entries as the canonical copy — and,
+   per §3, a natural host for the BEK record too, since both already answer to the same key.
 
 **BEK and backup contents — resolves into two containers, not one, and not the sibling file
 `BEK_LAYERING_REFACTOR.md` §2.2 proposes.** That proposal predates this framing and priced the BEK as
@@ -144,20 +144,21 @@ Same key domain as the shard buffer, so likely the same container once that's de
 
 ## 5. Open questions
 
-1. **Settled 2026-09-02: yes, build.** §3a's re-rating stands — for this app's actual users, "duress
-   PIN + forced biometrics" is closer to the default coercion pattern than a stacked edge case, so S8's
-   accepted-Medium rating undersells it. The failure isn't a passive metadata leak; it's the UI actively
-   showing "No entries yet" to a coercer holding a working extraction tool.
+1. **Does the vault get storage layering at all, or is S8 re-accepted? Open — release owner's call,
+   not settled here.**
 
-   **Sequencing, not just scope: build S5's Design B in the same effort, first or alongside — not
-   after.** The risky, unproven part of candidate 3 isn't the file mechanism (`LayerStore` already
-   ships) — it's the "unreadable shell in the DB, canonical copy in the sealed file, loaded to memory
-   on unlock, wiped on lock, merged with live rows in the UI" lifecycle, which has never been built
-   anywhere in this codebase. Contacts' Design B is that exact pattern, already specified in four named
-   steps, needs no new container or key (`LayerStore.md` — it upgrades the existing contact blob), and
-   has sat deferred. Building vault entries alone makes the vault — more frequently accessed, directly
-   edited by the user, higher cost if the memory lifecycle has a bug — the first real test of a pattern
-   that's never run in production. Pilot it on the cheap, already-designed case first.
+   **5.1 — Recommendation, not a decision.** Build, sequencing S5's Design B first or alongside rather
+   than after — but this rests partly on §3a, which is a flagged, unverified legal claim, not a
+   finding, and the recommendation should be read that way. If §3a doesn't hold up, S8 may be exactly
+   as "accepted, Medium" as it already reads, and re-accepting it (candidate 1) is a legitimate call.
+
+   Independent of §3a, worth weighing on its own: the risky, unproven part of candidate 3 isn't the
+   file mechanism (`LayerStore` already ships) — it's the "unreadable shell in the DB, canonical copy
+   in the sealed file, loaded to memory on unlock, wiped on lock, merged with live rows in the UI"
+   lifecycle, which has never been built anywhere in this codebase. Contacts' Design B is that exact
+   pattern, already specified in four named steps, needs no new container or key, and has sat
+   deferred. *If* S8 is built, piloting the lifecycle on S5 first, rather than making the vault the
+   first real test of an unproven pattern, is worth doing regardless of how urgent S8 turns out to be.
 2. **Settled by §3's key-domain trace, not still open as a free choice:** two containers, split by
    key — vault-key-gated (entries + BEK record) and recovery-buffer-key-gated (shard buffer + restore
    state + `CustodyShard`) — not one shared instance and not one file per consumer.
