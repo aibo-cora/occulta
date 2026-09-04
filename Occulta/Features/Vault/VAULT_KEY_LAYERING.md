@@ -236,15 +236,63 @@ container's Stage 1 needs, is in §9.
    both vault entries and a BEK record are far smaller, so 32 KB is a generous starting point — but
    must be picked against §10's tripwire, and only matters once §6's build order reaches vault entries.
 
-3. **A trustee-count cap for `shardMetadata` — found 2026-09-02, not previously named.**
-   `ShardDistributionMetadata.shards: [ShardRecord]` is variable-length, one record per trustee.
-   `prepareBEKShards`/`distributeBEKShards` bound `recipients.count` at nowhere today. Different depths
-   will legitimately have different trustee counts — a duress layer never set up for backup has zero.
-   Unpadded, that's a length leak of the same shape closed elsewhere in this design: a near-empty
-   `shardMetadata` compresses shorter than a full one, before the container's outer padding gets a
-   chance to hide it. A realistic cap (5–10 covers any real Shamir threshold use — the cryptographic
-   ceiling, confirmed in `ShamirSecretSharing.swift`, is 255 shares via `UInt8` x-coordinates, far past
-   what's relevant) also firmly bounds the BEK record's worst case for item 2's budget.
+3. **A trustee-count cap for `shardMetadata` — found 2026-09-02. Cap number agreed (10); wire
+   format and the pre-existing-data question below are what's still open.**
+
+   `ShardDistributionMetadata.shards: [ShardRecord]` is variable-length, one record per trustee, and
+   `prepareBEKShards`/`distributeBEKShards` bound `recipients.count` nowhere today. Different depths
+   legitimately have different trustee counts — a duress layer never set up for backup has zero — so
+   unpadded, a near-empty `shardMetadata` compresses shorter than a full one, before the container's
+   outer padding gets a chance to hide it.
+
+   **Cap = 10.** Comfortably above any realistic Shamir trustee count (consumer social-recovery schemes
+   typically run 3–9 guardians) while keeping padding cost negligible in this container. The
+   cryptographic ceiling — confirmed in `ShamirSecretSharing.swift`, `UInt8` x-coordinates — is 255
+   shares and was never the number this was sized against.
+
+   **Wire format — fixed-byte binary, not JSON/`Codable` as `Payload` is today.** A first pass at this
+   used `Payload`'s existing `Codable` shape plus a computed pad-to-target step, which turned out to be
+   the wrong instinct: `ShardStatus`'s `String` rawValues alone run 4–13 characters
+   (`"lost"` vs. `"revokePending"`), a 9-byte-per-record spread that a JSON-encode-then-pad approach
+   would have to bound correctly by hand and re-verify every time a case is added or renamed — exactly
+   the kind of thing that quietly breaks later. Fixed byte offsets close this structurally instead of
+   by computation. Per-trustee `ShardRecord`:
+
+   | Field | Bytes | Encoding |
+   |---|---|---|
+   | `contactIdentifier` | 16 | raw UUID bytes, not the 36-char string |
+   | `attributeID` | 16 | raw UUID bytes |
+   | `status` | 1 | `UInt8` tag, not the enum's string rawValue |
+   | `distributedAt` | 9 | 1 presence byte + 8-byte `UInt64` epoch seconds, always both, zero-filled when absent — **never 8 bytes when absent and 9 when present; that byte-count difference is itself the leak** |
+   | **Total** | **42** | — |
+
+   Padded to the cap regardless of how many are real: `42 × 10 = 420` bytes for the shards array.
+   `Payload` overall: `formatVersion` (`UInt16`, 2 bytes — see below) + `bekBytes` (32, already fixed)
+   + `distributionID` (16, already fixed) + `threshold` (1 byte, `UInt8` comfortably covers 2–10) +
+   the 420-byte shards array = **471 bytes, always**, whether the record holds 0 trustees or 10,
+   whatever their statuses. This changes `Payload`'s encoding project-wide, not just `shardMetadata` —
+   worth noting against §5's table, which doesn't currently specify one.
+
+   **`formatVersion` — folds the padding rule into the byte a decoder already needs to trust**, rather
+   than inventing a separate cap-version concept. `formatVersion = 1` means "`shardMetadata` is padded
+   for cap = 10"; a future cap change bumps it. Absence of the field entirely (not `0` — genuinely
+   absent) marks the legacy, pre-slotting device-wide row, which predates the whole concept and is
+   distinguishable from it on that basis alone.
+
+   **Open, not yet decided: what happens to a distribution that already exceeds the cap.** Nothing
+   auto-revokes trustees under any option on the table — that's a real, consequential, security-
+   relevant action (changes who can help reconstruct the BEK) and must never happen as a side effect of
+   a UI constraint. Two real shapes: (A) the cap is write-only — an over-cap distribution keeps working
+   for read/reconstruct indefinitely, but can't be re-saved above 10 without first reducing it, and the
+   UI needs an explicit "you're over the limit, reduce to update" state rather than a generic failure;
+   (B) no retroactive enforcement at all — the cap only stops *new* distributions from ever exceeding
+   10, and an existing larger one is left alone permanently, including remaining redistributable at its
+   original size, which would mean the padded slot size has to accommodate the true historical maximum
+   rather than a clean chosen number. Leaning (A), not decided.
+
+   **Not yet implemented.** A first pass shipped `prepareBEKShards`'s guard and matching UI enforcement
+   without this wire-format work or the over-cap question behind it — reverted (`2b49457`) once the gap
+   surfaced. Nothing about the cap number or wire format above is code yet.
 
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
    applications with different blockers and costs:
