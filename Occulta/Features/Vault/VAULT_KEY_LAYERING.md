@@ -143,6 +143,32 @@ applications.
 essentially every security check and SwiftData loads the whole row, so bulk payloads would ride along
 with every `requireConfig()`. Eagerly created from first launch, same reasoning as §3.
 
+**Found 2026-09-05, not yet decided how far to take it: no dedicated directory, no magic byte —
+disambiguate by which key opens it.** Checked the existing precedent directly
+(`AppGroupLayerStoreBackend.swift:26-53`) rather than assume: the current contact blob already lives in
+its own dedicated directory (`"blobs"`), holds nothing else, and `findFile(in:)` just reads whatever
+single file is there — filename is a fresh UUID on *every* write, old file deleted only after the new
+one lands, no magic byte, no stored path. That's most of the way there, but the dedicated directory
+itself is a residual signal: an examiner who has read this app's source sees a purpose-named folder and
+learns "a concealment subsystem lives here" from structure alone, before touching a single byte. Once
+this container and `RECOVERY_BUFFER_LAYERING.md`'s exist alongside it, that becomes two or three
+purpose-named folders — architecture leaking through directory layout, not content.
+
+**The stronger version:** one shared, undifferentiated pool for all of them — same directory, same
+random-renamed-on-every-write naming, same fixed size (§8 item 3's cross-container sizing note) —
+disambiguated purely by
+which of the app's own keys successfully opens a given file via `AES.GCM.open`. No magic byte required;
+GCM's own authentication tag already distinguishes "wrong key" from "right key" for free, which is a
+cleaner signal than a magic byte would be anyway, since a magic byte is plaintext-visible before any
+key is involved at all. Cost is a handful of trial decryptions per lookup — computationally trivial for
+a fixed, small key set (vault key, recovery-buffer key, Secure-Mode key). Pool file *count* must stay
+fixed regardless of configuration, matching the eager-creation principle already used everywhere in
+this design, so count doesn't become a new signal in place of the directory-name one it replaces.
+
+Not yet decided how far to take this — folding the recovery-buffer container and the existing contact
+blob into the same pool as this one requires `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives"
+section to adopt the same approach, which it doesn't yet.
+
 ---
 
 ## 6. Bug 105 — the sharpest evidence, and the one item with a clock on it
@@ -266,33 +292,69 @@ container's Stage 1 needs, is in §9.
    | `distributedAt` | 9 | 1 presence byte + 8-byte `UInt64` epoch seconds, always both, zero-filled when absent — **never 8 bytes when absent and 9 when present; that byte-count difference is itself the leak** |
    | **Total** | **42** | — |
 
-   Padded to the cap regardless of how many are real: `42 × 10 = 420` bytes for the shards array.
-   `Payload` overall: `formatVersion` (`UInt16`, 2 bytes — see below) + `bekBytes` (32, already fixed)
-   + `distributionID` (16, already fixed) + `threshold` (1 byte, `UInt8` comfortably covers 2–10) +
-   the 420-byte shards array = **471 bytes, always**, whether the record holds 0 trustees or 10,
-   whatever their statuses. This changes `Payload`'s encoding project-wide, not just `shardMetadata` —
-   worth noting against §5's table, which doesn't currently specify one.
+   **Storage capacity and write policy are two different numbers — settled 2026-09-05.** The array's
+   *storage* capacity is **255**, the Shamir ceiling itself (`UInt8` x-coordinates,
+   `ShamirSecretSharing.swift`) — not an arbitrary "generous" guess, the literal hardware/math limit of
+   what could ever exist, since the library itself refuses to produce more. `prepareBEKShards`'s
+   *write-time guard* still enforces **10** for anything new or redistributed. These don't need to
+   match, and forcing them to would recreate the exact problem below.
+
+   `Payload` overall, at capacity: `formatVersion` (`UInt16`, 2) + `bekBytes` (32) + `distributionID`
+   (16) + `threshold` (1, `UInt8` comfortably covers 2–255) + shards array (`42 × 255 = 10,710`) =
+   **10,761 bytes plaintext, always** — every slot, every device, whether it holds 0 real records or
+   255, regardless of write-time policy. This changes `Payload`'s encoding project-wide, not just
+   `shardMetadata` — worth noting against §5's table, which doesn't currently specify one.
+
+   **Why 255 and not 10: the over-cap question this resolves.** A legacy distribution created before
+   any cap existed could hold any count up to Shamir's own limit. Sizing storage to the *write* policy
+   (10) would mean Stage 1's migration literally cannot represent a legacy distribution larger than
+   that — no fixed-width encoding is at fault here, there'd just be nowhere to put the 11th record.
+   Sizing to 255 makes that scenario impossible by construction rather than needing a remedy: a legacy
+   distribution of any size Shamir could ever have produced fits, unconditionally, forever. Nothing is
+   truncated, nothing is silently reduced, no trustee is ever dropped without the owner choosing it —
+   reading and reconstructing an over-cap legacy distribution is permanently unaffected. The only
+   consequence: redistributing or updating one is still capped at 10 by the write guard, same as any
+   fresh distribution — reduce first if there's ever a reason to change it. This was framed as two
+   options (A/B) before working through the actual numbers; it isn't a tradeoff once the true ceiling
+   (255) turns out to cost only ~10.5 KB either way.
+
+   **Measured, not estimated — real `JSONEncoder()` output for today's `Codable` scheme, same encoder
+   the codebase actually uses (`Vault+Manager+Backup.swift:1016`), against the fixed design above:**
+
+   | Trustees | Current (JSON) — best case¹ | Current (JSON) — worst case² | New design, fixed-width³ |
+   |---|---|---|---|
+   | 0 | 159 → ciphertext 187 | 159 → ciphertext 187 | 10,761 → ciphertext **10,789** |
+   | 5 | 808 → ciphertext 836 | 1,018 → ciphertext 1,046 | 10,761 → ciphertext **10,789** |
+   | 10 | 1,459 → ciphertext 1,487 | 1,877 → ciphertext 1,905 | 10,761 → ciphertext **10,789** |
+   | 255 | 33,310 → ciphertext 33,338 | 43,988 → ciphertext 44,016 | 10,761 → ciphertext **10,789** |
+
+   ¹ Every `distributedAt` nil — Swift's synthesized `Codable` uses `encodeIfPresent`, so a nil optional
+   omits the key entirely rather than writing `null` — and every `status` the shortest rawValue
+   (`"lost"`, 4 chars). ² Every `distributedAt` set (adds the key plus a `Double` timestamp) and every
+   `status` the longest rawValue (`"revokePending"`, 13 chars). ³ Genuinely constant at every count
+   0–255 and every status/timestamp combination — that's the entire point being measured.
+
+   **Cross-container forensic concern, found 2026-09-05: don't let this container's *own* efficient
+   size become a fingerprint.** 10,789 bytes is cheap relative to the contact `LayerStore`'s existing
+   32 KB per slot, but if this container settles on its own tighter number, an examiner who knows both
+   values can identify "this file is the BEK+entries container" purely from its distinct size, same
+   problem as trustee count leaking via length, one level up. Reusing `LayerStore`'s existing 32 KB
+   constant here instead — rather than the cheaper 10,789 — costs roughly 22 KB × 32 slots ≈ 700 KB of
+   otherwise-unneeded padding, trivial on-device, in exchange for making this container and the contact
+   blob byte-identical in size. Not yet decided whether to take the cheap number or the matching one;
+   leaning matching, given the cost is negligible and the alternative reopens the fingerprinting
+   question item 5 below also raises for directory structure. `RECOVERY_BUFFER_LAYERING.md`'s own
+   container would need the same treatment for this to close completely — not yet applied there.
 
    **`formatVersion` — folds the padding rule into the byte a decoder already needs to trust**, rather
-   than inventing a separate cap-version concept. `formatVersion = 1` means "`shardMetadata` is padded
-   for cap = 10"; a future cap change bumps it. Absence of the field entirely (not `0` — genuinely
-   absent) marks the legacy, pre-slotting device-wide row, which predates the whole concept and is
-   distinguishable from it on that basis alone.
-
-   **Open, not yet decided: what happens to a distribution that already exceeds the cap.** Nothing
-   auto-revokes trustees under any option on the table — that's a real, consequential, security-
-   relevant action (changes who can help reconstruct the BEK) and must never happen as a side effect of
-   a UI constraint. Two real shapes: (A) the cap is write-only — an over-cap distribution keeps working
-   for read/reconstruct indefinitely, but can't be re-saved above 10 without first reducing it, and the
-   UI needs an explicit "you're over the limit, reduce to update" state rather than a generic failure;
-   (B) no retroactive enforcement at all — the cap only stops *new* distributions from ever exceeding
-   10, and an existing larger one is left alone permanently, including remaining redistributable at its
-   original size, which would mean the padded slot size has to accommodate the true historical maximum
-   rather than a clean chosen number. Leaning (A), not decided.
+   than inventing a separate cap-version concept. `formatVersion = 1` means "capacity is sized to the
+   255 ceiling, write policy is 10"; a future change to either bumps it. Absence of the field entirely
+   (not `0` — genuinely absent) marks the legacy, pre-slotting device-wide row, which predates the whole
+   concept and is distinguishable from it on that basis alone.
 
    **Not yet implemented.** A first pass shipped `prepareBEKShards`'s guard and matching UI enforcement
-   without this wire-format work or the over-cap question behind it — reverted (`2b49457`) once the gap
-   surfaced. Nothing about the cap number or wire format above is code yet.
+   without this wire-format work or the storage-capacity question behind it — reverted (`2b49457`) once
+   the gap surfaced. Nothing about the numbers or wire format above is code yet.
 
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
    applications with different blockers and costs:
@@ -314,6 +376,19 @@ container's Stage 1 needs, is in §9.
    the reconstructed `bekBytes` and the PIN active at export time — shards alone stop being sufficient,
    and rotating a PIN orphans old exports. This half touches `RECOVERY_BUFFER_LAYERING.md`'s territory
    (the exported/pending backup contents), not this container.
+
+5. **File-identity architecture — found 2026-09-05, not decided.** §5's "Where it lives" traced the
+   existing contact-blob backend (`AppGroupLayerStoreBackend.swift`) and found it already avoids magic
+   bytes and fixed filenames, but still uses a purpose-named dedicated directory (`"blobs"`) — a
+   residual signal once a second and third differently-purposed container exist alongside it. Two
+   shapes: (A) keep dedicated directories per container, one per purpose, as today; (B) one shared,
+   undifferentiated pool for every internal concealment container, same naming/renaming/size
+   convention, disambiguated purely by which of the app's own keys successfully opens a given file
+   (`AES.GCM.open`'s own authentication failure standing in for a magic byte, for free). (B) removes a
+   structural signal (A) still exposes to an examiner who's read this app's source, at the cost of a
+   handful of trial decryptions per lookup — trivial for a fixed, small key set. Requires
+   `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives" to adopt the same shape for it to close
+   completely; not yet applied there. Leaning (B), not decided.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
