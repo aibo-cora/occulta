@@ -357,8 +357,9 @@ container's Stage 1 needs, is in §9.
    the gap surfaced. Nothing about the numbers or wire format above is code yet.
 
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
-   applications with different blockers and costs. **The live-slot half decided 2026-09-05: build it.**
-   The exported-file half stays separate and undecided.
+   applications with different blockers and costs. **Both halves now decided, separately, on different
+   dates: live-slot 2026-09-05 (build it), exported-file 2026-09-06 (ship opt-in, 6-word passphrase).**
+   Neither implemented yet.
 
    **Why not a slow KDF.** `PIN+Manager.swift`'s existing verifier derivation is
    `HKDF(seKey, info: label ∥ pin)` — deliberately fast. `plan.md` records PBKDF2 being tried for this
@@ -382,12 +383,50 @@ container's Stage 1 needs, is in §9.
    **Not yet implemented.** Decided, not built — same status as item 3 until this branch's actual
    implementation work starts.
 
-   **The exported `.occbak` file (Bug 92's original proposal) — same mechanism, real recovery-contract
-   cost, still undecided, decide separately.** Folding the PIN into the file's wrapping key means a
-   restorer needs both the reconstructed `bekBytes` and the PIN active at export time — shards alone
-   stop being sufficient, and rotating a PIN orphans old exports. This half touches
-   `RECOVERY_BUFFER_LAYERING.md`'s territory
-   (the exported/pending backup contents), not this container.
+   **The exported `.occbak` file (Bug 92's original proposal) — decided 2026-09-06: ship as an
+   opt-in, 6-word passphrase, not a PIN.** Revises the original `slowKDF(PIN, ...)` proposal on two
+   points worked through in design:
+
+   **Passphrase, not PIN — and reuses existing infrastructure.** `Manager.PassphraseGenerator`
+   (`Passphrase+Manager.swift`) already exists, already shipped for the UWB pairing ceremony's Diceware
+   confirmation — EFF large wordlist (7776 words), `SecRandomCopyBytes`-backed generation, no new
+   dependency. At 6 words (log2(7776) × 6 ≈ 77.5 bits, vs. a 6-digit PIN's ≈ 19.9), this is comfortably
+   past feasible even for dedicated state-actor-scale offline brute force — rough estimate, generous
+   assumptions, ~60 years at 10¹³–10¹⁴ guesses/second, versus low single-digit days for 5 words. 6
+   chosen deliberately over the function's own 5-word default for that margin. **A fresh passphrase
+   generated per export, not the app's own unlock PIN** — shown once at export time, the user saves it
+   themselves. This also removes the original proposal's "PIN rotation orphans old exports" cost
+   entirely: it's independent of the app PIN, so rotating that PIN never touches a past export.
+   Sufficient entropy also removes the slow-KDF question from before — plain `HKDF`, the same pattern
+   used everywhere else in this design, is enough once the input itself carries 77.5 bits.
+
+   **What this actually protects, stated precisely rather than implied more broadly — the scope
+   decision that makes shipping it defensible.** Entropy defends against an adversary who obtains the
+   exported file *without* the owner's cooperation — found in `Documents/Inbox` (Bug 101), intercepted
+   from a device backup, or a subset of trustees compromised independently. It defends nothing against
+   a coercer who has the owner detained: a human-memorizable secret can be compelled from the one
+   person allowed to know it, same reason duress PINs exist elsewhere in this app. Sharper than a gap —
+   this reintroduces a single point of coercion Shamir's own design eliminates (no party, including a
+   coerced owner, can reconstruct alone; recovery needs `threshold` *independent* trustees). Before this
+   feature, a coercer holding the owner and the file still needs to separately reach several trustees.
+   After, if they can also compel the passphrase, they don't. **Accepted, not fixed** — a duress
+   variant (a second passphrase opening a decoy/empty result, mirroring duress PINs) was considered and
+   explicitly not built here; real design work on its own, out of scope for this decision. Document the
+   boundary plainly wherever this ships in-app: protects opportunistic and third-party exposure, not a
+   detained-owner scenario.
+
+   **Word selection: auto-generate by default; at most one word swappable via search.** Full free
+   choice for every word was considered and rejected — human-chosen "memorable" words are well-
+   documented to cluster far from uniform, materially cutting the effective entropy this whole decision
+   rests on. Bounding a swap to one word caps the cost at that one word's ~13 bits rather than losing
+   most of the passphrase's strength to predictability.
+
+   **Minor, pre-existing, non-blocking:** `generate()`'s `randomValue % 7776` carries the same shape of
+   modular bias already tracked and rated negligible elsewhere in this codebase (Bug 72, ~3.7×10⁻⁹) —
+   different function, same class of issue, worth a one-line note if touched, not a blocker here.
+
+   **Not yet implemented.** Decided, not built. This half touches `RECOVERY_BUFFER_LAYERING.md`'s
+   territory (the exported/pending backup contents), not this container.
 
 5. **File-identity architecture — found 2026-09-05, not decided.** §5's "Where it lives" traced the
    existing contact-blob backend (`AppGroupLayerStoreBackend.swift`) and found it already avoids magic
