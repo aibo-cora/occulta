@@ -357,7 +357,8 @@ container's Stage 1 needs, is in §9.
    the gap surfaced. Nothing about the numbers or wire format above is code yet.
 
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
-   applications with different blockers and costs:
+   applications with different blockers and costs. **The live-slot half decided 2026-09-05: build it.**
+   The exported-file half stays separate and undecided.
 
    **Why not a slow KDF.** `PIN+Manager.swift`'s existing verifier derivation is
    `HKDF(seKey, info: label ∥ pin)` — deliberately fast. `plan.md` records PBKDF2 being tried for this
@@ -366,15 +367,26 @@ container's Stage 1 needs, is in §9.
    to the SE key removes the offline-brute-force attacker entirely; the same shipped pattern fits here
    too, not a new primitive.
 
-   **The live slot — looks buildable now.** Binding each slot's key to that depth's own PIN, the same
-   way verifiers already are, closes the vault-key-extraction risk in §4: a session at depth 2 only
-   ever holds depth 2's PIN, so it can't derive depth 0's slot key even with the vault key in hand.
-   Touches only local storage — doesn't touch Shamir reconstruction or restore UX on a fresh device.
+   **The live slot — decided, build it.** Same fold-PIN-into-`info` convention the verifier already
+   uses, applied to the slot key instead of a verifier: `slotKey(depth) = HKDF(inputKeyMaterial:
+   vaultKey, info: "bek-slot" ∥ depth ∥ pin(depth))`. A session at depth 2 holds the vault key (from
+   biometric auth, not depth-specific) and depth 2's own PIN (from the PIN entry that reached it) — it
+   never holds depth 0's PIN, so it cannot compute depth 0's `slotKey` even though it holds the same
+   vault key depth 0 would use. This closes §4's vault-key-extraction risk: the boundary between depths
+   stops being "the app's code chooses not to read the other slot" and becomes "the key material to
+   read it doesn't exist in this session." Touches only local storage — doesn't touch Shamir
+   reconstruction (which splits raw `bekBytes`, independent of how any one device seals them locally)
+   or restore UX on a fresh device (which derives its own `slotKey` under its own new PIN). No
+   identified downside; scope is a key-derivation change only, not a new field or format.
+
+   **Not yet implemented.** Decided, not built — same status as item 3 until this branch's actual
+   implementation work starts.
 
    **The exported `.occbak` file (Bug 92's original proposal) — same mechanism, real recovery-contract
-   cost, decide separately.** Folding the PIN into the file's wrapping key means a restorer needs both
-   the reconstructed `bekBytes` and the PIN active at export time — shards alone stop being sufficient,
-   and rotating a PIN orphans old exports. This half touches `RECOVERY_BUFFER_LAYERING.md`'s territory
+   cost, still undecided, decide separately.** Folding the PIN into the file's wrapping key means a
+   restorer needs both the reconstructed `bekBytes` and the PIN active at export time — shards alone
+   stop being sufficient, and rotating a PIN orphans old exports. This half touches
+   `RECOVERY_BUFFER_LAYERING.md`'s territory
    (the exported/pending backup contents), not this container.
 
 5. **File-identity architecture — found 2026-09-05, not decided.** §5's "Where it lives" traced the
