@@ -97,12 +97,28 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
    size. Pick the cap and enforce it at **export**, with a clear failure — not at restore, when the
    user has no vault left.
 
+   **Blocking a sibling-doc decision, found 2026-09-06.** `VAULT_KEY_LAYERING.md`'s item 5
+   (file-identity) requires every file in the shared pool to be the same size — its own item 3 is
+   "leaning" toward 32 KB but not closed, and this item has no number at all. Neither container's size
+   can actually be finalized in isolation, and nobody has checked whether this container's real content
+   (potentially a full pending backup snapshot) fits under whatever the sibling doc settles on. Resolve
+   together with that doc's item 3, not separately.
+
 6. **Drop versus defer for non-shard payloads** behind §2's gate. Shards retry (§2); messages do not.
    Deferring means storing the bundle, which is a cross-layer container again unless it too is slotted.
 
 7. **Whether `CustodyShard` folds into this container.** Same key domain as the shard buffer, so
    likely the same file once decided — `LayerStore.md` already records its duress-mode accessibility
    as a deferred question, and §2's gate needs the same answer for it that it needs for BEK shards.
+
+   **This isn't a hypothetical gap — the model's own comment already documents it, checked
+   2026-09-06.** `CustodyShard`'s own doc comment states: *"Cold-disk forensics learns 'Bob holds N
+   shards' — nothing about which contacts those shards belong to."* The contact-linkage half is
+   mitigated; the row-count half is not — total shard count is readable via a plain row count, with no
+   key, on an unlocked device. That's the identical leak class S8 names for vault entries and this
+   entire redesign exists to eliminate. Leaving item 7 undecided means that goal is not actually
+   achieved project-wide — it's achieved for the owner's own containers and left open on the trustee
+   side, which is a real device with a real coercion exposure, just not this document's usual subject.
 
 8. **The `storePendingRestore` tombstone soft spot.** A downgraded build can still *arm* a restore
    against the sibling doc's tombstoned legacy row, because that one site uses `try?` where its

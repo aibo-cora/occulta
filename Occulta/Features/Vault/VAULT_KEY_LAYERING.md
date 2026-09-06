@@ -346,8 +346,16 @@ container's Stage 1 needs, is in §9.
    otherwise-unneeded padding, trivial on-device, in exchange for making this container and the contact
    blob byte-identical in size. Not yet decided whether to take the cheap number or the matching one;
    leaning matching, given the cost is negligible and the alternative reopens the fingerprinting
-   question item 5 below also raises for directory structure. `RECOVERY_BUFFER_LAYERING.md`'s own
-   container would need the same treatment for this to close completely — not yet applied there.
+   question item 5 below also raises for directory structure.
+
+   **Two open sizing questions are now blocking each other, found 2026-09-06.** This item's own number
+   (10,789 vs. 32 KB) is still "leaning," not closed. `RECOVERY_BUFFER_LAYERING.md`'s own container size
+   (its item 5, backup-contents cap) is fully open with no number at all. But this doc's item 5
+   (file-identity) requires *every* file in the shared pool to be the same size for its whole argument
+   to hold — so neither container's size can actually be finalized independently, and nobody has yet
+   checked whether the recovery-buffer container's real content (potentially a full pending backup
+   snapshot) even fits under whatever this container settles on. Resolve both together, not in
+   isolation — closing this item alone doesn't verify item 5's premise, it just asserts it.
 
    **`formatVersion` — folds the padding rule into the byte a decoder already needs to trust**, rather
    than inventing a separate cap-version concept. `formatVersion = 1` means "capacity is sized to the
@@ -424,6 +432,18 @@ container's Stage 1 needs, is in §9.
    rests on. Bounding a swap to one word caps the cost at that one word's ~13 bits rather than losing
    most of the passphrase's strength to predictability.
 
+   **Two implementation constraints, found 2026-09-06 during review — both are precedent, not new
+   ground.** Neither is optional if this ships:
+   - **The word-search field needs `.autocorrectionDisabled()` and `.textInputAutocapitalization(.never)`.**
+     Without them, a searched-but-not-chosen word still lands in the system keyboard's dynamic-text
+     dictionary — outside this app's storage, outside its threat model, permanently — exactly F1's
+     finding (`Docs/Audit/OPEN_LIMITATIONS.md`) for vault entry content, applied to a new field that
+     didn't exist when F1 was fixed.
+   - **Any "copy passphrase" convenience must go through `UIPasteboard.copySensitive`, never
+     `UIPasteboard.general.string =` directly.** F2's exact fix — `.localOnly` plus a 120s expiry —
+     exists because one call site got the bare setter wrong once already; this is a new call site for
+     the identical class of secret.
+
    **Minor, pre-existing, non-blocking:** `generate()`'s `randomValue % 7776` carries the same shape of
    modular bias already tracked and rated negligible elsewhere in this codebase (Bug 72, ~3.7×10⁻⁹) —
    different function, same class of issue, worth a one-line note if touched, not a blocker here.
@@ -474,6 +494,19 @@ container's Stage 1 needs, is in §9.
    there; picks up whenever that document's storage section is next touched.
 
    **Not yet implemented.** Decided, not built.
+
+6. **Item 4's live-slot fix does not cover vault entries — found 2026-09-06, not decided.** §4
+   describes the threat as a coercer with the vault key decrypting *every slot*, "including
+   `shardMetadata` — trustee counts and identities." Item 4's remedy is titled and scoped to "the BEK
+   field's slot separation," and its `slotKey(depth)` formula is applied only to the BEK record. But
+   §5.1's target design has **two** separately-sealed fields per slot — the BEK record and sensitive
+   vault entries — and the same vault key opens both. Once S8 is built, a coercer holding the vault key
+   can still decrypt every other depth's vault entries — seed phrases, key tokens, notes, the most
+   sensitive content in the app — by the identical mechanism item 4 was supposed to close. The fix
+   landed on the less sensitive of the two fields sharing the container. Needs the same `slotKey`-style
+   binding applied to the vault-entries field, decided as its own item rather than assumed covered by
+   item 4's existing wording. Blocks nothing today — S8 isn't built yet — but must be decided before it
+   is, not discovered after.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
