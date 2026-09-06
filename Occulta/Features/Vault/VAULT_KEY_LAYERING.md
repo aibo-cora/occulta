@@ -286,67 +286,63 @@ container's Stage 1 needs, is in §9.
    Net: nothing new to build for this decision — a consequence of the design above plus the existing
    trustee model.
 
-2. **The container's overall slot budget — per-entry size proposed 2026-09-06; entry-count mechanism
-   still genuinely open, not just unpicked. Container total open pending both.**
+2. **The container's overall slot budget — settled 2026-09-07: dynamic (option B), per-entry size
+   1,051 bytes.**
 
-   **Per-entry content: 1024 bytes, proposed fixed, not expandable.** Unlike entry count, size is
-   bounded by content type (seed phrases, key tokens, short notes), and `§11`'s tripwire already draws
-   the line at "kilobytes, text-only." A single generous fixed number covers the realistic range
-   without the added complexity of a second growable dimension. Encoded as a `UInt16` length prefix
-   (not `UInt8` — 256 doesn't fit in a byte, and a growable *count* alongside a fixed *size* only works
-   cleanly if the size field itself has headroom to spare, which `UInt16`'s 65,535-byte ceiling
-   provides by a wide margin). **Per-entry record: 1,051 bytes** (16 `id` + 8 `createdAt` + 1 type tag
-   + 2 length prefix + 1024 content).
+   **Per-entry content: 1024 bytes, fixed, not expandable.** Unlike entry count, size is bounded by
+   content type (seed phrases, key tokens, short notes), and `§11`'s tripwire already draws the line
+   at "kilobytes, text-only." A single generous fixed number covers the realistic range without the
+   added complexity of a second growable dimension. Encoded as a `UInt16` length prefix (not `UInt8` —
+   256 doesn't fit in a byte, and a growable *count* alongside a fixed *size* only works cleanly if the
+   size field itself has headroom to spare, which `UInt16`'s 65,535-byte ceiling provides by a wide
+   margin). **Per-entry record: 1,051 bytes** (16 `id` + 8 `createdAt` + 1 type tag + 2 length prefix +
+   1024 content).
 
-   **Entry count — a real, undecided choice between two approaches, not a settled number with an
-   unpicked constant.** Sent out 2026-09-06 as a standalone proposal package for independent review;
-   summarized here:
-   - **(A) Hard, generous storage ceiling** (a candidate of 128 has been discussed) **+ a smaller
-     enforced write policy (32)** — the same capacity-vs-policy split already used for the BEK's
-     trustee cap (item 3). No resize mechanism ever built. Costs more storage unconditionally, and any
-     fixed number is a guess, unlike the BEK's 255 which is a mathematical fact.
-   - **(B) Dynamic, expandable in increments** (start at 32, grow by 32 when needed, rewriting all 32
-     depth slots of *this* container at once — required by §11's "slot count must never vary," not an
-     added precaution). Smaller day-one footprint, never permanently wrong. But item 5's shared-pool
-     requirement means a growth event here would now cascade into resizing the recovery-buffer
-     container and the migrated contact blob too — files unrelated to vault entries — on every
-     occasion ordinary usage crosses a threshold, not just once.
+   **Entry count: dynamic, expandable in increments of 32 — chosen over a hard ceiling (option A)
+   after checking real shipped-code state, not picked arbitrarily.** A hard ceiling was considered
+   first (128 discussed, matching the BEK capacity/policy split's shape), but unlike the BEK's 255 —
+   the actual Shamir mathematical ceiling — no equivalent provable ceiling exists for vault entries.
+   Checked against the current codebase rather than assumed: `VaultManager.addEntry`
+   (`Vault+Manager.swift:217-265`) enforces no count limit today, and entry creation has none of the
+   friction (no key ceremony, no UWB exchange) that naturally bounded real-world BEK trustee counts —
+   a real install could plausibly already hold well over 128 entries at one depth. A hard ceiling risks
+   the one outcome this design treats as unacceptable everywhere else: guessing a fixed number that
+   turns out too small and truncates real user data on migration, with no telemetry available to
+   verify the guess in advance. Dynamic sizing avoids the guess entirely — each install grows to
+   wherever its real data already sits, by construction, rather than needing the number to be right on
+   the first try.
 
-   **Neither choice is a point of no return — found 2026-09-06 while stress-testing this.** Both
-   directions of a future change of mind use the identical migration mechanism this design already
-   commits to elsewhere (`formatVersion` bump, read the old fixed shape, re-seal into the new one,
-   adopt at the next safe unlock — the same pattern as Stage 1's legacy-row tombstoning): **(A) → (B)
-   later** reads the existing generous-but-fixed slots and re-seals into a larger or genuinely dynamic
-   target — rare by construction, since the whole point of picking a generous number is that this
-   rarely if ever needs to fire. **(B) → (A) later** requires the new fixed number never be smaller
-   than whatever any install has already genuinely grown to (no telemetry exists to know this in
-   advance) — resolved either by picking a ceiling generous enough to cover (B)'s own practical growth
-   limit, or by migrating per-install to whatever that install had already reached, which does not
-   reopen the fingerprinting concern since this app's threat model is about within-device
-   indistinguishability across depths, never cross-install comparison. **The real asymmetry between
-   the two options was never reversibility — both are equally reversible — it's frequency**: (A) pays
-   the whole-pool cascading-resize cost at most once, only if ever needed; (B) pays a version of that
-   cost every time real usage crosses a threshold.
+   **Migration must account for legacy counts already above 32, not just future growth.** Stage 1's
+   one-time conversion from today's uncapped storage into the new fixed-slot format must size each
+   depth's *initial* slot to `max(32, ceil(existingCount / 32) × 32)`, not assume every install starts
+   at exactly 32 — otherwise the same truncation risk a hard ceiling would have created reappears at
+   the very first migration instead of at some future growth point.
 
-   **Consequence, found immediately on computing real numbers, independent of which option wins: the
-   container's total slot size can no longer be item 3's "32 KB, matching `LayerStore`."** At the
-   32-entry starting point either option shares: `33,632` (vault entries) + `10,761` (BEK record, item
-   3) = **44,393 bytes/depth, minimum** — already exceeds both candidates item 3 was weighing (10,789
-   efficient, 32,768 matching). Under (B), one expansion (32 → 64) pushes this to ~78 KB/depth; under
-   (A) with a 128-entry ceiling, the number is fixed at ~145 KB/depth from the start. The container's
-   real size needs deciding against these numbers, not the placeholder ones item 3 used before vault
-   entries had a real shape — and per item 5's own requirement, `RECOVERY_BUFFER_LAYERING.md`'s
-   container needs the same, now-higher number for the shared-pool sizing argument to still hold.
+   **Growth mechanism: expand by 32, rewriting all 32 depth slots of *this* container at once** —
+   required by §11's "slot count must never vary," not an added precaution — using the same
+   `formatVersion`-driven migration this design already relies on elsewhere (bump the version, read
+   the old fixed shape, re-seal into the new one, adopt at the next safe unlock). Per item 5's
+   shared-pool requirement, a growth event here cascades into resizing the recovery-buffer container
+   and the migrated contact blob too, since all three pool files must stay the same size — a real,
+   recurring cost each time ordinary usage crosses a threshold, accepted as the tradeoff for never
+   needing to guess a ceiling.
 
-   **UI enforcement required on both dimensions, not yet built, regardless of which entry-count
-   approach wins.** Same two-layer pattern as the trustee cap (§6 of the sibling doc, and the reverted
-   `9493c85`): a storage-level guard throwing before any write, plus UI-level enforcement — a live
-   count indicator, input capped or disabled at the per-entry length limit — so neither cap is ever
-   discovered as a runtime error instead of a visible budget.
+   **Container total, at the 32-entry starting point: `33,632` (vault entries) + `10,761` (BEK record,
+   item 3) = 44,393 bytes/depth** — already exceeds both candidates item 3 was weighing before vault
+   entries had a real shape (10,789 efficient, 32,768 matching), so this container's slot size is no
+   longer "32 KB, matching `LayerStore`." One expansion (32 → 64) pushes this to 78,025 bytes/depth.
+   `RECOVERY_BUFFER_LAYERING.md`'s own container (56,065 bytes/depth at the same starting point, item 7
+   there) is larger by a constant 11,672 bytes at every entry count, since both containers scale by the
+   same per-entry term — so the shared-pool floor is always `RECOVERY_BUFFER_LAYERING.md`'s number, and
+   this container (plus the migrated contact blob) pads up to match it, not the other way round.
 
-   **Not yet implemented, not fully decided.** Per-entry size is a proposal with strong footing; entry
-   count is a genuine open A/B pending independent review; the container's actual total size follows
-   from both, plus reconciliation with `RECOVERY_BUFFER_LAYERING.md`'s own open sizing question.
+   **UI enforcement required, not yet built.** Same two-layer pattern as the trustee cap (§6 of the
+   sibling doc, and the reverted `9493c85`): a storage-level guard throwing before any write, plus
+   UI-level enforcement — a live count indicator, input capped or disabled at the per-entry length
+   limit — so neither the per-entry size nor the count-driven resize is ever discovered as a runtime
+   error instead of a visible budget.
+
+   **Not yet implemented.** Decided, not built — same status as items 3-6 above.
 
 3. **A trustee-count cap for `shardMetadata` — found 2026-09-02. Cap number agreed (10); wire
    format and the pre-existing-data question below are what's still open.**

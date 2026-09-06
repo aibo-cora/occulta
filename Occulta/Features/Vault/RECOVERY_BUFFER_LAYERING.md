@@ -99,11 +99,13 @@ Likely holds the larger payloads of the two containers — shard buffers and a p
 are more variable-sized than the vault-key-gated container's BEK record and short-text vault entries —
 so the `AppLayerConfig`-exclusion argument applies more forcefully here.
 
-**Same-size requirement, not yet closed.** Every pool file must match exactly. This container's total
-per depth (56,065 bytes, item 7) still needs reconciling against `VAULT_KEY_LAYERING.md`'s (44,393
-bytes minimum, item 2), which is itself pending that document's still-open entry-count mechanism
-choice — not a new dependency, the same one items 2 and 7 already carry, restated here because this is
-the section it actually constrains.
+**Same-size requirement — resolved 2026-09-07 now that item 2's entry-count mechanism is settled.**
+Every pool file must match exactly. At the shared 32-entry starting point, this container's total per
+depth (56,065 bytes, item 7) exceeds `VAULT_KEY_LAYERING.md`'s (44,393 bytes, item 2) by a constant
+11,672 bytes — constant at every future entry count too, since both containers scale by the same
+per-entry term. This container is therefore always the shared-pool floor: `VAULT_KEY_LAYERING.md`'s
+container and the migrated contact blob pad up to match this one's size, not the reverse, at every
+growth step.
 
 ---
 
@@ -140,20 +142,18 @@ the section it actually constrains.
    addition to it. §2's attribution gate (by sender visibility at the depth a bundle arrives at)
    already prevents a shared trustee's shares for one depth landing in another depth's buffer.
 
-   **Still open, found alongside this sizing: item 5 (file-identity)'s "every pool file the same size"
-   requirement makes future entry-count growth expensive.** `VAULT_KEY_LAYERING.md` item 2's entry-count
-   mechanism (hard, generous ceiling vs. dynamic expansion by 32 — genuinely open, sent for independent
-   review, not just an unpicked number) directly sets this container's floor too, since it shares
-   §5's reused numbers. Under the dynamic option specifically, a growth event there would now need to
-   resize this container and the migrated contact blob too, neither of which have anything to do with
-   vault entries — not a one-time cost, but one that recurs whenever real usage crosses a threshold.
+   **Settled 2026-09-07, resolving the entry-count question this item's sizing depends on:**
+   `VAULT_KEY_LAYERING.md` item 2 chose dynamic expansion by 32 (option B) over a hard ceiling, after
+   checking that today's shipped code enforces no vault-entry limit at all — a hard ceiling risked
+   truncating real, already-existing user data, the one outcome this design treats as unacceptable
+   everywhere else. This container's backup-contents sizing reuses that same mechanism and starting
+   count (32), so it grows in lockstep with the sibling container rather than needing its own answer.
 
-   **Neither entry-count option is a point of no return, though — checked 2026-09-06.** A future
-   switch between them, in either direction, reuses the same `formatVersion`-driven migration this
-   design already relies on elsewhere: read the old fixed shape, re-seal into the new one, adopt at
-   the next safe unlock. The real difference between the two options was never reversibility — it's
-   how often the expensive whole-pool resize actually runs. Full reasoning in
-   `VAULT_KEY_LAYERING.md` item 2.
+   **Confirmed cost: every growth event cascades to all three shared-pool files, not just the vault-key
+   container.** A resize there rewrites all 32 depth slots of *that* container, and per item 5 (file-
+   identity, that doc) this container and the migrated contact blob must resize to match — not a
+   one-time cost, one that recurs whenever real usage crosses a threshold. Accepted as the tradeoff for
+   never needing to guess a ceiling that could be wrong.
 
 6. **Drop versus defer for non-shard payloads behind §2's gate — settled 2026-09-06, no deferred
    storage needed for either category.**
