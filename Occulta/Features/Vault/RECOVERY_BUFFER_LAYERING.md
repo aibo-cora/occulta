@@ -199,3 +199,7 @@ Shared with the sibling doc, restated here since both containers must hold to th
 [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) — the BEK record and vault entries. Independent of
 this document except at its §7 Stage 5 (completion, reads this container) and this doc's §6 item 8
 (the `storePendingRestore` soft spot, reads the sibling container's tombstoned row).
+
+[`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — the
+spec docs for the restore/shard behavior this design replaces. Keep their own "Secure Mode" closing
+sections pointed here as this design's decisions land, the same as `VAULT_KEY_LAYERING.md`.

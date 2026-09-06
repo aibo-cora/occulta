@@ -953,6 +953,13 @@ That gap is the shared root of Bugs 99, 100, 102 and 103. None was found by read
 this document or the code it describes — each came from asking what a specific
 observation looks like from inside a duress session.
 
+**Updated 2026-09-06 — Bug 102's half of this now has an active design.**
+[`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) (the shard buffer and restore machinery
+this document describes) and [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) (the BEK record) carry
+the current decisions; check there rather than assuming this section is still the last word. Bugs 103
+and 104 were separately closed as duplicates of an accepted limitation, not open — see
+`Docs/Features/Secure Mode/bugs.md` for the current status of any bug number named below.
+
 **The one that touches this document most directly is Bug 103.** *Inbound bundle
 processing order*, above, describes the sequence faithfully and does not mention that
 it runs at whatever depth the app happens to be at. `identifyOwner` resolves senders

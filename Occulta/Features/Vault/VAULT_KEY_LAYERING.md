@@ -1,11 +1,14 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** design, not built. One sub-decision settled, rest open. **Owner entries:**
-`Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence); `forensic-trace-
-avoidance.md` S5 (contacts), S8 (vault entries). **Compiled:** 2026-09-02, split out of
-`STORAGE_LAYERING.md` once that doc's own container analysis showed this half and
-[`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) are independently buildable — see §7 for
-exactly where they do and don't touch.
+**Status:** design complete, nothing built. All five items in §8 decided (item 2 deferred by design,
+not urgent until vault entries are actually built). **Owner entries:** `Docs/Features/Secure Mode/
+bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence); `forensic-trace-avoidance.md` S5 (contacts),
+S8 (vault entries). **Spec docs this changes:** [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md),
+[`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both describe the device-wide BEK/shard behavior this
+design replaces; see their own "Secure Mode" closing sections, which point back here. **Compiled:**
+2026-09-02, split out of `STORAGE_LAYERING.md` once that doc's own container analysis showed this half
+and [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) are independently buildable — see §7
+for exactly where they do and don't touch. Last decision recorded: 2026-09-06.
 
 **What this is.** Everything about the container sealed under the vault's biometric-gated key: sensitive
 vault entries (if built) and the BEK record. Contacts (S5) aren't stored here — they use the existing,
@@ -260,7 +263,7 @@ container's Stage 1 needs, is in §9.
 2. **The container's overall slot budget.** Two payload types now compete for it (vault entries, BEK
    record), not one. 32 KB (`LayerStore`'s existing constant) holds ~30 contacts with ML-KEM material;
    both vault entries and a BEK record are far smaller, so 32 KB is a generous starting point — but
-   must be picked against §10's tripwire, and only matters once §6's build order reaches vault entries.
+   must be picked against §11's tripwire, and only matters once §6's build order reaches vault entries.
 
 3. **A trustee-count cap for `shardMetadata` — found 2026-09-02. Cap number agreed (10); wire
    format and the pre-existing-data question below are what's still open.**
@@ -515,7 +518,26 @@ leak in a different shape.
 
 ---
 
-## 10. Tripwire
+## 10. Known bugs — this container's
+
+Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical for full reasoning.
+`RECOVERY_BUFFER_LAYERING.md` §7 carries its own container's bugs — not repeated here.
+
+| Bug | What | Status |
+|---|---|---|
+| 92 | A backup file is readable from any layer (offline half) | open — complementary to this design, see §4 and §8 item 4 |
+| 102 | The BEK has no layer concept | **this document** |
+| 105 | A duress layer can distribute shares of the real BEK | open — §6; closes via Stage 1+2 |
+| 88 | Backup ignored `visibleThroughDepth` in both directions | fixed — export/import are depth-scoped |
+| 94a | Remedy 2's attestation field unpadded | fixed — every op ships an attestation, real or filler |
+
+Adjacent, not this container's subject, same root cause: Bugs 103/104 (inbound views render a hidden
+contact's identity) — closed as duplicates of an accepted limitation, but instances of "the depth
+dimension was not applied at the view layer."
+
+---
+
+## 11. Tripwire
 
 `VaultEntryType` has `document` and `photo` **commented out**. The whole fixed-slot design, in both
 containers, rests on a vault backup being kilobytes. Enabling either makes the vault bulk data and
@@ -529,3 +551,8 @@ belongs as a comment there too.
 [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) — the shard buffer, restore/arming state,
 and `CustodyShard`. Independent of this document except at §7 Stage 5 (completion) and §9's
 `storePendingRestore` soft spot, both noted at their point of contact above.
+
+[`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — the
+spec docs for the behavior this design replaces. Both describe today's device-wide BEK/shard machinery
+as shipped; this document is why and how that changes, not a second description of what it does. Keep
+their own "Secure Mode" closing sections pointed here as this design's decisions land.

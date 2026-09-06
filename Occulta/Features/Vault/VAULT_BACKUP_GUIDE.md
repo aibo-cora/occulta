@@ -555,6 +555,13 @@ Recording it here because the gap is invisible from inside the feature. Nothing
 above is wrong on its own terms; it simply answers questions that were never asked
 with a duress layer in the room.
 
+**Updated 2026-09-06 — this gap now has an active design answering it.**
+[`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) (the BEK record) and
+[`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) (the restore/shard machinery below) are
+the current design docs for closing this — Bug 102's owner entries. Everything below in this section
+is the diagnosis; those two documents carry the decisions and are being actively maintained as work
+proceeds. Check there before assuming this gap is still fully open.
+
 ### What is not layered today
 
 | Thing | Scope | Consequence |
