@@ -172,6 +172,30 @@ Not yet decided how far to take this — folding the recovery-buffer container a
 blob into the same pool as this one requires `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives"
 section to adopt the same approach, which it doesn't yet.
 
+### 5.3 What happens to the container across exports at multiple depths — confirmed 2026-09-06
+
+Nothing shared, nothing observable. Two exports at two different depths are fully independent
+operations, and neither writes to this container at all:
+
+- **Vault entries** are read from memory, not from a fresh container read. Per §8 item 6, a depth's
+  `entriesSlotKey` is derived once at the moment that depth's PIN is verified, and — mirroring
+  contacts' Design B exactly, "loaded into memory on normal unlock" from the blob — that depth's
+  entries get decrypted from its own slot into memory at that point, not re-read from the file on
+  every subsequent access. By the time an export runs, the current depth's entries are already sitting
+  in memory; export reads that in-memory copy, the same data the Vault tab is already displaying.
+- **The BEK** *is* read from the container at export time — `currentBEK()`/`fetchDecodedBEK`, routed
+  per-depth by Stage 2 — but that's a read, identical in shape to what `exportBackup` already performs
+  today against the device-wide row. Nothing about export writes to the container.
+- **What does get written on every export** is the separate, pre-existing `backup-export-meta.dat`
+  staleness tracker — its own 32-slot fixed file, one slot per depth, predating this whole design.
+  Exporting at depth 2 writes slot 2 there; exporting at depth 0 writes slot 0. Full regeneration on
+  every write means that file's mtime moves regardless of which depth exported — expected, and already
+  covered by the same reasoning applied elsewhere in this design (`B2`'s timestamp normalization), not
+  a new consideration this raises.
+
+So: exporting at multiple depths, in any order, any number of times, leaves this container completely
+unchanged in shape and content — regardless of what its final total size (§8 item 2) turns out to be.
+
 ---
 
 ## 6. Bug 105 — the sharpest evidence, and the one item with a clock on it
