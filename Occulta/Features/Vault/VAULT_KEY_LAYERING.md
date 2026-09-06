@@ -428,18 +428,49 @@ container's Stage 1 needs, is in §9.
    **Not yet implemented.** Decided, not built. This half touches `RECOVERY_BUFFER_LAYERING.md`'s
    territory (the exported/pending backup contents), not this container.
 
-5. **File-identity architecture — found 2026-09-05, not decided.** §5's "Where it lives" traced the
-   existing contact-blob backend (`AppGroupLayerStoreBackend.swift`) and found it already avoids magic
-   bytes and fixed filenames, but still uses a purpose-named dedicated directory (`"blobs"`) — a
-   residual signal once a second and third differently-purposed container exist alongside it. Two
-   shapes: (A) keep dedicated directories per container, one per purpose, as today; (B) one shared,
-   undifferentiated pool for every internal concealment container, same naming/renaming/size
-   convention, disambiguated purely by which of the app's own keys successfully opens a given file
-   (`AES.GCM.open`'s own authentication failure standing in for a magic byte, for free). (B) removes a
-   structural signal (A) still exposes to an examiner who's read this app's source, at the cost of a
-   handful of trial decryptions per lookup — trivial for a fixed, small key set. Requires
-   `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives" to adopt the same shape for it to close
-   completely; not yet applied there. Leaning (B), not decided.
+5. **File-identity architecture — settled 2026-09-06: one shared pool, generalized beyond the original
+   framing.** §5's "Where it lives" traced the existing contact-blob backend
+   (`AppGroupLayerStoreBackend.swift`) and found it already avoids magic bytes and fixed filenames, but
+   still uses a purpose-named dedicated directory (`"blobs"`) — a residual signal once a second and
+   third differently-purposed container exist alongside it: an examiner who's read this app's source
+   learns "a concealment subsystem lives here" from directory structure alone, before touching a byte,
+   and with multiple purpose-named directories, learns roughly how many subsystems exist. Worse than a
+   passive gap — it lets a coercer target compulsion precisely ("this exact file is your recovery-key
+   container, give us that key specifically") instead of only being able to demand a key for an
+   undifferentiated pile of look-alike files.
+
+   **Decision: one shared, undifferentiated pool for every internal concealment container** — same
+   naming/renaming-on-every-write/size convention, disambiguated purely by which of the app's own keys
+   successfully opens a given file (`AES.GCM.open`'s own authentication failure standing in for a magic
+   byte, for free; no new primitive needed). Cost is a handful of trial decryptions per lookup —
+   trivial for a fixed, small key set.
+
+   **Generalized further than the original A/B framing: one pool, not split by key domain.** No
+   security reason to keep biometric (vault key) and non-biometric (Secure-Mode, recovery-buffer)
+   containers in separate pools — protection comes entirely from the key, not the filesystem location,
+   and splitting by domain would just reintroduce a smaller version of the same signal this decision
+   removes. Fewer distinguishable groupings is strictly better.
+
+   **The existing, already-shipped contact blob migrates into the pool too**, not just the two new
+   containers — the one real cost beyond what was originally scoped. A one-time migration step
+   alongside Stage 1's other migration work: move the blob out of its current dedicated `"blobs"`
+   directory into the shared pool under the new naming convention. No special tombstoning needed for
+   the vacated directory — consistent with the earlier finding that app-update filesystem changes
+   aren't something this project's threat model defends against (no assumed before/after snapshot
+   comparison capability).
+
+   **Exported `.occbak` files stay out of the pool, deliberately.** These are a different kind of
+   object — user-visible, meant to leave the device via a document picker — not hidden, device-resident
+   state. Folding them in would blur a distinction that's load-bearing: `B4`'s strategy depends on an
+   internal blob being indistinguishable *from* an ordinary export, which requires them to remain
+   separate artifacts that happen to look similar, not the same storage.
+
+   **Dependency, not a blocker on this decision:** `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives"
+   needs to adopt this same pool for the property to close completely — a container left in its own
+   separate directory while everything else shares a pool just relocates the signal. Not yet applied
+   there; picks up whenever that document's storage section is next touched.
+
+   **Not yet implemented.** Decided, not built.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
