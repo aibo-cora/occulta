@@ -221,14 +221,41 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
    owner's own business, tracked in their own `shardMetadata`. The trustee's device only ever holds an
    opaque blob; the only depth that matters to the trustee's own protection is theirs.
 
-   **Not yet decided: the per-depth capacity.** How many custody relationships one depth-slot should
-   hold is a different kind of number than the owner's own 10-trustee cap (which is tied to *their*
-   Shamir scheme) — this is "how many different people trust me as a recovery contact." Something
-   generous (20–32 has been discussed informally) fits the pattern used everywhere else in this design,
-   but real bytes-per-record numbers haven't been worked out the way they were for the BEK record and
-   vault entries. Needed before this is fully specified.
+   **Per-depth capacity — sized 2026-09-06.** Fixed-width shape for the stored `SignedAttribute`
+   payload, one caught correction along the way: `signature` is documented as **DER-encoded**
+   ECDSA-P256 (`SignedAttribute.swift`) — variable-length by construction (ASN.1 `INTEGER` encoding
+   adds a leading zero byte to `r` or `s` whenever its high bit is set), the same class of mistake as
+   `distributedAt` earlier in this design. Fix: store the *raw* `r‖s` representation (fixed 64 bytes)
+   instead of DER — CryptoKit's `P256.Signing.ECDSASignature` verifies identically regardless of which
+   representation it was constructed from, so this is a lossless conversion at write time, not a
+   behavior change.
 
-   **Not yet implemented.** Mechanism decided; the capacity number is not.
+   | Field | Bytes | Note |
+   |---|---|---|
+   | owner identity hash | 32 | SHA-256, existing |
+   | `id` (UUID) | 16 | |
+   | `label` | 256 | fixed cap, UTF-8, zero-padded |
+   | `value` (shard bytes) | 33 | 1 x-coordinate + 32-byte share, per `ShamirSecretSharing` |
+   | `category` | 1 | `UInt8` tag, matches `ShardStatus`'s pattern, not the enum's string rawValue |
+   | `signature` | 64 | raw `r‖s`, **not** DER |
+   | `createdAt` | 8 | `UInt64` epoch seconds |
+   | `expiresAt` | 9 | 1 presence byte + 8-byte value, always both — same pattern as `distributedAt` |
+   | `entryID` | 17 | 1 presence byte + 16-byte UUID |
+   | **Total** | **436** | — |
+
+   **Capacity: 32 entries/depth-slot**, matching item 2's vault-entry cap for the same "how many
+   different relationships" shape — not derived from CustodyShard-specific volume, a reused
+   convention.
+
+   **`formatVersion`: `UInt16` (2 bytes), once per depth-slot, not once per entry.** Same mechanism as
+   the BEK `Payload` (`VAULT_KEY_LAYERING.md` item 3) and the same reason: the whole slot is always
+   read and re-sealed together at migration, so every entry in it shares one version by construction —
+   a per-entry field would be redundant and cost bytes × capacity for nothing.
+
+   **Per depth-slot: `2 + (436 × 32) = 13,954 bytes`.** Container total per depth:
+   `42,111 + 13,954 = 56,065 bytes` (supersedes item 5's 42,111 figure above).
+
+   **Not yet implemented.** Design-only, matching the rest of this branch.
 
 8. **The `storePendingRestore` tombstone soft spot — settled 2026-09-06: fix it, reusing a pattern
    already proven one function over.** A downgraded build can still *arm* a restore against the
