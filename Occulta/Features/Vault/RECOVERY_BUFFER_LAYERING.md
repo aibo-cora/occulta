@@ -125,12 +125,19 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
    already prevents a shared trustee's shares for one depth landing in another depth's buffer.
 
    **Still open, found alongside this sizing: item 5 (file-identity)'s "every pool file the same size"
-   requirement makes future entry-count growth expensive.** `VAULT_KEY_LAYERING.md` item 2's
-   "expandable by 32, rewrite all 32 depth slots" mechanism was scoped to that one container. Under
-   the shared pool, a growth event there would now need to resize this container and the migrated
-   contact blob too, neither of which have anything to do with vault entries. Worth reconsidering
-   there — size generously once (matching how the BEK's own 255/10 split works) rather than expanding
-   incrementally — but not yet decided; see that doc's item 2.
+   requirement makes future entry-count growth expensive.** `VAULT_KEY_LAYERING.md` item 2's entry-count
+   mechanism (hard, generous ceiling vs. dynamic expansion by 32 — genuinely open, sent for independent
+   review, not just an unpicked number) directly sets this container's floor too, since it shares
+   §5's reused numbers. Under the dynamic option specifically, a growth event there would now need to
+   resize this container and the migrated contact blob too, neither of which have anything to do with
+   vault entries — not a one-time cost, but one that recurs whenever real usage crosses a threshold.
+
+   **Neither entry-count option is a point of no return, though — checked 2026-09-06.** A future
+   switch between them, in either direction, reuses the same `formatVersion`-driven migration this
+   design already relies on elsewhere: read the old fixed shape, re-seal into the new one, adopt at
+   the next safe unlock. The real difference between the two options was never reversibility — it's
+   how often the expensive whole-pool resize actually runs. Full reasoning in
+   `VAULT_KEY_LAYERING.md` item 2.
 
 6. **Drop versus defer for non-shard payloads** behind §2's gate. Shards retry (§2); messages do not.
    Deferring means storing the bundle, which is a cross-layer container again unless it too is slotted.
