@@ -495,7 +495,7 @@ container's Stage 1 needs, is in §9.
 
    **Not yet implemented.** Decided, not built.
 
-6. **Item 4's live-slot fix does not cover vault entries — found 2026-09-06, not decided.** §4
+6. **Item 4's live-slot fix does not cover vault entries — found 2026-09-06, decided 2026-09-06.** §4
    describes the threat as a coercer with the vault key decrypting *every slot*, "including
    `shardMetadata` — trustee counts and identities." Item 4's remedy is titled and scoped to "the BEK
    field's slot separation," and its `slotKey(depth)` formula is applied only to the BEK record. But
@@ -503,10 +503,29 @@ container's Stage 1 needs, is in §9.
    vault entries — and the same vault key opens both. Once S8 is built, a coercer holding the vault key
    can still decrypt every other depth's vault entries — seed phrases, key tokens, notes, the most
    sensitive content in the app — by the identical mechanism item 4 was supposed to close. The fix
-   landed on the less sensitive of the two fields sharing the container. Needs the same `slotKey`-style
-   binding applied to the vault-entries field, decided as its own item rather than assumed covered by
-   item 4's existing wording. Blocks nothing today — S8 isn't built yet — but must be decided before it
-   is, not discovered after.
+   landed on the less sensitive of the two fields sharing the container.
+
+   **Resolution: the identical mechanism, own domain-separated key.**
+   `entriesSlotKey(depth) = HKDF(inputKeyMaterial: vaultKey, info: "vault-entries-slot" ∥ depth ∥
+   pin(depth))` — same shape as item 4's `slotKey`, different `info` string. Not a shortcut: two
+   separately-sealed fields get two separately-derived keys, the same domain-separation discipline
+   already used elsewhere (`K3`: distinct `info` strings for the blob key and PIN verifier keys
+   specifically so a compromise of one says nothing about the other). One shared key protecting both
+   fields would fail that standard.
+
+   **The frequency question this raises that item 4 didn't have to answer.** The BEK record is read
+   rarely — setup, distribute, export, restore. Vault entries are read constantly — every Vault tab
+   open, every entry displayed. Deriving from the raw PIN on every read would either force re-deriving
+   from PIN each time or force retaining the raw PIN in memory for the session, itself a new exposure.
+   Resolution: derive `entriesSlotKey` once, at the moment the depth's own PIN is verified to reach
+   that depth, and cache the *derived key* — never the raw PIN — for the scene-phase duration, cleared
+   on background. Identical shape to **C2**'s existing cache for the hybrid local DB key
+   (`Manager.Key`), not a new caching concept. Architecturally sound because reaching any depth already
+   requires that depth's PIN entry first — there is no path to vault entries that skips it, so the PIN
+   is always available at the exact moment this derivation needs it.
+
+   **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but must
+   ship alongside it, not be discovered as a gap after.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
