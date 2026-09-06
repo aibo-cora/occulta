@@ -188,18 +188,47 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
    doesn't need resolving, because neither messages (excluded from the gate) nor prekeys (self-healing)
    ever needed deferral in the first place.
 
-7. **Whether `CustodyShard` folds into this container.** Same key domain as the shard buffer, so
-   likely the same file once decided — `LayerStore.md` already records its duress-mode accessibility
-   as a deferred question, and §2's gate needs the same answer for it that it needs for BEK shards.
+7. **Whether `CustodyShard` folds into this container — settled 2026-09-06: yes, keyed by the
+   trustee's own depth, closing two previously-separate questions at once.**
 
-   **This isn't a hypothetical gap — the model's own comment already documents it, checked
-   2026-09-06.** `CustodyShard`'s own doc comment states: *"Cold-disk forensics learns 'Bob holds N
+   **Two questions this item was actually carrying, not one.** (a) The row-count leak —
+   `CustodyShard`'s own doc comment already concedes it: *"Cold-disk forensics learns 'Bob holds N
    shards' — nothing about which contacts those shards belong to."* The contact-linkage half is
-   mitigated; the row-count half is not — total shard count is readable via a plain row count, with no
-   key, on an unlocked device. That's the identical leak class S8 names for vault entries and this
-   entire redesign exists to eliminate. Leaving item 7 undecided means that goal is not actually
-   achieved project-wide — it's achieved for the owner's own containers and left open on the trustee
-   side, which is a real device with a real coercion exposure, just not this document's usual subject.
+   mitigated; the row count is not, readable with no key on an unlocked device — the identical leak
+   class S8 names for vault entries, left open on the trustee side of this whole redesign. (b)
+   `LayerStore.md`'s own deferred question: if the *trustee* is coerced into their own duress layer,
+   should shards they hold for other people become inaccessible to their coercer, the same way their
+   own contacts and vault entries already would?
+
+   **Why they resolve together.** `CustodyShard` lives on the trustee's device — a separate install
+   from whoever the shard belongs to — so "folding in" can't mean literally joining the owner-side
+   container (scoped to *this* device's own 32 depths). It means: on any device also acting as a
+   trustee for someone else, store custody shards under the same recovery-buffer key and the same
+   fixed-slot mechanism this device already needs for its own recovery machinery. Once framed that way,
+   "depth" naturally means the **trustee's own depth**, not anything about which of the owner's depths
+   a shard is for. Stamp each incoming custody shard with the trustee's current depth at the moment of
+   receipt — the same way contacts and vault entries are already depth-stamped at creation — and it
+   becomes accessible only when the trustee is back at that same depth later.
+
+   - **Closes (a):** each of the trustee's 32 depth-slots pads to a fixed cap, indistinguishable
+     whether it holds 0 shards or the max — the same fixed-slot technique used everywhere else in this
+     design, organized by the trustee's depth instead of by owner.
+   - **Closes (b):** a coercer holding the trustee's phone at their duress depth genuinely cannot see
+     or reveal shards held for others at the trustee's real depth — they sit in a slot the coercer's key
+     doesn't open, structurally, not by app-code discretion choosing not to show them.
+
+   Nothing here requires knowing which depth of the *owner's* device a shard is for — that's the
+   owner's own business, tracked in their own `shardMetadata`. The trustee's device only ever holds an
+   opaque blob; the only depth that matters to the trustee's own protection is theirs.
+
+   **Not yet decided: the per-depth capacity.** How many custody relationships one depth-slot should
+   hold is a different kind of number than the owner's own 10-trustee cap (which is tied to *their*
+   Shamir scheme) — this is "how many different people trust me as a recovery contact." Something
+   generous (20–32 has been discussed informally) fits the pattern used everywhere else in this design,
+   but real bytes-per-record numbers haven't been worked out the way they were for the BEK record and
+   vault entries. Needed before this is fully specified.
+
+   **Not yet implemented.** Mechanism decided; the capacity number is not.
 
 8. **The `storePendingRestore` tombstone soft spot.** A downgraded build can still *arm* a restore
    against the sibling doc's tombstoned legacy row, because that one site uses `try?` where its
