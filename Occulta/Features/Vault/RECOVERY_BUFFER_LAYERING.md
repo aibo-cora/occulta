@@ -80,14 +80,30 @@ container's collected shares and writes the reconstructed BEK into the other one
 
 ## 5. Where it lives
 
-A `LayerStore`-shaped sibling file, sealed under the recovery buffer key — not `AppLayerConfig`, for
-the same reason as the vault-key-gated container: that row is read on every security check and
-SwiftData loads the whole row, so bulk payloads shouldn't ride along. Eagerly created from first
-launch, same reasoning as the sibling doc's §3.
+**Joins the shared pool, not a dedicated sibling file — adopting `VAULT_KEY_LAYERING.md` §8 item 5's
+decision, settled 2026-09-06.** That item settled one shared, undifferentiated pool for every internal
+concealment container: same directory, filename a fresh random ID on every write, same fixed size
+across every file in the pool, disambiguated purely by which of the app's own keys successfully opens
+a given file (`AES.GCM.open`'s own authentication failure standing in for a magic byte) — not by
+directory name, filename, or size. This container is one of those pool files, opened by the
+recovery-buffer key, alongside the vault-key-gated container (vault key) and the migrated contact blob
+(Secure-Mode key).
+
+Sealed under the recovery buffer key, still excluded from `AppLayerConfig` for the same reason as the
+vault-key-gated container: that row is read on every security check and SwiftData loads the whole row,
+so bulk payloads shouldn't ride along. Eagerly created from first launch, same reasoning as the sibling
+doc's §3. The exclusion argument is unchanged; what moves is where the excluded payload lives — the
+shared pool instead of its own directory.
 
 Likely holds the larger payloads of the two containers — shard buffers and a pending backup snapshot
 are more variable-sized than the vault-key-gated container's BEK record and short-text vault entries —
 so the `AppLayerConfig`-exclusion argument applies more forcefully here.
+
+**Same-size requirement, not yet closed.** Every pool file must match exactly. This container's total
+per depth (56,065 bytes, item 7) still needs reconciling against `VAULT_KEY_LAYERING.md`'s (44,393
+bytes minimum, item 2), which is itself pending that document's still-open entry-count mechanism
+choice — not a new dependency, the same one items 2 and 7 already carry, restated here because this is
+the section it actually constrains.
 
 ---
 
