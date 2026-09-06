@@ -146,8 +146,9 @@ applications.
 essentially every security check and SwiftData loads the whole row, so bulk payloads would ride along
 with every `requireConfig()`. Eagerly created from first launch, same reasoning as §3.
 
-**Found 2026-09-05, not yet decided how far to take it: no dedicated directory, no magic byte —
-disambiguate by which key opens it.** Checked the existing precedent directly
+**Found 2026-09-05: no dedicated directory, no magic byte — disambiguate by which key opens it.**
+The trace below is what led to §8 item 5's decision; see that item for the settled outcome. Checked
+the existing precedent directly
 (`AppGroupLayerStoreBackend.swift:26-53`) rather than assume: the current contact blob already lives in
 its own dedicated directory (`"blobs"`), holds nothing else, and `findFile(in:)` just reads whatever
 single file is there — filename is a fresh UUID on *every* write, old file deleted only after the new
@@ -168,9 +169,10 @@ a fixed, small key set (vault key, recovery-buffer key, Secure-Mode key). Pool f
 fixed regardless of configuration, matching the eager-creation principle already used everywhere in
 this design, so count doesn't become a new signal in place of the directory-name one it replaces.
 
-Not yet decided how far to take this — folding the recovery-buffer container and the existing contact
-blob into the same pool as this one requires `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives"
-section to adopt the same approach, which it doesn't yet.
+**Settled 2026-09-06 (§8 item 5): take it all the way — one shared pool**, not the intermediate
+same-directory-different-name option. Folding the recovery-buffer container and the existing contact
+blob in requires `RECOVERY_BUFFER_LAYERING.md`'s own "where it lives" section to adopt the same
+approach, which it doesn't yet — tracked there as a dependency, not a new open question here.
 
 ### 5.3 What happens to the container across exports at multiple depths — confirmed 2026-09-06
 
