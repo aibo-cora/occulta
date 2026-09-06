@@ -139,8 +139,54 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
    how often the expensive whole-pool resize actually runs. Full reasoning in
    `VAULT_KEY_LAYERING.md` item 2.
 
-6. **Drop versus defer for non-shard payloads** behind §2's gate. Shards retry (§2); messages do not.
-   Deferring means storing the bundle, which is a cross-layer container again unless it too is slotted.
+6. **Drop versus defer for non-shard payloads behind §2's gate — settled 2026-09-06, no deferred
+   storage needed for either category.**
+
+   **Messages: excluded from the gate entirely — neither drop nor defer.** This isn't new ground.
+   Bugs 103 and 104 (an inbound message from a contact hidden at the current depth rendering that
+   contact's identity) were both closed as duplicates of an already-accepted limitation
+   (`Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle`): rejecting a message because its sender
+   isn't visible at the current depth is itself a detectable signal. Applying §2's gate to message
+   content would reproduce exactly that. §2's gate operates on the shard-*operation* portion of an
+   inbound bundle only; a bundle can carry a message and a shard-return together, and the gate touches
+   the latter without needing to touch the former.
+
+   **Prekeys: drop, safely — self-healing by regeneration, not an explicit retry guarantee.** A
+   dropped prekey batch is not lost the way a one-shot secret would be — batches are generated fresh on
+   every receive from a contact, so a drop just costs one skipped refresh cycle, corrected automatically
+   the next time that contact's traffic arrives. Worst case is more frequent fallback to the
+   non-forward-secret path in the interim, not permanent loss.
+
+   **Verified against a real oracle concern, not assumed safe.** Checked whether dropping shards or
+   prekeys creates a depth-conditional signal a coercer could detect, given this app's standing
+   principle that silence must be indistinguishable from an ordinary session:
+   - **No signal on the observing side.** A sender hidden at the current depth was never eligible to
+     appear in that depth's own shard-health UI (`bekSetupState`, "waiting for confirmation from X") —
+     the trustee picker already filters candidates by `isVisible(atDepth:)`, so a hidden sender's
+     shard was never going to show as "expected but missing." There's no gap for a coercer to notice.
+   - **No signal on the sending side**, even for the strongest version of this attack (coercer holds
+     the victim's phone *and* controls a sending identity): bundle delivery is acknowledged at the
+     transport level regardless of contents; whether the shard portion specifically got filed or
+     dropped is never surfaced back to the sender through any mechanism.
+   - **This is Bug 99's pattern, not a new class of concern.** A coercer using a controlled sender to
+     probe for a depth-conditional difference is exactly what Bug 99 already tracks; the resolution is
+     the same property checked here — every layer behaves identically, nothing to distinguish.
+
+   **Correction made along the way: shard confirmations and manifests are not "non-shard payloads" and
+   were never actually part of this open question.** First pass at this wrongly claimed no
+   acknowledgment mechanism exists for shard custody at all — false; `ShardStatus.confirmed` and
+   `bekSetupState`'s `waitingForConfirmations` are real, visible UI state. Checked properly:
+   `buildCustodyManifest` is called unconditionally from `ComposeViewModel.swift` on every outbound
+   bundle to a contact, the same "attached to every send" shape `mismatchHandbackOps` uses for shard
+   returns. A manifest dropped or misattributed to the wrong depth self-corrects on that trustee's very
+   next ordinary message — a different mechanism than shards' explicit handback retry, same safety
+   property. Confirmations and manifests belong in the same "already safe to drop" bucket as shard
+   returns, not the messages/prekeys bucket this item was actually asking about.
+
+   **Net: no deferred-storage mechanism needed for either remaining category.** The item's own
+   original concern — that deferring means "a cross-layer container again unless it too is slotted" —
+   doesn't need resolving, because neither messages (excluded from the gate) nor prekeys (self-healing)
+   ever needed deferral in the first place.
 
 7. **Whether `CustodyShard` folds into this container.** Same key domain as the shard buffer, so
    likely the same file once decided — `LayerStore.md` already records its duress-mode accessibility
