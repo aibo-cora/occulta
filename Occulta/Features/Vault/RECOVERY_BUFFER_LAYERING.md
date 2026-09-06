@@ -230,11 +230,31 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
 
    **Not yet implemented.** Mechanism decided; the capacity number is not.
 
-8. **The `storePendingRestore` tombstone soft spot.** A downgraded build can still *arm* a restore
-   against the sibling doc's tombstoned legacy row, because that one site uses `try?` where its
-   siblings use `try` — `alreadyHasBEK` reads false against filler. Arming is this container's action,
-   even though the check reads the other container's row. Accept it, or add a guard distinguishing
-   "no row" from "row present, undecryptable."
+8. **The `storePendingRestore` tombstone soft spot — settled 2026-09-06: fix it, reusing a pattern
+   already proven one function over.** A downgraded build can still *arm* a restore against the
+   sibling doc's tombstoned legacy row, because that one site uses `try?` where its three siblings use
+   `try` — `alreadyHasBEK` reads false against filler, since the tombstoned row's GCM auth failure gets
+   swallowed into `nil` instead of propagating. Arming is this container's action, even though the
+   check reads the other container's row.
+
+   **Bounded, checked before deciding to fix rather than accept.** Only manifests on the narrow
+   combination of migrated-then-downgraded — a device never touched by the new format still correctly
+   detects its own real BEK. Even then, only *arming* succeeds; completion still can't, since
+   `reconstructBEK` (the sibling that correctly uses `try`) will always fail against the same
+   tombstoned row. No data loss. No oracle either: arming behaves identically regardless of which
+   build is running, so it creates no build-detectable or depth-detectable difference.
+
+   **The fix, and why it's worth doing rather than documenting as accepted:** `setupBEK()` already
+   solves this exact problem, for the exact same row, one function over — it checks row *presence*
+   (`existing.isEmpty`), not decryptability. `storePendingRestore` should do the same instead of
+   attempting a decrypt and swallowing the failure: if a `BackupEncryptionKey` row exists at all —
+   tombstoned filler or not — treat that as "already has a BEK" and refuse to arm, matching how the
+   other three sites already behave. Not a new pattern to design, just reusing one already proven in
+   the same migration. Small, low-risk change, which is why "accept as documented" isn't the better
+   call here the way it might be for something costlier.
+
+   **Not yet implemented.** Design-only, matching the rest of this branch — kept that way
+   deliberately even though the fix itself is small enough to implement directly.
 
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
