@@ -93,16 +93,44 @@ so the `AppLayerConfig`-exclusion argument applies more forcefully here.
 
 ## 6. Open decisions
 
-5. **Slot size cap for the backup contents / pending-restore snapshot.** Fixed slots cap vault backup
-   size. Pick the cap and enforce it at **export**, with a clear failure — not at restore, when the
-   user has no vault left.
+5. **Slot size cap for the backup contents / pending-restore snapshot — worked out 2026-09-06.**
 
-   **Blocking a sibling-doc decision, found 2026-09-06.** `VAULT_KEY_LAYERING.md`'s item 5
-   (file-identity) requires every file in the shared pool to be the same size — its own item 3 is
-   "leaning" toward 32 KB but not closed, and this item has no number at all. Neither container's size
-   can actually be finalized in isolation, and nobody has checked whether this container's real content
-   (potentially a full pending backup snapshot) fits under whatever the sibling doc settles on. Resolve
-   together with that doc's item 3, not separately.
+   **Backup contents reuse `VAULT_KEY_LAYERING.md` item 2's numbers, not a separate cap.** A
+   pending-restore snapshot for one depth *is* every entry visible at that depth — the same set item
+   2's vault-entries field already describes, no narrower "sensitive" subset exists to exclude (see
+   that doc's correction on this point). No reason for a portable snapshot to need different capacity
+   than the live container producing it: same per-entry shape (1,051 bytes: 16 `id` + 8 `createdAt` +
+   1 type tag + 2 length prefix + 1024 content), same 32-entry count.
+
+   **Shard buffer, sized the same way item 3 sized the BEK record.** At most as many incoming shares
+   as could ever have been distributed — the Shamir ceiling (255), not the 10-trustee write policy,
+   for the identical reason: a legacy restore could be reconstructing a pre-cap distribution.
+   `255 × 33 bytes` (1-byte x-coordinate + 32-byte share value) = **8,415 bytes**.
+
+   **Arming/state:** small — timestamp, state enum. Generously, ~64 bytes.
+
+   **Total, this container, per depth: `33,632 + 8,415 + 64 = 42,111 bytes`** — close to but not equal
+   to `VAULT_KEY_LAYERING.md`'s 44,393 (item 2 there). Item 5 (file-identity, that doc) requires
+   *equal*, not close — reconcile by taking the larger as the shared floor once that doc's own
+   entry-count mechanism question (below) is settled, since it changes both numbers.
+
+   **Confirmed 2026-09-06: multiple depths distributing independently, each to its own trustees,
+   doesn't change any of this.** The container's whole shape has been "one slot per depth" since §5.1
+   — every depth already gets a fully independent slot, sharing nothing with any other. Depth 2's
+   8,415-byte shard buffer holds only depth 2's own incoming shares, from depth 2's own trustees;
+   depth 5's is a wholly separate allocation. The total file size (`42,111 × 32 ≈ 1.32 MB`) already
+   *is* 32 independent copies of this — multiple depths each running their own distribution and
+   restore, simultaneously if it comes to that, is the case this structure was built for, not an
+   addition to it. §2's attribution gate (by sender visibility at the depth a bundle arrives at)
+   already prevents a shared trustee's shares for one depth landing in another depth's buffer.
+
+   **Still open, found alongside this sizing: item 5 (file-identity)'s "every pool file the same size"
+   requirement makes future entry-count growth expensive.** `VAULT_KEY_LAYERING.md` item 2's
+   "expandable by 32, rewrite all 32 depth slots" mechanism was scoped to that one container. Under
+   the shared pool, a growth event there would now need to resize this container and the migrated
+   contact blob too, neither of which have anything to do with vault entries. Worth reconsidering
+   there — size generously once (matching how the BEK's own 255/10 split works) rather than expanding
+   incrementally — but not yet decided; see that doc's item 2.
 
 6. **Drop versus defer for non-shard payloads** behind §2's gate. Shards retry (§2); messages do not.
    Deferring means storing the bundle, which is a cross-layer container again unless it too is slotted.
