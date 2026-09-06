@@ -260,10 +260,45 @@ container's Stage 1 needs, is in §9.
    Net: nothing new to build for this decision — a consequence of the design above plus the existing
    trustee model.
 
-2. **The container's overall slot budget.** Two payload types now compete for it (vault entries, BEK
-   record), not one. 32 KB (`LayerStore`'s existing constant) holds ~30 contacts with ML-KEM material;
-   both vault entries and a BEK record are far smaller, so 32 KB is a generous starting point — but
-   must be picked against §11's tripwire, and only matters once §6's build order reaches vault entries.
+2. **The container's overall slot budget — vault-entry caps decided 2026-09-06, container total still
+   open and now larger than either earlier candidate.**
+
+   **Per-entry content: 1024 bytes, fixed.** Not expandable — unlike entry count, size is bounded by
+   content type (seed phrases, key tokens, short notes), and `§11`'s tripwire already draws the line
+   at "kilobytes, text-only." A single generous fixed number covers the realistic range without the
+   added complexity of a second growable dimension. Encoded as a `UInt16` length prefix (not `UInt8` —
+   256 doesn't fit in a byte, and a growable *count* alongside a fixed *size* only works cleanly if the
+   size field itself has headroom to spare, which `UInt16`'s 65,535-byte ceiling provides by a wide
+   margin).
+
+   **Entry count: 32, expandable by 32, uniform across all depths.** Same mechanism as the BEK's
+   capacity-vs-policy split (item 3), applied as a growable ceiling instead of a fixed one. Expansion
+   must rewrite all 32 depth slots at once, never just the one that needs the room — required by §11's
+   own "slot count must never vary... by count or length," not an added precaution. A resize event is
+   theoretically diffable across two device snapshots (reveals "some depth crossed 32 entries," never
+   which one, since full-slot regeneration makes every depth identical afterward) — same accepted
+   residual class as app-update filesystem changes elsewhere in this design, not a new gap.
+
+   **Per-entry record: 1,051 bytes** (16 `id` + 8 `createdAt` + 1 type tag + 2 length prefix + 1024
+   content). **Per depth at the initial 32-entry cap: 33,632 bytes.**
+
+   **Consequence, found immediately on computing this: the container's total slot size can no longer
+   be item 3's "32 KB, matching `LayerStore`."** `33,632` (vault entries) + `10,761` (BEK record, item
+   3) = **44,393 bytes/depth, minimum — before any entry-count expansion.** That already exceeds both
+   candidates item 3 was weighing (10,789 efficient, 32,768 matching). One expansion (32 → 64 entries)
+   pushes this to ~78 KB/depth. The container's real size needs deciding against these numbers, not the
+   placeholder ones item 3 used before vault entries had a real shape — and per item 5's own
+   requirement, `RECOVERY_BUFFER_LAYERING.md`'s container needs the same, now-higher number for the
+   shared-pool sizing argument to still hold.
+
+   **UI enforcement required on both dimensions, not yet built.** Same two-layer pattern as the
+   trustee cap (§6 of the sibling doc, and the reverted `9493c85`): a storage-level guard throwing
+   before any write, plus UI-level enforcement — a live count indicator, input capped or disabled at
+   the per-entry length limit — so neither cap is ever discovered as a runtime error instead of a
+   visible budget.
+
+   **Not yet implemented.** Numbers decided; the container's actual total size is not, pending
+   reconciliation with `RECOVERY_BUFFER_LAYERING.md`'s own open sizing question.
 
 3. **A trustee-count cap for `shardMetadata` — found 2026-09-02. Cap number agreed (10); wire
    format and the pre-existing-data question below are what's still open.**
@@ -348,14 +383,13 @@ container's Stage 1 needs, is in §9.
    leaning matching, given the cost is negligible and the alternative reopens the fingerprinting
    question item 5 below also raises for directory structure.
 
-   **Two open sizing questions are now blocking each other, found 2026-09-06.** This item's own number
-   (10,789 vs. 32 KB) is still "leaning," not closed. `RECOVERY_BUFFER_LAYERING.md`'s own container size
-   (its item 5, backup-contents cap) is fully open with no number at all. But this doc's item 5
-   (file-identity) requires *every* file in the shared pool to be the same size for its whole argument
-   to hold — so neither container's size can actually be finalized independently, and nobody has yet
-   checked whether the recovery-buffer container's real content (potentially a full pending backup
-   snapshot) even fits under whatever this container settles on. Resolve both together, not in
-   isolation — closing this item alone doesn't verify item 5's premise, it just asserts it.
+   **Superseded 2026-09-06 — the "10,789 vs. 32 KB" framing no longer applies.** Item 2's vault-entry
+   caps (1024 bytes/entry, 32 entries expandable by 32) put the real per-depth floor at **44,393 bytes,
+   minimum, before any entry-count expansion** — both this item's efficient (10,789) and matching
+   (32,768) candidates are now too small. The question this item raises still holds, just against the
+   updated number: `RECOVERY_BUFFER_LAYERING.md`'s container size (its item 5) remains fully open, item
+   5 here (file-identity) still requires every pool file to match, and neither container's size can be
+   finalized in isolation. See item 2 for the current numbers and the reasoning.
 
    **`formatVersion` — folds the padding rule into the byte a decoder already needs to trust**, rather
    than inventing a separate cap-version concept. `formatVersion = 1` means "capacity is sized to the
