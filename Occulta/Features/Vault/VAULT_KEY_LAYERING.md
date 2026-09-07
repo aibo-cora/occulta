@@ -670,6 +670,33 @@ worse, gated on an event a coercer can indefinitely prevent (Bug 99); keep depth
 row, slot only depths ≥1 — genuine downgrade safety, but reintroduces the "slot count must never vary"
 leak in a different shape.
 
+**Two Stage 1 implementation questions, settled 2026-09-07:**
+
+**Fixed-width wire format ships as part of Stage 1, not after it.** Item 3 already established that
+its wire format changes `Payload`'s encoding project-wide, not just `shardMetadata`. Building Stage 1's
+new sealed file with today's `JSONEncoder()`/`JSONDecoder()` (`Vault+Manager+Backup.swift:1016`/1009)
+and redoing it immediately after would mean building the same file's format twice, and would expose the
+exact JSON-length leak this whole design has fought elsewhere — on a brand-new file, not a legacy one
+with an excuse. No real cost identified to building it right the first time.
+
+**Migration timing: first vault unlock after update, at any depth — not gated to depth 0.** Two
+things are getting conflated in "seeded with filler at first launch": creating the 32-slot file (pure
+random-sized filler, no key needed) can and should happen eagerly at launch, matching the existing
+`LayerStore` convention. Migrating the *legacy row's real BEK bytes* into slot 0 is different — it
+needs `vaultKey` (biometric-gated), so it can't run before first unlock. The question is which unlock.
+`RECOVERY_BUFFER_LAYERING.md` §8 gates its own in-flight-restore adoption to "first depth-0 unlock,"
+but that data is inherently depth-0-scoped by construction (a legacy pending restore is depth-0-destined
+already). The legacy BEK row isn't analogous — it's device-wide and depth-agnostic until migration
+*assigns* it to slot 0, and Stage 1 deliberately defers item 4's depth-derived `slotKey`, so plain
+`vaultKey` is available at any depth once biometric succeeds. Gating migration to depth-0-only would
+leave Bug 105's exposure window open indefinitely for a session that happens to operate mostly at a
+duress depth after updating — undermining the urgency that put Stage 1 first in the first place. Running
+unconditionally on first unlock, whatever depth that happens to be, closes the window as early as
+possible and creates no depth-conditional signal: the migration check doesn't consult `currentDepth` to
+decide whether to run, so a coercer sees identical first-unlock behavior regardless of which depth they
+forced their way into (the same "every layer behaves identically" property Bug 99's pattern requires
+elsewhere in this design).
+
 ---
 
 ## 10. Known bugs — this container's
