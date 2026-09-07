@@ -118,7 +118,8 @@ growth step.
 
 ## 6. Open decisions
 
-5. **Slot size cap for the backup contents / pending-restore snapshot — worked out 2026-09-06.**
+5. **Slot size cap for the backup contents / pending-restore snapshot — worked out 2026-09-06, entry-
+   count dependency settled 2026-09-07.**
 
    **Backup contents reuse `VAULT_KEY_LAYERING.md` item 2's numbers, not a separate cap.** A
    pending-restore snapshot for one depth *is* every entry visible at that depth — the same set item
@@ -136,8 +137,8 @@ growth step.
 
    **Total, this container, per depth: `33,632 + 8,415 + 64 = 42,111 bytes`** — close to but not equal
    to `VAULT_KEY_LAYERING.md`'s 44,393 (item 2 there). Item 5 (file-identity, that doc) requires
-   *equal*, not close — reconcile by taking the larger as the shared floor once that doc's own
-   entry-count mechanism question (below) is settled, since it changes both numbers.
+   *equal*, not close; resolved below now that item 2's entry-count mechanism is settled — this
+   container's own item 7 (adding CustodyShard) is what actually finalizes the number.
 
    **Confirmed 2026-09-06: multiple depths distributing independently, each to its own trustees,
    doesn't change any of this.** The container's whole shape has been "one slot per depth" since §5.1

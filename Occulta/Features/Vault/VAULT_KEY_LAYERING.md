@@ -1,14 +1,16 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** design complete, nothing built. All five items in §8 decided (item 2 deferred by design,
-not urgent until vault entries are actually built). **Owner entries:** `Docs/Features/Secure Mode/
-bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence); `forensic-trace-avoidance.md` S5 (contacts),
-S8 (vault entries). **Spec docs this changes:** [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md),
-[`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both describe the device-wide BEK/shard behavior this
-design replaces; see their own "Secure Mode" closing sections, which point back here. **Compiled:**
-2026-09-02, split out of `STORAGE_LAYERING.md` once that doc's own container analysis showed this half
-and [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) are independently buildable — see §7
-for exactly where they do and don't touch. Last decision recorded: 2026-09-06.
+**Status:** design complete, nothing built. All six items in §8 decided. **Owner entries:**
+`Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
+`forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
+[`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
+describe the device-wide BEK/shard behavior this design replaces; see their own "Secure Mode" closing
+sections, which point back here. **Compiled:** 2026-09-02, split out of `STORAGE_LAYERING.md` once
+that doc's own container analysis showed this half and
+[`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) are independently buildable — see §7 for
+exactly where they do and don't touch. Last decision recorded: 2026-09-07. **Release target
+corrected 2026-09-07** — see §9: no longer `v1.10.3` (already shipped without this fix), now
+`v1.11.0/vault-key-layering`.
 
 **What this is.** Everything about the container sealed under the vault's biometric-gated key: sensitive
 vault entries (if built) and the BEK record. Contacts (S5) aren't stored here — they use the existing,
@@ -242,8 +244,9 @@ separate SwiftData table. `bekSetupState` and `bekShardMetadata()` are pure comp
 whatever `fetchDecodedBEK` returns, so once that's depth-routed both become depth-correct without
 either function changing. (`PendingShardDistribute`/`queueDistribute` looked relevant but isn't — a
 separate queue used only for per-entry vault PEK shares; BEK distribution builds and returns bundles
-synchronously and never touches it.) Item 2's trustee-count padding is the one piece this doesn't give
-for free — `shardMetadata`'s variable length still needs its own cap.
+synchronously and never touches it.) Item 3's trustee-count padding is the one piece this doesn't give
+for free — `shardMetadata`'s variable length needed its own cap, settled there (10 write / 255
+storage, 42-byte fixed record).
 
 ---
 
@@ -266,9 +269,12 @@ touches existing on-device data (Stage 1's legacy-row migration, any future entr
 item 2), there's an explicit migration plan checked for data loss, not just assumed safe by the design
 reasoning above. This data has no other copy if a migration goes wrong.
 
-**A large change for a patch release.** Ships in **v1.10.3**, on `v1.10.3/bek-layering-refactor` off
-`release/v1.10.3`. Full migration/release-scope reasoning, including the legacy-row tombstone this
-container's Stage 1 needs, is in §9.
+**Release target — corrected 2026-09-07: `v1.10.3` already shipped without this fix.** §9 originally
+scoped this as a `v1.10.3` patch, on `v1.10.3/bek-layering-refactor` off `release/v1.10.3`. That branch
+merged — design consolidation and bug filing only, not Stages 1-2's actual implementation — and
+`release/v1.10.3` has since shipped with Bug 105 still open. The fix now belongs on the current branch,
+`v1.11.0/vault-key-layering` off `release/v1.11.0`. Full migration/release-scope reasoning, including
+the legacy-row tombstone this container's Stage 1 needs, is in §9.
 
 ---
 
@@ -350,8 +356,8 @@ container's Stage 1 needs, is in §9.
 
    **Not yet implemented.** Decided, not built — same status as items 3-6 above.
 
-3. **A trustee-count cap for `shardMetadata` — found 2026-09-02. Cap number agreed (10); wire
-   format and the pre-existing-data question below are what's still open.**
+3. **A trustee-count cap for `shardMetadata` — found 2026-09-02, settled 2026-09-05: cap 10 (write
+   policy) against a 255-share storage ceiling, fixed-byte wire format below.**
 
    `ShardDistributionMetadata.shards: [ShardRecord]` is variable-length, one record per trustee, and
    `prepareBEKShards`/`distributeBEKShards` bound `recipients.count` nowhere today. Different depths
@@ -433,13 +439,14 @@ container's Stage 1 needs, is in §9.
    leaning matching, given the cost is negligible and the alternative reopens the fingerprinting
    question item 5 below also raises for directory structure.
 
-   **Superseded 2026-09-06 — the "10,789 vs. 32 KB" framing no longer applies.** Item 2's vault-entry
-   caps (1024 bytes/entry, 32 entries expandable by 32) put the real per-depth floor at **44,393 bytes,
-   minimum, before any entry-count expansion** — both this item's efficient (10,789) and matching
-   (32,768) candidates are now too small. The question this item raises still holds, just against the
-   updated number: `RECOVERY_BUFFER_LAYERING.md`'s container size (its item 5) remains fully open, item
-   5 here (file-identity) still requires every pool file to match, and neither container's size can be
-   finalized in isolation. See item 2 for the current numbers and the reasoning.
+   **Superseded 2026-09-06 — the "10,789 vs. 32 KB" framing no longer applies**, and **resolved
+   2026-09-07** now that item 2 has settled. Item 2's vault-entry sizing (1024 bytes/entry, dynamic,
+   starting at 32) put the real per-depth floor at **44,393 bytes at the starting point** — both this
+   item's efficient (10,789) and matching (32,768) candidates were already too small. Both container
+   sizes are now known: this container starts at 44,393 bytes/depth, `RECOVERY_BUFFER_LAYERING.md`'s
+   starts at 56,065 (its item 7) and is larger by a constant 11,672 bytes at every future entry count.
+   Per item 5 (file-identity), this container and the migrated contact blob pad up to match the
+   recovery-buffer container's size at every growth step — see item 2 for the full numbers.
 
    **`formatVersion` — folds the padding rule into the byte a decoder already needs to trust**, rather
    than inventing a separate cap-version concept. `formatVersion = 1` means "capacity is sized to the
@@ -622,13 +629,23 @@ stayed unverified throughout and was not the basis for this decision.
 
 ## 9. Migration and release scope
 
-Settled 2026-08-28.
+Settled 2026-08-28. **Release target superseded 2026-09-07** — see the correction below; the
+compatibility and tombstoning reasoning that follows is unaffected by which branch ships it.
 
-**Release scope.** Ships in **v1.10.3**, branch `v1.10.3/bek-layering-refactor` off `release/v1.10.3`
-— not a separate `develop` branch, since `develop` was 133 commits behind at the time and would have
-dropped every fix this design builds on. (Both branches have since merged; no longer diverging.) The
-patch framing is deliberate: Bug 105 is live, and its standalone remedy is the unattractive one in §6.
-Cost: a patch version implies downgrade is safe, and after this migration it is not.
+**Release scope, as originally settled.** Ships in **v1.10.3**, branch `v1.10.3/bek-layering-refactor`
+off `release/v1.10.3` — not a separate `develop` branch, since `develop` was 133 commits behind at the
+time and would have dropped every fix this design builds on. (Both branches have since merged; no
+longer diverging.) The patch framing is deliberate: Bug 105 is live, and its standalone remedy is the
+unattractive one in §6. Cost: a patch version implies downgrade is safe, and after this migration it is
+not.
+
+**Correction, 2026-09-07: that release has already happened, without this fix.**
+`v1.10.3/bek-layering-refactor` merged into `release/v1.10.3` — but only design consolidation and bug
+filing, not Stages 1-2's actual implementation — and `release/v1.10.3` has since shipped with Bug 105
+still open. The scope described above no longer has a live release to land in; the fix now targets the
+current branch, `v1.11.0/vault-key-layering` off `release/v1.11.0`. The "patch implies downgrade-safe"
+cost noted above still applies to whichever release actually ships it — that constraint is about the
+migration's own shape, not the specific version number.
 
 **Compatibility.** New build reads old data — free, `BackupEncryptionKey.Payload` is `Codable`, fields
 added as optional decode against existing ciphertext untouched. Old build reads what the new build
@@ -643,8 +660,9 @@ gap worth not repeating.
 itself a new tell. A filler-filled row is indistinguishable from a real one on cold disk. More
 importantly, a downgraded build then fails closed at three of four sites (`setupBEK` no-ops on row
 presence; `currentBEK` throws; `reconstructBEK` propagates decrypt failure) — the fourth,
-`storePendingRestore`, is the soft spot tracked in `RECOVERY_BUFFER_LAYERING.md` §8, since arming a
-restore is that container's action even though the check reads this container's tombstoned row.
+`storePendingRestore`, is the soft spot tracked in `RECOVERY_BUFFER_LAYERING.md` §6 item 8, since
+arming a restore is that container's action even though the check reads this container's tombstoned
+row.
 
 **Rejected alternatives:** dual-run (legacy restores finish under legacy rules) — attacker-pinnable, a
 coercer who arms before updating keeps every pre-design weakness; complete-then-migrate — strictly
@@ -685,8 +703,8 @@ belongs as a comment there too.
 ## See also
 
 [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) — the shard buffer, restore/arming state,
-and `CustodyShard`. Independent of this document except at §7 Stage 5 (completion) and §9's
-`storePendingRestore` soft spot, both noted at their point of contact above.
+and `CustodyShard`. Independent of this document except at §7 Stage 5 (completion) and that document's
+§6 item 8 (the `storePendingRestore` soft spot), both noted at their point of contact above.
 
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — the
 spec docs for the behavior this design replaces. Both describe today's device-wide BEK/shard machinery
