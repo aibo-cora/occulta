@@ -687,6 +687,12 @@ unlock, wiped on lock — no new file or key, four named steps. Vault entries re
 lifecycle in this container instead of the existing one, once built once on the cheaper case. §4a
 stayed unverified throughout and was not the basis for this decision.
 
+**Accepted limitation, found and closed out 2026-09-07: an empty or sparse duress-depth vault is
+directly visible to a coercer who compels live authentication — cold-storage padding doesn't reach
+that scenario.** Narrowed on examination to two specific, non-default conditions (coercer has prior
+knowledge of expected content; coercer compels and compares multiple depths) rather than a general
+risk. Full reasoning and disposition in `Docs/Audit/OPEN_LIMITATIONS.md` §I.
+
 ---
 
 ## 9. Migration and release scope
