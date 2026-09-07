@@ -140,6 +140,19 @@ one array is fewer artifacts to pad, clean up, and explain than one per feature.
 **Every sealed field's AAD must bind its slot index.** Without it, lifting slot 2's ciphertext into
 slot 0 moves a duress layer's BEK — or vault entries — into the real one.
 
+**Concrete design, built 2026-09-07: `BEKSlotAAD`, in `Vault+Manager+Backup.swift`.** 20-byte domain
+separator (`"occulta-bek-slot-v1"`) plus a 1-byte slot index — checked against this codebase's other
+depth/slot mechanisms first, not assumed: neither `Manager.LayerStore.pop()` nor `AppLayerConfig`'s
+verifiers seal with any AAD at all, so this is a genuinely new pattern here, not a reuse of an existing
+one. Deliberately excludes `formatVersion` — that already lives inside the sealed plaintext (item 3's
+byte 0–1) and is checked there post-decryption; a slot-swap attack moves ciphertext between two slots
+written at the same format version, so slot-index binding alone is what stops it. Its 32-slot range is
+its own constant, not `AppLayerConfig.maxVerifierCount` — the two coincide today (one BEK slot per
+depth, one verifier per depth) but reusing that constant would make BEK key material depend invisibly
+on a verifier-array-sizing decision made for unrelated reasons elsewhere. Tested directly:
+`AES.GCM.seal` under slot 2's AAD, then `.open` under slot 0's, throws — the actual property this
+exists for, not just that the two byte strings differ.
+
 **This container cannot get cryptographic per-depth separation for free.** The vault key is not
 depth-derived, and making it so touches every vault entry. §8 item 4 has the remedy and its two
 applications.

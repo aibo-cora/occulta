@@ -1155,6 +1155,61 @@ extension VaultManager {
         }
     }
 
+    // MARK: - BEK slot AAD
+
+    /// Additional Authenticated Data for one slot's sealed content in the (not yet
+    /// built) 32-slot BEK array `BEKPayloadCodec` encodes. Binds the slot's own
+    /// index, so AES-GCM's tag-verification step itself — not application logic
+    /// reading the decrypted plaintext afterward — is what rejects a slot swap.
+    ///
+    /// `VAULT_KEY_LAYERING.md` §5: "Every sealed field's AAD must bind its slot
+    /// index. Without it, lifting slot 2's ciphertext into slot 0 moves a duress
+    /// layer's BEK... into the real one." Checked against this codebase's other
+    /// depth/slot mechanisms rather than assumed novel: `Manager.LayerStore.pop()`
+    /// and `AppLayerConfig`'s verifiers both seal with no `authenticating:` AAD at
+    /// all, relying on array offset or a plaintext `slotIndex` field inside the
+    /// payload, checked only *after* a successful open — a swap between slots is
+    /// something application code would need to notice post-decryption, not
+    /// something AES-GCM itself refuses. Nothing existing does what this does; it's
+    /// a stronger primitive for this container, not a reuse of an established one.
+    ///
+    /// Deliberately excludes `formatVersion` — that already lives inside the sealed
+    /// plaintext itself (`BEKPayloadCodec`'s own byte 0–1) and is checked there
+    /// after a successful open. A slot-swap attack moves ciphertext between two
+    /// slots written at the same format version, so slot-index binding alone is
+    /// what stops it; folding version into AAD too would mix two different
+    /// properties into one field for no attack it additionally closes.
+    ///
+    /// ```
+    /// bytes 0–19  domain separator — "occulta-bek-slot-v1" (UTF-8, 20 bytes)
+    /// byte  20    slotIndex        — UInt8, 0..<BEKSlotAAD.slotCount (32)
+    /// ```
+    enum BEKSlotAAD {
+        private static let domain = Data("occulta-bek-slot-v1".utf8)
+
+        /// Deliberately its own constant, not `AppLayerConfig.maxVerifierCount` —
+        /// unlike `ExportMetaSlotCodec.slotCount` above, which is genuinely *about*
+        /// the verifier arrays, this is BEK key-material AAD. Reusing that constant
+        /// would make it an invisible dependency: someone resizing verifier arrays
+        /// for a reason that has nothing to do with BEK would silently change what
+        /// this file accepts, with no signal at the point of that change. Both
+        /// happen to be 32 today because the app currently has one BEK slot per
+        /// depth and one verifier per depth — if that number ever moves, this needs
+        /// its own deliberate update, not an automatic one.
+        static let slotCount: Int = 32
+        static let validRange: Range<Int> = 0..<Self.slotCount
+
+        /// Traps outside `validRange`. `slotIndex` is always an internal loop bound
+        /// here, never attacker- or user-supplied, so an out-of-range value is a
+        /// caller bug to catch immediately, not input to validate gracefully.
+        static func aad(slotIndex: Int) -> Data {
+            precondition(Self.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
+            var out = Self.domain
+            out.append(UInt8(slotIndex))
+            return out
+        }
+    }
+
     // MARK: - Export metadata helpers
 
     private static let backupExportMetaURL: URL =
