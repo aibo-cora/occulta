@@ -1,9 +1,10 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** **implementation paused 2026-09-07 — item 7 in §8 is open and blocking.** Six of seven
-items in §8 decided; item 7 (per-slot write pattern leaks which depth is active across snapshots, and
-collides with item 4's own decision) is not, and no further implementation proceeds until it's settled.
-**Owner entries:**
+**Status:** design complete, nothing built. All seven items in §8 decided — item 7 settled 2026-09-07
+(accept the cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built). A related,
+not-yet-formalized concern (whether unconfigured duress depths look conspicuously different under
+direct use, distinct from item 7's ciphertext-level question) is under active discussion. **Owner
+entries:**
 `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
 `forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
@@ -475,39 +476,33 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    the gap surfaced. Nothing about the numbers or wire format above is code yet.
 
 4. **Convention or cryptography for the BEK field's slot separation** (Bug 92) — splits into two
-   applications with different blockers and costs. **Both halves now decided, separately, on different
-   dates: live-slot 2026-09-05 (build it), exported-file 2026-09-06 (ship opt-in, 6-word passphrase).**
-   Neither implemented yet.
+   applications with different blockers and costs. **Live-slot half superseded 2026-09-07 by item 7 —
+   not built, accepted as code-discipline separation instead. Exported-file half still decided
+   2026-09-06 (ship opt-in, 6-word passphrase), unaffected, not implemented yet.**
 
-   **Why not a slow KDF.** `PIN+Manager.swift`'s existing verifier derivation is
-   `HKDF(seKey, info: label ∥ pin)` — deliberately fast. `plan.md` records PBKDF2 being tried for this
-   exact purpose and removed: *"on-device code execution defeats any KDF regardless of iteration
-   count... SE key prevents all off-device attacks"* doing the actual work instead. Binding derivation
-   to the SE key removes the offline-brute-force attacker entirely; the same shipped pattern fits here
-   too, not a new primitive.
+   **Why not a slow KDF** (still applies to the exported-file half). `PIN+Manager.swift`'s existing
+   verifier derivation is `HKDF(seKey, info: label ∥ pin)` — deliberately fast. `plan.md` records
+   PBKDF2 being tried for this exact purpose and removed: *"on-device code execution defeats any KDF
+   regardless of iteration count... SE key prevents all off-device attacks"* doing the actual work
+   instead. Binding derivation to the SE key removes the offline-brute-force attacker entirely; the
+   same shipped pattern fits here too, not a new primitive.
 
-   **The live slot — decided, build it.** Same fold-PIN-into-`info` convention the verifier already
-   uses, applied to the slot key instead of a verifier: `slotKey(depth) = HKDF(inputKeyMaterial:
-   vaultKey, info: "bek-slot" ∥ depth ∥ pin(depth))`. A session at depth 2 holds the vault key (from
-   biometric auth, not depth-specific) and depth 2's own PIN (from the PIN entry that reached it) — it
-   never holds depth 0's PIN, so it cannot compute depth 0's `slotKey` even though it holds the same
-   vault key depth 0 would use. This closes §4's vault-key-extraction risk: the boundary between depths
-   stops being "the app's code chooses not to read the other slot" and becomes "the key material to
-   read it doesn't exist in this session." Touches only local storage — doesn't touch Shamir
-   reconstruction (which splits raw `bekBytes`, independent of how any one device seals them locally)
-   or restore UX on a fresh device (which derives its own `slotKey` under its own new PIN). No
-   identified downside; scope is a key-derivation change only, not a new field or format.
+   **The live slot — originally decided 2026-09-05, superseded 2026-09-07 by item 7. Preserved below
+   for the record, not built.** Same fold-PIN-into-`info` convention the verifier already uses, applied
+   to the slot key instead of a verifier: `slotKey(depth) = HKDF(inputKeyMaterial: vaultKey, info:
+   "bek-slot" ∥ depth ∥ pin(depth))`. A session at depth 2 holds the vault key (from biometric auth,
+   not depth-specific) and depth 2's own PIN — it never holds depth 0's PIN, so it cannot compute
+   depth 0's `slotKey` even though it holds the same vault key depth 0 would use. This would have
+   closed §4's vault-key-extraction risk cryptographically rather than by code discipline alone — but
+   item 7 found that exact isolation makes it impossible to hide *which slot is actively written*
+   across snapshots, since hiding that needs every slot re-sealable with fresh nonces regardless of
+   which depth's session is writing. The two properties can't both hold; item 7 settled 2026-09-07 on
+   keeping the write-pattern protection and accepting code-discipline-only separation instead, matching
+   `Manager.LayerStore`'s existing posture for contacts (Bug 106). See item 7 for the full reasoning.
 
-   **Flagged 2026-09-07, not yet reconciled — see item 7.** "No identified downside" above no longer
-   holds unconditionally. Item 7 found that hiding *which slot is actively written* (a separate property
-   from this item's own cross-depth read/write prevention) needs every slot re-sealed with fresh nonces
-   on every write — which requires exactly the cross-slot key access this item removes. The two
-   properties can't both hold once `slotKey` ships as designed here. Item 7 is open; this item's own
-   two decisions (live-slot convention, exported-file passphrase) stand on their own merits regardless
-   of how that gets resolved, but implementation is blocked pending it — see item 7.
-
-   **Not yet implemented.** Decided, not built — same status as item 3 until this branch's actual
-   implementation work starts.
+   **Not yet implemented — and now won't be, as designed above.** The exported-file half remains
+   decided and pending implementation; the live-slot half above is superseded, kept only as a record of
+   what was considered and why it was set aside.
 
    **The exported `.occbak` file (Bug 92's original proposal) — decided 2026-09-06: ship as an
    opt-in, 6-word passphrase, not a PIN.** Revises the original `slowKDF(PIN, ...)` proposal on two
@@ -642,51 +637,48 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but must
    ship alongside it, not be discovered as a gap after.
 
-7. **Per-slot write pattern leaks which depth is active, across snapshots — found 2026-09-07, OPEN.**
-   No implementation proceeds until this is settled.
+7. **Per-slot write pattern leaks which depth is active, across snapshots — found 2026-09-07, settled
+   2026-09-07: accept the risk, matching Bug 106's precedent. Item 4's live-slot `slotKey` is
+   superseded — not built.**
 
    **The mechanism.** Each of the 32 BEK slots is independently AES-GCM sealed (own nonce, own tag,
    `BEKSlotAAD`-bound). Writing depth N's slot was planned as: leave every other slot's ciphertext
    byte-for-byte untouched, replace only slot N's, write the whole file out under a fresh filename. The
    filename is randomized (uninformative), but the *other 31 slots' bytes are copied verbatim*. An
-   adversary holding two snapshots of this file from different points in time — already a live threat
-   this app defends against elsewhere (Bug 101, device backups) — can diff them with no key at all: 31
-   slots identical, one different, directly identifies which depth is actively used. If duress layers
-   are set up once and never touched again while the real depth sees ordinary use, this points straight
-   at the real depth.
+   adversary holding two snapshots of this file from different points in time can diff them with no key
+   at all: 31 slots identical, one different, directly identifies which depth is actively used.
 
-   **A mitigation exists, but only conditionally.** Re-sealing *all 32 slots* with fresh nonces on every
-   write — not just the touched one — would make every snapshot diff show all 32 slots changed,
-   regardless of which one logically changed. This is only possible because Stage 1 currently defers
-   item 4's `slotKey`: plain `vaultKey` can open and reseal every slot from any depth's session. The
-   existing contact `LayerStore` already does exactly this (full-array nonce refresh on every write) —
-   and can, precisely *because* contacts have no per-depth key isolation to begin with. That gap is now
-   filed as its own entry, **Bug 106** — found by asking this exact question, not previously named
-   anywhere despite `LayerStore.md`'s "Cryptography" section already documenting the shared key as a
-   feature.
+   **Correction, found while assessing this: the file is already backup-excluded, same as
+   `SecureMode+LayerStoreBackend.swift` (`isExcludedFromBackup = true`).** The original write-up cited
+   Bug 101 as evidence this threat is already live — wrong; Bug 101 is about unmanaged
+   `Documents/Inbox` files, a completely different, unprotected category. This file, like the contact
+   blob, is never in an iCloud or iTunes backup. The realistic path to two snapshots is physically
+   re-imaging the same device on separate occasions — a narrower adversary (repeated forensic custody,
+   or a sustained-access domestic threat) than routine backup exposure. This narrowed threat is part of
+   why accepting the risk below is defensible, not just expedient.
 
-   **Why this doesn't resolve by just adopting the mitigation: it collides with item 4.** Item 4's
-   entire point is that a depth-2 session becomes cryptographically unable to touch depth 0's slot —
-   that's what closes the vault-key-extraction risk item 4 exists for. But that same isolation makes it
-   unable to *refresh* depth 0's slot's nonce. Once `slotKey` ships as item 4 currently specifies, no
-   session at any depth can freshen any other depth's slot — this mitigation doesn't degrade, it becomes
-   structurally impossible for every slot outside whichever one depth is currently open.
+   **Decision: accept the cross-depth-reach risk, drop item 4's live-slot `slotKey`, reseal all 32
+   slots with fresh nonces on every write.** Matches `Manager.LayerStore`'s existing, shipped posture
+   for contacts exactly — one key for every slot, full-array nonce refresh closes the snapshot-diffing
+   leak completely and *permanently*, with no future collision to reconcile, because there is no
+   `slotKey` for it to collide with. This is Bug 106's own precedent, now deliberately extended to BEK
+   rather than left as a coincidence: contacts already carry this same trade-off in shipped code, and
+   the same call is made here for consistency, weighed against the corrected, narrower threat above.
+   Item 4's live-slot cryptographic isolation is superseded, not implemented — the vault-key-extraction
+   risk it targeted stays at code-discipline separation, the same posture Bug 106 already documents for
+   `LayerStore`. Item 4's *other* half (the exported `.occbak` 6-word passphrase) is unaffected — a
+   separate mechanism, not touched by this.
 
-   **The general shape of the tension, stated plainly:** cross-depth key isolation (item 4's goal) and
-   hiding which slot is active (this item's goal) pull in opposite directions under the current
-   per-depth-key architecture. Gaining one appears to cost the other. Nothing decided here about which
-   to prioritize, whether a third option exists, or whether this is an accepted-limitation candidate
-   (this app's threat model centers on single-session physical coercion; the cross-snapshot-diffing
-   adversary this item describes is a different, arguably more sophisticated one — that distinction
-   hasn't been weighed against precedent like `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle`).
+   **What this changes structurally:** the BEK array's write path always reseals all 32 slots on every
+   write, not just the touched one — a real, necessary revision to the backend design discussed
+   earlier, not an optional hardening. `BEKPayloadCodec` and `BEKSlotAAD` are both unaffected — per-slot
+   AAD binding still matters (it's what stops a slot-swap attack; full-array resealing stops the
+   snapshot-diffing one, a different property).
 
-   **Likely also applies to `RECOVERY_BUFFER_LAYERING.md`'s own eventual per-slot backend** — flagged
-   there for whoever picks that container's backend up, not analyzed here. One difference worth noting:
-   the recovery-buffer key isn't depth-derived today and has no item-4 analog proposed, so that
-   container may not face the same future collision — unconfirmed, not the same as ruled out.
-
-   **Blocks:** the BEK backend file (this item's own trigger), and item 4's live-slot implementation,
-   until reconciled.
+   **Also applies to `RECOVERY_BUFFER_LAYERING.md`'s own eventual per-slot backend** — flagged there for
+   whoever picks up that container's backend, not analyzed here. That container was never going to face
+   item 4's specific collision (its key isn't depth-derived today), but the underlying write pattern
+   still needs the same full-array-refresh treatment for the identical reason.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
