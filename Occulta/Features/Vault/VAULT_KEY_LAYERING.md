@@ -1,6 +1,9 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** design complete, nothing built. All six items in §8 decided. **Owner entries:**
+**Status:** **implementation paused 2026-09-07 — item 7 in §8 is open and blocking.** Six of seven
+items in §8 decided; item 7 (per-slot write pattern leaks which depth is active across snapshots, and
+collides with item 4's own decision) is not, and no further implementation proceeds until it's settled.
+**Owner entries:**
 `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
 `forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
@@ -495,6 +498,14 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    or restore UX on a fresh device (which derives its own `slotKey` under its own new PIN). No
    identified downside; scope is a key-derivation change only, not a new field or format.
 
+   **Flagged 2026-09-07, not yet reconciled — see item 7.** "No identified downside" above no longer
+   holds unconditionally. Item 7 found that hiding *which slot is actively written* (a separate property
+   from this item's own cross-depth read/write prevention) needs every slot re-sealed with fresh nonces
+   on every write — which requires exactly the cross-slot key access this item removes. The two
+   properties can't both hold once `slotKey` ships as designed here. Item 7 is open; this item's own
+   two decisions (live-slot convention, exported-file passphrase) stand on their own merits regardless
+   of how that gets resolved, but implementation is blocked pending it — see item 7.
+
    **Not yet implemented.** Decided, not built — same status as item 3 until this branch's actual
    implementation work starts.
 
@@ -630,6 +641,49 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
 
    **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but must
    ship alongside it, not be discovered as a gap after.
+
+7. **Per-slot write pattern leaks which depth is active, across snapshots — found 2026-09-07, OPEN.**
+   No implementation proceeds until this is settled.
+
+   **The mechanism.** Each of the 32 BEK slots is independently AES-GCM sealed (own nonce, own tag,
+   `BEKSlotAAD`-bound). Writing depth N's slot was planned as: leave every other slot's ciphertext
+   byte-for-byte untouched, replace only slot N's, write the whole file out under a fresh filename. The
+   filename is randomized (uninformative), but the *other 31 slots' bytes are copied verbatim*. An
+   adversary holding two snapshots of this file from different points in time — already a live threat
+   this app defends against elsewhere (Bug 101, device backups) — can diff them with no key at all: 31
+   slots identical, one different, directly identifies which depth is actively used. If duress layers
+   are set up once and never touched again while the real depth sees ordinary use, this points straight
+   at the real depth.
+
+   **A mitigation exists, but only conditionally.** Re-sealing *all 32 slots* with fresh nonces on every
+   write — not just the touched one — would make every snapshot diff show all 32 slots changed,
+   regardless of which one logically changed. This is only possible because Stage 1 currently defers
+   item 4's `slotKey`: plain `vaultKey` can open and reseal every slot from any depth's session. The
+   existing contact `LayerStore` already does exactly this (full-array nonce refresh on every write) —
+   and can, precisely *because* contacts have no per-depth key isolation to begin with.
+
+   **Why this doesn't resolve by just adopting the mitigation: it collides with item 4.** Item 4's
+   entire point is that a depth-2 session becomes cryptographically unable to touch depth 0's slot —
+   that's what closes the vault-key-extraction risk item 4 exists for. But that same isolation makes it
+   unable to *refresh* depth 0's slot's nonce. Once `slotKey` ships as item 4 currently specifies, no
+   session at any depth can freshen any other depth's slot — this mitigation doesn't degrade, it becomes
+   structurally impossible for every slot outside whichever one depth is currently open.
+
+   **The general shape of the tension, stated plainly:** cross-depth key isolation (item 4's goal) and
+   hiding which slot is active (this item's goal) pull in opposite directions under the current
+   per-depth-key architecture. Gaining one appears to cost the other. Nothing decided here about which
+   to prioritize, whether a third option exists, or whether this is an accepted-limitation candidate
+   (this app's threat model centers on single-session physical coercion; the cross-snapshot-diffing
+   adversary this item describes is a different, arguably more sophisticated one — that distinction
+   hasn't been weighed against precedent like `Non-Safe-Sender-Rejection-Is-A-Duress-Detection-Oracle`).
+
+   **Likely also applies to `RECOVERY_BUFFER_LAYERING.md`'s own eventual per-slot backend** — flagged
+   there for whoever picks that container's backend up, not analyzed here. One difference worth noting:
+   the recovery-buffer key isn't depth-derived today and has no item-4 analog proposed, so that
+   container may not face the same future collision — unconfirmed, not the same as ruled out.
+
+   **Blocks:** the BEK backend file (this item's own trigger), and item 4's live-slot implementation,
+   until reconciled.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
