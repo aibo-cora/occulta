@@ -76,6 +76,13 @@ before then — see §6's anti-pairings.
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
 container's collected shares and writes the reconstructed BEK into the other one's slot.
 
+**Testing and migration requirement, every stage — settled 2026-09-07, same rule as the sibling doc.**
+A stage isn't done once it builds. It's done once (a) tests cover the behavior in its `Verify` column,
+and (b) if the stage touches existing on-device data (§8's in-flight-restore adoption, any future
+resize cascading from `VAULT_KEY_LAYERING.md` item 2), there's an explicit migration plan checked for
+data loss, not just assumed safe by the design reasoning above. This data has no other copy if a
+migration goes wrong.
+
 ---
 
 ## 5. Where it lives

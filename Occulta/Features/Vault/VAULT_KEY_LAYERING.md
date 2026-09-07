@@ -260,6 +260,12 @@ for free — `shardMetadata`'s variable length still needs its own cap.
 trustees, collect and complete a restore in his layer, and see exactly what a working app does —
 because it *is* a working app in that layer, not a simulation of one.
 
+**Testing and migration requirement, every stage — settled 2026-09-07.** A stage isn't done once it
+builds. It's done once (a) tests cover the behavior in its `Verify` column, and (b) if the stage
+touches existing on-device data (Stage 1's legacy-row migration, any future entry-count expansion from
+item 2), there's an explicit migration plan checked for data loss, not just assumed safe by the design
+reasoning above. This data has no other copy if a migration goes wrong.
+
 **A large change for a patch release.** Ships in **v1.10.3**, on `v1.10.3/bek-layering-refactor` off
 `release/v1.10.3`. Full migration/release-scope reasoning, including the legacy-row tombstone this
 container's Stage 1 needs, is in §9.
