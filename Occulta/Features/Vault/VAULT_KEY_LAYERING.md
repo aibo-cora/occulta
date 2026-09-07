@@ -680,6 +680,37 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    item 4's specific collision (its key isn't depth-derived today), but the underlying write pattern
    still needs the same full-array-refresh treatment for the identical reason.
 
+8. **Two findings from starting the BEK backend build, 2026-09-07 — documented, not yet fixed.**
+
+   **`AppGroupLayerStoreBackend.findFile()` doesn't implement the disambiguation item 5 promised, and
+   the shared pool would break the shipped contact blob if used as designed today.** `findFile()`
+   (`SecureMode+LayerStoreBackend.swift:90-102`) selects by newest-modification-date among files with
+   the `.occbak` extension — it never tries opening candidates with a key at all. That's correct for
+   exactly one file in the directory, which is all that exists today. The moment the new BEK array file
+   joins the same `"blobs"` directory under the same extension (item 5's design), `findFile()` would
+   nondeterministically return whichever file was written most recently — not necessarily the caller's
+   own file. A write to the BEK array after the contact blob would make the *contact blob's own
+   `read()`* silently start returning BEK bytes. This is not a hypothetical edge case; it's how the
+   function is written today. **Item 5's "disambiguated by which key opens it" was never actually
+   implemented** — the real selection logic needs rewriting to try each candidate file against the
+   caller's own key/AAD and use whichever succeeds, which means touching existing, shipped production
+   code (the contact blob's own backend), not just adding a new one alongside it. Not yet fixed —
+   blocks building the shared-pool part of the new backend as designed; the backend can still be built
+   using its own directory in the meantime, deferring the merge.
+
+   **Migration carries forward pre-existing Bug 105 poisoning, if any, with no way to detect it.** If a
+   device was coerced into distributing shares of the real BEK (Bug 105) *before* ever updating to this
+   design, the legacy row's `shardMetadata` already reflects the coercer's trustee list, not the
+   owner's — same `bekBytes`, same `distributionID`, no depth stamp anywhere to tell them apart, because
+   the pre-fix code never tracked depth at all. Migration (§9) faithfully moves whatever the legacy row
+   currently holds into slot 0, so a pre-existing compromise lands in "the real depth's slot" looking
+   exactly like a legitimate setup. Not a bug migration introduces — the same ambiguity already exists
+   in the single unlayered row today, and migration only relocates it once; every write after migration
+   is correctly depth-isolated by Stage 2. Scoped to devices already compromised before they update.
+   **Possible mitigation, not yet decided:** prompt the user to review their recovery contacts at the
+   same depth-0 session where migration runs, giving a freed, coerced user a chance to notice an
+   unrecognized trustee — UX work, not a backend change, not yet scoped or committed to.
+
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
 unreadable shells in the DB, existing `LayerStore` blob is the canonical copy, loaded to memory on
