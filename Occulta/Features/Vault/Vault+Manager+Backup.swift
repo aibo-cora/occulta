@@ -897,6 +897,264 @@ extension VaultManager {
         }
     }
 
+    // MARK: - BEK payload codec
+
+    /// Fixed-width plaintext codec for `BackupEncryptionKey.Payload`. Not yet wired
+    /// into `fetchDecodedBEK`/`persistBEKPayload` below, which still use
+    /// `JSONDecoder`/`JSONEncoder` — this codec exists standalone so it can be built
+    /// and tested in isolation before anything's rewired. See `VAULT_KEY_LAYERING.md`
+    /// §8 item 3 for the design; this is item 3's wire format, exactly.
+    ///
+    /// JSON's variable length leaks trustee count and shard status through
+    /// ciphertext size alone, before any key is ever involved — measured directly
+    /// against this app's own `JSONEncoder()` output in the design doc. Fixed byte
+    /// offsets close this structurally instead of by computed padding, the same
+    /// reasoning as `ExportMetaSlotCodec` above.
+    ///
+    /// Storage capacity (255) and write policy (10, enforced in `prepareBEKShards`)
+    /// are different numbers, on purpose. 255 is the Shamir ceiling itself
+    /// (`ShamirSecretSharing`'s `UInt8` x-coordinates), not a guess, so a legacy
+    /// distribution created before any cap existed always fits.
+    ///
+    /// Not `private`, unlike `ExportMetaSlotCodec` — this format has enough moving
+    /// parts (per-shard records, two error cases, capacity boundaries) that direct
+    /// round-trip tests are worth more here than the indirect coverage a private
+    /// codec would only get through higher-level manager functions.
+    ///
+    /// ```
+    /// byte 0–1        formatVersion   — UInt16, big-endian
+    /// byte 2–33       bekBytes        — 32 bytes, raw
+    /// byte 34–49      distributionID  — UUID's raw 16 bytes
+    /// byte 50         threshold       — UInt8; 0 means shardMetadata is nil
+    ///                                   (never distributed / just rotated) — a real
+    ///                                   threshold is always 2...255, so 0 is an
+    ///                                   unambiguous sentinel, not a heuristic
+    /// byte 51–10,760  shards          — 255 × 42-byte ShardRecord, in order
+    /// ```
+    /// Total: 10,761 bytes, always — whether 0 shards are in use or 255.
+    ///
+    /// Per-`ShardRecord`, 42 bytes:
+    /// ```
+    /// byte 0–15   contactIdentifier — raw UUID bytes, not the 36-char string
+    /// byte 16–31  attributeID       — raw UUID bytes
+    /// byte 32     status            — UInt8 tag; 0 = unused capacity slot, never a
+    ///                                 real `ShardStatus` (those are 1...5)
+    /// byte 33     distributedAt presence — 1 = set, 0 = absent
+    /// byte 34–41  distributedAt value    — UInt64 epoch seconds, big-endian,
+    ///                                      zero-filled when absent
+    /// ```
+    /// A slot with status 0 is filler (random bytes past the status tag) for a
+    /// capacity slot with no shard in it — matching `ExportMetaSlotCodec`'s house
+    /// style of random rather than structured filler, chosen for consistency with
+    /// the rest of Secure Mode.
+    enum BEKPayloadCodec {
+        /// The version every `encode(_:)` call writes. Bumping this alone is not how
+        /// you ship a new format — see the note on `decode(_:)` below.
+        static let formatVersion:   UInt16 = 1
+        static let shardCapacity:   Int    = 255
+        static let shardRecordSize: Int    = 42
+        /// Size of the version this codec currently *writes*. A future version is
+        /// free to be a different size — `decode(_:)` reads the version tag before
+        /// it ever assumes a length, precisely so that isn't a breaking change.
+        static let payloadSize:     Int    = Self.payloadSizeV1
+
+        private static let payloadSizeV1: Int = 2 + 32 + 16 + 1 + (shardRecordSize * shardCapacity)
+
+        enum CodecError: Error, Equatable {
+            /// More shards than the Shamir ceiling could ever produce. Refuses to
+            /// silently truncate real trustee records — the one thing this codec
+            /// must never do.
+            case tooManyShards(count: Int)
+            /// `ShardRecord.contactIdentifier` wasn't a valid UUID string.
+            case invalidContactIdentifier(String)
+        }
+
+        /// Always writes `formatVersion` — dispatches on that constant the same way
+        /// `decode(_:)` dispatches on whatever version tag it reads, so the two stay
+        /// symmetric by construction rather than by remembering to update both.
+        /// Encoding an old version on purpose is never needed: every write is either
+        /// a fresh record or a migration re-seal, and both want the newest shape.
+        static func encode(_ payload: BackupEncryptionKey.Payload) throws -> Data {
+            switch Self.formatVersion {
+            case 1:  return try Self.encodeV1(payload)
+            default: preconditionFailure("formatVersion \(Self.formatVersion) has no encoder")
+            }
+        }
+
+        /// Dispatches on the version tag *before* checking length, not after — a
+        /// future version is free to have a different `payloadSizeV2` &c., and this
+        /// ordering is what lets `decodeV1` keep reading existing on-disk data once
+        /// `formatVersion` above has moved on to a newer one. This is the actual
+        /// mechanism behind `VAULT_KEY_LAYERING.md`'s "bump `formatVersion`, read the
+        /// old fixed shape, re-seal into the new one" migration pattern — bumping the
+        /// constant alone does nothing without a decode path that still recognises
+        /// the version it's replacing.
+        ///
+        /// **To add a version 2 later:** write `encodeV2`/`decodeV2` against whatever
+        /// `payloadSizeV2` the new shape needs, add `case 2:` to both switches above
+        /// and below, bump `formatVersion` to `2`, and leave `encodeV1`/`decodeV1`
+        /// exactly as they are — `decodeV1` must keep reading existing version-1
+        /// files for as long as any could still be on disk; `encodeV1` only stays
+        /// referenced by `decodeV1`'s round-trip tests once `encode` no longer calls
+        /// it, and is safe to delete once nothing does.
+        ///
+        /// `nil` for anything malformed — wrong length for its version, or a version
+        /// tag nothing below recognises. Never partially decodes.
+        static func decode(_ data: Data) -> BackupEncryptionKey.Payload? {
+            guard data.count >= 2 else { return nil }
+            let version = UInt16(data[data.startIndex]) << 8 | UInt16(data[data.startIndex + 1])
+
+            switch version {
+            case 1:  return Self.decodeV1(data)
+            default: return nil
+            }
+        }
+
+        private static func encodeV1(_ payload: BackupEncryptionKey.Payload) throws -> Data {
+            let shards = payload.shardMetadata?.shards ?? []
+            guard shards.count <= Self.shardCapacity else {
+                throw CodecError.tooManyShards(count: shards.count)
+            }
+
+            var out = Data(capacity: Self.payloadSizeV1)
+
+            var version = UInt16(1).bigEndian
+            withUnsafeBytes(of: &version) { out.append(contentsOf: $0) }
+
+            out.append(payload.bekBytes)
+            out.append(Self.uuidBytes(payload.distributionID))
+            out.append(UInt8(clamping: payload.shardMetadata?.threshold ?? 0))
+
+            for shard in shards {
+                out.append(try Self.encodeShard(shard))
+            }
+            for _ in shards.count..<Self.shardCapacity {
+                out.append(Self.emptyShardSlot())
+            }
+
+            return out
+        }
+
+        private static func decodeV1(_ data: Data) -> BackupEncryptionKey.Payload? {
+            guard data.count == Self.payloadSizeV1 else { return nil }
+            let bytes = [UInt8](data)
+
+            let bekBytes = Data(bytes[2..<34])
+            guard let distributionID = Self.uuid(fromBytes: Array(bytes[34..<50])) else { return nil }
+            let threshold = Int(bytes[50])
+
+            var shards: [ShardRecord] = []
+            var offset = 51
+            for _ in 0..<Self.shardCapacity {
+                let slot = data.subdata(in: offset..<(offset + Self.shardRecordSize))
+                if let shard = Self.decodeShard(slot) {
+                    shards.append(shard)
+                }
+                offset += Self.shardRecordSize
+            }
+
+            let shardMetadata = threshold == 0
+                ? nil
+                : ShardDistributionMetadata(threshold: threshold, shards: shards)
+
+            return BackupEncryptionKey.Payload(
+                bekBytes:       bekBytes,
+                distributionID: distributionID,
+                shardMetadata:  shardMetadata
+            )
+        }
+
+        // MARK: Per-shard record
+
+        private static let emptyStatusTag: UInt8 = 0
+
+        /// Exhaustive `switch`, not a dictionary literal — a future `ShardStatus`
+        /// case fails this at compile time instead of silently falling through.
+        private static func tag(for status: ShardStatus) -> UInt8 {
+            switch status {
+            case .pending:       return 1
+            case .confirmed:     return 2
+            case .revokePending: return 3
+            case .revoked:       return 4
+            case .lost:          return 5
+            }
+        }
+
+        private static func status(fromTag tag: UInt8) -> ShardStatus? {
+            switch tag {
+            case 1: return .pending
+            case 2: return .confirmed
+            case 3: return .revokePending
+            case 4: return .revoked
+            case 5: return .lost
+            default: return nil
+            }
+        }
+
+        private static func encodeShard(_ shard: ShardRecord) throws -> Data {
+            guard let contactID = UUID(uuidString: shard.contactIdentifier) else {
+                throw CodecError.invalidContactIdentifier(shard.contactIdentifier)
+            }
+
+            var out = Data(capacity: Self.shardRecordSize)
+            out.append(Self.uuidBytes(contactID))
+            out.append(Self.uuidBytes(shard.attributeID))
+            out.append(Self.tag(for: shard.status))
+
+            if let distributedAt = shard.distributedAt {
+                out.append(1)
+                var ts = UInt64(max(0, distributedAt.timeIntervalSince1970)).bigEndian
+                withUnsafeBytes(of: &ts) { out.append(contentsOf: $0) }
+            } else {
+                out.append(0)
+                out.append(Data(repeating: 0, count: 8))
+            }
+
+            return out
+        }
+
+        /// `nil` for a genuinely-unused capacity slot (status tag 0) or a malformed
+        /// one — both mean "no shard here," the same "absent" convention
+        /// `ExportMetaSlotCodec.decodeSlot` uses.
+        private static func decodeShard(_ slot: Data) -> ShardRecord? {
+            let bytes = [UInt8](slot)
+            guard let status = Self.status(fromTag: bytes[32]) else { return nil }
+            guard let contactID = Self.uuid(fromBytes: Array(bytes[0..<16])) else { return nil }
+            guard let attributeID = Self.uuid(fromBytes: Array(bytes[16..<32])) else { return nil }
+
+            let hasDistributedAt = bytes[33] == 1
+            let ts = bytes[34..<42].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let distributedAt = hasDistributedAt ? Date(timeIntervalSince1970: TimeInterval(ts)) : nil
+
+            return ShardRecord(
+                contactIdentifier: contactID.uuidString,
+                attributeID:       attributeID,
+                status:            status,
+                distributedAt:     distributedAt
+            )
+        }
+
+        private static func emptyShardSlot() -> Data {
+            var out = Data(capacity: Self.shardRecordSize)
+            out.append(Data.randomBytes(32))   // contactIdentifier + attributeID region, filler
+            out.append(Self.emptyStatusTag)
+            out.append(Data.randomBytes(9))    // distributedAt presence + value region, filler
+            return out
+        }
+
+        private static func uuidBytes(_ id: UUID) -> Data {
+            withUnsafeBytes(of: id.uuid) { Data($0) }
+        }
+
+        private static func uuid(fromBytes bytes: [UInt8]) -> UUID? {
+            guard bytes.count == 16 else { return nil }
+            return UUID(uuid: (
+                bytes[0], bytes[1], bytes[2],  bytes[3],  bytes[4],  bytes[5],  bytes[6],  bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+            ))
+        }
+    }
+
     // MARK: - Export metadata helpers
 
     private static let backupExportMetaURL: URL =
