@@ -8102,3 +8102,71 @@ because it *is* the same flow, not a suppressed one.
 
 No test covers distribution at a non-zero depth. `Vault+ShardSetup.swift` has no depth-aware tests at
 all, which is consistent with the code having no depth awareness to test.
+
+## Bug 106 — The contact `LayerStore` has no cryptographic cross-depth isolation, the same gap Bug 92 names for the BEK
+
+**Status:** **Open, severity not yet assessed.** Filed 2026-09-07, found while working through
+`VAULT_KEY_LAYERING.md` item 7 (a duress-depth-detection risk in the new BEK slot array) and asking
+why the *existing* contact `LayerStore` can safely reseal all 32 slots with fresh nonces on every
+write without hitting the same problem. The answer — it has no per-depth key isolation to begin with
+— is a real, previously unnamed consequence of an intentional design choice, not a newly introduced
+defect. No reachability trace has been done yet; this entry records the structural fact, following
+Bug 92's own precedent of separating "this is real" from "here is exactly what a coercer can do about
+it today."
+
+**Target:** unset. No fix proposed or decided. `VAULT_KEY_LAYERING.md` item 7 considers the analogous
+trade-off for the BEK array and is itself open — this entry is supporting context for that decision,
+not a request to resolve this one first.
+
+### Severity: not yet rated — see *Why this isn't a confident "High" or "Low"* below
+
+### What happens
+
+`LayerStore.md`'s own "Cryptography" section documents `layerKey = HKDF-SHA256(IKM: seKey, info:
+"layer-store-key")` — no depth or PIN input — and states plainly that "all 32 slots use the same
+`layerKey`," calling this out as the property that *enables* full-array regeneration (the store can
+trial-decrypt every slot and tell real payloads from padding by which ones authenticate). Confirmed
+directly against `Key+Manager.swift:889-913`'s `deriveSecureModeKey()`: no `depth` or `pin` parameter
+anywhere in the derivation. Every session, at every depth, computes the identical key.
+
+So there is no cryptographic barrier that prevents a session at depth 2 from opening or resealing
+depth 0's contact slot — the exact shape of gap Bug 92 names for the BEK (*"the vault key... opens
+every slot... code discipline rather than cryptography"*), except here it was never framed as a gap at
+all — `LayerStore.md` presents the shared key as a feature, because it is one, for the property it
+was built to enable. The consequence just never got named as a corresponding cost until asked.
+
+### Why this isn't a confident "High" or "Low"
+
+**Not established: any concrete in-app path.** Unlike Bug 105 (traced to a specific, ordinary-UI-
+reachable function with zero special access needed), no equivalent trace has been done here for
+`LayerStore.pop()`/`push()`'s actual call sites — whether the app's own code ever calls either with an
+explicit depth other than `currentDepth` is unconfirmed, not ruled out. `pop()`'s `slotIndexMismatch`
+check happens *after* decryption, on the plaintext, matching Bug 92's own "code discipline, not
+cryptography" framing — but code discipline having no known counterexample today is different from
+having been verified to have none.
+
+**Not established: what an offline/extracted-key scenario actually requires.** `layerKey` derives from
+an SE-backed key gated `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (`Key+Manager.swift:936-941`) —
+device-unlock state, not a per-use biometric prompt. Whether that access-control tier is meaningfully
+weaker than the vault key's biometric gate, for this specific class of attacker, hasn't been assessed
+here — Bug 92 went through exactly this kind of re-examination (rated High, then re-rated Medium once
+the actual reachable path was traced) before its severity was trusted; this entry hasn't done that
+work yet.
+
+### Relationship to the entries around it
+
+- **Bug 92** is the same underlying issue — a device-wide key with no depth input, protection resting
+  on the app's own code discipline — for the BEK instead of contacts. Its "Re-examined" section is the
+  template for how this entry's severity should eventually be settled: trace actual reachable call
+  sites before rating, not from the structural fact alone.
+- **`VAULT_KEY_LAYERING.md` item 7** is where this was found. That item is weighing whether the new BEK
+  slot array should get item 4's cryptographic depth isolation (at the cost of the write-pattern leak
+  item 7 describes) or accept the same posture `LayerStore` already has, live, in shipped code. This
+  entry is what makes "accept the same posture" a documented, precedented choice rather than an
+  unexamined one.
+
+### Guard
+
+None. No test asserts that a session at one depth cannot open another depth's contact slot, or
+documents that no such test exists because the property isn't claimed — the same absence Bug 105's
+own Guard section notes for BEK distribution.

@@ -660,7 +660,10 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    regardless of which one logically changed. This is only possible because Stage 1 currently defers
    item 4's `slotKey`: plain `vaultKey` can open and reseal every slot from any depth's session. The
    existing contact `LayerStore` already does exactly this (full-array nonce refresh on every write) —
-   and can, precisely *because* contacts have no per-depth key isolation to begin with.
+   and can, precisely *because* contacts have no per-depth key isolation to begin with. That gap is now
+   filed as its own entry, **Bug 106** — found by asking this exact question, not previously named
+   anywhere despite `LayerStore.md`'s "Cryptography" section already documenting the shared key as a
+   feature.
 
    **Why this doesn't resolve by just adopting the mitigation: it collides with item 4.** Item 4's
    entire point is that a depth-2 session becomes cryptographically unable to touch depth 0's slot —

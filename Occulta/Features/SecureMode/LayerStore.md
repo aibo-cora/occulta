@@ -283,6 +283,10 @@ All 32 slots use the same `layerKey`. This is what enables full regeneration in 
 — the store can attempt decryption of every slot and distinguish real payloads (authentication
 succeeds) from padding (authentication fails, tag mismatch).
 
+**The flip side of that, named 2026-09-07: no cryptographic barrier stops a session at one depth
+from opening or resealing another depth's slot** — protection here is code discipline (the app's own
+call sites always pass `currentDepth`), the same shape of gap Bug 92 names for the BEK. See Bug 106.
+
 ---
 
 ## No-op maintenance
@@ -324,3 +328,16 @@ var sealedBlobSlots: [Data]
 /// One value per depth, parallel to sealedBlobSlots.
 var layerSequenceNumbers: [Data]
 ```
+
+---
+
+## Known bugs
+
+Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical for full reasoning.
+
+| Bug | What | Status |
+|---|---|---|
+| 38 | `AppGroupLayerStoreBackend.write()` deleted the old file before writing the new one | fixed |
+| 39 | `maintainLayerStore()` blocked the main thread on launch | fixed |
+| 43 | `rewrite()` in `deactivateSecureMode` ran synchronously; `LayerStore.Error` codes were unstable | fixed |
+| 106 | No cryptographic cross-depth isolation — all 32 slots share one key, protection is code discipline only | open, severity not yet assessed |
