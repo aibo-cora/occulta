@@ -8170,3 +8170,87 @@ work yet.
 None. No test asserts that a session at one depth cannot open another depth's contact slot, or
 documents that no such test exists because the property isn't claimed — the same absence Bug 105's
 own Guard section notes for BEK distribution.
+
+## Bug 107 — `Manager.LayerStore.push()`/`pop()` silently replace an unreadable slot with fresh
+random filler, indistinguishable from a slot that was always empty
+
+**Status:** **Open, severity not fully assessed — mechanism confirmed, likelihood not yet traced.**
+Filed 2026-09-08, found while designing the new BEK slot array's own write algorithm and comparing it
+against `Manager.LayerStore`'s existing pattern as precedent. A near-identical bug was caught and fixed
+in the BEK design before any of that code was written (`VAULT_KEY_LAYERING.md` §8 item 8, third
+finding) — checking the precedent it was modeled on afterward found the same conflation already live.
+
+**Target:** unset. No fix proposed or decided.
+
+### Severity: impact is high if triggered (silent, irreversible loss of real sensitive contact data);
+likelihood — how often a slot actually becomes unreadable in practice — has not been traced. Rating
+deliberately withheld rather than guessed, matching Bug 92's own precedent of re-examining reachability
+before trusting a severity number.
+
+### What happens
+
+`decryptedPlaintexts(using:)` (`SecureMode+LayerStore.swift:333-345`), used by `push()` to preserve
+every slot other than the one being newly written:
+
+```swift
+guard let box   = try? AES.GCM.SealedBox(combined: cipher),
+      let plain = try? AES.GCM.open(box, using: key)
+else { return nil }
+```
+
+Every slot in this store — real or filler — is sealed under the exact same `layerKey`
+(`deriveKey(from:)`, no depth input, no per-slot AAD). Filler is genuinely-sealed random plaintext,
+not a structurally-distinguishable "empty" marker — there is no separate decode-validity step the way
+`BEKPayloadCodec` (the new design) has. That means `AES.GCM.open` succeeding is **not** conditional on
+whether a slot holds real content; it should succeed for every slot this store has ever written,
+period. A `nil` here can only mean the ciphertext failed to authenticate under the one key that opens
+everything — disk corruption, a partial write, or a bug. It cannot mean "this slot was always empty."
+
+`push()` doesn't draw that distinction. `nil` from `decryptedPlaintexts` and "this slot is genuinely
+unused" are treated identically — `SecureMode+LayerStore.swift:187-192`:
+
+```swift
+} else if let plain = existing[i], let combined = try? AES.GCM.seal(plain, using: key).combined {
+    file.append(combined)
+} else {
+    file.append(try self.sealRandom(using: key))   // ← real-but-unreadable and never-written land here alike
+}
+```
+
+`pop()` has the identical shape inline (`:224-233`) rather than going through `decryptedPlaintexts`,
+same conflation, same consequence.
+
+### The harm
+
+A slot that held a real, sensitive contact and became transiently unreadable — the concrete path being
+a crash mid-write, since `AppGroupLayerStoreBackend.write()` (`SecureMode+LayerStoreBackend.swift:37-53`)
+does not use `.atomic`, only `.completeFileProtection` (a Data Protection class, not a write-atomicity
+guarantee) — gets silently overwritten with fresh random garbage on the very next `push()` or `pop()`.
+No error, no signal, nothing recoverable. `push()`/`pop()` run on every Secure Mode activation and
+deactivation, not a rare code path, and every one of the 32 slots is subject to this on every call, not
+just the one actively being read or written.
+
+### Relationship to `OPEN_LIMITATIONS.md` C1
+
+C1 ("Decryption failure is not representable") names this exact failure shape — *"wrong-key ciphertext
+... indistinguishable from an empty field ... the direct reason Bugs 75, 76, 77, 78 and 80 were silent
+permanent data loss"* — but C1's own count is specifically `String.decrypt()`/`Data.decrypt()`'s `try?`
+pattern across 88 call sites. `push()`/`pop()` call `AES.GCM.SealedBox`/`AES.GCM.open` directly, not
+those functions — this is a separate, previously uncounted instance of the same underlying problem, not
+one of the already-tracked 88.
+
+### Not yet done
+
+No reachability trace of how often this actually fires in practice (matching the discipline Bug 92 was
+held to before its severity was trusted). No fix proposed. The correct shape of a fix — distinguish
+"open fails" (halt, surface an error, do not silently substitute filler) from "open succeeds but the
+result isn't structurally valid content" (genuinely empty, safe) — is already worked out for the BEK
+design (`VAULT_KEY_LAYERING.md` §8 item 8) and is the natural template here too, but `LayerStore` has no
+equivalent "structurally valid content" check to fall back on, since filler and real payloads are both
+just AES-GCM-sealed arbitrary bytes at this layer — closing this properly may need more than porting
+the same fix verbatim.
+
+### Guard
+
+None. No test exercises a corrupted or unreadable slot during `push()`/`pop()` and asserts the real
+content survives rather than being silently replaced.

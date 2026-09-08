@@ -279,13 +279,26 @@ SE binding prevents all off-device attacks — the key is inaccessible without t
 and biometrics/passcode. No PBKDF2: on-device code execution defeats any KDF regardless of
 iteration count, and PBKDF2 added ~1 s of main-thread blocking for no real gain.
 
-All 32 slots use the same `layerKey`. This is what enables full regeneration in `push`/`pop`
-— the store can attempt decryption of every slot and distinguish real payloads (authentication
-succeeds) from padding (authentication fails, tag mismatch).
+All 32 slots use the same `layerKey`. This is what enables full regeneration in `push`/`pop` — the
+store can decrypt every slot under this one key and re-seal it with a fresh nonce, real or padding
+alike.
 
-**The flip side of that, named 2026-09-07: no cryptographic barrier stops a session at one depth
-from opening or resealing another depth's slot** — protection here is code discipline (the app's own
-call sites always pass `currentDepth`), the same shape of gap Bug 92 names for the BEK. See Bug 106.
+**Correction, 2026-09-08: padding does not fail authentication.** The line above previously said
+padding is distinguished from real payloads by "authentication fails, tag mismatch" — wrong, and worth
+fixing precisely because Bug 107 depends on the actual behavior: padding is genuinely-sealed random
+plaintext under the same `layerKey`, so `AES.GCM.open` succeeds for it exactly as it does for real
+content. There is no structural way to tell real from padding at this layer at all — both open
+successfully; distinguishing them (if it happens anywhere) is a decision made from the decrypted
+plaintext's own content one level up, not from whether decryption itself succeeded.
+
+**The flip side of the shared key, named 2026-09-07: no cryptographic barrier stops a session at one
+depth from opening or resealing another depth's slot** — protection here is code discipline (the app's
+own call sites always pass `currentDepth`), the same shape of gap Bug 92 names for the BEK. See Bug 106.
+
+**A second consequence of the shared key and the "open should always succeed" property above, found
+2026-09-08: an actual open failure is never legitimate here, and `push()`/`pop()` treat it as if it
+were.** See Bug 107 — a slot that fails to open (corruption, a partial write, a bug) is indistinguishable
+in the code from one that was always empty, and gets silently overwritten with fresh filler either way.
 
 ---
 
@@ -341,3 +354,4 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 | 39 | `maintainLayerStore()` blocked the main thread on launch | fixed |
 | 43 | `rewrite()` in `deactivateSecureMode` ran synchronously; `LayerStore.Error` codes were unstable | fixed |
 | 106 | No cryptographic cross-depth isolation — all 32 slots share one key, protection is code discipline only | open, severity not yet assessed |
+| 107 | `push()`/`pop()` silently replace an unreadable slot with fresh filler — real content and a corrupted slot look identical | open, severity not yet assessed |
