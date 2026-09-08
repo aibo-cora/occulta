@@ -680,7 +680,8 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    item 4's specific collision (its key isn't depth-derived today), but the underlying write pattern
    still needs the same full-array-refresh treatment for the identical reason.
 
-8. **Two findings from starting the BEK backend build, 2026-09-07 — documented, not yet fixed.**
+8. **Findings from starting the BEK backend build, 2026-09-07/08 — two documented and still open, one
+   found and fixed in a security/forensic review before any backend code was written.**
 
    **`AppGroupLayerStoreBackend.findFile()` doesn't implement the disambiguation item 5 promised, and
    the shared pool would break the shipped contact blob if used as designed today.** `findFile()`
@@ -710,6 +711,38 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    **Possible mitigation, not yet decided:** prompt the user to review their recovery contacts at the
    same depth-0 session where migration runs, giving a freed, coerced user a chance to notice an
    unrecognized trustee — UX work, not a backend change, not yet scoped or committed to.
+
+   **Third finding, found and fixed 2026-09-08 during a security/forensic review of the codec and the
+   backend design, before any backend code existed: the write algorithm as described conflated two
+   different failure modes, and the conflation was a real data-loss path.** The design (per-slot: try
+   `open` + `decode`, success → real, failure → filler, generate fresh random plaintext) treated
+   "`open` succeeds, `decode` fails" and "`open` itself fails" identically. Those are not the same
+   thing. The first is genuinely empty — random noise that authenticates under the right key but isn't
+   structured content, safe to treat as absent. The second means the ciphertext doesn't authenticate at
+   all under the correct key and AAD, which should essentially never happen for a slot this backend
+   itself wrote — it means disk corruption, a partial write from a crash, or a bug. Treating it as
+   "empty" would silently overwrite a slot that was real but transiently unreadable with random garbage
+   on the very next write, with no error and nothing recoverable — the same failure shape
+   `Docs/Audit/OPEN_LIMITATIONS.md` C1 names elsewhere in this codebase ("wrong-key ciphertext...
+   indistinguishable from an empty field... the direct reason Bugs 75-78, 80 were silent permanent data
+   loss"), reproduced fresh in a brand-new subsystem before it shipped.
+
+   **Fix, folded into the design directly: `open` failure throws and halts the write; only
+   `open`-succeeds-`decode`-fails counts as empty.** Consistent with how file identification already
+   has to work (trying slot 0's `open` alone, independent of whether `decode` then succeeds) — the write
+   algorithm was the one place this distinction wasn't being honored. Noted separately: the existing,
+   shipped `AppGroupLayerStoreBackend.write()` doesn't use `.atomic` in its write options, only
+   `.completeFileProtection` (a Data Protection class, not an atomicity guarantee) — a crash mid-write
+   could leave a corrupted file today. Pre-existing, not introduced here, but it's the concrete scenario
+   this fix has to handle correctly rather than silently paper over.
+
+   **Two smaller fixes to `BEKPayloadCodec`, same review pass, already applied:** `decodeV1` extracted
+   `bekBytes` into a local buffer with no `defer` zeroing, unlike every other BEK-handling function in
+   this file and the file's own stated convention — fixed, the working `[UInt8]` copy is now zeroed on
+   return. Separately, the function mixed two indexing idioms (`[UInt8](data)`, which always rebases to
+   0, and `data.subdata(in:)`, which doesn't) — harmless today given real callers always pass
+   freshly-decrypted `Data`, but latent, and worth closing before the backend starts slicing real file
+   contents. Both fixed by slicing consistently from the already-rebased array.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —

@@ -1037,7 +1037,17 @@ extension VaultManager {
 
         private static func decodeV1(_ data: Data) -> BackupEncryptionKey.Payload? {
             guard data.count == Self.payloadSizeV1 else { return nil }
-            let bytes = [UInt8](data)
+            // `[UInt8](data)` always rebases to 0-based indices regardless of `data`'s
+            // own indices (unlike `data.subdata(in:)`, which is relative to `data`'s
+            // own index space and would misbehave on a non-zero-based slice). Slicing
+            // `bytes` for every extraction below, rather than mixing it with `data`
+            // directly, keeps this consistent throughout.
+            var bytes = [UInt8](data)
+            // This is the one raw copy of `bekBytes` (and the rest of the decrypted
+            // payload) that exists purely as a working buffer — zeroed once extraction
+            // is done, matching this file's own stated convention (top of file) and
+            // the pattern every other BEK-handling function here already follows.
+            defer { for i in bytes.indices { bytes[i] = 0 } }
 
             let bekBytes = Data(bytes[2..<34])
             guard let distributionID = Self.uuid(fromBytes: Array(bytes[34..<50])) else { return nil }
@@ -1046,7 +1056,7 @@ extension VaultManager {
             var shards: [ShardRecord] = []
             var offset = 51
             for _ in 0..<Self.shardCapacity {
-                let slot = data.subdata(in: offset..<(offset + Self.shardRecordSize))
+                let slot = Data(bytes[offset..<(offset + Self.shardRecordSize)])
                 if let shard = Self.decodeShard(slot) {
                     shards.append(shard)
                 }
