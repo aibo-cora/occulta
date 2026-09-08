@@ -1,10 +1,11 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** design complete, nothing built. All seven items in §8 decided — item 7 settled 2026-09-07
-(accept the cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built). A related,
-not-yet-formalized concern (whether unconfigured duress depths look conspicuously different under
-direct use, distinct from item 7's ciphertext-level question) is under active discussion. **Owner
-entries:**
+**Status:** design complete, all seven items in §8 decided. Implementation started 2026-09-08 —
+Stage 1's core is built (see §7 table): the BEK array, its codec and AAD, and the wiring into
+`fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Item 7 settled 2026-09-07 (accept the
+cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built). The duress-depth
+content-richness concern raised alongside item 7 is resolved — accepted limitation, full reasoning in
+`Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
 `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
 `forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
@@ -269,12 +270,12 @@ storage, 42-byte fixed record).
 
 ## 7. Build stages, and where they touch the other container
 
-| # | Stage | Verify | Touches `RECOVERY_BUFFER_LAYERING.md`? |
-|---|---|---|---|
-| 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No |
-| 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No |
-| — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No |
-| 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot |
+| # | Stage | Verify | Touches `RECOVERY_BUFFER_LAYERING.md`? | Status |
+|---|---|---|---|---|
+| 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08.** `BEKPayloadCodec` → `BEKSlotAAD` → `AppGroupBEKArrayBackend` (own directory, item 8) → `BEKArray` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecodedBEK`/`persistBEKPayload`, migration folded in. Remaining: `RotationRegistry` update. |
+| 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | Not started. Stage 1 alone still doesn't close Bug 105 — everything currently routes through slot 0 regardless of depth, matching today's behavior; this stage is what actually isolates depths. |
+| — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No | Not started. |
+| 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot | Not started. |
 
 **Acceptance criterion for the whole design (both containers):** a coercer can arm, set up his own
 trustees, collect and complete a restore in his layer, and see exactly what a working app does —
