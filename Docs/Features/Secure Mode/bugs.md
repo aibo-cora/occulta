@@ -8239,18 +8239,66 @@ pattern across 88 call sites. `push()`/`pop()` call `AES.GCM.SealedBox`/`AES.GCM
 those functions — this is a separate, previously uncounted instance of the same underlying problem, not
 one of the already-tracked 88.
 
+### Proposed fix, 2026-09-08 — designed and reviewed against actual call sites, not yet applied
+
+Simpler than first expected: `LayerStore` doesn't need BEK's two-way "open fails vs. decode fails"
+split at all, since every slot here — real or padding — is sealed under the same key with no separate
+structural-validity check. There is no legitimate case where `open` fails; it should succeed for every
+slot this store has ever written, full stop. The fix is just: stop treating an open failure as if it
+were one.
+
+`decryptedPlaintexts(using:)` changes from returning `[Data?]` (silent `nil` per slot) to
+`throws -> [Data]?` — `nil` only for "no existing file to preserve from" (a real, different, non-error
+case), and a thrown `Error.decryptionFailed` for any individual slot that fails to open once the file
+is confirmed present at the correct size:
+
+```swift
+private func decryptedPlaintexts(using key: SymmetricKey) throws -> [Data]? {
+    guard let fileData = try? self.backend.read(),
+          fileData.count == Self.slotCount * Self.slotCiphertextSize
+    else { return nil }
+    return try (0..<Self.slotCount).map { i in
+        let offset = i * Self.slotCiphertextSize
+        let cipher = fileData[offset..<(offset + Self.slotCiphertextSize)]
+        guard let box = try? AES.GCM.SealedBox(combined: cipher),
+              let plain = try? AES.GCM.open(box, using: key)
+        else { throw Error.decryptionFailed }
+        return plain
+    }
+}
+```
+
+`push()` propagates the throw and its per-slot loop drops the silent-filler fallback for a real
+failure; `pop()` gets the identical treatment inline. Neither writes anything until the whole loop
+succeeds, so a thrown error mid-loop leaves the on-disk file completely untouched — not a partial
+write.
+
+**Checked against real call sites before proposing this, not just made to compile:**
+- `Manager+Security.swift:643` (activation, `push`) — already `try`, propagates normally.
+- `Manager+Security.swift:884` (deactivation, `pop`) — already `do/catch` with an existing, sensible
+  fallback ("blob corrupted... sensitive contacts unrecoverable, safe contacts intact"). Strictly
+  better than today: a corrupt *other* slot currently gets silently destroyed with zero signal; with
+  the fix, `pop()` throws into a path that already degrades gracefully instead of losing data quietly.
+
+**Found while checking call sites — a real complication, not resolved:** `Manager+Security.swift:1720`,
+`pushDummyBlobSlot`, writes a decoy `push()` right before throwing a PIN-collision error, specifically
+so a collision produces the *same filesystem footprint as a real activation* — same anti-oracle family
+as Bug 99. It calls `push()` with `try?`, deliberately swallowing errors, because the write's own
+success has never mattered to that caller. But the fix changes what a swallowed failure now *means*: if
+some unrelated slot happens to be corrupted exactly when a PIN collision fires, the fixed `push()`
+throws before writing anything at all — the decoy write silently doesn't happen, and a collision would
+leave a different, no-write footprint versus a real activation, which always writes. Today's bug
+accidentally avoids this (it always writes *something*, even when it shouldn't). Not resolved: likely
+needs a decoy-path variant of `push` that skips other-slot integrity checking entirely, since it never
+needed to preserve anything real — genuinely separate design work, not a default to pick silently.
+
 ### Not yet done
 
-No reachability trace of how often this actually fires in practice (matching the discipline Bug 92 was
-held to before its severity was trusted). No fix proposed. The correct shape of a fix — distinguish
-"open fails" (halt, surface an error, do not silently substitute filler) from "open succeeds but the
-result isn't structurally valid content" (genuinely empty, safe) — is already worked out for the BEK
-design (`VAULT_KEY_LAYERING.md` §8 item 8) and is the natural template here too, but `LayerStore` has no
-equivalent "structurally valid content" check to fall back on, since filler and real payloads are both
-just AES-GCM-sealed arbitrary bytes at this layer — closing this properly may need more than porting
-the same fix verbatim.
+No reachability trace of how often the underlying corruption actually fires in practice (matching the
+discipline Bug 92 was held to before its severity was trusted). Fix designed and reviewed, not applied.
+The `pushDummyBlobSlot` interaction above needs its own resolution before the fix ships.
 
 ### Guard
 
-None. No test exercises a corrupted or unreadable slot during `push()`/`pop()` and asserts the real
+None yet. No test exercises a corrupted or unreadable slot during `push()`/`pop()` and asserts the real
 content survives rather than being silently replaced.
