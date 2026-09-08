@@ -184,12 +184,13 @@ final class VaultManager {
         self.drainPendingShardStatusUpdates()
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
-        // backupStaleness is refreshed by the views that display it (Vault+Tab,
-        // VaultRecoverySettings), not here. currentDepth is available in this scope
-        // now (added for Bug 93, below) — that's no longer why staleness stays external.
-        // It's left where it already is, tested and working, rather than consolidated
-        // here without a reason tied to this fix (see refreshBackupStaleness's own
-        // doc comment for why it must never be computed from the wrong depth).
+        // backupStaleness and bekErosion are both refreshed by the views that display
+        // them (Vault+Tab, VaultRecoverySettings), not here — currentDepth is available
+        // in this scope now (added for Bug 93, below), but that's no longer why they
+        // stay external. The views' onChange(of: isUnlocked) already fires right after
+        // this call sets authContext, so a call here would just be a redundant second
+        // refresh (see refreshBackupStaleness's and refreshBekErosion's own doc
+        // comments for why they must never be computed from the wrong depth).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
         self.refreshPendingRestoreState()

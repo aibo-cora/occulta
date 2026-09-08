@@ -2,10 +2,13 @@
 
 **Status:** design complete, all seven items in §8 decided. Implementation started 2026-09-08 —
 Stage 1's core is built (see §7 table): the BEK array, its codec and AAD, and the wiring into
-`fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Item 7 settled 2026-09-07 (accept the
-cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built). The duress-depth
-content-richness concern raised alongside item 7 is resolved — accepted limitation, full reasoning in
-`Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
+`fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's array-routing half is now
+also built (item 10) — every listed function takes `currentDepth` except `updateBEKShardStatus`,
+which deliberately takes none (searches all 32 slots instead, item 10). `reconstructBEK`/restore
+completion remains blocked on `RECOVERY_BUFFER_LAYERING.md`'s Stage 4 (item 9). Item 7 settled
+2026-09-07 (accept the cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built).
+The duress-depth content-richness concern raised alongside item 7 is resolved — accepted limitation,
+full reasoning in `Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
 `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
 `forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
@@ -273,7 +276,7 @@ storage, 42-byte fixed record).
 | # | Stage | Verify | Touches `RECOVERY_BUFFER_LAYERING.md`? | Status |
 |---|---|---|---|---|
 | 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08.** `BEKPayloadCodec` → `BEKSlotAAD` → `AppGroupBEKArrayBackend` (own directory, item 8) → `BEKArray` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecodedBEK`/`persistBEKPayload`, migration folded in. `RotationRegistry` checked, not just assumed — `BackupEncryptionKey` stays correctly in `notRotated` since the row and the new array file are both still sealed under the vault key, unchanged; `RotationRegistryTests` passes as-is. |
-| 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | **Split, found 2026-09-08 (item 9).** The array-routing half (`fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, plus `persistBEKPayload`/`prepareBEKShards`/`distributeBEKShards`/`rotateBEK`/`updateBEKShardStatus` not named in this row but equally in scope) is self-contained and not started yet. `reconstructBEK` specifically is blocked on `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state (its Stage 4) — cannot be finished correctly in isolation here. |
+| 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | **Split, found 2026-09-08 (item 9). Array-routing half built 2026-09-08 (item 10).** `fetchDecodedBEK`, `persistBEKPayload`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `prepareBEKShards`, `distributeBEKShards`, `rotateBEK`, `exportBackup`, `refreshBackupStaleness` all take `currentDepth: Int` with no default. `updateBEKShardStatus` deliberately does **not** — found mid-build that "whatever depth is current" cannot locate a trustee's confirmation reliably even in the ordinary case (a confirmation for depth 0's distribution can arrive while any other depth is active); it now searches all 32 slots for the attributeID instead (item 10). All UI call sites (`Vault+Tab.swift`, `Vault+ShardSetup.swift`, `VaultRecoverySettings.swift`) updated; `recomputeRecoveryHealth`'s auto-save-triggered path split so `bekErosion` — now depth-scoped — isn't computed from a depth-blind trigger (item 10). `reconstructBEK` specifically is still blocked on `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state (its Stage 4) — cannot be finished correctly in isolation here. |
 | — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No | Not started. |
 | 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot | Not started. |
 
@@ -807,6 +810,70 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
 
    **Not resolved.** Cross-container work needed before `reconstructBEK`/restore-completion can be
    built correctly. See `RECOVERY_BUFFER_LAYERING.md` for the other half.
+
+10. **Stage 2's array-routing half built 2026-09-08. `updateBEKShardStatus` deliberately takes no
+    `currentDepth` — found, while wiring it in, that "whatever depth is current" is not a reliable way
+    to find which slot owns a given trustee confirmation, even outside the async/queued case.**
+
+    Every other Stage 2 function (`fetchDecodedBEK`, `persistBEKPayload`, `setupBEK`, `currentBEK`,
+    `bekSetupState`, `bekShardMetadata`, `prepareBEKShards`, `distributeBEKShards`, `rotateBEK`,
+    `exportBackup`, `refreshBackupStaleness`) took a `currentDepth: Int` parameter with no default,
+    matching the project's established "a forgotten argument must be a compile error" convention.
+    `updateBEKShardStatus` was drafted the same way at first.
+
+    **Why that was wrong.** `updateBEKShardStatus` is reached two ways: directly, when a trustee's
+    confirmation manifest arrives while the vault is unlocked (`ShardCustody+Manager.swift`'s
+    `processInboundManifest`, via `VaultManager.updateShardStatus`'s BEK fallback); or queued as a
+    `PendingShardStatusUpdate` row and replayed by `drainPendingShardStatusUpdates()` on the next
+    `unlock()`, if the vault was locked when the confirmation arrived. The queued path obviously can't
+    use "current depth" — it wasn't unlocked at all when the update was queued. But the direct path is
+    just as unreliable: a shard gets distributed from depth 0, the owner later switches to a different
+    depth for an unrelated reason, and *then* the trustee's confirmation arrives while depth 0 is no
+    longer active. Using `currentDepth` to pick which slot to search would silently miss it in both
+    cases — not a rare edge case, just how asynchronous confirmations actually arrive.
+
+    **The fix.** Removed the parameter. `updateBEKShardStatus(attributeID:to:)` now loops over
+    `BEKSlotAAD.validRange` (all 32 slots), using `try?` to skip any slot that fails to open or doesn't
+    decode as having `shardMetadata` — both mean "not the one being searched for," not corruption.
+    Once the slot whose `shardMetadata.shards` actually contains the `attributeID` is found, the status
+    transition is applied there and `persistBEKPayload` is called with that discovered depth. This
+    needs nothing beyond the vault key already being available: `vaultKey` itself isn't depth-derived —
+    only `BEKSlotAAD`'s AAD provides per-slot binding — so trying all 32 slots costs up to 32 slot
+    reads, only on this comparatively rare, per-confirmation path, not a hot path. An `attributeID` is
+    structurally guaranteed to belong to exactly one depth's `shardMetadata` (a fresh `UUID()` per
+    shard per `prepareBEKShards` call), so the search either finds one match or none. One fix serves
+    both the immediate and the queued/deferred case — there was never a reason for two.
+
+    **A second gap found bringing the rest of the target up to date, same pass: `recomputeRecoveryHealth`
+    had to lose its `bekErosion` half too, for the identical reason.** It's called both from `unlock()`
+    (which has `currentDepth` in scope) and automatically from a `ModelContext.didSave` subscriber
+    (`Vault+Manager.swift`, no depth in scope at all — an unrelated save anywhere in the app can fire
+    it). `bekErosion`, once BEK became per-depth-slotted, needs a depth to read the right slot; defaulting
+    the auto-triggered path to any fixed depth would silently repaint the UI's erosion display for the
+    *wrong* depth on an unrelated save — e.g. surfacing the real (depth-0) BEK's erosion state while the
+    user is in a duress layer, a coercer-observable leak of exactly the kind this document's threat
+    model exists to prevent. Fixed by splitting `bekErosion` into its own `refreshBekErosion
+    (currentDepth:)`, following the precedent already set by `backupStaleness`: refreshed only by the
+    views that display it (`Vault+Tab`, `VaultRecoverySettings`, both with `Manager.Security` in scope),
+    not from any auto-triggered or depth-blind path. `recomputeRecoveryHealth` itself keeps the PEK half
+    (not depth-scoped) and stays on the auto-save trigger unchanged.
+
+    **A third, smaller consequence surfaced fixing the build: `exportBackup(currentDepth:)` now
+    genuinely requires *that* depth's own BEK to be configured, not just depth 0's — this is Stage 2
+    working as intended, not a bug, but it meant two pre-existing tests
+    (`VaultBackupRoundTripTests.exportExcludesHiddenEntries`, `.stalenessIsIsolatedPerDepth`) needed
+    their fixtures updated to set up a confirmed BEK at depth 2 before exporting at depth 2, since they
+    predate BEK becoming per-depth-slotted and previously relied on every depth sharing the one
+    device-wide BEK row.** Extracted the shared setup into `setUpConfirmedBEK(for:in:currentDepth:)` so
+    both tests (and any future one needing a second depth's BEK) call it rather than duplicating
+    `makeBackupReadyVault()`'s inline setup a third time.
+
+    Tests: `shardConfirmationAppliesToOwningDepthOnly` (`VaultBackupRoundTripTests.swift`) — sets up a
+    pending (unconfirmed) shard pair at depth 2 alongside depth 0's already-confirmed pair, confirms one
+    of depth 2's shards, and asserts depth 0's shards are untouched and depth 2's *other* shard is still
+    pending — proving the search finds the right slot and disturbs nothing else. Full BEK-related suite
+    (`BEKPayloadCodecTests`, `BEKSlotAADTests`, `BEKArrayTests`, `VaultBackupRoundTripTests`,
+    `VaultRestoreTrustTests`, `VaultRestoreRobustnessTests`, `RotationRegistryTests`) re-run clean after.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —

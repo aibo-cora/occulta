@@ -36,16 +36,18 @@ struct VaultRecoverySettings: View {
         .navigationBarTitleDisplayMode(.large)
         .scrollIndicators(.hidden)
         .onAppear {
-            // backupStaleness is depth-scoped; this view can be reached without ever
-            // visiting Vault+Tab first, so it must refresh its own copy rather than
-            // rely on that tab having already done it.
+            // backupStaleness and bekErosion are both depth-scoped; this view can be
+            // reached without ever visiting Vault+Tab first, so it must refresh its
+            // own copies rather than rely on that tab having already done it.
             if self.vault.isUnlocked {
                 self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                self.vault.refreshBekErosion(currentDepth: self.security.currentDepth)
             }
         }
         .onChange(of: self.vault.isUnlocked) { _, isUnlocked in
             if isUnlocked {
                 self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                self.vault.refreshBekErosion(currentDepth: self.security.currentDepth)
             }
         }
     }
@@ -68,7 +70,7 @@ struct VaultRecoverySettings: View {
 
     @ViewBuilder
     private var bekStatusRow: some View {
-        let state = vault.bekSetupState
+        let state = vault.bekSetupState(currentDepth: self.security.currentDepth)
         switch state {
         case .notSetup:
             statusRow(dot: .occultaDanger,

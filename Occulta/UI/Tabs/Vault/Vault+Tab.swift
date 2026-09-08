@@ -142,11 +142,12 @@ struct VaultTab: View {
                 if isUnlocked && self.postRestoreActionNeeded {
                     self.showPostRestoreSheet = true
                 }
-                // backupStaleness is depth-scoped and VaultManager has no way to know
-                // currentDepth on its own — refresh it here, where both vault and
-                // security are in scope, rather than inside unlock() itself.
+                // backupStaleness and bekErosion are both depth-scoped and VaultManager
+                // has no way to know currentDepth on its own — refresh them here, where
+                // both vault and security are in scope, rather than inside unlock() itself.
                 if isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                    self.vault.refreshBekErosion(currentDepth: self.security.currentDepth)
                 }
             }
             .onChange(of: self.postRestoreActionNeeded) { _, newValue in
@@ -159,6 +160,7 @@ struct VaultTab: View {
                 // isUnlocked transition above never fires.
                 if self.vault.isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
+                    self.vault.refreshBekErosion(currentDepth: self.security.currentDepth)
                 }
             }
         }
@@ -408,10 +410,10 @@ struct VaultTab: View {
                     NavigationLink {
                         VaultShardSetup(mode: .backup)
                     } label: {
-                        VaultBackupRow(state: self.vault.bekSetupState)
+                        VaultBackupRow(state: self.vault.bekSetupState(currentDepth: self.security.currentDepth))
                     }
                 } footer: {
-                    if self.vault.bekSetupState == .ready {
+                    if self.vault.bekSetupState(currentDepth: self.security.currentDepth) == .ready {
                         Button {
                             self.showExportEducation = true
                         } label: {

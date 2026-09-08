@@ -322,16 +322,25 @@ extension VaultManager {
         meta.shards.filter { $0.status == .pending || $0.status == .confirmed }.count
     }
 
-    /// Recompute `recoveryHealth` (PEK) and `bekErosion` (BEK) in one pass.
+    /// Recompute `recoveryHealth` (PEK health — not depth-scoped).
     ///
     /// Best-effort: silently skips entries that fail to decrypt (corrupted or
-    /// from a concurrent lock). Sets both properties to nil if the vault is locked.
+    /// from a concurrent lock). Sets the property to nil if the vault is locked.
     /// Called directly from unlock() (no save occurs there) and automatically
     /// via the ModelContext.didSave observer for all other mutations.
+    ///
+    /// Deliberately does NOT also recompute `bekErosion` — that moved to its own
+    /// `refreshBekErosion(currentDepth:)` once BEK went per-depth-slotted, because
+    /// this function's automatic didSave trigger has no depth in scope. Defaulting
+    /// that trigger to any fixed depth would silently repaint `bekErosion` for the
+    /// wrong depth on an unrelated save elsewhere in the app — e.g. exposing the
+    /// real (depth-0) BEK's erosion state while the user is in a duress layer.
+    /// `bekErosion` now follows the same precedent already set by
+    /// `backupStaleness`: refreshed only by the views that display it, which have
+    /// `Manager.Security.currentDepth` in scope.
     func recomputeRecoveryHealth() {
         guard let vaultKey = try? self.currentKey() else {
             self.recoveryHealth = nil
-            self.bekErosion     = nil
             return
         }
 
@@ -381,9 +390,24 @@ extension VaultManager {
         }
 
         self.recoveryHealth = RecoveryHealthSummary(affected: affected)
+    }
 
-        // — BEK erosion —
-        if let meta = try? self.bekShardMetadata() {
+    /// Recompute `bekErosion` for `currentDepth`'s own BEK slot.
+    ///
+    /// Split out of `recomputeRecoveryHealth()` — see that function's doc comment
+    /// for why. Not called from `unlock()` itself: the views' `onChange(of:
+    /// vault.isUnlocked)` already fires right after unlock sets `authContext`, so a
+    /// call there would just be a redundant second refresh. Called only from the
+    /// views that display it (`Vault+Tab`, `VaultRecoverySettings`), mirroring
+    /// `refreshBackupStaleness` exactly — must never be computed from any depth
+    /// other than the one actually in scope where it's read, or it becomes a
+    /// coercer-observable leak of a different depth's BEK erosion state.
+    func refreshBekErosion(currentDepth: Int) {
+        guard let vaultKey = try? self.currentKey() else {
+            self.bekErosion = nil
+            return
+        }
+        if let meta = try? self.bekShardMetadata(currentDepth: currentDepth) {
             let active = self.activeShardCount(in: meta)
             self.bekErosion = active < meta.threshold ? (active, meta.threshold) : nil
         } else {

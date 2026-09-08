@@ -19,6 +19,7 @@ struct VaultShardSetup: View {
     @Environment(VaultManager.self) private var vault
     @Environment(ShardCustodyManager.self) private var shardCustodyManager: ShardCustodyManager?
     @Environment(ContactManager.self) private var contactManager
+    @Environment(Manager.Security.self) private var security
     @Environment(\.dismiss) private var dismiss
 
     @Query private var vaultEntries: [VaultEntry]
@@ -537,7 +538,7 @@ struct VaultShardSetup: View {
             return try? self.vault.shardDistributionMetadata(for: id)
         case .backup:
             _ = self.bekRows
-            return try? self.vault.bekShardMetadata()
+            return try? self.vault.bekShardMetadata(currentDepth: self.security.currentDepth)
         }
     }
 
@@ -550,7 +551,7 @@ struct VaultShardSetup: View {
     /// - New entry (no distribution): seed selectedIDs from the global trustee config
     ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
-        if case .backup = self.mode { try? self.vault.setupBEK() }
+        if case .backup = self.mode { try? self.vault.setupBEK(currentDepth: self.security.currentDepth) }
 
         if let meta = self.fetchDistributionMeta() {
             let activeIDs = Set(meta.shards
@@ -626,7 +627,10 @@ struct VaultShardSetup: View {
     private func performPrepareShards(k: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
         switch self.mode {
         case .entry(let id): return try self.vault.prepareShards(for: id, threshold: k, recipients: recipients)
-        case .backup:        return try self.vault.prepareBEKShards(threshold: k, recipients: recipients)
+        case .backup:
+            return try self.vault.prepareBEKShards(
+                threshold: k, recipients: recipients, currentDepth: self.security.currentDepth
+            )
         }
     }
 

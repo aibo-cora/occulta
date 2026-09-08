@@ -103,11 +103,22 @@ extension VaultManager {
 
     // MARK: - BEK setup
 
-    /// Generate and persist a new BEK if one does not already exist. No-op if present.
-    func setupBEK() throws {
+    /// Generate and persist a new BEK at `currentDepth`'s slot, if that depth
+    /// does not already have one. No-op if present at that depth.
+    ///
+    /// Checks `fetchDecodedBEK` rather than the legacy row's raw presence —
+    /// Stage 2 correction: the row-presence check only ever answered "has this
+    /// *device* been through legacy setup," which stopped being the right
+    /// question once each depth manages its own BEK. `fetchDecodedBEK` still
+    /// migrates the legacy row first (unconditionally, into slot 0) before
+    /// checking `currentDepth`'s own slot, so a downgraded build's "row exists"
+    /// no-op is unaffected — that check lives in the *old* binary's code, not
+    /// this one, and doesn't change because this function's logic does.
+    func setupBEK(currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
-        let existing = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
-        guard existing.isEmpty else { return }
+        guard try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth) == nil else {
+            return
+        }
 
         var bekBytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, 32, &bekBytes) == errSecSuccess else {
@@ -121,16 +132,17 @@ extension VaultManager {
                 distributionID: UUID(),
                 shardMetadata: nil
             ),
-            vaultKey: vaultKey
+            vaultKey: vaultKey,
+            currentDepth: currentDepth
         )
     }
 
     // MARK: - BEK access
 
-    /// Return the current BEK as a SymmetricKey. Vault must be unlocked.
-    func currentBEK() throws -> SymmetricKey {
+    /// Return `currentDepth`'s BEK as a SymmetricKey. Vault must be unlocked.
+    func currentBEK(currentDepth: Int) throws -> SymmetricKey {
         let vaultKey = try self.currentKey()
-        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {
+        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth) else {
             throw BackupError.bekNotSetup
         }
         return decoded.bek
@@ -144,20 +156,25 @@ extension VaultManager {
         case ready
     }
 
-    /// Current BEK distribution state. Returns `.notSetup` when locked or BEK absent.
-    var bekSetupState: BEKSetupState {
-        guard let meta = try? self.bekShardMetadata() else { return .notSetup }
+    /// `currentDepth`'s BEK distribution state. Returns `.notSetup` when locked
+    /// or that depth's BEK is absent.
+    ///
+    /// A function now, not a computed `var` — Stage 2 needs a depth parameter,
+    /// and a `var` can't take one. Every call site changes syntax accordingly.
+    func bekSetupState(currentDepth: Int) -> BEKSetupState {
+        guard let meta = try? self.bekShardMetadata(currentDepth: currentDepth) else { return .notSetup }
         let confirmed = meta.shards.filter { $0.status == .confirmed }.count
         return confirmed >= meta.threshold
             ? .ready
             : .waitingForConfirmations(confirmed: confirmed, threshold: meta.threshold)
     }
 
-    /// BEK shard distribution metadata, or `nil` if BEK has not been distributed yet.
-    func bekShardMetadata() throws -> ShardDistributionMetadata? {
+    /// `currentDepth`'s BEK shard distribution metadata, or `nil` if that
+    /// depth's BEK has not been distributed yet.
+    func bekShardMetadata(currentDepth: Int) throws -> ShardDistributionMetadata? {
         let vaultKey = try self.currentKey()
-        
-        return try self.fetchDecodedBEK(vaultKey: vaultKey)?.payload.shardMetadata
+
+        return try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth)?.payload.shardMetadata
     }
 
     // MARK: - Export
@@ -176,7 +193,7 @@ extension VaultManager {
     func exportBackup(currentDepth: Int) throws -> Data {
         let vaultKey = try self.currentKey()
 
-        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {
+        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth) else {
             throw BackupError.bekNotSetup
         }
 
@@ -273,7 +290,7 @@ extension VaultManager {
     func importBackup(_ data: Data, currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
 
-        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {
+        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth) else {
             throw BackupError.bekNotSetup
         }
 
@@ -365,10 +382,12 @@ extension VaultManager {
     /// Parallel to `prepareShards` for per-entry PEKs. Returns one SignedAttribute
     /// per recipient in the same order as `recipients`. The caller feeds these into
     /// `distributeBEKShards` or the .occ basket pipeline.
-    func prepareBEKShards(threshold: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
+    func prepareBEKShards(
+        threshold: Int, recipients: [Contact.Profile], currentDepth: Int
+    ) throws -> [SignedAttribute] {
         let vaultKey = try self.currentKey()
 
-        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else {
+        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth) else {
             throw BackupError.bekNotSetup
         }
 
@@ -431,7 +450,8 @@ extension VaultManager {
                 distributionID: distributionID,
                 shardMetadata: ShardDistributionMetadata(threshold: threshold, shards: shards)
             ),
-            vaultKey: vaultKey
+            vaultKey: vaultKey,
+            currentDepth: currentDepth
         )
 
         return attributes
@@ -444,21 +464,24 @@ extension VaultManager {
     func distributeBEKShards(
         threshold:      Int,
         recipients:     [Contact.Profile],
-        contactManager: ContactManager
+        contactManager: ContactManager,
+        currentDepth:   Int
     ) throws -> [(contactIdentifier: String, occData: Data)] {
         let vaultKey = try self.currentKey()
 
         // Capture existing attrIDs before re-split: existing trustees get .replace,
         // new trustees get .distribute.
         let oldAttrIDs: [String: UUID]
-        if let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey),
+        if let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth),
            let meta    = decoded.payload.shardMetadata {
             oldAttrIDs = Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attributeID) })
         } else {
             oldAttrIDs = [:]
         }
 
-        let attributes = try self.prepareBEKShards(threshold: threshold, recipients: recipients)
+        let attributes = try self.prepareBEKShards(
+            threshold: threshold, recipients: recipients, currentDepth: currentDepth
+        )
 
         return try zip(recipients, attributes).map { contact, attribute in
             let oldID = oldAttrIDs[contact.identifier]
@@ -496,7 +519,10 @@ extension VaultManager {
     ) throws {
         let vaultKey = try self.currentKey()
 
-        guard try self.fetchDecodedBEK(vaultKey: vaultKey) == nil else {
+        // Hardcoded currentDepth: 0 — see the note on persistBEKPayload's call
+        // near the end of this function; reconstructBEK stays pinned to depth 0
+        // until RECOVERY_BUFFER_LAYERING.md's per-depth restore state exists.
+        guard try self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: 0) == nil else {
             throw BackupError.bekAlreadyPresent
         }
 
@@ -530,25 +556,33 @@ extension VaultManager {
             throw BackupError.bekReconstructionFailed
         }
 
+        // Hardcoded currentDepth: 0, not threaded from a caller — deliberate.
+        // reconstructBEK stays pinned to depth 0 (§8 item 9): restore-completion
+        // can't be routed correctly until RECOVERY_BUFFER_LAYERING.md's own
+        // per-depth restore state exists. attemptBEKRestore's own `currentDepth
+        // == 0` guard is what makes this always true in practice; this literal
+        // makes it true by construction too, not just by the caller happening
+        // to get it right.
         try self.persistBEKPayload(
             BackupEncryptionKey.Payload(
                 bekBytes:      bekData,
                 distributionID: distributionID,
                 shardMetadata: nil
             ),
-            vaultKey: vaultKey
+            vaultKey: vaultKey,
+            currentDepth: 0
         )
     }
 
     // MARK: - BEK rotation
 
-    /// Generate a fresh BEK and replace the existing BackupEncryptionKey row.
+    /// Generate a fresh BEK and replace `currentDepth`'s BackupEncryptionKey slot.
     ///
-    /// All existing BEK shard distribution is invalidated (new distributionID).
-    /// The caller must revoke old BEK shards and call distributeBEKShards to
-    /// restore coverage. Any backup file sealed under the old BEK remains
-    /// decryptable until overwritten — warn the user.
-    func rotateBEK() throws {
+    /// All existing BEK shard distribution at that depth is invalidated (new
+    /// distributionID). The caller must revoke old BEK shards and call
+    /// distributeBEKShards to restore coverage. Any backup file sealed under the
+    /// old BEK remains decryptable until overwritten — warn the user.
+    func rotateBEK(currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
 
         var newBEKBytes = [UInt8](repeating: 0, count: 32)
@@ -563,37 +597,60 @@ extension VaultManager {
                 distributionID: UUID(),
                 shardMetadata: nil
             ),
-            vaultKey: vaultKey
+            vaultKey: vaultKey,
+            currentDepth: currentDepth
         )
     }
 
     // MARK: - BEK shard status
 
-    /// Update the status of one BEK ShardRecord identified by `attributeID`.
+    /// Update the status of one BEK ShardRecord identified by `attributeID`, in
+    /// whichever depth's own shard metadata actually contains it.
     ///
     /// Called from `updateShardStatus(attributeID:)` as a fallback when no
     /// per-entry shard row matches. BEK and per-entry shards share the same
     /// attrID namespace; the caller need not know which kind a given attrID is.
+    ///
+    /// **Deliberately does not take a `currentDepth` parameter — found 2026-09-08
+    /// that "whatever depth is current" is not a reliable way to find where an
+    /// attrID lives, even in the ordinary, non-adversarial case.** A trustee's
+    /// confirmation arrives whenever they respond, independent of which depth
+    /// the owner happens to have active at that moment — distribute from depth
+    /// 0, switch depths for an unrelated reason, and a depth-0 confirmation
+    /// arriving while depth 2 is current would silently fail to apply if this
+    /// only checked `currentDepth`'s own slot. Searches all 32 instead — costs
+    /// up to 32 slot reads, only on this relatively rare, async confirmation
+    /// path, not a hot path. A slot that fails to open here is skipped, not
+    /// fatal to the search — the attrID being sought may live in a different,
+    /// perfectly healthy slot; `persistBEKPayload`'s own full-array reseal is
+    /// still what refuses to silently paper over real corruption once a match
+    /// is found and this actually writes (item 8's fix, unaffected by this).
     func updateBEKShardStatus(attributeID: UUID, to newStatus: ShardStatus) throws {
         let vaultKey = try self.currentKey()
-        guard let decoded = try self.fetchDecodedBEK(vaultKey: vaultKey) else { return }
-        guard var meta = decoded.payload.shardMetadata else { return }
-        guard let idx  = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { return }
+        let array = VaultManager.BEKArray(backend: self.bekArrayBackend)
 
-        // Reject illegal state machine transitions — prevents inbound traffic from
-        // un-revoking a BEK shard or moving confirmed back to pending.
-        guard ShardStatus.isValidTransition(from: meta.shards[idx].status, to: newStatus) else { return }
+        for depth in BEKSlotAAD.validRange {
+            guard let payload = try? array.read(slotIndex: depth, vaultKey: vaultKey) else { continue }
+            guard var meta = payload.shardMetadata else { continue }
+            guard let idx = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { continue }
 
-        meta.shards[idx].status = newStatus
+            // Reject illegal state machine transitions — prevents inbound traffic
+            // from un-revoking a BEK shard or moving confirmed back to pending.
+            guard ShardStatus.isValidTransition(from: meta.shards[idx].status, to: newStatus) else { return }
 
-        try self.persistBEKPayload(
-            BackupEncryptionKey.Payload(
-                bekBytes:      decoded.payload.bekBytes,
-                distributionID: decoded.payload.distributionID,
-                shardMetadata: meta
-            ),
-            vaultKey: vaultKey
-        )
+            meta.shards[idx].status = newStatus
+
+            try self.persistBEKPayload(
+                BackupEncryptionKey.Payload(
+                    bekBytes:      payload.bekBytes,
+                    distributionID: payload.distributionID,
+                    shardMetadata: meta
+                ),
+                vaultKey: vaultKey,
+                currentDepth: depth
+            )
+            return
+        }
     }
 
     // MARK: - Backup-excluded writes
@@ -713,8 +770,10 @@ extension VaultManager {
     func storePendingRestore(_ data: Data) throws {
         guard data.prefix(4) == Self.backupMagic else { throw BackupError.invalidFormat }
 
+        // currentDepth: 0 — this whole mechanism is pinned to depth 0 (doc
+        // comment above: "only ever set at depth 0").
         let vaultKey       = try? self.currentKey()
-        let alreadyHasBEK  = vaultKey.flatMap { try? self.fetchDecodedBEK(vaultKey: $0) } != nil
+        let alreadyHasBEK  = vaultKey.flatMap { try? self.fetchDecodedBEK(vaultKey: $0, currentDepth: 0) } != nil
         guard !alreadyHasBEK else { throw BackupError.alreadyProcessed }
 
         guard !FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path) else {
@@ -752,7 +811,7 @@ extension VaultManager {
         guard currentDepth == 0 else { return }
 
         if let vaultKey = try? self.currentKey(),
-           (try? self.fetchDecodedBEK(vaultKey: vaultKey)) != nil {
+           (try? self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth)) != nil {
             self.clearBEKRestoreShards()
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
@@ -1250,7 +1309,7 @@ extension VaultManager {
             return
         }
 
-        let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey)
+        let decoded = try? self.fetchDecodedBEK(vaultKey: vaultKey, currentDepth: currentDepth)
 
         let bekRotated        = decoded.map { $0.payload.distributionID != meta.distributionID } ?? false
         let currentEntryCount = (try? self.entriesVisible(atDepth: currentDepth).count) ?? 0
@@ -1316,32 +1375,44 @@ extension VaultManager {
         let bek:     SymmetricKey
     }
 
-    /// Fetch and decrypt slot 0 of the BEK array. Returns nil if nothing is set
-    /// up anywhere yet (neither slot 0 nor an un-migrated legacy row).
+    /// Fetch and decrypt `currentDepth`'s slot of the BEK array. Returns nil if
+    /// nothing is set up at that depth (and, transitively, neither slot 0 nor an
+    /// un-migrated legacy row, since migration always runs first).
     ///
-    /// Slot 0, not a depth-routed slot — Stage 2 (routing BEK access by depth)
-    /// hasn't landed, so this deliberately preserves today's "one device-wide
-    /// BEK" behavior for now; Stage 1 alone doesn't close Bug 105, Stage 2 does.
-    private func fetchDecodedBEK(vaultKey: SymmetricKey) throws -> DecodedBEK? {
+    /// No default for `currentDepth` — a forgotten argument must be a compile
+    /// error, not a silent leak of one depth's BEK into whichever call site
+    /// forgot to pass it (same discipline as `exportBackup(currentDepth:)`).
+    ///
+    /// Stage 2 (§8 item 9): the array-routing half. `reconstructBEK` and the
+    /// restore path deliberately do not call this with a caller-supplied depth —
+    /// they hardcode `currentDepth: 0`, since restore-completion stays pinned to
+    /// depth 0 until `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state
+    /// exists to route it correctly instead.
+    private func fetchDecodedBEK(vaultKey: SymmetricKey, currentDepth: Int) throws -> DecodedBEK? {
         try self.migrateLegacyBEKIfNeeded(vaultKey: vaultKey)
-        guard let payload = try VaultManager.BEKArray(backend: self.bekArrayBackend).read(slotIndex: 0, vaultKey: vaultKey) else {
+        guard let payload = try VaultManager.BEKArray(backend: self.bekArrayBackend)
+            .read(slotIndex: currentDepth, vaultKey: vaultKey)
+        else {
             return nil
         }
         return DecodedBEK(payload: payload, bek: SymmetricKey(data: payload.bekBytes))
     }
 
-    /// Writes `payload` into slot 0 of the BEK array.
+    /// Writes `payload` into `currentDepth`'s slot of the BEK array.
     ///
     /// Migrates first — not just on the read path — so a caller that writes
     /// without reading first (`rotateBEK`, which doesn't call `fetchDecodedBEK`)
-    /// can't bypass migration and leave the legacy row un-tombstoned. Migrating
-    /// then immediately overwriting with the new payload is correct either way:
-    /// rotation already discards `shardMetadata`/`distributionID` regardless of
-    /// migration timing, so nothing is lost by migrating first — the legacy row
-    /// just gets tombstoned as a side effect instead of lingering.
-    private func persistBEKPayload(_ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey) throws {
+    /// can't bypass migration and leave the legacy row un-tombstoned. Migration
+    /// itself is always slot 0 regardless of `currentDepth` here — migrating
+    /// then writing the new payload into `currentDepth`'s own slot is correct
+    /// either way, since migration only ever moves the legacy row into slot 0,
+    /// never into whatever depth this write happens to target.
+    private func persistBEKPayload(
+        _ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, currentDepth: Int
+    ) throws {
         try self.migrateLegacyBEKIfNeeded(vaultKey: vaultKey)
-        try VaultManager.BEKArray(backend: self.bekArrayBackend).write(payload, slotIndex: 0, vaultKey: vaultKey)
+        try VaultManager.BEKArray(backend: self.bekArrayBackend)
+            .write(payload, slotIndex: currentDepth, vaultKey: vaultKey)
     }
 
     // MARK: - Legacy migration (Stage 1 — §9)

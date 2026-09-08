@@ -79,7 +79,7 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
         modelContainer: container, keyManager: TestKeyManager(), bekArrayBackend: InMemoryBEKArrayBackend()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
-    try vault.setupBEK()
+    try vault.setupBEK(currentDepth: 0)
 
     let recipients = (0..<2).map { _ -> Contact.Profile in
         // A real UUID string, not a "trustee-N" label — BEKPayloadCodec's fixed-width
@@ -94,7 +94,7 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     }
     try container.mainContext.save()
 
-    let shards = try vault.prepareBEKShards(threshold: 2, recipients: recipients)
+    let shards = try vault.prepareBEKShards(threshold: 2, recipients: recipients, currentDepth: 0)
     for shard in shards {
         try vault.updateBEKShardStatus(attributeID: shard.id, to: .confirmed)
     }
@@ -115,10 +115,14 @@ private func makeFreshVault() throws -> (vault: VaultManager, container: ModelCo
     return (vault, container)
 }
 
+/// Reads `currentDepth: 0` unconditionally — `reconstructBEK` still only ever writes
+/// depth 0's slot (item 9, deferred until `RECOVERY_BUFFER_LAYERING.md`'s Stage 4), so
+/// depth 0 is where every test in this suite's BEK actually lives regardless of which
+/// depth `attemptBEKRestore` was called with.
 @MainActor
 private func bekBytes(of vault: VaultManager) throws -> Data {
     var bytes = Data()
-    try vault.currentBEK().withUnsafeBytes { bytes = Data($0) }
+    try vault.currentBEK(currentDepth: 0).withUnsafeBytes { bytes = Data($0) }
     return bytes
 }
 
@@ -234,7 +238,7 @@ struct VaultRestoreTrustTests {
 
         // The replacement device: vault set up, backup never configured, so no BEK row.
         let fresh = try makeFreshVault()
-        #expect((try? fresh.vault.currentBEK()) == nil, "a fresh device must start with no BEK")
+        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, "a fresh device must start with no BEK")
 
         try fresh.vault.reconstructBEK(shards: owner.shards, backupData: backup, ownerIdentity: nil)
         #expect(try bekBytes(of: fresh.vault) == ownerBEK,
@@ -394,7 +398,7 @@ struct VaultRestoreDepthGatingTests {
 
         fresh.vault.attemptBEKRestore(currentDepth: 0)
 
-        #expect((try? fresh.vault.currentBEK()) != nil, "the BEK must be installed at depth 0")
+        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) != nil, "the BEK must be installed at depth 0")
         #expect(!fresh.vault.pendingRestoreActive, "a completed restore must clear the flag")
     }
 
@@ -415,7 +419,7 @@ struct VaultRestoreDepthGatingTests {
 
         fresh.vault.attemptBEKRestore(currentDepth: 2)
 
-        #expect((try? fresh.vault.currentBEK()) == nil, """
+        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, """
             The restore completed while the caller reported a duress depth — a recovered \
             real-layer vault was just filed into whichever layer the coercer happened to \
             be looking at.
@@ -438,10 +442,10 @@ struct VaultRestoreDepthGatingTests {
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
         fresh.vault.attemptBEKRestore(currentDepth: 3)
-        #expect((try? fresh.vault.currentBEK()) == nil, "must not complete above depth 0")
+        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, "must not complete above depth 0")
 
         fresh.vault.attemptBEKRestore(currentDepth: 0)
-        #expect((try? fresh.vault.currentBEK()) != nil, """
+        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) != nil, """
             Shards collected while at a duress depth must not be lost — the deferred \
             restore must complete on the next depth-0 attempt using the same shards.
             """)
@@ -502,7 +506,7 @@ struct VaultRestoreDepthGatingTests {
 
         fresh.vault.attemptBEKRestore(currentDepth: 2)
 
-        #expect((try? fresh.vault.currentBEK()) == nil, """
+        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, """
             Deferral is the half of Bug 93 that stays. A full shard set at a duress depth must \
             not install the BEK — showing the banner there is only safe because completion \
             still cannot happen.
@@ -523,7 +527,7 @@ struct VaultRestoreRobustnessTests {
     private func sealedBackup(_ backup: VaultManager.VaultBackup,
                               under vault: VaultManager) throws -> Data {
         let json   = try JSONEncoder().encode(backup)
-        let sealed = try AES.GCM.seal(json, using: try vault.currentBEK(),
+        let sealed = try AES.GCM.seal(json, using: try vault.currentBEK(currentDepth: 0),
                                       nonce: AES.GCM.Nonce(), authenticating: backupFileAAD)
         var out = Data("OCBK".utf8)
         out.append(sealed.combined!)

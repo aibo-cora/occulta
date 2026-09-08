@@ -79,7 +79,17 @@ private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
         modelContainer: container, keyManager: TestKeyManager(), bekArrayBackend: InMemoryBEKArrayBackend()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
-    try vault.setupBEK()
+    try setUpConfirmedBEK(for: vault, in: container, currentDepth: 0)
+    return (vault, container)
+}
+
+/// Set up a BEK and confirm enough shards to clear `exportBackup`'s threshold check, at
+/// `currentDepth`'s own slot. Stage 2 (`VAULT_KEY_LAYERING.md`) made each depth's BEK
+/// independent — `exportBackup(currentDepth:)` reads whichever depth it's exporting *at*,
+/// so a depth other than 0 needs its own call to this, not just depth 0's.
+@MainActor
+private func setUpConfirmedBEK(for vault: VaultManager, in container: ModelContainer, currentDepth: Int) throws {
+    try vault.setupBEK(currentDepth: currentDepth)
 
     let recipients = (0..<2).map { _ -> Contact.Profile in
         // A real UUID string, not a "trustee-N" label — BEKPayloadCodec's fixed-width
@@ -94,11 +104,10 @@ private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
     }
     try container.mainContext.save()
 
-    let attributes = try vault.prepareBEKShards(threshold: 2, recipients: recipients)
+    let attributes = try vault.prepareBEKShards(threshold: 2, recipients: recipients, currentDepth: currentDepth)
     for attribute in attributes {
         try vault.updateBEKShardStatus(attributeID: attribute.id, to: .confirmed)
     }
-    return (vault, container)
 }
 
 @MainActor
@@ -169,6 +178,11 @@ struct VaultBackupRoundTripTests {
                                         type: .note, currentDepth: 0)
         #expect(hidden.visibleThroughDepth != nil, "addEntry always stamps a ceiling")
 
+        // Depth 2 needs its own confirmed BEK before it can export — Stage 2 made each
+        // depth's BEK independent, so depth 0's setup in makeBackupReadyVault() doesn't
+        // cover depth 2.
+        try setUpConfirmedBEK(for: vault, in: container, currentDepth: 2)
+
         // Export taken under coercion, from the duress depth — not the real one.
         let backup = try vault.exportBackup(currentDepth: 2)
 
@@ -226,10 +240,15 @@ struct VaultBackupRoundTripTests {
     @Test("Staleness for one depth is never derived from another depth's export or entries",
           .enabled(if: secureEnclaveAvailable()))
     func stalenessIsIsolatedPerDepth() throws {
-        let (vault, _) = try makeBackupReadyVault()
+        let (vault, container) = try makeBackupReadyVault()
 
         _ = try vault.addEntry(label: "real",  content: Data("real".utf8),  type: .note, currentDepth: 0)
         _ = try vault.addEntry(label: "decoy", content: Data("decoy".utf8), type: .note, currentDepth: 2)
+
+        // Depth 2 needs its own confirmed BEK before it can export — Stage 2 made each
+        // depth's BEK independent, so depth 0's setup in makeBackupReadyVault() doesn't
+        // cover depth 2.
+        try setUpConfirmedBEK(for: vault, in: container, currentDepth: 2)
 
         _ = try vault.exportBackup(currentDepth: 0)
         _ = try vault.exportBackup(currentDepth: 2)
@@ -289,5 +308,45 @@ struct VaultBackupRoundTripTests {
         _ = try vault.exportBackup(currentDepth: 0)
         vault.refreshBackupStaleness(currentDepth: 0)
         #expect(vault.backupStaleness == nil, "a fresh export must read back cleanly under the new format")
+    }
+
+    // MARK: - Shard status routing (VAULT_KEY_LAYERING.md §8, updateBEKShardStatus)
+
+    /// `updateBEKShardStatus` takes no `currentDepth` — it searches all 32 slots for
+    /// whichever one's `shardMetadata` actually contains the `attributeID`, because a
+    /// trustee's confirmation is not guaranteed to arrive while the depth it was
+    /// distributed from happens to be the active one. This test proves the search finds
+    /// the right slot and touches nothing else: confirming one of depth 2's shards must
+    /// not disturb depth 0's already-confirmed shards, and must not confirm depth 2's
+    /// *other* shard either.
+    @Test("A shard confirmation is applied to whichever depth's slot actually owns the attributeID",
+          .enabled(if: secureEnclaveAvailable()))
+    func shardConfirmationAppliesToOwningDepthOnly() throws {
+        let (vault, container) = try makeBackupReadyVault() // depth 0: both shards pre-confirmed
+
+        // Depth 2 gets its own BEK with shards left pending (not auto-confirmed).
+        try vault.setupBEK(currentDepth: 2)
+        let recipients = (0..<2).map { _ -> Contact.Profile in
+            let p = Contact.Profile(
+                identifier: UUID().uuidString, givenName: "", familyName: "", middleName: "",
+                nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+            )
+            container.mainContext.insert(p)
+            return p
+        }
+        try container.mainContext.save()
+        let depth2Shards = try vault.prepareBEKShards(threshold: 2, recipients: recipients, currentDepth: 2)
+
+        try vault.updateBEKShardStatus(attributeID: depth2Shards[0].id, to: .confirmed)
+
+        let depth0Meta = try vault.bekShardMetadata(currentDepth: 0)
+        #expect(depth0Meta?.shards.allSatisfy { $0.status == .confirmed } == true,
+                "depth 0's shards, confirmed before depth 2 even existed, must be untouched")
+
+        let depth2Meta = try vault.bekShardMetadata(currentDepth: 2)
+        #expect(depth2Meta?.shards.first { $0.attributeID == depth2Shards[0].id }?.status == .confirmed,
+                "the targeted shard must be confirmed")
+        #expect(depth2Meta?.shards.first { $0.attributeID == depth2Shards[1].id }?.status == .pending,
+                "the other depth-2 shard must be left alone")
     }
 }
