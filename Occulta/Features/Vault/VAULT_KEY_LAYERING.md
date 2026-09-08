@@ -695,9 +695,15 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    function is written today. **Item 5's "disambiguated by which key opens it" was never actually
    implemented** — the real selection logic needs rewriting to try each candidate file against the
    caller's own key/AAD and use whichever succeeds, which means touching existing, shipped production
-   code (the contact blob's own backend), not just adding a new one alongside it. Not yet fixed —
-   blocks building the shared-pool part of the new backend as designed; the backend can still be built
-   using its own directory in the meantime, deferring the merge.
+   code (the contact blob's own backend), not just adding a new one alongside it.
+
+   **Decided 2026-09-08: the BEK array uses its own directory for now, not the shared `"blobs"`
+   directory.** Keeps the fix surgical — new file, no touching shipped contact-blob code in the same
+   change — at a real, accepted cost: a second directory reintroduces a milder version of the exact
+   signal item 5 was built to eliminate (an examiner sees two purpose-differentiated directories
+   instead of one, even if neither name says what it holds). This is explicitly interim, not a revised
+   architecture — item 5's shared-pool decision is unchanged; `findFile()`'s fix and the directory merge
+   are deferred, separate work, not abandoned.
 
    **Migration carries forward pre-existing Bug 105 poisoning, if any, with no way to detect it.** If a
    device was coerced into distributing shares of the real BEK (Bug 105) *before* ever updating to this
