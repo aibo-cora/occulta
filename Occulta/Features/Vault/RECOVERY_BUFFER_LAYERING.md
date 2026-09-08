@@ -76,6 +76,17 @@ before then — see §6's anti-pairings.
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
 container's collected shares and writes the reconstructed BEK into the other one's slot.
 
+**Stage 4 found to be a hard dependency, not just adjacent, 2026-09-08 — see `VAULT_KEY_LAYERING.md`
+§8 item 9.** Working out that document's own Stage 2, `reconstructBEK` turned out to need
+depth-routing (completing in whichever depth's own trustees supplied the shares, not pinned to depth
+0 — the acceptance criterion in that doc's §7 already requires this: a coercer completing a restore
+"in his layer" is supposed to work, not fail identically forever, which is its own oracle). That
+depth-routed completion has nothing to read from until this container's arming/shard-buffer state is
+actually per-depth instead of the single, device-wide file it is today
+(`backup-import-cache.occbak`, `refreshPendingRestoreState`/`storePendingRestore`). So Stage 4 here
+isn't just "the sibling half of the same feature" — it's a precondition for finishing
+`reconstructBEK` correctly over there.
+
 **Testing and migration requirement, every stage — settled 2026-09-07, same rule as the sibling doc.**
 A stage isn't done once it builds. It's done once (a) tests cover the behavior in its `Verify` column,
 and (b) if the stage touches existing on-device data (§8's in-flight-restore adoption, any future

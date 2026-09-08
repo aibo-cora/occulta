@@ -273,7 +273,7 @@ storage, 42-byte fixed record).
 | # | Stage | Verify | Touches `RECOVERY_BUFFER_LAYERING.md`? | Status |
 |---|---|---|---|---|
 | 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08.** `BEKPayloadCodec` → `BEKSlotAAD` → `AppGroupBEKArrayBackend` (own directory, item 8) → `BEKArray` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecodedBEK`/`persistBEKPayload`, migration folded in. `RotationRegistry` checked, not just assumed — `BackupEncryptionKey` stays correctly in `notRotated` since the row and the new array file are both still sealed under the vault key, unchanged; `RotationRegistryTests` passes as-is. |
-| 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | Not started. Stage 1 alone still doesn't close Bug 105 — everything currently routes through slot 0 regardless of depth, matching today's behavior; this stage is what actually isolates depths. |
+| 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | **Split, found 2026-09-08 (item 9).** The array-routing half (`fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, plus `persistBEKPayload`/`prepareBEKShards`/`distributeBEKShards`/`rotateBEK`/`updateBEKShardStatus` not named in this row but equally in scope) is self-contained and not started yet. `reconstructBEK` specifically is blocked on `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state (its Stage 4) — cannot be finished correctly in isolation here. |
 | — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No | Not started. |
 | 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot | Not started. |
 
@@ -750,6 +750,63 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    0, and `data.subdata(in:)`, which doesn't) — harmless today given real callers always pass
    freshly-decrypted `Data`, but latent, and worth closing before the backend starts slicing real file
    contents. Both fixed by slicing consistently from the already-rebased array.
+
+9. **Stage 2 design correction, found 2026-09-08: `reconstructBEK` must be depth-routed, not pinned to
+   depth 0 — my own first proposal for this got it backwards, and it's blocked on
+   `RECOVERY_BUFFER_LAYERING.md`'s own not-yet-built work, not just on this document.**
+
+   **The mistake.** Scoping Stage 2, `reconstructBEK` was proposed to keep completing only at depth 0,
+   with an internal precondition enforcing it — carrying forward Bug 93's existing
+   `attemptBEKRestore` guard (`currentDepth == 0`) as if it were still correct once every depth has its
+   own independent BEK. It directly contradicts this document's own acceptance criterion, stated above
+   in §7: *"a coercer can arm, set up his own trustees, collect and complete a restore in his layer...
+   because it is a working app in that layer, not a simulation of one."* Restore pinned to depth 0
+   means a coercer's own duress-depth restore can never complete, no matter what he does.
+
+   **Why that's a real, sharper oracle than the one Bug 93 already closed.** Bug 93's fix defends
+   against a *comparative* oracle — depth 0 looking different from a duress depth to someone who can
+   observe both, or who knows the app's design. It does not defend against a coercer who supplies his
+   *own* trustees, sends threshold-many shares back to himself from phones he controls, and watches
+   nothing happen. He needs no comparison to depth 0 for this to be informative — he has independent,
+   self-verified ground truth (he knows exactly what he sent), and "nothing completes, ever, no matter
+   what" directly contradicts the app's own stated mechanism (threshold shares reconstruct the key).
+   This is Bug 99's exact pattern: *"a coercer who supplies his own trustees can test whether the phone
+   is in duress, because a restore completes in one layer and not the other."*
+
+   **Why "depth 0 only" was correct before Stage 2 and wrong after.** Pre-refactor there is exactly one
+   device-wide BEK — letting restore complete anywhere risks exposing the real vault at a duress depth
+   (Bug 93 harm 2). Once each depth has its own independent BEK, own trustees, own slot, a coercer's
+   restore-to-himself reconstructs *that depth's own* key and recovers *that depth's own*
+   already-visible content — nothing left to protect by blocking it. The old rule solved a problem
+   Stage 2 itself removes; keeping it stops solving anything and starts creating the oracle above.
+
+   **The actual blocker, found checking `refreshPendingRestoreState`/`storePendingRestore`: they and
+   the files they read are single, device-wide artifacts, not slotted per depth at all.**
+   `storePendingRestore` refuses a second file with `alreadyProcessed` if *any* restore is pending,
+   checked against one shared file (`backup-import-cache.occbak`) regardless of depth — there is no
+   "depth 0's pending restore" versus "depth 2's own," only one, device-wide. A depth-routed
+   `reconstructBEK` has nothing per-depth to read arming/shard-buffer state from yet. That work belongs
+   to `RECOVERY_BUFFER_LAYERING.md`, not here — its own Stage 4 ("per-depth restore state: arming,
+   sealed backup contents, shard buffer, per-depth cancel") is exactly this, and its Stage 5
+   ("completion per layer") is the explicit join point that reads collected shares from that container
+   and writes the reconstructed BEK into this one's slot. Neither has started. So: this container's own
+   Stage 2 (routing the BEK array itself by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`,
+   `bekShardMetadata`, `prepareBEKShards`, `distributeBEKShards`, `rotateBEK`, `updateBEKShardStatus`)
+   is unaffected by this and can proceed independently; the `reconstructBEK`/restore-completion piece
+   specifically cannot be finished correctly until the sibling document's per-depth restore state
+   exists.
+
+   **A correction to my own understanding, found in the same pass, not a new decision:** Bug 93's
+   original "hide pending-restore state above depth 0" has already been reversed in shipped code —
+   `refreshPendingRestoreState`'s own doc comment states it plainly: *"Publishing the same state at
+   every depth removes the comparison... Hiding was closing a duress-against-duress gap and opening a
+   duress-against-real one."* I was reasoning from `bugs.md`'s original Bug 93 writeup instead of
+   checking the current code first, and stated the old, already-superseded behavior as if it were
+   current. The completion guard (`currentDepth == 0`) is the only piece of the original fix still in
+   place — and per this item, that piece needs to change too, not stay as precedent.
+
+   **Not resolved.** Cross-container work needed before `reconstructBEK`/restore-completion can be
+   built correctly. See `RECOVERY_BUFFER_LAYERING.md` for the other half.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
