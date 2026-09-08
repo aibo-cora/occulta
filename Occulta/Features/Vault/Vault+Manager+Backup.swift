@@ -1312,40 +1312,100 @@ extension VaultManager {
     // MARK: - Private helpers
 
     private struct DecodedBEK {
-        let row:     BackupEncryptionKey
         let payload: BackupEncryptionKey.Payload
         let bek:     SymmetricKey
     }
 
-    /// Fetch and decrypt the BackupEncryptionKey row. Returns nil if no row exists.
+    /// Fetch and decrypt slot 0 of the BEK array. Returns nil if nothing is set
+    /// up anywhere yet (neither slot 0 nor an un-migrated legacy row).
+    ///
+    /// Slot 0, not a depth-routed slot — Stage 2 (routing BEK access by depth)
+    /// hasn't landed, so this deliberately preserves today's "one device-wide
+    /// BEK" behavior for now; Stage 1 alone doesn't close Bug 105, Stage 2 does.
     private func fetchDecodedBEK(vaultKey: SymmetricKey) throws -> DecodedBEK? {
+        try self.migrateLegacyBEKIfNeeded(vaultKey: vaultKey)
+        guard let payload = try VaultManager.BEKArray(backend: self.bekArrayBackend).read(slotIndex: 0, vaultKey: vaultKey) else {
+            return nil
+        }
+        return DecodedBEK(payload: payload, bek: SymmetricKey(data: payload.bekBytes))
+    }
+
+    /// Writes `payload` into slot 0 of the BEK array.
+    ///
+    /// Migrates first — not just on the read path — so a caller that writes
+    /// without reading first (`rotateBEK`, which doesn't call `fetchDecodedBEK`)
+    /// can't bypass migration and leave the legacy row un-tombstoned. Migrating
+    /// then immediately overwriting with the new payload is correct either way:
+    /// rotation already discards `shardMetadata`/`distributionID` regardless of
+    /// migration timing, so nothing is lost by migrating first — the legacy row
+    /// just gets tombstoned as a side effect instead of lingering.
+    private func persistBEKPayload(_ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey) throws {
+        try self.migrateLegacyBEKIfNeeded(vaultKey: vaultKey)
+        try VaultManager.BEKArray(backend: self.bekArrayBackend).write(payload, slotIndex: 0, vaultKey: vaultKey)
+    }
+
+    // MARK: - Legacy migration (Stage 1 — §9)
+
+    /// Moves the legacy device-wide `BackupEncryptionKey` row into slot 0 and
+    /// tombstones it, if one still exists and hasn't been migrated yet.
+    /// Idempotent — once slot 0 has real content, this returns immediately
+    /// without touching SwiftData at all, so it's cheap to call from both the
+    /// read and write paths on every call rather than threading a "have we
+    /// migrated yet" flag through the whole file.
+    ///
+    /// Runs at first vault unlock after update, at any depth — deliberately,
+    /// not gated to depth 0 (`VAULT_KEY_LAYERING.md` §9): the legacy row is
+    /// device-wide and depth-agnostic until this assigns it to slot 0, and
+    /// Stage 1 defers item 4's depth-derived key, so `vaultKey` works at any
+    /// depth. Gating to depth-0-only would leave Bug 105's window open
+    /// indefinitely for a session mostly running at a duress depth.
+    ///
+    /// Write-before-tombstone, deliberately: if this crashes between the two
+    /// steps, slot 0 already has the real BEK (safe) and the legacy row is
+    /// merely left un-tombstoned rather than the reverse ordering, which could
+    /// tombstone real data before it's safely relocated.
+    private func migrateLegacyBEKIfNeeded(vaultKey: SymmetricKey) throws {
+        guard try VaultManager.BEKArray(backend: self.bekArrayBackend).read(slotIndex: 0, vaultKey: vaultKey) == nil else {
+            return
+        }
+        guard let legacyPayload = try self.fetchLegacyBEKPayload(vaultKey: vaultKey) else {
+            return
+        }
+        try VaultManager.BEKArray(backend: self.bekArrayBackend).write(legacyPayload, slotIndex: 0, vaultKey: vaultKey)
+        try self.tombstoneLegacyBEKRow()
+    }
+
+    /// Reads and decodes the legacy row exactly as `fetchDecodedBEK` used to,
+    /// before this container existed. `nil` covers both "no row ever existed"
+    /// and "row exists but is already tombstoned" identically — a tombstoned
+    /// row's `encryptedPayload` is unstructured random bytes of the same
+    /// length, so it fails to open under any key, the same as no row at all.
+    ///
+    /// A decode failure *after* a successful open is not treated the same way
+    /// — open succeeding under the correct key and AAD means this is genuine,
+    /// un-tombstoned legacy content; a decode failure past that point is a real
+    /// anomaly and is surfaced, not silently treated as "nothing to migrate."
+    private func fetchLegacyBEKPayload(vaultKey: SymmetricKey) throws -> BackupEncryptionKey.Payload? {
         guard let row = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>()).first else {
             return nil
         }
-        let box       = try AES.GCM.SealedBox(combined: row.encryptedPayload)
-        let plaintext: Data
-        do {
-            plaintext = try AES.GCM.open(box, using: vaultKey, authenticating: row.aad())
-        } catch {
-            throw VaultError.decryptionFailed
+        guard let box = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+              let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: row.aad())
+        else {
+            return nil
         }
-        let payload = try JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext)
-        return DecodedBEK(row: row, payload: payload, bek: SymmetricKey(data: payload.bekBytes))
+        return try JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext)
     }
 
-    /// Delete-and-replace the BackupEncryptionKey row with a freshly sealed payload.
-    /// Every write generates a new row id, keeping the AAD contract simple.
-    private func persistBEKPayload(_ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey) throws {
-        let payloadData = try JSONEncoder().encode(payload)
-        let rowID       = UUID()
-        let aad         = rowID.uuidString.data(using: .utf8)!
-        let sealed      = try AES.GCM.seal(payloadData, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: aad)
-        guard let combined = sealed.combined else { throw BackupError.encryptionFailed }
-
-        let existing = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
-        for row in existing { self.modelContext.delete(row) }
-
-        self.modelContext.insert(BackupEncryptionKey(id: rowID, encryptedPayload: combined))
+    /// Overwrites the legacy row's `encryptedPayload` with same-length random
+    /// filler. Never deletes the row — deleting it is itself a tell, and a
+    /// downgraded build needs the row present to fail closed at `setupBEK`,
+    /// `currentBEK`, and `reconstructBEK` (§9).
+    private func tombstoneLegacyBEKRow() throws {
+        guard let row = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>()).first else {
+            return
+        }
+        row.encryptedPayload = Data.randomBytes(row.encryptedPayload.count)
         try self.modelContext.save()
     }
 }

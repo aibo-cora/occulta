@@ -75,13 +75,18 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
-    let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+    let vault = VaultManager(
+        modelContainer: container, keyManager: TestKeyManager(), bekArrayBackend: InMemoryBEKArrayBackend()
+    )
     vault.unlock(context: LAContext(), currentDepth: 0)
     try vault.setupBEK()
 
-    let recipients = (0..<2).map { i -> Contact.Profile in
+    let recipients = (0..<2).map { _ -> Contact.Profile in
+        // A real UUID string, not a "trustee-N" label — BEKPayloadCodec's fixed-width
+        // wire format stores contactIdentifier as raw UUID bytes (item 3), and the
+        // field's own doc comment already documents it as "a stable SwiftData UUID."
         let p = Contact.Profile(
-            identifier: "trustee-\(i)", givenName: "", familyName: "", middleName: "",
+            identifier: UUID().uuidString, givenName: "", familyName: "", middleName: "",
             nickname: "", organizationName: "", departmentName: "", jobTitle: ""
         )
         container.mainContext.insert(p)
@@ -103,7 +108,9 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
 private func makeFreshVault() throws -> (vault: VaultManager, container: ModelContainer) {
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
-    let vault = VaultManager(modelContainer: container, keyManager: TestKeyManager())
+    let vault = VaultManager(
+        modelContainer: container, keyManager: TestKeyManager(), bekArrayBackend: InMemoryBEKArrayBackend()
+    )
     vault.unlock(context: LAContext(), currentDepth: 0)
     return (vault, container)
 }

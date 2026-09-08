@@ -36,6 +36,13 @@ final class VaultManager {
 
     let keyManager: any KeyManagerProtocol
 
+    /// Backend for the 32-slot BEK array (`BEKArray`). Injected the same way
+    /// `keyManager` is — tests use `InMemoryBEKArrayBackend` so BEK state
+    /// doesn't leak across test runs via the real app-group container's
+    /// persistent file, the same class of isolation problem `keyManager`'s
+    /// injection already solves for Secure Enclave key material.
+    let bekArrayBackend: any BEKArrayBackend
+
     // MARK: - Auth context
 
     /// Evaluated LAContext from the most recent unlock(context:) call.
@@ -112,11 +119,13 @@ final class VaultManager {
     init(
         modelContainer: ModelContainer,
         keyManager: any KeyManagerProtocol = Manager.Key(),
+        bekArrayBackend: any BEKArrayBackend = AppGroupBEKArrayBackend(),
         inactivityTimeout: TimeInterval = 5 * 60
     ) {
         self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer    = modelContainer
         self.keyManager        = keyManager
+        self.bekArrayBackend   = bekArrayBackend
         self.inactivityTimeout = inactivityTimeout
 
         // ── Lock triggers (conditions 1–3) ───────────────────────────────────

@@ -40,6 +40,16 @@ struct BEKArrayTests {
         #expect(read?.distributionID == payload.distributionID)
     }
 
+    @Test("Reading a slot when the array has never been written at all returns nil, not a throw")
+    func readOnCompletelyEmptyBackendReturnsNil() throws {
+        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let key = SymmetricKey(size: .bits256)
+
+        let read = try array.read(slotIndex: 0, vaultKey: key)
+
+        #expect(read == nil)
+    }
+
     @Test("An untouched slot reads as nil — genuinely empty, not an error")
     func untouchedSlotReadsAsNil() throws {
         let array = Array_(backend: InMemoryBEKArrayBackend())

@@ -60,11 +60,18 @@ extension VaultManager {
 
         /// `nil` means genuinely empty (the slot opened correctly but didn't
         /// decode as a real `Payload` — filler). Throws for anything that means
-        /// something is actually wrong.
+        /// something is actually wrong. The array not existing yet at all is
+        /// also `nil`, not an error — same "first creation" case `write()`
+        /// already treats as legitimate.
         func read(slotIndex: Int, vaultKey: SymmetricKey) throws -> BackupEncryptionKey.Payload? {
             precondition(BEKSlotAAD.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
 
-            let fileData = try self.backend.read()
+            let fileData: Data
+            do {
+                fileData = try self.backend.read()
+            } catch BEKArrayBackendError.notFound {
+                return nil
+            }
             guard fileData.count == Self.fileSize else { throw Error.fileSizeMismatch }
 
             var bytes = [UInt8](fileData)
