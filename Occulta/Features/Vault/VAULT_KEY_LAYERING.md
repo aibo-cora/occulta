@@ -1007,16 +1007,18 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     more often than sensitive contacts, so the exposure window is proportionally worse here than where
     the gap was actually found.
 
-    **Fifth step designed, not built; its co-requisite is built and tested — 2026-09-09, same day.**
-    `plan.md`'s "What Design B requires" list, item 4 has the full finding, item 5 has the fifth step:
-    reuse `push()` itself on every mutation to `inMemorySensitiveContacts`, reusing the depth's
-    on-record `slotIndex`/`sequenceNumber` rather than regenerating either — regenerating the sequence
-    number would silently break every later `pop()` at deactivation, caught before proposing it. That
-    step itself is designed, not built. The co-requisite it surfaced — step 2's own non-destructive
-    read, `readPayload`, ran neither of `pop()`'s integrity checks despite being commented
-    test/diagnostic-only — **is fixed**: `readPayload` now validates `sequenceNumber` and `slotIndex`
-    exactly as `pop()` does, non-destructively, covered by `LayerStoreReadPayloadTests.swift`. Neither
-    S5 nor S8 is safe to build until the step 5 mechanism itself lands too. Cross-referenced from
+    **Fifth step's mechanism built, its co-requisite built — neither wired to a caller — 2026-09-09,
+    same day.** `plan.md`'s "What Design B requires" list, item 4 has the full finding, item 5 has the
+    fifth step: `resyncSensitiveContactsBlob()` reuses `push()` itself, called on every mutation to
+    `inMemorySensitiveContacts`, reusing the depth's on-record `slotIndex`/`sequenceNumber` rather than
+    regenerating either — regenerating the sequence number would silently break every later `pop()` at
+    deactivation, caught before proposing it. Built in `Manager+Security.swift`, but
+    `inMemorySensitiveContacts` has no writer yet, since Design B's steps 1, 3, and 4 (shell the DB,
+    load on unlock, populate from edits) don't exist — nothing calls this function yet. The co-requisite
+    it surfaced — step 2's own non-destructive read, `readPayload`, ran neither of `pop()`'s integrity
+    checks despite being commented test/diagnostic-only — is fixed and tested:
+    `LayerStoreReadPayloadTests.swift`. Neither S5 nor S8 is safe to build until steps 1, 3, and 4 land
+    too. Cross-referenced from
     `forensic-trace-avoidance.md` S5 too, and filed as `bugs.md` Bug 108.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build

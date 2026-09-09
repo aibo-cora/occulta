@@ -415,7 +415,15 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 
    **Co-requisite this surfaces, fixed 2026-09-09: step 2 didn't have a sanctioned production read.** Step 2 needs a *repeatable, non-destructive* load on every unlock, but `pop()` is destructive — it erases the touched slot and reseals the rest — and the only non-destructive alternative, `readPayload(key:slotIndex:)` (`SecureMode+LayerStore.swift:244`), was explicitly commented *"Use for diagnostics and tests. Production code should use pop()."* Checked its actual body before promoting it, not just its comment: `readPayload` called `decodeSlot` directly, which only decrypts and JSON-decodes — neither of `pop()`'s two integrity checks (`sequenceNumber`, `slotIndex`) ran. Promoting it as-is would have silently accepted a stale blob from an older activation cycle, exactly what those checks exist to catch at deactivation. **Fixed:** `readPayload` now takes a required `expectedSequenceNumber` and runs both checks, throwing the same `Error.sequenceNumberMismatch`/`Error.slotIndexMismatch` cases `pop()` already defines — validated, non-destructive, the same shape minus the erasure. One call site (a test helper in `SecureModeActivationTests.swift`) updated; four new tests in `LayerStoreReadPayloadTests.swift` pin the round trip, both rejection paths, and repeatability across multiple reads. `LayerPayload.sequenceNumber`'s doc comment was also wrong — said "strictly increasing," actually a fresh random value per activation (`LayerStore.md`'s own "Sequence numbers" section confirms it deliberately isn't incrementing) — corrected in passing.
 
-   **Not yet implemented.** Designed, not built — same status as items 1 and 3-4 above.
+   **The mechanism itself is built, 2026-09-09 — `resyncSensitiveContactsBlob()` and
+   `inMemorySensitiveContacts`, `Manager+Security.swift`, right before "Emergency recovery."
+   Not wired to anything yet, and not independently meaningfully testable yet** —
+   `inMemorySensitiveContacts` is `private(set)` with no writer, since steps 1-4 (which would
+   populate it) aren't built, so there's no real content to push in a test beyond an empty
+   array. Added `SecurityError.blobMetadataMissing` for the "no slot/sequence number on
+   record" branches, replacing the `invalidStateTransition` misfit flagged when this was
+   first designed. Blocked on steps 1, 3, and 4 above before it has a caller or a meaningful
+   test.
 
 - [x] **[bug]** Fix `isVisible(_:atDepth:)` fallback: `visibleThroughDepth` non-nil + decrypt failure → `return false`. Defense-in-depth — should not trigger in normal operation under Design A since all contacts are re-encrypted at activation and remain readable.
 - [x] **[security]** `pinCollision` during activation silently dismissed — dedicated `catch Manager.Security.SecurityError.pinCollision` arm in `SummaryView` calls `onDone()` (same as `invalidStateTransition`), removing the binary oracle signal. A dummy blob slot (`pushDummyBlobSlot`) is written on collision to match the filesystem footprint of a real activation — same ciphertext size as a real blob slot write. Contact DB and `AppLayerConfig` are unmodified. (Bug 62, Gap 1 applied)

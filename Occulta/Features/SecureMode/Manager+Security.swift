@@ -1171,6 +1171,52 @@ extension Manager {
             self.resetCounters()
         }
 
+        // MARK: - Design B: mid-session blob resync (Bug 108, plan.md "What Design B requires" item 5)
+
+        /// The in-memory canonical copy of sensitive contacts under Design B — populated
+        /// from the blob on unlock (step 2), wiped on lock (step 3).
+        ///
+        /// **Not yet wired to anything.** Steps 1–4 of Design B (shelling the DB at
+        /// activation, loading this array on unlock, wiping it on lock, merging it with
+        /// the DB for the contact list view) are not built — this array has no writer and
+        /// no reader yet. `resyncSensitiveContactsBlob()` below is step 5, ready for
+        /// whichever call site eventually mutates this array to call into.
+        private(set) var inMemorySensitiveContacts: [LayerContact] = []
+
+        /// Resyncs the blob from the current in-memory state. Must be called synchronously
+        /// as part of the same operation that mutates `inMemorySensitiveContacts` — add,
+        /// edit, delete, or a reclassification into/out of this array — before the caller
+        /// reports the mutation as saved. An edit that only lives in memory is lost the
+        /// moment the process backgrounds or is killed (Bug 108); this is what prevents
+        /// that.
+        ///
+        /// Reuses the depth's on-record `slotIndex`/`sequenceNumber` rather than
+        /// regenerating either — regenerating the sequence number would silently break
+        /// every later `pop()` at deactivation, since `pop()` validates against whatever
+        /// `AppLayerConfig` recorded once at activation, not "whatever was written most
+        /// recently."
+        func resyncSensitiveContactsBlob() throws {
+            let config = try self.requireConfig()
+            guard let seKey    = try self.keyManager.deriveSecureModeKey(),
+                  let layerKey = self.layerStore.deriveKey(from: seKey)
+            else { throw SecurityError.keyDerivationFailed }
+
+            let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
+            guard let slotIndex = config.readBlobSlot(at: self.currentDepth, using: blobKey) else {
+                throw SecurityError.blobMetadataMissing
+            }
+            guard let sequenceNumber = config.readSequenceNumber(at: self.currentDepth, using: blobKey) else {
+                throw SecurityError.blobMetadataMissing
+            }
+
+            let payload = LayerPayload(
+                sequenceNumber: sequenceNumber,
+                slotIndex:      slotIndex,
+                contacts:       self.inMemorySensitiveContacts
+            )
+            try self.layerStore.push(payload, key: layerKey, slotIndex: slotIndex)
+        }
+
         // MARK: - Emergency recovery
 
         /// Clears Secure Mode state without performing a key rotation or re-encryption.
@@ -1769,6 +1815,12 @@ extension Manager.Security {
         case incorrectPIN
         case invalidStateTransition
         case pinCollision
+        /// `AppLayerConfig` has no blob slot or sequence number recorded for the depth
+        /// this operation needs — distinct from `invalidStateTransition`, which is about
+        /// an illegal state-machine step, not missing metadata a prior step should have
+        /// already written. Should be unreachable in practice: whatever loaded content
+        /// into memory for this depth already read the same metadata successfully.
+        case blobMetadataMissing
     }
 }
 

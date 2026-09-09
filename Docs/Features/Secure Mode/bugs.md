@@ -8310,9 +8310,9 @@ a dead shell
 built.** Filed 2026-09-09 as a design gap, found before Design B is built rather than after, while
 checking whether `VAULT_KEY_LAYERING.md`'s S8 could safely reuse Design B's four named steps as-is for
 vault entries. It couldn't, because the four steps have this hole regardless of which content they're
-applied to. **The missing fifth step is designed, same day — see *Not yet done* below — but not built.
-Its co-requisite (a validated non-destructive read for step 2) is now built and tested; the step 5
-resync mechanism itself is not.**
+applied to. **The missing fifth step's mechanism is built, same day — see *Not yet done* below — but
+not wired to anything, since the steps that would populate `inMemorySensitiveContacts` (1, 3, 4) don't
+exist yet. Its co-requisite (a validated non-destructive read for step 2) is built and tested too.**
 
 **Target:** unset. Blocks Design B (`forensic-trace-avoidance.md` S5) and, downstream, S8
 (`VAULT_KEY_LAYERING.md` item 12) — neither should be built against the four steps as currently
@@ -8377,9 +8377,17 @@ non-destructive read, `readPayload(key:slotIndex:)`, was commented "for diagnost
 and — checked directly, not just its comment — ran neither of `pop()`'s integrity checks, so promoting
 it as-is would have silently accepted a stale blob. **That co-requisite is now fixed** (2026-09-09):
 `readPayload` takes a required `expectedSequenceNumber` and runs both `pop()` checks non-destructively;
-`LayerStoreReadPayloadTests.swift` covers the round trip and both rejection paths. The step 5 mechanism
-itself — resync `inMemorySensitiveContacts` via `push()` on every mutation — remains designed, not
-built. Blocks Design B and, by extension, S8 (item 12) from being safely built as currently specified.
+`LayerStoreReadPayloadTests.swift` covers the round trip and both rejection paths.
+
+**The step 5 mechanism itself is built, same day — `resyncSensitiveContactsBlob()` and
+`inMemorySensitiveContacts`, `Manager+Security.swift`.** Added `SecurityError.blobMetadataMissing`
+for the "no slot/sequence number on record" branches — the original design reused
+`invalidStateTransition`, flagged as a poor fit (a state-machine error for a missing-metadata
+condition) and fixed before writing this in. **Not wired to anything, and not independently
+meaningfully testable yet:** `inMemorySensitiveContacts` is `private(set)` with no writer, since steps
+1, 3, and 4 (which would shell the DB, load the array on unlock, and populate it from edits) don't
+exist. Blocks Design B and, by extension, S8 (item 12) from being safely built as currently specified —
+steps 1, 3, and 4 are what's left.
 
 ### Guard
 
