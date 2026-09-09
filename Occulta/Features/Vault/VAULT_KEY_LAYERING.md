@@ -1,18 +1,22 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** BEK design complete; vault-entries (S8) key/reseal design resolved 2026-09-09 (item 11)
-but its own AAD field-type gap is open, not yet designed. §8 now has eleven items — items 4 and 6 are
-both superseded (by item 7 and item 11 respectively), preserved for the record, not live decisions.
-Implementation started 2026-09-08 — Stage 1's core is built (see §7 table): the BEK array, its codec
-and AAD, and the wiring into `fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's
-array-routing half is now also built (item 10) — every listed function takes `currentDepth` except
-`updateBEKShardStatus`, which deliberately takes none (searches all 32 slots instead, item 10).
-`reconstructBEK`/restore completion remains blocked on `RECOVERY_BUFFER_LAYERING.md`'s Stage 4 (item
-9). Item 7 settled 2026-09-07 (accept the cross-depth-reach risk; item 4's live-slot `slotKey`
-superseded, not built) — item 11 (2026-09-09) found item 6's `entriesSlotKey` structurally
-incompatible with that same full-array reseal and extended item 7's resolution to the vault-entries
-field. The duress-depth content-richness concern raised alongside item 7 is resolved — accepted
-limitation, full reasoning in `Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
+**Status:** BEK design complete; vault-entries (S8) key/array design resolved 2026-09-09 (item 11,
+revised same day) — own array, own AAD, own codec, none of it extending or touching the BEK chain.
+§8 now has twelve items — items 4 and 6 are superseded (by item 7 and item 11 respectively), preserved
+for the record, not live decisions; §5's original one-array packaging is likewise superseded by item
+11, preserved there too. Item 12 (2026-09-09) found contacts' Design B — which S8 is meant to reuse —
+has no described mechanism for persisting a mid-session edit once its DB row is a dead shell; tracked
+primarily in `plan.md`, cross-referenced here since S8 inherits it directly. Implementation started
+2026-09-08 — Stage 1's core is built (see §7 table): the BEK array, its codec and AAD, and the wiring
+into `fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's array-routing half is
+now also built (item 10) — every listed function takes `currentDepth` except `updateBEKShardStatus`,
+which deliberately takes none (searches all 32 slots instead, item 10). `reconstructBEK`/restore
+completion remains blocked on `RECOVERY_BUFFER_LAYERING.md`'s Stage 4 (item 9). Item 7 settled
+2026-09-07 (accept the cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built) —
+item 11 (2026-09-09) found item 6's `entriesSlotKey` structurally incompatible with that same
+full-array reseal, then, later the same day, found the one-array packaging itself wasn't the right
+answer either. The duress-depth content-richness concern raised alongside item 7 is resolved —
+accepted limitation, full reasoning in `Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
 `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
 `forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
@@ -138,21 +142,30 @@ yet" while the raw DB holds N rows — is real regardless of how the legal quest
 
 ## 5. Target design
 
-**One fixed-width array of fixed-count slots, one slot per depth**, sealed under the vault key. Each
-slot carries, as separately sealed fields:
+**BEK: one fixed-width array of fixed-count slots, one slot per depth**, sealed under the vault key.
+
+**Vault entries, if built, get their own equivalent array, not a shared slot in this one — reopened by
+item 11, 2026-09-09.** The table below described one array with two separately-sealed fields per slot;
+that's superseded. Preserved for the record, not the current design:
 
 | Field | Notes |
 |---|---|
 | BEK record | `bekBytes`, `distributionID`, `shardMetadata` — capped and padded, see §8 |
-| Sensitive vault entries (if built) | canonical copy; DB rows become unreadable shells |
+| ~~Sensitive vault entries (if built)~~ | ~~canonical copy; DB rows become unreadable shells~~ — see item 11 |
 
-**Two record types don't force two containers.** Preserving a sealed field never requires its own key —
-one array is fewer artifacts to pad, clean up, and explain than one per feature.
+DB rows becoming unreadable shells and the canonical copy living off-DB both still hold — only the
+"one array, two fields" packaging is what item 11 reopened.
+
+**Two record types don't force two containers — nor do they require one, once item 11 weighed the
+actual costs on each side.** The rest of this paragraph is the original, one-container reasoning,
+preserved for the record: preserving a sealed field never requires its own key — one array is fewer
+artifacts to pad, clean up, and explain than one per feature.
 
 **Every sealed field's AAD must bind its slot index.** Without it, lifting slot 2's ciphertext into
-slot 0 moves a duress layer's BEK — or vault entries — into the real one. **Binding slot index alone
-is not sufficient once a slot holds two fields under one key — it must bind field type too, or the BEK
-and vault-entries ciphertexts within the same slot are swappable with each other. See item 11.**
+slot 0 moves a duress layer's BEK — or vault entries — into the real one. **With BEK and vault entries
+in separate arrays (item 11), slot-index binding alone is sufficient within each array — but the two
+arrays' AAD domain strings must differ from each other too, or a slot-N ciphertext from one array
+would authenticate if pasted into the other array's slot N under the same `vaultKey`. See item 11.**
 
 **Concrete design, built 2026-09-07: `BEKSlotAAD`, in `Vault+Manager+Backup.swift`.** 20-byte domain
 separator (`"occulta-bek-slot-v1"`) plus a 1-byte slot index — checked against this codebase's other
@@ -283,7 +296,7 @@ storage, 42-byte fixed record).
 |---|---|---|---|---|
 | 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08.** `BEKPayloadCodec` → `BEKSlotAAD` → `AppGroupBEKArrayBackend` (own directory, item 8) → `BEKArray` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecodedBEK`/`persistBEKPayload`, migration folded in. `RotationRegistry` checked, not just assumed — `BackupEncryptionKey` stays correctly in `notRotated` since the row and the new array file are both still sealed under the vault key, unchanged; `RotationRegistryTests` passes as-is. |
 | 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | **Split, found 2026-09-08 (item 9). Array-routing half built 2026-09-08 (item 10).** `fetchDecodedBEK`, `persistBEKPayload`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `prepareBEKShards`, `distributeBEKShards`, `rotateBEK`, `exportBackup`, `refreshBackupStaleness` all take `currentDepth: Int` with no default. `updateBEKShardStatus` deliberately does **not** — found mid-build that "whatever depth is current" cannot locate a trustee's confirmation reliably even in the ordinary case (a confirmation for depth 0's distribution can arrive while any other depth is active); it now searches all 32 slots for the attributeID instead (item 10). All UI call sites (`Vault+Tab.swift`, `Vault+ShardSetup.swift`, `VaultRecoverySettings.swift`) updated; `recomputeRecoveryHealth`'s auto-save-triggered path split so `bekErosion` — now depth-scoped — isn't computed from a depth-blind trigger (item 10). `reconstructBEK` specifically is still blocked on `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state (its Stage 4) — cannot be finished correctly in isolation here. |
-| — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No | Not started. Key/reseal design for the vault-entries field resolved 2026-09-09 (item 11) — plain `vaultKey`, full-array reseal on every entry write, own AAD field-type binding needed alongside `BEKSlotAAD`. Slot format, growth mechanism, and migration sizing settled in item 2. Still needs: S5 (contacts' Design B) built first per the candidates decision below; the `BEKArray`/`BEKPayloadCodec`/`AppGroupBEKArrayBackend` chain extended to carry a second sealed field per slot, not a new sibling container; `entriesSlotKey`'s in-memory-cache mechanism is now moot (item 11) so no per-depth key cache to build; UI-level count/size enforcement (item 2). |
+| — | Vault entries: contacts' Design B first (§8 candidates), then this container's own equivalent array | see §8 | No | Not started. Key/array design resolved 2026-09-09 (item 11, revised same day) — own array (`VaultEntriesArray`, provisional), own AAD (`VaultEntriesSlotAAD`, provisional), own codec (`VaultEntriesPayloadCodec`, provisional), sealed under plain `vaultKey` — `BEKArray`/`BEKPayloadCodec`/`BEKSlotAAD`/`AppGroupBEKArrayBackend` are all reused as reference shape, not extended or touched. Slot format, growth mechanism, and migration sizing settled in item 2. Still needs: S5 (contacts' Design B) built first per the candidates decision below, including item 12's found gap (no mechanism to persist a mid-session edit — plan.md item 4); `entriesSlotKey`'s in-memory-cache mechanism is moot (item 11) so no per-depth key cache to build; the backend's hardcoded directory constant made configurable for a second file; UI-level count/size enforcement (item 2). |
 | 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot | Not started. |
 
 **Acceptance criterion for the whole design (both containers):** a coercer can arm, set up his own
@@ -887,54 +900,116 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     (`BEKPayloadCodecTests`, `BEKSlotAADTests`, `BEKArrayTests`, `VaultBackupRoundTripTests`,
     `VaultRestoreTrustTests`, `VaultRestoreRobustnessTests`, `RotationRegistryTests`) re-run clean after.
 
-11. **Item 6 and item 7 are mutually exclusive, not just in tension — found and resolved 2026-09-09.
-    `entriesSlotKey` is dropped; vault entries get item 7's exact posture instead: plain `vaultKey`,
-    full-array reseal, code-discipline-only separation.**
+11. **Item 6 and item 7 are mutually exclusive, not just in tension — found 2026-09-09. `entriesSlotKey`
+    is dropped; vault entries get item 7's exact key posture instead: plain `vaultKey`, full-array
+    reseal, code-discipline-only separation. Revised the same day, before anything was built against
+    it: §5's "one array, two fields per slot" is reopened too — vault entries get their own array, not
+    a shared slot with BEK.**
 
-    **Why they can't both hold — the same structural proof item 7 already gave for `slotKey`, one day
-    earlier, for a different field.** `entriesSlotKey(depth)` needs that depth's own PIN to derive. A
-    session at depth 2 holds only depth 2's PIN — never depth 0's, by the same design that made item 4's
-    `slotKey` attractive in the first place. Item 7's full-array reseal requires opening and re-sealing
-    *every* slot's plaintext on every write, which requires holding every depth's key. A depth-2 session
-    can never compute `entriesSlotKey(0)`, so it can never reseal depth 0's vault-entries field under a
-    fresh nonce. Item 6 proposed `entriesSlotKey` using the identical fold-the-PIN-into-`info` shape as
-    item 4's `slotKey`, decided 2026-09-06 — one day before item 7 found that exact shape incompatible
-    with full-array reseal for the BEK field. Item 6 was never revisited against it.
+    **Why `entriesSlotKey` and full-array reseal can't both hold — the same structural proof item 7
+    already gave for `slotKey`, one day earlier, for a different field.** `entriesSlotKey(depth)` needs
+    that depth's own PIN to derive. A session at depth 2 holds only depth 2's PIN — never depth 0's, by
+    the same design that made item 4's `slotKey` attractive in the first place. Item 7's full-array
+    reseal requires opening and re-sealing *every* slot's plaintext on every write, which requires
+    holding every depth's key. A depth-2 session can never compute `entriesSlotKey(0)`, so it can never
+    reseal depth 0's vault-entries field under a fresh nonce. Item 6 proposed `entriesSlotKey` using the
+    identical fold-the-PIN-into-`info` shape as item 4's `slotKey`, decided 2026-09-06 — one day before
+    item 7 found that exact shape incompatible with full-array reseal for the BEK field. Item 6 was
+    never revisited against it. **This part stands: plain `vaultKey`, no per-depth key, no per-depth
+    cache to build.**
 
-    **Resolution: apply item 7's answer to the vault-entries field too, not item 6's.** Seal it under
-    plain `vaultKey` — the same key that already opens the BEK field, already derived once at biometric
-    unlock, no PIN-folding, no per-depth key. This also removes item 6's own "derive once at PIN
-    verification, cache the derived key for the session" mechanism outright — there is no separate key
-    left to cache, so no new per-depth caching infrastructure is needed at all. Reseal all 32 slots'
-    vault-entries field with fresh nonces on every entry write (add/edit/delete), the identical shape
-    already shipped for `Manager.LayerStore`'s push/pop (`SecureMode+LayerStore.swift`) — checked against
-    the actual code, not assumed: `LayerStore` already reseals 32 × 32KB ≈ 1MB on every single contact
-    reclassification, today, in production. Vault entries start smaller (44KB/depth × 32 ≈ 1.4MB total,
-    item 2) and grow with the +32 mechanism — the same order of magnitude, the same already-accepted cost
-    category `Manager.LayerStore` established, not a new one this decision introduces.
+    **What didn't hold up: the first attempt at fitting vault entries into §5's one-array design.**
+    Two shapes were tried, in order, both before any code existed against either:
 
-    **The case for this is stronger here than for the BEK field, not just consistent with it.** Item 6's
-    own text calls vault entries "the most sensitive content in the app." Keeping a live-slot key for
-    them isn't a tradeoff to weigh against full resealing, the way item 7 weighed it for BEK — it is the
-    identical mathematical impossibility item 7 already proved, just not noticed until this item.
+    - *Two independently-sealed fields per slot* (the original version of this item) — scope the reseal
+      to just the touched field, leaving BEK's ciphertext untouched on an entries-only write. This needs
+      the two ciphertexts to be unswappable, which `BEKSlotAAD`'s existing slot-index-only AAD doesn't
+      provide once two fields share one slot — a real, then-uncovered gap, closed only by adding a new
+      field-type AAD binding.
+    - *One combined seal per slot* — no new AAD needed at all (one AEAD tag authenticates the whole
+      slot atomically, nothing to swap out of it), but any write to either field now reseals both,
+      and `BEKPayloadCodec` would either have to grow vault-entries fields into a type whose entire
+      name and identity is the Backup Encryption Key's wire format, or a new wrapper codec would have
+      to compose it with a second, new codec — real new code either way.
 
-    **Scope the reseal to the vault-entries field only, not the BEK field too.** The two fields are
-    independently sealed under the same `vaultKey`; there is no security reason to touch the BEK field's
-    ciphertext when only a vault entry changed. A diff between two snapshots after an entry-only write
-    shows all 32 entry sub-fields changed (uninformative about depth — the point) and all 32 BEK
-    sub-fields untouched (reveals only "an entry operation happened, not a BEK operation"). That is
-    outside item 7's stated threat model, which hides *which depth is active*, not *what kind of
-    operation ran* — item 7 never claimed the latter, and this item doesn't extend it to claim it either.
+    **Then a sharper question dissolved most of the reason to combine them at all.** Full-array reseal
+    already hides *which depth* changed, identically, whether the touched field lives in one file or
+    two — an examiner diffing two snapshots of two independently-resealed files sees the same "31
+    identical, one different" pattern in each, uninformative about depth either way; nothing about that
+    property requires the two fields to share a slot. What one array *did* still buy over two was
+    hiding *that a BEK operation happened rather than an entries operation* (or vice versa) from an
+    examiner comparing the two files' mtimes — but this item's own reasoning already ruled that outside
+    item 7's threat model (hides depth, not operation kind) before the AAD gap was ever found. Once
+    that's granted, two independently-resealed arrays lose nothing item 7 or this item actually
+    requires.
 
-    **A real, previously uncovered gap this surfaces: `BEKSlotAAD` binds slot index but not field type.**
-    Once a slot holds two independently-sealed fields under one `vaultKey`, nothing yet stops swapping
-    slot 2's BEK ciphertext into slot 2's vault-entries position — a cross-*field* swap within one slot,
-    distinct from the cross-*slot* swap `BEKSlotAAD` already defends against. Needs its own field-type
-    byte in the AAD (or a second, field-specific domain string parallel to `BEKSlotAAD`'s
-    `"occulta-bek-slot-v1"`) before either field ships alongside the other in the same slot.
+    **What's left of "one array is fewer artifacts to explain" (§5) is real, but narrower and more
+    temporary than it reads.** One fewer enumerable file today — but the BEK array already lives in its
+    *own* directory, not the shared pool (item 8), specifically because item 8's `findFile()` fix is
+    still deferred. Item 8 already named and accepted this exact cost once, for that directory: *"a
+    second directory reintroduces a milder version of the exact signal item 5 was built to eliminate...
+    explicitly interim, not a revised architecture."* A second directory for vault entries is the same
+    class of cost, not a new one, and it disappears entirely once the shared-pool merge lands — at that
+    point file count stops being a meaningful signal regardless of how many purpose-differentiated files
+    the pool holds.
 
-    **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but, like
-    item 6 before it, must ship alongside S8, not be discovered as a gap after.
+    **Weighed against two costs combining pays permanently, not just until the pool merges:**
+    corruption blast radius — one corrupted slot loses the BEK record *and* the vault content for that
+    depth together, no independent failure, when BEK is separately reconstructable from trustees and
+    vault content generally isn't; and code cost — a combined design needs new composition machinery
+    (`BEKPayloadCodec` unchanged plus one of the two shapes above) that two independent arrays don't,
+    because they can each just be `BEKArray`'s already-shipped, already-tested shape, cloned.
+
+    **Resolution: two independent arrays, not one.** Vault entries get their own array, own backend
+    instance, own codec, own AAD — each mirroring the BEK chain's exact, already-proven shape rather
+    than composing with it:
+
+    | BEK (unchanged) | Vault entries (new, provisional names) |
+    |---|---|
+    | `BEKArray` | `VaultEntriesArray` |
+    | `BEKPayloadCodec` — fixed 10,761 B | `VaultEntriesPayloadCodec` — dynamic, item 2's format |
+    | `BEKSlotAAD` — `"occulta-bek-slot-v1"` | `VaultEntriesSlotAAD` — own domain string, same shape, reuses `BEKSlotAAD.slotCount`/`validRange` rather than redefining 32 a second time |
+    | `AppGroupBEKArrayBackend` | a second file, own directory — the backend protocol is already payload-agnostic; needs its hardcoded directory constant made configurable (or a sibling instance), a mechanical change, not a design one |
+
+    `BEKArray`, `BEKPayloadCodec`, `BEKSlotAAD`, `AppGroupBEKArrayBackend` are all untouched by this —
+    zero changes to shipped, tested Stage 1 code. `VaultEntriesSlotAAD` needs its own domain string,
+    not a shared one with `BEKSlotAAD`, even across two files: reusing the exact same AAD for two files
+    sealed under the same `vaultKey` would let a slot-N ciphertext from one file authenticate if pasted
+    into the other file's slot N — the same cross-container reuse `BEKSlotAAD`'s own domain separation
+    already exists to prevent, one level up.
+
+    **§5's "one fixed-width array... two separately sealed fields per slot" is superseded by this item
+    — preserved there for the record, not a live description of the target design anymore.**
+
+    **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but must
+    ship alongside it, not be discovered as a gap after.
+
+12. **Contacts' Design B — the four steps S8 is meant to reuse — has no fifth step for persisting a
+    mid-session edit. Found 2026-09-09 while checking whether S8 could safely copy them as-is; the gap
+    is actually in `forensic-trace-avoidance.md`/`plan.md`'s territory, not this document's, but S8
+    inherits it directly.**
+
+    The four named steps (activation: shell the DB, snapshot to blob; unlock: load blob into an
+    in-memory array; lock: wipe that array; display: merge DB + in-memory) cover activation and the
+    unlock/lock boundary. None of them writes an edit made *during* the unlocked session back to the
+    blob. Checked directly, not assumed: `Manager.LayerStore.push()` — the only call that writes real
+    content — has exactly two call sites in the whole codebase, both one-time (activation's snapshot;
+    a decoy write on PIN collision). `rewrite()` doesn't refresh content either — it overwrites all 32
+    slots with random junk, a wipe. Under Design A this is harmless, because the DB row stays the live,
+    authoritative copy for the session and the blob is just a periodic snapshot. Under Design B it
+    isn't: the DB row goes cryptographically dead at activation, so an edit that lives only in the
+    in-memory array is lost the moment the process backgrounds or is killed, not just hidden.
+
+    **Why this belongs here even though it's Design B's gap, not this container's.** The release
+    owner's candidates decision (below) has S8 reuse Design B's lifecycle "once built once on the
+    cheaper case" — literally the same four steps, applied to vault entries instead of contacts.
+    Copying them as specified would copy the missing fifth step too, and vault entries are edited far
+    more often than sensitive contacts, so the exposure window is proportionally worse here than where
+    the gap was actually found.
+
+    **Not resolved.** `plan.md`'s "What Design B requires" list, item 4, has the full finding and needs
+    a fifth step designed — reseal on every edit to the in-memory array, not only at activation — before
+    either S5 or S8 is safe to build. Cross-referenced from `forensic-trace-avoidance.md` S5 too.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
