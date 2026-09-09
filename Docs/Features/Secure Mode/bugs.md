@@ -8116,7 +8116,13 @@ it today."
 
 **Target:** unset. No fix proposed or decided. `VAULT_KEY_LAYERING.md` item 7 considers the analogous
 trade-off for the BEK array and is itself open — this entry is supporting context for that decision,
-not a request to resolve this one first.
+not a request to resolve this one first. **A second reason to eventually fix this, found 2026-09-09:**
+item 13 there proposes unifying `Manager.LayerStore`'s crypto/logic layer with `BEKArray`'s (both
+already share the identical raw-I/O shape) — but only after this bug is fixed, since unifying first
+would either dilute `BEKArray`'s AAD protection to match this store's absence of any, or require the
+AAD fix to happen unreviewed, folded inside an unrelated refactor. Still no commitment to fix this on
+any timeline — item 13 is itself unconfirmed — but it's now two independent reasons pointing at the
+same missing AAD, not one.
 
 ### Severity: not yet rated — see *Why this isn't a confident "High" or "Low"* below
 

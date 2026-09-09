@@ -2,11 +2,16 @@
 
 **Status:** BEK design complete; vault-entries (S8) key/array design resolved 2026-09-09 (item 11,
 revised same day) — own array, own AAD, own codec, none of it extending or touching the BEK chain.
-§8 now has twelve items — items 4 and 6 are superseded (by item 7 and item 11 respectively), preserved
+§8 now has thirteen items — items 4 and 6 are superseded (by item 7 and item 11 respectively), preserved
 for the record, not live decisions; §5's original one-array packaging is likewise superseded by item
 11, preserved there too. Item 12 (2026-09-09) found contacts' Design B — which S8 is meant to reuse —
 has no described mechanism for persisting a mid-session edit once its DB row is a dead shell; tracked
-primarily in `plan.md`, cross-referenced here since S8 inherits it directly. Implementation started
+primarily in `plan.md`, cross-referenced here since S8 inherits it directly — its fifth-step mechanism
+and its own co-requisite (`readPayload`'s missing validation) are both built now, neither wired to a
+caller. Item 13 (2026-09-09) proposes unifying the raw I/O backend across `Manager.LayerStore`,
+`BEKArray`, and the future vault-entries array now, but sequences unifying their crypto/logic layer
+behind fixing `bugs.md` Bug 106 first (the contact store's missing AAD) — proposed, not confirmed as
+something to build. Implementation started
 2026-09-08 — Stage 1's core is built (see §7 table): the BEK array, its codec and AAD, and the wiring
 into `fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's array-routing half is
 now also built (item 10) — every listed function takes `currentDepth` except `updateBEKShardStatus`,
@@ -1021,7 +1026,56 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     too. Cross-referenced from
     `forensic-trace-avoidance.md` S5 too, and filed as `bugs.md` Bug 108.
 
-**Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
+13. **Proposal, 2026-09-09: unify the raw I/O backend across all three files now; sequence Bug 106's
+    fix as the prerequisite for unifying the crypto/logic layer, don't unify ahead of it.** Prompted by
+    a direct question — could `Manager.LayerStore`, `BEKArray`, and the future vault-entries array all
+    share the same classes, not just the same shape — that exposed a distinction item 11 hadn't drawn
+    cleanly: sharing a *class* and sharing a *key* are different questions, and only one of them is a
+    security problem.
+
+    **Compared the two existing backends line by line before proposing anything.** `AppGroupLayerStoreBackend`
+    (`SecureMode+LayerStoreBackend.swift`) and `AppGroupBEKArrayBackend` (`BEKArray+Backend.swift`) share
+    the identical app group (`"group.com.occulta.shared"`), the identical write-then-delete-old pattern,
+    the identical `.completeFileProtection`/`isExcludedFromBackup` attributes, and near-identical
+    `findFile()` newest-mtime selection. They differ in exactly three places: the `directory` constant
+    (`"blobs"` vs `"cache"`), which error type they throw on a missing container/file, and
+    `LayerStoreBackend`'s protocol carrying a `modificationDate` `BEKArrayBackend`'s doesn't (needed for
+    `maintainLayerStore()`'s age-based rewrite cadence, unused by BEK).
+
+    **Part A — unify the raw I/O layer now. Safe, mechanical, no format change, doesn't wait on
+    anything.** Replace both concrete types with one, `AppGroupFileBackend(directory:)` (name
+    provisional), parameterized by directory name. Fold `modificationDate` into the one shared protocol
+    — harmless where a consumer doesn't use it. Reconcile the two error enums into one shared type (or
+    a thin per-consumer `throws`-mapping adapter) — a genuinely different failure mode
+    (`directoryUnavailable`/`notFound`) shouldn't need two names. **This is not the shared-pool merge
+    item 5 describes and does not require or accelerate `findFile()`'s still-open disambiguation fix
+    (item 8)** — each consumer keeps its own separate directory for now; this removes duplicate *code*,
+    not duplicate *files*. A future vault-entries backend becomes a third call to the same type with a
+    third directory name, not a fourth near-identical struct.
+
+    **Part B — the crypto/logic layer (`Manager.LayerStore` / `BEKArray` / the future
+    `VaultEntriesArray`) is more shareable than item 11's framing implied, but not before Bug 106 is
+    fixed, and not casually even after.** The key these classes seal under is already an external
+    parameter — `push(payload, key:, slotIndex:)` — never derived or owned by the class itself. A
+    shared class would not collapse the Secure-Mode-key/vault-key domain separation §4 protects: each
+    caller still supplies its own key, exactly as today. **What actually blocks sharing this layer
+    right now: `Manager.LayerStore` uses no AAD at all** — checked directly, every `AES.GCM.seal`/`.open`
+    call in `SecureMode+LayerStore.swift` was grepped for `authenticating:`; none exists. That's Bug
+    106, already filed and open (*"The contact LayerStore has no cryptographic cross-depth isolation,
+    the same gap Bug 92 names for the BEK"*). Unifying today means either the new classes lose their
+    AAD to match `LayerStore`'s weaker posture (a real regression) or `LayerStore` gains AAD to match
+    theirs (correct, but a genuine format change to shipped, already-relied-upon content — needs its
+    own migration plan, the same standing requirement every other format change in this container has
+    already been held to, not a side effect to wave through inside a refactor). Slot count and slot
+    size (32×32KB fixed vs. 32×10,761B fixed vs. dynamic) are the easy part — constructor parameters,
+    not a real obstacle.
+
+    **Sequencing: fix Bug 106 on its own terms first — own migration plan, own tests, own commit — then
+    revisit unifying the crypto/logic layer as a separate decision, not a bundled one.** Doing both at
+    once risks the AAD fix being reviewed as "part of a refactor" rather than as the security fix it
+    actually is.
+
+    **Not yet implemented.** Proposed, not built, not yet confirmed as something to build at all.
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
 unreadable shells in the DB, existing `LayerStore` blob is the canonical copy, loaded to memory on
 unlock, wiped on lock — no new file or key, four named steps. Vault entries reuse the identical
