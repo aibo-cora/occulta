@@ -1,14 +1,18 @@
 # Vault-Key-Gated Storage — Vault Entries and the BEK Record
 
-**Status:** design complete, all seven items in §8 decided. Implementation started 2026-09-08 —
-Stage 1's core is built (see §7 table): the BEK array, its codec and AAD, and the wiring into
-`fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's array-routing half is now
-also built (item 10) — every listed function takes `currentDepth` except `updateBEKShardStatus`,
-which deliberately takes none (searches all 32 slots instead, item 10). `reconstructBEK`/restore
-completion remains blocked on `RECOVERY_BUFFER_LAYERING.md`'s Stage 4 (item 9). Item 7 settled
-2026-09-07 (accept the cross-depth-reach risk; item 4's live-slot `slotKey` superseded, not built).
-The duress-depth content-richness concern raised alongside item 7 is resolved — accepted limitation,
-full reasoning in `Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
+**Status:** BEK design complete; vault-entries (S8) key/reseal design resolved 2026-09-09 (item 11)
+but its own AAD field-type gap is open, not yet designed. §8 now has eleven items — items 4 and 6 are
+both superseded (by item 7 and item 11 respectively), preserved for the record, not live decisions.
+Implementation started 2026-09-08 — Stage 1's core is built (see §7 table): the BEK array, its codec
+and AAD, and the wiring into `fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's
+array-routing half is now also built (item 10) — every listed function takes `currentDepth` except
+`updateBEKShardStatus`, which deliberately takes none (searches all 32 slots instead, item 10).
+`reconstructBEK`/restore completion remains blocked on `RECOVERY_BUFFER_LAYERING.md`'s Stage 4 (item
+9). Item 7 settled 2026-09-07 (accept the cross-depth-reach risk; item 4's live-slot `slotKey`
+superseded, not built) — item 11 (2026-09-09) found item 6's `entriesSlotKey` structurally
+incompatible with that same full-array reseal and extended item 7's resolution to the vault-entries
+field. The duress-depth content-richness concern raised alongside item 7 is resolved — accepted
+limitation, full reasoning in `Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:**
 `Docs/Features/Secure Mode/bugs.md` Bug 102 (BEK), Bug 105 (its sharpest evidence);
 `forensic-trace-avoidance.md` S5 (contacts), S8 (vault entries). **Spec docs this changes:**
 [`VAULT_BACKUP_GUIDE.md`](VAULT_BACKUP_GUIDE.md), [`VAULT_SSS_GUIDE.md`](VAULT_SSS_GUIDE.md) — both
@@ -16,7 +20,7 @@ describe the device-wide BEK/shard behavior this design replaces; see their own 
 sections, which point back here. **Compiled:** 2026-09-02, split out of `STORAGE_LAYERING.md` once
 that doc's own container analysis showed this half and
 [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md) are independently buildable — see §7 for
-exactly where they do and don't touch. Last decision recorded: 2026-09-07. **Release target
+exactly where they do and don't touch. Last decision recorded: 2026-09-09. **Release target
 corrected 2026-09-07** — see §9: no longer `v1.10.3` (already shipped without this fix), now
 `v1.11.0/vault-key-layering`.
 
@@ -146,7 +150,9 @@ slot carries, as separately sealed fields:
 one array is fewer artifacts to pad, clean up, and explain than one per feature.
 
 **Every sealed field's AAD must bind its slot index.** Without it, lifting slot 2's ciphertext into
-slot 0 moves a duress layer's BEK — or vault entries — into the real one.
+slot 0 moves a duress layer's BEK — or vault entries — into the real one. **Binding slot index alone
+is not sufficient once a slot holds two fields under one key — it must bind field type too, or the BEK
+and vault-entries ciphertexts within the same slot are swappable with each other. See item 11.**
 
 **Concrete design, built 2026-09-07: `BEKSlotAAD`, in `Vault+Manager+Backup.swift`.** 20-byte domain
 separator (`"occulta-bek-slot-v1"`) plus a 1-byte slot index — checked against this codebase's other
@@ -277,7 +283,7 @@ storage, 42-byte fixed record).
 |---|---|---|---|---|
 | 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08.** `BEKPayloadCodec` → `BEKSlotAAD` → `AppGroupBEKArrayBackend` (own directory, item 8) → `BEKArray` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecodedBEK`/`persistBEKPayload`, migration folded in. `RotationRegistry` checked, not just assumed — `BackupEncryptionKey` stays correctly in `notRotated` since the row and the new array file are both still sealed under the vault key, unchanged; `RotationRegistryTests` passes as-is. |
 | 2 | Route BEK access by depth — `fetchDecodedBEK`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `exportBackup`, `reconstructBEK` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | **Split, found 2026-09-08 (item 9). Array-routing half built 2026-09-08 (item 10).** `fetchDecodedBEK`, `persistBEKPayload`, `setupBEK`, `currentBEK`, `bekSetupState`, `bekShardMetadata`, `prepareBEKShards`, `distributeBEKShards`, `rotateBEK`, `exportBackup`, `refreshBackupStaleness` all take `currentDepth: Int` with no default. `updateBEKShardStatus` deliberately does **not** — found mid-build that "whatever depth is current" cannot locate a trustee's confirmation reliably even in the ordinary case (a confirmation for depth 0's distribution can arrive while any other depth is active); it now searches all 32 slots for the attributeID instead (item 10). All UI call sites (`Vault+Tab.swift`, `Vault+ShardSetup.swift`, `VaultRecoverySettings.swift`) updated; `recomputeRecoveryHealth`'s auto-save-triggered path split so `bekErosion` — now depth-scoped — isn't computed from a depth-blind trigger (item 10). `reconstructBEK` specifically is still blocked on `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state (its Stage 4) — cannot be finished correctly in isolation here. |
-| — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No | Not started. |
+| — | Vault entries: contacts' Design B first (§8 candidates), then this container's own entry-shell lifecycle | see §8 | No | Not started. Key/reseal design for the vault-entries field resolved 2026-09-09 (item 11) — plain `vaultKey`, full-array reseal on every entry write, own AAD field-type binding needed alongside `BEKSlotAAD`. Slot format, growth mechanism, and migration sizing settled in item 2. Still needs: S5 (contacts' Design B) built first per the candidates decision below; the `BEKArray`/`BEKPayloadCodec`/`AppGroupBEKArrayBackend` chain extended to carry a second sealed field per slot, not a new sibling container; `entriesSlotKey`'s in-memory-cache mechanism is now moot (item 11) so no per-depth key cache to build; UI-level count/size enforcement (item 2). |
 | 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot | Not started. |
 
 **Acceptance criterion for the whole design (both containers):** a coercer can arm, set up his own
@@ -609,7 +615,10 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
 
    **Not yet implemented.** Decided, not built.
 
-6. **Item 4's live-slot fix does not cover vault entries — found 2026-09-06, decided 2026-09-06.** §4
+6. **Item 4's live-slot fix does not cover vault entries — found 2026-09-06, decided 2026-09-06.
+   Superseded 2026-09-09 by item 11 — not built, `entriesSlotKey` dropped in favor of the same
+   full-array-reseal/code-discipline posture item 7 already settled on for the BEK field. Preserved
+   below for the record.** §4
    describes the threat as a coercer with the vault key decrypting *every slot*, "including
    `shardMetadata` — trustee counts and identities." Item 4's remedy is titled and scoped to "the BEK
    field's slot separation," and its `slotKey(depth)` formula is applied only to the BEK record. But
@@ -638,8 +647,11 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    requires that depth's PIN entry first — there is no path to vault entries that skips it, so the PIN
    is always available at the exact moment this derivation needs it.
 
-   **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but must
-   ship alongside it, not be discovered as a gap after.
+   **Not yet implemented — and now won't be, as designed above.** Superseded 2026-09-09 by item 11:
+   `entriesSlotKey`, needing that depth's own PIN to derive, cannot be resealed by any other depth's
+   session — the identical structural conflict with full-array reseal that item 7 found for item 4's
+   `slotKey` one day after this item proposed the same shape for a second field. Kept only as a record
+   of what was considered and why it was set aside.
 
 7. **Per-slot write pattern leaks which depth is active, across snapshots — found 2026-09-07, settled
    2026-09-07: accept the risk, matching Bug 106's precedent. Item 4's live-slot `slotKey` is
@@ -874,6 +886,55 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     pending — proving the search finds the right slot and disturbs nothing else. Full BEK-related suite
     (`BEKPayloadCodecTests`, `BEKSlotAADTests`, `BEKArrayTests`, `VaultBackupRoundTripTests`,
     `VaultRestoreTrustTests`, `VaultRestoreRobustnessTests`, `RotationRegistryTests`) re-run clean after.
+
+11. **Item 6 and item 7 are mutually exclusive, not just in tension — found and resolved 2026-09-09.
+    `entriesSlotKey` is dropped; vault entries get item 7's exact posture instead: plain `vaultKey`,
+    full-array reseal, code-discipline-only separation.**
+
+    **Why they can't both hold — the same structural proof item 7 already gave for `slotKey`, one day
+    earlier, for a different field.** `entriesSlotKey(depth)` needs that depth's own PIN to derive. A
+    session at depth 2 holds only depth 2's PIN — never depth 0's, by the same design that made item 4's
+    `slotKey` attractive in the first place. Item 7's full-array reseal requires opening and re-sealing
+    *every* slot's plaintext on every write, which requires holding every depth's key. A depth-2 session
+    can never compute `entriesSlotKey(0)`, so it can never reseal depth 0's vault-entries field under a
+    fresh nonce. Item 6 proposed `entriesSlotKey` using the identical fold-the-PIN-into-`info` shape as
+    item 4's `slotKey`, decided 2026-09-06 — one day before item 7 found that exact shape incompatible
+    with full-array reseal for the BEK field. Item 6 was never revisited against it.
+
+    **Resolution: apply item 7's answer to the vault-entries field too, not item 6's.** Seal it under
+    plain `vaultKey` — the same key that already opens the BEK field, already derived once at biometric
+    unlock, no PIN-folding, no per-depth key. This also removes item 6's own "derive once at PIN
+    verification, cache the derived key for the session" mechanism outright — there is no separate key
+    left to cache, so no new per-depth caching infrastructure is needed at all. Reseal all 32 slots'
+    vault-entries field with fresh nonces on every entry write (add/edit/delete), the identical shape
+    already shipped for `Manager.LayerStore`'s push/pop (`SecureMode+LayerStore.swift`) — checked against
+    the actual code, not assumed: `LayerStore` already reseals 32 × 32KB ≈ 1MB on every single contact
+    reclassification, today, in production. Vault entries start smaller (44KB/depth × 32 ≈ 1.4MB total,
+    item 2) and grow with the +32 mechanism — the same order of magnitude, the same already-accepted cost
+    category `Manager.LayerStore` established, not a new one this decision introduces.
+
+    **The case for this is stronger here than for the BEK field, not just consistent with it.** Item 6's
+    own text calls vault entries "the most sensitive content in the app." Keeping a live-slot key for
+    them isn't a tradeoff to weigh against full resealing, the way item 7 weighed it for BEK — it is the
+    identical mathematical impossibility item 7 already proved, just not noticed until this item.
+
+    **Scope the reseal to the vault-entries field only, not the BEK field too.** The two fields are
+    independently sealed under the same `vaultKey`; there is no security reason to touch the BEK field's
+    ciphertext when only a vault entry changed. A diff between two snapshots after an entry-only write
+    shows all 32 entry sub-fields changed (uninformative about depth — the point) and all 32 BEK
+    sub-fields untouched (reveals only "an entry operation happened, not a BEK operation"). That is
+    outside item 7's stated threat model, which hides *which depth is active*, not *what kind of
+    operation ran* — item 7 never claimed the latter, and this item doesn't extend it to claim it either.
+
+    **A real, previously uncovered gap this surfaces: `BEKSlotAAD` binds slot index but not field type.**
+    Once a slot holds two independently-sealed fields under one `vaultKey`, nothing yet stops swapping
+    slot 2's BEK ciphertext into slot 2's vault-entries position — a cross-*field* swap within one slot,
+    distinct from the cross-*slot* swap `BEKSlotAAD` already defends against. Needs its own field-type
+    byte in the AAD (or a second, field-specific domain string parallel to `BEKSlotAAD`'s
+    `"occulta-bek-slot-v1"`) before either field ships alongside the other in the same slot.
+
+    **Not yet implemented.** Decided, not built. Blocks nothing today — S8 isn't built yet — but, like
+    item 6 before it, must ship alongside S8, not be discovered as a gap after.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
