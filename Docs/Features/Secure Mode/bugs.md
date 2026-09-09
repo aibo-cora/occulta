@@ -8302,3 +8302,74 @@ The `pushDummyBlobSlot` interaction above needs its own resolution before the fi
 
 None yet. No test exercises a corrupted or unreadable slot during `push()`/`pop()` and asserts the real
 content survives rather than being silently replaced.
+
+## Bug 108 — Design B has no mechanism to persist a mid-session edit, once the DB row it would edit is
+a dead shell
+
+**Status:** **Not a live bug — Design A ships today and is unaffected; Design B is deferred, not
+built.** Filed 2026-09-09 as a design gap, found before Design B is built rather than after, while
+checking whether `VAULT_KEY_LAYERING.md`'s S8 could safely reuse Design B's four named steps as-is for
+vault entries. It couldn't, because the four steps have this hole regardless of which content they're
+applied to.
+
+**Target:** unset. Blocks Design B (`forensic-trace-avoidance.md` S5) and, downstream, S8
+(`VAULT_KEY_LAYERING.md` item 12) — neither should be built against the four steps as currently
+specified.
+
+### Severity: would be High (silent, permanent loss of the user's own data) if Design B shipped with
+only the four described steps; not yet triggerable, since nothing runs this path today
+
+### What happens
+
+Design B's four named steps (`forensic-trace-avoidance.md` S5, `plan.md`'s "Design B considered and
+deferred"): (1) sensitive contacts' DB rows become unreadable shells at activation — fields
+re-encrypted under the deleted old key; (2) `inMemorySensitiveContacts` loaded from the blob into
+memory on normal unlock; (3) that array wiped on lock; (4) DB + in-memory merged for the contact list
+view. None of the four says what happens to an edit made to a sensitive contact *between* steps 2 and
+3 — while the session is unlocked and the in-memory array is the only thing holding it.
+
+Checked directly against the actual code, not assumed: `Manager.LayerStore.push()` — the only function
+that writes real content into the blob — has exactly two call sites in the whole codebase. Activation's
+one-time snapshot (`Manager+Security.swift:643`), and `pushDummyBlobSlot`, an empty decoy write fired
+on PIN collision (`Manager+Security.swift:1709-1720`) so a collision produces the same filesystem
+footprint as a real activation. Neither fires in response to an edit. `rewrite()` (called at
+deactivation and force-recovery) doesn't preserve content either — `writeNoOpFile()` overwrites all 32
+slots with fresh random junk, a wipe, not a reseal of real content.
+
+### The harm
+
+Harmless under Design A, shipped today: the DB row stays the live, authoritative, editable copy for
+the whole session, and the blob is just a periodic snapshot taken once per activation — its staleness
+relative to later DB edits doesn't matter, because deactivation restores from the blob only to recover
+what activation *hid*, not to recover edits made while active.
+
+Once Design B ships, the DB row cannot hold anything readable from the moment of activation onward, so
+an edit made mid-session exists only in the wiped-on-lock, killed-on-termination in-memory array. If
+the app backgrounds ordinarily — not a deliberate, explicit lock action — or is killed by the OS or the
+user before any (currently nonexistent) blob-resync step runs, the edit is lost permanently: no error,
+no signal, no recovery path. The same silent, permanent-loss shape Bug 107 documents for corruption,
+except triggered by ordinary use rather than corruption.
+
+### Relationship to S8 (`VAULT_KEY_LAYERING.md`)
+
+S8's release-owner decision (`VAULT_KEY_LAYERING.md`, "Vault entries and contacts (S5/S8)") has vault
+entries reuse Design B's lifecycle "once built once on the cheaper case" — the same four steps, applied
+to vault entries instead of contacts. Copying them as specified would copy this exact gap, and vault
+entries are edited far more often than sensitive contacts (add/edit/delete vs. an occasional
+classification change), so the exposure window is proportionally worse wherever it lands second.
+Tracked as item 12 there.
+
+### Not yet done
+
+No fifth step has been designed. The obvious shape — reseal the blob (or the touched slot) whenever
+the in-memory array changes, not only at activation — hasn't been checked against write frequency or
+weighed against the same full-array-reseal cost `Manager.LayerStore`'s `push`/`pop` already accepts for
+classification changes; `VAULT_KEY_LAYERING.md` item 11's reasoning about that exact tradeoff may be
+directly reusable here, not yet examined. Blocks Design B (`plan.md`'s own "What Design B requires"
+list, item 4) and, by extension, S8 (item 12) from being safely built as currently specified.
+
+### Guard
+
+None. Design B is not built, so nothing exercises this path yet — this entry exists so the fifth step
+gets designed deliberately when Design B is implemented, rather than discovered as data loss after it
+ships.
