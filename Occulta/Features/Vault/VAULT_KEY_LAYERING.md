@@ -1007,10 +1007,14 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     more often than sensitive contacts, so the exposure window is proportionally worse here than where
     the gap was actually found.
 
-    **Not resolved.** `plan.md`'s "What Design B requires" list, item 4, has the full finding and needs
-    a fifth step designed — reseal on every edit to the in-memory array, not only at activation — before
-    either S5 or S8 is safe to build. Cross-referenced from `forensic-trace-avoidance.md` S5 too, and
-    filed as `bugs.md` Bug 108.
+    **Designed, not built — 2026-09-09, same day.** `plan.md`'s "What Design B requires" list, item 4
+    has the full finding, item 5 has the fifth step: reuse `push()` itself on every mutation to
+    `inMemorySensitiveContacts`, reusing the depth's on-record `slotIndex`/`sequenceNumber` rather than
+    regenerating either — regenerating the sequence number would silently break every later `pop()` at
+    deactivation, caught before proposing it. Surfaced a co-requisite: step 2's own non-destructive read
+    (`readPayload`) is currently commented test/diagnostic-only, not a sanctioned production path.
+    Neither S5 nor S8 is safe to build until this is. Cross-referenced from `forensic-trace-avoidance.md`
+    S5 too, and filed as `bugs.md` Bug 108.
 
 **Vault entries and contacts (S5/S8) — candidates, decided 2026-09-02 by the release owner:** build
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —

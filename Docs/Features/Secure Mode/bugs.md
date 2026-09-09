@@ -8310,7 +8310,7 @@ a dead shell
 built.** Filed 2026-09-09 as a design gap, found before Design B is built rather than after, while
 checking whether `VAULT_KEY_LAYERING.md`'s S8 could safely reuse Design B's four named steps as-is for
 vault entries. It couldn't, because the four steps have this hole regardless of which content they're
-applied to.
+applied to. **The missing fifth step is designed, same day — see *Not yet done* below — but not built.**
 
 **Target:** unset. Blocks Design B (`forensic-trace-avoidance.md` S5) and, downstream, S8
 (`VAULT_KEY_LAYERING.md` item 12) — neither should be built against the four steps as currently
@@ -8361,12 +8361,20 @@ Tracked as item 12 there.
 
 ### Not yet done
 
-No fifth step has been designed. The obvious shape — reseal the blob (or the touched slot) whenever
-the in-memory array changes, not only at activation — hasn't been checked against write frequency or
-weighed against the same full-array-reseal cost `Manager.LayerStore`'s `push`/`pop` already accepts for
-classification changes; `VAULT_KEY_LAYERING.md` item 11's reasoning about that exact tradeoff may be
-directly reusable here, not yet examined. Blocks Design B (`plan.md`'s own "What Design B requires"
-list, item 4) and, by extension, S8 (item 12) from being safely built as currently specified.
+**Fifth step designed 2026-09-09 — `plan.md`'s "What Design B requires" list, item 5.** Reuses `push()`
+itself: any mutation to `inMemorySensitiveContacts` resyncs the blob synchronously, before the caller
+can treat the edit as saved, using the depth's already-on-record `slotIndex` and `sequenceNumber`
+(`AppLayerConfig.readBlobSlot`/`readSequenceNumber`) rather than regenerating either. Checking that
+directly against `pop()`'s validation caught a real trap: a fresh random sequence number per edit — the
+naive version of "just push again" — would make the first edit-triggered resync silently break every
+later `pop()` at deactivation with `sequenceNumberMismatch`, losing every edited contact. Same
+full-array-reseal cost `Manager.LayerStore` already pays for classification changes today, not a new
+category — contact edits are occasional, not the "constantly" frequency `VAULT_KEY_LAYERING.md` item 11
+weighed for vault entries. Surfaced a co-requisite gap in step 2, not this bug's own scope: the only
+non-destructive read, `readPayload(key:slotIndex:)`, is commented "for diagnostics and tests" only —
+step 2 needs a sanctioned production equivalent, or the first unlock of any session erases the blob
+step 5 needs to resync into. Designed, not built. Blocks Design B and, by extension, S8 (item 12) from
+being safely built as currently specified.
 
 ### Guard
 
