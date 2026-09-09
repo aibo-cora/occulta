@@ -78,7 +78,7 @@ extension VaultManager {
 
         // ── 3. BEK restore — store shard + attempt reconstruction ────────
         // Only active when a .occbak file is awaiting recovery. storeRestoreShard
-        // is safe while locked (recovery buffer key); attemptBEKRestore no-ops if locked.
+        // is safe while locked (recovery buffer key); attemptBackupRestore no-ops if locked.
         //
         // isRestorePending, not pendingRestoreActive — the shard must still be stored
         // above depth 0, or a genuine recovery silently stops accumulating shards the
@@ -87,7 +87,7 @@ extension VaultManager {
         // distributionID any more precisely than this before reconstruction succeeds.
         if self.isRestorePending {
             try? self.storeRestoreShard(attribute, attestation: attestation, senderIdentifier: senderIdentifier)
-            self.attemptBEKRestore(currentDepth: currentDepth)
+            self.attemptBackupRestore(currentDepth: currentDepth)
         }
     }
 
@@ -258,7 +258,7 @@ extension VaultManager {
     ///
     /// At most one stored shard per `(entryID, senderIdentifier)` (Bug 94 remedy 2) — a second
     /// share from the same sender replaces the first rather than accumulating, so
-    /// `attemptBEKRestore`'s grouping reflects distinct senders, not just distinct
+    /// `attemptBackupRestore`'s grouping reflects distinct senders, not just distinct
     /// `SignedAttribute.id`s. Safe to call while the vault is locked: the recovery buffer key
     /// is derived from the Secure Enclave, not from the vault key.
     ///
@@ -304,7 +304,7 @@ extension VaultManager {
     }
 
     /// Same as `loadRestoreShards()` but decrypts with an already-derived key — for
-    /// `attemptBEKRestore` (`Vault+Manager+Backup.swift`), which also calls
+    /// `attemptBackupRestore` (`Vault+Manager+Backup.swift`), which also calls
     /// `clearBEKRestoreShards(usingKey:)` on success and would otherwise re-derive the
     /// identical key for that second call. Not `private`: it's called from that other file.
     func loadRestoreShards(usingKey key: SymmetricKey) throws -> [AttestedShard] {

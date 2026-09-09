@@ -14,10 +14,10 @@ import Foundation
 import CryptoKit
 @testable import Occulta
 
-@Suite("BEKArray — 32-slot BEK array crypto and slot logic")
+@Suite("VaultManager.Backup.LayerStore — 32-slot backup-key array crypto and slot logic")
 struct BEKArrayTests {
 
-    private typealias Array_ = VaultManager.BEKArray
+    private typealias Array_ = VaultManager.Backup.LayerStore
 
     private func makePayload(bekBytes: Data = Data.randomBytes(32)) -> BackupEncryptionKey.Payload {
         BackupEncryptionKey.Payload(
@@ -29,7 +29,7 @@ struct BEKArrayTests {
 
     @Test("Write then read the same slot returns the same payload")
     func roundTripSingleSlot() throws {
-        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let array = Array_(backend: InMemoryLayerStoreBackend())
         let key = SymmetricKey(size: .bits256)
         let payload = makePayload()
 
@@ -42,7 +42,7 @@ struct BEKArrayTests {
 
     @Test("Reading a slot when the array has never been written at all returns nil, not a throw")
     func readOnCompletelyEmptyBackendReturnsNil() throws {
-        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let array = Array_(backend: InMemoryLayerStoreBackend())
         let key = SymmetricKey(size: .bits256)
 
         let read = try array.read(slotIndex: 0, vaultKey: key)
@@ -52,7 +52,7 @@ struct BEKArrayTests {
 
     @Test("An untouched slot reads as nil — genuinely empty, not an error")
     func untouchedSlotReadsAsNil() throws {
-        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let array = Array_(backend: InMemoryLayerStoreBackend())
         let key = SymmetricKey(size: .bits256)
 
         try array.write(makePayload(), slotIndex: 0, vaultKey: key)
@@ -65,7 +65,7 @@ struct BEKArrayTests {
 
     @Test("Writing to one slot preserves a previously-written different slot's content")
     func writingOneSlotPreservesAnother() throws {
-        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let array = Array_(backend: InMemoryLayerStoreBackend())
         let key = SymmetricKey(size: .bits256)
         let first = makePayload()
         let second = makePayload()
@@ -82,7 +82,7 @@ struct BEKArrayTests {
 
     @Test("A third write still preserves both earlier slots")
     func thirdWritePreservesEarlierTwo() throws {
-        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let array = Array_(backend: InMemoryLayerStoreBackend())
         let key = SymmetricKey(size: .bits256)
         let a = makePayload()
         let b = makePayload()
@@ -101,7 +101,7 @@ struct BEKArrayTests {
 
     @Test("A file present but the wrong total size throws fileSizeMismatch, not treated as first creation")
     func wrongFileSizeThrows() throws {
-        let backend = InMemoryBEKArrayBackend()
+        let backend = InMemoryLayerStoreBackend()
         try backend.write(Data.randomBytes(100))   // present, but not Array_.fileSize
         let array = Array_(backend: backend)
         let key = SymmetricKey(size: .bits256)
@@ -118,7 +118,7 @@ struct BEKArrayTests {
 
     @Test("A corrupted slot throws corruptSlot on read, not nil")
     func corruptedSlotThrowsOnRead() throws {
-        let backend = InMemoryBEKArrayBackend()
+        let backend = InMemoryLayerStoreBackend()
         let array = Array_(backend: backend)
         let key = SymmetricKey(size: .bits256)
 
@@ -137,7 +137,7 @@ struct BEKArrayTests {
 
     @Test("A corrupted slot halts a write to a different slot — never silently replaced with filler")
     func corruptedSlotHaltsWriteToAnotherSlot() throws {
-        let backend = InMemoryBEKArrayBackend()
+        let backend = InMemoryLayerStoreBackend()
         let array = Array_(backend: backend)
         let key = SymmetricKey(size: .bits256)
         let real = makePayload()
@@ -165,7 +165,7 @@ struct BEKArrayTests {
 
     @Test("Wrong key on read throws corruptSlot, not nil — a wrong key must never look like 'empty'")
     func wrongKeyThrowsNotNil() throws {
-        let array = Array_(backend: InMemoryBEKArrayBackend())
+        let array = Array_(backend: InMemoryLayerStoreBackend())
         let key = SymmetricKey(size: .bits256)
         let wrongKey = SymmetricKey(size: .bits256)
 

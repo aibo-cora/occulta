@@ -236,8 +236,8 @@ extension VaultManager {
             return
         }
 
-        // No per-entry shard matched — check BEK shard metadata.
-        try? self.updateBEKShardStatus(attributeID: attributeID, to: newStatus)
+        // No per-entry shard matched — check the backup key's own shard metadata.
+        try? self.backup.updateShardStatus(vaultKey: vaultKey, attributeID: attributeID, to: newStatus)
     }
 
     // MARK: - Deferred status updates
@@ -329,13 +329,13 @@ extension VaultManager {
     /// Called directly from unlock() (no save occurs there) and automatically
     /// via the ModelContext.didSave observer for all other mutations.
     ///
-    /// Deliberately does NOT also recompute `bekErosion` — that moved to its own
-    /// `refreshBekErosion(currentDepth:)` once BEK went per-depth-slotted, because
-    /// this function's automatic didSave trigger has no depth in scope. Defaulting
-    /// that trigger to any fixed depth would silently repaint `bekErosion` for the
-    /// wrong depth on an unrelated save elsewhere in the app — e.g. exposing the
-    /// real (depth-0) BEK's erosion state while the user is in a duress layer.
-    /// `bekErosion` now follows the same precedent already set by
+    /// Deliberately does NOT also recompute `backupErosion` — that moved to its own
+    /// `refreshBackupErosion(currentDepth:)` once the backup key went per-depth-slotted,
+    /// because this function's automatic didSave trigger has no depth in scope.
+    /// Defaulting that trigger to any fixed depth would silently repaint
+    /// `backupErosion` for the wrong depth on an unrelated save elsewhere in the app —
+    /// e.g. exposing the real (depth-0) key's erosion state while the user is in a
+    /// duress layer. `backupErosion` now follows the same precedent already set by
     /// `backupStaleness`: refreshed only by the views that display it, which have
     /// `Manager.Security.currentDepth` in scope.
     func recomputeRecoveryHealth() {
@@ -392,7 +392,7 @@ extension VaultManager {
         self.recoveryHealth = RecoveryHealthSummary(affected: affected)
     }
 
-    /// Recompute `bekErosion` for `currentDepth`'s own BEK slot.
+    /// Recompute `backupErosion` for `currentDepth`'s own backup-key slot.
     ///
     /// Split out of `recomputeRecoveryHealth()` — see that function's doc comment
     /// for why. Not called from `unlock()` itself: the views' `onChange(of:
@@ -401,17 +401,17 @@ extension VaultManager {
     /// views that display it (`Vault+Tab`, `VaultRecoverySettings`), mirroring
     /// `refreshBackupStaleness` exactly — must never be computed from any depth
     /// other than the one actually in scope where it's read, or it becomes a
-    /// coercer-observable leak of a different depth's BEK erosion state.
-    func refreshBekErosion(currentDepth: Int) {
+    /// coercer-observable leak of a different depth's erosion state.
+    func refreshBackupErosion(currentDepth: Int) {
         guard let vaultKey = try? self.currentKey() else {
-            self.bekErosion = nil
+            self.backupErosion = nil
             return
         }
-        if let meta = try? self.bekShardMetadata(currentDepth: currentDepth) {
+        if let meta = try? self.backup.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth) {
             let active = self.activeShardCount(in: meta)
-            self.bekErosion = active < meta.threshold ? (active, meta.threshold) : nil
+            self.backupErosion = active < meta.threshold ? (active, meta.threshold) : nil
         } else {
-            self.bekErosion = nil
+            self.backupErosion = nil
         }
     }
 

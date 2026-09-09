@@ -4,7 +4,7 @@
 //
 //  Bug 106 — Manager.LayerStore sealed every slot with no AAD at all, so nothing bound a
 //  slot's ciphertext to its own position in the file. Fixed by adding LayerStoreSlotAAD
-//  (SecureMode+LayerStore.swift), mirroring VaultManager.BEKSlotAAD's shape, with a
+//  (SecureMode+LayerStore.swift), mirroring VaultManager.Backup.SlotAAD's shape, with a
 //  fallback to the pre-fix (no-AAD) scheme on open so existing files keep reading and get
 //  upgraded on the very next push()/pop() — both already reseal every slot unconditionally.
 //

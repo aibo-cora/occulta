@@ -110,7 +110,7 @@ private func makeSignedShardAttr(signer: TestKeyManager) throws -> SignedAttribu
     // the same size.
     let value     = Data((0..<33).map { _ in UInt8.random(in: .min ... .max) })
     // Non-nil for the same reason the value is 33 bytes: production `.shard` attributes always
-    // bind an entryID (`prepareBEKShards` uses the distributionID, per-entry splits use the
+    // bind an entryID (`backup.prepareShards` uses the distributionID, per-entry splits use the
     // entry's id), and the filler is sized against that. A nil here made the fixture ~50 bytes
     // smaller than anything real, which is a fixture bug that shows up as a padding failure.
     let entryID   = UUID()

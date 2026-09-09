@@ -36,12 +36,15 @@ final class VaultManager {
 
     let keyManager: any KeyManagerProtocol
 
-    /// Backend for the 32-slot BEK array (`BEKArray`). Injected the same way
-    /// `keyManager` is — tests use `InMemoryBEKArrayBackend` so BEK state
-    /// doesn't leak across test runs via the real app-group container's
-    /// persistent file, the same class of isolation problem `keyManager`'s
-    /// injection already solves for Secure Enclave key material.
-    let bekArrayBackend: any BEKArrayBackend
+    /// The device's Backup Encryption Key: setup, access, shard distribution,
+    /// reconstruction, rotation. Mirrors `Manager.Security` holding a
+    /// `layerStore: Manager.LayerStore` — see `VaultManager.Backup`'s own doc
+    /// comment (`Vault+Manager+Backup.swift`).
+    ///
+    /// Holds no reference back to `self` — `Backup` takes only `keyManager` and
+    /// `backend` as plain injected values, so this is an ordinary `let` assigned
+    /// inline like `keyManager` below, not a circular construction.
+    let backup: Backup
 
     // MARK: - Auth context
 
@@ -61,10 +64,16 @@ final class VaultManager {
     /// after every shard status mutation.
     var recoveryHealth: RecoveryHealthSummary? = nil
 
-    /// BEK erosion state: non-nil when a BEK distribution exists and
+    /// Backup key shard erosion state: non-nil when a distribution exists and
     /// active (pending + confirmed) shards fall below threshold.
-    /// `nil` when the vault is locked, no BEK is distributed, or coverage is met.
-    var bekErosion: (active: Int, threshold: Int)? = nil
+    /// `nil` when the vault is locked, no distribution exists, or coverage is met.
+    ///
+    /// Stays flat on `VaultManager`, not moved into `Backup` — `VaultManager` is
+    /// `@Observable`, `Backup` is a plain class, so a property read through
+    /// `vault.backup.erosion` would never trigger a SwiftUI view update. UI-facing
+    /// observed state stays here alongside `recoveryHealth`/`backupStaleness`;
+    /// `Backup` holds the operations, `VaultManager` holds what the UI watches.
+    var backupErosion: (active: Int, threshold: Int)? = nil
 
     // MARK: - Pending restore
 
@@ -119,13 +128,13 @@ final class VaultManager {
     init(
         modelContainer: ModelContainer,
         keyManager: any KeyManagerProtocol = Manager.Key(),
-        bekArrayBackend: any BEKArrayBackend = AppGroupBEKArrayBackend(),
+        backupBackend: any LayerStoreBackend = AppGroupLayerStoreBackend(directory: "cache"),
         inactivityTimeout: TimeInterval = 5 * 60
     ) {
         self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer    = modelContainer
         self.keyManager        = keyManager
-        self.bekArrayBackend   = bekArrayBackend
+        self.backup            = Backup(keyManager: keyManager, backend: backupBackend)
         self.inactivityTimeout = inactivityTimeout
 
         // ── Lock triggers (conditions 1–3) ───────────────────────────────────
@@ -151,7 +160,7 @@ final class VaultManager {
         // fire it while the vault is unlocked, but extra recomputes are harmless
         // since recomputeRecoveryHealth() exits cheaply when no shard data exists.
         // The guard on isUnlocked is for correctness: currentKey() would throw
-        // when locked, and recoveryHealth/bekErosion are already nil from lock().
+        // when locked, and recoveryHealth/backupErosion are already nil from lock().
         NotificationCenter.default.publisher(for: ModelContext.didSave)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -171,30 +180,39 @@ final class VaultManager {
     ///
     /// `currentDepth` has no default — a forgotten argument must be a compile error,
     /// not a silent leak of restore state into whichever depth happened to call this
-    /// (Bug 93). Required specifically because `attemptBEKRestore` must never run as
-    /// though it's at depth 0 by accident. `refreshPendingRestoreState` no longer takes
-    /// a depth at all: its published state is deliberately uniform across layers, and
-    /// deferral in `attemptBEKRestore` is what keeps that safe.
+    /// (Bug 93). Required specifically because `attemptBackupRestore` must never run
+    /// as though it's at depth 0 by accident. `refreshPendingRestoreState` no longer
+    /// takes a depth at all: its published state is deliberately uniform across
+    /// layers, and deferral in `attemptBackupRestore` is what keeps that safe.
     func unlock(context: LAContext, currentDepth: Int) {
         self.authContext = context
         self.resetInactivityTimer()
+        // Migrate the legacy device-wide BackupEncryptionKey row into the backup
+        // array, if one still exists and hasn't been migrated yet. Idempotent —
+        // see migrateLegacyBEKIfNeeded's own doc comment. try? is deliberate: a
+        // migration decode failure becomes "stays un-migrated, retried next unlock"
+        // rather than a throwing unlock() across every caller.
+        if let vaultKey = try? self.currentKey() {
+            try? self.migrateLegacyBEKIfNeeded(vaultKey: vaultKey)
+        }
         // Drain reconstruction buffer entries that crossed threshold while locked.
         self.tryFinalizeAllReconstructions()
         // Replay shard status updates that arrived while locked, then check for losses.
         self.drainPendingShardStatusUpdates()
         self.drainPotentiallyLostShards()
         self.recomputeRecoveryHealth()
-        // backupStaleness and bekErosion are both refreshed by the views that display
-        // them (Vault+Tab, VaultRecoverySettings), not here — currentDepth is available
-        // in this scope now (added for Bug 93, below), but that's no longer why they
-        // stay external. The views' onChange(of: isUnlocked) already fires right after
-        // this call sets authContext, so a call here would just be a redundant second
-        // refresh (see refreshBackupStaleness's and refreshBekErosion's own doc
-        // comments for why they must never be computed from the wrong depth).
+        // backupStaleness and backupErosion are both refreshed by the views that
+        // display them (Vault+Tab, VaultRecoverySettings), not here — currentDepth is
+        // available in this scope now (added for Bug 93, below), but that's no longer
+        // why they stay external. The views' onChange(of: isUnlocked) already fires
+        // right after this call sets authContext, so a call here would just be a
+        // redundant second refresh (see refreshBackupStaleness's and
+        // refreshBackupErosion's own doc comments for why they must never be computed
+        // from the wrong depth).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
         self.refreshPendingRestoreState()
-        self.attemptBEKRestore(currentDepth: currentDepth)
+        self.attemptBackupRestore(currentDepth: currentDepth)
     }
 
     /// Invalidate the auth context and cancel the inactivity timer.
@@ -207,7 +225,7 @@ final class VaultManager {
         self.authContext?.invalidate()
         self.authContext     = nil
         self.recoveryHealth  = nil
-        self.bekErosion      = nil
+        self.backupErosion   = nil
     }
 
     // MARK: - Create

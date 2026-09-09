@@ -14,7 +14,7 @@ import Foundation
 @Suite("BEKPayloadCodec — fixed-width Payload wire format")
 struct BEKPayloadCodecTests {
 
-    private typealias Codec = VaultManager.BEKPayloadCodec
+    private typealias Codec = VaultManager.Backup.PayloadCodec
 
     private func makeShard(
         contactID: UUID = UUID(),

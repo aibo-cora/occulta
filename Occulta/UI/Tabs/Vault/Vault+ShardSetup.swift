@@ -538,7 +538,7 @@ struct VaultShardSetup: View {
             return try? self.vault.shardDistributionMetadata(for: id)
         case .backup:
             _ = self.bekRows
-            return try? self.vault.bekShardMetadata(currentDepth: self.security.currentDepth)
+            return try? self.vault.backupShardMetadata(currentDepth: self.security.currentDepth)
         }
     }
 
@@ -551,7 +551,7 @@ struct VaultShardSetup: View {
     /// - New entry (no distribution): seed selectedIDs from the global trustee config
     ///   if set; threshold stays at its default of 2.
     private func seedInitialState() {
-        if case .backup = self.mode { try? self.vault.setupBEK(currentDepth: self.security.currentDepth) }
+        if case .backup = self.mode { try? self.vault.setupBackup(currentDepth: self.security.currentDepth) }
 
         if let meta = self.fetchDistributionMeta() {
             let activeIDs = Set(meta.shards
@@ -624,12 +624,18 @@ struct VaultShardSetup: View {
     }
 
     /// Call the correct prepare function for the current mode.
+    ///
+    /// Backup-key shards only ever need the recipient's identifier — see
+    /// `Backup.prepareShards`'s own doc comment — so this narrows to `[String]` on
+    /// that branch. The entry branch still passes the full `[Contact.Profile]` through:
+    /// `VaultManager.prepareShards(for:threshold:recipients:)` isn't part of this
+    /// change.
     private func performPrepareShards(k: Int, recipients: [Contact.Profile]) throws -> [SignedAttribute] {
         switch self.mode {
         case .entry(let id): return try self.vault.prepareShards(for: id, threshold: k, recipients: recipients)
         case .backup:
-            return try self.vault.prepareBEKShards(
-                threshold: k, recipients: recipients, currentDepth: self.security.currentDepth
+            return try self.vault.prepareBackupShards(
+                threshold: k, recipients: recipients.map(\.identifier), currentDepth: self.security.currentDepth
             )
         }
     }

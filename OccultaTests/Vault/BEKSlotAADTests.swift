@@ -15,7 +15,7 @@ import CryptoKit
 @Suite("BEKSlotAAD — per-slot AAD for the BEK array")
 struct BEKSlotAADTests {
 
-    private typealias SlotAAD = VaultManager.BEKSlotAAD
+    private typealias SlotAAD = VaultManager.Backup.SlotAAD
 
     @Test("Deterministic — the same slot index always produces the same AAD")
     func deterministicForSameIndex() {

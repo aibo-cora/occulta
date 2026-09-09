@@ -135,7 +135,7 @@ extension Manager {
         /// AAD binding each slot's ciphertext to its own position in the file — closes
         /// Bug 106 (`bugs.md`): without this, a slot's ciphertext could be relocated to a
         /// different slot position and still decrypt successfully, since decryption never
-        /// depended on where the bytes physically sit. Same shape as `VaultManager.BEKSlotAAD`
+        /// depended on where the bytes physically sit. Same shape as `VaultManager.Backup.SlotAAD`
         /// (`Vault+Manager+Backup.swift`), own domain string — the two files' keys already
         /// differ, so reuse would be cryptographically safe, but a self-contained identity
         /// is the established convention here rather than leaning on key-independence as a
@@ -181,7 +181,7 @@ extension Manager {
 
         private let backend: any LayerStoreBackend
 
-        init(backend: any LayerStoreBackend = AppGroupLayerStoreBackend()) {
+        init(backend: any LayerStoreBackend = AppGroupLayerStoreBackend(directory: "blobs")) {
             self.backend = backend
         }
 

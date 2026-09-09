@@ -142,12 +142,13 @@ struct VaultTab: View {
                 if isUnlocked && self.postRestoreActionNeeded {
                     self.showPostRestoreSheet = true
                 }
-                // backupStaleness and bekErosion are both depth-scoped and VaultManager
-                // has no way to know currentDepth on its own — refresh them here, where
-                // both vault and security are in scope, rather than inside unlock() itself.
+                // backupStaleness and backupErosion are both depth-scoped and
+                // VaultManager has no way to know currentDepth on its own — refresh
+                // them here, where both vault and security are in scope, rather than
+                // inside unlock() itself.
                 if isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
-                    self.vault.refreshBekErosion(currentDepth: self.security.currentDepth)
+                    self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
             .onChange(of: self.postRestoreActionNeeded) { _, newValue in
@@ -160,7 +161,7 @@ struct VaultTab: View {
                 // isUnlocked transition above never fires.
                 if self.vault.isUnlocked {
                     self.vault.refreshBackupStaleness(currentDepth: self.security.currentDepth)
-                    self.vault.refreshBekErosion(currentDepth: self.security.currentDepth)
+                    self.vault.refreshBackupErosion(currentDepth: self.security.currentDepth)
                 }
             }
         }
@@ -223,9 +224,9 @@ struct VaultTab: View {
         let affectedIDs    = Set(affected.map(\.entryID))
         let normalEntries  = visibleEntries.filter { !affectedIDs.contains($0.id) }
 
-        // BEK erosion: read the stored property computed by recomputeRecoveryHealth().
+        // Backup-key erosion: read the stored property computed by refreshBackupErosion().
         // Same pending+confirmed logic as PEK — no crypto calls at render time.
-        let bekAffected = self.vault.bekErosion
+        let bekAffected = self.vault.backupErosion
 
         let stale      = self.vault.backupStaleness
         let staleCount = stale.map {
@@ -410,10 +411,10 @@ struct VaultTab: View {
                     NavigationLink {
                         VaultShardSetup(mode: .backup)
                     } label: {
-                        VaultBackupRow(state: self.vault.bekSetupState(currentDepth: self.security.currentDepth))
+                        VaultBackupRow(state: self.vault.backupSetupState(currentDepth: self.security.currentDepth))
                     }
                 } footer: {
-                    if self.vault.bekSetupState(currentDepth: self.security.currentDepth) == .ready {
+                    if self.vault.backupSetupState(currentDepth: self.security.currentDepth) == .ready {
                         Button {
                             self.showExportEducation = true
                         } label: {
@@ -601,7 +602,7 @@ private struct VaultEntryRow: View {
 // MARK: - Backup Recovery Row
 
 private struct VaultBackupRow: View {
-    let state: VaultManager.BEKSetupState
+    let state: VaultManager.Backup.SetupState
 
     private var subtitle: String {
         switch state {

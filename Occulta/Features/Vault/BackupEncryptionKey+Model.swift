@@ -17,7 +17,7 @@
 //    trustees, or threshold. Resolving requires a biometric unlock.
 //
 //  Lifecycle:
-//  - Inserted by VaultManager.setupBEK() on first backup configuration.
+//  - Inserted by VaultManager.Backup.setup() on first backup configuration.
 //  - Delete-and-replace on every write (same convention as GlobalShardConfig):
 //    the new row gets a fresh id, keeping the AAD contract simple.
 //  - Updated on distribution (new shard metadata), status transitions,

@@ -19,7 +19,7 @@ final class InMemoryLayerStoreBackend: LayerStoreBackend {
     }
 
     func read() throws -> Data {
-        guard let stored else { throw Manager.LayerStore.Error.notFound }
+        guard let stored else { throw LayerStoreBackendError.notFound }
         return stored
     }
 

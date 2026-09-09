@@ -39,7 +39,7 @@ private let pendingRestoreShardsURL = appSupport.appendingPathComponent("backup-
 
 /// Both restore files live at fixed global paths, so a leftover from one test changes
 /// what `unlock(context:)` does in the next — it calls `refreshPendingRestoreState()`
-/// and then `attemptBEKRestore()`. Clear them around every test in this suite.
+/// and then `attemptBackupRestore()`. Clear them around every test in this suite.
 private func clearRestoreFiles() {
     try? FileManager.default.removeItem(at: pendingRestoreURL)
     try? FileManager.default.removeItem(at: pendingRestoreShardsURL)
@@ -67,7 +67,7 @@ private func makeContainer() throws -> ModelContainer {
 
 /// A vault with a BEK and enough *confirmed* shards that `exportBackup` will run.
 /// Returns the shard attributes too — the restore path consumes them, and
-/// `prepareBEKShards` is the only way to obtain shares that reconstruct this BEK.
+/// `prepareBackupShards` is the only way to obtain shares that reconstruct this BEK.
 @MainActor
 private func makeBackupReadyVault() throws -> (vault: VaultManager,
                                                container: ModelContainer,
@@ -76,32 +76,24 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
     let vault = VaultManager(
-        modelContainer: container, keyManager: TestKeyManager(), bekArrayBackend: InMemoryBEKArrayBackend()
+        modelContainer: container, keyManager: TestKeyManager(), backupBackend: InMemoryLayerStoreBackend()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
-    try vault.setupBEK(currentDepth: 0)
+    try vault.setupBackup(currentDepth: 0)
 
-    let recipients = (0..<2).map { _ -> Contact.Profile in
-        // A real UUID string, not a "trustee-N" label — BEKPayloadCodec's fixed-width
-        // wire format stores contactIdentifier as raw UUID bytes (item 3), and the
-        // field's own doc comment already documents it as "a stable SwiftData UUID."
-        let p = Contact.Profile(
-            identifier: UUID().uuidString, givenName: "", familyName: "", middleName: "",
-            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        container.mainContext.insert(p)
-        return p
-    }
-    try container.mainContext.save()
+    // Real UUID strings, not "trustee-N" labels — BEKPayloadCodec's fixed-width wire
+    // format stores contactIdentifier as raw UUID bytes (item 3). No Contact.Profile
+    // needed here any more — prepareBackupShards takes identifiers directly.
+    let recipients = (0..<2).map { _ in UUID().uuidString }
 
-    let shards = try vault.prepareBEKShards(threshold: 2, recipients: recipients, currentDepth: 0)
+    let shards = try vault.prepareBackupShards(threshold: 2, recipients: recipients, currentDepth: 0)
     for shard in shards {
-        try vault.updateBEKShardStatus(attributeID: shard.id, to: .confirmed)
+        try vault.updateShardStatus(attributeID: shard.id, to: .confirmed)
     }
     return (vault, container, shards)
 }
 
-/// A vault with no BEK at all — the genuine new-device restore target. `setupBEK()` has
+/// A vault with no BEK at all — the genuine new-device restore target. `setupBackup()` has
 /// exactly one production caller (`Vault+ShardSetup.swift:553`, `.backup` mode only), so
 /// a device that has never configured backup reaches a restore in precisely this state.
 @MainActor
@@ -109,20 +101,20 @@ private func makeFreshVault() throws -> (vault: VaultManager, container: ModelCo
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
     let vault = VaultManager(
-        modelContainer: container, keyManager: TestKeyManager(), bekArrayBackend: InMemoryBEKArrayBackend()
+        modelContainer: container, keyManager: TestKeyManager(), backupBackend: InMemoryLayerStoreBackend()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
     return (vault, container)
 }
 
-/// Reads `currentDepth: 0` unconditionally — `reconstructBEK` still only ever writes
+/// Reads `currentDepth: 0` unconditionally — `reconstructBackup` still only ever writes
 /// depth 0's slot (item 9, deferred until `RECOVERY_BUFFER_LAYERING.md`'s Stage 4), so
 /// depth 0 is where every test in this suite's BEK actually lives regardless of which
-/// depth `attemptBEKRestore` was called with.
+/// depth `attemptBackupRestore` was called with.
 @MainActor
 private func bekBytes(of vault: VaultManager) throws -> Data {
     var bytes = Data()
-    try vault.currentBEK(currentDepth: 0).withUnsafeBytes { bytes = Data($0) }
+    try vault.currentBackupKey(currentDepth: 0).withUnsafeBytes { bytes = Data($0) }
     return bytes
 }
 
@@ -138,9 +130,9 @@ struct VaultRestoreTrustTests {
 
     /// The attack, end to end, in the one call that decides it.
     ///
-    /// `attemptBEKRestore` passes `ownerIdentity: nil`, so the GCM tag is the only check —
+    /// `attemptBackupRestore` passes `ownerIdentity: nil`, so the GCM tag is the only check —
     /// and it only proves the shards match the file. Here the *same* party produced both,
-    /// so the tag proves nothing about whose backup this is. Remedy 1 (`reconstructBEK`'s
+    /// so the tag proves nothing about whose backup this is. Remedy 1 (`reconstructBackup`'s
     /// step 0) refuses before any of that runs, purely because the victim already has a row.
     @Test("A foreign backup and its own shards must not replace an existing BEK")
     func foreignShardsCannotReplaceExistingBEK() throws {
@@ -159,7 +151,7 @@ struct VaultRestoreTrustTests {
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
-            try victim.vault.reconstructBEK(
+            try victim.vault.reconstructBackup(
                 shards:        attacker.shards,
                 backupData:    attackerBackup,
                 ownerIdentity: nil
@@ -176,9 +168,9 @@ struct VaultRestoreTrustTests {
 
     /// The second half of the same harm: once the BEK has been replaced, `importBackup`
     /// decrypts the attacker's file with it and inserts their rows into the user's vault.
-    /// With remedy 1 in place, `reconstructBEK` never gets far enough to replace anything,
+    /// With remedy 1 in place, `reconstructBackup` never gets far enough to replace anything,
     /// so `importBackup` is never even reached on this path — asserted directly below rather
-    /// than via `attemptBEKRestore`, since that already stops calling it once the first throws.
+    /// than via `attemptBackupRestore`, since that already stops calling it once the first throws.
     @Test("A foreign backup's entries must not be inserted into an existing vault")
     func foreignEntriesAreNotInserted() throws {
         clearRestoreFiles()
@@ -193,8 +185,8 @@ struct VaultRestoreTrustTests {
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         #expect(throws: VaultManager.BackupError.bekAlreadyPresent) {
-            try victim.vault.reconstructBEK(shards: attacker.shards,
-                                            backupData: attackerBackup, ownerIdentity: nil)
+            try victim.vault.reconstructBackup(shards: attacker.shards,
+                                           backupData: attackerBackup, ownerIdentity: nil)
         }
         // importBackup still decrypts with whatever BEK is installed — the victim's own,
         // unchanged — so the attacker's ciphertext must fail to open at all, not just fail
@@ -238,9 +230,9 @@ struct VaultRestoreTrustTests {
 
         // The replacement device: vault set up, backup never configured, so no BEK row.
         let fresh = try makeFreshVault()
-        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, "a fresh device must start with no BEK")
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "a fresh device must start with no BEK")
 
-        try fresh.vault.reconstructBEK(shards: owner.shards, backupData: backup, ownerIdentity: nil)
+        try fresh.vault.reconstructBackup(shards: owner.shards, backupData: backup, ownerIdentity: nil)
         #expect(try bekBytes(of: fresh.vault) == ownerBEK,
                 "reconstruction must install the owner's BEK on a device that had none")
 
@@ -255,7 +247,7 @@ struct VaultRestoreTrustTests {
     }
 
     /// `storePendingRestore` now refuses outright when a BEK already exists (Bug 93's own
-    /// two-signal check, reusing remedy 1's `fetchDecodedBEK`) — a hostile file on an
+    /// two-signal check, reusing remedy 1's `Backup.fetchDecoded`) — a hostile file on an
     /// existing-BEK device is rejected before it is ever written, not armed-then-cleaned-up.
     /// This is what `existingBEKRestoreDoesNotStallForever` below used to test by calling
     /// `storePendingRestore` directly; that path is no longer reachable, so it now
@@ -328,16 +320,16 @@ struct VaultRestoreTrustTests {
     }
 
     /// The consequence of remedy 1 that motivated it: on an existing-BEK device, every group
-    /// `reconstructBEK` sees now fails immediately via `bekAlreadyPresent` — so the "success"
+    /// `reconstructBackup` sees now fails immediately via `bekAlreadyPresent` — so the "success"
     /// branch that clears `pendingRestoreActive` and deletes the restore files can never run.
-    /// Without the early check in `attemptBEKRestore`, a single stale `.occbak` would leave
+    /// Without the early check in `attemptBackupRestore`, a single stale `.occbak` would leave
     /// the device permanently in "restoring" state: the banner never clears, and every future
     /// shard arrival keeps appending to a file nothing will ever read successfully again.
     ///
     /// Constructed by writing directly to the restore paths, bypassing `storePendingRestore` —
     /// that path now refuses outright on an existing-BEK device (see the test above), so this
     /// scenario is only reachable the way it would be in practice: a file already pending
-    /// *before* a BEK existed (attacker-armed, or simply stale), with `setupBEK()` called
+    /// *before* a BEK existed (attacker-armed, or simply stale), with `setupBackup()` called
     /// afterward through ordinary use while it still sat there.
     @Test("A stale restore on an existing-BEK device cleans itself up, not stalls forever")
     func existingBEKRestoreDoesNotStallForever() throws {
@@ -354,7 +346,7 @@ struct VaultRestoreTrustTests {
         #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
         #expect(victim.vault.pendingRestoreShardCount == 1)
 
-        victim.vault.attemptBEKRestore(currentDepth: 0)
+        victim.vault.attemptBackupRestore(currentDepth: 0)
 
         #expect(!victim.vault.pendingRestoreActive, """
             pendingRestoreActive is stuck true — every future unlock will retry against a \
@@ -370,7 +362,7 @@ struct VaultRestoreTrustTests {
 
 // MARK: - Bug 93
 
-/// Depth-gating for the automatic restore path. `attemptBEKRestore` must never complete
+/// Depth-gating for the automatic restore path. `attemptBackupRestore` must never complete
 /// above depth 0 (defer), and `refreshPendingRestoreState` must never publish real state
 /// above depth 0 (hide) — the two ship together, since deferring without hiding turns a
 /// disclosure into a self-contradicting oracle.
@@ -396,9 +388,9 @@ struct VaultRestoreDepthGatingTests {
         try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
-        fresh.vault.attemptBEKRestore(currentDepth: 0)
+        fresh.vault.attemptBackupRestore(currentDepth: 0)
 
-        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) != nil, "the BEK must be installed at depth 0")
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil, "the BEK must be installed at depth 0")
         #expect(!fresh.vault.pendingRestoreActive, "a completed restore must clear the flag")
     }
 
@@ -417,9 +409,9 @@ struct VaultRestoreDepthGatingTests {
         try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
-        fresh.vault.attemptBEKRestore(currentDepth: 2)
+        fresh.vault.attemptBackupRestore(currentDepth: 2)
 
-        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, """
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, """
             The restore completed while the caller reported a duress depth — a recovered \
             real-layer vault was just filed into whichever layer the coercer happened to \
             be looking at.
@@ -441,11 +433,11 @@ struct VaultRestoreDepthGatingTests {
         try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
 
-        fresh.vault.attemptBEKRestore(currentDepth: 3)
-        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, "must not complete above depth 0")
+        fresh.vault.attemptBackupRestore(currentDepth: 3)
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "must not complete above depth 0")
 
-        fresh.vault.attemptBEKRestore(currentDepth: 0)
-        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) != nil, """
+        fresh.vault.attemptBackupRestore(currentDepth: 0)
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil, """
             Shards collected while at a duress depth must not be lost — the deferred \
             restore must complete on the next depth-0 attempt using the same shards.
             """)
@@ -504,9 +496,9 @@ struct VaultRestoreDepthGatingTests {
             try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)")
         }
 
-        fresh.vault.attemptBEKRestore(currentDepth: 2)
+        fresh.vault.attemptBackupRestore(currentDepth: 2)
 
-        #expect((try? fresh.vault.currentBEK(currentDepth: 0)) == nil, """
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, """
             Deferral is the half of Bug 93 that stays. A full shard set at a duress depth must \
             not install the BEK — showing the banner there is only safe because completion \
             still cannot happen.
@@ -527,7 +519,7 @@ struct VaultRestoreRobustnessTests {
     private func sealedBackup(_ backup: VaultManager.VaultBackup,
                               under vault: VaultManager) throws -> Data {
         let json   = try JSONEncoder().encode(backup)
-        let sealed = try AES.GCM.seal(json, using: try vault.currentBEK(currentDepth: 0),
+        let sealed = try AES.GCM.seal(json, using: try vault.currentBackupKey(currentDepth: 0),
                                       nonce: AES.GCM.Nonce(), authenticating: backupFileAAD)
         var out = Data("OCBK".utf8)
         out.append(sealed.combined!)
@@ -582,7 +574,7 @@ struct VaultRestoreRobustnessTests {
     /// and the dedup scan still decrypts every buffered row on each arrival.
     ///
     /// **Scoped to a fresh, no-BEK vault deliberately.** On an existing-BEK device, the early
-    /// check added to `attemptBEKRestore` bounds this to roughly one shard per arming cycle in
+    /// check added to `attemptBackupRestore` bounds this to roughly one shard per arming cycle in
     /// real usage — `acceptReturnedShard` calls it immediately after every `storeRestoreShard`
     /// — so this test would no longer reflect production behaviour if run against
     /// `makeBackupReadyVault()`. The no-BEK population has no equivalent early-out (there is no

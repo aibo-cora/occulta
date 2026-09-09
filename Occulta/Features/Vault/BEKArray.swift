@@ -2,16 +2,18 @@
 //  BEKArray.swift
 //  Occulta
 //
-//  32-slot BEK array — the crypto and slot logic layer over BEKArrayBackend.
-//  Wires together BEKPayloadCodec (wire format) and BEKSlotAAD (per-slot AAD).
-//  Same split VaultManager.BEKPayloadCodec/BEKSlotAAD already established, and
-//  the same backend/logic split Manager.LayerStore uses over LayerStoreBackend.
+//  VaultManager.Backup.LayerStore — the crypto and slot logic layer over the shared
+//  LayerStoreBackend, mirroring Manager.LayerStore's own shape and name deliberately
+//  (VAULT_KEY_LAYERING.md item 13): same backend protocol, same "backend handles raw
+//  I/O only" split, parallel naming so a reader who knows one recognizes the other
+//  immediately. Filename kept for git history continuity; the type itself dropped
+//  the "BEK" prefix along with every other symbol in this namespace.
 //
 //  ── Wire format ──────────────────────────────────────────────────────────────
 //
 //    File is always exactly slotCount × slotCiphertextSize bytes.
-//    Every slot is independently AES-GCM sealed: BEKPayloadCodec.payloadSize
-//    bytes of plaintext, BEKSlotAAD.aad(slotIndex:) as AAD.
+//    Every slot is independently AES-GCM sealed: PayloadCodec.payloadSize
+//    bytes of plaintext, SlotAAD.aad(slotIndex:) as AAD.
 //    All 32 slots are re-sealed with fresh nonces on every write (item 7).
 //
 //    No file-identification-by-key logic here yet — this array lives in its own
@@ -24,11 +26,12 @@
 import Foundation
 import CryptoKit
 
-extension VaultManager {
+extension VaultManager.Backup {
 
-    /// Crypto and slot logic for the 32-slot BEK array. No knowledge of the
-    /// filesystem — that's `BEKArrayBackend`'s job.
-    final class BEKArray {
+    /// Crypto and slot logic for the 32-slot backup-key array. No knowledge of
+    /// the filesystem — that's `LayerStoreBackend`'s job, shared with Contact's
+    /// own `Manager.LayerStore` since item 13's backend unification.
+    final class LayerStore {
 
         enum Error: Swift.Error, Equatable {
             /// The file exists but isn't the expected total size — truncation,
@@ -46,13 +49,13 @@ extension VaultManager {
             case sealFailed
         }
 
-        static let slotCount:          Int = BEKSlotAAD.slotCount
-        static let slotCiphertextSize: Int = BEKPayloadCodec.payloadSize + 28   // nonce(12) + tag(16)
-        static let fileSize:           Int = BEKArray.slotCount * BEKArray.slotCiphertextSize
+        static let slotCount:          Int = SlotAAD.slotCount
+        static let slotCiphertextSize: Int = PayloadCodec.payloadSize + 28   // nonce(12) + tag(16)
+        static let fileSize:           Int = LayerStore.slotCount * LayerStore.slotCiphertextSize
 
-        private let backend: any BEKArrayBackend
+        private let backend: any LayerStoreBackend
 
-        init(backend: any BEKArrayBackend = AppGroupBEKArrayBackend()) {
+        init(backend: any LayerStoreBackend) {
             self.backend = backend
         }
 
@@ -64,12 +67,12 @@ extension VaultManager {
         /// also `nil`, not an error — same "first creation" case `write()`
         /// already treats as legitimate.
         func read(slotIndex: Int, vaultKey: SymmetricKey) throws -> BackupEncryptionKey.Payload? {
-            precondition(BEKSlotAAD.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
+            precondition(SlotAAD.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
 
             let fileData: Data
             do {
                 fileData = try self.backend.read()
-            } catch BEKArrayBackendError.notFound {
+            } catch LayerStoreBackendError.notFound {
                 return nil
             }
             guard fileData.count == Self.fileSize else { throw Error.fileSizeMismatch }
@@ -78,7 +81,7 @@ extension VaultManager {
             defer { for i in bytes.indices { bytes[i] = 0 } }
 
             let plaintext = try Self.openSlot(slotIndex, in: bytes, using: vaultKey)
-            return BEKPayloadCodec.decode(plaintext)
+            return PayloadCodec.decode(plaintext)
         }
 
         // MARK: - Write one slot (full-array reseal, item 7)
@@ -91,7 +94,7 @@ extension VaultManager {
         /// exact bug `Manager.LayerStore.push()`/`pop()` have (Bug 107), fixed
         /// here from the start rather than retrofitted.
         func write(_ payload: BackupEncryptionKey.Payload, slotIndex: Int, vaultKey: SymmetricKey) throws {
-            precondition(BEKSlotAAD.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
+            precondition(SlotAAD.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
 
             var existing: [[UInt8]?] = Array(repeating: nil, count: Self.slotCount)
             defer {
@@ -108,7 +111,7 @@ extension VaultManager {
                 for i in 0..<Self.slotCount where i != slotIndex {
                     existing[i] = [UInt8](try Self.openSlot(i, in: bytes, using: vaultKey))
                 }
-            } catch BEKArrayBackendError.notFound {
+            } catch LayerStoreBackendError.notFound {
                 // First creation — no existing file. Every other slot gets fresh
                 // filler below; nothing to preserve.
             }
@@ -120,14 +123,14 @@ extension VaultManager {
             for i in 0..<Self.slotCount {
                 let plaintext: [UInt8]
                 if i == slotIndex {
-                    plaintext = [UInt8](try BEKPayloadCodec.encode(payload))
+                    plaintext = [UInt8](try PayloadCodec.encode(payload))
                 } else if let preserved = existing[i] {
                     plaintext = preserved
                 } else {
-                    plaintext = [UInt8](Data.randomBytes(BEKPayloadCodec.payloadSize))
+                    plaintext = [UInt8](Data.randomBytes(PayloadCodec.payloadSize))
                 }
                 guard let combined = try? AES.GCM.seal(
-                    Data(plaintext), using: vaultKey, authenticating: BEKSlotAAD.aad(slotIndex: i)
+                    Data(plaintext), using: vaultKey, authenticating: SlotAAD.aad(slotIndex: i)
                 ).combined else {
                     throw Error.sealFailed
                 }
@@ -143,7 +146,7 @@ extension VaultManager {
             let offset = index * Self.slotCiphertextSize
             let cipher = Data(bytes[offset..<(offset + Self.slotCiphertextSize)])
             guard let box = try? AES.GCM.SealedBox(combined: cipher),
-                  let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: BEKSlotAAD.aad(slotIndex: index))
+                  let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: SlotAAD.aad(slotIndex: index))
             else {
                 throw Error.corruptSlot(index: index)
             }
