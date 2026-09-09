@@ -10,7 +10,9 @@ primarily in `plan.md`, cross-referenced here since S8 inherits it directly — 
 and its own co-requisite (`readPayload`'s missing validation) are both built now, neither wired to a
 caller. Item 13 (2026-09-09) proposes unifying the raw I/O backend across `Manager.LayerStore`,
 `BEKArray`, and the future vault-entries array now, but sequences unifying their crypto/logic layer
-behind fixing `bugs.md` Bug 106 first (the contact store's missing AAD) — proposed, not confirmed as
+behind fixing `bugs.md` Bug 106's AAD half first (the contact store's missing slot binding, not its
+separate, unfixed, accepted-tradeoff shared-key half) — that prerequisite is now built and tested,
+same day; the backend and crypto-layer unifications themselves remain proposed, not confirmed as
 something to build. Implementation started
 2026-09-08 — Stage 1's core is built (see §7 table): the BEK array, its codec and AAD, and the wiring
 into `fetchDecodedBEK`/`persistBEKPayload` with migration folded in. Stage 2's array-routing half is
@@ -1060,22 +1062,30 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     shared class would not collapse the Secure-Mode-key/vault-key domain separation §4 protects: each
     caller still supplies its own key, exactly as today. **What actually blocks sharing this layer
     right now: `Manager.LayerStore` uses no AAD at all** — checked directly, every `AES.GCM.seal`/`.open`
-    call in `SecureMode+LayerStore.swift` was grepped for `authenticating:`; none exists. That's Bug
-    106, already filed and open (*"The contact LayerStore has no cryptographic cross-depth isolation,
-    the same gap Bug 92 names for the BEK"*). Unifying today means either the new classes lose their
-    AAD to match `LayerStore`'s weaker posture (a real regression) or `LayerStore` gains AAD to match
-    theirs (correct, but a genuine format change to shipped, already-relied-upon content — needs its
-    own migration plan, the same standing requirement every other format change in this container has
-    already been held to, not a side effect to wave through inside a refactor). Slot count and slot
-    size (32×32KB fixed vs. 32×10,761B fixed vs. dynamic) are the easy part — constructor parameters,
-    not a real obstacle.
+    call in `SecureMode+LayerStore.swift` was grepped for `authenticating:`; none exists. That's the
+    separable half of Bug 106 (*"the contact `LayerStore` has no cryptographic cross-depth
+    isolation"*) — not the shared-`layerKey` half, which is the same accepted tradeoff item 7 already
+    settled for BEK and isn't being fixed; the AAD-binding half, which Bug 106's own text flagged as
+    "code discipline, not cryptography" without separating it out as its own fixable gap. Slot count
+    and slot size (32×32KB fixed vs. 32×10,761B fixed vs. dynamic) are the easy part — constructor
+    parameters, not a real obstacle.
 
-    **Sequencing: fix Bug 106 on its own terms first — own migration plan, own tests, own commit — then
-    revisit unifying the crypto/logic layer as a separate decision, not a bundled one.** Doing both at
-    once risks the AAD fix being reviewed as "part of a refactor" rather than as the security fix it
-    actually is.
+    **Prerequisite met, 2026-09-09: `LayerStore.SlotAAD` closes the AAD-binding half** — own migration
+    (fall back to the pre-fix no-AAD scheme on open, upgrade on the next `push()`/`pop()`, both of
+    which already reseal every slot unconditionally), own tests
+    (`LayerStoreSlotAADFixTests.swift`), own commit, exactly as sequenced below. `Manager.LayerStore`,
+    `BEKArray`, and the future vault-entries array now have matching AAD postures. **This does not by
+    itself mean unify the crypto/logic layer** — that's still a separate, unconfirmed decision; it
+    means the one concrete blocker named here is gone, not that the unification is approved.
 
-    **Not yet implemented.** Proposed, not built, not yet confirmed as something to build at all.
+    **Sequencing, as followed: fix Bug 106's AAD half on its own terms first — own migration plan, own
+    tests, own commit — before revisiting unifying the crypto/logic layer as a separate decision, not a
+    bundled one.** Doing both at once would have risked the AAD fix being reviewed as "part of a
+    refactor" rather than as the security fix it actually is.
+
+    **Not yet implemented — Part A (raw I/O unification) and the crypto/logic unification itself.**
+    Part B's prerequisite is now built; unifying the crypto/logic layer remains proposed, not built,
+    not yet confirmed as something to build at all.
 both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and deferred —
 unreadable shells in the DB, existing `LayerStore` blob is the canonical copy, loaded to memory on
 unlock, wiped on lock — no new file or key, four named steps. Vault entries reuse the identical

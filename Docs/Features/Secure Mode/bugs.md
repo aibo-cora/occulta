@@ -8105,7 +8105,8 @@ all, which is consistent with the code having no depth awareness to test.
 
 ## Bug 106 — The contact `LayerStore` has no cryptographic cross-depth isolation, the same gap Bug 92 names for the BEK
 
-**Status:** **Open, severity not yet assessed.** Filed 2026-09-07, found while working through
+**Status:** **Open for the headline issue (shared key, accepted tradeoff, not being fixed); the
+separable AAD/slot-binding half is fixed, 2026-09-09 — see *Partial fix* below.** Filed 2026-09-07, found while working through
 `VAULT_KEY_LAYERING.md` item 7 (a duress-depth-detection risk in the new BEK slot array) and asking
 why the *existing* contact `LayerStore` can safely reseal all 32 slots with fresh nonces on every
 write without hitting the same problem. The answer — it has no per-depth key isolation to begin with
@@ -8171,11 +8172,40 @@ work yet.
   entry is what makes "accept the same posture" a documented, precedented choice rather than an
   unexamined one.
 
+### Partial fix, 2026-09-09 — closes a narrower, separable gap this entry's own text raised but never
+cleanly split out from the headline issue. **The headline issue — the shared `layerKey` itself, no
+depth input, the same accepted tradeoff `VAULT_KEY_LAYERING.md` item 7 settled for the BEK array — is
+unfixed and, per that precedent, not going to be fixed.** Full-array reseal needs one shared key to
+resurface 31 slots it didn't write; that's still true here exactly as it is for BEK.
+
+What this section already flagged, without naming it as its own gap: *"`pop()`'s `slotIndexMismatch`
+check happens after decryption, on the plaintext... code discipline, not cryptography."* That's a
+second, separable property from the shared key — whether a slot's ciphertext is bound to its own
+position in the file at all, checked at the AEAD-authentication layer rather than by a caller
+remembering to compare a decoded field afterward. `BEKArray` already has this, via `BEKSlotAAD`, kept
+even after item 7 superseded the *other* half of item 4 (the live-slot key) — the two properties were
+already separable there. `LayerStore` had neither.
+
+**Fixed:** `LayerStore.SlotAAD` (nested in `SecureMode+LayerStore.swift`, private — same shape as
+`BEKSlotAAD`, own domain string) binds every slot to its position. A slot opened without it falls back
+to the pre-fix (no-AAD) scheme, so existing files keep reading; every slot gets re-sealed under the new
+scheme on the very next `push()`/`pop()`, which already reseal all 32 slots unconditionally — no
+separate migration pass needed. `LayerStoreSlotAADFixTests.swift` proves: a legacy slot still opens via
+the fallback; popping a legacy file upgrades even the untouched filler slots, not just the popped one;
+and a slot's ciphertext relocated to a different position (the actual attack this AAD stops) is now
+discarded as fresh filler by the preserve path instead of being silently carried forward with the
+wrong identity, which is what happened before — checked directly, not assumed, since the first version
+of that test asserted the wrong resulting error type. **This closes the plaintext-only, "code
+discipline, not cryptography" half named above; the shared-key half is the part Bug 92/item 7 already
+decided is not being closed.**
+
 ### Guard
 
-None. No test asserts that a session at one depth cannot open another depth's contact slot, or
-documents that no such test exists because the property isn't claimed — the same absence Bug 105's
-own Guard section notes for BEK distribution.
+`LayerStoreSlotAADFixTests.swift` (2026-09-09) covers the AAD/migration fix above — legacy fallback,
+migration-on-write, and slot relocation. **Still none for the headline issue**: no test asserts that a
+session at one depth cannot open another depth's contact slot with the shared key, or documents that
+no such test exists because the property isn't claimed — the same absence Bug 105's own Guard section
+notes for BEK distribution, and the same accepted-tradeoff shape item 7 already documents there.
 
 ## Bug 107 — `Manager.LayerStore.push()`/`pop()` silently replace an unreadable slot with fresh
 random filler, indistinguishable from a slot that was always empty

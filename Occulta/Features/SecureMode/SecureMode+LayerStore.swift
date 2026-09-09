@@ -22,7 +22,13 @@
 //  ── Encryption ───────────────────────────────────────────────────────────────
 //
 //    layerKey = HKDF-SHA256(IKM: seKey, info: "layer-store-key", outputLen: 32)
-//    slot     = AES-GCM(layerKey, plaintext, randomNonce)   [combined: nonce ∥ ciphertext ∥ tag]
+//    slot     = AES-GCM(layerKey, plaintext, randomNonce, LayerStore.SlotAAD.aad(slotIndex:))
+//               [combined: nonce ∥ ciphertext ∥ tag]
+//
+//    AAD binds each slot to its own position (Bug 106 fix) — a slot opened without
+//    it falls back to the pre-fix scheme (no AAD at all) so existing files keep
+//    reading, and gets re-sealed under the new scheme on the very next push()/pop(),
+//    which already reseal every slot unconditionally. No separate migration pass.
 //
 //  ── Storage ──────────────────────────────────────────────────────────────────
 //
@@ -124,6 +130,33 @@ extension Manager {
 
         private static let hkdfInfo = Data("layer-store-key".utf8)
 
+        // MARK: - Slot AAD (Bug 106 fix)
+
+        /// AAD binding each slot's ciphertext to its own position in the file — closes
+        /// Bug 106 (`bugs.md`): without this, a slot's ciphertext could be relocated to a
+        /// different slot position and still decrypt successfully, since decryption never
+        /// depended on where the bytes physically sit. Same shape as `VaultManager.BEKSlotAAD`
+        /// (`Vault+Manager+Backup.swift`), own domain string — the two files' keys already
+        /// differ, so reuse would be cryptographically safe, but a self-contained identity
+        /// is the established convention here rather than leaning on key-independence as a
+        /// property nobody has to reason about later.
+        ///
+        /// Does **not** close the separate, already-accepted gap this store shares with the
+        /// BEK array (`VAULT_KEY_LAYERING.md` item 7): every slot is still sealed under the
+        /// same `layerKey`, so a coercer holding that key can still open every depth's slot
+        /// directly. That's the unavoidable cost of full-array reseal, not something this
+        /// AAD is meant to fix.
+        private enum SlotAAD {
+            private static let domain = Data("occulta-layer-store-slot-v1".utf8)
+
+            static func aad(slotIndex: Int) -> Data {
+                precondition((0..<LayerStore.slotCount).contains(slotIndex), "slot index \(slotIndex) out of range")
+                var out = Self.domain
+                out.append(UInt8(slotIndex))
+                return out
+            }
+        }
+
         /// Maintenance-rewrite threshold, drawn once per process from an 18–30 h window.
         ///
         /// A fixed 24 h cadence turns the store file's own modification timestamp into a
@@ -182,16 +215,20 @@ extension Manager {
             var file = Data(capacity: Self.slotCount * Self.slotCiphertextSize)
             for i in 0..<Self.slotCount {
                 if i == slotIndex {
-                    guard let combined = try? AES.GCM.seal(plaintext, using: key).combined else {
+                    guard let combined = try? AES.GCM.seal(
+                        plaintext, using: key, authenticating: SlotAAD.aad(slotIndex: i)
+                    ).combined else {
                         throw Error.encryptionFailed
                     }
                     file.append(combined)
                 } else if let plain = existing[i],
-                          let combined = try? AES.GCM.seal(plain, using: key).combined {
+                          let combined = try? AES.GCM.seal(
+                            plain, using: key, authenticating: SlotAAD.aad(slotIndex: i)
+                          ).combined {
                     // Re-seal existing plaintext (real payload at another depth or padding)
                     file.append(combined)
                 } else {
-                    file.append(try self.sealRandom(using: key))
+                    file.append(try self.sealRandom(using: key, slotIndex: i))
                 }
             }
 
@@ -221,16 +258,17 @@ extension Manager {
             var newFile = Data(capacity: Self.slotCount * Self.slotCiphertextSize)
             for i in 0..<Self.slotCount {
                 if i == slotIndex {
-                    newFile.append(try self.sealRandom(using: key))
+                    newFile.append(try self.sealRandom(using: key, slotIndex: i))
                 } else {
                     let offset = i * Self.slotCiphertextSize
                     let cipher = fileData[offset..<(offset + Self.slotCiphertextSize)]
-                    if let box      = try? AES.GCM.SealedBox(combined: cipher),
-                       let plain    = try? AES.GCM.open(box, using: key),
-                       let combined = try? AES.GCM.seal(plain, using: key).combined {
+                    if let plain    = Self.openSlot(cipher, using: key, slotIndex: i),
+                       let combined = try? AES.GCM.seal(
+                        plain, using: key, authenticating: SlotAAD.aad(slotIndex: i)
+                       ).combined {
                         newFile.append(combined)
                     } else {
-                        newFile.append(try self.sealRandom(using: key))
+                        newFile.append(try self.sealRandom(using: key, slotIndex: i))
                     }
                 }
             }
@@ -339,8 +377,7 @@ extension Manager {
         private func decodeSlot(_ index: Int, from fileData: Data, using key: SymmetricKey) throws -> LayerPayload {
             let offset = index * Self.slotCiphertextSize
             let cipher = fileData[offset..<(offset + Self.slotCiphertextSize)]
-            guard let box      = try? AES.GCM.SealedBox(combined: cipher),
-                  let plaintext = try? AES.GCM.open(box, using: key)
+            guard let plaintext = Self.openSlot(cipher, using: key, slotIndex: index)
             else { throw Error.decryptionFailed }
             let jsonEnd = plaintext.firstIndex(of: 0) ?? plaintext.endIndex
             return try JSONDecoder().decode(LayerPayload.self, from: plaintext[..<jsonEnd])
@@ -354,20 +391,36 @@ extension Manager {
             return (0..<Self.slotCount).map { i in
                 let offset = i * Self.slotCiphertextSize
                 let cipher = fileData[offset..<(offset + Self.slotCiphertextSize)]
-                guard let box   = try? AES.GCM.SealedBox(combined: cipher),
-                      let plain = try? AES.GCM.open(box, using: key)
-                else { return nil }
-                return plain
+                return Self.openSlot(cipher, using: key, slotIndex: i)
             }
         }
 
-        private func sealRandom(using key: SymmetricKey) throws -> Data {
+        /// Opens one slot's ciphertext, trying the current (AAD-bound) scheme first and
+        /// falling back to the pre-Bug-106-fix scheme (no AAD at all) on failure — the same
+        /// "try current, then legacy" dispatch `BEKPayloadCodec` uses for format versions,
+        /// keyed off which AAD succeeds rather than a version byte, since this file
+        /// deliberately carries no version tag (see the header comment). A slot that fails
+        /// both is genuinely corrupted or unreadable, not stale — the same distinction
+        /// Bug 107 already draws for this store. Every slot re-sealed after this fix ships
+        /// adopts the new AAD immediately, since push()/pop() already reseal all 32 slots
+        /// unconditionally on every call — no separate migration pass is needed.
+        private static func openSlot(_ cipher: Data, using key: SymmetricKey, slotIndex: Int) -> Data? {
+            guard let box = try? AES.GCM.SealedBox(combined: cipher) else { return nil }
+            if let plain = try? AES.GCM.open(box, using: key, authenticating: SlotAAD.aad(slotIndex: slotIndex)) {
+                return plain
+            }
+            return try? AES.GCM.open(box, using: key)
+        }
+
+        private func sealRandom(using key: SymmetricKey, slotIndex: Int) throws -> Data {
             var random = Data(count: Self.slotPlaintextSize)
             let status = random.withUnsafeMutableBytes {
                 SecRandomCopyBytes(kSecRandomDefault, Self.slotPlaintextSize, $0.baseAddress!)
             }
             guard status == errSecSuccess else { throw Error.encryptionFailed }
-            guard let combined = try? AES.GCM.seal(random, using: key).combined else {
+            guard let combined = try? AES.GCM.seal(
+                random, using: key, authenticating: SlotAAD.aad(slotIndex: slotIndex)
+            ).combined else {
                 throw Error.encryptionFailed
             }
             return combined
@@ -380,8 +433,8 @@ extension Manager {
             else { return }
 
             var file = Data(capacity: Self.slotCount * Self.slotCiphertextSize)
-            for _ in 0..<Self.slotCount {
-                guard let slot = try? self.sealRandom(using: layerKey) else { return }
+            for i in 0..<Self.slotCount {
+                guard let slot = try? self.sealRandom(using: layerKey, slotIndex: i) else { return }
                 file.append(slot)
             }
 
