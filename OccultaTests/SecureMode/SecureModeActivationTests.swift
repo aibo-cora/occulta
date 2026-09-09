@@ -201,10 +201,14 @@ private func readActivationPayload(from c: ActivationComponents) throws -> Layer
           let layerKey = c.layerStore.deriveKey(from: seKey)
     else { throw TestError("could not derive blob key from TestKeyManager") }
     // Blob metadata is sealed under the SE-derived key, not the local DB key (Bug 76).
-    guard let slotIndex = config.readBlobSlot(at: 0, using: AppLayerConfig.blobMetadataKey(from: seKey)) else {
+    let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
+    guard let slotIndex = config.readBlobSlot(at: 0, using: blobKey) else {
         throw TestError("no blob slot stored in config after activation")
     }
-    return try c.layerStore.readPayload(key: layerKey, slotIndex: slotIndex)
+    guard let sequenceNumber = config.readSequenceNumber(at: 0, using: blobKey) else {
+        throw TestError("no sequence number stored in config after activation")
+    }
+    return try c.layerStore.readPayload(key: layerKey, slotIndex: slotIndex, expectedSequenceNumber: sequenceNumber)
 }
 
 // MARK: - Blob lifecycle

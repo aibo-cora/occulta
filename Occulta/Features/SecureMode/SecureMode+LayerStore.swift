@@ -65,9 +65,11 @@ struct LayerContact: Codable {
 
 /// The complete payload for one activation layer.
 struct LayerPayload: Codable {
-    /// Strictly increasing per push; validated on pop to detect stale blobs.
+    /// A fresh random value chosen once at activation, not incrementing — see
+    /// LayerStore.md "Sequence numbers" for why. Validated on pop (and on
+    /// readPayload) to detect a stale blob from an older activation cycle.
     let sequenceNumber: Int
-    /// Which of the 32 slots this payload occupies; validated on pop.
+    /// Which of the 32 slots this payload occupies; validated on pop and on readPayload.
     let slotIndex:      Int
     let contacts:       [LayerContact]
 }
@@ -239,14 +241,29 @@ extension Manager {
 
         // MARK: - Non-destructive read
 
-        /// Decrypts slotIndex without modifying the file.
-        /// Use for diagnostics and tests. Production code should use pop().
-        func readPayload(key: SymmetricKey, slotIndex: Int) throws -> LayerPayload {
+        /// Decrypts slotIndex without modifying the file — the repeatable load Design B's
+        /// own unlock step needs (lock/unlock can cycle many times within one activation,
+        /// each needing a fresh, non-erasing read), distinct from `pop()`'s one-time,
+        /// destructive deactivation read.
+        ///
+        /// Validates `sequenceNumber` and `slotIndex` exactly as `pop()` does — the same
+        /// stale-blob check, just without the erasure. Not optional: `decodeSlot` alone
+        /// only decrypts and decodes, so without this a caller would silently accept a
+        /// blob left over from an older activation cycle, exactly what the sequence-number
+        /// check exists to catch at deactivation.
+        func readPayload(key: SymmetricKey, slotIndex: Int, expectedSequenceNumber: Int) throws -> LayerPayload {
             let fileData = try self.backend.read()
             guard fileData.count == Self.slotCount * Self.slotCiphertextSize else {
                 throw Error.decryptionFailed
             }
-            return try self.decodeSlot(slotIndex, from: fileData, using: key)
+            let payload = try self.decodeSlot(slotIndex, from: fileData, using: key)
+            guard payload.sequenceNumber == expectedSequenceNumber else {
+                throw Error.sequenceNumberMismatch(expected: expectedSequenceNumber, got: payload.sequenceNumber)
+            }
+            guard payload.slotIndex == slotIndex else {
+                throw Error.slotIndexMismatch(expected: slotIndex, got: payload.slotIndex)
+            }
+            return payload
         }
 
         // MARK: - Slot assignment

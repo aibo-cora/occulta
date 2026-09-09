@@ -8310,7 +8310,9 @@ a dead shell
 built.** Filed 2026-09-09 as a design gap, found before Design B is built rather than after, while
 checking whether `VAULT_KEY_LAYERING.md`'s S8 could safely reuse Design B's four named steps as-is for
 vault entries. It couldn't, because the four steps have this hole regardless of which content they're
-applied to. **The missing fifth step is designed, same day — see *Not yet done* below — but not built.**
+applied to. **The missing fifth step is designed, same day — see *Not yet done* below — but not built.
+Its co-requisite (a validated non-destructive read for step 2) is now built and tested; the step 5
+resync mechanism itself is not.**
 
 **Target:** unset. Blocks Design B (`forensic-trace-avoidance.md` S5) and, downstream, S8
 (`VAULT_KEY_LAYERING.md` item 12) — neither should be built against the four steps as currently
@@ -8371,10 +8373,13 @@ later `pop()` at deactivation with `sequenceNumberMismatch`, losing every edited
 full-array-reseal cost `Manager.LayerStore` already pays for classification changes today, not a new
 category — contact edits are occasional, not the "constantly" frequency `VAULT_KEY_LAYERING.md` item 11
 weighed for vault entries. Surfaced a co-requisite gap in step 2, not this bug's own scope: the only
-non-destructive read, `readPayload(key:slotIndex:)`, is commented "for diagnostics and tests" only —
-step 2 needs a sanctioned production equivalent, or the first unlock of any session erases the blob
-step 5 needs to resync into. Designed, not built. Blocks Design B and, by extension, S8 (item 12) from
-being safely built as currently specified.
+non-destructive read, `readPayload(key:slotIndex:)`, was commented "for diagnostics and tests" only,
+and — checked directly, not just its comment — ran neither of `pop()`'s integrity checks, so promoting
+it as-is would have silently accepted a stale blob. **That co-requisite is now fixed** (2026-09-09):
+`readPayload` takes a required `expectedSequenceNumber` and runs both `pop()` checks non-destructively;
+`LayerStoreReadPayloadTests.swift` covers the round trip and both rejection paths. The step 5 mechanism
+itself — resync `inMemorySensitiveContacts` via `push()` on every mutation — remains designed, not
+built. Blocks Design B and, by extension, S8 (item 12) from being safely built as currently specified.
 
 ### Guard
 
