@@ -195,6 +195,81 @@ struct VaultBackupRoundTripTests {
             """)
     }
 
+    // MARK: - Bug 114: legacy nil-depth entries and duress-depth exports
+
+    /// Simulates a legacy pre-field entry by clearing `visibleThroughDepth` through a
+    /// separate, saved `ModelContext` — not by mutating `VaultManager`'s own live object
+    /// in place. An unsaved edit on `vault`'s own context leaves that context's identity
+    /// map holding a "dirty" tracked instance, which later shadows an external wipe:
+    /// `importBackup`'s `fetchEntry(by:)` dedup check (`self.modelContext`, the same
+    /// context) can still find the pre-wipe instance and skip re-importing it, producing
+    /// a false "already exists" — nothing to do with depth filtering, purely a test-setup
+    /// hazard. Committing the mutation through its own context sidesteps that entirely.
+    @MainActor
+    private func makeLegacyEntry(via vault: VaultManager, in container: ModelContainer) throws -> UUID {
+        let entry = try vault.addEntry(label: "legacy", content: Data("legacy".utf8), type: .note)
+        let id    = entry.id
+        let mutate = ModelContext(container)
+        let toMutate = try #require(
+            try mutate.fetch(FetchDescriptor<VaultEntry>(predicate: #Predicate { $0.id == id })).first
+        )
+        toMutate.visibleThroughDepth = nil
+        try mutate.save()
+        return id
+    }
+
+    /// `entriesVisible(atDepth:)` passes `whenUnclassified: depth == 0` (Bug 114) — a
+    /// legacy entry with no `visibleThroughDepth` (pre-dating the field) is real content
+    /// that predates duress depths existing at all, and must not be swept into a backup
+    /// exported from one.
+    @Test("Export excludes a legacy nil-depth entry when taken from a duress depth",
+          .enabled(if: secureEnclaveAvailable()))
+    func exportExcludesLegacyNilDepthEntryAtDuressDepth() throws {
+        let (vault, container) = try makeBackupReadyVault()
+        _ = try makeLegacyEntry(via: vault, in: container)
+
+        try setUpConfirmedBEK(for: vault, currentDepth: 2)
+        let backup = try vault.exportBackup(currentDepth: 2)
+
+        let wipe = ModelContext(container)
+        for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
+        try wipe.save()
+
+        try vault.importBackup(backup, currentDepth: 2)
+        let restoredCount = try entries(in: container).count
+
+        #expect(restoredCount == 0, """
+            The export from depth 2 contained \(restoredCount) entries. A legacy entry with \
+            no depth stamp must not be swept into a backup exported from a duress depth.
+            """)
+    }
+
+    /// The other half, and the behavior Bug 114's fix must not regress: at the real depth
+    /// 0, a legacy nil-depth entry must still be included — the original fix
+    /// (`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md`)
+    /// this codebase shipped specifically to stop it silently vanishing from ordinary,
+    /// non-duress backups.
+    @Test("Export still includes a legacy nil-depth entry at the real depth 0",
+          .enabled(if: secureEnclaveAvailable()))
+    func exportIncludesLegacyNilDepthEntryAtRealDepth0() throws {
+        let (vault, container) = try makeBackupReadyVault()
+        _ = try makeLegacyEntry(via: vault, in: container)
+
+        let backup = try vault.exportBackup(currentDepth: 0)
+
+        let wipe = ModelContext(container)
+        for entry in try wipe.fetch(FetchDescriptor<VaultEntry>()) { wipe.delete(entry) }
+        try wipe.save()
+
+        try vault.importBackup(backup, currentDepth: 0)
+        let restoredCount = try entries(in: container).count
+
+        #expect(restoredCount == 1, """
+            The export from the real depth 0 contained \(restoredCount) entries. A legacy \
+            entry with no depth stamp must still be included in an ordinary, non-duress backup.
+            """)
+    }
+
     /// Fixed: `importBackup(_:currentDepth:)` now stamps every restored entry with
     /// `currentDepth`, mirroring `addEntry`. A file only ever holds one layer's entries
     /// (Bug 88 remedy 4), so the depth to stamp is simply whichever depth the import is

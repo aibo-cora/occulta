@@ -199,22 +199,20 @@ extension VaultManager {
     /// via a fresh Secure Enclave round trip — this runs on every unlock and
     /// every Vault tab appearance (`refreshBackupStaleness`), on the main actor.
     ///
-    /// Passes `whenUnclassified: true` unconditionally, at whatever `depth` the
-    /// caller passes — including a duress depth (`exportBackup(currentDepth:)`
-    /// forwards its caller's live `currentDepth`, no depth-0-only gate). Correct for
-    /// the ordinary, ever-real-depth-only user this was introduced to protect: nil
-    /// only occurs for entries pre-dating this field, and `false` here would
-    /// silently and permanently drop those from every backup export they make. But
-    /// unlike the display path (`Manager.Security.visibleVaultEntries(from:)`,
-    /// which conditions this on `depth == 0`), nothing here excludes a duress
-    /// depth — a legacy nil entry would also be swept into a backup exported from
-    /// one. Flagged, not yet fixed — Bug 114, `bugs.md`.
+    /// `whenUnclassified: depth == 0` (Bug 114) — true only at the real depth, matching
+    /// the display path (`Manager.Security.visibleVaultEntries(from:)`). A legacy nil
+    /// entry is real content that predates duress depths existing at all: it must still
+    /// be included in an export made at the real depth 0 (the ordinary, ever-real-depth-
+    /// only user this was originally protected against dropping it for), and must not be
+    /// swept into a backup exported from a duress depth (`exportBackup(currentDepth:)`
+    /// forwards its caller's live `currentDepth`, whatever that is). A single fixed value
+    /// can't get both right — see Bug 113's identical reasoning on the display side.
     private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
         guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed
         }
         return try self.fetchAllEntries().filter {
-            $0.isVisible(atDepth: depth, whenUnclassified: true, usingKey: key)
+            $0.isVisible(atDepth: depth, whenUnclassified: depth == 0, usingKey: key)
         }
     }
 

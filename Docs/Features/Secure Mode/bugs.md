@@ -9027,10 +9027,10 @@ skipped (`KeychainMigrationSETests`, the one expected device-only skip), 849 tot
 
 ## Bug 114 — A legacy nil-`visibleThroughDepth` `VaultEntry` is swept into a backup exported from a duress depth
 
-**Status:** Open, not fixed — found while checking whether Bug 113's fix for the display path had a
-counterpart on the export path. Filed 2026-09-10.
+**Status:** Closed (Fixed), verified 2026-09-10. Found while checking whether Bug 113's fix for
+the display path had a counterpart on the export path. Filed and fixed the same day.
 
-**Target:** unset — not yet decided whether/how to fix.
+**Target:** `v1.11.0/vault-key-layering`.
 
 ### Severity: High
 
@@ -9095,10 +9095,42 @@ persists indefinitely, and is now reachable at any depth.
 
 Same underlying cause — the Removal effort deleted machinery an unrelated function's safety argument
 depended on, without that function or its doc comments being revisited. Bug 113's fix
-(`Manager.Security.visibleVaultEntries(from:)`) already handles this correctly for the display path
-by conditioning on `depth == 0`; this entry is the same fix, not yet applied, for the export path.
+(`Manager.Security.visibleVaultEntries(from:)`) already handled this correctly for the display path
+by conditioning on `depth == 0`; this entry applies the identical fix to the export path.
+
+### Fix
+
+One-line change to `entriesVisible(atDepth:)` ([Vault+Manager+Backup.swift:210](Occulta/Features/Vault/Vault+Manager+Backup.swift:210)):
+`whenUnclassified: true` → `whenUnclassified: depth == 0`. Both of its callers benefit with no fork
+needed — `exportBackup(currentDepth:)` (the `.occbak` builder) and `refreshBackupStaleness(currentDepth:)`
+(which was, as a side effect, counting a legacy entry toward a duress depth's "current" entry count
+even though — pre-fix — it could never actually have been exported there; the fix also resolves that
+inconsistency for free). `Vault+Model.swift`'s shared doc comment on `isVisible(atDepth:whenUnclassified:)`
+updated to describe both callers now agreeing on `depth == 0`, rather than the two-different-answers
+framing that was accurate before this fix.
 
 ### Guard
 
-None — not fixed. `VaultBackupRoundTripTests.swift` and the sibling round-trip suites do not currently
-construct a nil-`visibleThroughDepth` entry at a duress depth to exercise this.
+Two new tests in `VaultBackupRoundTripTests.swift`, mirroring `exportExcludesHiddenEntries`'s existing
+full export→wipe→import round-trip pattern: `exportExcludesLegacyNilDepthEntryAtDuressDepth` (a legacy
+nil-depth entry is not present after a round trip through an export taken at depth 2) and
+`exportIncludesLegacyNilDepthEntryAtRealDepth0` (the same entry survives a round trip through an
+export taken at depth 0 — the behavior this fix must not regress, and the original subject of
+`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md`).
+
+Constructing the legacy entry surfaced a real test-harness trap, worth recording since it could bite
+again: mutating the `VaultEntry` object `VaultManager.addEntry` returns, in place, without saving
+through `VaultManager`'s own `ModelContext`, leaves that context's identity map holding a "dirty"
+tracked instance. A later external wipe (a separate `ModelContext` on the same container, the
+established pattern in this file for resetting state before import) deletes and saves the row at the
+persistent-store level, but `VaultManager`'s own context — used internally by `importBackup`'s
+`fetchEntry(by:)` dedup check — can still resolve the stale in-memory instance for that id, so the
+check reads "already exists" and silently skips re-importing it. Nothing to do with depth filtering;
+pure test-setup hazard, caught by adding a diagnostic `isVisible`/`isOrphaned` check and a byte-count
+check on the exported file, both of which showed the export side was already correct while the
+round-tripped count still came back wrong. Fixed by adding `makeLegacyEntry(via:in:)`, which mutates
+and saves through its own freshly-opened `ModelContext`, matching the `wipe` context's own pattern,
+so `VaultManager`'s context never carries an unsaved edit into the dedup check.
+
+Full local suite run on a host with Secure Enclave access: 844 passed, 0 failed, 6 skipped
+(`KeychainMigrationSETests` only), 851 total — clean, and consistent with Bug 113's own verified run.

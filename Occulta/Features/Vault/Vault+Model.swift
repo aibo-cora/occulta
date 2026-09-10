@@ -302,34 +302,25 @@ final class VaultEntry {
     /// Whether this entry is visible at `depth`, decoding `visibleThroughDepth` per
     /// its documented semantics: a non-nil but undecryptable ceiling (sensitive
     /// shell) is always hidden; a decodable ceiling is visible only at the exact
-    /// depth it's stamped with; nil (never classified) resolves to `whenUnclassified`,
-    /// since the two callers cannot safely share one answer for it — see below.
+    /// depth it's stamped with; nil (never classified) resolves to `whenUnclassified`.
     ///
     /// Single source of truth for the decrypt/decode/compare logic — the part
-    /// `Bug 27` was about, and the part that must not fork. Only the nil case is a
-    /// deliberate, explicit, per-caller decision, not a shared default:
+    /// `Bug 27` was about, and the part that must not fork.
     ///
-    ///   - `Manager.Security.visibleVaultEntries(from:)` (display) passes
-    ///     `depth == 0` — true only at the real depth. A nil entry is a real,
-    ///     persistent state, not something ever swept away — confirmed by grep, no
-    ///     code anywhere stamps an existing nil entry to a concrete depth, and
-    ///     `PQmigration.migrateDepthFieldsToFixedWidth`'s own doc comment calls it
-    ///     "a legitimate steady state." It must stay visible at the real depth 0,
-    ///     matching ordinary pre-feature usage, and stay hidden at every duress
-    ///     depth (Bug 113: the previous hardcoded `false` here was correct for
-    ///     duress depths but wrong at depth 0 — though that went unnoticed because
-    ///     the SwiftUI call site never invoked this function at depth 0 at all).
-    ///   - `VaultManager.entriesVisible(atDepth:)` (backup export, staleness
-    ///     counts) passes `true` unconditionally, at whatever depth its caller is
-    ///     currently at — including a duress depth (`exportBackup(currentDepth:)`
-    ///     forwards the caller's live `currentDepth` straight through, no
-    ///     depth-0-only gate). Correct for the ordinary, non-duress user this
-    ///     function was introduced to protect (ensuring a legacy nil entry isn't
-    ///     silently and permanently dropped from every backup they make), but it
-    ///     means a legacy nil entry — real content, by construction, since it
-    ///     predates duress depths existing at all — would also be swept into a
-    ///     backup exported *from* a duress depth. Flagged, not yet fixed — Bug 114,
-    ///     `bugs.md`.
+    /// Both current callers — `Manager.Security.visibleVaultEntries(from:)` (display,
+    /// Bug 113) and `VaultManager.entriesVisible(atDepth:)` (backup export, staleness
+    /// counts, Bug 114) — pass `whenUnclassified: depth == 0`: true only at the real
+    /// depth. A nil entry is a real, persistent state, not something ever swept away —
+    /// confirmed by grep, no code anywhere stamps an existing nil entry to a concrete
+    /// depth, and `PQmigration.migrateDepthFieldsToFixedWidth`'s own doc comment calls
+    /// it "a legitimate steady state." It must stay visible at the real depth 0,
+    /// matching ordinary pre-feature usage, and stay hidden at every duress depth —
+    /// including in a backup exported from one, where it would otherwise be real
+    /// content leaking out under that depth's own backup key. `whenUnclassified` stays
+    /// an explicit per-call parameter rather than a hardcoded default because the two
+    /// callers arrived at the same answer for the same reason, not because they're
+    /// guaranteed to always agree — a future caller with a genuinely different
+    /// depth-0-only-or-not shape shouldn't have to fight a baked-in constant.
     func isVisible(atDepth depth: Int, whenUnclassified: Bool) -> Bool {
         guard let data = self.visibleThroughDepth else { return whenUnclassified }
         guard let plain = data.decrypt(), let value = DepthCodec.decode(plain)
