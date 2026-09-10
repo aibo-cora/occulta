@@ -8618,3 +8618,67 @@ what makes `VaultEntry`'s case different.
 ### Guard
 
 None yet.
+
+---
+
+## Bug 111 — `deactivateSecureMode` collapsed a cascade deactivation straight to depth 1 instead of popping one layer at a time
+
+**Status:** Closed (Fixed), 2026-09-10. Found and fixed the same day, during a user conversation about
+what `activateSecureMode`/`deactivateSecureMode` do post-removal — not related to Bug 110 or anything
+found during the removal effort itself; this is a pre-existing state-machine defect that predates
+Removal Stage 0 and was simply never exercised by a test deep enough to catch it.
+
+**Target:** Fixed.
+
+### Severity: felt wrong / broke the intended mental model — nested duress layers are meant to behave
+as a stack (LIFO): activating pushes one layer at a time, so deactivating should pop one layer at a
+time. It didn't.
+
+### What happened
+
+For any cascade deactivation (calling `deactivateSecureMode` from `currentDepth >= 2`), the function
+unconditionally set `currentDepth = 1` regardless of how deep the stack actually was — confirmed via
+`git log -S`, this exact behavior dates to the very first multi-layer commit (`22762fb`, 2026-06-03),
+not a later regression. Deactivating from depth 3 (in a 0→1→2→3 stack) jumped straight to depth 1,
+silently skipping past depth 2 as a landing state, even though depth 2's own verifiers were never
+touched by the clear (`clearVerifiers(from: clearFrom)` already only removed the popped layer and
+anything nested deeper — the verifier-clearing scope was already correctly LIFO, only the landing
+depth wasn't).
+
+**Why nothing caught it:** the only existing multi-layer test coverage
+(`SecurityMultiLayerTests.deactivation_fromDepth2_goesToDepth1`) used exactly a 2-layer stack, where
+`depth - 1 == 1` regardless — mathematically unable to distinguish "always land at depth 1" from a
+genuine one-level LIFO pop. A 3-layer stack is the minimum needed to tell the two apart, and nothing
+in the suite built one.
+
+A second, coupled defect: `coercerBaseDepth` was unconditionally reset to `0` on every deactivation,
+including cascades. Combined with `Settings.swift`'s `isAtSecureModeHomeDepth` gate
+(`currentDepth == 0 || currentDepth == coercerBaseDepth`), this meant "Deactivate Protection" was
+never visible immediately after any cascade pop — even in the pre-fix single-hop-to-depth-1 behavior,
+landing at depth 1 left `state == .duress`, not `.normal` (confirmed directly: the pre-fix test
+asserted this itself). The operator would have needed to leave and re-verify a PIN to regain the
+button, rather than being able to pop a multi-layer stack down in one sitting.
+
+### Fix
+
+`Manager+Security.swift`'s `deactivateSecureMode`:
+- `newDepth = max(0, depth - 1)` replaces the old `depth <= 1 ? 0 : 1` branch — lands exactly one
+  depth shallower than the layer just removed, for every starting depth, not just a hardcoded floor.
+- `coercerBaseDepth` is now written as `newDepth` (mirroring exactly how `activateSecureMode` already
+  writes `coercerBaseDepth = depth` when creating a layer — Bug 58/61's own precedent) instead of
+  unconditionally `0`. "Deactivate Protection" is now reachable at every intermediate depth
+  immediately after each pop, letting a multi-layer stack be torn down one button-press at a time
+  without a re-verify between steps.
+
+Both changes are additive in scope for a 2-layer stack — `deactivation_fromDepth2_goesToDepth1`
+(renamed `deactivation_fromDepth2_popsOneLevelToDepth1`) still lands at depth 1 for that case, only
+its `state` assertion flipped from `.duress` to `.normal` to match the `coercerBaseDepth` fix.
+
+### Guard
+
+Two new tests in `SecurityMultiLayerTests` (`PINManagerTests.swift`), both requiring a 3-layer stack
+to be meaningful: `deactivation_fromDepth3_popsOneLevelToDepth2` (a single pop lands at depth 2 exactly,
+not depth 1; the un-popped depth-1 layer's own verifier is independently confirmed still
+cold-start-routable) and `deactivation_threeLayerStack_popsOneLevelPerCall` (three sequential
+deactivations, asserting `currentDepth`/`isSecureModeActive` after each one: 3→2→1→0). Full suite
+green, 0 failures, 6 skips (baseline), confirmed after the fix.

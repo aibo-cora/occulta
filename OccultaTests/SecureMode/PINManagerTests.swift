@@ -427,7 +427,7 @@ struct SecurityMultiLayerTests {
         #expect(s.isRestricted)
     }
 
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_fromDepth2_goesToDepth1() async throws {
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_fromDepth2_popsOneLevelToDepth1() async throws {
         let (s, _, _, _) = try makeSecurityAndManagers()
         try s.configurePIN("111111")
         try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
@@ -436,10 +436,16 @@ struct SecurityMultiLayerTests {
         s.applyVerifyState(for: try s.verify("777777"))
         #expect(s.currentDepth == 2)
 
-        // Deactivate from depth 2 — per the two-step chain, should land at depth 1.
+        // LIFO pop: deactivating from depth 2 removes only that layer, landing
+        // exactly one depth shallower — depth 1, coincidentally the same number a
+        // 2-layer stack would produce either way, but for the LIFO reason, not
+        // because deactivation always targets depth 1 specifically.
         try s.deactivateSecureMode(confirmingEntryPIN: "777777")
         #expect(s.currentDepth == 1)
-        #expect(s.state == .duress)
+        // coercerBaseDepth becomes the landed-on depth (1), so state reads .normal —
+        // "Deactivate Protection" is reachable immediately, without a separate
+        // re-verify, to pop the remaining depth 0→1 layer too.
+        #expect(s.state == .normal)
         #expect(s.isSecureModeActive, "depth 0→1 layer must still be active")
     }
 
@@ -451,9 +457,64 @@ struct SecurityMultiLayerTests {
         try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
         s.applyVerifyState(for: try s.verify("777777"))
 
-        // Two-step deactivation chain.
+        // Two-step deactivation chain, one LIFO pop per call.
         try s.deactivateSecureMode(confirmingEntryPIN: "777777")  // depth 2 → depth 1
         #expect(s.currentDepth == 1)
+
+        try s.deactivateSecureMode(confirmingEntryPIN: "999999")  // depth 1 → pinOnly
+        #expect(s.currentDepth == 0)
+        #expect(s.requiresPIN && !s.isSecureModeActive)
+    }
+
+    /// The case a 2-layer stack can't distinguish: `depth - 1 == 1` either way there,
+    /// so nothing before this test could tell "always land at depth 1" apart from a
+    /// genuine LIFO pop. A 3-layer stack can — deactivating from depth 3 must land at
+    /// depth 2, not jump straight to depth 1.
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_fromDepth3_popsOneLevelToDepth2() async throws {
+        let (s, _, _, _) = try makeSecurityAndManagers()
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        s.applyVerifyState(for: try s.verify("999999"))
+        try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        s.applyVerifyState(for: try s.verify("777777"))
+        try s.activateSecureMode(confirmingEntryPIN: "777777", duressPIN: "444444")
+        s.applyVerifyState(for: try s.verify("444444"))
+        #expect(s.currentDepth == 3)
+
+        try s.deactivateSecureMode(confirmingEntryPIN: "444444")
+
+        #expect(s.currentDepth == 2, "must pop exactly one level, not cascade past depth 1")
+        #expect(s.state == .normal, "Deactivate Protection must be reachable at the new depth")
+        #expect(s.isSecureModeActive, "depths 0→1 and 1→2 must both still be active")
+
+        // The popped-to layer's own shallower verifier chain must still be fully
+        // intact and reachable — cold-start routing for "999999" still resolves to
+        // depth 1, and "777777" (the layer that was NOT popped) still resolves to
+        // depth 2, exactly as before the pop.
+        let depth1Result = try s.verify("999999")
+        #expect(depth1Result == .normal(depth: 1))
+    }
+
+    /// Full LIFO teardown: three activations, three deactivations, one level at a
+    /// time, verifying `currentDepth` and `isSecureModeActive` after every step.
+    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_threeLayerStack_popsOneLevelPerCall() async throws {
+        let (s, _, _, _) = try makeSecurityAndManagers()
+        try s.configurePIN("111111")
+        try s.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        s.applyVerifyState(for: try s.verify("999999"))
+        try s.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        s.applyVerifyState(for: try s.verify("777777"))
+        try s.activateSecureMode(confirmingEntryPIN: "777777", duressPIN: "444444")
+        s.applyVerifyState(for: try s.verify("444444"))
+        #expect(s.currentDepth == 3)
+
+        try s.deactivateSecureMode(confirmingEntryPIN: "444444")  // depth 3 → depth 2
+        #expect(s.currentDepth == 2)
+        #expect(s.isSecureModeActive)
+
+        try s.deactivateSecureMode(confirmingEntryPIN: "777777")  // depth 2 → depth 1
+        #expect(s.currentDepth == 1)
+        #expect(s.isSecureModeActive)
 
         try s.deactivateSecureMode(confirmingEntryPIN: "999999")  // depth 1 → pinOnly
         #expect(s.currentDepth == 0)

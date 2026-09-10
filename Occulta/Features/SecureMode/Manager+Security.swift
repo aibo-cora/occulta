@@ -453,28 +453,29 @@ extension Manager {
             //
             //   depth ≤ 1 (last layer): clearFrom = 1 keeps normalVerifiers[0] (master PIN)
             //             and removes the entire depth 0→1 configuration.
-            //   depth ≥ 2 (expendable): clearFrom = depth keeps the first duress layer
-            //             (depth 0→1) intact so the coercer still passes through it.
+            //   depth ≥ 2 (expendable): clearFrom = depth keeps every shallower layer
+            //             (0 through depth-1) intact — only the popped layer's own
+            //             verifiers are removed.
             let clearFrom = max(1, depth)
             config.clearVerifiers(from: clearFrom)
 
-            if depth <= 1 {
-                // Full deactivation — Secure Mode fully off; return to pinOnly.
+            // LIFO pop: land exactly one depth shallower than the layer just removed,
+            // never further. Every verifier for depths 0..depth-2 is untouched by the
+            // clear above, so that shallower stack is still fully intact and correctly
+            // becomes the new home. depth ≤ 1 has nowhere shallower than 0 to land —
+            // that is also a full deactivation, so the duress scalar clears too.
+            let newDepth = max(0, depth - 1)
+            if newDepth == 0 {
                 config.sealedDuressVerifier = nil
-                try self.setState(0, config: config)
-            } else {
-                // Cascade deactivation — expendable layer removed. Always land at depth 1
-                // (.duress) — the convincing first-duress view must be the final stop
-                // before the real app is reachable.
-                try self.setState(1, config: config)
             }
+            try self.setState(newDepth, config: config)
 
-            // Reset coercerBaseDepth to 0: the stripped layer is gone, so any previous
-            // coercion re-enable is no longer relevant. After this deactivation, depth 0
-            // is the effective home (real user) and the UI conditions
-            // `currentDepth == 0 || currentDepth == coercerBaseDepth` collapse back to
-            // `currentDepth == 0` — standard behaviour.
-            try? config.writeCoercerBaseDepth(0)
+            // coercerBaseDepth becomes the depth just landed on, mirroring
+            // activateSecureMode's own write (Bug 58/61) — 0 after a full deactivation
+            // (the real user's own home), or the popped-to depth after a cascade pop, so
+            // "Deactivate Protection" is reachable there immediately without a separate
+            // re-verify to re-establish `state == .normal`.
+            try? config.writeCoercerBaseDepth(newDepth)
 
             try self.modelContext.save()
             self.resetCounters()

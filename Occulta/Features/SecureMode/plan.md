@@ -1108,3 +1108,24 @@ tested, and documented end to end.
 Six stages, six commits (`880b980` through this one), each independently reviewable and revertable,
 none skipped, none reordered from the original sketch except the two forced deviations Stage 1 and
 Stage 3 each documented at the time they happened.
+
+## Post-removal fix: `deactivateSecureMode` now pops one depth at a time (Bug 111)
+
+Found immediately after Stage 6 closed, during a user conversation walking through what
+`activateSecureMode`/`deactivateSecureMode` do now — unrelated to the removal itself, a pre-existing
+state-machine defect dating to the first multi-layer commit (`22762fb`, 2026-06-03), never caught
+because the only prior multi-layer test used a 2-layer stack, which can't distinguish "always land at
+depth 1" from a genuine one-level LIFO pop (both give the same number there).
+
+**Fixed:** cascade deactivation used to jump straight to depth 1 regardless of starting depth;
+`deactivateSecureMode` now computes `newDepth = max(0, depth - 1)` and lands there, popping exactly
+one layer per call — matching the stack model activation already uses (one layer pushed per call).
+`coercerBaseDepth` now becomes `newDepth` instead of unconditionally resetting to `0`, so "Deactivate
+Protection" stays reachable at each intermediate depth immediately, without a re-verify between pops.
+Full writeup, root cause, and fix detail: `bugs.md` Bug 111 (Closed, Fixed).
+
+Two new tests in `PINManagerTests.swift`'s `SecurityMultiLayerTests` build an actual 3-layer stack to
+exercise this (`deactivation_fromDepth3_popsOneLevelToDepth2`,
+`deactivation_threeLayerStack_popsOneLevelPerCall`); the existing 2-layer test's `state` assertion was
+corrected from `.duress` to `.normal` to match the `coercerBaseDepth` change. Full suite: 0 failures,
+6 skips (baseline), confirmed after the fix.
