@@ -8886,12 +8886,12 @@ None — not fixed.
 
 ## Bug 113 — The vault entry list reads a raw `@Query`, not `VaultManager.fetchAllEntries()` — the depth-0 duress leak and Bug 110's orphan filter both bypass the UI
 
-**Status:** Open. Filed 2026-09-10, found while verifying that vault entries are depth-aware
-end-to-end, prompted by re-checking whether the exact-depth-match fix
+**Status:** Closed (Fixed), verified 2026-09-10. Filed 2026-09-10, found while verifying that
+vault entries are depth-aware end-to-end, prompted by re-checking whether the exact-depth-match fix
 (`Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`) and Bug 110's
-orphaning both actually reach the screen. Neither does, for the same root cause.
+orphaning both actually reach the screen. Neither did, for the same root cause.
 
-**Target:** unset — not yet decided whether/how to fix.
+**Target:** `v1.11.0/vault-key-layering`.
 
 ### Severity: Medium
 
@@ -8976,8 +8976,129 @@ itself — confirmed by grep, no test file references it. This is the same class
 work has hit before: a unit-tested primitive with no test proving its one production call site
 actually uses it.
 
+### Fix
+
+Replaced `Manager.Security.isEntryVisible(_:)` with `visibleVaultEntries(from: [VaultEntry])`
+(`Manager+Security.swift`), which folds both harms into one call over an already-fetched array —
+`Vault+Tab.swift`'s `@Query` results:
+
+```swift
+func visibleVaultEntries(from entries: [VaultEntry]) -> [VaultEntry] {
+    guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+    let depth = self.currentDepth
+    return entries.filter {
+        !$0.isOrphaned(usingKey: key) &&
+        $0.isVisible(atDepth: depth, whenUnclassified: depth == 0, usingKey: key)
+    }
+}
+```
+
+`Vault+Tab.swift`'s `visibleEntries` is now a one-line call to this, at every depth — no
+`isRestricted` shortcut. Two design points worth recording:
+
+- **`whenUnclassified: depth == 0`, not a constant.** A legacy nil-`visibleThroughDepth` entry
+  (pre-dating the field) is a real, persistent state — not swept away by anything (confirmed by grep
+  and by `PQmigration.migrateDepthFieldsToFixedWidth`'s own doc comment, "a legitimate steady state").
+  It must stay visible at the real depth 0 (matching ordinary pre-feature usage) and hidden at every
+  duress depth. A single fixed value for `whenUnclassified` cannot get both right — `true` leaks a
+  real entry into duress; `false` hides legacy entries from their own owner.
+- **Key derived once, reused across every row** — matching `fetchAllEntries()`/`entriesVisible(atDepth:)`'s
+  existing pattern, not the ambient per-row `.decrypt()` that would re-derive it once per entry per
+  SwiftUI render.
+
+The doc comments this bug's investigation showed were stale — the "Step 8 stamps every nil entry"
+claim in `Vault+Model.swift` and the old `isEntryVisible` — have been corrected in place, and
+`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md` has been marked
+partially superseded. See Bug 114 for the related, still-open finding: `entriesVisible(atDepth:)`
+(backup export) has the same unconditional `whenUnclassified: true`, at whatever depth its caller is
+at, including a duress depth — not fixed here, scoped separately.
+
 ### Guard
 
-None — not fixed. Not yet decided whether the fix is switching `Vault+Tab.swift` to route through
-`VaultManager.fetchAllEntries()` plus the existing `isEntryVisible` depth filter (folding both harms
-into one call), or something narrower.
+`VaultEntryDepthVisibilityTests` (`VaultTests.swift`) rewritten to call `visibleVaultEntries(from:)`
+directly instead of the deleted `isEntryVisible(_:)` — this is what closes the actual gap this bug
+was about: the old tests exercised a correct function that the real UI call site never invoked. Two
+new cases added: `visibleVaultEntries_excludesOrphanedEntries` (an orphaned entry stays hidden even
+at the depth its untouched `visibleThroughDepth` still names) and
+`visibleVaultEntries_legacyNilVisibleThroughDepth_visibleAtRealDepth0` (the new depth-0 nil-entry
+case this fix adds, mirroring the pre-existing hidden-at-restricted-depth case). Full local suite
+run on a host with Secure Enclave access, per `CLAUDE.md`'s Testing Gate: 842 passed, 0 failed, 6
+skipped (`KeychainMigrationSETests`, the one expected device-only skip), 849 total — clean.
+
+## Bug 114 — A legacy nil-`visibleThroughDepth` `VaultEntry` is swept into a backup exported from a duress depth
+
+**Status:** Open, not fixed — found while checking whether Bug 113's fix for the display path had a
+counterpart on the export path. Filed 2026-09-10.
+
+**Target:** unset — not yet decided whether/how to fix.
+
+### Severity: High
+
+Real vault content — by construction, since a nil-stamped entry can only be one that predates duress
+depths existing on the device at all — ends up inside a `.occbak` file sealed under a duress depth's
+own backup key. Unlike Bug 113 (a UI display glitch, self-correcting once you're looking at the right
+depth), this produces a durable artifact: a file a coercer who controls that depth's backup key
+custody can decrypt and read, containing content the owner never intended to expose at that layer.
+
+### What happens
+
+`VaultManager.entriesVisible(atDepth:)` ([Vault+Manager+Backup.swift:207](Occulta/Features/Vault/Vault+Manager+Backup.swift:207)):
+
+```swift
+private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
+    guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+        throw VaultError.keyDerivationFailed
+    }
+    return try self.fetchAllEntries().filter {
+        $0.isVisible(atDepth: depth, whenUnclassified: true, usingKey: key)
+    }
+}
+```
+
+`whenUnclassified: true` is unconditional — it does not vary with `depth`. Its one caller,
+`exportBackup(currentDepth:)` ([Vault+Manager+Backup.swift:130](Occulta/Features/Vault/Vault+Manager+Backup.swift:130)),
+passes whatever depth it's called with straight through: `let entries = try self.entriesVisible(atDepth: currentDepth)`
+at line 148, with `currentDepth` supplied by the caller — there is no depth-0-only gate anywhere in
+this path. So a legacy nil entry is included in the export at *every* depth, duress ones included.
+
+### Why `whenUnclassified: true` was believed safe here, and why that no longer holds
+
+This exact question was investigated once already, thoroughly, in
+`Docs/Bugs/v1.10.3/Backup-Export-Silently-Drops-Legacy-Nil-Depth-Vault-Entries.md`. Its answer,
+verified correct *at the time*: a nil entry cannot exist at an active duress depth, because
+`activateSecureMode`'s Step 8 unconditionally re-stamped every entry — nil ones included — to a
+hidden sentinel before that depth became reachable, backed by an `assert` and a dedicated regression
+test, `activation_nilDepthVaultEntry_getsStampedHidden`.
+
+**Both are gone.** `ef9c1f4` ("Removal Stage 1: shrink activate/deactivateSecureMode to PIN-only"),
+on this same branch, deleted `activateSecureMode`'s entire re-encryption/stamping sweep — Step 8
+included — along with its `assert` and that regression test, as part of retiring the old blob-based
+activation design. Confirmed three ways:
+
+- `grep -rn "stamps every\|stamp every" Occulta/Features/SecureMode/ Occulta/Features/Vault/` finds
+  nothing — no code anywhere stamps an existing nil entry to a concrete depth.
+- The current `activateSecureMode` ([Manager+Security.swift:337-414](Occulta/Features/SecureMode/Manager+Security.swift:337))
+  read in full: PIN verification and verifier-slot writes only. No loop over `VaultEntry`, no
+  `assert`, no reference to `visibleThroughDepth`.
+- `grep -n "activation_nilDepthVaultEntry_getsStampedHidden" OccultaTests/SecureMode/SecureModeActivationTests.swift`
+  — no match. That file was fully rewritten by this branch's own "Removal Stage 4" commit (`15404b1`).
+
+**Confirmed the opposite is now explicitly true, not just unenforced.** `PQmigration.swift`'s own doc
+comment on `migrateDepthFieldsToFixedWidth` (line 192): *"For `VaultEntry` nil is a legitimate steady
+state rather than a gap... inventing a value there would change what the user sees."* Nil is not an
+unlikely edge case that happens to be unreachable today — it's a documented, permanent population
+this codebase deliberately never touches. Combined with Removal Stage 1 deleting the only thing that
+ever moved a nil entry out of a duress depth's reach, the population this bug affects is real,
+persists indefinitely, and is now reachable at any depth.
+
+### Relationship to Bug 113
+
+Same underlying cause — the Removal effort deleted machinery an unrelated function's safety argument
+depended on, without that function or its doc comments being revisited. Bug 113's fix
+(`Manager.Security.visibleVaultEntries(from:)`) already handles this correctly for the display path
+by conditioning on `depth == 0`; this entry is the same fix, not yet applied, for the export path.
+
+### Guard
+
+None — not fixed. `VaultBackupRoundTripTests.swift` and the sibling round-trip suites do not currently
+construct a nil-`visibleThroughDepth` entry at a duress depth to exercise this.

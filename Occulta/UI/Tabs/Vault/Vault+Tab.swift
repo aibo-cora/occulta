@@ -210,11 +210,11 @@ struct VaultTab: View {
 
     // MARK: Entry list
 
-    /// Entries visible at the current depth. In restricted mode this excludes
-    /// entries whose visibleThroughDepth ceiling is below currentDepth.
+    /// Entries visible at the current depth — see `Manager.Security.visibleVaultEntries`
+    /// (Bug 113) for the filtering itself: excludes orphaned rows and applies the
+    /// exact-depth match at every depth, including 0.
     private var visibleEntries: [VaultEntry] {
-        guard self.security.isRestricted else { return self.entries }
-        return self.entries.filter { self.security.isEntryVisible($0) }
+        self.security.visibleVaultEntries(from: self.entries)
     }
 
     private var list: some View {

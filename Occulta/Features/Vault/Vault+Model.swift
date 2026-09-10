@@ -188,7 +188,7 @@ final class VaultEntry {
     /// nil = never classified (a legacy entry pre-dating this field); what that
     ///       resolves to is caller-specific — see `isVisible(atDepth:whenUnclassified:)`.
     /// N   = visible only at exactly depth N (an exact match, not a ceiling —
-    ///       see `Manager.Security.isEntryVisible` and
+    ///       see `Manager.Security.visibleVaultEntries(from:)` and
     ///       `Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`
     ///       for why "visible 0...N" would let an entry created at a duress depth
     ///       leak into every shallower depth, including the real depth 0).
@@ -309,26 +309,27 @@ final class VaultEntry {
     /// `Bug 27` was about, and the part that must not fork. Only the nil case is a
     /// deliberate, explicit, per-caller decision, not a shared default:
     ///
-    ///   - `Manager.Security.isEntryVisible` (display) passes `false`. It only runs
-    ///     this check while `isRestricted` (an active duress depth), and a duress
-    ///     depth can currently only exist once `activateSecureMode` has run — its
-    ///     Step 8 stamps every nil entry to hidden before that depth becomes
-    ///     reachable, so nil can never actually reach this function while
-    ///     `isRestricted` is true *today*. `false` costs nothing now and defends
-    ///     the display path if a future alternate route to a duress depth ever
-    ///     bypasses Step 8 — this caller would rather fail closed than trust a
-    ///     guarantee made three call-frames away.
+    ///   - `Manager.Security.visibleVaultEntries(from:)` (display) passes
+    ///     `depth == 0` — true only at the real depth. A nil entry is a real,
+    ///     persistent state, not something ever swept away — confirmed by grep, no
+    ///     code anywhere stamps an existing nil entry to a concrete depth, and
+    ///     `PQmigration.migrateDepthFieldsToFixedWidth`'s own doc comment calls it
+    ///     "a legitimate steady state." It must stay visible at the real depth 0,
+    ///     matching ordinary pre-feature usage, and stay hidden at every duress
+    ///     depth (Bug 113: the previous hardcoded `false` here was correct for
+    ///     duress depths but wrong at depth 0 — though that went unnoticed because
+    ///     the SwiftUI call site never invoked this function at depth 0 at all).
     ///   - `VaultManager.entriesVisible(atDepth:)` (backup export, staleness
-    ///     counts) passes `true`. It has no `isRestricted` gate — it runs at the
-    ///     user's own real depth 0 unconditionally, and nil only exists in
-    ///     installs with entries that pre-date this field and have never
-    ///     activated Secure Mode. `false` here would make it silently and
-    ///     permanently drop those entries from every backup for that ordinary,
-    ///     non-duress user — the bug this function was introduced to fix.
-    ///
-    /// If Step 8's stamping guarantee ever needs a stronger backstop, add it at
-    /// the source (see the `assert` after that loop in `activateSecureMode`) —
-    /// don't make both callers share a single nil answer again to get it.
+    ///     counts) passes `true` unconditionally, at whatever depth its caller is
+    ///     currently at — including a duress depth (`exportBackup(currentDepth:)`
+    ///     forwards the caller's live `currentDepth` straight through, no
+    ///     depth-0-only gate). Correct for the ordinary, non-duress user this
+    ///     function was introduced to protect (ensuring a legacy nil entry isn't
+    ///     silently and permanently dropped from every backup they make), but it
+    ///     means a legacy nil entry — real content, by construction, since it
+    ///     predates duress depths existing at all — would also be swept into a
+    ///     backup exported *from* a duress depth. Flagged, not yet fixed — Bug 114,
+    ///     `bugs.md`.
     func isVisible(atDepth depth: Int, whenUnclassified: Bool) -> Bool {
         guard let data = self.visibleThroughDepth else { return whenUnclassified }
         guard let plain = data.decrypt(), let value = DepthCodec.decode(plain)

@@ -199,11 +199,16 @@ extension VaultManager {
     /// via a fresh Secure Enclave round trip — this runs on every unlock and
     /// every Vault tab appearance (`refreshBackupStaleness`), on the main actor.
     ///
-    /// Passes `whenUnclassified: true`: unlike the display path, this runs
-    /// unconditionally at the user's own real depth, including depth 0. nil only
-    /// occurs in installs with entries pre-dating this field that have never
-    /// activated Secure Mode — `false` here would silently and permanently drop
-    /// those entries from every backup export for that ordinary user.
+    /// Passes `whenUnclassified: true` unconditionally, at whatever `depth` the
+    /// caller passes — including a duress depth (`exportBackup(currentDepth:)`
+    /// forwards its caller's live `currentDepth`, no depth-0-only gate). Correct for
+    /// the ordinary, ever-real-depth-only user this was introduced to protect: nil
+    /// only occurs for entries pre-dating this field, and `false` here would
+    /// silently and permanently drop those from every backup export they make. But
+    /// unlike the display path (`Manager.Security.visibleVaultEntries(from:)`,
+    /// which conditions this on `depth == 0`), nothing here excludes a duress
+    /// depth — a legacy nil entry would also be swept into a backup exported from
+    /// one. Flagged, not yet fixed — Bug 114, `bugs.md`.
     private func entriesVisible(atDepth depth: Int) throws -> [VaultEntry] {
         guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
             throw VaultError.keyDerivationFailed

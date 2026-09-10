@@ -2,6 +2,17 @@
 
 **Status: fixed and verified — `3e16a8e`.** Found during a routine code review of `release/v1.10.3` (three independent finder passes — line-by-line scan, cross-file caller trace, and altitude/design review — converged on the same bug from different directions, a strong signal it was real). A `VaultEntry` with a `nil` `visibleThroughDepth` (a row pre-dating the field's existence) was silently and permanently excluded from every backup export, at every depth, with no error — while the exact same entry displayed normally in the Vault tab. The two code paths disagreed about what `nil` means, and only one of them was right.
 
+**⚠️ Partially superseded, 2026-09-10 — see Bug 114, `Docs/Features/Secure Mode/bugs.md`.** This
+fix's entire safety argument for `entriesVisible(atDepth:)` — "Step 8 eliminates nil before a
+duress depth exists" (the "Root cause" section below, the second bullet under "Fix", and the whole
+of "Considered and rejected") — depended on `activateSecureMode`'s Step 8 stamping loop and its
+backstop `assert`. Both were deleted by `ef9c1f4` ("Removal Stage 1: shrink activate/deactivateSecureMode
+to PIN-only"), on this same `v1.11.0/vault-key-layering` branch, along with the regression test
+named below. The consolidated `isVisible(atDepth:whenUnclassified:)` function and the
+`Manager.Security` display-path fix are still correct and still in place — only the claim that
+`entriesVisible`'s `whenUnclassified: true` is safe at a duress depth no longer holds. Kept
+unedited below as the historical record of the original, then-correct reasoning.
+
 ## Symptom
 
 `VaultManager.exportBackup(currentDepth:)` calls a private helper, `entriesVisible(atDepth:)`, to decide which entries go into the `.occbak` file. Before the fix, that helper read:

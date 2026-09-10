@@ -33,9 +33,9 @@ private func makeVaultManager(
 }
 
 /// Separate minimal container for standing up a `Manager.Security` in isolation —
-/// `isEntryVisible(_:)` is a pure function of the passed `VaultEntry` plus
+/// `visibleVaultEntries(from:)` is a pure function of the passed `[VaultEntry]` plus
 /// `currentDepth`, so it doesn't need to share a container/context with the
-/// `VaultManager` that created the entry.
+/// `VaultManager` that created the entries.
 @MainActor
 private func makeContainer() throws -> ModelContainer {
     let schema = Schema([
@@ -325,12 +325,19 @@ private func secureEnclaveAvailable() -> Bool {
 
     // visibleThroughDepth is an exact-depth match, not a ceiling: an entry is
     // visible only at exactly the depth it was created at (nil = never
-    // classified, visible everywhere). Deliberately not "visible 0 through N" —
-    // see Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md
+    // classified — visible at the real depth 0 only, since Bug 113; hidden at
+    // every duress depth). Deliberately not "visible 0 through N" — see
+    // Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md
     // for why a ceiling let an entry created at a duress depth leak into every
     // shallower depth, including the real depth 0.
+    //
+    // These test `Manager.Security.visibleVaultEntries(from:)` directly — the same
+    // function `Vault+Tab.swift`'s `visibleEntries` calls. Bug 113: the previous
+    // per-entry `isEntryVisible(_:)` this suite tested was itself correct, but the
+    // SwiftUI call site never invoked it at depth 0, so none of this coverage ever
+    // reached production. Testing the shared function both suites call closes that gap.
 
-    @Test func isEntryVisible_stampedDepth0_onlyVisibleAtDepth0() throws {
+    @Test func visibleVaultEntries_stampedDepth0_onlyVisibleAtDepth0() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _)  = try makeVaultManager()
         vm.unlock(context: LAContext(), currentDepth: 0)
@@ -339,14 +346,14 @@ private func secureEnclaveAvailable() -> Bool {
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
 
         security.applyVerifyState(for: .normal(depth: 0))
-        #expect(security.isEntryVisible(entry))
+        #expect(security.visibleVaultEntries(from: [entry]).map(\.id) == [entry.id])
         security.applyVerifyState(for: .normal(depth: 1))
-        #expect(!security.isEntryVisible(entry), "an entry stamped depth 0 must hide at any other depth")
+        #expect(security.visibleVaultEntries(from: [entry]).isEmpty, "an entry stamped depth 0 must hide at any other depth")
         security.applyVerifyState(for: .normal(depth: 3))
-        #expect(!security.isEntryVisible(entry))
+        #expect(security.visibleVaultEntries(from: [entry]).isEmpty)
     }
 
-    @Test func isEntryVisible_stampedDepthN_onlyVisibleAtN_hiddenElsewhere() throws {
+    @Test func visibleVaultEntries_stampedDepthN_onlyVisibleAtN_hiddenElsewhere() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _)  = try makeVaultManager()
         vm.unlock(context: LAContext(), currentDepth: 0)
@@ -355,21 +362,22 @@ private func secureEnclaveAvailable() -> Bool {
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
 
         security.applyVerifyState(for: .normal(depth: 0))
-        #expect(!security.isEntryVisible(entry), "an entry stamped depth 2 must NOT leak into the real (depth 0) view — this is the bug this fix closes")
+        #expect(security.visibleVaultEntries(from: [entry]).isEmpty,
+                "an entry stamped depth 2 must NOT leak into the real (depth 0) view — Bug 113")
         security.applyVerifyState(for: .normal(depth: 2))
-        #expect(security.isEntryVisible(entry), "visible at its own stamped depth")
+        #expect(security.visibleVaultEntries(from: [entry]).map(\.id) == [entry.id], "visible at its own stamped depth")
         security.applyVerifyState(for: .normal(depth: 3))
-        #expect(!security.isEntryVisible(entry), "hidden at any other depth too, including deeper ones")
+        #expect(security.visibleVaultEntries(from: [entry]).isEmpty, "hidden at any other depth too, including deeper ones")
     }
 
-    /// `isEntryVisible` fails closed on nil (`whenUnclassified: false`) as defense-in-depth
-    /// for the display path — see `VaultEntry.isVisible`'s doc comment. This constructs the
-    /// nil-entry + restricted-depth combination directly, bypassing `activateSecureMode`
-    /// entirely; in production that combination shouldn't occur (Step 8 always stamps nil
-    /// away before a duress depth exists), but `isEntryVisible` doesn't get to assume that
-    /// guarantee held. `entriesVisible` (backup export), by contrast, passes `true` for this
-    /// same nil case — see `VaultBackupRoundTripTests` for that side.
-    @Test func isEntryVisible_legacyNilVisibleThroughDepth_hiddenAtRestrictedDepth() throws {
+    /// A legacy entry with no `visibleThroughDepth` (pre-dating the field) is a real,
+    /// persistent state — not swept away before a duress depth exists (confirmed by grep:
+    /// no code anywhere stamps existing nil entries; `PQmigration.migrateDepthFieldsToFixedWidth`'s
+    /// own doc comment calls it "a legitimate steady state"). It must fail closed — hidden —
+    /// at any duress depth. `entriesVisible` (backup export) needs the opposite answer at
+    /// the real depth it runs at — see `VaultBackupRoundTripTests` for that side, and Bug
+    /// 113's write-up for why `entriesVisible` itself may share this gap at a duress depth.
+    @Test func visibleVaultEntries_legacyNilVisibleThroughDepth_hiddenAtRestrictedDepth() throws {
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext(), currentDepth: 0)
         let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
@@ -377,11 +385,43 @@ private func secureEnclaveAvailable() -> Bool {
 
         let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
         security.applyVerifyState(for: .normal(depth: 3))
-        #expect(!security.isEntryVisible(entry),
+        #expect(security.visibleVaultEntries(from: [entry]).isEmpty,
                 "a row with no visibleThroughDepth must fail closed at a restricted depth")
     }
 
-    @Test func visibleEntries_endToEnd_exactMatchOnly() throws {
+    /// The other half of the case above, and the specific behavior Bug 113 adds: at the
+    /// real depth 0, a legacy nil entry must stay visible — only the restricted-depth side
+    /// needed to change.
+    @Test func visibleVaultEntries_legacyNilVisibleThroughDepth_visibleAtRealDepth0() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let (vm, _) = try makeVaultManager()
+        vm.unlock(context: LAContext(), currentDepth: 0)
+        let entry   = try vm.addEntry(label: "pre-existing", content: Data(), type: .note)
+        entry.visibleThroughDepth = nil
+
+        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        security.applyVerifyState(for: .normal(depth: 0))
+        #expect(security.visibleVaultEntries(from: [entry]).map(\.id) == [entry.id],
+                "a legacy unclassified entry must stay visible at the real depth 0")
+    }
+
+    /// Bug 113's second harm: an entry orphaned by `orphanVaultEntries` (Secure Mode
+    /// deactivation's eviction sweep) must never reappear, even at the depth its
+    /// (untouched) `visibleThroughDepth` stamp still names — orphan status wins.
+    @Test func visibleVaultEntries_excludesOrphanedEntries() throws {
+        guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
+        let (vm, _) = try makeVaultManager()
+        vm.unlock(context: LAContext(), currentDepth: 0)
+        let entry   = try vm.addEntry(label: "orphaned", content: Data(), type: .note, currentDepth: 0)
+        entry.deletionToken = try VaultEntry.orphanedToken.encrypt()
+
+        let security = try Manager.Security(modelContainer: try makeContainer(), keyManager: TestKeyManager())
+        security.applyVerifyState(for: .normal(depth: 0))
+        #expect(security.visibleVaultEntries(from: [entry]).isEmpty,
+                "an orphaned entry must not show even at the depth it was originally stamped with")
+    }
+
+    @Test func visibleVaultEntries_endToEnd_exactMatchOnly() throws {
         guard secureEnclaveAvailable() else { print("⚠︎ Skipping — SE unavailable"); return }
         let (vm, _) = try makeVaultManager()
         vm.unlock(context: LAContext(), currentDepth: 0)
@@ -393,19 +433,19 @@ private func secureEnclaveAvailable() -> Bool {
         let all      = try vm.fetchAllEntries()
 
         security.applyVerifyState(for: .normal(depth: 0))
-        var visible = all.filter { security.isEntryVisible($0) }
+        var visible = security.visibleVaultEntries(from: all)
         #expect(visible.map(\.id) == [real.id], "at the real depth, only the real entry shows — the duress-depth entry must not leak in")
 
         security.applyVerifyState(for: .normal(depth: 1))
-        visible = all.filter { security.isEntryVisible($0) }
+        visible = security.visibleVaultEntries(from: all)
         #expect(visible.isEmpty, "at depth 1, neither entry was stamped here")
 
         security.applyVerifyState(for: .normal(depth: 3))
-        visible = all.filter { security.isEntryVisible($0) }
+        visible = security.visibleVaultEntries(from: all)
         #expect(visible.map(\.id) == [decoy.id], "at depth 3, only the entry stamped exactly there shows")
 
         security.applyVerifyState(for: .normal(depth: 4))
-        visible = all.filter { security.isEntryVisible($0) }
+        visible = security.visibleVaultEntries(from: all)
         #expect(visible.isEmpty, "at depth 4, neither entry was stamped here")
     }
 }

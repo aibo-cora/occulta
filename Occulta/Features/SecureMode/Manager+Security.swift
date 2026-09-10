@@ -966,7 +966,11 @@ extension Manager {
 
         // MARK: - Safe vault entries
 
-        /// Returns true if the vault entry is visible at the current depth.
+        /// Vault entries visible at the current depth, from an already-fetched set —
+        /// `Vault+Tab.swift`'s `@Query` results. Excludes orphaned rows (Bug 110) and
+        /// applies the exact-depth match, including at depth 0 (Bug 113 — the previous
+        /// `isEntryVisible(_:)` was only ever called when `isRestricted`, so depth 0
+        /// bypassed depth filtering, and Bug 110's orphaning, entirely).
         ///
         /// Exact-depth match, not a ceiling: an entry is visible only at the exact
         /// depth it was created at. Deliberately not `value >= currentDepth` — see
@@ -974,15 +978,25 @@ extension Manager {
         /// for why a ceiling lets an entry created at a duress depth leak into every
         /// shallower depth, including the real depth 0.
         ///
-        /// Passes `whenUnclassified: false`: this is the display path, gated by
-        /// `isRestricted` at the only call site (`Vault+Tab.visibleEntries`), so it
-        /// only ever runs at an active duress depth. A nil-depth entry can't reach
-        /// this today (Step 8 of `activateSecureMode` stamps every one before a
-        /// duress depth exists), but failing closed here doesn't depend on that
-        /// guarantee holding elsewhere — see `VaultEntry.isVisible`'s doc comment
-        /// for why the export path needs the opposite answer.
-        func isEntryVisible(_ entry: VaultEntry) -> Bool {
-            entry.isVisible(atDepth: self.currentDepth, whenUnclassified: false)
+        /// `whenUnclassified: depth == 0`, not a constant: a legacy entry with a nil
+        /// `visibleThroughDepth` is a real, persistent state, not something swept away
+        /// before a duress depth becomes reachable — confirmed by
+        /// `PQmigration.migrateDepthFieldsToFixedWidth`'s own doc comment ("VaultEntry nil
+        /// is a legitimate steady state rather than a gap"), and by grep: no code
+        /// anywhere stamps existing nil entries. It must stay visible at the real depth 0
+        /// and stay hidden at every duress depth; a single fixed value can't do both.
+        ///
+        /// Derives the local DB key once and reuses it across every row, matching
+        /// `VaultManager.fetchAllEntries()`/`entriesVisible(atDepth:)`'s pattern, rather
+        /// than paying a Secure Enclave round trip per entry. Fails closed to `[]` on
+        /// derivation failure — never falls back to returning `entries` unfiltered.
+        func visibleVaultEntries(from entries: [VaultEntry]) -> [VaultEntry] {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return [] }
+            let depth = self.currentDepth
+            return entries.filter {
+                !$0.isOrphaned(usingKey: key) &&
+                $0.isVisible(atDepth: depth, whenUnclassified: depth == 0, usingKey: key)
+            }
         }
 
         // MARK: - Private
