@@ -905,3 +905,70 @@ mutation that stopped happening in Stage 1 — nothing this stage's own changes 
 (unchanged `KeychainMigrationSETests` baseline). `GroupOrphanPurgeTests` (all 4) and the trimmed
 `EncryptedFieldCoverageTests` (`readabilitySeparatesStrandedFromAbsent`) confirmed passing
 individually, not just absent from the failure list.
+
+## Removal — Stage 4: done, 2026-09-10
+
+Rewrote `SecureModeActivationTests.swift` end to end rather than continuing to patch it —
+everything Stage 2/3 left behind (`SecureModeWALPersistenceTests`, `CascadeDeactivationDepthTests`,
+`GlobalTrusteeDepthPreservationTests`, `OriginDepthPreservationTests`,
+`DepthMigrationRotationCompositionTests`'s two rotation-composition tests, `StrandedCeilingRotationTests`,
+`SensitiveContactKeyRecordTests`'s two remaining tests, and `SecureModeClassificationTests`'s one
+remaining test) asserted, in one form or another, that `activateSecureMode`/`deactivateSecureMode`
+mutate `Contact.Profile`/`VaultEntry` fields — which stopped being true in Stage 1. There was nothing
+left to patch; the file needed new content matching what the functions actually do now.
+
+**What the new file covers, and why these three things specifically.** `activateSecureMode`/
+`deactivateSecureMode`'s entire remaining job is PIN verification plus `AppLayerConfig` verifier
+writes — so the file now tests exactly that surface, nothing broader:
+- `SecureModeNonInterferenceTests` (4 tests) — the direct regression guard for the removal itself.
+  A contact's depth fields and key material, and a vault entry's visibility ceiling, must be
+  byte-identical before and after an activate/deactivate cycle — including a nested two-layer one,
+  covering what `CascadeDeactivationDepthTests` used to check from the opposite (now-false)
+  assumption — and regardless of whether the bytes are real ciphertext or garbage nothing can
+  decrypt (`undecryptableBytesSurviveUnchanged`, replacing `StrandedCeilingRotationTests`'s concern
+  with a simpler fact: unreadable bytes are no longer a special case at all, since nothing reads
+  them). If a future change reintroduces data-touching in either function, this fails loudly.
+- `SecureModeVerifierPersistenceTests` (2 tests) — a Bug-37-shaped check for the PIN-only shape,
+  not a resurrection of the old one: the old regression was `contactManager.modelContext.save()`
+  being skipped during a rotation that no longer exists; what's left to skip now is
+  `Manager.Security`'s own `modelContext.save()` after its `AppLayerConfig` verifier writes. Fetches
+  from a brand-new `ModelContext` after activation and after deactivation, confirming each reaches
+  the persistent store rather than just the in-memory `AppLayerConfig` every other test in the file
+  reads through `c.security` directly. No prior test anywhere verified this for the new shape —
+  `SecurityStateTests` in `PINManagerTests.swift` checks `security.currentDepth`/`isSecureModeActive`
+  in-memory, never a fresh-context fetch.
+- `DepthMigrationInertnessTests` (1 test, `migrationIsInertAgainstForeignKeyRows`, carried over
+  unchanged) — `DatabaseMigration.migrateDepthFieldsToFixedWidth` runs independently of Secure Mode
+  entirely; its one piece of coverage that belonged in this file (a row sealed under an
+  undecryptable key must be left alone, not resolved to a default) doesn't depend on activation at
+  all and needed no rework, just a header and suite name no longer describing "composed with
+  rotation" — a concept that no longer exists.
+
+**Deliberately not added, and why:** `Message.Draft` purging (`purgeDraftsNotSafeAtCurrentDepth` /
+`Message.Draft.purgeUnsafe`) has zero test coverage anywhere in the suite — confirmed by grep,
+zero hits for either name outside their own definitions. This was a real gap left by Stage 1
+(`DraftKeyRotationTests.swift` was deleted there with nothing added in its place), but it is not
+this stage's gap to fill: `purgeDraftsNotSafeAtCurrentDepth` is called from `applyVerifyState`
+(`Manager+Security.swift:643`), not from `activateSecureMode`/`deactivateSecureMode` at all — a
+completely different code path this file was never about. Coverage for it belongs in
+`PINManagerTests.swift`, which already exercises `applyVerifyState`/`verify()` extensively, not
+here. Flagged for the user as a separate follow-up rather than pulled into this stage's scope.
+
+**A structural side effect worth noting, not a deliberate design goal:** every test in the
+rewritten file is SE-independent even though all are still gated `.enabled(if:
+secureEnclaveAvailable())` for consistency with the rest of the Secure Mode suite. The old file's
+gate existed because the old activation/deactivation touched `Contact.Profile` fields through the
+**ambient** real `Manager.Key()`, forcing real Secure Enclave availability regardless of the
+injected `TestKeyManager`. That coupling is gone along with the rotation it existed for — nothing
+in the new file's call path touches the real key manager — but the gate was kept rather than
+removed, matching the same convention `PINManagerTests.swift` uses for its own activate/deactivate
+tests even though the same reasoning would apply there too. Not re-litigated here; out of scope.
+
+**Exit state, verified, not assumed:** app target and test target build with zero errors and zero
+warnings in the rewritten file (the stray `await`s on the now-synchronous `activateSecureMode`/
+`deactivateSecureMode` that Stage 1 explicitly left for this stage are gone along with the code that
+had them). Full suite: **`** TEST SUCCEEDED **`**, zero failures — the first fully green run since
+this removal effort began. 6 skips (unchanged `KeychainMigrationSETests` baseline). All 7 new tests
+(`SecureModeNonInterferenceTests` ×4, `SecureModeVerifierPersistenceTests` ×2,
+`DepthMigrationInertnessTests` ×1) confirmed passing individually by name, not just inferred from a
+clean overall result.
