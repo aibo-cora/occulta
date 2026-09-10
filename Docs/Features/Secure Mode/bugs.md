@@ -8883,3 +8883,101 @@ opportunity isn't missed.
 ### Guard
 
 None — not fixed.
+
+## Bug 113 — The vault entry list reads a raw `@Query`, not `VaultManager.fetchAllEntries()` — the depth-0 duress leak and Bug 110's orphan filter both bypass the UI
+
+**Status:** Open. Filed 2026-09-10, found while verifying that vault entries are depth-aware
+end-to-end, prompted by re-checking whether the exact-depth-match fix
+(`Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`) and Bug 110's
+orphaning both actually reach the screen. Neither does, for the same root cause.
+
+**Target:** unset — not yet decided whether/how to fix.
+
+### Severity: Medium
+
+Two independent harms, from one cause. Neither exposes new plaintext to a coercer beyond what a
+correctly-filtered screen would already withhold from the *other* depth — the damage is a UI showing
+content it has no business showing at the depth it's showing it at, not a new decryption path.
+
+### The cause
+
+[Vault+Tab.swift:215-218](Occulta/UI/Tabs/Vault/Vault+Tab.swift:215):
+
+```swift
+private var visibleEntries: [VaultEntry] {
+    guard self.security.isRestricted else { return self.entries }
+    return self.entries.filter { self.security.isEntryVisible($0) }
+}
+```
+
+`self.entries` ([Vault+Tab.swift:81](Occulta/UI/Tabs/Vault/Vault+Tab.swift:81)) is a plain
+`@Query(sort: \VaultEntry.createdAt, order: .reverse)` straight on `VaultEntry` — every row in the
+table, unfiltered by SwiftData itself. `visibleEntries` is the only place that narrows it, and it is
+the sole source for the list, the count text, and the attention section
+(`Occulta/UI/Tabs/Vault/Vault+Tab.swift:221-225`). Nothing else in the file touches orphan status or
+depth.
+
+### Harm 1 — the depth-0 duress leak this branch believed was already fixed
+
+`isRestricted` is `currentDepth > 0`. At depth 0 the guard's `else` branch never runs, so
+`isEntryVisible` — the function `Fix vault entries leaking into the real view with a one-line change,
+not a new schema` (`2392653`) corrected to an exact match — is never called at all. An entry stamped
+`visibleThroughDepth == 2` is returned by `visibleEntries` at depth 0 exactly as it was before that
+fix.
+
+**Confirmed by git history, not assumed:**
+- `git log -L 210,220:Occulta/UI/Tabs/Vault/Vault+Tab.swift` shows the guard was introduced in `5f20dac`
+  ("[step3] Complete Step 3: depth stamping, share index, grace period, file protection"), May 21 2026 —
+  three months before the exact-match fix.
+- `git show --stat 2392653` — the exact-match fix — touched only `Manager+Security.swift`,
+  `Vault+Model.swift`, the bug doc, and `VaultTests.swift`. `Vault+Tab.swift` is absent from that list.
+  The guard was never revisited.
+- The fix's own regression test,
+  `isEntryVisible_stampedDepthN_onlyVisibleAtN_hiddenElsewhere` (`VaultTests.swift:349-363`), asserts
+  `security.isEntryVisible(entry)` directly at depth 0 and correctly gets `false` — proving the
+  *function* is right. It never calls `visibleEntries`, the property that actually gates the screen, so
+  it cannot see that the screen bypasses the function it's testing.
+
+Net effect: an entry created at a duress depth — willingly, by rehearsal, or under live coercion — is
+not confined to that depth. It resurfaces in the real depth-0 list, indistinguishable from anything
+created intentionally, with only a `createdAt` timestamp as a passive tell — the exact risk
+`Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md` describes, reopened at the one
+call site its fix never reached.
+
+### Harm 2 — Bug 110's orphan filter never reaches the screen
+
+`VaultManager.fetchAllEntries()` ([Vault+Manager.swift:314-321](Occulta/Features/Vault/Vault+Manager.swift:314))
+derives the vault key once and filters out every `isOrphaned(usingKey:)` row — the mechanism this
+branch built specifically so an orphaned entry is "genuinely inert everywhere at once, not just hidden
+from the list" (that function's own doc comment, lines 310-313). Checked by grep across
+`Occulta/Features/Vault/`: `Vault+Manager+ReturnBuffer.swift`, `Vault+Manager+Backup.swift`, and
+`Vault+Manager+Shards.swift` all call it and inherit the filter correctly. `Vault+Tab.swift` is not on
+that list — its `@Query` reads `VaultEntry` directly, so `fetchAllEntries()`'s doc comment claiming "the
+UI list" is one of its consumers is itself wrong, not just the code.
+
+Concretely: `Manager.Security.orphanVaultEntries` runs on Secure Mode deactivation
+(`Manager+Security.swift:461,509`) to retire entries at a depth being freed — Bug 110/111's entire
+point. Those rows are not hard-deleted, by design, for the deletion-count cover Bug 110 exists to
+provide. But because `Vault+Tab.swift` never checks `isOrphaned`, a just-orphaned entry keeps appearing
+in the list at whatever depth is current, fully readable, until something else removes the row —
+undoing the "inert" half of Bug 110's fix at the only place a person actually looks.
+
+**Not the same path as user-initiated deletion.** `VaultManager.deleteEntry(id:)`
+(`Vault+Manager.swift:405`) calls `modelContext.delete(entry)` — a real hard delete — so a swipe-deleted
+entry disappears correctly, via SwiftData's own change notification, without touching this bug. This
+entry is specifically about rows `orphanVaultEntries` retires, not ordinary deletion.
+
+### Why this wasn't caught earlier
+
+Both regressions are invisible to the existing test suites because both suites test the correct
+function in isolation (`isEntryVisible`, `isOrphaned(usingKey:)`) rather than the SwiftUI computed
+property that actually decides what renders. `Vault+Tab.swift` has no test coverage of `visibleEntries`
+itself — confirmed by grep, no test file references it. This is the same class of gap this branch's own
+work has hit before: a unit-tested primitive with no test proving its one production call site
+actually uses it.
+
+### Guard
+
+None — not fixed. Not yet decided whether the fix is switching `Vault+Tab.swift` to route through
+`VaultManager.fetchAllEntries()` plus the existing `isEntryVisible` depth filter (folding both harms
+into one call), or something narrower.
