@@ -8757,3 +8757,76 @@ not depth 1; the un-popped depth-1 layer's own verifier is independently confirm
 cold-start-routable) and `deactivation_threeLayerStack_popsOneLevelPerCall` (three sequential
 deactivations, asserting `currentDepth`/`isSecureModeActive` after each one: 3→2→1→0). Full suite
 green, 0 failures, 6 skips (baseline), confirmed after the fix.
+
+---
+
+## Bug 112 — `Contact.Profile.deletionToken`'s nil/non-nil status is a free, zero-decryption signal — scoped, deliberately not fixed
+
+**Status:** Open, low severity, declined for now. Filed 2026-09-10, found immediately after Bug 110's
+fix shipped for `VaultEntry.deletionToken` and the same question was asked of its sibling field on
+`Contact.Profile`. Scoped in full before deciding; the scope is why this is declined rather than
+fixed, not a severity judgment alone.
+
+**Target:** unset — not planned.
+
+### Severity: Low — same class of gap as Bug 110 before its fix, same reasoning for why it's low
+
+SQLite tracks column nullability structurally, independent of any encryption applied to the value —
+`SELECT COUNT(*) WHERE deletionToken IS NOT NULL` answers "how many contacts are soft-deleted" with no
+key at all. Exactly the gap Bug 110 closed for `VaultEntry.deletionToken` by making that field always
+non-nil, content carrying the meaning instead of presence. Low for the same reason Bug 110 was: this
+raises the bar for a quick, no-decryption pass, not a guarantee against an examiner already decrypting
+the database wholesale, who gains nothing new here either way.
+
+### Why it's declined, not just deferred — the real scope, checked before deciding
+
+**The blocking finding: SwiftUI's `@Query` cannot decrypt-and-filter.** `Contact.Profile.descriptor` —
+the fetch descriptor carrying `deletionToken == nil` — is consumed via `@Query` in **18 sites across 14
+files**: every contact list (v1/v2/v3), contact detail screens, group forms, the vault tab's contact
+lookup, key exchange, the share recipient picker, both Secure Mode flows. `@Query`'s predicate must be
+translatable straight to SQL by SwiftData; there is no way to express "and this AES-GCM blob decrypts
+to sentinel X" in a `#Predicate`. Making `deletionToken` always non-nil breaks every one of those 18
+sites' ability to exclude soft-deleted contacts *at the query level* — each would need re-architecting
+to fetch unfiltered and filter reactively elsewhere (a view-model layer deriving the key and decrypting
+per row on every render, or a maintained published "visible contacts" cache). That is not a predicate
+swap; it is a different architecture for the Contacts UI's primary rendering path.
+
+**Beyond the UI, the service/migration layer alone would be a wider version of `VaultEntry`'s fix, same
+shape:** `Contact+Manager.swift` (`fetchAllContacts`, `deleteContact`'s write, `fetchSoftDeletedContacts`
+driving the existing 50-row cap, one more lookup), `ContactManager+Classification.swift` (four
+`identifier == X && deletionToken == nil` lookups), `Manager+Security.swift`'s
+`purgeDraftsNotSafeAtCurrentDepth`.
+
+**`PQmigration.swift` adds a third kind of complexity beyond either of those — an actual oracle, not
+just a filter.** Three backfills (`migrateSafeContactVisibilityBackfill`, `migrateGlobalTrusteeDepthBackfill`,
+`migrateOriginDepthBackfill`) each gate on `someField == nil && deletionToken == nil` (Bug 97) so a
+backfill never stamps a fresh value under the current key onto a row whose other fields are
+deliberately left under a stale one. `migrateDepthFieldsToFixedWidth` excludes soft-deleted rows the
+same way, for the same reason. `migrateScrubDeletedDepthStamps` is the real oracle: it fetches only
+`deletionToken != nil` rows, then uses `deletionToken?.decrypt() == Data([1])` itself to distinguish
+"deleted and still readable under the current key" from "deleted but stranded by a since-superseded key
+rotation," feeding a per-field repair decision. Worth naming precisely: since Removal Stages 0-6 deleted
+key rotation entirely, a contact soft-deleted from now on can never become stranded — that branch is
+permanently historical, relevant only to rows already stranded by a rotation that happened before this
+removal shipped. The oracle's *logic* doesn't need to change, only its entry predicate — but losing the
+SQL-level `!= nil` filter means fetching every contact just to find the (now permanently non-growing)
+deleted population, on every launch, forever, for something that used to be free. A dedicated test
+suite, `DeletedDepthStampScrubTests.swift`, is built entirely around this oracle and would need
+updating in step with it.
+
+**Unlike `VaultEntry.deletionToken`, this field is shipped.** Changing its semantics needs a real
+migration — backfill every existing nil row to encrypted-`0`, re-stamp every existing non-nil row to
+encrypted-`1` — not a lightweight default on an unreleased field.
+
+### Conclusion
+
+The service/migration layer cost alone would be proportionate to the benefit — the same trade Bug 110
+made for `VaultEntry`. The `@Query` architecture problem is not: it is a different, larger project (a
+new data-fetching pattern for the Contacts UI generally) with its own design questions, not a follow-on
+to this bug. Declined for now on that basis. If the Contacts UI's `@Query` pattern is ever revisited for
+an unrelated reason, this fix becomes cheap to fold in at the same time — tracked here so that
+opportunity isn't missed.
+
+### Guard
+
+None — not fixed.
