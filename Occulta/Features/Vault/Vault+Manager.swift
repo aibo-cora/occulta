@@ -293,16 +293,25 @@ final class VaultManager {
 
     // MARK: - Read
 
-    /// Return all vault entries sorted by creation date (oldest first).
+    /// Return all non-orphaned vault entries sorted by creation date (oldest first).
     ///
     /// All fields on the returned entries are ciphertext — no decryption occurs here.
+    /// Excludes orphaned rows (`deletionToken != nil`, Bug 110) — this is the single
+    /// central read every other consumer (shard custody, backup export, the return
+    /// buffer, the UI list) goes through, so filtering here is what makes an orphaned
+    /// entry genuinely inert everywhere at once, not just hidden from the list.
     func fetchAllEntries() throws -> [VaultEntry] {
-        let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
+        let predicate  = #Predicate<VaultEntry> { $0.deletionToken == nil }
+        let descriptor = FetchDescriptor<VaultEntry>(predicate: predicate, sortBy: [SortDescriptor(\.createdAt)])
         return try self.modelContext.fetch(descriptor)
     }
 
+    /// Hard-deletes every VaultEntry row, including orphaned ones — deliberately not
+    /// `fetchAllEntries()`, which now excludes orphaned rows (Bug 110). Only ever called
+    /// from `deleteAllData()` (panic wipe), which must erase everything, the same way
+    /// `ContactManager.deleteAllContacts()` hard-deletes soft-deleted contacts too.
     func deleteAllEntries() throws {
-        let entries = try fetchAllEntries()
+        let entries = try self.modelContext.fetch(FetchDescriptor<VaultEntry>())
         for entry in entries { modelContext.delete(entry) }
         try modelContext.save()
     }

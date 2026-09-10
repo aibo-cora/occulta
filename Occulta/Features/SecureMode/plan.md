@@ -1129,3 +1129,41 @@ exercise this (`deactivation_fromDepth3_popsOneLevelToDepth2`,
 `deactivation_threeLayerStack_popsOneLevelPerCall`); the existing 2-layer test's `state` assertion was
 corrected from `.duress` to `.normal` to match the `coercerBaseDepth` change. Full suite: 0 failures,
 6 skips (baseline), confirmed after the fix.
+
+## Post-removal fix: VaultEntry orphaning closes the Bug 110 depth-reuse gap
+
+Bug 110 (`bugs.md`, filed during the same post-Stage-6 conversation as Bug 111, unrelated to it):
+`VaultEntry.visibleThroughDepth` is stamped once at creation and never reset, so an entry created in
+one duress session stayed exact-match-visible to a later, unrelated session reaching the same depth
+number — depth numbers are reused since Stage 1 stopped activation/deactivation touching application
+data, and nothing replaced the old bulk re-stamp/reset that used to prevent this.
+
+**Design, settled after exploring the shard-custody machinery together rather than guessing:** a new
+`VaultEntry.deletionToken` field, mirroring `Contact.Profile.deletionToken` exactly — encrypted, fixed
+sentinel content, physically kept rather than hard-deleted (the same forensic reasoning `bugs.md`
+Bug 13 already established for contacts), capped at 50 with oldest-first eviction.
+`VaultManager.fetchAllEntries()` — the single central read every consumer goes through — now filters
+`deletionToken == nil`, making orphaning a real, one-change exclusion from every functional path:
+shard custody, backup export, the return buffer, the UI list, not just the display layer. Caught in
+the same pass: `deleteAllEntries()` (panic wipe) would have silently stopped erasing orphaned rows had
+it kept routing through the now-filtered `fetchAllEntries()` — fixed to fetch unfiltered.
+
+`Manager.Security.orphanVaultEntries(freedFrom:)` runs from `deactivateSecureMode` and
+`forceDeactivateForRecovery`, orphaning any entry whose stamp names a depth the call just freed.
+`visibleThroughDepth` itself is left untouched — a historical record now moot for every functional
+purpose, since exclusion makes it unreachable regardless of its value.
+
+**The shard-revocation side was traced end to end before concluding anything needed building for
+it, and none did:** `ShardCustodyManager.buildExpectedShards` → `VaultManager.shardRecordsForTrustee`
+already reads through `fetchAllEntries()`, so an orphaned entry's shards simply stop appearing in the
+`expectedShards` list sent to a trustee on the next bundle — the trustee's existing
+`processExpectedShards` already deletes anything absent from that list (a real implicit-revoke
+mechanism documented in `SHARD_PROTOCOL_CASES.md`, initially and incorrectly assumed not to exist at
+all before checking). Full writeup, including the rejected sentinel-on-`visibleThroughDepth`
+alternative and why it was wrong: `bugs.md` Bug 110 (Closed, Fixed).
+
+Three new tests in `VaultEntryOrphaningTests` (`SecureModeActivationTests.swift`) cover the core
+resurfacing fix, a shallower-layer survival case, and cap eviction — the last of which caught a real
+ordering bug in the first implementation pass (`toOrphan` needed sorting before processing, not just
+`alreadyOrphaned`, for eviction to be reliably oldest-first within a single multi-entry batch). Full
+suite: 0 failures, 6 skips (baseline), confirmed after the fix.

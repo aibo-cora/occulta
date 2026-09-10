@@ -458,6 +458,7 @@ extension Manager {
             //             verifiers are removed.
             let clearFrom = max(1, depth)
             config.clearVerifiers(from: clearFrom)
+            self.orphanVaultEntries(freedFrom: clearFrom)
 
             // LIFO pop: land exactly one depth shallower than the layer just removed,
             // never further. Every verifier for depths 0..depth-2 is untouched by the
@@ -505,10 +506,69 @@ extension Manager {
             // Clear everything — force deactivation resets all layers.
             config.sealedDuressVerifier = nil
             config.clearVerifiers(from: 1)  // keep normalVerifiers[0] (master PIN intact)
+            self.orphanVaultEntries(freedFrom: 1)
             try self.setState(0, config: config)
             try self.modelContext.save()
 
             self.resetCounters()
+        }
+
+        /// Orphans any `VaultEntry` whose duress-depth stamp names a depth `clearFrom` or
+        /// deeper — depths a deactivation (or force-deactivation) just freed. Bug 110
+        /// (`bugs.md`): depth *numbers* are reused across unrelated duress sessions (a
+        /// fresh activation always counts back up 1, 2, 3... the same way, and
+        /// deactivation always returns to 0 or one level shallower), so without this an
+        /// entry created in one session stays exact-match-visible
+        /// (`VaultEntry.isVisible`) to a later, unrelated session that reaches the same
+        /// depth number.
+        ///
+        /// Marks `deletionToken` rather than touching `visibleThroughDepth` — see that
+        /// field's own doc comment (`Vault+Model.swift`) for why: exclusion from
+        /// `fetchAllEntries()` makes the entry inert everywhere at once (UI, shard
+        /// custody, backup export), not just hidden from one depth's view, and
+        /// `visibleThroughDepth` is left as a historical record of the depth the entry
+        /// was actually created at.
+        ///
+        /// Not gated on Secure Mode's own injected key manager — `VaultEntry` fields are
+        /// always sealed under the ambient real key (`Manager.Key()`), the same
+        /// key-manager split `purgeDraftsNotSafeAtCurrentDepth` already documents. Derives
+        /// that key once and reuses it for every entry checked and orphaned, rather than
+        /// paying a Secure Enclave round trip per row.
+        private func orphanVaultEntries(freedFrom clearFrom: Int) {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            let allEntries = (try? self.modelContext.fetch(FetchDescriptor<VaultEntry>())) ?? []
+
+            var toOrphan: [VaultEntry] = []
+            var alreadyOrphaned: [VaultEntry] = []
+            for entry in allEntries {
+                if entry.deletionToken != nil {
+                    alreadyOrphaned.append(entry)
+                    continue
+                }
+                guard let data  = entry.visibleThroughDepth,
+                      let plain = data.decrypt(using: key),
+                      let value = DepthCodec.decode(plain),
+                      value >= clearFrom
+                else { continue }
+                toOrphan.append(entry)
+            }
+            guard !toOrphan.isEmpty else { return }
+
+            // Cap: 50 orphaned rows total, oldest evicted first — mirrors
+            // Contact.Profile.deletionToken's own cap (Contact+Manager.swift). Both lists
+            // sorted by creation date: an unsorted fetch can return `toOrphan` in any
+            // order, and processing it oldest-first is what keeps `alreadyOrphaned`
+            // correctly ordered as newly-orphaned entries are appended to it below.
+            alreadyOrphaned.sort { $0.createdAt < $1.createdAt }
+            toOrphan.sort { $0.createdAt < $1.createdAt }
+            let sentinel = try? Data([1]).encrypt(using: key)
+            for entry in toOrphan {
+                if alreadyOrphaned.count >= 50 {
+                    self.modelContext.delete(alreadyOrphaned.removeFirst())
+                }
+                entry.deletionToken = sentinel
+                alreadyOrphaned.append(entry)
+            }
         }
 
         // MARK: - Verify

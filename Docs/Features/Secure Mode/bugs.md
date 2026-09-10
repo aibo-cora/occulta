@@ -8564,11 +8564,12 @@ sensitive contact's key-record material decrypts successfully under the current 
 
 ## Bug 110 — A vault entry's duress-depth stamp is never reset, so it can resurface in a later, unrelated duress session at the same depth number
 
-**Status:** Open, low severity. Filed 2026-09-10, found while updating `forensic-trace-avoidance.md`'s
-S7 to describe the current (post-removal) behavior — not a pre-existing entry being revisited, a fresh
-regression from Removal Stage 1.
+**Status:** Closed (Fixed), 2026-09-10. Filed the same day, found while updating
+`forensic-trace-avoidance.md`'s S7 to describe the current (post-removal) behavior — not a
+pre-existing entry being revisited, a fresh regression from Removal Stage 1. Fixed the same day, after
+a design discussion — see *Fix* below.
 
-**Target:** unset.
+**Target:** Fixed.
 
 ### Severity: Low — stale-state confusion, not a confidentiality leak
 
@@ -8615,9 +8616,56 @@ the same class of bug: its floor semantics (`depth >= origin`) are a deliberate 
 comment) — not an accidental byproduct with no policy intent behind the specific number, which is
 what makes `VaultEntry`'s case different.
 
+### Fix
+
+Rejected the first design considered (a sentinel value written into `visibleThroughDepth` itself,
+e.g. `-1`, chosen so it could never exact-match a real depth): it would have conflated "which depth
+this entry belongs to" with "is this entry still live," and — found only after tracing the actual
+shard-custody call chain — a sentinel there does nothing for the shard side of this bug at all, since
+`shardRecordsForTrustee` doesn't look at `visibleThroughDepth`.
+
+**Shipped design:** a new `VaultEntry.deletionToken` field (`Vault+Model.swift`), mirroring
+`Contact.Profile.deletionToken` exactly — encrypted, content a fixed sentinel (`Data([1])`, no date or
+identity information), physically kept rather than hard-deleted (same reasoning Bug 13 already
+established for contacts: a row count that drops in step with a duress-layer teardown is itself a
+forensic signal), capped at 50 with oldest-first eviction. `visibleThroughDepth` is left untouched — a
+historical record of the depth the entry was actually created at, now moot for every functional
+purpose since exclusion makes it unreachable.
+
+`VaultManager.fetchAllEntries()` — the single central read every consumer (shard custody, backup
+export, the return buffer, the UI list) goes through — now filters `deletionToken == nil`, so marking
+an entry orphaned makes it inert everywhere at once, not just hidden from one view. Caught in the same
+pass: `deleteAllEntries()` (panic wipe) was routing through `fetchAllEntries()` too and would have
+silently stopped erasing orphaned rows — fixed to fetch unfiltered, matching how
+`ContactManager.deleteAllContacts()` already hard-deletes soft-deleted contacts during a wipe.
+
+`Manager.Security.orphanVaultEntries(freedFrom:)` runs from both `deactivateSecureMode` and
+`forceDeactivateForRecovery`, right where verifiers for the freed depth(s) are cleared — decodes each
+entry's `visibleThroughDepth` once with a single derived key (not one Secure Enclave round trip per
+row) and orphans anything `>= clearFrom`, the exact depth threshold the deactivation just freed.
+
+**The shard-custody side resolves for free, no new machinery needed** — traced end to end, not
+assumed: `ShardCustodyManager.buildExpectedShards` → `VaultManager.shardRecordsForTrustee` reads
+through `fetchAllEntries()` (`Vault+Manager+Shards.swift:428`), so an orphaned entry's `ShardRecord`s
+simply stop appearing in the `expectedShards` list sent in the next bundle to that trustee. The
+trustee's own `processExpectedShards` (`ShardCustody+Manager.swift:322`) already deletes any
+`CustodyShard` absent from that list — a real, physical deletion on the trustee's device, riding the
+protocol's existing implicit-revoke mechanism (`SHARD_PROTOCOL_CASES.md`). The one honest caveat,
+not new to this fix: revocation only fires the next time the owner sends that specific trustee
+anything — the same eventual-consistency property `deleteEntry`'s existing hard-delete path already
+has, since both ride the identical mechanism.
+
 ### Guard
 
-None yet.
+Three tests in `VaultEntryOrphaningTests` (`SecureModeActivationTests.swift`):
+`staleSessionEntryDoesNotResurface` (the core regression — an entry from one duress session must not
+reappear in a later, unrelated session reaching the same depth, and the row must survive physically
+with `deletionToken` set, not be hard-deleted), `shallowerEntrySurvivesCascade` (an entry at a
+shallower, still-live depth must be untouched by an unrelated deeper cascade deactivation), and
+`orphanCapEvictsOldest` (51 entries orphaned in one call caps at 50, with the single oldest hard-deleted
+— this test also caught a real ordering bug in the first implementation pass, where `toOrphan` wasn't
+sorted before processing, so eviction inside a single multi-entry batch wasn't reliably oldest-first).
+Full suite: 0 failures, 6 skips (baseline), confirmed after the fix.
 
 ---
 

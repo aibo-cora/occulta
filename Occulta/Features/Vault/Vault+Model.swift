@@ -195,6 +195,39 @@ final class VaultEntry {
     /// Set once at creation (`VaultManager.addEntry`); never edited afterward.
     var visibleThroughDepth: Data? = nil
 
+    /// Non-nil means this entry has been orphaned — decommissioned in place rather than
+    /// hard-deleted. Mirrors `Contact.Profile.deletionToken` exactly: the field is
+    /// encrypted, only its nil/non-nil status is meaningful at the query layer, and its
+    /// content is a fixed sentinel — no date or identity information is stored here.
+    /// Orphaned rows are never shown in any view and are excluded from every functional
+    /// read via `VaultManager.fetchAllEntries()`, which is why marking this (rather than
+    /// hard-deleting) still gives the row a stable, permanent physical presence — the
+    /// same reasoning that motivated soft-deleting contacts instead of hard-deleting them
+    /// (`bugs.md` Bug 13): a row count that drops in step with a duress-layer teardown is
+    /// itself a forensic signal.
+    ///
+    /// Written by `Manager.Security`'s deactivation-time sweep when the depth this entry
+    /// was stamped with (`visibleThroughDepth`) is freed by a deactivation and would
+    /// otherwise be reused by a later, unrelated duress session (Bug 110, `bugs.md`) —
+    /// `visibleThroughDepth` itself is left untouched (still names the depth this entry
+    /// was created at, for the historical record) since exclusion from every read makes
+    /// its value moot going forward.
+    ///
+    /// A side effect worth knowing, not something this field has to implement itself: an
+    /// orphaned entry's `ShardRecord`s stop appearing in `VaultManager.
+    /// shardRecordsForTrustee(_:)` (which reads through `fetchAllEntries()`), so the next
+    /// bundle sent to a trustee holding one of this entry's shards omits it from
+    /// `expectedShards` — the trustee deletes their own copy via `ShardCustodyManager.
+    /// processExpectedShards`'s existing implicit-revoke handling. No new shard-status
+    /// bookkeeping needed for that to happen.
+    ///
+    /// Cap: 50 rows; when full, the oldest orphaned row is hard-deleted before a new one
+    /// is written — same cap Contact.Profile.deletionToken uses.
+    ///
+    /// New field with a default value — a lightweight SwiftData migration, same as when
+    /// `deletionToken` itself was added to `Contact.Profile`.
+    var deletionToken: Data? = nil
+
     // MARK: Init
 
     init(encryptedLabel: Data, encryptedContent: Data) {

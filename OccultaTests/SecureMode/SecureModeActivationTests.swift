@@ -5,9 +5,9 @@
 //  Regression coverage for Secure Mode activation and deactivation, reworked for the
 //  PIN-only shape (Removal Stages 0-3, `plan.md`): `activateSecureMode`/`deactivateSecureMode`
 //  verify a PIN and write or clear `AppLayerConfig` verifiers — nothing else. They no longer
-//  touch `Contact.Profile`, `VaultEntry`, `Message.Draft`, `Group`, or any of
-//  `AppLayerConfig`'s other local-DB-key fields at all; there is no blob to seal sensitive
-//  contacts into and no staged key to re-encrypt anything under.
+//  touch `Contact.Profile`, `Message.Draft`, `Group`, or any of `AppLayerConfig`'s other
+//  local-DB-key fields at all; there is no blob to seal sensitive contacts into and no staged
+//  key to re-encrypt anything under.
 //
 //  This file used to test the opposite: that activation/deactivation correctly re-encrypted,
 //  classified, and restored application data during a key rotation that no longer exists. That
@@ -21,6 +21,13 @@
 //     activate/deactivate still make are their entire remaining job; this confirms they reach
 //     the persistent store, not just an in-memory `ModelContext`, by fetching from a
 //     brand-new one afterward.
+//  3. VaultEntry orphaning (Bug 110) — the one deliberate exception to point 1.
+//     `deactivateSecureMode` marks (never hard-deletes) any `VaultEntry` whose duress-depth
+//     stamp names a depth just freed, since depth numbers are reused across unrelated duress
+//     sessions and an unmarked entry would otherwise resurface in a later one. See
+//     `VaultEntryOrphaningTests` below for why this doesn't contradict point 1: contacts and
+//     key records still see no data-touching at all, and a vault entry at a depth that
+//     *wasn't* just freed is exactly as untouched as everything else in this file proves.
 //
 //  SE-availability guard — a helper checks whether `Manager.Key` can derive a key at runtime.
 //  Every test here uses the injected `TestKeyManager` throughout and never the real
@@ -334,5 +341,114 @@ struct DepthMigrationInertnessTests {
             Rewriting it would need a decrypt that cannot succeed; resolving it to a default \
             would persist Int.max — visible at every duress depth.
             """)
+    }
+}
+
+// MARK: - VaultEntry orphaning on deactivation (Bug 110)
+
+/// Regression coverage for `bugs.md` Bug 110: `VaultEntry.visibleThroughDepth` is stamped
+/// once, at creation, with whatever `currentDepth` is at that moment, and compared by exact
+/// match — never reset. Duress depth *numbers* are reused across unrelated sessions (a fresh
+/// `activateSecureMode` → duress-PIN verification always counts back up 1, 2, 3... the same
+/// way), so without a reset, an entry created in one duress session stays exact-match-visible
+/// to a later, unrelated session that reaches the same depth number.
+///
+/// `deactivateSecureMode` now orphans (marks `VaultEntry.deletionToken`, never hard-deletes)
+/// any entry whose stamp names a depth just freed — `VaultManager.fetchAllEntries()` excludes
+/// orphaned rows, so the entry becomes inert everywhere (UI, shard custody, backup export) at
+/// once, the same way a soft-deleted `Contact.Profile` is.
+@Suite("Secure Mode — VaultEntry orphaning on deactivation (Bug 110)", .serialized)
+struct VaultEntryOrphaningTests {
+
+    @Test("A vault entry from one duress session does not resurface in a later, unrelated session at the same depth",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func staleSessionEntryDoesNotResurface() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        // Session A: reach depth 1, insert a vault entry stamped for that depth.
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
+
+        // End session A entirely.
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+        #expect(!c.security.isSecureModeActive)
+
+        // The entry must already be orphaned — gone from the functional read, not merely
+        // hidden by no longer matching the current depth.
+        let afterSessionA = try c.vault.fetchAllEntries()
+        #expect(!afterSessionA.map(\.id).contains(entryID))
+
+        // The row itself must still physically exist, marked inert — never hard-deleted.
+        let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
+        #expect(raw != nil, "orphaned row must be hard-kept, not deleted")
+        #expect(raw?.deletionToken != nil)
+
+        // Session B: a completely unrelated duress PIN, also reaching depth 1.
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "444444")
+        c.security.applyVerifyState(for: try c.security.verify("444444"))
+        #expect(c.security.currentDepth == 1)
+
+        // The stale entry must not resurface in session B either.
+        let sessionBEntries = try c.vault.fetchAllEntries()
+        #expect(!sessionBEntries.map(\.id).contains(entryID))
+    }
+
+    @Test("A vault entry at a shallower, still-live depth survives an unrelated deeper cascade deactivation",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func shallowerEntrySurvivesCascade() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+        let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
+
+        try c.security.activateSecureMode(confirmingEntryPIN: "999999", duressPIN: "777777")
+        c.security.applyVerifyState(for: try c.security.verify("777777"))
+        #expect(c.security.currentDepth == 2)
+
+        // Deactivate the depth-2 layer only — depth 1's own entry must be untouched.
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "777777")
+        #expect(c.security.currentDepth == 1)
+
+        let entries = try c.vault.fetchAllEntries()
+        #expect(entries.map(\.id).contains(entryID),
+                "a shallower, still-live layer's entry must survive an unrelated deeper cascade")
+        let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
+        #expect(raw?.deletionToken == nil, "must not be orphaned — its own depth was never freed")
+    }
+
+    @Test("Orphaning caps at 50 rows, evicting the oldest first",
+          .enabled(if: secureEnclaveAvailable()))
+    @MainActor
+    func orphanCapEvictsOldest() throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+        try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "999999")
+        c.security.applyVerifyState(for: try c.security.verify("999999"))
+        #expect(c.security.currentDepth == 1)
+
+        // 51 entries at depth 1, spaced so `createdAt` ordering is unambiguous.
+        var ids: [UUID] = []
+        for _ in 0..<51 {
+            let id = try insertVaultEntry(in: c.container, visibleThroughDepth: try DepthCodec.encode(1).encrypt())
+            ids.append(id)
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+
+        try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
+
+        let allRows  = try fetchAllVaultEntries(from: c.container)
+        let orphaned = allRows.filter { $0.deletionToken != nil }
+        #expect(orphaned.count == 50, "cap must hold at 50 orphaned rows")
+        #expect(!allRows.map(\.id).contains(ids[0]),
+                "the single oldest row must be hard-deleted once the cap is exceeded")
+        #expect(allRows.map(\.id).contains(ids[50]), "the newest orphan must survive")
     }
 }
