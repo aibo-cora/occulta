@@ -205,67 +205,6 @@ extension Message {
             delete(draft, in: modelContext)
         }
 
-        /// Secure Mode activation pass: every draft row either survives re-keyed
-        /// under the staged key, or is purged (row and attachment folder) — never
-        /// left encrypted under a key about to be destroyed. Selective, matching
-        /// §S7's preserve-and-rekey precedent for `VaultEntry`, not a blanket wipe.
-        ///
-        /// A draft survives if its recipient is a known group (`allGroupIdentifiers`
-        /// — group membership sensitivity is handled separately via
-        /// `purgeMembersFromDuressDepths`, not here) or a safe contact
-        /// (`safeContactIdentifiers`, visible at the new, deeper layer too). Anything
-        /// else — undecryptable under `oldKey`, fails to re-seal, or simply doesn't
-        /// match a known group or safe contact (including a contact identifier that
-        /// used to exist and was deleted — see FINDINGS.md, "Scoping item 2's fix") —
-        /// is purged rather than left in a broken or ambiguous state — fail-safe to gone.
-        ///
-        /// Attachment *files* are never touched here, surviving or not: a surviving
-        /// contact's per-contact key keeps deriving correctly after their profile is
-        /// re-encrypted elsewhere in activation, so their attachment folder needs no
-        /// re-seal; a purged contact's folder is deleted outright by `delete(_:in:)`,
-        /// which is the only erasure mechanism attachment files get (see FINDINGS.md,
-        /// "Key" — they're never protected by this row's key rotation).
-        static func reKeyOrPurgeAll(
-            safeContactIdentifiers: Set<String>,
-            allGroupIdentifiers:    Set<String>,
-            oldKey: SymmetricKey,
-            newKey: SymmetricKey,
-            in modelContext: ModelContext
-        ) throws {
-            for draft in try modelContext.fetch(FetchDescriptor<Message.Draft>()) {
-                guard
-                    let recipientBox   = try? AES.GCM.SealedBox(combined: draft.encryptedRecipientID),
-                    let recipientPlain = try? AES.GCM.open(recipientBox, using: oldKey, authenticating: draft.aad(for: .recipientID)),
-                    let recipientID    = String(data: recipientPlain, encoding: .utf8)
-                else {
-                    delete(draft, in: modelContext)
-                    continue
-                }
-
-                let survives = allGroupIdentifiers.contains(recipientID) || safeContactIdentifiers.contains(recipientID)
-                guard survives else {
-                    delete(draft, in: modelContext)
-                    continue
-                }
-
-                guard
-                    let contentBox   = try? AES.GCM.SealedBox(combined: draft.encryptedContent),
-                    let contentPlain = try? AES.GCM.open(contentBox, using: oldKey, authenticating: draft.aad(for: .content)),
-                    let newRecipient = try? AES.GCM.seal(recipientPlain, using: newKey, nonce: AES.GCM.Nonce(),
-                                                          authenticating: draft.aad(for: .recipientID)).combined,
-                    let newContent   = try? AES.GCM.seal(contentPlain, using: newKey, nonce: AES.GCM.Nonce(),
-                                                          authenticating: draft.aad(for: .content)).combined
-                else {
-                    delete(draft, in: modelContext)
-                    continue
-                }
-
-                draft.encryptedRecipientID = newRecipient
-                draft.encryptedContent     = newContent
-            }
-            try modelContext.save()
-        }
-
         /// Non-rotation purge: deletes any draft whose recipient isn't in the safe set,
         /// without touching survivors' encryption at all. Replaces `reKeyOrPurgeAll` for
         /// `purgeDraftsNotSafeAtCurrentDepth`'s use (`Manager+Security.swift`) once Secure

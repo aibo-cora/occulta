@@ -820,3 +820,88 @@ in Stage 1 — a file slated for a later stage that already calls a symbol this 
 entries, which stopped being true in Stage 1, not anything this stage broke. 6 skips (unchanged
 `KeychainMigrationSETests` baseline), every other suite green — including
 `EncryptedFieldCoverageTests` and `AppLayerConfigRotationTests` after their fixes above.
+
+## Removal — Stage 3: done, 2026-09-10
+
+Deleted the rotation machinery whole, mapped by direct grep/read against the live tree rather than
+trusting the original six-stage sketch — the sketch's own dead-test-file list turned out to be
+partly wrong (see deviations below), the second time this removal effort has caught a scope-mapping
+error by verifying directly instead of trusting a prior summary.
+
+`Occulta/Data Models/Contact+Model+Reencrypt.swift` (`reencryptAllFields`, `reencryptKeyRecords`,
+their private helpers) deleted outright — no production caller since Stage 1. `Group+Model.swift`
+lost only its public `reencrypt(from:to:)` entry point and doc comment; the private
+`reencryptAllDepths(usingKey:content:)` engine it shared with `purgeMembersFromDuressDepths`,
+`refreshCiphertext`, and `purgeMember` stays, since those three have nothing to do with Secure Mode
+key rotation. `AppLayerConfig+Model.swift` lost its "Key rotation" section (`reencrypt(from:to:)` and
+the private `reseal` helper it alone used). `Occulta/Data Models/Message+Draft.swift` lost
+`reKeyOrPurgeAll` — the rotation-driving function Stage 1's `purgeUnsafe` was added beside rather than
+written in place of, exactly as that stage's `plan.md` entry flagged as deferred here.
+`Occulta/Features/SecureMode/RotationRegistry.swift` deleted outright: a type-level classification
+table with no purpose once nothing rotates.
+
+`KeyManagerProtocol.swift` lost the protocol's four staged-key methods, `TestKeyManager`'s
+`stagedLocalDBPrivateKey`/`stagedLocalDBPublicKeyData`/`stagedRandomComponent` and their
+implementation section, and `simulatesHybridKeyUnavailable` (Bug 78's fault-injection flag — no
+longer has any effect on the new PIN-only activate/deactivate, since neither calls
+`createHybridLocalEncryptionKey()` at all). `localDBPrivateKey`/`localDBPublicKeyData`/
+`randomComponent` changed `var` → `let`: `commitStagedLocalDBKey()` was their only mutator.
+`Key+Manager.swift` lost `StagedKeyError` and the entire "Staged DB key (activation / deactivation
+key rotation)" section including its private helpers (`retrieveExistingLocalDBPrivateKey`,
+`generateAndStoreRandomComponent(account:)`, `retrieveRandomComponent(account:)`,
+`deriveHybridKey(seTag:randomData:)`) — none shared with the canonical-key path, confirmed by grep
+before deletion. `createLocalDBSEKey(tag:)` stays (still used by the canonical-key path), doc comment
+corrected to drop its now-false "used for both the canonical key and the staged key" claim.
+
+**Caught by the compiler, not the upfront map — `Manager.Key.deleteAllKeys()`** (the full-wipe
+function) called `deleteSupersededLocalDBArtefacts()`/`rollbackStagedLocalDBKey()` directly to sweep
+transient rotation artefacts in case a wipe fired mid-rotation. Missed in the initial grep because it
+was checked by MARK-comment boundary rather than by searching the whole file for every call site of
+the methods being deleted. Fixed by removing those two lines — nothing rotates any more, so there is
+never a transient artefact to sweep.
+
+**Deviations from the original dead-test-file list, both caught by direct verification before
+deleting anything (the list itself, written before this stage, was checked against the live tree
+first — unlike Stage 1/2's mid-execution catches):**
+- `GroupOrphanPurgeTests.swift` was named as dead in the original sketch. It is not: it covers
+  `ContactManager.purgeUnreadableGroups`, the *historical-damage repair* pass for groups stranded by
+  a rotation that already happened — a live function, still called from `OccultaApp.swift`, with
+  nothing to do with whether rotation exists going forward. It used `Group.reencrypt` only as a
+  same-file test helper (`strand(_:from:)`) to manufacture a stranded group. Rewrote the helper to
+  overwrite `encryptedID` with literal undecryptable bytes instead of rotating to a discarded key —
+  same end state, no dependency on the deleted function. All 4 tests pass unchanged otherwise.
+- `AppLayerConfigRotationTests.swift` was NOT in the original dead list (Stage 2 had already trimmed
+  it to 5 scalar/gate-rotation tests, explicitly deferring full deletion to this stage per that
+  entry's own note) — and turned out to be wholly dead now, since all 5 remaining tests call
+  `AppLayerConfig.reencrypt` directly. Deleted outright.
+- `SecureModeActivationTests.swift`'s `SecureModeRotationKeyGuardTests` (Bug 78, 2 tests) depended on
+  `simulatesHybridKeyUnavailable`, which this stage deletes — forced the same treatment. Both tests
+  already asserted on the old rotation-driven abort behavior, so nothing is lost that Stage 4 needed.
+
+**`EncryptedFieldCoverageTests.swift` trimmed, not deleted, despite being named as fully dead in the
+original sketch:** most of the file (the `FieldProbe` infrastructure, both models' `probes`/
+`unprobedFields` tables, `AppLayerConfigFieldCoverageTests`, most of `EncryptedFieldTripwireTests`,
+most of `EncryptedFieldRotationTests`) existed solely to guard the bug class of "a field silently
+escapes the rotation" — which cannot happen once there is no rotation, so all of that is gone. One
+test survives on different grounds: `readabilitySeparatesStrandedFromAbsent` doesn't call any deleted
+function — it tests `ContactManager.hasReadableBundleVersion`'s three-state read directly, which
+stays load-bearing forever for installs that went through a rotation before this removal shipped (the
+stranding is permanent, historical damage, not an ongoing risk). File rewritten down to that one test
+plus its fixtures; header rewritten to explain the reduced scope. Also dropped `sealString`, a
+fixture helper with zero callers even before this stage's changes — flagging rather than silently
+losing it, per the standing "mention pre-existing dead code" rule, since it did not survive the
+rewrite.
+
+**Flagged, not fixed — out of this stage's scope:** `KeyManagerProtocol.swift`'s
+`simulatesSecureModeKeyUnavailable` flag is now completely unreferenced anywhere in the codebase
+(confirmed by grep). Its own doc comment says it existed for Bug 86's migration guard
+(`migrateBlobMetadataArrays`), which Stage 2 deleted — this is a Stage 2 orphan, not one this stage's
+changes created, so left in place rather than removed under Stage 3's separate scope.
+
+**Exit state, verified, not assumed:** app target and test target build with zero errors. Full suite:
+20 failures, the same set Stage 2 left minus the 2 now-deleted `SecureModeRotationKeyGuardTests`, all
+still confined to `SecureModeActivationTests.swift` and still asserting on contact/vault-entry
+mutation that stopped happening in Stage 1 — nothing this stage's own changes broke. 6 skips
+(unchanged `KeychainMigrationSETests` baseline). `GroupOrphanPurgeTests` (all 4) and the trimmed
+`EncryptedFieldCoverageTests` (`readabilitySeparatesStrandedFromAbsent`) confirmed passing
+individually, not just absent from the failure list.

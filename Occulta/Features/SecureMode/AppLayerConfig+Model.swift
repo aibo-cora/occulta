@@ -132,56 +132,6 @@ final class AppLayerConfig {
         self.pinEnabledPerDepth    = Self.pinEnabledFillerArray()
     }
 
-    // MARK: - Key rotation
-
-    /// Re-encrypts every field on this row that is sealed under the **local DB key** from
-    /// `oldKey` to `newKey`. The counterpart of `Contact.Profile.reencryptAllFields(to:aad:)`
-    /// and `Group.reencrypt(from:to:)`, and the reason this row survives a rotation (Bug 76).
-    ///
-    /// Must run while `oldKey` is still canonical, i.e. before `commitStagedLocalDBKey()`.
-    ///
-    /// Deliberately does **not** cover `sealedBlobSlots` or `layerSequenceNumbers`: those moved
-    /// to the non-rotating SE Secure Mode key precisely so no rotation can strand them. Nor the
-    /// verifier arrays, which were always sealed by `PINManager` under that same SE key — which
-    /// is why PIN entry kept working across rotations even while everything here did not.
-    ///
-    /// `pinEnabledPerDepth` is re-sealed entry by entry rather than skipped, because its filler
-    /// *is* real ciphertext (encrypted `1`, chosen so enabled and disabled encode to equal
-    /// lengths — see `pinEnabledFillerArray()`). An entry that will not decrypt under `oldKey`
-    /// is stranded from an earlier rotation and its value is already unrecoverable; it is
-    /// re-sealed as `1`, which is exactly what `readPinEnabled(at:)` reports for it anyway. That
-    /// keeps all 32 entries equal-length and mutually indistinguishable instead of leaving
-    /// stranded garbage sitting among live entries.
-    ///
-    /// Scalars that fail to decrypt are left byte-identical rather than nil-ed. Their read
-    /// accessors already document safe fallbacks (0 / true / 0 / not-locked-out), so a stranded
-    /// scalar degrades to that fallback; discarding the ciphertext would gain nothing and would
-    /// make a nil field stand out against rows where it is always present.
-    func reencrypt(from oldKey: SymmetricKey, to newKey: SymmetricKey) throws {
-        self.persistedDepth   = Self.reseal(self.persistedDepth,   from: oldKey, to: newKey)
-        self.pinEnabled       = Self.reseal(self.pinEnabled,       from: oldKey, to: newKey)
-        self.coercerBaseDepth = Self.reseal(self.coercerBaseDepth, from: oldKey, to: newKey)
-        self.lockoutCountEncrypted        = Self.reseal(self.lockoutCountEncrypted,        from: oldKey, to: newKey)
-        self.lockoutAnchorUptimeEncrypted = Self.reseal(self.lockoutAnchorUptimeEncrypted, from: oldKey, to: newKey)
-
-        self.ensurePadded()
-        let enabledFallback = try JSONEncoder().encode(UInt8(1))
-        self.pinEnabledPerDepth = try self.pinEnabledPerDepth.map { entry in
-            let plain = entry.decrypt(using: oldKey) ?? enabledFallback
-            guard let resealed = try plain.encrypt(using: newKey) else {
-                throw CocoaError(.coderValueNotFound)
-            }
-            return resealed
-        }
-    }
-
-    /// Decrypt-and-reseal for a single optional scalar. Returns the input untouched when it is
-    /// absent or will not open under `oldKey` — see `reencrypt(from:to:)` for why.
-    private static func reseal(_ data: Data?, from oldKey: SymmetricKey, to newKey: SymmetricKey) -> Data? {
-        guard let data, let plain = data.decrypt(using: oldKey) else { return data }
-        return ((try? plain.encrypt(using: newKey)) ?? nil) ?? data
-    }
-
     // MARK: - Verifier array helpers
 
     /// Writes a normal verifier at `depth`, padding the array to `maxVerifierCount` first.

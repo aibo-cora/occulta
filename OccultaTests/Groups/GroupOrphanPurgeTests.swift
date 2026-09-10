@@ -56,10 +56,13 @@ private func makeManager() throws -> ContactManager {
     return ContactManager(modelContainer: container, security: security)
 }
 
-/// Strands a group by re-keying it to a key that is then discarded — the same end state as a
-/// rotation whose superseded key Step 11 deleted.
-private func strand(_ group: Group, from key: SymmetricKey) throws {
-    try group.reencrypt(from: key, to: SymmetricKey(size: .bits256))
+/// Strands a group by overwriting its ID with ciphertext nobody holds the key for — the same
+/// end state as a rotation whose superseded key Step 11 deleted. `Group.reencrypt` (the
+/// mechanism that used to produce this state via an actual rotation) was removed along with
+/// the rest of Secure Mode's key-rotation machinery (Removal Stage 3, `plan.md`), so this
+/// writes stranded ciphertext directly instead.
+private func strand(_ group: Group) {
+    group.encryptedID = Data([0xDE, 0xAD, 0xBE, 0xEF])
 }
 
 // MARK: - Tests
@@ -79,7 +82,7 @@ struct GroupOrphanPurgeTests {
         let healthyID = try #require(healthy.readID())
 
         let doomed = try manager.createGroup(name: "Stranded")
-        try strand(doomed, from: key)
+        strand(doomed)
         try #require(doomed.readID() == nil)
 
         try manager.purgeUnreadableGroups(using: key)
@@ -100,7 +103,7 @@ struct GroupOrphanPurgeTests {
         let manager = try makeManager()
         for name in ["One", "Two", "Three"] {
             let group = try manager.createGroup(name: name)
-            try strand(group, from: key)
+            strand(group)
         }
 
         try manager.purgeUnreadableGroups(using: key)
@@ -125,7 +128,7 @@ struct GroupOrphanPurgeTests {
         let healthy = try manager.createGroup(name: "Healthy")
         try healthy.addMember("alice", atDepth: 0)
         let doomed  = try manager.createGroup(name: "Stranded")
-        try strand(doomed, from: key)
+        strand(doomed)
 
         try manager.purgeUnreadableGroups(using: key)
         try manager.purgeUnreadableGroups(using: key)
