@@ -9,8 +9,11 @@
 //  then deleted the superseded key — but every field on this row stayed sealed under the
 //  old one. Only the fields an activation happened to rewrite post-commit survived. The
 //  rest degraded silently to their documented fallbacks: a lowered PIN gate re-armed
-//  itself, the persisted depth reset to 0, and blob indices for every depth except the one
-//  just written became unreadable, orphaning the blobs they pointed at.
+//  itself and the persisted depth reset to 0.
+//
+//  The blob-metadata coverage this file used to carry (blob slots and sequence numbers
+//  deliberately not rotating) was removed along with the rest of the blob mechanism
+//  (Removal Stage 2, `plan.md`) — `reencrypt` itself is unchanged and still covered here.
 //
 //  Fully deterministic — every field is sealed with an explicit key, so no Secure Enclave
 //  is involved.
@@ -114,24 +117,6 @@ struct AppLayerConfigRotationTests {
 
         #expect(try decodeUInt8(config.pinEnabledPerDepth[5], using: newKey) == 1)
         #expect(Set(config.pinEnabledPerDepth.map(\.count)).count == 1)
-    }
-
-    /// Blob metadata deliberately does not rotate — it lives on the SE-derived key. If a
-    /// rotation touched it, the very failure mode Decision 2 removed would be back.
-    @Test("Blob metadata is untouched by a local DB key rotation")
-    func blobMetadataUnaffectedByRotation() throws {
-        let oldKey  = SymmetricKey(size: .bits256)
-        let newKey  = SymmetricKey(size: .bits256)
-        let blobKey = SymmetricKey(size: .bits256)
-        let config  = AppLayerConfig()
-
-        try config.writeBlobSlot(9, at: 0, using: blobKey)
-        try config.writeSequenceNumber(4242, at: 0, using: blobKey)
-
-        try config.reencrypt(from: oldKey, to: newKey)
-
-        #expect(config.readBlobSlot(at: 0, using: blobKey) == 9)
-        #expect(config.readSequenceNumber(at: 0, using: blobKey) == 4242)
     }
 
     /// Two consecutive rotations — the multi-layer case that stranded depth-0 metadata and

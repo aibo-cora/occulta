@@ -296,8 +296,6 @@ extension AppLayerConfig {
         "sealedDuressVerifier":  "SE Secure Mode key via PINManager. Never rotate",
         "sealedNormalVerifiers": "SE Secure Mode key via PINManager — the array verify() scans. Never rotate; this is why PIN entry kept working across rotations while everything else on the row did not",
         "sealedDuressVerifiers": "SE Secure Mode key via PINManager. Never rotate",
-        "sealedBlobSlots":       "AppLayerConfig.blobMetadataKey(from:), HKDF from the SE Secure Mode key — moved there by Bug 76's fix so no rotation can strand it by construction rather than by remembering",
-        "layerSequenceNumbers":  "AppLayerConfig.blobMetadataKey(from:) — as above",
     ]
 }
 

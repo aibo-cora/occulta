@@ -139,8 +139,7 @@ private func makeKey(expiredOn: Data? = nil) -> Contact.Profile.Key {
         let keyManager = TestKeyManager()
         let security = Manager.Security(
             modelContainer: container,
-            keyManager: keyManager,
-            layerStore: Manager.LayerStore(backend: InMemoryLayerStoreBackend())
+            keyManager: keyManager
         )
         let contacts = ContactManager(modelContainer: container, security: security)
         try insertContact(identifier: "a", in: container)

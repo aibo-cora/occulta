@@ -85,10 +85,7 @@ struct OccultaApp: App {
         let security = Manager.Security(modelContainer: sharedModelContainer,
                                         storeURL: url,
                                         enabled: FeatureFlags.isEnabled(.secureMode))
-        if FeatureFlags.isEnabled(.secureMode) {
-            security.maintainLayerStore()
-        }
-        
+
         self.security = security
 
         let contactManager = ContactManager(modelContainer: sharedModelContainer, security: security)
@@ -318,12 +315,6 @@ struct RootView: View {
                 // make checkpoint timing itself a depth signal — the failure
                 // `checkpointStore()`'s own documentation exists to prevent.
                 self.security.checkpointStore()
-
-                // Move blob metadata onto the non-rotating SE-derived key (Bug 76). Runs at
-                // every depth, unlike the purge above: it writes no delete records, and a
-                // still-unmigrated entry would be read as absent by the very next activation —
-                // which can happen at a duress depth — silently orphaning a live blob.
-                self.security.migrateBlobMetadataKeyIfNeeded()
             }
             // onOpenURL must be on the outermost container so it fires in all phases.
             .onOpenURL { url in self.handleOpenURL(url) }
@@ -382,19 +373,6 @@ struct RootView: View {
                 for: NSManagedObjectContext.didSaveObjectIDsNotification
             ).receive(on: DispatchQueue.main)) { _ in
                 self.reapplyFileProtection()
-            }
-            // Rewrite the no-op blob on every save (debounced 30 s) so the
-            // blob's Last-Modified timestamp correlates with normal app activity,
-            // not with Secure Mode activation. Only rewrites when Secure Mode is
-            // inactive — when active the blob holds a real payload that must not
-            // be overwritten.
-            .onReceive(NotificationCenter.default.publisher(
-                for: NSManagedObjectContext.didSaveObjectIDsNotification
-            )
-            .receive(on: DispatchQueue.main)
-            .debounce(for: .seconds(30), scheduler: DispatchQueue.main)) { [self] _ in
-                guard FeatureFlags.isEnabled(.secureMode) else { return }
-                self.security.rewriteLayerStore()
             }
     }
 

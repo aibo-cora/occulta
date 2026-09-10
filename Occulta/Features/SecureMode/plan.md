@@ -760,3 +760,63 @@ Full suite: 28 failures, all confined to `SecureModeActivationTests.swift` (blob
 persistence, cascade-depth-preservation, and `SensitiveContactKeyRecordTests` — all asserting on
 behavior that no longer exists, exactly as scoped), 6 skips (unchanged `KeychainMigrationSETests`
 baseline), every other suite green.
+
+## Removal — Stage 2: done, 2026-09-10
+
+Deleted the blob mechanism whole. `Occulta/Features/SecureMode/SecureMode+LayerStore.swift`
+(`Manager.LayerStore`, `LayerContact`, `LayerPayload`) and `LayerArrayCodec.swift` removed outright.
+`Manager+Security.swift` lost the `layerStore` property/init param, "Layer store maintenance"
+(`maintainLayerStore`, `migrateBlobMetadataArrays`, `rewriteLayerStore`), "Design B: mid-session blob
+resync" (`inMemorySensitiveContacts`, `resyncSensitiveContactsBlob`), `migrateBlobMetadataKeyIfNeeded`,
+`protectedBlobSlots`/`pushDummyBlobSlot`/`randomSequenceNumber`, `StagedCryptoManager`, and
+`SecurityError.blobMetadataMissing`; `forceDeactivateForRecovery` stripped of its blob lines and its
+doc comment corrected to describe what it actually does now. `AppLayerConfig+Model.swift` lost
+`sealedBlobSlots`/`layerSequenceNumbers` and every accessor/migration/filler method built around
+them (`readBlobSlot`/`writeBlobSlot`/`clearBlobSlot`, the sequence-number trio, `clearAllBlobMetadata`,
+`blobMetadataKey(from:)`, `migrateBlobMetadata`, `fillerSize`/`randomFiller`/`blobArrayFiller`/
+`randomFillerArray`) — `ensurePadded()` now only pads `pinEnabledPerDepth`. `OccultaApp.swift` lost
+the `maintainLayerStore()` launch call, `migrateBlobMetadataKeyIfNeeded()`, and the 30-second-debounced
+`rewriteLayerStore()` view modifier. `ContactManager+Classification.swift` lost the whole
+"Deactivation restore" section (`restoreContact`, `hasUnreadableKeys`, `rebuildKeyRecord`) — Design B
+item 3, now vestigial since item 1's activation-side skip it paired with only mattered while
+key-rotation-driven deletion of the superseded key was still a thing (removed in full by Stage 3, but
+already unreachable in practice once Stage 1 stopped routing contacts through activation at all).
+
+**Two pre-existing defects found and fixed while in this code, not caused by this removal:** a
+dangling doc comment at the end of `Manager+Security.swift` describing a "re-encrypts every field of
+every `Contact.Profile.Key` child" helper that had no function attached at all — confirmed via
+`git show 880b980:...` to predate this entire session. And a bug introduced by this session's own
+Stage 1: a stale duplicate old doc comment left above `activateSecureMode`'s new one instead of being
+replaced — found on re-read, fixed.
+
+**Deviations from the six-stage sketch, both forced by the same pattern as `DraftKeyRotationTests.swift`
+in Stage 1 — a file slated for a later stage that already calls a symbol this stage deletes:**
+- `AppLayerConfigRotationTests.swift` (Stage 3's bucket — rotation) had one test,
+  `blobMetadataUnaffectedByRotation`, calling the deleted `writeBlobSlot`/`writeSequenceNumber`/
+  `readBlobSlot`/`readSequenceNumber` directly. Mixed file, not wholly dead — removed that one test
+  and its header's blob-orphaning sentence, kept the five scalar/gate-rotation tests (`reencrypt`
+  itself is untouched until Stage 3).
+- `SecureModeActivationTests.swift` needed the same treatment at larger scale: `ActivationComponents`/
+  `makeComponents()` lost their `backend`/`layerStore` fields; the `readActivationPayload` helper and
+  the whole `SecureModeBlobLifecycleTests` suite were deleted (wholly blob-dependent); two of three
+  tests in `SecureModeClassificationTests` and one in `OriginDepthPreservationTests` that called
+  `readActivationPayload` were deleted, keeping the one test in each suite that didn't touch it; the
+  two `restoreContact`/`LayerContact`-based tests in `SensitiveContactKeyRecordTests` were deleted
+  along with the now-unused `StubCrypto` helper, keeping the two tests covering item 1's activation-side
+  skip itself. What's left in the file still compiles against the new PIN-only activate/deactivate but
+  largely asserts on contact/vault-entry mutation that no longer happens — that's Stage 4's rework, not
+  addressed here, exactly as Stage 1's own note anticipated.
+- `EncryptedFieldCoverageTests.swift`'s `unprobedFields` still classified `sealedBlobSlots`/
+  `layerSequenceNumbers`, now-deleted fields — its own tripwire (`appLayerConfigPropertiesReviewed`)
+  caught this at runtime, not compile time, since dictionary literals don't reference the model's
+  actual properties. Removed both entries.
+
+**Exit state, verified, not assumed:** app target and test target build with zero errors. Full suite:
+22 failures, all confined to `SecureModeActivationTests.swift` (`CascadeDeactivationDepthTests`,
+`DepthMigrationRotationCompositionTests`, `GlobalTrusteeDepthPreservationTests`,
+`OriginDepthPreservationTests`, `SecureModeRotationKeyGuardTests`, `SecureModeWALPersistenceTests`,
+`SensitiveContactKeyRecordTests.safeContactKeyMaterial_reencryptedByActivation`,
+`StrandedCeilingRotationTests`) — all asserting that activation/deactivation mutate contacts or vault
+entries, which stopped being true in Stage 1, not anything this stage broke. 6 skips (unchanged
+`KeychainMigrationSETests` baseline), every other suite green — including
+`EncryptedFieldCoverageTests` and `AppLayerConfigRotationTests` after their fixes above.

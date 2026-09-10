@@ -41,15 +41,13 @@ private func makeSecurity() throws -> Manager.Security {
 
 /// Creates a security manager plus the contact/vault managers needed by `activateSecureMode`.
 /// The vault manager starts locked (no LAContext) so vault PEK extraction is skipped.
-/// An `InMemoryLayerStoreBackend` is injected so tests never touch the filesystem.
 @MainActor
 private func makeSecurityAndManagers() throws -> (security: Manager.Security,
                                                     container: ModelContainer,
                                                     contacts: ContactManager,
                                                     vault: VaultManager) {
     let container = try makeContainer()
-    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager(),
-                                     layerStore: Manager.LayerStore(backend: InMemoryLayerStoreBackend()))
+    let security  = Manager.Security(modelContainer: container, keyManager: TestKeyManager())
     let contacts  = ContactManager(modelContainer: container, security: security)
     let vault     = VaultManager(modelContainer: container, keyManager: TestKeyManager())
     return (security, container, contacts, vault)
@@ -765,8 +763,6 @@ struct VerifierArrayPaddingTests {
 
         #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
         #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedBlobSlots.count       == AppLayerConfig.maxVerifierCount)
-        #expect(config.layerSequenceNumbers.count  == AppLayerConfig.maxVerifierCount)
     }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func afterConfigurePIN_normalVerifiers_still32() throws {
@@ -789,8 +785,6 @@ struct VerifierArrayPaddingTests {
         let config = try ctx.fetch(FetchDescriptor<AppLayerConfig>()).first!
         #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
         #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedBlobSlots.count       == AppLayerConfig.maxVerifierCount)
-        #expect(config.layerSequenceNumbers.count  == AppLayerConfig.maxVerifierCount)
     }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func afterDeactivation_arrays_still32() async throws {
@@ -803,8 +797,6 @@ struct VerifierArrayPaddingTests {
         let config = try ctx.fetch(FetchDescriptor<AppLayerConfig>()).first!
         #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
         #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedBlobSlots.count       == AppLayerConfig.maxVerifierCount)
-        #expect(config.layerSequenceNumbers.count  == AppLayerConfig.maxVerifierCount)
     }
 
     @Test func fillerSize_matchesPINManagerVerifierSize() {

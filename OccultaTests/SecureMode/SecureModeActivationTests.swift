@@ -12,12 +12,19 @@
 //  round-trips impossible in tests without a full key-injection refactor.
 //
 //  What IS testable without that refactor:
-//  1. Blob I/O — sealed/unsealed with TestKeyManager's SecureMode key, SE-independent.
-//  2. WAL-persistence smoke test — fetch from a brand-new ModelContext to verify
+//  1. WAL-persistence smoke test — fetch from a brand-new ModelContext to verify
 //     contactManager.modelContext.save() actually wrote to the persistent store.
 //     This is the direct Bug 37 regression guard.
-//  3. SE-availability guard — a helper checks whether Manager.Key can derive a
+//  2. SE-availability guard — a helper checks whether Manager.Key can derive a
 //     key at runtime; tests that require real SE skip gracefully on the simulator.
+//
+//  The blob mechanism this file used to exercise (Manager.LayerStore, blob-slot metadata,
+//  ContactManager.restoreContact) was removed along with the rest of Secure Mode's blob
+//  and key-rotation machinery (Removal Stage 2, `plan.md`). The tests that depended
+//  directly on those deleted APIs are removed below; the remaining suites still compile
+//  against the new PIN-only activate/deactivate, but their behavioral assumptions (that
+//  activation/deactivation touch Contact.Profile/VaultEntry fields at all) predate that
+//  removal and are Stage 4's full rework, not addressed here.
 //
 
 import Testing
@@ -55,10 +62,6 @@ private struct ActivationComponents {
     let container:  ModelContainer
     let contacts:   ContactManager
     let vault:      VaultManager
-    /// Raw backend — used for low-level assertions (e.g. `.exists`).
-    let backend:    InMemoryLayerStoreBackend
-    /// Layer store — used for readPayload() in blob-content tests.
-    let layerStore: Manager.LayerStore
     let keyManager: TestKeyManager
 }
 
@@ -66,12 +69,9 @@ private struct ActivationComponents {
 private func makeComponents() throws -> ActivationComponents {
     let container  = try makeActivationContainer()
     let keyManager = TestKeyManager()
-    let backend    = InMemoryLayerStoreBackend()
-    let layerStore = Manager.LayerStore(backend: backend)
     let security   = Manager.Security(
         modelContainer: container,
-        keyManager:     keyManager,
-        layerStore:     layerStore
+        keyManager:     keyManager
     )
     let contacts = ContactManager(modelContainer: container, security: security)
     let vault    = VaultManager(modelContainer: container, keyManager: TestKeyManager())
@@ -80,8 +80,6 @@ private func makeComponents() throws -> ActivationComponents {
         container:  container,
         contacts:   contacts,
         vault:      vault,
-        backend:    backend,
-        layerStore: layerStore,
         keyManager: keyManager
     )
 }
@@ -190,131 +188,11 @@ private func fetchAllVaultEntries(from container: ModelContainer) throws -> [Vau
     return try ctx.fetch(FetchDescriptor<VaultEntry>())
 }
 
-// MARK: - Blob helpers
-
-/// Reads the activation payload non-destructively from the blob store.
-/// Uses the slot index stored in AppLayerConfig to locate the right slot.
-@MainActor
-private func readActivationPayload(from c: ActivationComponents) throws -> LayerPayload {
-    let config = try c.container.mainContext.fetch(FetchDescriptor<AppLayerConfig>()).first!
-    guard let seKey    = try c.keyManager.deriveSecureModeKey(),
-          let layerKey = c.layerStore.deriveKey(from: seKey)
-    else { throw TestError("could not derive blob key from TestKeyManager") }
-    // Blob metadata is sealed under the SE-derived key, not the local DB key (Bug 76).
-    let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
-    guard let slotIndex = config.readBlobSlot(at: 0, using: blobKey) else {
-        throw TestError("no blob slot stored in config after activation")
-    }
-    guard let sequenceNumber = config.readSequenceNumber(at: 0, using: blobKey) else {
-        throw TestError("no sequence number stored in config after activation")
-    }
-    return try c.layerStore.readPayload(key: layerKey, slotIndex: slotIndex, expectedSequenceNumber: sequenceNumber)
-}
-
-// MARK: - Blob lifecycle
-
-@MainActor
-@Suite("Secure Mode — Blob lifecycle", .serialized)
-struct SecureModeBlobLifecycleTests {
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_writesBlob() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        #expect(!c.backend.exists, "blob should not exist before activation")
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-
-        #expect(c.backend.exists, "blob must be written during activation")
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobReadableWithCorrectKey() async throws {
-        // Verifies push/pop are symmetric end-to-end using TestKeyManager's
-        // SecureMode key — entirely SE-independent (no Manager.Key involvement).
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-
-        // readPayload should not throw — proves the push payload is decodable.
-        let payload = try readActivationPayload(from: c)
-        _ = payload  // structure is valid; contact content depends on SE availability
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func deactivation_blobStillReadableDuringDeactivation() async throws {
-        // The deactivation sequence pops the blob to restore sensitive contacts.
-        // If pop throws, it falls back to an empty payload — verify it doesn't throw.
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-        // Deactivation must complete successfully; if blob was unreadable it would
-        // fall back to an empty payload but the sequence would still succeed.
-        try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111")
-        #expect(!c.security.isSecureModeActive)
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func activation_blobIsCorrectSize() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-        let data = try c.backend.read()
-        let expectedSize = Manager.LayerStore.slotCount * Manager.LayerStore.slotCiphertextSize
-        #expect(data.count == expectedSize, "blob must be exactly \(expectedSize) bytes (32 fixed slots)")
-    }
-}
-
 // MARK: - Contact classification
 
 @MainActor
 @Suite("Secure Mode — Contact classification in blob", .serialized)
 struct SecureModeClassificationTests {
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_appearsInBlob() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
-        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
-        try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: sensitiveDepthValue)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-
-        let payload           = try readActivationPayload(from: c)
-        let identifiersInBlob = payload.contacts.map { $0.draft.identifier }
-        #expect(identifiersInBlob.contains(sensitiveID),
-                "sensitive contact must be sealed in the blob during activation")
-    }
-
-    @Test(.enabled(if: secureEnclaveAvailable())) func safeContact_doesNotAppearInBlob() async throws {
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let safeID      = "contact-safe-\(UUID().uuidString)"
-        let sensitiveID = "contact-sensitive-\(UUID().uuidString)"
-        // nil → classified safe (default visible, Int.max)
-        try insertContact(identifier: safeID, in: c.container, visibleThroughDepth: nil)
-        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
-        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
-        try insertContact(identifier: sensitiveID, in: c.container,
-                          visibleThroughDepth: sensitiveDepthValue)
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-
-        let payload           = try readActivationPayload(from: c)
-        let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
-
-        #expect(!identifiersInBlob.contains(safeID),
-                "safe contact must NOT be in the blob")
-        #expect(identifiersInBlob.contains(sensitiveID),
-                "sensitive contact must be in the blob")
-    }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func sensitiveContact_restoredByIdentifier_afterDeactivation() async throws {
         // Verifies the deactivation blob-restore path rewrites the contact row.
@@ -1036,43 +914,6 @@ struct OriginDepthPreservationTests {
                 "a never-stamped contact must decode to 0 after deactivation, not literal nil")
     }
 
-    /// The core behavior this whole field exists for: a duress-origin contact must
-    /// never be sealed into the activation blob, even when its visibleThroughDepth
-    /// ceiling would otherwise mark it sensitive for this exact activation. Mirrors
-    /// SecureModeClassificationTests' sensitiveContact_appearsInBlob, but stamped
-    /// originDepth > 0 on top of an otherwise-sensitive ceiling — the origin floor
-    /// must take priority and keep it live.
-    @Test func duressOriginContact_neverSealedIntoBlob_evenWithASensitiveCeiling() async throws {
-        guard secureEnclaveAvailable() else {
-            print("⚠︎ Skipping — SE not available (simulator)")
-            return
-        }
-
-        let c = try makeComponents()
-        try c.security.configurePIN("111111")
-
-        let id = "contact-\(UUID().uuidString)"
-        // Ceiling 0 alone would make this "sensitive for this layer" and blob-seal it
-        // (see sensitiveContact_appearsInBlob) — originDepth > 0 must override that.
-        try insertContact(
-            identifier: id, in: c.container,
-            visibleThroughDepth: try JSONEncoder().encode(0).encrypt(),
-            originDepth:         try JSONEncoder().encode(1).encrypt()
-        )
-
-        try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999")
-
-        let payload           = try readActivationPayload(from: c)
-        let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
-        #expect(!identifiersInBlob.contains(id),
-                "a duress-origin contact must never be sealed into the blob, regardless of its visibleThroughDepth ceiling")
-
-        // Still live in the DB (re-encrypted under the staged key in Step 8), not a
-        // sealed-away shell.
-        let stillLive = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(stillLive != nil, "the contact row must remain live, not be removed from the DB")
-    }
 }
 
 // MARK: - Error type
@@ -1382,10 +1223,10 @@ struct StrandedCeilingRotationTests {
 
 /// Design B item 1 (`plan.md` "What Design B requires") — activation deliberately skips
 /// re-encrypting a sensitive contact's key records, leaving them under the key Step 11
-/// deletes moments later. Item 3 is its required pair: `ContactManager.restoreContact`
-/// rebuilds them from this same activation's blob snapshot. Implementing item 1 alone
-/// guarantees silent, permanent loss of every sensitive contact's messaging key the very
-/// first time Secure Mode activates — these four tests are the safety net for that pairing.
+/// deletes moments later. Item 3 was its required pair: `ContactManager.restoreContact`
+/// rebuilding them from that activation's blob snapshot — removed along with the rest of
+/// the blob mechanism (Removal Stage 2, `plan.md`), so its two direct-call tests went with
+/// it. These two remain, covering item 1's skip itself.
 @MainActor
 @Suite("Design B item 1 — sensitive contact key records", .serialized)
 struct SensitiveContactKeyRecordTests {
@@ -1449,136 +1290,6 @@ struct SensitiveContactKeyRecordTests {
             """)
     }
 
-    // MARK: Deactivation's rebuild (item 3) — exercised directly against restoreContact.
-    //
-    // Manager.Security's injected TestKeyManager and the hardcoded real-SE
-    // Data.decrypt() this rebuild's trigger (hasUnreadableKeys) keys off are entirely
-    // independent of each other (see this file's header comment) — there is no way to
-    // make a TestKeyManager-driven activation genuinely invalidate real-SE ciphertext,
-    // so the rebuild's trigger condition can never fire through a full activate/
-    // deactivate cycle in this harness. Calling the production restoreContact directly,
-    // with synthetic keys throughout, tests the same code deterministically instead.
-
-    @Test("restoreContact rebuilds an unreadable key record from the blob, recovering the original material exactly")
-    func restoreContact_rebuildsUnreadableKeyFromBlob() throws {
-        let c = try makeComponents()
-        let id        = "shelled-\(UUID().uuidString)"
-        let stagedKey = SymmetricKey(size: .bits256)
-        let aad       = EncryptionScheme.v2_hybridPQ.aad
-
-        // The DB row as item 1 leaves it: present, but its key material is sealed under
-        // a key nothing here can open — standing in for the deleted old canonical key.
-        // Inserted via ContactManager's own modelContext — restoreContact reads and
-        // writes through this same context, and per its own doc comment does not save;
-        // the caller must, which this test does explicitly below.
-        let unreadableMaterial = try AES.GCM.seal(
-            Data("unreadable".utf8), using: SymmetricKey(size: .bits256), authenticating: aad
-        ).combined!
-        let profile = Contact.Profile(
-            identifier: id, givenName: "", familyName: "", middleName: "",
-            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        profile.contactPublicKeys = [
-            Contact.Profile.Key(material: unreadableMaterial, owner: Data("owner".utf8), date: Data("date".utf8))
-        ]
-        c.contacts.modelContext.insert(profile)
-        try c.contacts.modelContext.save()
-
-        // The blob's own plaintext snapshot, captured at activation time — the only
-        // surviving copy of the real material.
-        let originalMaterial = Data("the-real-key-material".utf8)
-        var draft = Contact.Draft(identifier: id)
-        draft.contactPublicKeys = [
-            Contact.Draft.Key(material: originalMaterial, owner: Data("owner-hash".utf8), date: "2026-01-01")!
-        ]
-        let record = LayerContact(draft: draft, signedAttributes: nil, visibleThroughDepth: 0, globalTrusteeDepth: -1)
-
-        try c.contacts.restoreContact(record, using: StubCrypto(key: stagedKey), stagedKey: stagedKey, aad: aad)
-        try c.contacts.modelContext.save()
-
-        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        let rebuiltMaterial = try #require(after?.contactPublicKeys?.first?.material)
-        let box    = try AES.GCM.SealedBox(combined: rebuiltMaterial)
-        let opened = try AES.GCM.open(box, using: stagedKey, authenticating: aad)
-        #expect(opened == originalMaterial, """
-            The rebuilt key material does not match what was captured in the blob at \
-            activation time — the recovery path is supposed to be lossless.
-            """)
-    }
-
-    @Test("Known gap (Bug 108): a key rotation received mid-session is discarded by the rebuild, not preserved")
-    func restoreContact_discardsMidSessionKeyRotation() throws {
-        let c = try makeComponents()
-        let id        = "shelled-\(UUID().uuidString)"
-        let stagedKey = SymmetricKey(size: .bits256)
-        let aad       = EncryptionScheme.v2_hybridPQ.aad
-
-        let unreadableOriginal = try AES.GCM.seal(
-            Data("unreadable-original".utf8), using: SymmetricKey(size: .bits256), authenticating: aad
-        ).combined!
-        // A key rotation "received" while the session was unlocked — appended after
-        // activation, so it is NOT in the blob's snapshot. Also sealed unreadably, to
-        // isolate this test from whichever key would otherwise make it independently
-        // "readable" — what's being proven is that it disappears from the array
-        // entirely, not that it merely gets re-encrypted.
-        let unreadableRotated = try AES.GCM.seal(
-            Data("unreadable-rotated".utf8), using: SymmetricKey(size: .bits256), authenticating: aad
-        ).combined!
-
-        // Inserted via ContactManager's own modelContext — see the previous test's
-        // comment; restoreContact reads and writes through this same context.
-        let profile = Contact.Profile(
-            identifier: id, givenName: "", familyName: "", middleName: "",
-            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
-        )
-        profile.contactPublicKeys = [
-            Contact.Profile.Key(material: unreadableOriginal, owner: Data("old".utf8), date: Data("old".utf8)),
-            Contact.Profile.Key(material: unreadableRotated,  owner: Data("new".utf8), date: Data("new".utf8)),
-        ]
-        c.contacts.modelContext.insert(profile)
-        try c.contacts.modelContext.save()
-
-        // The blob only ever knew about the original key — captured before the rotation.
-        var draft = Contact.Draft(identifier: id)
-        draft.contactPublicKeys = [
-            Contact.Draft.Key(material: Data("the-real-key-material".utf8), owner: Data("owner-hash".utf8), date: "2026-01-01")!
-        ]
-        let record = LayerContact(draft: draft, signedAttributes: nil, visibleThroughDepth: 0, globalTrusteeDepth: -1)
-
-        try c.contacts.restoreContact(record, using: StubCrypto(key: stagedKey), stagedKey: stagedKey, aad: aad)
-        try c.contacts.modelContext.save()
-
-        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
-        #expect(after?.contactPublicKeys?.count == 1, """
-            Expected exactly the one key record rebuilt from the blob. A count of 2 would \
-            mean the mid-session rotation survived — which is not what happens today; any \
-            other count means this test's assumptions about the rebuild no longer hold.
-            """)
-    }
-}
-
-/// Seals/opens under a fixed key — used only by `restoreContact`'s direct-call tests
-/// above, which supply every key themselves rather than deriving one from a key manager.
-/// Mirrors `StagedCryptoManager`'s role (private to `Manager+Security.swift`) without
-/// depending on it.
-private struct StubCrypto: CryptoProtocol {
-    let key: SymmetricKey
-    static let aad = EncryptionScheme.v2_hybridPQ.aad
-
-    func encrypt(data: Data?) throws -> Data? {
-        guard let data else { return nil }
-        return try AES.GCM.seal(data, using: self.key, authenticating: Self.aad).combined
-    }
-
-    func decrypt(data: Data?) throws -> Data? {
-        guard let data else { return nil }
-        return try AES.GCM.open(try AES.GCM.SealedBox(combined: data), using: self.key, authenticating: Self.aad)
-    }
-
-    func decryptLegacy(data: Data?) throws -> Data? { try self.decrypt(data: data) }
-    func encrypt(message: Data, using material: Data?) throws -> Data? { nil }
-    func decrypt(message: Data, using material: Data?) throws -> Data? { nil }
-    func sign(data: Data?) throws -> String { "" }
 }
 
 /// Attaches a single key record to an already-inserted contact, matching
