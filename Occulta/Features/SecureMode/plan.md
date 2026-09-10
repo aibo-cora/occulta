@@ -607,3 +607,119 @@ A deliberate, hard-to-trigger destruction mechanism for scenarios where deniabil
 - Is UIKit event interception acceptable in a SwiftUI lifecycle app on iOS 16+?
 - Should the trigger also post a silent iCloud note or AirDrop beacon so a remote party knows destruction succeeded? (Adds network dependency — conflicts with offline-first.)
 - Should the destroy sequence be available before first Secure Mode activation (e.g., to destroy the app entirely before a border crossing)?
+
+**Note, 2026-09-10:** step 3 of this sketch calls `LayerStore.deleteFile()`, which won't exist once the
+removal below lands. This proposal was never built, so nothing to migrate — just don't resurrect that
+call if this gets picked up later.
+
+---
+
+## Removal — Stage 0: design decision
+
+**2026-09-10.** Settles what `activateSecureMode`/`deactivateSecureMode`/`purgeDraftsNotSafeAtCurrentDepth`
+actually do once the blob mechanism and staged-key rotation are gone, so Stage 1 has something concrete
+to implement against rather than deriving it while also deleting code. No code changes in this stage.
+See the top-of-file note for why (AFU derivability, Bug 109) and `PASSPHRASE_LAYER_KEYS.md` for the
+proposed v2.0.0 replacement.
+
+### `activateSecureMode` — new shape
+
+Signature changes: drops `contactManager`/`vaultManager` params (nothing left to re-key or classify —
+see below) and drops `async` (nothing left that needs it; every remaining step is synchronous SE/Keychain
+work and a `ModelContext.save()`). Stays `throws`.
+
+1. Guard: `requiresPIN` true, and either `isRestricted` (nested activation, depth > 0) or
+   `!isSecureModeActive` (fresh activation) — else `.invalidStateTransition`. Unchanged from today.
+2. Verify `confirmingEntryPIN` against `sealedNormalVerifiers[currentDepth]`. Unchanged. No longer also
+   derives `oldKey` up front — nothing downstream re-encrypts anything, so there's no key to derive.
+3. Reject if `duressPIN` collides with any existing verifier at any depth — throw `.pinCollision`.
+   **`pushDummyBlobSlot` is gone.** It existed to make a rejected collision leave the same filesystem
+   footprint as a real activation; with no blob file at all, there's no footprint to match. The
+   user-visible behavior this protected — `SummaryView`'s quiet `.pinCollision`/`.invalidStateTransition`
+   dismissal, no oracle — is unaffected, since that's UI-level handling, not this internal side effect.
+4. Build the new depth's duress verifier and a fresh normal verifier for depth+1 (`PINManager.buildVerifier`,
+   unchanged mechanism).
+5. Write both to `AppLayerConfig` (`writeDuressVerifier`, `writeNormalVerifier`), `writeCoercerBaseDepth(depth)`
+   if `depth > 0`.
+6. `modelContext.save()`, `resetCounters()`.
+
+**Gone entirely, not just reordered:** `slotIndex`/`sequenceNumber` selection (blob-slot assignment —
+no blob), `createStagedLocalDBKey()`, the Step-4-style contact classification pass (`blobContacts`/
+`safeProfiles` split — nothing to classify *for*, since nothing gets sealed away or re-keyed; a
+contact's `visibleThroughDepth` was set independently by the user via `setVisibility` and activation
+never needs to touch it), `layerStore.push(...)`, the `reencryptAllFields`/`reencryptKeyRecords` loop
+over every contact, vault-entry/`Message.Draft`/`Group`/`AppLayerConfig` re-keying, `commitStagedLocalDBKey()`,
+the WAL checkpoint, `deleteSupersededLocalDBArtefacts()`, and the `catch`/rollback block — there is
+nothing staged and nothing destructive, so nothing to roll back. A crash mid-function just means the
+verifier write never landed; safely retryable, no partial state to reason about.
+
+### `deactivateSecureMode` — new shape
+
+Same signature changes as activation: drops `contactManager`/`vaultManager`, drops `async`, stays `throws`.
+
+1. Guard: `sealedDuressVerifier != nil`.
+2. Verify `confirmingEntryPIN` against `sealedNormalVerifiers[depth]`.
+3. `config.clearVerifiers(from: max(1, depth))` — **the existing cascade logic, unchanged**: full
+   deactivation (`sealedDuressVerifier = nil`, `setState(0, ...)`) if `depth <= 1`, otherwise a partial
+   cascade (`setState(1, ...)`) leaving a shallower duress layer intact. This was always pure
+   `AppLayerConfig` state, not rotation — it survives as-is.
+4. `writeCoercerBaseDepth(0)`, `modelContext.save()`, `resetCounters()`.
+
+**Gone entirely:** `layerStore.pop(...)` and its empty-payload fallback, `createStagedLocalDBKey()`,
+the Step-4-style re-encryption loop over every contact (including the `restoreContact` calls for
+blob-popped records), vault-entry/`Message.Draft`/`Group`/`AppLayerConfig` re-keying,
+`commitStagedLocalDBKey()`, the WAL checkpoint, `deleteSupersededLocalDBArtefacts()`, the rollback
+`catch`, `clearAllBlobMetadata()`/`clearBlobSlot`/`clearSequenceNumber`, and the async
+`layerStore.rewrite()` on full deactivation.
+
+**Also gone: the entire "preserve the real classification value across the cascade" problem.** Bug 23
+and the extensive "never flatten to nil, preserve the real depth" commentary throughout the current
+`Manager+Security.swift` exist because the old re-encryption loop touched every contact's
+`visibleThroughDepth` on every cycle, and `restoreContact` had to put back the exact pre-existing value
+for anyone tied to the departing layer. With activation/deactivation never touching that field, there is
+nothing to preserve — it's a standing property of the row, decoupled from the PIN lifecycle entirely.
+
+### `purgeDraftsNotSafeAtCurrentDepth` — needs a real (small) replacement, not a deletion
+
+**Verified directly against `Manager+Security.swift:1414-1429`, not assumed.** Called from
+`applyVerifyState` on every entry to a duress depth (not just activation) — the "defense in depth
+alongside `reKeyOrPurgeAll` at activation" pass, since a contact classified sensitive *after* a layer
+already existed could otherwise keep an old draft across any number of later duress-PIN entries. Current
+body: fetch all `Contact.Profile` rows, compute `safeIdentifiers` via
+`profile.isVisible(atDepth: currentDepth, usingKey: key)` (the hardcoded real-SE key, same
+`Manager.Key().createHybridLocalEncryptionKey()` path every other classification check already uses —
+nothing here goes through `Manager.Security`'s own injected `keyManager`), likewise
+`allGroupIdentifiers`, then calls `Message.Draft.reKeyOrPurgeAll(safeContactIdentifiers:allGroupIdentifiers:oldKey:newKey:in:)`
+with `oldKey == newKey` purely for its survive/purge semantics — surviving drafts get re-sealed under an
+identical key with a fresh nonce, a no-op in effect. Finishes with `self.checkpointStore()` — **keep
+this call**, it's not rotation-tied: the doc comment on `checkpointStore()` explains `PRAGMA secure_delete
+= ON` only zeroes a freed page's content for the write that frees it, so an un-checkpointed WAL frame
+from before the purge can still hold recoverable ciphertext under whatever key is still live. Still
+needed once drafts are simply being deleted, no rotation involved.
+
+**What Stage 1 replaces:** the identifier computation (`safeIdentifiers`/`allGroupIdentifiers` via
+`isVisible(atDepth:usingKey:)`) stays exactly as-is — already SE-key-based and unrelated to rotation.
+Only the `reKeyOrPurgeAll` call needs a lighter replacement that performs just its purge half (delete
+whichever `Message.Draft` rows aren't tied to a safe contact/group) without the reseal-survivors half,
+once `reKeyOrPurgeAll`'s rotation core is deleted in Stage 3.
+
+**Still flagged, not resolved here:** `Message.Draft.reKeyOrPurgeAll`'s own internal purge logic (which
+field(s) it reads to decide "not visible," whether it hard-deletes) wasn't read as part of this design
+pass — Stage 1 should check `Message+Draft.swift` directly before writing the replacement, the same way
+this section's own claims were checked against `Manager+Security.swift` rather than assumed.
+
+### Call-site impact (cross-cutting, handled across Stages 1 and 4)
+
+Every caller of `activateSecureMode`/`deactivateSecureMode` — `SecureModeSetupFlow`,
+`SecureModeDeactivateFlow`, and every test that drives them — needs updating for the new signature
+(fewer params, no longer `async`/`await`). Noted here so it isn't rediscovered mid-Stage-1; not scoped
+in detail until that stage, since the mechanical fixups follow directly from the signature change above.
+
+### What does not change
+
+PIN verification and building (`PINManager`), the verifier arrays and cascade-clearing logic on
+`AppLayerConfig`, `persistedDepth`/`pinEnabled(PerDepth)`/`coercerBaseDepth`/lockout fields and their
+r/w helpers, `configurePIN`/`deactivatePIN` (the PIN-only, non-Secure-Mode-activation functions),
+`Contact.Profile.isVisible(atDepth:)`/`VaultEntry.isVisible`, and everything in
+`ContactManager+Classification.swift` except `restoreContact`'s key-rebuild block (which Stage 2 deletes
+along with the rest of the blob machinery).
