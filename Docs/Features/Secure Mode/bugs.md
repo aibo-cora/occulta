@@ -8445,3 +8445,78 @@ steps 1, 3, and 4 are what's left.
 None. Design B is not built, so nothing exercises this path yet — this entry exists so the fifth step
 gets designed deliberately when Design B is implemented, rather than discovered as data loss after it
 ships.
+
+## Bug 109 — Skipping a sensitive contact's key-record re-encryption leaves an authentication-failure
+tell, not silence
+
+**Status:** Open. Live in shipped code (`Manager+Security.swift` Step 8, commit `3b7baa9`,
+2026-09-10) — `plan.md`'s Design B item 1. Found the same day, while defending that change against a
+direct question about what an AFU-capable adversary — one who can derive the current canonical key,
+which needs no biometric (see this feature's own key-derivation discussion) — would actually observe,
+not discovered independently.
+
+**Target:** unset.
+
+### Severity: would be High under actual coercion — proves concealment occurred, which can be worse
+than exposing the content it was meant to hide
+
+### What happens
+
+Item 1 has activation's Step 8 skip `reencryptKeyRecords` for a sensitive contact's `contactPublicKeys`,
+deliberately, so those bytes stay sealed under the canonical key Step 11 deletes moments later. Text
+fields (`reencryptAllFields`) are untouched by this skip and continue to be re-encrypted normally, same
+as every other contact.
+
+The result: a sensitive contact's row, examined under the *current* canonical key, decrypts almost
+entirely — name, phone, notes, everything `reencryptAllFields` touches — except
+`contactPublicKeys[*].material`/`owner`/`acquiredAt`/`quantumKeyMaterialEncrypted`, which fail
+`AES.GCM.open` with `.authenticationFailure`, every time, for as long as that layer exists.
+
+### The harm
+
+Not a quiet gap — a loud, structural one. A forensic examiner does not need to suspect this specific
+mechanism: attempting to decrypt every field of every row and noting where authentication fails is
+routine practice, not a targeted attack. A row where the overwhelming majority of fields open cleanly
+and one specific field category consistently, reproducibly does not is unambiguous evidence of
+deliberate content removal — not corruption (corruption is rare and inconsistent across rows; this is
+systematic, isolated to exactly the fields item 1 targets, and correlates with `visibleThroughDepth`
+once combined with app-logic knowledge that's not even required to notice the pattern).
+
+Compare to Design A's own accepted gap (`forensic-trace-avoidance.md` S5): Design A exposes a sensitive
+contact's *content* to anyone holding the canonical key, but every field decrypts uniformly — nothing
+about ciphertext shape reveals that concealment was attempted. Item 1, as shipped, trades a content
+leak for a *proof-of-concealment* leak. Under coercion, "they can demonstrate I deliberately hid
+something from them" invites exactly the follow-up pressure — what, from whom, why — that a deniability
+mechanism exists to avoid. That can be a worse position than uniform exposure, not a strictly better
+one, depending on what the coercer does with "I know you hid something" versus simply reading it.
+
+### Proposed remedy — not built
+
+Mirror `Manager.LayerStore`'s own established pattern for unused slots (`sealRandom`): a slot holding no
+real content is never left unsealed or under a mismatched key — it's resealed with fresh random
+plaintext under the *current* key, so it opens cleanly and only fails on content inspection, never on
+authentication. Applied here:
+
+- Activation's Step 8, for a sensitive contact's key records, would reseal `material`/`owner`/
+  `acquiredAt`/`quantumKeyMaterialEncrypted` with random bytes under the **staged** (new,
+  about-to-be-canonical) key, instead of leaving the old ciphertext untouched. Decrypts fine under the
+  current key; decodes to nothing meaningful — no `AES.GCM.open` failure anywhere in the row.
+- `ContactManager.restoreContact` would no longer need `hasUnreadableKeys` (a decrypt-and-check
+  heuristic) at all — it is only ever called for contacts that came out of the blob, i.e. were
+  classified sensitive during that same activation, so it can unconditionally rebuild
+  `contactPublicKeys` from `record.draft.contactPublicKeys` on every call instead of conditionally.
+- Cost: trades away "genuinely destroyed, not just hidden" for that field specifically — the content
+  becomes real-key-recoverable if an adversary already captured the *old* key before its deletion (a
+  different, prior-compromise scenario this design never protected against any differently — an
+  AFU-capable adversary who compromises the device *before* a rotation gets everything live at that
+  moment regardless). What it buys back is removing the authentication-failure tell: the field becomes
+  indistinguishable, by shape, from any other key record, the same way `LayerStore`'s filler slots are
+  indistinguishable from real ones without the key.
+
+### Guard
+
+None yet. `SensitiveContactKeyRecordTests` (`SecureModeActivationTests.swift`) asserts the key material
+is left *unchanged* by activation — proving item 1 works exactly as specified, which is also exactly
+the shape of this bug. A test for the remedy above would assert the opposite: after activation, a
+sensitive contact's key-record material decrypts successfully under the current canonical key (no
+`.authenticationFailure`) but decodes to something other than the original plaintext.

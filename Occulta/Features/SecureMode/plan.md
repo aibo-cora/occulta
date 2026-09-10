@@ -1,5 +1,24 @@
 # Secure Mode — Implementation Plan
 
+**2026-09-10 — decision made to simplify: drop the blob mechanism (`Manager.LayerStore`) and the
+staged local-DB-key rotation entirely, reverting Secure Mode to pure UI-layer filtering.** Motivated by
+a direct assessment of what either mechanism actually buys against an AFU-capable (After-First-Unlock
+forensic extraction) adversary: nothing, since both the local-DB key and the blob key derive with equal
+ease under that access level (no biometric gate on either), and the one piece that did add a real
+guarantee — Design B item 1's key-record shelling, shipped and then found to leak its own occurrence,
+`bugs.md` Bug 109 — cost more in forensic tells than it protected. Staged removal plan agreed in
+conversation, not yet written up here; six stages (design decision → shrink `activate`/`deactivate` →
+delete blob code → delete rotation code → rework tests → docs), each independently buildable and
+committable. Not yet started as of this note. Once landed, this document's Steps 3+ (blob/rotation
+build history below) describe removed machinery, kept for the record, not a live design.
+
+**Proposed replacement for what this removal gives up — [`PASSPHRASE_LAYER_KEYS.md`](PASSPHRASE_LAYER_KEYS.md), filed for a future v2.0.0, not v1.11.0.**
+Replaces the numeric PIN with a 6–7 word diceware phrase that's an actual key-derivation input (Argon2id
++ per-depth SE component via HKDF) rather than a pure UI-routing verifier — closes the AFU gap with a
+human secret absent from the device, at the cost of a real UX/recovery tradeoff and a structural
+tell-avoidance problem (§2 of that doc) comparable in shape to what's being removed here. Not started;
+sequenced after this removal.
+
 ## Feature Flag
 
 Secure Mode is governed by the `secureMode` key in `features.plist` (default `true`).
@@ -415,6 +434,8 @@ received mid-session is still discarded by the rebuild — pinned as a known-gap
 test, not fixed here) all have explicit coverage.
 
 1. [x] **Skip sensitive contacts in activation Step 8's re-encryption loop.** Under Design A, all contacts (including sensitive) are re-encrypted to K_staged. Sensitive contacts' key records are now left under the old canonical key so they become genuinely unreadable after the key is deleted (`Manager+Security.swift`, Step 8 — `sensitiveIdentifiers`, derived from `blobContacts`). Text fields for sensitive contacts are still re-encrypted normally (so the shell stays syntactically valid) — only `reencryptKeyRecords` is skipped.
+
+   **Found 2026-09-10, not yet fixed — `bugs.md` Bug 109: leaving the old ciphertext in place is itself a tell.** A row where every other field decrypts under the current canonical key and this one field category consistently fails `AES.GCM.open` is unmistakable, no-heuristic evidence that content was deliberately withheld — a structural leak Design A's uniform-decrypt-everywhere shape never had. Proposed remedy (not built): reseal those fields as random filler under the staged key instead of leaving them stale, mirroring `Manager.LayerStore`'s own `sealRandom` treatment of unused slots — see Bug 109 for the full tradeoff.
 
 2. [x] **Fix `convertToMutableCopy` to carry `quantumKeyMaterialEncrypted` through to the draft.** `Contact+Manager.swift` now decrypts and JSON-decodes `record.quantumKeyMaterialEncrypted` and passes it as `quantumKeyMaterial` when constructing `Contact.Draft.Key`. This makes the blob complete under both designs — Design A ignores it (key records are never rebuilt from the blob); Design B depends on it.
 
