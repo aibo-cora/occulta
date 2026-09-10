@@ -19,8 +19,11 @@ struct VaultShardHealth: View {
 
     @State private var unlocking = false
 
+    /// Filtered through `Manager.Security.visibleVaultEntries(from:)` (Bug 115) — this screen's own
+    /// `@Query` was raw and unfiltered, decrypting and rendering entry labels at every depth,
+    /// orphaned or not. Same fix shape as Bug 113's `Vault+Tab.swift`.
     private var entriesWithShards: [VaultEntry] {
-        entries.filter { $0.shardDistributionEncrypted != nil }
+        self.security.visibleVaultEntries(from: self.entries).filter { $0.shardDistributionEncrypted != nil }
     }
 
     // Pairs (entry, metadata, label, type) for all entries we could decrypt.

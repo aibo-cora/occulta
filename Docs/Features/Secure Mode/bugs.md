@@ -9134,3 +9134,165 @@ so `VaultManager`'s context never carries an unsaved edit into the dedup check.
 
 Full local suite run on a host with Secure Enclave access: 844 passed, 0 failed, 6 skipped
 (`KeychainMigrationSETests` only), 851 total — clean, and consistent with Bug 113's own verified run.
+
+## Bug 115 — `VaultShardHealth` reads a raw, unfiltered `@Query` and renders decrypted entry labels from every depth
+
+**Status:** Closed (Fixed), verified 2026-09-11. Filed and fixed the same day, found while
+answering "what's left to complete the vault entry refactor" — checked every remaining
+`@Query`/`FetchDescriptor<VaultEntry>` site in the UI against the pattern Bug 113 fixed for
+`Vault+Tab.swift`, since that fix was scoped to one file and never claimed to be exhaustive.
+
+### Severity: High — worse than Bug 113, not just the same class
+
+Bug 113 leaked *visibility* (an entry showing up when it shouldn't). This leaks *content*: the actual,
+decrypted entry label — the thing a seed phrase or password's own descriptive name would be — rendered
+directly on screen for entries at every depth, real and duress alike, and for orphaned entries too.
+
+### What happens
+
+[VaultShardHealth.swift:18](Occulta/UI/Tabs/Settings/VaultShardHealth.swift:18):
+
+```swift
+@Query private var entries: [VaultEntry]
+```
+
+No predicate, no depth check, no orphan check — every row in the table, exactly the pattern
+`Vault+Tab.swift` had before Bug 113. `Manager.Security` is imported (`VaultShardHealth.swift:17`) but
+never referenced anywhere in the file — the depth-awareness the import implies was never wired in.
+
+```swift
+private var entriesWithShards: [VaultEntry] {
+    entries.filter { $0.shardDistributionEncrypted != nil }
+}
+
+private var decoded: [(entry: VaultEntry, meta: ShardDistributionMetadata, label: String, type: VaultEntryType)] {
+    guard vault.isUnlocked else { return [] }
+    return entriesWithShards.compactMap { entry in
+        guard let meta = try? vault.shardDistributionMetadata(for: entry.id) else { return nil }
+        let payload = try? vault.decryptLabelPayload(for: entry)
+        return (entry, meta, payload?.label ?? "–", payload?.type ?? .note)
+    }
+}
+```
+
+`decryptLabelPayload` is called unconditionally for every entry that has shard distribution set up —
+at any depth, orphaned or not — and the resulting plaintext `label` is carried straight into the
+row model. `healthSection`'s `ForEach(decoded, id: \.entry.id) { entry, meta, label, type in ... }`
+(`VaultShardHealth.swift:147`) renders it.
+
+**Reachable from any depth.** Settings → Vault Recovery → Shard Health, `NavigationLink`-accessible
+from `VaultRecoverySettings.swift`'s `pekSummaryRow` (see Bug 116) at any depth, real or duress — the
+screen itself has no depth gate of its own to prevent navigating to it in the first place.
+
+### Two harms, mirroring Bug 113's two but with label content instead of just presence
+
+1. **A coercer at a duress depth sees the real depth-0 vault's entry labels** — not just that entries
+   exist (Bug 113's harm), but what they're called: "Recovery seed," "Bank PIN," whatever descriptive
+   name the owner gave it, for any depth-0 entry that has shards set up.
+2. **The real owner, back at depth 0, sees duress-depth decoy entries' labels too** — and orphaned
+   entries' labels (Bug 110's entire point was making an orphaned entry inert everywhere; this screen
+   doesn't check `isOrphaned` at all, so a decommissioned entry's label still renders here indefinitely).
+
+### Why this wasn't caught by Bug 113's fix
+
+Bug 113 fixed `Vault+Tab.swift`'s `visibleEntries` specifically — the file the bug was filed against.
+It never claimed to audit every other `VaultEntry` consumer in the UI. This file has its own,
+independent `@Query`, never routed through the fix. Confirmed by grep: no test file references
+`VaultShardHealth`'s `entries`/`decoded`/`entriesWithShards` properties at all — zero test coverage of
+this screen's filtering, the same "unit-tested primitive, untested call site" gap Bug 113 named.
+
+### Fix
+
+One-line change to `entriesWithShards`, the single upstream property everything else in the file
+derives from ([VaultShardHealth.swift:22-25](Occulta/UI/Tabs/Settings/VaultShardHealth.swift:22)):
+
+```swift
+private var entriesWithShards: [VaultEntry] {
+    self.security.visibleVaultEntries(from: self.entries).filter { $0.shardDistributionEncrypted != nil }
+}
+```
+
+Routes through `Manager.Security.visibleVaultEntries(from:)` — the same function Bug 113 introduced —
+before the shard-distribution filter runs. `decoded`, `atRiskCount`, `atRiskBanner`, and `healthSection`
+all consume `entriesWithShards`, so every downstream computation and every rendered row is now
+depth-and-orphan-correct with the one change. `self.security` (`Manager.Security`) was already an
+`@Environment` property on this view — imported, per the bug's own write-up, but never used until now.
+
+### Guard
+
+No new test written: `visibleVaultEntries(from:)` itself is already fully covered by
+`VaultEntryDepthVisibilityTests` (Bug 113) — exact-depth match, orphan exclusion, the depth-0
+nil-entry case — and this fix introduces no new logic, only a new caller of that same, already-tested
+function. Neither this file nor `Vault+Tab.swift` has its own test suite (no SwiftUI view in this
+codebase does; view-level logic delegates to tested `Manager`/`VaultManager` functions, confirmed by
+grep — consistent architecture, not a gap specific to this fix). Full local suite run, combined with
+Bug 116's fix: 844 passed, 0 failed, 6 skipped (`KeychainMigrationSETests` only), 851 total — clean.
+
+## Bug 116 — `VaultRecoverySettings`'s PEK summary reads `recoveryHealth.affected` unfiltered, leaking a cross-depth count
+
+**Status:** Closed (Fixed), verified 2026-09-11. Filed and fixed the same day, found alongside
+Bug 115.
+
+### Severity: Medium — a count leak, not a content leak
+
+No entry labels are shown here, only aggregate numbers ("3 entries critical," "1 entry degraded"), but
+those numbers are computed across every depth's entries, not just the current one.
+
+### What happens
+
+[VaultRecoverySettings.swift:108](Occulta/UI/Tabs/Settings/VaultRecoverySettings.swift:108):
+
+```swift
+private var pekSummaryRow: some View {
+    let affected = vault.recoveryHealth?.affected ?? []
+    let critical = affected.filter { $0.status == .critical }.count
+    let degraded = affected.filter { $0.status == .degraded }.count
+    ...
+}
+```
+
+`vault.recoveryHealth` is computed by `VaultManager.recomputeRecoveryHealth()`
+(`Vault+Manager+Shards.swift:341`), which reads `fetchAllEntries()` — orphan-filtered, but not
+depth-filtered — and builds `affected: [RecoveryHealthSummary.AffectedEntry]` (which does carry each
+entry's decrypted `label`, per its own struct) across every depth at once. `Vault+Tab.swift` reads this
+same published property but filters it first: `(self.vault.recoveryHealth?.affected ?? []).filter {
+visibleIDs.contains($0.entryID) }` (`Vault+Tab.swift:223`). `VaultRecoverySettings.swift` does not —
+the count badge on this screen aggregates every depth's critical/degraded entries into one number,
+displayed at whichever depth the viewer is currently at.
+
+**Not a label leak in this file** — `pekSummaryRow` only reads `.status` to build counts, never
+`.label`. But `VaultRecoverySettings.swift`'s own `NavigationLink` from this row goes to
+`VaultShardHealth()` (Bug 115), so the practical path from "the count looks off" to "the actual labels
+are visible" is one tap, not a separate vulnerability chain to build.
+
+### Fix
+
+Added the same `@Query`/filter pair `Vault+Tab.swift` already carries, then applied it to
+`pekSummaryRow` ([VaultRecoverySettings.swift](Occulta/UI/Tabs/Settings/VaultRecoverySettings.swift)):
+
+```swift
+@Query private var entries: [VaultEntry]
+
+private var visibleEntryIDs: Set<UUID> {
+    Set(self.security.visibleVaultEntries(from: self.entries).map(\.id))
+}
+```
+
+```swift
+private var pekSummaryRow: some View {
+    let affected = (vault.recoveryHealth?.affected ?? []).filter { self.visibleEntryIDs.contains($0.entryID) }
+    ...
+}
+```
+
+This view had no `@Query` on `VaultEntry` before — `SwiftData` added as an import. Deliberately local to
+this view rather than a new shared helper on `Manager.Security`: `Vault+Tab.swift` already computes its
+own `visibleIDs` the same inline way, so this matches the existing pattern rather than introducing a
+second one.
+
+### Guard
+
+Same reasoning as Bug 115's Guard: no new logic, only a new caller of the already-tested
+`visibleVaultEntries(from:)`; neither this view nor `Vault+Tab.swift` carries its own test suite. Full
+local suite run, combined with Bug 115's fix: 844 passed, 0 failed, 6 skipped
+(`KeychainMigrationSETests` only), 851 total — clean.

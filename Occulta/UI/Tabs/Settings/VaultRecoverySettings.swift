@@ -13,13 +13,22 @@
 //
 
 import SwiftUI
+import SwiftData
 import LocalAuthentication
 
 struct VaultRecoverySettings: View {
 
     @Environment(VaultManager.self) private var vault
     @Environment(Manager.Security.self) private var security
+    @Query private var entries: [VaultEntry]
     @State private var unlocking = false
+
+    /// IDs of entries visible at the current depth — same filter `Vault+Tab.swift` applies to
+    /// `recoveryHealth.affected` (Bug 116: this view read that property unfiltered, leaking a
+    /// cross-depth critical/degraded count).
+    private var visibleEntryIDs: Set<UUID> {
+        Set(self.security.visibleVaultEntries(from: self.entries).map(\.id))
+    }
 
     // Amber consistent with the rest of the vault UI.
     private static let amber = VaultEntryType.cat(light: (0x7A, 0x50, 0x00), dark: (0xFF, 0xCC, 0x66))
@@ -105,7 +114,7 @@ struct VaultRecoverySettings: View {
 
     @ViewBuilder
     private var pekSummaryRow: some View {
-        let affected = vault.recoveryHealth?.affected ?? []
+        let affected = (vault.recoveryHealth?.affected ?? []).filter { self.visibleEntryIDs.contains($0.entryID) }
         let critical = affected.filter { $0.status == .critical }.count
         let degraded = affected.filter { $0.status == .degraded }.count
 
