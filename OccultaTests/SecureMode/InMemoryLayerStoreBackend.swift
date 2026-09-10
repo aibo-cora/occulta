@@ -10,7 +10,8 @@ import Foundation
 @testable import Occulta
 
 /// In-memory backend for unit tests only. Not thread-safe.
-/// Injected via `Manager.LayerStore(backend: InMemoryLayerStoreBackend())`.
+/// Injected via `VaultManager.Backup.LayerStore(backend: InMemoryLayerStoreBackend())` —
+/// its sole consumer since `Manager.LayerStore` was deleted (Removal Stage 2, `plan.md`).
 final class InMemoryLayerStoreBackend: LayerStoreBackend {
     private var stored: Data?
 

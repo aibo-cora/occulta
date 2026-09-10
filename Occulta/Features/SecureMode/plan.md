@@ -1045,3 +1045,66 @@ work than the prose changes in this stage, and wasn't named in the original stag
 handful of `.swift` doc comments alongside the `.md` files, so this wasn't purely a markdown-only
 change). No test suite run: nothing in this stage changed runtime behavior, only documentation and
 comments.
+
+## Removal — Stage 6: done, 2026-09-10 — final verification
+
+**A final sweep caught three more stale doc-comment references Stage 5 missed** — all stated as
+*current* fact rather than history, unlike the ones Stage 5 correctly judged safe to leave:
+`SecureMode+LayerStoreBackend.swift`'s header claimed `Manager.LayerStore` as an active co-consumer of
+the shared backend protocol (it is deleted; `VaultManager.Backup.LayerStore` is the sole remaining
+one — the file itself stays, only its header was wrong), `Vault+Manager.swift` claimed
+`Manager.Security` "mirrors... holding a `layerStore: Manager.LayerStore`" (that property no longer
+exists), and `InMemoryLayerStoreBackend.swift` claimed it was "injected via
+`Manager.LayerStore(backend:)`" (nothing constructs one any more — `VaultManager.Backup.LayerStore` is
+its only real caller, confirmed by `BEKArrayTests.swift`'s actual usage). Found via a repo-wide grep
+for every deleted symbol name (`Manager.LayerStore`, `LayerContact`, `LayerPayload`,
+`StagedKeyError`, the four staged-key methods, `reencryptAllFields`, `reencryptKeyRecords`,
+`RotationRegistry`, `reKeyOrPurgeAll`, `sealedBlobSlots`, `layerSequenceNumbers`,
+`blobMetadataMissing`/`blobMetadataKey`, `migrateBlobMetadata`, `inMemorySensitiveContacts`,
+`resyncSensitiveContactsBlob`, `restoreContact`, `hasUnreadableKeys`, `rebuildKeyRecord`,
+`pushDummyBlobSlot`, `maintainLayerStore`, `rewriteLayerStore`) across `Occulta/` and `OccultaTests/`,
+checked one by one against whether each was a live compile-relevant reference (none were — everything
+remaining was either these three stale doc comments or accurate historical/precedent citations,
+matching the pattern Stage 5 already established for `Group+FormV3.swift`/`OccultaApp.swift`'s
+version-specific historical mentions). `Occulta/Features/Vault/`'s own design docs and code
+(`BEKArray.swift`, `Vault+Manager+Backup.swift`, `VAULT_KEY_LAYERING.md`) cite `Manager.LayerStore`
+extensively as the precedent `VaultManager.Backup.LayerStore` was deliberately shaped after — left
+untouched, same reasoning as Stage 5: accurate as design history for a still-live feature, not this
+removal's scope to rewrite.
+
+**Full local run, the actual exit criteria this project's own `CLAUDE.md` states:** 834 tests
+executed, **`** TEST SUCCEEDED **`**, zero failures, exactly 6 skips — all `KeychainMigrationSETests`,
+the documented device-only baseline. No other suite skipped, confirming a real Secure Enclave was
+available for this run and the green result isn't hiding an unavailable-Enclave false pass.
+
+**Cumulative diff for the whole effort** (`git diff --shortstat` from the last pre-removal commit,
+`2ea7df3`, to this stage's `HEAD`, `Occulta/` and `OccultaTests/` only): **39 files changed, 1,062
+insertions(+), 6,546 deletions(-)**. Net: the blob mechanism, the staged-key rotation protocol, and
+every re-encryption pass built on top of either are gone; `activateSecureMode`/`deactivateSecureMode`
+are PIN-verification-and-verifier-writes only, exactly the Stage 0 design decision, now built,
+tested, and documented end to end.
+
+**What this removal effort settled, for anyone picking this back up later:**
+- Secure Mode's confidentiality guarantee against the realistic threat model (AFU extraction, no
+  biometric gate) was never the blob or the rotation — it was always the file-protection/PRAGMA
+  measures in `forensic-trace-avoidance.md`'s S2-S4, unaffected by any of this. The blob and rotation
+  bought deniability-adjacent forensic cover (B1-B7, K3) and a *historical* page-slack erasure (S1)
+  against a weaker, locked-device attacker — real, but not the one this app's own threat model
+  centers on, and not worth the complexity once looked at directly.
+- Design B (unreadable DB shells, blob as sole readable copy) is not a deferred future upgrade any
+  more — it would need rebuilding from nothing, against the same analysis that concluded it wasn't
+  buying real protection either.
+- One open item from this effort, not closed here: `bugs.md` Bug 110 (`VaultEntry` depth-stamp reuse
+  across unrelated duress sessions) — low severity, logged, not fixed, per the user's explicit choice
+  in Stage 5.
+- One real testing gap from Stage 1, not filled here: `Message.Draft` purging
+  (`purgeDraftsNotSafeAtCurrentDepth`/`purgeUnsafe`) has zero test coverage anywhere, flagged in
+  Stage 4's entry — belongs in `PINManagerTests.swift`, since the purge runs from `applyVerifyState`,
+  not `activateSecureMode`/`deactivateSecureMode`.
+- `PASSPHRASE_LAYER_KEYS.md` (v2.0.0 proposal, replacing numeric PINs with diceware phrases) remains
+  filed and not started — explicitly out of scope for this removal, which was about deleting
+  complexity, not adding a new layer.
+
+Six stages, six commits (`880b980` through this one), each independently reviewable and revertable,
+none skipped, none reordered from the original sketch except the two forced deviations Stage 1 and
+Stage 3 each documented at the time they happened.

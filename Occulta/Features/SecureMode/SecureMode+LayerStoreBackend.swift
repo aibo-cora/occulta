@@ -2,14 +2,17 @@
 //  SecureMode+LayerStoreBackend.swift
 //  Occulta
 //
-//  LayerStoreBackend protocol and production AppGroupLayerStoreBackend. Both
-//  Manager.LayerStore (contacts) and VaultManager.Backup.LayerStore (backup key)
-//  share these — unified 2026-09-09 (VAULT_KEY_LAYERING.md item 13, Part A). The
+//  LayerStoreBackend protocol and production AppGroupLayerStoreBackend.
+//
+//  Unified 2026-09-09 (VAULT_KEY_LAYERING.md item 13, Part A) to be shared between
+//  Manager.LayerStore (contacts) and VaultManager.Backup.LayerStore (backup key) — the
 //  two concrete backends were identical except for their directory constant, which
 //  file's own crypto/logic layer error each one threw on failure, and whether
-//  modificationDate was tracked — none of that needed two types.
+//  modificationDate was tracked. Manager.LayerStore and its contact blob were deleted
+//  whole (Removal Stage 2, `plan.md`); VaultManager.Backup.LayerStore is this
+//  protocol's sole remaining consumer.
 //
-//  Manager.LayerStore owns all cryptography. Backends handle only raw ciphertext I/O.
+//  Backends handle only raw ciphertext I/O — crypto lives in the consuming layer.
 //
 
 import Foundation
@@ -29,8 +32,9 @@ enum LayerStoreBackendError: Error {
 // MARK: - Protocol
 
 /// Raw ciphertext I/O for a 32-slot layer store. No crypto knowledge — all AES-GCM
-/// lives in the consuming crypto/logic layer (`Manager.LayerStore`,
-/// `VaultManager.Backup.LayerStore`). Abstracted for testability.
+/// lives in the consuming crypto/logic layer (`VaultManager.Backup.LayerStore`, its
+/// sole consumer since `Manager.LayerStore` was deleted — Removal Stage 2, `plan.md`).
+/// Abstracted for testability.
 protocol LayerStoreBackend {
     func write(_ data: Data) throws
     func read() throws -> Data

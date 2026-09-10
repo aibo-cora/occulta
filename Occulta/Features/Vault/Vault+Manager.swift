@@ -37,9 +37,8 @@ final class VaultManager {
     let keyManager: any KeyManagerProtocol
 
     /// The device's Backup Encryption Key: setup, access, shard distribution,
-    /// reconstruction, rotation. Mirrors `Manager.Security` holding a
-    /// `layerStore: Manager.LayerStore` — see `VaultManager.Backup`'s own doc
-    /// comment (`Vault+Manager+Backup.swift`).
+    /// reconstruction, rotation. See `VaultManager.Backup`'s own doc comment
+    /// (`Vault+Manager+Backup.swift`).
     ///
     /// Holds no reference back to `self` — `Backup` takes only `keyManager` and
     /// `backend` as plain injected values, so this is an ordinary `let` assigned
