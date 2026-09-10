@@ -1493,3 +1493,227 @@ struct StrandedCeilingRotationTests {
                 "a ceiling that decodes must survive verbatim, not be flattened by the fallback")
     }
 }
+
+// MARK: - Design B item 1 — activation skip + deactivation rebuild (data-loss prevention)
+
+/// Design B item 1 (`plan.md` "What Design B requires") — activation deliberately skips
+/// re-encrypting a sensitive contact's key records, leaving them under the key Step 11
+/// deletes moments later. Item 3 is its required pair: `ContactManager.restoreContact`
+/// rebuilds them from this same activation's blob snapshot. Implementing item 1 alone
+/// guarantees silent, permanent loss of every sensitive contact's messaging key the very
+/// first time Secure Mode activates — these four tests are the safety net for that pairing.
+@MainActor
+@Suite("Design B item 1 — sensitive contact key records", .serialized)
+struct SensitiveContactKeyRecordTests {
+
+    // MARK: Activation's skip (item 1 itself)
+
+    @Test("Activation leaves a sensitive contact's key material byte-for-byte untouched",
+          .enabled(if: secureEnclaveAvailable()))
+    func sensitiveContactKeyMaterial_unchangedByActivation() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "sensitive-\(UUID().uuidString)"
+        // depth 0 encrypted → decrypt succeeds → value 0 == activation depth 0 → sensitive
+        let sensitiveDepthValue = try JSONEncoder().encode(0).encrypt()!
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: sensitiveDepthValue)
+
+        // Key material sealed under an arbitrary key — not real SE, deliberately. Item 1's
+        // skip never attempts to decrypt a sensitive contact's key record at all, so what
+        // key it happens to be under is irrelevant here; only whether the bytes move.
+        let originalMaterial = try AES.GCM.seal(
+            Data("original-key-material".utf8), using: SymmetricKey(size: .bits256),
+            authenticating: EncryptionScheme.v2_hybridPQ.aad
+        ).combined!
+        try attachKeyRecord(to: id, in: c.container, material: originalMaterial)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(after?.contactPublicKeys?.first?.material == originalMaterial, """
+            Activation changed a sensitive contact's key material bytes. Item 1 requires \
+            leaving it completely untouched — any re-encryption here defeats the whole \
+            point, since the key Step 11 deletes moments later would then be the only \
+            key that can open it.
+            """)
+    }
+
+    @Test("Activation still re-encrypts a safe contact's key material normally",
+          .enabled(if: secureEnclaveAvailable()))
+    func safeContactKeyMaterial_reencryptedByActivation() async throws {
+        let c = try makeComponents()
+        try c.security.configurePIN("111111")
+
+        let id = "safe-\(UUID().uuidString)"
+        // nil → classified safe (default visible, Int.max) — never enters blobContacts.
+        try insertContact(identifier: id, in: c.container, visibleThroughDepth: nil)
+
+        let originalMaterial = try Data("original-key-material".utf8).encrypt()!
+        try attachKeyRecord(to: id, in: c.container, material: originalMaterial)
+
+        try await c.security.activateSecureMode(
+            confirmingEntryPIN: "111111", duressPIN: "999999",
+            contactManager: c.contacts, vaultManager: c.vault
+        )
+
+        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(after?.contactPublicKeys?.first?.material != originalMaterial, """
+            A safe contact's key material was left unchanged by activation. Item 1 only \
+            excludes sensitive contacts — a safe contact must still be re-encrypted under \
+            the staged key like every other field, or it becomes unreadable for no reason \
+            once the old key is deleted.
+            """)
+    }
+
+    // MARK: Deactivation's rebuild (item 3) — exercised directly against restoreContact.
+    //
+    // Manager.Security's injected TestKeyManager and the hardcoded real-SE
+    // Data.decrypt() this rebuild's trigger (hasUnreadableKeys) keys off are entirely
+    // independent of each other (see this file's header comment) — there is no way to
+    // make a TestKeyManager-driven activation genuinely invalidate real-SE ciphertext,
+    // so the rebuild's trigger condition can never fire through a full activate/
+    // deactivate cycle in this harness. Calling the production restoreContact directly,
+    // with synthetic keys throughout, tests the same code deterministically instead.
+
+    @Test("restoreContact rebuilds an unreadable key record from the blob, recovering the original material exactly")
+    func restoreContact_rebuildsUnreadableKeyFromBlob() throws {
+        let c = try makeComponents()
+        let id        = "shelled-\(UUID().uuidString)"
+        let stagedKey = SymmetricKey(size: .bits256)
+        let aad       = EncryptionScheme.v2_hybridPQ.aad
+
+        // The DB row as item 1 leaves it: present, but its key material is sealed under
+        // a key nothing here can open — standing in for the deleted old canonical key.
+        // Inserted via ContactManager's own modelContext — restoreContact reads and
+        // writes through this same context, and per its own doc comment does not save;
+        // the caller must, which this test does explicitly below.
+        let unreadableMaterial = try AES.GCM.seal(
+            Data("unreadable".utf8), using: SymmetricKey(size: .bits256), authenticating: aad
+        ).combined!
+        let profile = Contact.Profile(
+            identifier: id, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        profile.contactPublicKeys = [
+            Contact.Profile.Key(material: unreadableMaterial, owner: Data("owner".utf8), date: Data("date".utf8))
+        ]
+        c.contacts.modelContext.insert(profile)
+        try c.contacts.modelContext.save()
+
+        // The blob's own plaintext snapshot, captured at activation time — the only
+        // surviving copy of the real material.
+        let originalMaterial = Data("the-real-key-material".utf8)
+        var draft = Contact.Draft(identifier: id)
+        draft.contactPublicKeys = [
+            Contact.Draft.Key(material: originalMaterial, owner: Data("owner-hash".utf8), date: "2026-01-01")!
+        ]
+        let record = LayerContact(draft: draft, signedAttributes: nil, visibleThroughDepth: 0, globalTrusteeDepth: -1)
+
+        try c.contacts.restoreContact(record, using: StubCrypto(key: stagedKey), stagedKey: stagedKey, aad: aad)
+        try c.contacts.modelContext.save()
+
+        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        let rebuiltMaterial = try #require(after?.contactPublicKeys?.first?.material)
+        let box    = try AES.GCM.SealedBox(combined: rebuiltMaterial)
+        let opened = try AES.GCM.open(box, using: stagedKey, authenticating: aad)
+        #expect(opened == originalMaterial, """
+            The rebuilt key material does not match what was captured in the blob at \
+            activation time — the recovery path is supposed to be lossless.
+            """)
+    }
+
+    @Test("Known gap (Bug 108): a key rotation received mid-session is discarded by the rebuild, not preserved")
+    func restoreContact_discardsMidSessionKeyRotation() throws {
+        let c = try makeComponents()
+        let id        = "shelled-\(UUID().uuidString)"
+        let stagedKey = SymmetricKey(size: .bits256)
+        let aad       = EncryptionScheme.v2_hybridPQ.aad
+
+        let unreadableOriginal = try AES.GCM.seal(
+            Data("unreadable-original".utf8), using: SymmetricKey(size: .bits256), authenticating: aad
+        ).combined!
+        // A key rotation "received" while the session was unlocked — appended after
+        // activation, so it is NOT in the blob's snapshot. Also sealed unreadably, to
+        // isolate this test from whichever key would otherwise make it independently
+        // "readable" — what's being proven is that it disappears from the array
+        // entirely, not that it merely gets re-encrypted.
+        let unreadableRotated = try AES.GCM.seal(
+            Data("unreadable-rotated".utf8), using: SymmetricKey(size: .bits256), authenticating: aad
+        ).combined!
+
+        // Inserted via ContactManager's own modelContext — see the previous test's
+        // comment; restoreContact reads and writes through this same context.
+        let profile = Contact.Profile(
+            identifier: id, givenName: "", familyName: "", middleName: "",
+            nickname: "", organizationName: "", departmentName: "", jobTitle: ""
+        )
+        profile.contactPublicKeys = [
+            Contact.Profile.Key(material: unreadableOriginal, owner: Data("old".utf8), date: Data("old".utf8)),
+            Contact.Profile.Key(material: unreadableRotated,  owner: Data("new".utf8), date: Data("new".utf8)),
+        ]
+        c.contacts.modelContext.insert(profile)
+        try c.contacts.modelContext.save()
+
+        // The blob only ever knew about the original key — captured before the rotation.
+        var draft = Contact.Draft(identifier: id)
+        draft.contactPublicKeys = [
+            Contact.Draft.Key(material: Data("the-real-key-material".utf8), owner: Data("owner-hash".utf8), date: "2026-01-01")!
+        ]
+        let record = LayerContact(draft: draft, signedAttributes: nil, visibleThroughDepth: 0, globalTrusteeDepth: -1)
+
+        try c.contacts.restoreContact(record, using: StubCrypto(key: stagedKey), stagedKey: stagedKey, aad: aad)
+        try c.contacts.modelContext.save()
+
+        let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
+        #expect(after?.contactPublicKeys?.count == 1, """
+            Expected exactly the one key record rebuilt from the blob. A count of 2 would \
+            mean the mid-session rotation survived — which is not what happens today; any \
+            other count means this test's assumptions about the rebuild no longer hold.
+            """)
+    }
+}
+
+/// Seals/opens under a fixed key — used only by `restoreContact`'s direct-call tests
+/// above, which supply every key themselves rather than deriving one from a key manager.
+/// Mirrors `StagedCryptoManager`'s role (private to `Manager+Security.swift`) without
+/// depending on it.
+private struct StubCrypto: CryptoProtocol {
+    let key: SymmetricKey
+    static let aad = EncryptionScheme.v2_hybridPQ.aad
+
+    func encrypt(data: Data?) throws -> Data? {
+        guard let data else { return nil }
+        return try AES.GCM.seal(data, using: self.key, authenticating: Self.aad).combined
+    }
+
+    func decrypt(data: Data?) throws -> Data? {
+        guard let data else { return nil }
+        return try AES.GCM.open(try AES.GCM.SealedBox(combined: data), using: self.key, authenticating: Self.aad)
+    }
+
+    func decryptLegacy(data: Data?) throws -> Data? { try self.decrypt(data: data) }
+    func encrypt(message: Data, using material: Data?) throws -> Data? { nil }
+    func decrypt(message: Data, using material: Data?) throws -> Data? { nil }
+    func sign(data: Data?) throws -> String { "" }
+}
+
+/// Attaches a single key record to an already-inserted contact, matching
+/// `insertContact`'s "direct SwiftData insertion" style so these tests stay independent
+/// of `ContactManager`'s own key-update path.
+@MainActor
+private func attachKeyRecord(to identifier: String, in container: ModelContainer, material: Data) throws {
+    let ctx = ModelContext(container)
+    guard let profile = try ctx.fetch(FetchDescriptor<Contact.Profile>(
+        predicate: #Predicate { $0.identifier == identifier }
+    )).first else {
+        throw TestError("no contact with identifier \(identifier) to attach a key to")
+    }
+    profile.contactPublicKeys = [
+        Contact.Profile.Key(material: material, owner: Data("owner".utf8), date: Data("date".utf8))
+    ]
+    try ctx.save()
+}

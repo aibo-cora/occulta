@@ -255,8 +255,18 @@ extension ContactManager {
     /// Restores a blob contact record into the DB during `deactivateSecureMode` Step 5.
     ///
     /// Saves the contact's text fields via `crypto` (staged-key protocol), then writes
-    /// `visibleThroughDepth` and `signedAttributes` directly under the staged key.
+    /// `visibleThroughDepth` and `signedAttributes` directly under the staged key. Also
+    /// rebuilds `contactPublicKeys` from this same blob record when the existing ones are
+    /// unreadable (Design B item 1 — activation deliberately leaves a sensitive contact's
+    /// key records under a key it then deletes; `record.draft.contactPublicKeys`, captured
+    /// by `convertToMutableCopy` before that deletion, is the only surviving plaintext).
     /// The caller is responsible for calling `modelContext.save()` after processing all records.
+    ///
+    /// **Known gap, accepted (`bugs.md` Bug 108):** this rebuilds from the *activation-time*
+    /// snapshot only. A key rotation received for a sensitive contact while the session was
+    /// unlocked is not in that snapshot — nothing currently re-seals the blob mid-session —
+    /// so replacing `contactPublicKeys` wholesale here discards it. Not fixed by this change;
+    /// pinned by a test so it stays visible rather than silently reappearing as a surprise.
     func restoreContact(_ record: LayerContact,
                         using crypto: any CryptoProtocol,
                         stagedKey: SymmetricKey,
@@ -267,6 +277,12 @@ extension ContactManager {
             predicate: #Predicate { $0.identifier == record.draft.identifier }
         )
         guard let restored = try self.modelContext.fetch(descriptor).first else { return }
+
+        if self.hasUnreadableKeys(restored) {
+            restored.contactPublicKeys = try record.draft.contactPublicKeys.map {
+                try Self.rebuildKeyRecord(from: $0, stagedKey: stagedKey, aad: aad)
+            }
+        }
 
         // Restore the depth stored at activation time, encrypted under the staged key so it is
         // readable after commitStagedLocalDBKey(). Falls back to 0 (sensitive) for blobs written
@@ -296,5 +312,54 @@ extension ContactManager {
                 attrs, using: stagedKey, authenticating: aad
             ).combined
         }
+    }
+
+    /// Whether any of `profile`'s key records fail to decrypt under the currently active
+    /// canonical key. True only for a sensitive contact whose keys were deliberately left
+    /// under a since-deleted key (Design B item 1, activation Step 8) — nothing else in
+    /// this codebase produces a currently-live, corrupted record, so this is not a general
+    /// corruption check.
+    private func hasUnreadableKeys(_ profile: Contact.Profile) -> Bool {
+        guard let keys = profile.contactPublicKeys, !keys.isEmpty else { return false }
+        return keys.contains { key in
+            guard let material = key.material, !material.isEmpty else { return false }
+            return material.decrypt() == nil
+        }
+    }
+
+    /// Re-seals one blob-captured key record under `stagedKey`. Mirrors `update(key:for:)`'s
+    /// field mapping exactly, but takes an explicit key rather than the ambient
+    /// `cryptoManager` — `stagedKey` is not yet the canonical key at the point this runs.
+    private static func rebuildKeyRecord(
+        from draftKey: Contact.Draft.Key, stagedKey: SymmetricKey, aad: Data
+    ) throws -> Contact.Profile.Key {
+        let encryptedMaterial: Data? = try draftKey.material.flatMap {
+            try AES.GCM.seal($0, using: stagedKey, authenticating: aad).combined
+        }
+        guard
+            let encryptedOwner = try AES.GCM.seal(draftKey.owner, using: stagedKey, authenticating: aad).combined,
+            let encryptedDate  = try AES.GCM.seal(
+                Data(draftKey.acquiredAt.utf8), using: stagedKey, authenticating: aad
+            ).combined
+        else {
+            throw ContactManager.Errors.identityNotSaved
+        }
+
+        var encryptedQuantum: Data? = nil
+        if let quantum = draftKey.quantumKeyMaterial {
+            let encoded = try JSONEncoder().encode(quantum)
+            encryptedQuantum = try AES.GCM.seal(encoded, using: stagedKey, authenticating: aad).combined
+        }
+
+        let rebuilt = Contact.Profile.Key(
+            material: encryptedMaterial, owner: encryptedOwner, date: encryptedDate,
+            quantumKeyMaterialEncrypted: encryptedQuantum
+        )
+        if let expiredOn = draftKey.expiredOn {
+            rebuilt.expiredOn = try AES.GCM.seal(
+                Data(expiredOn.utf8), using: stagedKey, authenticating: aad
+            ).combined
+        }
+        return rebuilt
     }
 }

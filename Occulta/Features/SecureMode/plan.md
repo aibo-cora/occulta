@@ -396,11 +396,29 @@ See **[LayerStore.md](LayerStore.md)** for wire format, slot design, cryptograph
 
 **What Design B requires before it can be implemented:**
 
-1. **Skip sensitive contacts in activation Step 8's re-encryption loop.** Under Design A, all contacts (including sensitive) are re-encrypted to K_staged. Under Design B, sensitive contacts must be left with their key records under the old canonical key so they become genuinely unreadable after the key is deleted. Only text fields for sensitive contacts may be re-encrypted (so the shell is syntactically valid but cryptographically inaccessible).
+**Items 1 and 3 built and shipped, 2026-09-10 — key records only, not the rest of Design B.**
+Activation now genuinely leaves a sensitive contact's key records unreadable once the old
+canonical key is deleted, and deactivation genuinely recovers them from the blob — a real,
+live behavior change, not a dormant addition. This is *not* "Design B is now active": text
+fields are still fully re-encrypted and DB-readable exactly as under Design A (Step 8's
+`reencryptAllFields` call is untouched), there is still no `inMemorySensitiveContacts`
+array, no merged contact-list view, and no mid-session resync — a raw SQLite read on an
+unlocked device still sees every sensitive contact's name/phone/etc. regardless of depth,
+same residual gap `forensic-trace-avoidance.md` S5 already documents. What changed is
+narrower and self-contained: a sensitive contact's *messaging key material* specifically
+now has the cryptographic guarantee Design B was proposed for, closing the concrete data-loss
+risk that motivated Bug 108 in the first place (item 1 without item 3 would have made this
+harm live on the very first activation). Verified by `SensitiveContactKeyRecordTests`
+(`OccultaTests/SecureMode/SecureModeActivationTests.swift`) — the activation skip, the
+deactivation rebuild's content-correctness, and Bug 108's own residual gap (a key rotation
+received mid-session is still discarded by the rebuild — pinned as a known-gap regression
+test, not fixed here) all have explicit coverage.
+
+1. [x] **Skip sensitive contacts in activation Step 8's re-encryption loop.** Under Design A, all contacts (including sensitive) are re-encrypted to K_staged. Sensitive contacts' key records are now left under the old canonical key so they become genuinely unreadable after the key is deleted (`Manager+Security.swift`, Step 8 — `sensitiveIdentifiers`, derived from `blobContacts`). Text fields for sensitive contacts are still re-encrypted normally (so the shell stays syntactically valid) — only `reencryptKeyRecords` is skipped.
 
 2. [x] **Fix `convertToMutableCopy` to carry `quantumKeyMaterialEncrypted` through to the draft.** `Contact+Manager.swift` now decrypts and JSON-decodes `record.quantumKeyMaterialEncrypted` and passes it as `quantumKeyMaterial` when constructing `Contact.Draft.Key`. This makes the blob complete under both designs — Design A ignores it (key records are never rebuilt from the blob); Design B depends on it.
 
-3. **Restore the `hasUnreadableKeys` rebuild path in deactivation Step 5b.** Under Design B, sensitive contacts' key records are left under the deleted activation key; `reEncryptKeyRecords` cannot decrypt them; the rebuild path is the correct recovery. The rebuild code that was removed from `deactivateSecureMode` belongs here. It must now also re-encrypt the `quantumKeyMaterialEncrypted` field from the blob draft's `key.quantumKeyMaterial` (point 2 above must be fixed first, or the rebuilt records will have nil quantum material).
+3. [x] **Restore the `hasUnreadableKeys` rebuild path in deactivation Step 5b.** `ContactManager.restoreContact` (`ContactManager+Classification.swift`) now checks `hasUnreadableKeys` and, when true, rebuilds `contactPublicKeys` from the blob record's own `draft.contactPublicKeys` — the only surviving plaintext, captured before Step 11 deletes the old key — sealing each field (including `quantumKeyMaterialEncrypted`, via point 2) under the deactivation's own staged key via a new `rebuildKeyRecord` helper.
 
 4. **No mechanism exists to persist an edit made mid-session, once the DB row is a dead shell — found 2026-09-09, checking whether it was already known.** Every `layerStore.push()` call site in the codebase was checked directly, not assumed: there are exactly two — activation's Step 6 (`Manager+Security.swift:643`, a one-time snapshot) and `pushDummyBlobSlot` (`Manager+Security.swift:1709-1720`, an empty decoy write on PIN collision, unrelated to real content). `rewrite()` (called at deactivation and force-recovery) doesn't refresh the real payload either — `writeNoOpFile()` overwrites all 32 slots with random junk, a wipe, not a content-preserving reseal. So under Design A this is harmless: the DB row stays the live, authoritative, editable copy for the whole session, and the blob is just a periodic snapshot taken once per activation. Under Design B it isn't harmless, because the DB row stops being able to hold anything readable the moment activation shells it — there is no other described path back to persistent storage. The four steps above cover activation (shell + snapshot), unlock (load blob into `inMemorySensitiveContacts`), and lock (wipe that array) — none of them says what writes an edit made *during* the unlocked session back to the blob before that wipe happens, or before a background kill skips the graceful-lock path entirely. As written, a sensitive contact edited mid-session and never re-sealed is lost the moment the process dies or backgrounds, not just hidden. **Needs a fifth step — reseal the blob (or the touched slot) whenever `inMemorySensitiveContacts` changes, not only at activation — designed and reasoned through before Design B is built, not discovered after.** `VAULT_KEY_LAYERING.md`'s S8 build stage inherits the identical gap if it copies these same four steps for vault entries; see its own item 12. Filed as `bugs.md` Bug 108.
 

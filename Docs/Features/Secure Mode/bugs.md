@@ -8342,13 +8342,28 @@ content survives rather than being silently replaced.
 ## Bug 108 — Design B has no mechanism to persist a mid-session edit, once the DB row it would edit is
 a dead shell
 
-**Status:** **Not a live bug — Design A ships today and is unaffected; Design B is deferred, not
-built.** Filed 2026-09-09 as a design gap, found before Design B is built rather than after, while
-checking whether `VAULT_KEY_LAYERING.md`'s S8 could safely reuse Design B's four named steps as-is for
-vault entries. It couldn't, because the four steps have this hole regardless of which content they're
-applied to. **The missing fifth step's mechanism is built, same day — see *Not yet done* below — but
-not wired to anything, since the steps that would populate `inMemorySensitiveContacts` (1, 3, 4) don't
-exist yet. Its co-requisite (a validated non-destructive read for step 2) is built and tested too.**
+**Status:** **Not a live bug — Design A ships today for contact *content* (text fields), and is
+unaffected; the four-named-steps Design B this bug is about (full text-field shelling,
+`inMemorySensitiveContacts`, merged view) is still deferred, not built.** Filed 2026-09-09 as a design
+gap, found before Design B is built rather than after, while checking whether `VAULT_KEY_LAYERING.md`'s
+S8 could safely reuse Design B's four named steps as-is for vault entries. It couldn't, because the four
+steps have this hole regardless of which content they're applied to. **The missing fifth step's
+mechanism is built, same day — see *Not yet done* below — but not wired to anything, since the steps
+that would populate `inMemorySensitiveContacts` (1, 3, 4) don't exist yet. Its co-requisite (a validated
+non-destructive read for step 2) is built and tested too.**
+
+**2026-09-10 — a narrower, related pair shipped: `plan.md`'s "What Design B requires" items 1 and 3
+(key records only, not the four-named-steps content-shelling this bug is about).** Activation now
+skips re-encrypting a sensitive contact's key records (left under the old key, genuinely unreadable
+once deleted); deactivation's `restoreContact` rebuilds them from the blob. This closes the worse,
+immediate-term risk this bug's own discovery flagged — item 1 without a rebuild would have caused
+silent, permanent key-material loss on literally the first activation, before this bug's own
+mid-session-edit gap ever mattered. That gap itself is **not fixed** by this change — a key rotation
+received for a sensitive contact while the session is unlocked is still discarded, because the rebuild
+only knows about the activation-time blob snapshot — now pinned as an explicit regression test
+(`restoreContact_discardsMidSessionKeyRotation`, `SensitiveContactKeyRecordTests`,
+`SecureModeActivationTests.swift`) so it stays visible rather than being fixed silently or
+reappearing as a surprise later. Text-field shelling and the rest of Design B remain untouched.
 
 **Target:** unset. Blocks Design B (`forensic-trace-avoidance.md` S5) and, downstream, S8
 (`VAULT_KEY_LAYERING.md` item 12) — neither should be built against the four steps as currently

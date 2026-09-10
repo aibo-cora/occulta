@@ -642,18 +642,31 @@ extension Manager {
                 )
                 try self.layerStore.push(payload, key: layerKey, slotIndex: slotIndex)
 
-                // ── Step 8: Re-encrypt ALL contacts + vault depth fields ──────────────
+                // ── Step 8: Re-encrypt ALL contacts' text fields + vault depth fields ──
                 //
-                // Both safe and sensitive contacts must be re-encrypted under the staged
-                // key. Sensitive contacts remain in the DB (not hard-deleted); after the
-                // old canonical key is deleted in Step 11, any contact still encrypted
-                // under it becomes permanently unreadable. Depth-based visibility
-                // (visibleThroughDepth) controls what appears in the UI — not the key.
+                // Every contact's text fields are re-encrypted under the staged key.
+                // Sensitive contacts remain in the DB (not hard-deleted); depth-based
+                // visibility (visibleThroughDepth) is what controls the UI, not the key —
+                // their shell must stay a syntactically valid, readable row.
+                //
+                // Key records are the one deliberate exception (Design B item 1,
+                // `plan.md` "What Design B requires"): a sensitive contact's
+                // `contactPublicKeys` are left under the OLD canonical key, which Step 11
+                // deletes below — making them genuinely, cryptographically unreadable for
+                // as long as this layer exists, not merely UI-hidden. `blobContacts`
+                // (Step 4) is exactly the set this applies to; identifiers, not profile
+                // references, since that's all Step 4 retained.
+                // `deactivateSecureMode`'s restore path rebuilds them from this same
+                // activation's blob snapshot — captured in Step 6, above, before the key
+                // is deleted — see `ContactManager.restoreContact`.
                 let aad = EncryptionScheme.v2_hybridPQ.aad
+                let sensitiveIdentifiers = Set(blobContacts.map { $0.draft.identifier })
 
                 for profile in allProfiles {
                     try profile.reencryptAllFields(to: stagedKey, aad: aad)
-                    try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
+                    if !sensitiveIdentifiers.contains(profile.identifier) {
+                        try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
+                    }
                 }
                 // Flush re-encrypted contacts to the WAL BEFORE committing the staged key.
                 // reencryptAllFields only mutates the in-memory SwiftData objects; without
