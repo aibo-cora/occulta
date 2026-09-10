@@ -265,5 +265,39 @@ extension Message {
             }
             try modelContext.save()
         }
+
+        /// Non-rotation purge: deletes any draft whose recipient isn't in the safe set,
+        /// without touching survivors' encryption at all. Replaces `reKeyOrPurgeAll` for
+        /// `purgeDraftsNotSafeAtCurrentDepth`'s use (`Manager+Security.swift`) once Secure
+        /// Mode no longer rotates the local DB key on any PIN transition (`plan.md`,
+        /// Removal Stage 0) — nothing needs re-sealing under a new key, because there is
+        /// no new key; a surviving draft is left completely untouched.
+        ///
+        /// Same survive/purge semantics as `reKeyOrPurgeAll`: a draft survives if its
+        /// recipient is a known group or a contact visible at the current depth; anything
+        /// undecryptable under `key`, or whose recipient doesn't match, is purged.
+        static func purgeUnsafe(
+            safeContactIdentifiers: Set<String>,
+            allGroupIdentifiers:    Set<String>,
+            using key: SymmetricKey,
+            in modelContext: ModelContext
+        ) throws {
+            for draft in try modelContext.fetch(FetchDescriptor<Message.Draft>()) {
+                guard
+                    let recipientBox   = try? AES.GCM.SealedBox(combined: draft.encryptedRecipientID),
+                    let recipientPlain = try? AES.GCM.open(recipientBox, using: key, authenticating: draft.aad(for: .recipientID)),
+                    let recipientID    = String(data: recipientPlain, encoding: .utf8)
+                else {
+                    delete(draft, in: modelContext)
+                    continue
+                }
+
+                let survives = allGroupIdentifiers.contains(recipientID) || safeContactIdentifiers.contains(recipientID)
+                if !survives {
+                    delete(draft, in: modelContext)
+                }
+            }
+            try modelContext.save()
+        }
     }
 }

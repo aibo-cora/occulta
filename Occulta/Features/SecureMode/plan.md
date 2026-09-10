@@ -723,3 +723,40 @@ r/w helpers, `configurePIN`/`deactivatePIN` (the PIN-only, non-Secure-Mode-activ
 `Contact.Profile.isVisible(atDepth:)`/`VaultEntry.isVisible`, and everything in
 `ContactManager+Classification.swift` except `restoreContact`'s key-rebuild block (which Stage 2 deletes
 along with the rest of the blob machinery).
+
+## Removal — Stage 1: done, 2026-09-10
+
+`activateSecureMode`/`deactivateSecureMode` rewritten to exactly the Stage 0 shape — both now
+`func ... throws` (no `async`, no `contactManager`/`vaultManager` params). `purgeDraftsNotSafeAtCurrentDepth`
+now calls a new `Message.Draft.purgeUnsafe(safeContactIdentifiers:allGroupIdentifiers:using:in:)`
+(`Message+Draft.swift`) — the purge-only half of `reKeyOrPurgeAll`, added rather than modifying
+`reKeyOrPurgeAll` itself, which Stage 3 still deletes whole. `checkpointStore()` kept, per Stage 0's
+own note.
+
+**Confirmed safe to drop activation's own draft purge** (this was the one open question Stage 0 didn't
+settle): checked directly that `Message.Draft` carries no `visibleThroughDepth`/`isVisible` field at
+all — purging is its *only* mechanism for staying out of view, no UI-level filter backs it up. But its
+one display surface (`ContactsListV2`'s "Draft" badge) is keyed off `contactIdentifiersWithDrafts`
+matched only against contacts that already passed depth filtering, so an unpurged draft attached to a
+hidden contact was never independently discoverable there regardless. Combined with
+`purgeDraftsNotSafeAtCurrentDepth` still running on every duress-depth entry — including the first one
+right after a fresh activation, before any UI renders — dropping activation's separate purge is safe.
+Documented in the function's own doc comment, not just here.
+
+**Deviation from the six-stage sketch, forced rather than chosen:** `DraftKeyRotationTests.swift`
+called `deactivateSecureMode` with the old rotation-driving signature directly — its entire premise
+(does key rotation preserve drafts) no longer has anything to test once deactivation doesn't rotate
+any key, so it couldn't be patched to compile, only deleted. Deleted now rather than deferred to
+Stage 3, since the test target has to compile as a whole. The other "fully dead" test files identified
+in the scope map (`RotationRegistryTests`, `StagedKeyTests`, etc.) don't call activate/deactivate
+directly, so they still compile for now and stay until Stage 3 as originally planned.
+
+**Exit state, verified, not assumed:** app target and test target both build with zero errors.
+`PINManagerTests.swift` (part of the "untouched" bucket) additionally cleaned of every stray
+`await`/unused-binding warning the signature change produced, since it won't be revisited later.
+`SecureModeActivationTests.swift`'s equivalent warnings were left as-is — that file gets substantially
+rewritten in Stage 4 regardless, so cleaning warnings there now would mean touching most lines twice.
+Full suite: 28 failures, all confined to `SecureModeActivationTests.swift` (blob lifecycle, WAL
+persistence, cascade-depth-preservation, and `SensitiveContactKeyRecordTests` — all asserting on
+behavior that no longer exists, exactly as scoped), 6 skips (unchanged `KeychainMigrationSETests`
+baseline), every other suite green.

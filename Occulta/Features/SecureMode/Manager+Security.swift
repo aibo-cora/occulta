@@ -439,18 +439,23 @@ extension Manager {
         ///   - duressPIN: The new duress PIN; must differ from the normal PIN.
         ///   - contactManager: Used to read, re-encrypt, and hard-delete contacts.
         ///   - vaultManager: Used to read vault PEKs for the blob (vault must be unlocked).
-        func activateSecureMode(
-            confirmingEntryPIN: String,
-            duressPIN:          String,
-            contactManager:     ContactManager,
-            vaultManager:       VaultManager
-        ) async throws {
-            // Prevent accidental mid-sequence autosaves on this context.
-            // Explicit saves still work; only the RunLoop-triggered autosave is suppressed.
+        /// Creates a new duress layer: verifies the caller is legitimately at the current
+        /// depth, rejects a colliding duress PIN, and writes the new depth's verifiers.
+        ///
+        /// **Removal Stage 1, 2026-09-10 (`plan.md`, "Removal — Stage 0: design decision").**
+        /// No longer touches `Contact.Profile`, `VaultEntry`, `Message.Draft`, `Group`, or
+        /// `AppLayerConfig`'s local-DB-key fields at all — there is no blob to seal sensitive
+        /// contacts into and no staged key to re-encrypt anything under, because nothing is
+        /// classified or re-keyed at activation any more. A contact's `visibleThroughDepth`
+        /// is a standing property set independently via `ContactManager.setVisibility`,
+        /// unrelated to the PIN lifecycle. This function's only job now is PIN state.
+        /// No longer `async` — nothing left needs it.
+        func activateSecureMode(confirmingEntryPIN: String, duressPIN: String) throws {
+            // Prevent accidental mid-sequence autosaves on this context between the
+            // several config mutations below and the explicit save at the end.
             self.modelContext.autosaveEnabled = false
             defer { self.modelContext.autosaveEnabled = true }
 
-            // ── Step 1: State guard + PIN verification ──────────────────────────────
             // Activation is valid from: .pinOnly (depth 0, creating first duress layer)
             //                           .duress  (depth N, adding a deeper layer)
             // It is NOT valid from .normal when Secure Mode is already active — the
@@ -471,24 +476,6 @@ extension Manager {
                 throw SecurityError.keyDerivationFailed
             }
 
-            // Derived here, before anything is staged, written or mutated (Bug 78).
-            //
-            // This guard first lived down at Step 8's draft/group/config pass, which was too
-            // late to be worth much: by then `reencryptAllFields` had already run over every
-            // contact and `modelContext.save()` had committed the result. Its `reencrypt(data:)`
-            // helper returns nil for anything it cannot decrypt — deliberately, so callers
-            // reinitialise — so a key outage nils `visibleThroughDepth`, `globalTrusteeDepth`,
-            // `originDepth`, `signedAttributes`, `forwardSecrecyEncrypted` and both image fields
-            // on every contact, writes that to disk, and only then hits the guard. Rolling back
-            // the staged key does not bring those back. Losing `visibleThroughDepth` alone drops
-            // the Secure Mode visibility ceiling for the whole address book.
-            //
-            // Deriving up front makes the failure inert: nothing is staged, so there is nothing
-            // to roll back, and no row has been touched.
-            guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
-
             // Confirm entry PIN against the normal verifier at the current depth.
             guard depth < config.sealedNormalVerifiers.count,
                   PINManager.checkVerifier(pin: confirmingEntryPIN, label: Self.normalLabel,
@@ -496,8 +483,8 @@ extension Manager {
             else { throw SecurityError.incorrectPIN }
 
             // Duress PIN must not match ANY existing verifier (normal or duress at any depth).
-            // On collision, write a dummy blob slot before throwing so the disk footprint
-            // (blob file modification, WAL activity) is indistinguishable from a real activation.
+            // The old dummy-blob-slot write on collision is gone along with the blob itself —
+            // there is no disk footprint left to make indistinguishable from a real activation.
             let collidesWithNormal = config.sealedNormalVerifiers.contains {
                 PINManager.checkVerifier(pin: duressPIN, label: Self.normalLabel, verifier: $0, seKey: seKey)
             }
@@ -505,310 +492,21 @@ extension Manager {
                 PINManager.checkVerifier(pin: duressPIN, label: Self.duressLabel, verifier: $0, seKey: seKey)
             }
             if collidesWithNormal || collidesWithDuress {
-                self.pushDummyBlobSlot(config: config, seKey: seKey, depth: depth)
                 throw SecurityError.pinCollision
             }
 
-            // Build verifiers now so they are in scope for the post-catch config write.
             let duressVerifier = try PINManager.buildVerifier(pin: duressPIN, label: Self.duressLabel, seKey: seKey)
-            let routingAlias   = try PINManager.buildVerifier(pin: duressPIN, label: Self.normalLabel, seKey: seKey)
-
-            // Depth-0 scalar written in-memory now; cleared by catch on failure.
-            // All array writes happen in the post-catch section (new canonical key).
-            if depth == 0 {
-                config.sealedDuressVerifier = duressVerifier
-                // Do NOT save yet — deferred until key rotation succeeds.
-                // If anything below throws, catch clears this in-memory mutation.
-            }
-
-            // Slot index and sequence number chosen before the do/catch block so they
-            // are in scope for the post-catch config write.
-            //   depth 1 activation → exclude slot 0 only (slot 1 doesn't exist yet)
-            //   depth 2+ activation → exclude slots 0 and 1
-            let blobKey        = AppLayerConfig.blobMetadataKey(from: seKey)
-            let excludedSlots  = Self.protectedBlobSlots(config: config, depth: depth, blobKey: blobKey)
-            let slotIndex      = self.layerStore.randomSlot(excluding: excludedSlots)
-            let sequenceNumber = Self.randomSequenceNumber()
-
-            // ── Step 2: Create staged local DB key ──────────────────────────────────
-            // On any failure past this point we rollback staged artefacts.
-            // stagedKey is declared here so it's in scope for the catch's rollback call.
-            do {
-                let stagedKey = try self.keyManager.createStagedLocalDBKey()
-                // ── Step 3: Derive blob key ──────────────────────────────────────────
-                guard let layerKey = self.layerStore.deriveKey(from: seKey) else {
-                    throw SecurityError.keyDerivationFailed
-                }
-
-                // ── Step 4: Classify contacts ────────────────────────────────────────
-                // sensitive → blob; safe → re-encrypt in DB.
-                let allProfiles = try contactManager.fetchAllContacts()
-
-                var blobContacts:  [LayerContact] = []
-                var safeProfiles:  [Contact.Profile]   = []
-
-                for profile in allProfiles {
-                    // Decode this contact's duress-origin floor first — a duress-origin
-                    // contact (originDepth > 0) is exempt from the ceiling classification
-                    // below entirely. It must never be sealed into the blob when a deeper
-                    // layer activates: floor semantics (Contact+Model.swift's isVisible)
-                    // keep it live and processable at every depth from its origin downward,
-                    // the opposite of ceiling-classified real contacts, which get sealed
-                    // away once a layer matches their ceiling exactly. Absent/undecryptable
-                    // → 0 (not duress-origin), same fail-safe default as everywhere else.
-                    let originDepth: Int = {
-                        guard let data = profile.originDepth,
-                              let plain = data.decrypt(),
-                              let value = DepthCodec.decode(plain)
-                        else { return 0 }
-                        return value
-                    }()
-                    if originDepth > 0 {
-                        // Always stays live, re-encrypted under the staged key in Step 8 —
-                        // never blob-sealed, regardless of visibleThroughDepth.
-                        safeProfiles.append(profile)
-                        continue
-                    }
-
-                    // Decode the contact's visibility ceiling.
-                    // nil = legacy pre-activation value; treat as Int.max (safe at all depths).
-                    let contactDepth: Int = {
-                        guard let data = profile.visibleThroughDepth,
-                              let plain = data.decrypt(),
-                              let value = DepthCodec.decode(plain)
-                        else { return Int.max }
-                        return value
-                    }()
-
-                    if contactDepth > depth {
-                        // Safe for this activation: visible at the new deeper layer too.
-                        safeProfiles.append(profile)
-                    } else if contactDepth == depth {
-                        // Sensitive for this layer: visible now, hidden at depth+1 → seal in blob.
-                        let draft = try contactManager.convertToMutableCopy(using: profile.identifier)
-                        let signedAttrs: Data? = {
-                            guard let enc = profile.signedAttributes, !enc.isEmpty else { return nil }
-                            return enc.decrypt()
-                        }()
-                        // Decode this contact's global-trustee depth stamp the same way as
-                        // its visibility ceiling — undecryptable or absent → -1 (not a trustee).
-                        let trusteeDepth: Int = {
-                            guard let data = profile.globalTrusteeDepth,
-                                  let plain = data.decrypt(),
-                                  let value = DepthCodec.decode(plain)
-                            else { return -1 }
-                            return value
-                        }()
-                        // Strip images — they stay in the DB and are re-encrypted in
-                        // Step 8, so the blob doesn't need to carry them. Including a
-                        // contact photo can push the JSON over the 32 KB slot limit.
-                        var blobDraft = draft
-                        blobDraft.imageData          = nil
-                        blobDraft.thumbnailImageData = nil
-                        blobContacts.append(
-                            LayerContact(draft: blobDraft, signedAttributes: signedAttrs,
-                                         visibleThroughDepth: contactDepth,
-                                         globalTrusteeDepth: trusteeDepth)
-                        )
-                    }
-                    // contactDepth < depth: already hidden from a previous layer.
-                    // Not sealed in this blob. Step 8 still re-encrypts under the staged key.
-                }
-
-                // ── Step 5: Migrate nil visibleThroughDepth / globalTrusteeDepth /
-                // originDepth (should be a no-op — creation and the backfill migrations
-                // already keep all three fields non-nil) ───────────────────────────────
-                for profile in safeProfiles where profile.visibleThroughDepth == nil {
-                    profile.visibleThroughDepth = try DepthCodec.encode(Int.max).encrypt()
-                }
-                for profile in safeProfiles where profile.globalTrusteeDepth == nil {
-                    profile.globalTrusteeDepth = try DepthCodec.encode(-1).encrypt()
-                }
-                for profile in safeProfiles where profile.originDepth == nil {
-                    profile.originDepth = try DepthCodec.encode(0).encrypt()
-                }
-
-                // ── Step 6: Push blob ────────────────────────────────────────────────
-                // Vault entries are not included in the blob. Their per-entry keys (PEKs)
-                // are derived from a dedicated SE key entirely independent of the local DB
-                // key rotation — vault entries never need re-keying during activation or
-                // deactivation. Storing raw PEK bytes in the blob would unnecessarily widen
-                // the attack surface: blob compromise (SE Secure Mode key, no biometrics)
-                // would also yield all vault entry symmetric keys, bypassing the biometric gate.
-                let payload = LayerPayload(
-                    sequenceNumber: sequenceNumber,
-                    slotIndex:      slotIndex,
-                    contacts:       blobContacts
-                )
-                try self.layerStore.push(payload, key: layerKey, slotIndex: slotIndex)
-
-                // ── Step 8: Re-encrypt ALL contacts' text fields + vault depth fields ──
-                //
-                // Every contact's text fields are re-encrypted under the staged key.
-                // Sensitive contacts remain in the DB (not hard-deleted); depth-based
-                // visibility (visibleThroughDepth) is what controls the UI, not the key —
-                // their shell must stay a syntactically valid, readable row.
-                //
-                // Key records are the one deliberate exception (Design B item 1,
-                // `plan.md` "What Design B requires"): a sensitive contact's
-                // `contactPublicKeys` are left under the OLD canonical key, which Step 11
-                // deletes below — making them genuinely, cryptographically unreadable for
-                // as long as this layer exists, not merely UI-hidden. `blobContacts`
-                // (Step 4) is exactly the set this applies to; identifiers, not profile
-                // references, since that's all Step 4 retained.
-                // `deactivateSecureMode`'s restore path rebuilds them from this same
-                // activation's blob snapshot — captured in Step 6, above, before the key
-                // is deleted — see `ContactManager.restoreContact`.
-                let aad = EncryptionScheme.v2_hybridPQ.aad
-                let sensitiveIdentifiers = Set(blobContacts.map { $0.draft.identifier })
-
-                for profile in allProfiles {
-                    try profile.reencryptAllFields(to: stagedKey, aad: aad)
-                    if !sensitiveIdentifiers.contains(profile.identifier) {
-                        try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
-                    }
-                }
-                // Flush re-encrypted contacts to the WAL BEFORE committing the staged key.
-                // reencryptAllFields only mutates the in-memory SwiftData objects; without
-                // an explicit save the WAL checkpoint in Step 10 would flush an empty WAL,
-                // leaving the main SQLite file with pre-activation ciphertext. After Step 11
-                // deletes the old canonical key, those rows become permanently unreadable.
-                try contactManager.modelContext.save()
-
-                // Re-encrypt VaultEntry.visibleThroughDepth (encrypted under local DB key).
-                // Every entry must end up with a staged-key ciphertext — no silent skips:
-                //   • nil depth (Bug 26): pre-existing entry never stamped → hide at all duress depths.
-                //   • non-nil but unreadable (Bug 27): corrupt/wrong-key ciphertext → treat as hidden.
-                //   • non-nil and readable: re-encrypt the existing value verbatim.
-                let hiddenData = DepthCodec.encode(0)
-                let allVaultEntries = try vaultManager.fetchAllEntries()
-                for entry in allVaultEntries {
-                    let plain = entry.visibleThroughDepth.flatMap { $0.decrypt() } ?? hiddenData
-                    entry.visibleThroughDepth = try AES.GCM.seal(
-                        plain, using: stagedKey, authenticating: aad
-                    ).combined
-                }
-                // isEntryVisible already fails closed on nil (whenUnclassified: false —
-                // see VaultEntry.isVisible's doc comment), but that only protects a
-                // display read; it says nothing about whether a nil entry's real
-                // classification survives once Secure Mode is active. This loop is what's
-                // supposed to guarantee no VaultEntry stays nil past this point. The
-                // assert catches a regression here directly (e.g. a re-added skip
-                // condition, or `.combined` unexpectedly nil) instead of only finding out
-                // indirectly, elsewhere, that this guarantee stopped holding.
-                assert(
-                    allVaultEntries.allSatisfy { $0.visibleThroughDepth != nil },
-                    "Step 8 must leave every VaultEntry with a non-nil depth stamp"
-                )
-                try vaultManager.modelContext.save()
-
-                // Re-key or purge Message.Draft rows — selective, matching §S7's
-                // preserve-and-rekey precedent above, not a blanket wipe. Must run
-                // before Step 9 commits the staged key: `oldKey` has to still be the
-                // active canonical key to decrypt existing draft ciphertext.
-                // `oldKey` was derived before Step 1's PIN check — see the guard there for why
-                // it cannot be derived here. Skipping this pass on a missing key (which an
-                // `if let` used to do) would leave groups and AppLayerConfig sealed under a key
-                // Step 11 then deletes: Bugs 75 and 76 exactly, reached through the code that
-                // fixes them.
-                let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
-                let allGroupIdentifiers = Set(groups.compactMap { $0.readID()?.uuidString })
-                try Message.Draft.reKeyOrPurgeAll(
-                    safeContactIdentifiers: Set(safeProfiles.map(\.identifier)),
-                    allGroupIdentifiers:    allGroupIdentifiers,
-                    oldKey:  oldKey,
-                    newKey:  stagedKey,
-                    in:      contactManager.modelContext
-                )
-
-                // Re-key groups (Bug 75). Order is load-bearing: this must run AFTER the
-                // draft pass above, never before. `readID()` decrypts with the canonical
-                // key, which is still `oldKey` until Step 9 — so re-keying groups first
-                // would leave every group unreadable to `readID()`, collapse
-                // `allGroupIdentifiers` to the empty set, and make `reKeyOrPurgeAll`
-                // delete every group-addressed draft as an unknown recipient.
-                //
-                // Reuses the `oldKey` already derived for the drafts rather than deriving
-                // per group — the Bug 74 constraint. Groups whose ID no longer decrypts
-                // are skipped inside `reencrypt`; they are orphans from a rotation that
-                // predates this call and cannot be recovered here.
-                for group in groups {
-                    try group.reencrypt(from: oldKey, to: stagedKey)
-                }
-                try contactManager.modelContext.save()
-
-                // Re-key AppLayerConfig's local-DB-key fields (Bug 76). Blob slots and
-                // sequence numbers are deliberately not in here — they moved to the SE
-                // key, which does not rotate. The post-commit writes below use `blobKey`
-                // for exactly that reason.
-                try config.reencrypt(from: oldKey, to: stagedKey)
-                try self.modelContext.save()
-
-                // ── Step 9: Commit staged key → point of no return ───────────────────
-                //
-                // WAL checkpoint intentionally comes AFTER commit (Step 10).
-                // If checkpoint ran before commit and the commit failed, the main
-                // SQLite file would contain data encrypted with the staged (rolled-back)
-                // key — permanently unreadable. Keeping all staged writes in the WAL
-                // means a commit failure leaves the main file intact under the old
-                // canonical key, which is fully readable after a rollback.
-                try self.keyManager.commitStagedLocalDBKey()
-
-                // ── Step 10: WAL checkpoint ───────────────────────────────────────────
-                // Commit succeeded — flush the staged-key writes from the WAL to the
-                // main file. Safe to checkpoint now because the commit is final.
-                if let url = self.storeURL {
-                    Self.walCheckpoint(at: url)
-                }
-
-                // ── Step 11: Cleanup ──────────────────────────────────────────────────
-                self.keyManager.deleteSupersededLocalDBArtefacts()
-
-                // Sensitive contacts are NOT hard-deleted from the DB.
-                //
-                // They remain in the DB with `visibleThroughDepth` set to a value that
-                // hides them at duress depth (e.g. 0 = visible at depth 0 only). Depth
-                // filtering in the contact list UI enforces visibility: at depth 0 (normal
-                // PIN) they show; at depth 1+ (duress PIN) they are hidden.
-                //
-                // Page-slack forensics are handled by two existing mitigations that do not
-                // require hard-deletion:
-                //   • PRAGMA secure_delete = ON: SQLite zeroes freed pages on any row
-                //     deletion or update, eliminating residual ciphertext from prior writes.
-                //   • DB key rotation (S1): rows written before activation are encrypted
-                //     under the old canonical key, which is deleted after commit. A forensic
-                //     examiner with the current canonical key cannot decrypt pre-activation
-                //     page slack.
-                // Sensitive contacts that remain in the DB are encrypted under the new
-                // canonical key. They are not accessible via the UI in duress mode; a raw
-                // SQLite examiner with device access during duress exposure could decrypt
-                // them. This is documented in forensic-trace-avoidance.md §S5 as an
-                // accepted residual gap given the functional requirement that the real user
-                // can see their sensitive contacts after entering the normal PIN.
-
-            } catch {
-                self.keyManager.rollbackStagedLocalDBKey()
-                // Clear in-memory depth-0 scalar mutation so a retry doesn't hit the
-                // `!isSecureModeActive` guard. Array writes are deferred so nothing to undo.
-                if depth == 0 { config.sealedDuressVerifier = nil }
-                throw error
-            }
-
-            // Key rotation succeeded. All config writes use the new canonical DB key
-            // (post-commit) so they are encrypted correctly for the post-rotation state.
-            //
-            // Write duress verifier at `depth` and routing alias at `depth + 1`.
             // The routing alias is the SAME duress PIN built with normalLabel so that
             // verify()'s step-1 scan (which uses normalLabel for all entries) can find it
             // at cold start without walking through intermediate depths.
+            let routingAlias = try PINManager.buildVerifier(pin: duressPIN, label: Self.normalLabel, seKey: seKey)
+
             config.writeDuressVerifier(duressVerifier, at: depth)
             config.writeNormalVerifier(routingAlias, at: depth + 1)
-            // Update depth-0 scalar (isSecureModeActive / requiresPIN flags).
+            // Depth-0 scalar (isSecureModeActive / requiresPIN flags).
             if depth == 0 {
                 config.sealedDuressVerifier = duressVerifier
             }
-            try config.writeBlobSlot(slotIndex, at: depth, using: blobKey)
-            try config.writeSequenceNumber(sequenceNumber, at: depth, using: blobKey)
 
             // When activating from a duress depth (depth > 0), record the operator's
             // home depth and transition state to .normal so the "Deactivate Protection"
@@ -831,21 +529,19 @@ extension Manager {
             self.resetCounters()
         }
 
-        /// Verifies the normal PIN, unwinds the blob, reverse-rotates the local DB key,
-        /// restores sensitive contacts, and removes the duress verifier (`isSecureModeActive` becomes `false`).
+        /// Verifies the normal PIN and removes the duress verifier for this depth
+        /// (`isSecureModeActive` becomes `false` if this was the last layer).
         ///
-        /// Mirror of `activateSecureMode`: creates a staged key, re-encrypts everything
-        /// under it (safe contacts + restored blob contacts + vault depth fields), commits,
-        /// then replaces the real blob with a fresh no-op payload.
-        func deactivateSecureMode(
-            confirmingEntryPIN: String,
-            contactManager:     ContactManager,
-            vaultManager:       VaultManager
-        ) async throws {
+        /// **Removal Stage 1, 2026-09-10 (`plan.md`, "Removal — Stage 0: design decision").**
+        /// No longer touches `Contact.Profile`, `VaultEntry`, `Message.Draft`, `Group`, or
+        /// `AppLayerConfig`'s local-DB-key fields — nothing was ever sealed away or re-keyed
+        /// at activation any more, so there is nothing to restore or reverse-rotate here.
+        /// The one thing this function still owns is PIN/verifier state, exactly like
+        /// `activateSecureMode`. No longer `async`.
+        func deactivateSecureMode(confirmingEntryPIN: String) throws {
             self.modelContext.autosaveEnabled = false
             defer { self.modelContext.autosaveEnabled = true }
 
-            // ── Step 1: State guard + PIN verification ──────────────────────────────
             let config = try self.requireConfig()
             let depth  = self.currentDepth
 
@@ -858,15 +554,6 @@ extension Manager {
                 throw SecurityError.keyDerivationFailed
             }
 
-            // Derived up front for the same reason as in `activateSecureMode` (Bug 78):
-            // deactivation runs the identical re-encrypt-then-save-then-commit sequence, so a
-            // guard placed after Step 4 would fire only once every contact's `Data` fields had
-            // already been nil-ed and written. Nothing here has been staged or mutated yet, so
-            // failing at this point costs nothing.
-            guard let oldKey = try self.keyManager.createHybridLocalEncryptionKey() else {
-                throw SecurityError.keyDerivationFailed
-            }
-
             // Confirm PIN against the normal verifier at the current depth.
             // depth 0 → sealedNormalVerifiers[0] (master PIN).
             // depth 1 → sealedNormalVerifiers[1] (routing alias = duress PIN).
@@ -875,270 +562,7 @@ extension Manager {
                                            verifier: config.sealedNormalVerifiers[depth], seKey: seKey)
             else { throw SecurityError.incorrectPIN }
 
-            // ── Step 2: Derive blob key + pop ───────────────────────────────────────
-            // Blob index per depth:
-            //   depth 0 → blobDepth 0 (blob from activation at depth 0)
-            //   depth 1 → blobDepth 0 (same blob; deactivating the depth 0→1 layer)
-            //   depth N ≥ 2 → blobDepth N-1 (cascade: removes expendable layer,
-            //                  preserves depth 0→1 layer until the final deactivation)
-            guard let layerKey = self.layerStore.deriveKey(from: seKey) else {
-                throw SecurityError.keyDerivationFailed
-            }
-
-            let blobDepth = max(0, depth - 1)
-
-            // Both slot index and sequence number must be present. If either is missing,
-            // skip pop — guessing a slot is not safe.
-            let payload: LayerPayload
-            let blobKey = AppLayerConfig.blobMetadataKey(from: seKey)
-            if let slotIndex = config.readBlobSlot(at: blobDepth, using: blobKey),
-               let expectedSeq = config.readSequenceNumber(at: blobDepth, using: blobKey) {
-                do {
-                    payload = try self.layerStore.pop(key: layerKey, slotIndex: slotIndex,
-                                                      expectedSequenceNumber: expectedSeq)
-                } catch {
-                    // Blob corrupted, overwritten by maintain(), or seqnum mismatch.
-                    // Sensitive contacts unrecoverable; safe contacts in DB are intact.
-                    payload = LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: [])
-                }
-            } else {
-                // No slot metadata — pre-upgrade install or config corruption.
-                payload = LayerPayload(sequenceNumber: 0, slotIndex: 0, contacts: [])
-            }
-
-            // ── Step 3: Create staged key (point of no return begins) ───────────────
-            let stagedKey = try self.keyManager.createStagedLocalDBKey()
-            
-            do {
-                let stagedCrypto = StagedCryptoManager(key: stagedKey)
-                let aad          = EncryptionScheme.v2_hybridPQ.aad
-
-                // ── Step 4: Re-encrypt safe contacts (currently in DB) ───────────────
-                // Pre-fix visibleThroughDepth, signedAttributes, and contactPublicKeys
-                // BEFORE the save so they land in the same modelContext.save() batch.
-                //
-                // visibleThroughDepth is re-encrypted preserving the contact's REAL
-                // classification depth — never flattened to nil as a side effect of
-                // deactivation. A contact classified "hide once beyond depth N" must keep
-                // that exact threshold across ANY deactivation (full or a cascade that
-                // only removes a deeper, unrelated layer) — otherwise a cascade exposes
-                // shallower-hidden contacts, and a full deactivation erases a deeper
-                // threshold the moment an intermediate layer is stripped. Step 5's
-                // restoreContact overwrites this again (with the same value, from the
-                // blob) for the specific contacts belonging to the layer actually being
-                // removed — this loop just has to not corrupt anyone else's classification
-                // in the meantime. A genuinely unclassified contact (decodes to Int.max) is
-                // re-sealed as Int.max, never flattened to literal nil — every contact has
-                // carried a non-nil visibleThroughDepth since creation, so nil would now
-                // stand out rather than blend in. See forensic-trace-avoidance.md S6.
-                //
-                // Sensitive shells are re-encrypted by this loop like any other contact.
-                // They are still readable here: activation never hard-deletes them, and its
-                // own Step 8 re-keyed every field on every profile under the then-staged key,
-                // which is the canonical key now — the staged key created above is not
-                // committed until Step 7. So `fetchAllContacts()` (no depth filter, only
-                // `deletionToken == nil`) is the correct set to walk.
-                //
-                // This was NOT always true, and the difference is worth keeping in mind
-                // before treating the blob as expendable: until `reencryptAllFields` existed,
-                // activation re-keyed only visibleThroughDepth, signedAttributes, and key
-                // records. A sensitive shell's text fields stayed under the old canonical key,
-                // which Step 11 then deleted, leaving them permanently unreadable — the blob
-                // was the sole surviving copy, which is why Step 5 restores text fields from
-                // blob plaintext at all. That path is now redundant on every normal cycle but
-                // remains the only backstop if a field is ever stranded again, so it stays.
-                //
-                // A stranded field degrades quietly rather than aborting: reencryptAllFields
-                // clears anything it cannot decrypt to nil instead of throwing. That is also
-                // what keeps the no-hard-delete property below intact — hard-deleting an
-                // unreadable shell would write a delete record to the WAL at deactivation
-                // time, a forensic tell naming exactly which contacts were hidden while
-                // Secure Mode was active.
-                for profile in try contactManager.fetchAllContacts() {
-                    // Decode the contact's current classification BEFORE re-encrypting
-                    // other fields — this still uses the active OLD canonical key.
-                    //
-                    // Absent and undecryptable are deliberately NOT the same fallback here
-                    // (Bug 87). Absent means never classified, so Int.max — safe — is right.
-                    // Undecryptable means the value is *unknown*, and this loop re-seals
-                    // whatever it decides into a readable field: resolving an unknown to
-                    // Int.max persists "visible at every duress depth" for a contact that
-                    // `isVisible` was correctly keeping hidden, irreversibly, because the
-                    // original ciphertext is then gone.
-                    //
-                    // 0 is the fail-safe: hidden at every duress depth, still visible to the
-                    // real user at depth 0. Same principle S7 states for vault entries — an
-                    // entry invisible in duress mode is an inconvenience, one that is visible
-                    // is a security failure.
-                    let contactDepth: Int = {
-                        guard let data = profile.visibleThroughDepth else { return Int.max }
-                        guard let plain = data.decrypt(),
-                              let value = DepthCodec.decode(plain)
-                        else { return 0 }
-                        return value
-                    }()
-                    // Same preserve-real-value treatment for the global-trustee stamp —
-                    // undecryptable or absent → -1 (not a trustee), never silently dropped.
-                    let trusteeDepth: Int = {
-                        guard let data = profile.globalTrusteeDepth,
-                              let plain = data.decrypt(),
-                              let value = DepthCodec.decode(plain)
-                        else { return -1 }
-                        return value
-                    }()
-                    // Same preserve-real-value treatment for the duress-origin stamp —
-                    // undecryptable or absent → 0 (not duress-origin), never silently
-                    // dropped. A currently-live duress-origin contact reaches this loop
-                    // (it's in the DB, not blob-sealed — see activation's Step 4 exemption)
-                    // and its floor must survive deactivation exactly like a real contact's
-                    // ceiling does, or it would fall back to ceiling-based classification
-                    // afterward and could start rejecting bundles again.
-                    let originDepth: Int = {
-                        guard let data = profile.originDepth,
-                              let plain = data.decrypt(),
-                              let value = DepthCodec.decode(plain)
-                        else { return 0 }
-                        return value
-                    }()
-
-                    try profile.reencryptAllFields(to: stagedKey, aad: aad)
-                    try profile.reencryptKeyRecords(to: stagedKey, aad: aad)
-
-                    // Always re-seal, even for Int.max (safe/never-classified) contacts.
-                    // Every contact has carried a non-nil visibleThroughDepth since creation
-                    // (Contact+Manager.swift's "never nil" stamp) — resetting safe contacts to
-                    // literal nil here would make them stand out against that baseline instead
-                    // of blending into it. See forensic-trace-avoidance.md S6.
-                    profile.visibleThroughDepth = try AES.GCM.seal(
-                        DepthCodec.encode(contactDepth), using: stagedKey, authenticating: aad
-                    ).combined
-                    // Same non-nil invariant applies to the global-trustee stamp.
-                    profile.globalTrusteeDepth = try AES.GCM.seal(
-                        DepthCodec.encode(trusteeDepth), using: stagedKey, authenticating: aad
-                    ).combined
-                    // Same non-nil invariant applies to the duress-origin stamp.
-                    profile.originDepth = try AES.GCM.seal(
-                        DepthCodec.encode(originDepth), using: stagedKey, authenticating: aad
-                    ).combined
-                }
-                // Flush re-encrypted contacts to the WAL before the staged key is committed.
-                // Same invariant as activation: in-memory changes must reach SQLite BEFORE
-                // commitStagedLocalDBKey() or the WAL checkpoint will miss them.
-                try contactManager.modelContext.save()
-
-                // ── Step 5: Restore sensitive contacts from blob ────────────────────
-                // Step 4's reencryptKeyRecords already migrated all contacts' key records
-                // (including sensitive contacts') from K_activation → K_staged. This step
-                // re-encrypts text fields from blob plaintext under the staged key and
-                // restores depth / signedAttributes. Key records are not touched — they
-                // are already under the staged key from Step 4.
-                for record in payload.contacts {
-                    try contactManager.restoreContact(record, using: stagedCrypto,
-                                                     stagedKey: stagedKey, aad: aad)
-                }
-                if !payload.contacts.isEmpty {
-                    try contactManager.modelContext.save()
-                }
-
-                // ── Step 6: Re-encrypt vault entry depth ceilings under the staged key ──
-                // Vault entries have no blob/restore mechanism at all (see activation's
-                // own comment on this), so this loop is the only thing that determines
-                // their classification after a deactivation — it must preserve each
-                // entry's REAL depth ceiling, mirroring Step 4's contact handling above,
-                // rather than flattening every entry to nil. An entry with no depth stamp
-                // (nil) needs no action: there is no ciphertext to strand under the old key.
-                let allVaultEntries = try vaultManager.fetchAllEntries()
-                for entry in allVaultEntries {
-                    guard let data = entry.visibleThroughDepth else { continue }
-                    // Undecryptable (Bug 27: corrupt/wrong-key ciphertext) → treat as
-                    // hidden, matching activateSecureMode's own fallback for this field.
-                    let entryDepth: Int = {
-                        guard let plain = data.decrypt(),
-                              let value = DepthCodec.decode(plain)
-                        else { return 0 }
-                        return value
-                    }()
-                    entry.visibleThroughDepth = try AES.GCM.seal(
-                        DepthCodec.encode(entryDepth), using: stagedKey, authenticating: aad
-                    ).combined
-                }
-                if !allVaultEntries.isEmpty {
-                    try vaultManager.modelContext.save()
-                }
-
-                // ── Step 6b: Re-key drafts and groups under the staged key ───────────
-                // Mirror of activation's Step 8 passes. Deactivation rotates the local DB key
-                // exactly like activation does, so omitting any of them strands that model on
-                // the way *out* of Secure Mode just as surely as on the way in.
-                //
-                // `oldKey` was derived before Step 1's PIN check — see the guard there. Runs
-                // before the Step 7 commit so `oldKey` is still canonical and the writes land
-                // in the WAL ahead of the checkpoint. Derived once and reused across every row
-                // rather than per model (Bug 74).
-                //
-                // Order matters and is the same as activation's, for the same reason:
-                // `readID()` decrypts with the *canonical* key, which is still `oldKey` until
-                // Step 7. Re-keying groups first would make every `readID()` fail, collapse
-                // `allGroupIdentifiers` to the empty set, and take `reKeyOrPurgeAll` down its
-                // delete branch for every group-addressed draft.
-                let groups = (try? contactManager.modelContext.fetch(FetchDescriptor<Group>())) ?? []
-                let allGroupIdentifiers = Set(groups.compactMap { $0.readID()?.uuidString })
-
-                // Drafts. Absent here until 2026-08-14, which silently destroyed every saved
-                // draft on each deactivation: they stayed sealed under `oldKey`, Step 9 deleted
-                // it, and the next `reKeyOrPurgeAll` took its delete branch for rows it could
-                // no longer open. Found in review of the very changeset that added the group
-                // and config passes above without adding this one.
-                //
-                // The survive set is *every* contact still present, unlike activation's, which
-                // passes only the profiles that stay visible in the new layer. Nothing is
-                // hidden on the way out — Step 5 has just restored the sensitive shells from
-                // the blob — so a draft is purged here only when its recipient genuinely no
-                // longer exists, which is what `reKeyOrPurgeAll` should do with it anyway.
-                try Message.Draft.reKeyOrPurgeAll(
-                    safeContactIdentifiers: Set(try contactManager.fetchAllContacts().map(\.identifier)),
-                    allGroupIdentifiers:    allGroupIdentifiers,
-                    oldKey:  oldKey,
-                    newKey:  stagedKey,
-                    in:      contactManager.modelContext
-                )
-
-                for group in groups {
-                    try group.reencrypt(from: oldKey, to: stagedKey)
-                }
-                try contactManager.modelContext.save()
-
-                // Same AppLayerConfig re-key as activation — deactivation rotates the
-                // local DB key too, so omitting it would strand the row on the way out.
-                try config.reencrypt(from: oldKey, to: stagedKey)
-                try self.modelContext.save()
-
-                // ── Step 7: Commit staged key (hard point of no return) ───────────────
-                //
-                // WAL checkpoint intentionally comes AFTER commit (Step 8).
-                // If checkpoint ran before commit and the commit failed, the main
-                // SQLite file would contain data encrypted with the staged (rolled-back)
-                // key — permanently unreadable. Keeping all staged writes in the WAL
-                // means a commit failure leaves the main file intact under the old
-                // canonical key, which is fully readable after a rollback.
-                try self.keyManager.commitStagedLocalDBKey()
-
-                // ── Step 8: WAL checkpoint ────────────────────────────────────────────
-                // Commit succeeded — flush the staged-key writes from the WAL to the
-                // main file. Safe to checkpoint now because the commit is final.
-                if let url = self.storeURL {
-                    Self.walCheckpoint(at: url)
-                }
-
-                // ── Step 9: Delete superseded artefacts ───────────────────────────────
-                self.keyManager.deleteSupersededLocalDBArtefacts()
-
-            } catch {
-                self.keyManager.rollbackStagedLocalDBKey()
-                throw error
-            }
-
-            // Clear verifiers and blob metadata, then transition state.
+            // Clear verifiers and transition state.
             //
             // clearVerifiers(from: clearFrom) removes normalVerifiers[clearFrom..31]
             // and duressVerifiers[(clearFrom-1)..31], leaving shallower depths intact.
@@ -1152,19 +576,12 @@ extension Manager {
 
             if depth <= 1 {
                 // Full deactivation — Secure Mode fully off; return to pinOnly.
-                // Wipe all blob metadata in one shot: clearAllBlobMetadata() replaces
-                // both arrays with fresh random filler regardless of how many layers
-                // were activated above depth 0. No hardcoded indices needed.
-                config.clearAllBlobMetadata()
                 config.sealedDuressVerifier = nil
                 try self.setState(0, config: config)
             } else {
-                // Cascade deactivation — expendable layer removed. Only clear the
-                // metadata for this specific layer; shallower blobs remain intact.
-                // Always land at depth 1 (.duress) — the convincing first-duress view
-                // must be the final stop before the real app is reachable.
-                config.clearBlobSlot(at: blobDepth)
-                config.clearSequenceNumber(at: blobDepth)
+                // Cascade deactivation — expendable layer removed. Always land at depth 1
+                // (.duress) — the convincing first-duress view must be the final stop
+                // before the real app is reachable.
                 try self.setState(1, config: config)
             }
 
@@ -1176,11 +593,6 @@ extension Manager {
             try? config.writeCoercerBaseDepth(0)
 
             try self.modelContext.save()
-
-            if depth <= 1 {
-                let store = self.layerStore
-                DispatchQueue.global(qos: .utility).async { store.rewrite() }
-            }
             self.resetCounters()
         }
 
@@ -1398,19 +810,30 @@ extension Manager {
             }
         }
 
-        /// Defense in depth alongside `reKeyOrPurgeAll` at activation (`Message+Draft.swift`):
-        /// activation only purges at layer *creation*, not at every later entry into an
-        /// already-created layer. A contact classified sensitive sometime after that layer
-        /// was set up — with a draft saved before this pass existed, or before the sensitivity
-        /// gate was in place — would otherwise keep that draft across any number of duress-PIN
-        /// entries. Called after `currentDepth` has already advanced, so `isVisible` checks
-        /// against the depth actually being entered.
+        /// Purges any `Message.Draft` not safe at the depth just entered. Called on every
+        /// duress-depth entry, including the very first one right after a fresh
+        /// activation — `Message.Draft` carries no `visibleThroughDepth`/`isVisible` field
+        /// of its own (unlike `Contact.Profile`/`VaultEntry`), so purging is the only thing
+        /// keeping an unsafe draft from existing at all; there is no UI-level filter as a
+        /// backstop. A contact classified sensitive sometime after a layer was already
+        /// created — with a draft saved before, or before the sensitivity gate existed —
+        /// would otherwise keep that draft across any number of duress-PIN entries. Called
+        /// after `currentDepth` has already advanced, so `isVisible` checks against the
+        /// depth actually being entered.
         ///
-        /// No key rotation happens at entry into an existing layer (only at activation), so
-        /// this reuses `reKeyOrPurgeAll` with `oldKey == newKey` — surviving rows are re-sealed
-        /// under an identical key with a fresh nonce, a no-op in effect, not a new crypto path —
-        /// to get the exact same, already-reviewed survive/purge semantics rather than a second
-        /// implementation of them.
+        /// **Removal Stage 1, 2026-09-10:** `activateSecureMode` no longer runs a draft
+        /// purge of its own at layer creation — there is nothing left to stage it around,
+        /// and this function already covers the first entry into a freshly created layer
+        /// (this always runs before any UI renders for that depth), not only later ones.
+        /// A draft's only display surface (`ContactsListV2`'s "Draft" badge) is keyed off
+        /// `contactIdentifiersWithDrafts` matched against already depth-filtered contact
+        /// rows, so an unpurged draft attached to a hidden contact was never independently
+        /// discoverable there either way — this function's real job is hygiene (nothing
+        /// pointing at a hidden or gone recipient lingers in the DB), not a display gate.
+        ///
+        /// No key rotation happens anywhere any more, so this calls `Message.Draft.purgeUnsafe`
+        /// — the purge-only half of what `reKeyOrPurgeAll` used to do with `oldKey == newKey`
+        /// — rather than a no-op reseal of survivors.
         private func purgeDraftsNotSafeAtCurrentDepth() {
             guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
             let profiles = (try? self.modelContext.fetch(
@@ -1421,9 +844,9 @@ extension Manager {
                 ((try? self.modelContext.fetch(FetchDescriptor<Group>())) ?? [])
                     .compactMap { $0.readID()?.uuidString }
             )
-            try? Message.Draft.reKeyOrPurgeAll(
+            try? Message.Draft.purgeUnsafe(
                 safeContactIdentifiers: safeIdentifiers, allGroupIdentifiers: allGroupIdentifiers,
-                oldKey: key, newKey: key, in: self.modelContext
+                using: key, in: self.modelContext
             )
             self.checkpointStore()
         }

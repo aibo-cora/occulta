@@ -12,8 +12,6 @@ struct SecureModeDeactivateFlow: View {
 
     @Environment(\.dismiss)             private var dismiss
     @Environment(Manager.Security.self) private var security
-    @Environment(ContactManager.self)   private var contactManager
-    @Environment(VaultManager.self)     private var vaultManager
 
     @State private var isDeactivating     = false
     @State private var deactivationFailed = false
@@ -21,16 +19,10 @@ struct SecureModeDeactivateFlow: View {
     var body: some View {
         PINEntry(mode: .verifyCurrentLayer, onAuthenticated: { pin in
             self.isDeactivating = true
-            let cm = self.contactManager
-            let vm = self.vaultManager
             Task {
                 try? await Task.sleep(for: .milliseconds(50)) // let the overlay render
                 do {
-                    try await self.security.deactivateSecureMode(
-                        confirmingEntryPIN: pin,
-                        contactManager:     cm,
-                        vaultManager:       vm
-                    )
+                    try self.security.deactivateSecureMode(confirmingEntryPIN: pin)
                     self.isDeactivating = false
                     self.dismiss()
                 } catch {

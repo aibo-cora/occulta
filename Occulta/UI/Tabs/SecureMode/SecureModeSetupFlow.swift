@@ -15,8 +15,6 @@ struct SecureModeSetupFlow: View {
 
     @Environment(\.dismiss)             private var dismiss
     @Environment(Manager.Security.self) private var security
-    @Environment(ContactManager.self)   private var contactManager
-    @Environment(VaultManager.self)     private var vaultManager
 
     @State private var path = NavigationPath()
 
@@ -297,17 +295,14 @@ private struct SummaryView: View {
             Section {
                 Button {
                     self.isActivating = true
-                    let cm = self.contactManager
 
                     Task {
                         try? await Task.sleep(for: .milliseconds(50))
 
                         do {
-                            try await self.security.activateSecureMode(
+                            try self.security.activateSecureMode(
                                 confirmingEntryPIN: self.normalPIN,
-                                duressPIN:          self.duressPIN,
-                                contactManager:     cm,
-                                vaultManager:       self.vaultManager
+                                duressPIN:          self.duressPIN
                             )
                             self.isActivating = false
                             self.onDone()

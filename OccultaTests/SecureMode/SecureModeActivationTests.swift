@@ -223,9 +223,7 @@ struct SecureModeBlobLifecycleTests {
         #expect(!c.backend.exists, "blob should not exist before activation")
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         #expect(c.backend.exists, "blob must be written during activation")
     }
@@ -236,9 +234,7 @@ struct SecureModeBlobLifecycleTests {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         // readPayload should not throw — proves the push payload is decodable.
         let payload = try readActivationPayload(from: c)
@@ -251,15 +247,11 @@ struct SecureModeBlobLifecycleTests {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         // Deactivation must complete successfully; if blob was unreadable it would
         // fall back to an empty payload but the sequence would still succeed.
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
         #expect(!c.security.isSecureModeActive)
     }
 
@@ -267,9 +259,7 @@ struct SecureModeBlobLifecycleTests {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         let data = try c.backend.read()
         let expectedSize = Manager.LayerStore.slotCount * Manager.LayerStore.slotCiphertextSize
         #expect(data.count == expectedSize, "blob must be exactly \(expectedSize) bytes (32 fixed slots)")
@@ -293,9 +283,7 @@ struct SecureModeClassificationTests {
                           visibleThroughDepth: sensitiveDepthValue)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let payload           = try readActivationPayload(from: c)
         let identifiersInBlob = payload.contacts.map { $0.draft.identifier }
@@ -317,9 +305,7 @@ struct SecureModeClassificationTests {
                           visibleThroughDepth: sensitiveDepthValue)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let payload           = try readActivationPayload(from: c)
         let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
@@ -342,13 +328,9 @@ struct SecureModeClassificationTests {
                           visibleThroughDepth: sensitiveDepthValue)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         // Fetch from a fresh context to verify persistence (not just in-memory state).
         let profiles = try fetchAllProfiles(from: c.container)
@@ -411,9 +393,7 @@ struct SecureModeWALPersistenceTests {
         }
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         // Fetch from a brand-new context to bypass all in-memory caches.
         let profilesAfter = try fetchAllProfiles(from: c.container)
@@ -454,9 +434,7 @@ struct SecureModeWALPersistenceTests {
         }
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let profilesAfter = try fetchAllProfiles(from: c.container)
         let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
@@ -482,9 +460,7 @@ struct SecureModeWALPersistenceTests {
         let entryID = try insertVaultEntry(in: c.container, visibleThroughDepth: nil)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let entriesAfter = try fetchAllVaultEntries(from: c.container)
         let stampAfter    = entriesAfter.first { $0.id == entryID }?.visibleThroughDepth
@@ -524,9 +500,7 @@ struct SecureModeWALPersistenceTests {
 
         // Activation seals this contact into the blob (it's sensitive).
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         // After activation, Step 8's reencryptAllFields on a non-AES field returns nil
         // (decrypt fails).  Confirm the save wrote nil to the store before deactivation.
@@ -539,9 +513,7 @@ struct SecureModeWALPersistenceTests {
 
         // Deactivation: Step 4 re-sets to nil; Step 5 restores blob contact with depth 0.
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         // After deactivation the contact is restored from the blob with a fresh
         // visibleThroughDepth = AES-GCM(stagedKey, 0).  It must not still be
@@ -575,9 +547,7 @@ struct SecureModeWALPersistenceTests {
         let id = "contact-safe-\(UUID().uuidString)"
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         // The safe ceiling is written directly, after activation, for this file's
         // key-manager split (see header). Two reasons it cannot be done the obvious way:
@@ -602,9 +572,7 @@ struct SecureModeWALPersistenceTests {
         }
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let profilesAfter = try fetchAllProfiles(from: c.container)
         let depthAfter    = profilesAfter.first { $0.identifier == id }?.visibleThroughDepth
@@ -636,13 +604,9 @@ struct SecureModeWALPersistenceTests {
         let countBefore = try fetchAllProfiles(from: c.container).count
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let countAfter = try fetchAllProfiles(from: c.container).count
         #expect(countAfter == countBefore,
@@ -658,13 +622,9 @@ struct SecureModeWALPersistenceTests {
 
         for _ in 0..<2 {
             try await c.security.activateSecureMode(
-                confirmingEntryPIN: "111111", duressPIN: "999999",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
+                confirmingEntryPIN: "111111", duressPIN: "999999")
             try await c.security.deactivateSecureMode(
-                confirmingEntryPIN: "111111",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
+                confirmingEntryPIN: "111111")
         }
 
         let countAfter = try fetchAllProfiles(from: c.container).count
@@ -705,16 +665,12 @@ struct CascadeDeactivationDepthTests {
         try c.security.configurePIN("111111")
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         c.security.applyVerifyState(for: try c.security.verify("999999"))
         #expect(c.security.currentDepth == 1)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "999999", duressPIN: "777777")
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
@@ -732,9 +688,7 @@ struct CascadeDeactivationDepthTests {
 
         // Cascade deactivation: depth 2 → depth 1. Must NOT touch the depth-0 secret.
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "777777")
         #expect(c.security.currentDepth == 1)
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
@@ -763,22 +717,16 @@ struct CascadeDeactivationDepthTests {
         )
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         c.security.applyVerifyState(for: try c.security.verify("999999"))
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "999999", duressPIN: "777777")
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "777777")
         #expect(c.security.currentDepth == 1)
 
         let restored = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
@@ -809,14 +757,10 @@ struct CascadeDeactivationDepthTests {
         try c.security.configurePIN("111111")
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         c.security.applyVerifyState(for: try c.security.verify("999999"))
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "999999", duressPIN: "777777")
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
@@ -830,9 +774,7 @@ struct CascadeDeactivationDepthTests {
         // Cascade depth 2 → depth 1. blobDepth (1) < this contact's depth (2) —
         // it is not the layer being removed, so it must survive untouched.
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "777777")
         #expect(c.security.currentDepth == 1)
 
         let afterCascade = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
@@ -859,9 +801,7 @@ struct CascadeDeactivationDepthTests {
         try c.security.configurePIN("111111")
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         c.security.applyVerifyState(for: try c.security.verify("999999"))
         #expect(c.security.currentDepth == 1)
 
@@ -876,18 +816,14 @@ struct CascadeDeactivationDepthTests {
                           visibleThroughDepth: try JSONEncoder().encode(1).encrypt())
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "999999", duressPIN: "777777")
         c.security.applyVerifyState(for: try c.security.verify("777777"))
         #expect(c.security.currentDepth == 2)
 
         // Cascade deactivation: depth 2 → depth 1. blobDepth == 1 == this contact's
         // classification — it IS the layer being removed, so Step 5 must restore it.
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "777777")
         #expect(c.security.currentDepth == 1)
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
@@ -915,14 +851,10 @@ struct CascadeDeactivationDepthTests {
         let id = "contact-\(UUID().uuidString)"
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         c.security.applyVerifyState(for: try c.security.verify("999999"))
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "999999", duressPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "999999", duressPIN: "777777")
         c.security.applyVerifyState(for: try c.security.verify("777777"))
 
         // Inserted with a nil ceiling AFTER both activations, so nil is what deactivation
@@ -934,9 +866,7 @@ struct CascadeDeactivationDepthTests {
         try insertContact(identifier: id, in: c.container, visibleThroughDepth: nil)
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "777777",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "777777")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == Int.max,
@@ -971,9 +901,7 @@ struct GlobalTrusteeDepthPreservationTests {
         try c.security.configurePIN("111111")
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let id = "contact-\(UUID().uuidString)"
         try insertContact(
@@ -983,9 +911,7 @@ struct GlobalTrusteeDepthPreservationTests {
         )
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == 0,
@@ -1007,13 +933,9 @@ struct GlobalTrusteeDepthPreservationTests {
         try insertContact(identifier: id, in: c.container, globalTrusteeDepth: nil)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: restored?.globalTrusteeDepth, keyManager: c.keyManager) == -1,
@@ -1042,13 +964,9 @@ struct GlobalTrusteeDepthPreservationTests {
         )
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(restored != nil, "contact row must survive the blob round trip")
@@ -1077,9 +995,7 @@ struct OriginDepthPreservationTests {
         try c.security.configurePIN("111111")
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let id = "contact-\(UUID().uuidString)"
         try insertContact(
@@ -1089,9 +1005,7 @@ struct OriginDepthPreservationTests {
         )
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: restored?.originDepth, keyManager: c.keyManager) == 0,
@@ -1113,13 +1027,9 @@ struct OriginDepthPreservationTests {
         try insertContact(identifier: id, in: c.container, originDepth: nil)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "111111",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: restored?.originDepth, keyManager: c.keyManager) == 0,
@@ -1151,9 +1061,7 @@ struct OriginDepthPreservationTests {
         )
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let payload           = try readActivationPayload(from: c)
         let identifiersInBlob = Set(payload.contacts.map { $0.draft.identifier })
@@ -1200,9 +1108,7 @@ struct SecureModeRotationKeyGuardTests {
 
         await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
             try await c.security.activateSecureMode(
-                confirmingEntryPIN: "111111", duressPIN: "999999",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
+                confirmingEntryPIN: "111111", duressPIN: "999999")
         }
 
         // Must not have reached the commit: Secure Mode stays off, so the superseded key was
@@ -1227,9 +1133,7 @@ struct SecureModeRotationKeyGuardTests {
         let c = try makeComponents()
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
         try #require(c.security.isSecureModeActive)
 
         let ceiling = Data([0xC0, 0xFF, 0xEE])
@@ -1239,9 +1143,7 @@ struct SecureModeRotationKeyGuardTests {
 
         await #expect(throws: Manager.Security.SecurityError.keyDerivationFailed) {
             try await c.security.deactivateSecureMode(
-                confirmingEntryPIN: "111111",
-                contactManager: c.contacts, vaultManager: c.vault
-            )
+                confirmingEntryPIN: "111111")
         }
 
         // Still active — the rotation aborted before its point of no return.
@@ -1284,14 +1186,10 @@ struct DepthMigrationRotationCompositionTests {
 
         try c.security.configurePIN("111111")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "222222",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "222222")
         c.security.applyVerifyState(for: try c.security.verify("222222"))
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "222222",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "222222")
 
         let restored = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: restored?.visibleThroughDepth, keyManager: c.keyManager) == 0, """
@@ -1317,9 +1215,7 @@ struct DepthMigrationRotationCompositionTests {
         let c = try makeComponents()
         try c.security.configurePIN("333333")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "333333", duressPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "333333", duressPIN: "444444")
         c.security.applyVerifyState(for: try c.security.verify("444444"))
 
         let legacyID = "legacy-\(UUID().uuidString)"
@@ -1336,9 +1232,7 @@ struct DepthMigrationRotationCompositionTests {
                           visibleThroughDepth: try JSONEncoder().encode(Int.max).encrypt())
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "444444")
 
         let rows = try fetchAllProfiles(from: c.container)
         func ceiling(_ id: String) -> Int? {
@@ -1412,9 +1306,7 @@ struct StrandedCeilingRotationTests {
         try insertContact(identifier: id, in: c.container, visibleThroughDepth: stranded)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "222222",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "222222")
 
         let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(after?.visibleThroughDepth == stranded, """
@@ -1438,9 +1330,7 @@ struct StrandedCeilingRotationTests {
         let c = try makeComponents()
         try c.security.configurePIN("333333")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "333333", duressPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "333333", duressPIN: "444444")
         c.security.applyVerifyState(for: try c.security.verify("444444"))
 
         let id = "stranded-\(UUID().uuidString)"
@@ -1448,9 +1338,7 @@ struct StrandedCeilingRotationTests {
                           visibleThroughDepth: Data([0xA5, 0x5A, 0x3C, 0x7E]))
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "444444",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "444444")
 
         let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         let ceiling = decodedStagedDepth(from: after?.visibleThroughDepth, keyManager: c.keyManager)
@@ -1474,9 +1362,7 @@ struct StrandedCeilingRotationTests {
         let c = try makeComponents()
         try c.security.configurePIN("555555")
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "555555", duressPIN: "666666",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "555555", duressPIN: "666666")
         c.security.applyVerifyState(for: try c.security.verify("666666"))
 
         let id = "readable-\(UUID().uuidString)"
@@ -1484,9 +1370,7 @@ struct StrandedCeilingRotationTests {
                           visibleThroughDepth: try DepthCodec.encode(4).encrypt())
 
         try await c.security.deactivateSecureMode(
-            confirmingEntryPIN: "666666",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "666666")
 
         let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(decodedStagedDepth(from: after?.visibleThroughDepth, keyManager: c.keyManager) == 4,
@@ -1529,9 +1413,7 @@ struct SensitiveContactKeyRecordTests {
         try attachKeyRecord(to: id, in: c.container, material: originalMaterial)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(after?.contactPublicKeys?.first?.material == originalMaterial, """
@@ -1556,9 +1438,7 @@ struct SensitiveContactKeyRecordTests {
         try attachKeyRecord(to: id, in: c.container, material: originalMaterial)
 
         try await c.security.activateSecureMode(
-            confirmingEntryPIN: "111111", duressPIN: "999999",
-            contactManager: c.contacts, vaultManager: c.vault
-        )
+            confirmingEntryPIN: "111111", duressPIN: "999999")
 
         let after = try fetchAllProfiles(from: c.container).first { $0.identifier == id }
         #expect(after?.contactPublicKeys?.first?.material != originalMaterial, """
