@@ -541,7 +541,7 @@ extension Manager {
             var toOrphan: [VaultEntry] = []
             var alreadyOrphaned: [VaultEntry] = []
             for entry in allEntries {
-                if entry.deletionToken != nil {
+                if entry.isOrphaned(usingKey: key) {
                     alreadyOrphaned.append(entry)
                     continue
                 }
@@ -561,12 +561,12 @@ extension Manager {
             // correctly ordered as newly-orphaned entries are appended to it below.
             alreadyOrphaned.sort { $0.createdAt < $1.createdAt }
             toOrphan.sort { $0.createdAt < $1.createdAt }
-            let sentinel = try? Data([1]).encrypt(using: key)
+            let sealedOrphanToken = try? VaultEntry.orphanedToken.encrypt(using: key)
             for entry in toOrphan {
                 if alreadyOrphaned.count >= 50 {
                     self.modelContext.delete(alreadyOrphaned.removeFirst())
                 }
-                entry.deletionToken = sentinel
+                entry.deletionToken = sealedOrphanToken
                 alreadyOrphaned.append(entry)
             }
         }

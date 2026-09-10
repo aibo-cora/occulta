@@ -1167,3 +1167,33 @@ resurfacing fix, a shallower-layer survival case, and cap eviction — the last 
 ordering bug in the first implementation pass (`toOrphan` needed sorting before processing, not just
 `alreadyOrphaned`, for eviction to be reliably oldest-first within a single multi-entry batch). Full
 suite: 0 failures, 6 skips (baseline), confirmed after the fix.
+
+## Post-removal refinement: `VaultEntry.deletionToken` becomes always-populated, not nil-based
+
+Raised in the same conversation, immediately after the fix above shipped: nil-vs-non-nil is itself a
+free, zero-decryption signal (SQLite tracks column nullability independent of any encryption on the
+value), so `deletionToken`'s original design — mirroring `Contact.Profile.deletionToken`'s nil/non-nil
+pattern exactly — still let a `SELECT COUNT(*) WHERE deletionToken IS NOT NULL` answer "how many are
+orphaned" with no key at all.
+
+**Fixed by making the field always non-nil**, content instead of presence carrying the meaning —
+`VaultEntry.liveToken`/`orphanedToken`, two fixed-width one-byte sentinels that encrypt to the same
+ciphertext length, the identical principle `AppLayerConfig.pinEnabledPerDepth` already uses (Bug 51,
+"no plaintext boolean flags"). `isOrphaned(usingKey:)` replaces every nil check, failing safe on
+anything ambiguous. Stamped live at creation by `addEntry` and the backup-restore path.
+`fetchAllEntries()` loses its free SQL predicate as a result — decrypting a column can't be pushed
+into a `WHERE` clause, so it now fetches every row and filters in Swift with one derived key reused
+across all of them. `deleteAllEntries()` (panic wipe) already fetched unfiltered and needed no
+further change.
+
+**Deliberately not extended to `Contact.Profile.deletionToken`**, discussed and declined in the same
+conversation: it's shipped (a real migration, not a lightweight default), touches far more hot-path
+call sites over a much larger row count, and — found while checking the full usage surface before
+proposing anything — `PQmigration.swift`'s `migrateScrubDeletedDepthStamps` already uses its
+nil/non-nil status as a readability oracle for rows stranded by an old key rotation; changing the
+field's shape would mean redesigning that oracle, not just its predicates. Same marginal benefit,
+much higher cost — left as-is.
+
+All three `VaultEntryOrphaningTests` updated in place (same tests, assertions moved from `== nil`/
+`!= nil` to `isOrphaned(usingKey:)`) and reconfirmed passing. Full suite: 0 failures, 6 skips
+(baseline). Full writeup: `bugs.md` Bug 110's "Refined the same day" note.

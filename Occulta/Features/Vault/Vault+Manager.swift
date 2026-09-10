@@ -250,6 +250,9 @@ final class VaultManager {
         // Stamp depth ceiling — always encrypted, never nil.
         // Depth 0 entries get encrypt(0): real-layer items hidden from all duress views.
         entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()
+        // Always-populated orphan flag (Bug 110) — see its own doc comment for why this
+        // isn't left nil until orphaned.
+        entry.deletionToken = try VaultEntry.liveToken.encrypt()
 
         // ── Generate PEK ─────────────────────────────────────────────────────
         var pekBytes = [UInt8](repeating: 0, count: 32)
@@ -295,15 +298,26 @@ final class VaultManager {
 
     /// Return all non-orphaned vault entries sorted by creation date (oldest first).
     ///
-    /// All fields on the returned entries are ciphertext — no decryption occurs here.
-    /// Excludes orphaned rows (`deletionToken != nil`, Bug 110) — this is the single
-    /// central read every other consumer (shard custody, backup export, the return
-    /// buffer, the UI list) goes through, so filtering here is what makes an orphaned
-    /// entry genuinely inert everywhere at once, not just hidden from the list.
+    /// Every other field on the returned entries is ciphertext, untouched — decryption
+    /// happens here only for `deletionToken`, to tell orphaned rows apart from live ones.
+    /// That field is deliberately always populated (Bug 110: nil/non-nil would itself be
+    /// a free, zero-decryption signal), which means it can no longer be pushed down as a
+    /// SQL predicate the way `deletionToken == nil` used to be — SQLite cannot decrypt
+    /// AES-GCM as part of a `WHERE` clause. This fetches every row unconditionally and
+    /// filters in Swift, deriving the local-DB key once and reusing it across every row
+    /// rather than paying a Secure Enclave round trip per entry.
+    ///
+    /// This is the single central read every other consumer (shard custody, backup
+    /// export, the return buffer, the UI list) goes through, so filtering here is what
+    /// makes an orphaned entry genuinely inert everywhere at once, not just hidden from
+    /// the list.
     func fetchAllEntries() throws -> [VaultEntry] {
-        let predicate  = #Predicate<VaultEntry> { $0.deletionToken == nil }
-        let descriptor = FetchDescriptor<VaultEntry>(predicate: predicate, sortBy: [SortDescriptor(\.createdAt)])
-        return try self.modelContext.fetch(descriptor)
+        let descriptor = FetchDescriptor<VaultEntry>(sortBy: [SortDescriptor(\.createdAt)])
+        let all = try self.modelContext.fetch(descriptor)
+        guard let key = try Manager.Key().createHybridLocalEncryptionKey() else {
+            throw VaultError.keyDerivationFailed
+        }
+        return all.filter { !$0.isOrphaned(usingKey: key) }
     }
 
     /// Hard-deletes every VaultEntry row, including orphaned ones — deliberately not

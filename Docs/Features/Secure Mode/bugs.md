@@ -8624,20 +8624,44 @@ this entry belongs to" with "is this entry still live," and — found only after
 shard-custody call chain — a sentinel there does nothing for the shard side of this bug at all, since
 `shardRecordsForTrustee` doesn't look at `visibleThroughDepth`.
 
-**Shipped design:** a new `VaultEntry.deletionToken` field (`Vault+Model.swift`), mirroring
-`Contact.Profile.deletionToken` exactly — encrypted, content a fixed sentinel (`Data([1])`, no date or
-identity information), physically kept rather than hard-deleted (same reasoning Bug 13 already
-established for contacts: a row count that drops in step with a duress-layer teardown is itself a
-forensic signal), capped at 50 with oldest-first eviction. `visibleThroughDepth` is left untouched — a
-historical record of the depth the entry was actually created at, now moot for every functional
-purpose since exclusion makes it unreachable.
+**Shipped design:** a new `VaultEntry.deletionToken` field (`Vault+Model.swift`), initially mirroring
+`Contact.Profile.deletionToken` exactly — encrypted, nil/non-nil meaningful at the query layer,
+content a fixed sentinel when present — physically kept rather than hard-deleted (same reasoning
+Bug 13 already established for contacts: a row count that drops in step with a duress-layer teardown
+is itself a forensic signal), capped at 50 with oldest-first eviction. `visibleThroughDepth` is left
+untouched — a historical record of the depth the entry was actually created at, now moot for every
+functional purpose since exclusion makes it unreachable.
+
+**Refined the same day, before this shipped to anyone:** nil/non-nil is itself a free,
+zero-decryption signal — SQLite tracks column nullability structurally, independent of any
+encryption applied to the value, so `SELECT COUNT(*) WHERE deletionToken IS NOT NULL` would still
+answer "how many are orphaned" without the key. `deletionToken` is now **always populated** —
+`VaultEntry.liveToken`/`orphanedToken` are two fixed-width, one-byte sentinels (`Data([0])`/
+`Data([1])`) that encrypt to the same ciphertext length, the identical "no plaintext boolean flags"
+principle `AppLayerConfig.pinEnabledPerDepth` already uses (Bug 51) — nothing about the sealed bytes
+reveals which one is inside without decrypting. `VaultEntry.isOrphaned(usingKey:)` replaces every
+`== nil`/`!= nil` check; it fails safe (nil, undecryptable, or an unrecognized value all count as
+orphaned). Stamped live at creation by both `addEntry` and the backup-restore path, mirroring how
+`visibleThroughDepth` is already stamped by its callers rather than defaulted in `init`. This raises
+the bar from "zero-effort" to "requires knowing this app's schema convention and running one
+decryption" — not a guarantee against an examiner already decrypting the database wholesale (who
+gains nothing new to defend against here), but a real improvement against a quick, no-decryption
+pass. `Contact.Profile.deletionToken` was deliberately left on the nil/non-nil pattern: it's shipped,
+its migration cost is real (a production backfill, not a lightweight default), and
+`PQmigration.swift`'s `migrateScrubDeletedDepthStamps` already uses its nil/non-nil status as a
+readability oracle for stranded rows — changing it would mean redesigning that oracle, not just the
+predicate, for the same marginal benefit this fix already delivers where it was cheap.
 
 `VaultManager.fetchAllEntries()` — the single central read every consumer (shard custody, backup
-export, the return buffer, the UI list) goes through — now filters `deletionToken == nil`, so marking
-an entry orphaned makes it inert everywhere at once, not just hidden from one view. Caught in the same
-pass: `deleteAllEntries()` (panic wipe) was routing through `fetchAllEntries()` too and would have
-silently stopped erasing orphaned rows — fixed to fetch unfiltered, matching how
-`ContactManager.deleteAllContacts()` already hard-deletes soft-deleted contacts during a wipe.
+export, the return buffer, the UI list) goes through — now fetches every row unconditionally and
+filters on `isOrphaned(usingKey:)` in Swift, deriving the local-DB key once and reusing it across
+every row. This is the one real structural cost of the refinement: the old `deletionToken == nil`
+predicate pushed down to SQLite for free; decrypting a column can't be expressed as a SQL `WHERE`
+clause, so filtering moved from the database to the app. Acceptable at the row counts a personal
+vault realistically has. Caught in the same pass: `deleteAllEntries()` (panic wipe) was routing
+through `fetchAllEntries()` too and would have silently stopped erasing orphaned rows — fixed to
+fetch unfiltered, matching how `ContactManager.deleteAllContacts()` already hard-deletes soft-deleted
+contacts during a wipe.
 
 `Manager.Security.orphanVaultEntries(freedFrom:)` runs from both `deactivateSecureMode` and
 `forceDeactivateForRecovery`, right where verifiers for the freed depth(s) are cleared — decodes each
@@ -8657,15 +8681,18 @@ has, since both ride the identical mechanism.
 
 ### Guard
 
-Three tests in `VaultEntryOrphaningTests` (`SecureModeActivationTests.swift`):
-`staleSessionEntryDoesNotResurface` (the core regression — an entry from one duress session must not
-reappear in a later, unrelated session reaching the same depth, and the row must survive physically
-with `deletionToken` set, not be hard-deleted), `shallowerEntrySurvivesCascade` (an entry at a
-shallower, still-live depth must be untouched by an unrelated deeper cascade deactivation), and
-`orphanCapEvictsOldest` (51 entries orphaned in one call caps at 50, with the single oldest hard-deleted
-— this test also caught a real ordering bug in the first implementation pass, where `toOrphan` wasn't
-sorted before processing, so eviction inside a single multi-entry batch wasn't reliably oldest-first).
-Full suite: 0 failures, 6 skips (baseline), confirmed after the fix.
+Three tests in `VaultEntryOrphaningTests` (`SecureModeActivationTests.swift`), updated in place when
+`deletionToken` moved to the always-populated scheme (same tests, assertions now go through
+`isOrphaned(usingKey:)` instead of `== nil`/`!= nil`): `staleSessionEntryDoesNotResurface` (the core
+regression — an entry from one duress session must not reappear in a later, unrelated session
+reaching the same depth, and the row must survive physically, marked orphaned, not hard-deleted),
+`shallowerEntrySurvivesCascade` (an entry at a shallower, still-live depth must be untouched by an
+unrelated deeper cascade deactivation), and `orphanCapEvictsOldest` (51 entries orphaned in one call
+caps at 50, with the single oldest hard-deleted — this test also caught a real ordering bug in the
+first implementation pass, where `toOrphan` wasn't sorted before processing, so eviction inside a
+single multi-entry batch wasn't reliably oldest-first).
+Full suite: 0 failures, 6 skips (baseline), confirmed after the original fix and again after the
+always-populated refinement.
 
 ---
 

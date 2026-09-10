@@ -195,23 +195,32 @@ final class VaultEntry {
     /// Set once at creation (`VaultManager.addEntry`); never edited afterward.
     var visibleThroughDepth: Data? = nil
 
-    /// Non-nil means this entry has been orphaned — decommissioned in place rather than
-    /// hard-deleted. Mirrors `Contact.Profile.deletionToken` exactly: the field is
-    /// encrypted, only its nil/non-nil status is meaningful at the query layer, and its
-    /// content is a fixed sentinel — no date or identity information is stored here.
+    /// Whether this entry has been orphaned — decommissioned in place rather than
+    /// hard-deleted. Encrypted, and — deliberately unlike `Contact.Profile.deletionToken`
+    /// — **always populated**, never nil in practice: nil/non-nil status is itself a
+    /// free, zero-decryption signal (SQLite tracks column nullability structurally,
+    /// independent of any encryption applied to the value), so a naive `SELECT COUNT(*)
+    /// WHERE deletionToken IS NOT NULL` would still answer "how many are orphaned"
+    /// without needing the key. Content is one of two fixed-width sentinels
+    /// (`liveToken`/`orphanedToken` below) that encrypt to the same ciphertext length —
+    /// the same "no plaintext boolean flags" principle `AppLayerConfig.pinEnabledPerDepth`
+    /// already uses (Bug 51). Query via `isOrphaned(usingKey:)`, never `== nil`.
+    ///
     /// Orphaned rows are never shown in any view and are excluded from every functional
     /// read via `VaultManager.fetchAllEntries()`, which is why marking this (rather than
     /// hard-deleting) still gives the row a stable, permanent physical presence — the
     /// same reasoning that motivated soft-deleting contacts instead of hard-deleting them
     /// (`bugs.md` Bug 13): a row count that drops in step with a duress-layer teardown is
-    /// itself a forensic signal.
+    /// itself a forensic signal, and — combined with this field's own always-populated
+    /// design — the *live* row count itself is no longer a free signal either.
     ///
-    /// Written by `Manager.Security`'s deactivation-time sweep when the depth this entry
-    /// was stamped with (`visibleThroughDepth`) is freed by a deactivation and would
-    /// otherwise be reused by a later, unrelated duress session (Bug 110, `bugs.md`) —
-    /// `visibleThroughDepth` itself is left untouched (still names the depth this entry
-    /// was created at, for the historical record) since exclusion from every read makes
-    /// its value moot going forward.
+    /// Written live at creation (`VaultManager.addEntry`, the backup-restore path) and
+    /// flipped to orphaned by `Manager.Security`'s deactivation-time sweep when the depth
+    /// this entry was stamped with (`visibleThroughDepth`) is freed by a deactivation and
+    /// would otherwise be reused by a later, unrelated duress session (Bug 110,
+    /// `bugs.md`) — `visibleThroughDepth` itself is left untouched (still names the depth
+    /// this entry was created at, for the historical record) since exclusion from every
+    /// read makes its value moot going forward.
     ///
     /// A side effect worth knowing, not something this field has to implement itself: an
     /// orphaned entry's `ShardRecord`s stop appearing in `VaultManager.
@@ -221,12 +230,35 @@ final class VaultEntry {
     /// processExpectedShards`'s existing implicit-revoke handling. No new shard-status
     /// bookkeeping needed for that to happen.
     ///
-    /// Cap: 50 rows; when full, the oldest orphaned row is hard-deleted before a new one
-    /// is written — same cap Contact.Profile.deletionToken uses.
+    /// Cap: 50 orphaned rows; when full, the oldest is hard-deleted before a new one is
+    /// written — same cap `Contact.Profile.deletionToken` uses.
     ///
-    /// New field with a default value — a lightweight SwiftData migration, same as when
-    /// `deletionToken` itself was added to `Contact.Profile`.
+    /// Sealed under the ambient local-DB key (`Manager.Key()`), the same key
+    /// `visibleThroughDepth` uses — deliberately not the vault's biometric-gated key:
+    /// `Manager.Security.orphanVaultEntries` must be able to write this on deactivation
+    /// without the vault ever being unlocked.
     var deletionToken: Data? = nil
+
+    // MARK: Orphaning (Bug 110)
+
+    /// Fixed-width sentinel plaintexts for `deletionToken`. Both are one byte and encrypt
+    /// to the same ciphertext length — nothing about the sealed bytes reveals which one
+    /// is inside without the key.
+    static let liveToken:     Data = Data([0])
+    static let orphanedToken: Data = Data([1])
+
+    /// Whether this entry has been orphaned. Fail-safe: a `deletionToken` that is nil,
+    /// undecryptable, or decrypts to neither known sentinel is treated as orphaned — the
+    /// same "ambiguous means hidden" convention `isVisible` already uses elsewhere on
+    /// this model. In practice `deletionToken` is always populated and always decryptable
+    /// under the current key; nil only occurs for a row that predates this field
+    /// entirely, which cannot happen on this branch (added the same session it started
+    /// being written), but the fallback costs nothing to keep.
+    func isOrphaned(usingKey key: SymmetricKey) -> Bool {
+        guard let data = self.deletionToken, let plain = data.decrypt(using: key)
+        else { return true }
+        return plain != Self.liveToken
+    }
 
     // MARK: Init
 

@@ -144,6 +144,9 @@ private func insertVaultEntry(in container: ModelContainer, visibleThroughDepth:
     let ctx   = ModelContext(container)
     let entry = VaultEntry(encryptedLabel: Data(), encryptedContent: Data())
     entry.visibleThroughDepth = visibleThroughDepth
+    // Always-populated orphan flag (Bug 110), matching VaultManager.addEntry — every
+    // entry starts live.
+    entry.deletionToken = try VaultEntry.liveToken.encrypt()
     ctx.insert(entry)
     try ctx.save()
     return entry.id
@@ -385,7 +388,8 @@ struct VaultEntryOrphaningTests {
         // The row itself must still physically exist, marked inert — never hard-deleted.
         let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
         #expect(raw != nil, "orphaned row must be hard-kept, not deleted")
-        #expect(raw?.deletionToken != nil)
+        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        #expect(raw?.isOrphaned(usingKey: key) == true)
 
         // Session B: a completely unrelated duress PIN, also reaching depth 1.
         try c.security.activateSecureMode(confirmingEntryPIN: "111111", duressPIN: "444444")
@@ -421,7 +425,8 @@ struct VaultEntryOrphaningTests {
         #expect(entries.map(\.id).contains(entryID),
                 "a shallower, still-live layer's entry must survive an unrelated deeper cascade")
         let raw = try fetchAllVaultEntries(from: c.container).first { $0.id == entryID }
-        #expect(raw?.deletionToken == nil, "must not be orphaned — its own depth was never freed")
+        let key = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        #expect(raw?.isOrphaned(usingKey: key) == false, "must not be orphaned — its own depth was never freed")
     }
 
     @Test("Orphaning caps at 50 rows, evicting the oldest first",
@@ -445,7 +450,8 @@ struct VaultEntryOrphaningTests {
         try c.security.deactivateSecureMode(confirmingEntryPIN: "999999")
 
         let allRows  = try fetchAllVaultEntries(from: c.container)
-        let orphaned = allRows.filter { $0.deletionToken != nil }
+        let key      = try #require(try Manager.Key().createHybridLocalEncryptionKey())
+        let orphaned = allRows.filter { $0.isOrphaned(usingKey: key) }
         #expect(orphaned.count == 50, "cap must hold at 50 orphaned rows")
         #expect(!allRows.map(\.id).contains(ids[0]),
                 "the single oldest row must be hard-deleted once the cap is exceeded")

@@ -278,6 +278,8 @@ extension VaultManager {
             // (Vault+Manager.swift:223). A backup file only ever holds one layer's
             // entries (Bug 88 remedy 4), so the depth to stamp is simply "here."
             entry.visibleThroughDepth = try DepthCodec.encode(currentDepth).encrypt()
+            // Always-populated orphan flag (Bug 110), same as addEntry.
+            entry.deletionToken = try VaultEntry.liveToken.encrypt()
 
             var pekBytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, 32, &pekBytes) == errSecSuccess else {
