@@ -8005,11 +8005,16 @@ render, and is out of scope here — but any future UI reading `verifiedAt` inhe
 
 ## Bug 105 — A duress layer can distribute shares of the real BEK, through ordinary UI
 
-**Status:** **Open.** Filed 2026-08-28, found while scoping `BEK_LAYERING_REFACTOR.md` — by asking
-whether shard *distribution* is depth-gated, having already established that restore is not.
+**Status:** **Closed (Fixed), verified 2026-09-10.** Filed 2026-08-28, found while scoping
+`BEK_LAYERING_REFACTOR.md` — by asking whether shard *distribution* is depth-gated, having already
+established that restore is not. Fixed by `VAULT_KEY_LAYERING.md` §7 Stages 1-2 (built 2026-09-08,
+per that document's own status — not previously reflected here, verified directly against shipped
+code rather than taken on the doc's word). Distribution only — restore/reconstruction completing
+per-depth is a separate, still-open concern, `VAULT_KEY_LAYERING.md` item 9, blocked on
+`RECOVERY_BUFFER_LAYERING.md`'s own Stage 4. Not to be conflated with this closure.
 
-**Target:** `release/v1.10.3`. Reachable on shipped code with no attacker-supplied file, no shard
-delivery, and no restore.
+**Target:** Fixed. (Originally `release/v1.10.3` — that release shipped without this fix, per
+`VAULT_KEY_LAYERING.md` §9's own correction; landed instead on `v1.11.0/vault-key-layering`.)
 
 ### Severity: High
 
@@ -8064,7 +8069,55 @@ opens every slot. Bug 92's insight — the PIN is the only input in this subsyst
 does not hold — is the available answer. Adopting it here, or accepting convention and documenting
 that plainly, is an open decision for this refactor rather than something to inherit silently. It
 carries Bug 92's hard dependency with it: no slow KDF exists in the codebase, and a PIN-derived key
-without one is a design that looks layered and is not.
+without one is a design that looks layered and is not. (This decision itself is `VAULT_KEY_LAYERING.md`
+item 7: settled as accepted code-discipline separation, not the PIN-derived per-slot key — see that
+item and the *Fix* note below for why.)
+
+### Fix
+
+`VAULT_KEY_LAYERING.md` §7 Stages 1-2: the single device-wide `BackupEncryptionKey` row became a
+32-slot array, one slot per depth, each slot holding an independently-generated key. Verified directly
+against shipped code, not assumed from the design doc:
+
+- **`Backup.setup(vaultKey:currentDepth:)`** (`Vault+Manager+Backup.swift:888`) generates a fresh
+  `SecRandomCopyBytes` 256-bit key and persists it to `currentDepth`'s own slot — no derivation from,
+  or connection to, any other depth's key. A duress-depth setup cannot produce the real depth-0 key by
+  construction, not by convention.
+- **The full call chain genuinely routes by depth**, checked hop by hop:
+  `prepareBackupShards(currentDepth:)` → `Backup.prepareShards(currentDepth:)` →
+  `fetchDecoded(currentDepth:)` → `LayerStore.read(slotIndex: currentDepth, ...)`. `currentDepth` is
+  the slot index, not a decorative parameter.
+- **`Vault+ShardSetup.swift`** — the file this entry's own "What happens" section named as having zero
+  references to `currentDepth` — now passes `currentDepth: self.security.currentDepth` into
+  `backupShardMetadata`, `setupBackup`, and the shard-preparation call.
+- **Both named harms are closed as a structural consequence, not patched individually.** Harm 1 (a
+  coercer holds shares of the real BEK): impossible, since a duress-depth distribution splits that
+  depth's own independently-random key. Harm 2 (the owner's trustee list replaced): `shardMetadata`
+  lives inside each slot's own payload now, so a duress-depth distribution can only overwrite *that
+  depth's own* metadata — depth 0's is a separate record, never touched.
+- **The item 7 accepted-tradeoff decision, cross-referenced above:** slots are not additionally
+  cryptographically isolated by a PIN-derived per-slot key (the direction "Bug 92 does supply
+  something this design needs," above, gestures at) — that was designed (`slotKey(depth)`,
+  fold-the-PIN-into-`info`), then found to conflict with a *different* property this design also wants
+  (hiding which depth was last active across snapshot diffs, by full-array reseal on every write) and
+  deliberately dropped in favor of the snapshot protection. A coercer holding the vault key can still
+  decrypt every depth's slot content directly — that risk is accepted as code-discipline separation,
+  the same posture this codebase's contact storage used to document before its own mechanism was
+  removed (Removal Stage 2, `plan.md`) — not a residual version of *this* bug, a different, named,
+  still-accepted tradeoff.
+
+### Guard
+
+No dedicated regression test asserts the literal `depth0Key.bytes != depth2Key.bytes` — worth naming
+as a real, if narrow, gap rather than glossing over it. What's covered: `BEKArrayTests`
+("writing to one slot preserves a previously-written different slot's content" et al.) proves
+storage-level slot isolation; `VaultBackupRoundTripTests.shardConfirmationAppliesToOwningDepthOnly`
+sets up independent BEKs and `shardMetadata` at depths 0 and 2 and proves they're tracked as fully
+separate records, never cross-contaminating. Combined with `Backup.setup`'s fresh-CSPRNG-per-call
+construction (verified above, not test-covered directly), this is strong but not airtight evidence —
+a direct "two depths' keys are provably different values" test would close the remaining gap and is
+worth adding if this area is touched again.
+
 
 ### Relationship to the entries around it
 
