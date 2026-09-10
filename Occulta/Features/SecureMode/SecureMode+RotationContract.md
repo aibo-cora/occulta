@@ -1,8 +1,20 @@
 # Secure Mode — Key Rotation Contract & Change Checklist
 
-Every Secure Mode code change **must** pass through this checklist before merge.
-The checklist exists because key rotation has a narrow critical section between
-"staged key committed" and "old key deleted" where a single missing save can make
+**Retired, moot, 2026-09-10 — this checklist is no longer mandatory, because the mechanism it
+governs is gone.** `activateSecureMode`/`deactivateSecureMode` no longer stage, commit, or rotate any
+key, seal or read a blob, or re-key `Contact.Profile`/`VaultEntry`/`Group`/`AppLayerConfig`/
+`Message.Draft` (Removal Stages 0-3, `plan.md`). Every section below — the rotation sequence, model
+coverage tables, the "missing save" failure mode, the blob-maintenance checklist items, the Layer
+Store Protocol — describes deleted code. **One invariant survives and is worth carrying forward: I7**
+(`AppLayerConfig` always exists from first launch, its presence is never a forensic tell, sensitive
+fields go to nil rather than the row being deleted) — still true and still enforced, just no longer
+documented here; see `AppLayerConfig+Model.swift`'s own doc comments and
+`forensic-trace-avoidance.md`'s K-series. Everything else below is kept as a historical record of
+what the mechanism required while it existed, not as guidance for any change going forward.
+
+**Original framing (historical, no longer in force):** Every Secure Mode code change **must** pass
+through this checklist before merge. The checklist exists because key rotation has a narrow critical
+section between "staged key committed" and "old key deleted" where a single missing save can make
 all contacts permanently unreadable. Bugs 34–37 were all in this area.
 
 ---

@@ -972,3 +972,76 @@ this removal effort began. 6 skips (unchanged `KeychainMigrationSETests` baselin
 (`SecureModeNonInterferenceTests` ×4, `SecureModeVerifierPersistenceTests` ×2,
 `DepthMigrationInertnessTests` ×1) confirmed passing individually by name, not just inferred from a
 clean overall result.
+
+## Removal — Stage 5: done, 2026-09-10
+
+Docs pass, no code changes — the four items from the original stage sketch plus doc debt found while
+verifying against the live tree, following this feature's own standing rule (`bugs.md`, `plan.md`) to
+document decisions in place rather than leave them implicit.
+
+**`bugs.md`:** Bugs 106, 107, 108, 109 closed as moot, each with a **Status** update explaining why
+(the exact mechanism each describes — `Manager.LayerStore`, its AAD fix, Design B, the sensitive-
+contact key-record skip — was deleted whole in Stages 0-4) and the original text kept below verbatim,
+matching this doc's existing "Closed (design decision — X removed)" convention (Bug 13). **A fifth
+entry, Bug 110, was filed, not closed** — found while updating `forensic-trace-avoidance.md`'s S7:
+`VaultEntry.visibleThroughDepth` is stamped once at creation and never reset, so a vault entry created
+during one duress session can resurface in a later, unrelated session that reaches the same depth
+number, since Stage 1 removed both the old bulk re-stamp (activation) and bulk reset (deactivation)
+that used to prevent this. Surfaced to the user directly before writing anything, including a
+correction of my own first-pass severity read (initially framed as a confidentiality leak; actually a
+same-restriction-level stale-state issue, since anything stamped at a duress depth was already shown
+to whoever reached that depth) — filed as Low severity, open, not fixed in this pass, per the user's
+explicit choice to log it rather than fix it now.
+
+**`forensic-trace-avoidance.md`:** the most substantial rewrite of this stage — its security model
+rested on blob + DB-key-rotation, both gone. Added a top-of-document notice explaining the removal and
+its reasoning (AFU threat model derives both keys equally, established earlier this session and
+recorded in `plan.md`'s Stage 0 entry and `PASSPHRASE_LAYER_KEYS.md`). Retired in full, original text
+kept as historical record: the entire **Blob File Forensics** section (B1-B7), **S1** (DB key
+rotation), **K3** (blob key domain separation). Rewritten to describe current behavior rather than
+retired outright, since the underlying invariant or field is unchanged and only the mechanism
+maintaining it changed: **S5** (Design B is not a future upgrade path any more — the machinery it
+depended on is gone, not merely deferred), **S6** (the invariant holds via creation-time stamping and
+the launch migration alone now, not a second enforcement point at deactivation), **S7** (rewritten
+around Bug 110's finding — this is the entry where writing the "what changed" section surfaced the
+bug), **S9** (`globalTrusteeDepth` is simply never touched by Secure Mode's lifecycle now, and is
+unaffected by Bug 110 for a stated reason: it is a deliberate depth-severity policy, not an accidental
+session artifact, the same distinction that exempts `originDepth`). Minor stale-phrase fixes: S8's
+"local DB key that rotates during activation," the OS-Level-Artifacts section's opening paragraph
+naming S1 alongside file protection.
+
+**Stale doc-comment references fixed in code**, found while doing the above and flagged during
+Stages 2-4 rather than fixed inline at the time: `DepthCodec.swift` (two comments describing
+"staged" vs. "canonical" keys and `commitStagedLocalDBKey()`, neither of which exist), `Contact+
+Manager.swift` (the injectable-crypto `save` overload's doc comment claiming Secure Mode activation
+as its user — it never had another one now that Stage 1 shipped), `Contact+Manager+Groups.swift`
+(a dead pointer to `reencryptAllFields`'s deleted inline note, redirected to
+`EncryptedFieldRotationTests.readabilitySeparatesStrandedFromAbsent`), `OccultaApp.swift` (the
+`schema` array's doc comment claiming `RotationRegistryTests` as its reason for existing, which is
+also gone). Two comments in `Group+FormV3.swift` and `OccultaApp.swift` that name `reencryptAllFields`
+were deliberately left alone — they describe a specific historical version range (installs that
+activated Secure Mode on 1.10.0/1.10.1), accurate as history, not implying the function exists today.
+
+**Three dedicated docs retired with a top-of-file notice, original content kept as historical
+record, not otherwise rewritten:** `ROTATION_COVERAGE.md` (never built — no code was ever written
+against it), `SecureMode+RotationContract.md` (its mandatory-checklist framing corrected explicitly,
+since "must pass through this before merge" would otherwise mislead a future contributor; one
+invariant, I7 — `AppLayerConfig` must always exist — flagged as still true and pointed to where it's
+now documented), `LayerStore.md` (entirely about the deleted mechanism, no mixed content).
+`scenarios.md` got a file-level notice rather than per-scenario edits — dozens of its ~15 sections
+describe the removed rotation/blob behavior verbatim, and annotating each individually was judged out
+of proportion to a docs-cleanup pass; scenarios about PIN state, depth routing, lockout, and unrelated
+UI tells are unaffected and still accurate.
+
+**Explicitly out of scope, flagged rather than touched:** `VAULT_KEY_LAYERING.md`
+(`Occulta/Features/Vault/`) references `Manager.LayerStore` extensively as design precedent for the
+still-live, actively-developed `BEKArray` work — this is this branch's actual primary feature, not
+part of the Secure Mode removal, and rewriting a live spec document belongs to whoever continues that
+work, not to this pass. `secure-mode-architecture.html`, an interactive architecture diagram with
+`Manager.LayerStore` as a graph node, was left untouched — editing diagram data is a different kind of
+work than the prose changes in this stage, and wasn't named in the original stage sketch.
+
+**Exit state:** app target and test target build with zero errors (verified — the stage touched a
+handful of `.swift` doc comments alongside the `.md` files, so this wasn't purely a markdown-only
+change). No test suite run: nothing in this stage changed runtime behavior, only documentation and
+comments.

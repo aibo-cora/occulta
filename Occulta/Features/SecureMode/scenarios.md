@@ -1,5 +1,16 @@
 # Secure Mode — Scenario Catalogue
 
+**Partially retired, 2026-09-10.** `activateSecureMode`/`deactivateSecureMode` no longer stage or
+rotate any key, seal or read a blob, or re-key `Contact.Profile`/`VaultEntry`/`AppLayerConfig`
+(Removal Stages 0-3, `plan.md`) — Secure Mode is UI-only depth filtering now. Many scenarios below
+still describe that removed behavior verbatim ("14-step key rotation," "Blob sealed," "staged key,"
+`maintainLayerStore`/`rewriteLayerStore`, and the whole numbered-slot blob model) and no longer match
+shipped code. This notice covers the file as a whole rather than annotating each of the dozens of
+affected entries individually — treat any scenario mentioning rotation, staging, or a blob as a
+historical record of pre-removal behavior, not as current expected behavior for test planning or
+code review. Scenarios about PIN state transitions, depth routing, lockout, and UI/behavioral tells
+unrelated to the blob/rotation mechanism are unaffected and still describe live behavior.
+
 Documents every meaningful user flow and state permutation. Use this as the reference for test planning, code review, and evaluating new bug reports against expected behaviour.
 
 ---

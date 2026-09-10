@@ -218,8 +218,9 @@ class ContactManager {
         try self.save(contact: contact, currentDepth: currentDepth, using: self.cryptoManager)
     }
 
-    /// Overload used by Secure Mode activation to re-encrypt safe contacts under the staged key.
-    /// Identical to `save(contact:currentDepth:)` but uses `crypto` instead of `self.cryptoManager`.
+    /// Injectable-crypto overload, for callers that need a `CryptoProtocol` other than
+    /// `self.cryptoManager` — currently only tests. Identical to `save(contact:currentDepth:)`
+    /// but uses `crypto` instead of `self.cryptoManager`.
     func save(contact: Contact.Draft, currentDepth: Int = 0, using crypto: any CryptoProtocol) throws {
         // Not encrypted here despite the name this held before — `save` is dual-purpose
         // (create or update). For an edit, this is already the exact value stored at

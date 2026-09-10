@@ -8105,8 +8105,17 @@ all, which is consistent with the code having no depth awareness to test.
 
 ## Bug 106 — The contact `LayerStore` has no cryptographic cross-depth isolation, the same gap Bug 92 names for the BEK
 
-**Status:** **Open for the headline issue (shared key, accepted tradeoff, not being fixed); the
-separable AAD/slot-binding half is fixed, 2026-09-09 — see *Partial fix* below.** Filed 2026-09-07, found while working through
+**Status:** **Closed — moot, 2026-09-10.** `Manager.LayerStore` and the entire blob mechanism this
+entry is about were deleted whole (Removal Stage 2, `plan.md`) — Secure Mode no longer seals
+sensitive contacts into any blob, so there is no `layerKey`, no shared-key cross-depth exposure, and
+no slot to bind an AAD to. The severity question this entry left open (a confident High/Low rating
+for the shared-key gap) is now moot rather than answered; nothing is asking it any more. Left below
+verbatim as a historical record — including the *Partial fix* (`LayerStore.SlotAAD`), which was
+deleted along with the rest of `SecureMode+LayerStore.swift`.
+
+**Original status (superseded):** **Open for the headline issue (shared key, accepted tradeoff, not
+being fixed); the separable AAD/slot-binding half is fixed, 2026-09-09 — see *Partial fix* below.**
+Filed 2026-09-07, found while working through
 `VAULT_KEY_LAYERING.md` item 7 (a duress-depth-detection risk in the new BEK slot array) and asking
 why the *existing* contact `LayerStore` can safely reseal all 32 slots with fresh nonces on every
 write without hitting the same problem. The answer — it has no per-depth key isolation to begin with
@@ -8210,7 +8219,14 @@ notes for BEK distribution, and the same accepted-tradeoff shape item 7 already 
 ## Bug 107 — `Manager.LayerStore.push()`/`pop()` silently replace an unreadable slot with fresh
 random filler, indistinguishable from a slot that was always empty
 
-**Status:** **Open, severity not fully assessed — mechanism confirmed, likelihood not yet traced.**
+**Status:** **Closed — moot, 2026-09-10.** `Manager.LayerStore.push()`/`pop()` and the whole blob
+mechanism were deleted (Removal Stage 2, `plan.md`) — there is no slot, no filler, and no
+unreadable-slot-replacement path left to silently lose anything. The severity question this entry
+left open (how often a slot actually becomes unreadable in practice) is moot rather than answered.
+Left below verbatim as a historical record.
+
+**Original status (superseded):** **Open, severity not fully assessed — mechanism confirmed,
+likelihood not yet traced.**
 Filed 2026-09-08, found while designing the new BEK slot array's own write algorithm and comparing it
 against `Manager.LayerStore`'s existing pattern as precedent. A near-identical bug was caught and fixed
 in the BEK design before any of that code was written (`VAULT_KEY_LAYERING.md` §8 item 8, third
@@ -8342,9 +8358,21 @@ content survives rather than being silently replaced.
 ## Bug 108 — Design B has no mechanism to persist a mid-session edit, once the DB row it would edit is
 a dead shell
 
-**Status:** **Not a live bug — Design A ships today for contact *content* (text fields), and is
-unaffected; the four-named-steps Design B this bug is about (full text-field shelling,
-`inMemorySensitiveContacts`, merged view) is still deferred, not built.** Filed 2026-09-09 as a design
+**Status:** **Closed — moot, 2026-09-10.** Design B (the four-named-steps content-shelling design
+this entry is about) was never built and is not going to be: the whole blob/classification/rotation
+machinery it would have extended — `Manager.LayerStore`, `inMemorySensitiveContacts`,
+`resyncSensitiveContactsBlob()`, `ContactManager.restoreContact`/`hasUnreadableKeys` (the narrower
+item-1/3 pair that *did* ship, 2026-09-10, and is described below) — was deleted in full (Removal
+Stages 0-4, `plan.md`). Secure Mode now does UI-only depth filtering; there is no DB shell, no blob
+snapshot, and so no mid-session-edit gap to have. `forensic-trace-avoidance.md §S5`'s Design
+A/Design B discussion is updated separately to reflect the same decision. Left below verbatim as a
+historical record of why the four-step design was rejected even before this removal, which is
+itself part of why the removal happened.
+
+**Original status (superseded):** **Not a live bug — Design A ships today for contact *content* (text
+fields), and is unaffected; the four-named-steps Design B this bug is about (full text-field
+shelling, `inMemorySensitiveContacts`, merged view) is still deferred, not built.** Filed 2026-09-09
+as a design
 gap, found before Design B is built rather than after, while checking whether `VAULT_KEY_LAYERING.md`'s
 S8 could safely reuse Design B's four named steps as-is for vault entries. It couldn't, because the four
 steps have this hole regardless of which content they're applied to. **The missing fifth step's
@@ -8449,11 +8477,22 @@ ships.
 ## Bug 109 — Skipping a sensitive contact's key-record re-encryption leaves an authentication-failure
 tell, not silence
 
-**Status:** Open. Live in shipped code (`Manager+Security.swift` Step 8, commit `3b7baa9`,
-2026-09-10) — `plan.md`'s Design B item 1. Found the same day, while defending that change against a
-direct question about what an AFU-capable adversary — one who can derive the current canonical key,
-which needs no biometric (see this feature's own key-derivation discussion) — would actually observe,
-not discovered independently.
+**Status:** **Closed — moot, 2026-09-10, same day it was filed.** This entry's own discovery — that
+Design B's item 1 (activation skipping `reencryptKeyRecords` for a sensitive contact) trades a
+content leak for a proof-of-concealment leak — became part of the argument for removing the
+skip-and-rebuild mechanism (item 1/3) entirely rather than fixing it with the proposed remedy below.
+Activation no longer touches `Contact.Profile`/`Contact.Profile.Key` fields at all (Removal Stages
+0-4, `plan.md`) — no key-record skip, no Step 8, no `reencryptKeyRecords`, so no field that
+authenticates differently from its neighbors. The proposed remedy (resealing as filler under the
+current key) was never built; it's moot along with the mechanism it would have patched. Left below
+verbatim as a historical record — including the severity analysis, which was part of the reasoning
+that led to this removal in the first place.
+
+**Original status (superseded):** Open. Live in shipped code (`Manager+Security.swift` Step 8,
+commit `3b7baa9`, 2026-09-10) — `plan.md`'s Design B item 1. Found the same day, while defending that
+change against a direct question about what an AFU-capable adversary — one who can derive the
+current canonical key, which needs no biometric (see this feature's own key-derivation discussion) —
+would actually observe, not discovered independently.
 
 **Target:** unset.
 
@@ -8520,3 +8559,62 @@ is left *unchanged* by activation — proving item 1 works exactly as specified,
 the shape of this bug. A test for the remedy above would assert the opposite: after activation, a
 sensitive contact's key-record material decrypts successfully under the current canonical key (no
 `.authenticationFailure`) but decodes to something other than the original plaintext.
+
+---
+
+## Bug 110 — A vault entry's duress-depth stamp is never reset, so it can resurface in a later, unrelated duress session at the same depth number
+
+**Status:** Open, low severity. Filed 2026-09-10, found while updating `forensic-trace-avoidance.md`'s
+S7 to describe the current (post-removal) behavior — not a pre-existing entry being revisited, a fresh
+regression from Removal Stage 1.
+
+**Target:** unset.
+
+### Severity: Low — stale-state confusion, not a confidentiality leak
+
+**What this is not:** content leaking to a more-trusted viewer than it was meant for. `VaultEntry`'s
+exact-match depth design (`Vault+Model.swift:267`'s own doc comment, citing
+`Docs/Bugs/v1.10.0/Vault-Entries-Created-At-A-Duress-Depth-Leak-Into-The-Real-Vault.md`) exists
+specifically to stop a duress-created entry leaking *upward* into a less-restricted view — including
+the real depth-0 vault. That protection is untouched by this bug. Everything below is about a
+*different* direction: reappearing in a later view at the *same* restriction level, not a safer one.
+
+### What happens
+
+`VaultEntry.visibleThroughDepth` is stamped once, at creation, with whatever `currentDepth` is at
+that moment (`Vault+Manager.swift:253`, `Vault+Manager+Backup.swift:280`) and compared by exact match
+(`value == depth`, `Vault+Model.swift:267`). Nothing else ever writes it — confirmed by grep, exactly
+two writers, both creation-time.
+
+Duress depth *numbers* are reused across unrelated sessions: `deactivateSecureMode` always returns to
+depth 0 or 1, and a fresh `activateSecureMode` → duress-PIN verification always walks back up through
+1, 2, 3... the same way every time (`Manager+Security.swift`). Depth 1 is not tied to *which* duress
+PIN produced it — it is simply "the first duress layer," and any new, unrelated duress PIN configured
+after a full deactivate/reactivate cycle becomes depth 1 again.
+
+Before Removal Stage 1, this was covered by two things working together: activation's old Step 8
+re-stamped every vault entry on each activation, and deactivation's old Step 6 unconditionally reset
+every entry's stamp to nil. Between them, a stale depth-N stamp from a past session could never
+survive into a new one. Stage 1 removed both, per the Stage 0 design decision that activation/
+deactivation touch no application data at all — and nothing replaced the reset. Concretely: create a
+vault entry during duress session A (reaches depth 1) → deactivate → later configure an unrelated
+duress session B (also reaches depth 1) → the entry from session A is visible again in session B,
+because `entry.visibleThroughDepth == 1 == currentDepth` for both, with no way to tell the sessions
+apart.
+
+### Why this is Low, not High
+
+Anything stamped at a duress depth was, by construction, already shown to whoever reached that depth
+— it is not real-vault content. A stale duress-session entry resurfacing in a later duress session
+exposes it to someone at the *same* restriction level it was already exposed to, not a safer or more-
+trusted one. The worst case is confusing, unexpected old content appearing in a new coercion episode —
+not the real user's protected data crossing into a view it was never meant to reach. `originDepth` on
+`Contact.Profile` looks superficially similar (also a creation-time `currentDepth` stamp) but is not
+the same class of bug: its floor semantics (`depth >= origin`) are a deliberate policy about depth
+*severity levels*, meant to generalize across future duress sessions by design (see its own doc
+comment) — not an accidental byproduct with no policy intent behind the specific number, which is
+what makes `VaultEntry`'s case different.
+
+### Guard
+
+None yet.

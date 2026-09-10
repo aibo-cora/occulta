@@ -1,10 +1,20 @@
 # LayerStore — Design & Declarations
 
+**Retired, moot, 2026-09-10 — `Manager.LayerStore` was deleted whole (Removal Stage 2, `plan.md`).**
+There is no blob, no push/pop, no store file, and no cryptographic container any more — Secure Mode
+is UI-only depth filtering now. Every section below describes deleted code. Kept as a historical
+record of the design; see `forensic-trace-avoidance.md`'s retirement notice at its top for the
+security reasoning behind removing it (the blob key and the local DB key were equally derivable by
+the realistic AFU threat model, so the blob bought no confidentiality it didn't already have another
+way).
+
+**Original framing (historical, no longer in force):**
+
 `Manager.Security.LayerStore` is the cryptographic container for the plausible-deniability
 layer stack. It owns all file I/O and AES-GCM operations for storing and restoring sensitive
 contact data across activation and deactivation cycles.
 
-See `plan.md` Step 4 for the full activation and deactivation sequences that drive this store.
+See `plan.md` Step 4 for the full activation and deactivation sequences that drove this store.
 
 ---
 

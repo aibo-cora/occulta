@@ -31,13 +31,10 @@ struct OccultaApp: App {
     /// fresh -wal/-shm files that SQLite creates after the initial attributes call.
     private let storeURL: URL
 
-    /// Every persisted model. Extracted from `init()` so `RotationRegistryTests` can assert
-    /// that each entry is classified as either re-keyed by a Secure Mode rotation or
-    /// deliberately outside it — see `RotationRegistry`.
-    ///
-    /// This array is the anchor for that check precisely because it is load-bearing: the app
-    /// cannot launch without it, so a new model cannot be added to the store without appearing
-    /// here. A test fixture listing the same types could silently fall behind; this cannot.
+    /// Every persisted model. Extracted from `init()` as its own static property rather than
+    /// left inline, so it can be read (not just constructed) from outside `init()` — load-bearing
+    /// by construction: the app cannot launch without it, so a new model cannot be added to the
+    /// store without appearing here.
     static let schema = Schema([
         Contact.Profile.self,
         Contact.Profile.PhoneNumber.self,

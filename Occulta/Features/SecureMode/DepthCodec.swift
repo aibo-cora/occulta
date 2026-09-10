@@ -37,8 +37,7 @@ import Foundation
 /// to a coincidence of how JSON spells numbers.
 ///
 /// **Encryption stays at the call sites.** This type maps `Int` ↔ plaintext `Data` and
-/// nothing else — the sites differ in which key they seal under (canonical vs. staged)
-/// and that distinction is theirs to keep.
+/// nothing else — sealing is the caller's job, not this type's.
 enum DepthCodec {
 
     private static let tag:           UInt8 = 0xFF
@@ -61,11 +60,12 @@ enum DepthCodec {
 
     /// Encodes a depth value to plaintext, ready to seal. Always two bytes.
     ///
-    /// **Total by design — it cannot throw and cannot trap.** `deactivateSecureMode`
-    /// calls this between the staged-key creation ("point of no return begins") and
-    /// `commitStagedLocalDBKey()`. A throw there is caught and rolled back, but a trap
-    /// — which is what an unchecked `UInt8(_:)` conversion would produce — terminates
-    /// the process with no catch running. Depth is not structurally bounded either:
+    /// **Total by design — it cannot throw and cannot trap.** Callers like
+    /// `AppLayerConfig.writeCoercerBaseDepth(_:)` run inside `activateSecureMode`/
+    /// `deactivateSecureMode`'s own save sequence, where a trap — which is what an
+    /// unchecked `UInt8(_:)` conversion would produce — terminates the process with no
+    /// catch running and no chance to leave state consistent. Depth is not structurally
+    /// bounded either:
     /// `applyVerifyState` increments `currentDepth` with no ceiling, and the 32-wide
     /// arrays merely no-op past their end. So out-of-range values must clamp, never trap.
     ///
