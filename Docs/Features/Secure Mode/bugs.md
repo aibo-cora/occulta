@@ -5814,7 +5814,15 @@ neither subsumes the other.
 | Harm | A backup *file* decrypts at any layer | In-app operations at a duress depth act on the *real* key |
 | Attacker | Holds raw BEK bytes, obtained outside the app | Uses the app normally, in a duress session |
 | Fix | Derive the file key from BEK ‖ slow-KDF(PIN) | Give each layer its own BEK |
-| Blocker | No slow KDF exists in the codebase | Storage-format change, staged |
+| Blocker | No slow KDF exists in the codebase | ~~Storage-format change, staged~~ — **built, 2026-09-11** |
+
+**Stale, 2026-09-11: the right column's blocker shipped.** Per-depth BEK storage landed
+(`VAULT_KEY_LAYERING.md` §8 item 14) — Bug 102 is now closed, reclassified as subsumed into Bug 99;
+see that entry's own reclassification note for the accounting. Everything else in this reconciliation
+still holds unchanged: per-depth storage still does nothing for *this* bug, because `encryptedPayload`
+stays sealed under the plain vault key (not depth-derived) regardless of which table holds the row —
+someone holding raw extracted key material still gets every depth's payload. This bug's own remedy
+(PIN-combined file key) is still blocked on the same missing slow KDF, unaffected by any of this.
 
 **Per-depth BEKs do not fix this bug**, and the reason is already stated above under *Why the obvious
 keys do not work*. Bug 102's slots would all be sealed under the vault key, which is not
@@ -7287,6 +7295,19 @@ whichever layer completes, so a later export at depth 0 is readable by him. Unch
 remedy, and already confined by Bug 94 remedy 1 to devices that have no BEK yet, which is also the
 only case where his restore can proceed at all.
 
+**Stale as of 2026-09-08, corrected 2026-09-11 — never updated when it happened.** This paragraph
+describes a device-wide, unlayered BEK. That stopped being true at Stage 2 (2026-09-08, `VAULT_KEY_LAYERING.md`
+§7), which routed the BEK array itself by depth, and is even less true now: BEK storage moved off
+the array onto per-depth `BackupEncryptionKey` rows (§8 item 14, 2026-09-11). Installing a BEK at
+duress depth N now only ever touches depth N's own row — depth 0's key, trustees, and `shardMetadata`
+are structurally untouched, confirmed directly by `BackupKeyOrphaningTests.shallowerBackupKeySurvivesCascade`.
+**What is still true, unchanged:** `attemptBackupRestore` (renamed from `attemptBEKRestore`) still
+hard-guards `currentDepth == 0` before completing (`Vault+Manager+Backup.swift:482`) — restore
+completion itself remains pinned to depth 0, not routed per-depth. So this entry's actual oracle (arm
+in duress, wait, nothing ever completes there) is unaffected by either storage change; only the
+"his key becomes *the device's* key" framing above is what's gone stale — see Bug 102's own
+correction note for the fuller accounting, since that bug's entire scope turned on the same premise.
+
 ### Requirements
 
 **The arming depth has to be persisted, and sealed.** It must go through `DepthCodec` under the
@@ -7556,10 +7577,48 @@ backs up by default. Same investigation, unrelated remedies.
 
 ## Bug 102 — The BEK has no layer concept, so a restore completing in duress hands the coercer the device's real backup key
 
-**Status:** **Open.** Filed 2026-08-27. Found by asking whether Bug 99's arming-depth remedy also
-contains the *key* a restore installs, not just the entries it imports. It does not.
+**Status:** **Closed — subsumed into Bug 99, 2026-09-11.** Filed 2026-08-27, **Open** until now. Found
+originally by asking whether Bug 99's arming-depth remedy also contains the *key* a restore installs,
+not just the entries it imports — it did not, at the time.
 
 **Target:** unset. Larger than the entries it sits beside — see Remedy.
+
+### Reclassified 2026-09-11 — the premise this entire entry rests on no longer holds
+
+**Everything below this note describes a device-wide, unlayered `BackupEncryptionKey` — "exactly two
+fields, `id` and `encryptedPayload`... no depth stamp," fetched via `.first` with no predicate. That
+was accurate when filed and stayed accurate through Stage 1. It stopped being true at Stage 2
+(2026-09-08, `VAULT_KEY_LAYERING.md` §7), which routed the then-shipping BEK array by depth, and is
+further from true now that BEK storage moved off the array onto per-depth `BackupEncryptionKey` rows
+(§8 item 14, 2026-09-11).** Left below unedited as the reasoning trail — the design work in *Remedy*
+is what this refactor actually built, in a rows-shaped form rather than the array this entry proposed,
+so it's the accurate record of why, not a stale description to correct line by line.
+
+**What this closes, concretely.** The three consequences section below ("his key becomes the device's
+key," "real trustees are stranded," "the vault lists his phones as trustees") described a *device-wide*
+row — install anywhere, own everywhere. That's now structurally impossible: installing a BEK at duress
+depth N only ever touches depth N's own row via `Backup.persist`/`claimFillerRow`, confirmed directly
+by `BackupKeyOrphaningTests.shallowerBackupKeySurvivesCascade` (a shallower, still-live depth's BEK is
+byte-for-byte untouched by an unrelated deeper deactivation) — the identical property this entry's
+*Remedy* section asked for, under "What it subsumes." Row/file-count leaking layer count (the entry's
+own "What it does not remove" caveat) is likewise addressed the way item 14 settled it: a 32-row
+eager-filler baseline, not the fixed 32-slot array this entry pictured, but the same row-count-hiding
+property up to that baseline.
+
+**What is genuinely still open, and where it now lives: Bug 99, not here.** `attemptBackupRestore`
+(renamed from `attemptBEKRestore`) still hard-guards `currentDepth == 0` before completing
+(`Vault+Manager+Backup.swift:482`, confirmed directly) — restore *completion* remains pinned to depth
+0, unchanged by either storage refactor, blocked on `RECOVERY_BUFFER_LAYERING.md`'s own not-yet-built
+per-depth restore state (`VAULT_KEY_LAYERING.md` §8 item 9). That's exactly Bug 99's oracle — arm in
+duress, wait, nothing ever completes there — not a separate harm anymore. Before this refactor, Bug
+102 was the wider bug (it installs the *wrong* key device-wide) and Bug 99 the narrower one it
+partially subsumed (it never installs at all, which at least isn't wrong). Now that installing is
+correctly per-depth by construction, there is only the narrower harm left, and Bug 99 already tracks
+it in full — including the exact remedy (complete at the arming depth) that closes it. Nothing is lost
+by folding this entry into that one; there is no remaining piece of this bug that Bug 99 doesn't
+already cover.
+
+### Original entry, preserved below for the reasoning trail
 
 ### Severity: High
 

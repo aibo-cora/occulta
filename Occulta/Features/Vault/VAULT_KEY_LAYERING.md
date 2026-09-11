@@ -61,7 +61,8 @@ longer exists now that class is deleted. Not re-litigated here; flagged at item 
 whose stated justification needs fresh review, distinct from whether its conclusion still holds.** The
 duress-depth content-richness concern raised alongside item 7 is resolved — accepted limitation, full
 reasoning in `Docs/Audit/OPEN_LIMITATIONS.md` §I. **Owner entries:** `Docs/Features/Secure Mode/bugs.md`
-Bug 102 (BEK, still open), Bug 105 (**Closed, Fixed, verified 2026-09-10** — see §6), Bugs 110-114
+Bug 102 (BEK — **Closed, subsumed into Bug 99, 2026-09-11**, see §8 item 14 and §10), Bug 105
+(**Closed, Fixed, verified 2026-09-10** — see §6), Bugs 110-114
 (vault entries' shipped depth/orphan design and two fixes to it — outside this document's original
 scope, but this document is S8's home, so tracked at §10 now); `forensic-trace-avoidance.md` S5
 (contacts), S8 (vault entries). **Spec docs this changes:**
@@ -1481,7 +1482,7 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 | Bug | What | Status |
 |---|---|---|
 | 92 | A backup file is readable from any layer (offline half) | open — complementary to this design, see §4 and §8 item 4 |
-| 102 | The BEK has no layer concept | **this document** |
+| 102 | The BEK has no layer concept | **Closed — subsumed into Bug 99, 2026-09-11.** Item 14's per-depth rows closed the device-wide-install harm this bug was about; what's left (restore completion pinned to depth 0) is Bug 99's own oracle, not a separate one |
 | 108 | Design B has no mid-session edit persistence — was thought to block S8 too | **Closed — moot, 2026-09-10.** Design B deleted whole (Removal Stages 0-4); neither S5 nor S8 ever needed this mechanism — see §8 item 12 |
 | 105 | A duress layer can distribute shares of the real BEK | **Closed (Fixed), verified 2026-09-10** — §6; closed via Stage 1+2 |
 | 88 | Backup ignored `visibleThroughDepth` in both directions | fixed — export/import are depth-scoped |
