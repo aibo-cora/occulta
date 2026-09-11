@@ -1929,9 +1929,13 @@ At depth N+1 (Bug 47 coercer after `reEnablePIN`): `coercerBaseDepth = N+1` — 
 ## Bug 62 — `pinCollision` "Activation Failed" alert is a forensic tell; enables coercer PIN oracle at duress depth
 
 **See also Bug 119, 2026-09-11:** Gap 2 (no rate-limit design survives a compliant-victim relock
-cycle) and the residual-risk section (accidental master-PIN collision) are both closed as a side
-effect if `PASSPHRASE_LAYER_KEYS.md`'s passphrase-derived layer keys ship with genuinely high-entropy,
-non-editable phrases — worth deciding alongside that proposal rather than solving Gap 2 twice.
+cycle), the residual-risk section (accidental master-PIN collision), and Gap 3's own trigger
+mechanism (the `masterPINCollision` signal a wipe would respond to) are all closed as a side effect if
+`PASSPHRASE_LAYER_KEYS.md`'s passphrase-derived layer keys ship with genuinely high-entropy,
+non-editable phrases — worth deciding alongside that proposal rather than solving these twice. Gap
+3's own *deeper* structural problem (what happens once the real secret is known to be in a coercer's
+hands) is not touched by any of this — see Gap 3's 2026-09-11 note below for why that part is
+orthogonal to secret format.
 
 **Status:** **Open — root scenario fixed, escalation gaps remain.** Re-examined 2026-08-26: the
 bug's actual root — a single, accidental `pinCollision` during ordinary setup, revealing that
@@ -2129,6 +2133,27 @@ If only Secure Mode state is cleared but the coercer's depth-1 verifier is prese
 Sensitive contacts are not hard-deleted from the DB (Bug 13 resolution — they remain in SQLite, hidden by `visibleThroughDepth` filtering). Wiping the blob removes the deactivation restoration copy but leaves the sensitive contacts physically in the DB. If the coercer enters the master PIN after the wipe, they reach depth 0 and those contacts are still visible. A wipe that is actually effective at protecting the data requires hard-deleting sensitive contacts from the DB — which reinstates the Bug 13 functional conflict: the real user can no longer see their sensitive contacts after entering the normal PIN.
 
 There is no currently available path that both protects the data on `masterPINCollision` and preserves the real user's access to it. This option remains open pending a design resolution for the hard-delete conflict.
+
+**Re-examined 2026-09-11, against `PASSPHRASE_LAYER_KEYS.md`/Bug 119 — the pathway that *creates*
+`masterPINCollision` goes away; the deeper structural problem does not.** The whole reason this
+signal exists is that today's routing works by scanning a small array of stored verifiers — checking
+a new PIN candidate against `sealedNormalVerifiers`/`sealedDuressVerifiers` at setup is what turns
+"accidental collision" into a detectable event at all, and that only matters because a 6-digit PIN's
+1-in-10⁶ accidental-collision odds are worth guarding against. Under `PASSPHRASE_LAYER_KEYS.md`'s
+design, authentication is canary-decrypt-success per depth, not array comparison, and each depth
+carries its own SE key — two independently-Diceware-generated 7-word phrases colliding is a ~1-in-2⁹⁰
+event, not worth a setup-time check at all. No check, no `masterPINCollision`, no oracle to build a
+wipe response around. Same mechanism that closes the root scenario and Gap 2.
+
+**But strip away the collision-detection framing and what's actually left in this gap's own "Deeper
+structural problem" section is untouched by any of that.** It was never really a guessing-difficulty
+question: *if the app ever determines it's looking at the real depth-0 secret, entered by someone who
+might be coerced, what should it do?* A higher-entropy secret makes it harder to *stumble onto*; it
+does nothing to help the app tell voluntary entry from compelled entry once the real owner has been
+directed to type their actual real passphrase and the app faithfully, correctly routes them to depth
+0 — which is exactly what it's designed to do. The hard-delete-vs-Bug-13 dead end this section
+describes is identical whether the secret is 6 digits or 7 words; it was never a guessing problem
+underneath. See Bug 119 for the full accounting.
 
 ---
 
@@ -9786,6 +9811,17 @@ anything raised fresh today.
   the targeted, human-plausible guessing Gap 2 actually worries about equally infeasible. Not a reason
   to build this instead of fixing Gap 2 directly — a reason the two should be decided together rather
   than Bug 62 acquiring its own separate rate-limit design that this proposal would make moot.
+  **Re-examined 2026-09-11: Gap 3's trigger mechanism closes the same way.** `masterPINCollision`
+  only exists because today's routing scans a small array of stored verifiers, comparing a new
+  candidate against existing ones — that comparison is what turns a rare accidental match into a
+  detectable, nameable event. Canary-based per-depth authentication at ~90 bits doesn't need that
+  setup-time check at all (accidental collision odds go from 1-in-10⁶ to ~1-in-2⁹⁰), so there's no
+  error to throw and no oracle to build a wipe response around. **Gap 3's own "deeper structural
+  problem" is not closed by this, and can't be by any secret-format change** — it was never a
+  guessing-difficulty question. Once the real depth-0 secret is known to be in a coercer's hands (via
+  direct compulsion, not probing), the app still has no way to tell that apart from the real owner's
+  own legitimate entry, and the Bug 13 hard-delete conflict Gap 3 names is unaffected by whether the
+  secret was 6 digits or 7 words.
 - **§4's PBKDF2-vs-Argon2id tradeoff is lower-stakes than it reads, not resolved.** At ~90 bits of
   input entropy (7 words), even PBKDF2's weaker resistance to parallel/GPU attack leaves brute force
   well outside feasibility — the KDF choice stops being what stands between an attacker and the phrase.

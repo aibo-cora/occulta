@@ -17,7 +17,20 @@ against the actual current `Key+Manager.swift` code (`createVaultSEKey`'s access
 Bug 62's Gap 2/residual-risk as a case this design closes as a side effect if built with non-editable,
 high-entropy phrases, and names one concrete instance of §2's "every consumer needs re-auditing" cost:
 `VaultManager.Backup.updateShardStatus`'s cross-depth BEK scan, which assumes one shared key today and
-would need to route by `distributionID` instead under per-depth keys. Nothing here is a design
+would need to route by `distributionID` instead under per-depth keys.
+
+**Also closes Gap 3's trigger mechanism, not its deeper problem — Bug 62, re-examined 2026-09-11.**
+`masterPINCollision` exists only because today's routing is array-comparison (scan
+`sealedNormalVerifiers`/`sealedDuressVerifiers` for a match), which is what makes an accidental
+6-digit collision (1-in-10⁶) a nameable, detectable event worth a special error case. Canary-based
+per-depth authentication (§1) needs no equivalent setup-time check at ~90 bits — accidental collision
+between two independently-generated phrases is ~1-in-2⁹⁰, not worth guarding against. No check, no
+error, no oracle for a targeted wipe to respond to. **What this doesn't touch: Gap 3's own "deeper
+structural problem"** — once the real depth-0 secret is known to a hostile party via direct
+compulsion rather than probing, the app still can't distinguish that from the real owner's own
+legitimate entry, and the Bug 13 hard-delete conflict this raises is identical regardless of secret
+format. That part was never a guessing-difficulty question and isn't resolved by anything in this
+document. Nothing here is a design
 decision — findability and confirmation only; §2 remains unresolved.
 
 **What this is.** A redesign of how Secure Mode's per-depth PIN gates content, replacing the numeric
