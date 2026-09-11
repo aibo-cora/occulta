@@ -719,6 +719,28 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    separate directory while everything else shares a pool just relocates the signal. Not yet applied
    there; picks up whenever that document's storage section is next touched.
 
+   **Membership count needs correcting again, 2026-09-11 — and a second gap in the count was never
+   caught either time.** The "two, not three" paragraph above dropped the contact blob but still
+   counted `VaultManager.Backup.LayerStore` as a live member. That's gone too now — the BEK array
+   itself was deleted this session (item 14), replaced by `BackupEncryptionKey` SwiftData rows, no
+   file at all. So the realistic membership isn't two anymore; by this paragraph's own counting logic
+   it's one — just `RECOVERY_BUFFER_LAYERING.md`'s own future container, whenever it's built.
+
+   **Separately, `backup-export-meta.dat`/`ExportMetaSlotCodec` (`Vault+Manager+Backup.swift:818`) was
+   never brought into this membership conversation at all, at any point in this item's history** —
+   not when the contact blob was counted, not when it was dropped. It's a real, live, internal
+   32-slot file, untouched by item 14 and explicitly out of that stage's scope, and it fits the exact
+   concern this whole item exists for: a purpose-named artifact an examiner can reason about without
+   a key. Whether it belongs in the pool was simply never decided either way.
+
+   **Net effect on the pool's own rationale, not just its arithmetic:** the property this design
+   buys — an examiner can't tell which of *several* look-alike files is the sensitive one — weakens
+   the fewer real members the pool has. One file sitting in an undifferentiated directory reads to an
+   examiner almost the same as one file sitting in a purpose-named one: either way, there's exactly
+   one mystery container to point at. Before `RECOVERY_BUFFER_LAYERING.md`'s own container is built,
+   whoever next touches this decision needs to re-settle actual membership — including whether
+   `backup-export-meta.dat` joins — rather than build against a count that's been stale twice over.
+
    **Not yet implemented.** Decided, not built.
 
 6. **Item 4's live-slot fix does not cover vault entries — found 2026-09-06, decided 2026-09-06.

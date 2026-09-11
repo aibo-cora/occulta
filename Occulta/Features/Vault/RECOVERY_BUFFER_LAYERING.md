@@ -125,6 +125,20 @@ per-entry term. This container is therefore always the shared-pool floor: `VAULT
 container and the migrated contact blob pad up to match this one's size, not the reverse, at every
 growth step.
 
+**This whole section needs re-deciding before it's built, flagged 2026-09-11 — cross-referenced from
+`VAULT_KEY_LAYERING.md` item 5's own correction, same date.** Everything above is written against
+"alongside the vault-key-gated container... and the migrated contact blob" — neither exists as a file
+any more. The contact blob was deleted whole (Removal Stage 2); `VaultManager.Backup.LayerStore` (the
+vault-key-gated container this section keeps citing, including in its own size-parity arithmetic
+against 44,393 bytes) was itself deleted this session, replaced by `BackupEncryptionKey` SwiftData
+rows. There is currently no file on the vault-key side to be a sibling to, or to pad up to match, or
+to fall below as the "shared-pool floor." `backup-export-meta.dat` is the one real, live internal
+file left in that whole domain, and it was never brought into this membership question on either
+side — see `VAULT_KEY_LAYERING.md` item 5 for the fuller accounting. Whoever next builds this
+container needs to re-decide "where it lives" against whatever actually exists at that point, not
+this section's still-unrevised premise; the size-parity numbers above are computed against containers
+that no longer exist and cannot be trusted as-is even if the shared-pool decision itself still holds.
+
 ---
 
 ## 6. Open decisions
