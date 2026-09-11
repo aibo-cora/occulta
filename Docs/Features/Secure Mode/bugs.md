@@ -8882,6 +8882,10 @@ sensitive contact's key-record material decrypts successfully under the current 
 
 ## Bug 110 — A vault entry's duress-depth stamp is never reset, so it can resurface in a later, unrelated duress session at the same depth number
 
+**See `decisions.md`** (`Docs/General/`) for the short version of the orphan-in-place decision this
+bug's fix establishes — later extended to `BackupEncryptionKey` (Bug 118) and considered, declined,
+for `Contact.Profile` (Bug 112).
+
 **Status:** Closed (Fixed), 2026-09-10. Filed the same day, found while updating
 `forensic-trace-avoidance.md`'s S7 to describe the current (post-removal) behavior — not a
 pre-existing entry being revisited, a fresh regression from Removal Stage 1. Fixed the same day, after

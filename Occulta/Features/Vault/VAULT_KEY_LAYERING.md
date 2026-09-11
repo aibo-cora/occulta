@@ -1300,6 +1300,10 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     same `deletionToken`-orphaning shape vault entries already ship (item 11, Bug 110), applied to the
     BEK for the first time, plus a genuine motivating bug it closes along the way.**
 
+    **See `decisions.md`** (`Docs/General/`) for the short version of the orphan-in-place
+    decision this item is one instance of, spanning `VaultEntry`, `Contact.Profile`, and this model —
+    this item carries the full BEK-specific reasoning trail.
+
     **Motivation, found while scoping this: `deactivateSecureMode`/`forceDeactivateForRecovery` never
     orphaned the freed depth's BEK at all.** Both functions already call `orphanVaultEntries(freedFrom:)`
     when a depth is freed — confirmed by reading both bodies directly — but neither touched that depth's

@@ -56,64 +56,121 @@ design, and it has scope beyond shards — see §7.
 ### 2.1 Concrete design, 2026-09-11 — where the gate actually hooks in, and a correction to the
 framing above
 
+**See `decisions.md`** (`Docs/General/`) for the short, scannable version of the
+drop-all-kinds decision below — this section carries the full reasoning trail.
+
 **Refines rather than follows the paragraph above: the gate should not live inside `identifyOwner`
 at all.** That function (`Contact+Manager.swift:1550`) resolves the sender of *every* inbound bundle
 — messages, prekeys, shard operations alike — and §6 item 6 already settled that messages and
 prekeys must **not** be depth-gated the same way shards are (excluded from the gate entirely, and
 self-healing by regeneration, respectively). Putting the check there would mean threading an
 exemption back out for every non-shard caller, exactly the scope creep §4's "known scope creep" note
-already warns about. The gate belongs on the shard-specific path instead, and tracing that path found
-it already carries everything the gate needs, with no new parameter threading required.
+already warns about. The gate belongs on the shard-specific path instead.
 
-**The insertion point: `VaultManager.acceptReturnedShard(_:attestation:senderIdentifier:currentDepth:)`
-(`Vault+Manager+ReturnBuffer.swift:44`).** Both `senderIdentifier: String` and `currentDepth: Int`
-are already parameters — threaded end to end from `ShardCustodyManager.handleInbound` (the top-level
-router, `ShardCustody+Manager.swift:56`) through `handleHandback` down to this function, for reasons
-unrelated to this gate (senderIdentifier for the one-per-sender dedup rule, currentDepth for the
-existing `attemptBackupRestore(currentDepth:)` call one line below). Nothing upstream needs to
-change.
+**Rejected: checking inside `VaultManager.acceptReturnedShard` directly.** First pass at this
+proposed resolving `senderIdentifier` to its `Contact.Profile` at the bottom of the call chain, where
+`currentDepth` is also already a parameter. Caught before being built: `VaultManager` has no
+`ContactManager` dependency today, and this would be the reason to add one — a real change to
+`VaultManager.init` and every construction site across the app and tests, not a self-contained
+addition to one function.
 
-**The check itself, inserted at the top of that function, before either of its two existing buffer
-paths (per-entry reconstruction, step 1; BEK restore, step 3):**
+**Rejected: threading a `senderVisibleAtCurrentDepth: Bool` parameter down through
+`handleInbound` → `handleHandback` → `acceptReturnedShard`.** Avoids the new dependency above, but a
+required parameter breaks ~20 existing direct call sites in `ShardCustodyTests.swift`,
+`ShardManifestTests.swift`, `ShardHandbackAttestationTests.swift`, and
+`InboundShardCustodyDuressTests.swift`; a parameter defaulting to `true` avoids breaking them but
+fails **open** — any future call site (test or production) that omits it silently bypasses the gate.
+Neither shape was acceptable for something security-relevant.
+
+**Built: filter the `shardOperations` array before it ever reaches `handleInbound`, at the one place
+(`OccultaApp.swift`) that already has both `contactManager` and `currentDepth`.** No signature changes
+anywhere in `ShardCustodyManager` or `VaultManager` — none of the existing call sites needed to
+change, and there is no parameter to omit or default, so there's nothing to fail open on.
+
+**Drops every shard op kind — `.distribute`, `.replace`, `.handback` alike — not just `.handback`,
+revised 2026-09-11.** The first pass here scoped the drop to `.handback` only, on the reasoning that
+`.distribute`/`.replace` (trustee-side custody storage) had no retry mechanism and dropping them
+risked permanent shard loss. **That reasoning was wrong — corrected the same day, before it shipped.**
+`PendingShardDistribute+Model.swift`'s own header claims "deleted on send (fire-and-forget)"; that's
+stale. `ShardCustody+Manager.swift`'s `queueDistribute` doc comment says plainly: *"Row is deleted
+only when the trustee's `custodyManifest` confirms the ID (not on send), enabling automatic retry on
+bundle loss."* Checked directly against the code, not just the comment: `pendingDistributeOps`
+(building the outbound `.distribute`/`.replace` ops) is a pure fetch with no delete anywhere in it;
+the row is only ever removed in `processInboundManifest`, and only once the trustee's own
+`custodyManifest` shows the shard ID present. If a trustee's device drops an incoming `.distribute`
+(never creating the `CustodyShard` row), that ID simply never appears in that trustee's own outbound
+manifest, so the owner's `PendingShardDistribute` row is never confirmed and keeps re-offering the
+same op on every subsequent bundle — durable, automatic retry, the same property `mismatchHandbackOps`
+provides for `.handback`, just implemented as owner-side persistence instead of trustee-side
+re-offering. With the data-loss objection gone, dropping all three kinds is strictly better: a coerced
+session structurally cannot cause *new* custody data to be written for a hidden owner at all, not
+just cannot see it — complementary to §6 item 7's not-yet-built trustee-depth partitioning, not a
+substitute for it, since pre-existing rows from before the session are unaffected either way.
+
+**Placement: an instance method on `OccultaApp`, not a free function.** An earlier draft factored
+this as a free function specifically so it could be unit-tested without a `ModelContainer` — while
+building that version, a `static func` declared *inside* `struct OccultaApp: App` turned out to be
+invisible to `@testable import Occulta` from the test target (`error: type 'OccultaApp' has no
+member ...`, reproduced consistently even after clearing all caches; moving the identical function
+to file-scope fixed it immediately — apparently specific to `static` members on a `@main`-attributed
+type under this toolchain's explicit-module build, not anything wrong with the code). Moved back
+to an instance method on request. Consequence, accepted: constructing an `OccultaApp` instance builds
+a real, on-disk `ModelContainer` and runs live migrations, so this is genuinely not unit-testable in
+isolation — covered by manual/integration verification instead, the same limitation the visibility
+resolution already had. The dedicated unit test file this earlier draft added was deleted rather than
+left describing coverage that no longer exists.
+
+**The combined method — visibility resolution and the drop, one place** (`OccultaApp.swift`, private
+instance method, next to `purgeOrphanedGroupsIfAtRealDepth`):
 
 ```swift
-guard
-    let sender = try self.contactManager.fetchContact(by: senderIdentifier),
-    let localKey = try Manager.Key().createHybridLocalEncryptionKey(),
-    sender.isVisible(atDepth: currentDepth, usingKey: localKey)
-else { return }  // drop — mismatchHandbackOps guarantees this trustee's next bundle retries it
+private func filterShardOperations(
+    _ ops: [OccultaBundle.ShardOperation]?,
+    from senderIdentifier: String
+) -> [OccultaBundle.ShardOperation]? {
+    guard
+        let sender   = try? self.contactManager.fetchContact(by: senderIdentifier),
+        let localKey = try? Manager.Key().createHybridLocalEncryptionKey(),
+        sender.isVisible(atDepth: self.security.currentDepth, usingKey: localKey)
+    else { return nil }
+    return ops
+}
 ```
 
-One check covers both downstream buffers, since both are gated by this same function's entry —
-matching the "per-depth buffers become correct" framing above, which was written about buffers in
-the plural.
+**At both call sites (`OccultaApp.swift`, the `.v3fs`/group and the legacy branch), the
+`shardOperations:` argument to `handleInbound` becomes:**
+
+```swift
+self.filterShardOperations(
+    recipShardOps ?? sealed.shardOperations,  // or sealed.shardOperations at the other site
+    from: ownerID
+)
+```
 
 **Key domain, worth stating explicitly since it's easy to assume otherwise:** `isVisible(atDepth:)`
 decrypts `originDepth`/`visibleThroughDepth` under the **local DB key**
 (`Manager.Key().createHybridLocalEncryptionKey()`, the bare `Data.decrypt()` extension's own
-derivation) — not the recovery buffer key this function already derives for `ReconstructShard`
-rows, and not the vault key. Two ambient key derivations end up happening in the same function, not
-one, but both are device-unlock-gated with no biometric, matching this file's own header claim that
-absorption works "even while the vault is locked." The gate adds no new availability constraint —
-it's exactly as available as `storeRestoreShard` already is.
+derivation) — not the recovery buffer key `acceptReturnedShard` separately derives for
+`ReconstructShard` rows, and not the vault key. Both are ambient, device-unlock-gated, no
+biometric, so the gate adds no new availability constraint — it's exactly as available as
+`storeRestoreShard` already is.
 
-**What this deliberately does not touch:** `handleHandback`'s own Branch A/B signature verification,
-upstream and unaffected — this is an additional attribution gate *after* authentication succeeds, not
-a replacement for it. Message and prekey processing, different call paths entirely, per §6 item 6.
-The trustee-*side* `handleDistribute`/`handleReplace` (receiving custody shards for someone else,
-item 7's separate "keyed by the trustee's own depth" mechanism) — a different device's own storage,
-not this owner-side gate.
+**What this deliberately does not touch:** `handleHandback`'s own Branch A/B signature verification —
+an op filtered out here never reaches that code at all, so there's no verification wasted on it.
+Message and prekey processing, different call paths entirely, per §6 item 6. The trustee-*side*
+`handleDistribute`/`handleReplace` when *this* device is the one receiving custody on someone else's
+behalf are untouched by this specific gate too (item 7's own, separate "keyed by the trustee's own
+depth" mechanism covers that direction) — this gate is about what *this* device accepts as the owner,
+not what it stores as a trustee for others.
 
 **Migration: none.** No schema change, no new persisted field — this reads fields
-(`originDepth`/`visibleThroughDepth`) that already exist and are already populated. Unlike every
-other piece of this document, this stage has no on-device data to migrate, which is part of why it's
-cheap relative to how load-bearing it is.
+(`originDepth`/`visibleThroughDepth`) that already exist and are already populated.
 
-**Test shape:** a shard from a contact visible only at depth 2, delivered while `currentDepth == 1`,
-must not appear in `ReconstructShard` rows afterward (covers both the per-entry and BEK paths in one
-assertion each). The same shard delivered again with `currentDepth == 2` must bank normally —
-standing in for the trustee's automatic retry `mismatchHandbackOps` already guarantees, without
-needing to simulate the retry mechanism itself to prove the gate doesn't cause permanent loss.
+**Tests: none dedicated, by design — see the placement note above.** `InboundShardCustodyDuressTests.swift`'s
+existing tests call `ShardCustodyManager.handleInbound` directly, one layer below this filter, and
+are unaffected: they continue to assert that `ShardCustodyManager` storage itself is unconditional,
+which is still true — the depth decision now happens one layer up, in `OccultaApp`, before
+`ShardCustodyManager` is ever reached, not inside it.
 
 ---
 

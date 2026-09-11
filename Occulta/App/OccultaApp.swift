@@ -807,6 +807,35 @@ struct RootView: View {
         try? self.contactManager.purgeUnreadableGroups(using: key)
     }
 
+    /// Stage 3 (RECOVERY_BUFFER_LAYERING.md §2.1): drop every shard op — `.distribute`,
+    /// `.replace`, `.handback` alike — from a sender not visible at the current depth,
+    /// before any of them reach `ShardCustodyManager`. Safe for all three kinds: each one
+    /// already retries automatically if dropped, so nothing is lost, only delayed until
+    /// the sender is visible again — `.handback` via `mismatchHandbackOps` (retried on
+    /// the trustee's every subsequent bundle), `.distribute`/`.replace` via
+    /// `PendingShardDistribute`, which persists until the trustee's own `custodyManifest`
+    /// confirms receipt (`queueDistribute`'s own doc comment, confirmed directly against
+    /// `processInboundManifest` — the row is not deleted on send).
+    ///
+    /// Fails closed: an unresolvable sender or an unavailable local DB key is treated as
+    /// not visible, so an ambiguous case drops the ops rather than processing them.
+    ///
+    /// Not unit-testable in isolation — constructing an `OccultaApp` instance builds a
+    /// real, on-disk `ModelContainer` and runs live migrations, so this is verified by
+    /// manual/integration checks instead, the same limitation already true of the
+    /// visibility resolution this folds in.
+    private func filterShardOperations(
+        _ ops: [OccultaBundle.ShardOperation]?,
+        from senderIdentifier: String
+    ) -> [OccultaBundle.ShardOperation]? {
+        guard
+            let sender   = try? self.contactManager.fetchContact(by: senderIdentifier),
+            let localKey = try? Manager.Key().createHybridLocalEncryptionKey(),
+            sender.isVisible(atDepth: self.security.currentDepth, usingKey: localKey)
+        else { return nil }
+        return ops
+    }
+
     /// Decode and decrypt an inbound `.occ` file into a shareable ``OwnedBasket``.
     ///
     /// Dispatches to the correct decryption path based on the bundle version:
@@ -872,7 +901,10 @@ struct RootView: View {
                     // which has no per-recipient content to pad) working unchanged.
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  recipShardOps ?? sealed.shardOperations,
+                            shardOperations:  self.filterShardOperations(
+                                recipShardOps ?? sealed.shardOperations,
+                                from: ownerID
+                            ),
                             custodyManifest:  recipManifest ?? sealed.custodyManifest,
                             expectedShards:   recipExpected ?? sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
@@ -917,7 +949,10 @@ struct RootView: View {
 
                     if let senderPublicKey = try? self.contactManager.currentPublicKey(forIdentifier: ownerID) {
                         _ = self.shardCustodyManager.handleInbound(
-                            shardOperations:  sealed.shardOperations,
+                            shardOperations:  self.filterShardOperations(
+                                sealed.shardOperations,
+                                from: ownerID
+                            ),
                             custodyManifest:  sealed.custodyManifest,
                             expectedShards:   sealed.expectedShards,
                             senderPublicKey:  senderPublicKey,
