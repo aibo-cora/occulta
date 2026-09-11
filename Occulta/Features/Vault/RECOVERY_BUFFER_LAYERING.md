@@ -71,6 +71,7 @@ before then — see §6's anti-pairings.
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
+| — | ~~As a fixed-slot file~~ — **proposed superseded 2026-09-11, §6 item 9: rows, not a file, following `VAULT_KEY_LAYERING.md` item 14's BEK migration.** Two of Stage 4's three pieces (shard buffer, `CustodyShard`) are already rows in production; item 9 designs the third. Not yet decided — proposal only. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -138,6 +139,13 @@ side — see `VAULT_KEY_LAYERING.md` item 5 for the fuller accounting. Whoever n
 container needs to re-decide "where it lives" against whatever actually exists at that point, not
 this section's still-unrevised premise; the size-parity numbers above are computed against containers
 that no longer exist and cannot be trusted as-is even if the shared-pool decision itself still holds.
+
+**Proposed answer, 2026-09-11 — §6 item 9: there may be no "where it lives" question left to
+re-decide, because there's no file proposed to live anywhere.** Rather than re-settling this section
+against whatever the vault-key side's file membership turns out to be, item 9 proposes retiring the
+file side of this container entirely — rows, following `VAULT_KEY_LAYERING.md` item 14's own BEK
+migration — which would make this section moot rather than merely in need of new numbers. Not yet
+decided; see item 9 for what's still open before that's settled.
 
 ---
 
@@ -332,12 +340,97 @@ that no longer exist and cannot be trusted as-is even if the shared-pool decisio
    **Not yet implemented.** Design-only, matching the rest of this branch — kept that way
    deliberately even though the fix itself is small enough to implement directly.
 
+9. **Proposed 2026-09-11: retire the file entirely — this container as SwiftData rows, not a
+   shared-pool file, following `VAULT_KEY_LAYERING.md` item 14's own BEK migration.** Prompted by a
+   direct question: does this container have to be a file at all, given the sibling doc's BEK array
+   just moved off file storage onto rows for the same class of reasons item 5 above assumed only a
+   file could provide. It doesn't, and checking what's *actually* still file-based here turned up
+   less than the rest of this document assumes.
+
+   **Three of this container's four pieces are already rows, not files, in production.**
+   `ReconstructShard` (`ReconstructShard+Model.swift`) has held BEK restore shards since Bug 100
+   remedy 2, 2026-08-27 — well before item 14 or this proposal. `CustodyShard`
+   (`CustodyShard+Model.swift`) has never been a file. Stage 4's own plan above (moving both into a
+   fixed-slot *file*) would have been a regression for the shard buffer specifically, undoing
+   something already shipped. Only the arming flag and the pending backup-contents snapshot
+   (`backup-import-cache.occbak`, `storePendingRestore`) are genuinely still file-based today.
+
+   **Why rows alone don't already close this, and what does — the same answer item 14 already
+   proved.** Bug 100 remedy 2's own text concedes moving to rows only *reduces* the row-count leak
+   Stage 4 was meant to close outright: *"an examiner who opens the store can still count rows...
+   A reduction, not an elimination."* That gap is exactly what item 14's eager-filler-row baseline
+   closes for `BackupEncryptionKey` — pad row count to a constant floor regardless of real usage,
+   let real content claim a filler row rather than the row count ever tracking reality, uncapped
+   beyond the baseline. Applying that identical pattern here — not a new mechanism, the one already
+   proven and tested — closes what rows alone left open, without needing a file to do it.
+
+   **Per-component design, each mirroring `BackupEncryptionKey`'s three-state shape (filler/live/
+   orphaned, one-way transitions, both fields present at every state so nothing is a free
+   zero-decryption signal):**
+
+   - **Shard buffer (`ReconstructShard`).** Add the filler-row baseline directly to the existing
+     model rather than replacing it — it already has the right shape (one row per shard, sealed
+     under the recovery buffer key). What it's missing is padding: today, zero shards banked means
+     zero rows, which is itself informative. Needs a baseline count per depth chosen deliberately —
+     **not** the Shamir ceiling (255) §6 item 5 above sized the *file slot* to. That number was sized
+     for "the largest a legacy distribution could ever be," a worst-case-capacity question a fixed
+     file slot has to answer once; a filler-row baseline is a different question — "how many rows
+     should exist regardless of activity," the same question item 14 answered as 32 for BEK by
+     analogy to `AppLayerConfig.maxVerifierCount`. This container has no equivalent existing constant
+     to anchor to and needs its own answer, not a borrowed one — left open below, not decided here.
+   - **`CustodyShard`.** Same treatment, keyed by the *trustee's own* depth per item 7's already-
+     settled design — a filler-row baseline per trustee-depth closes item 7's own row-count-leak half
+     (part (a) of that item) the same way, without needing item 7's originally-envisioned fixed-slot
+     array at all.
+   - **Arming state + pending backup contents — one new model, not two.** Both are per-depth,
+     both need the recovery buffer key (arming and holding a restore must work while the vault is
+     locked), and arming state is small enough (§6 item 5's own estimate: *"timestamp, state enum...
+     ~64 bytes"*) to live as a field alongside the snapshot rather than earning its own row. One row
+     per depth: `depth: Data?` (encrypted, filler when unclaimed — the row's claim state), `state:
+     Data?` (encrypted arming timestamp + state enum, filler when unclaimed), `encryptedSnapshot:
+     Data` (the already-sealed `.occbak` bytes as delivered — this container never decrypts them,
+     only holds them until `VAULT_KEY_LAYERING.md` §7 Stage 5 reconstructs the BEK and hands them to
+     `importBackup`). **Correction to this proposal's own first framing:** §6 item 5's per-entry
+     sizing math (1,051 bytes × 32) computes a *capacity ceiling* for this field — how large a real
+     `.occbak` payload could plausibly need to be — it does not mean the snapshot should be decoded
+     into 32 separate per-entry rows at arming time. It can't be: the snapshot is one sealed unit
+     under whichever BEK produced it, unreadable until that BEK is reconstructed, so there is nothing
+     to decompose into rows before then. One row per depth, one padded blob field, exactly
+     `BackupEncryptionKey.encryptedPayload`'s own shape.
+
+   **This resolves §7's own flagged ambiguity about Bug 99, not just §5's stale file-membership
+   count.** That section's "except the pending-file tag" qualifier assumed a standalone pending file
+   that still needs a depth tag on it. Under this proposal there is no pending file at all — the
+   depth is which row it is, the identical property that already makes BEK's own per-depth rows work
+   without a tag. If this proposal is adopted, that qualifier should simply come off.
+
+   **What's still genuinely open, not resolved by this proposal:**
+   - **Filler-row baseline counts** for shard-buffer and pending-snapshot rows — a real sizing
+     decision, not automatic from item 14's precedent, since this container's usage shape (shards
+     arrive continuously during a restore; a restore is armed once and holds one snapshot) differs
+     from BEK's (configured once per depth, rarely touched again).
+   - **The row-count-hiding property this buys is bounded by the baseline, same limitation item 14
+     already accepted for BEK** — past the baseline, row count starts tracking real activity again.
+     Acceptable there because BEK rows are rarely created; needs its own justification here given
+     shards arrive far more often.
+   - **§3's per-depth cap reasoning is unaffected either way** — "a cap is only safe once the buffer
+     is per-depth" holds whether "per-depth" means a file slot or a filler-row baseline; this
+     proposal doesn't reopen that question, just changes what "per-depth" is built from.
+
+   **Supersedes, if adopted:** §4 Stage 4 as written (a fixed-slot file); §5 in full (there is no
+   file left to decide "where it lives" for); §6 item 5's slot-size numbers stay useful as capacity
+   ceilings for the padded row fields above, but stop being *file-slot* sizes. **Not yet decided** —
+   proposal only, matching this document's own "design, not built" status; the baseline-count
+   question above blocks calling this settled.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
   denial channel.
 - **Do not pad the `.occbak` (Bug 100 r3) before item 5 above is decided.** If backup contents move
-  into slots, that file stops existing.
+  into slots, that file stops existing. **Item 9 above proposes exactly that** — the file stops
+  existing regardless of whether it's replaced by file-slots or by rows; either way, don't pad a file
+  that's about to be retired.
 - **Do not ship Bug 100 r1 alone.** It excludes the measurement while Bug 101 leaves the content
   unsealed in `Documents/Inbox`. One device session verifies both.
 
@@ -375,6 +468,13 @@ point there's no standalone pending file left to tag at all — the depth is imp
 and should read simply "open — subsumed here in full." Not corrected in place because it isn't fully
 certain which of the two statements is the stale one without reconstructing the exact order these
 were written in — flagged for whoever next touches Stage 4 to settle, not asserted as resolved.
+
+**Update, 2026-09-11 — §6 item 9 answers this independently of which of the two statements above was
+the stale one.** Item 9 proposes retiring the pending-file side of this container entirely in favor
+of rows, the same direction item 5's own successor took. Under that proposal there is no standalone
+`.occbak` and nothing resembling a slot to tag either — the depth is which row it is. If item 9 is
+adopted, this row's qualifier comes off regardless of how the §6-item-5-versus-this-row question
+above would otherwise have resolved.
 
 See [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) §6, §8 for Bugs 92, 102, 105 — this container's
 sibling issues, not its own.
