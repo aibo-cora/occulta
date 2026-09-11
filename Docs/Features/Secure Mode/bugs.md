@@ -6295,6 +6295,16 @@ surfaces bundled under "what does duress show," and only one of them was fixable
   cannot contradict itself across repeated unlocks and reads the same as a real recovery still
   waiting on trustees it has not met.
 
+  **"Depth-independent" is now imprecise, corrected 2026-09-12 — the fix's conclusion is unaffected.**
+  `RECOVERY_BUFFER_LAYERING.md` §2.1's Stage 3 gate now drops an inbound shard op (`.handback`
+  included) when its sender isn't visible at the current depth, before `storeRestoreShard` ever runs
+  — collection is no longer *unconditionally* depth-independent. This narrows, doesn't reopen, the
+  concern above: a real depth-0 trustee typically isn't visible at a duress depth, so their handback
+  now gets dropped and retried rather than silently banked during a duress session — the exact
+  cross-depth accumulation this paragraph worried about. The static "Recovery in progress…" text
+  remains the right choice regardless (a duress-depth-visible sender, per Bug 99's attack, still
+  accumulates freely), just no longer the *only* thing standing between duress and a climbing count.
+
   Neither horn of the original objection applies to the static form: it is real state rather than a
   fabrication, so there is no timing to get wrong, and it is identical in both layers, so there is
   nothing to compare. What it does concede is that duress advertises an event whose result only ever
@@ -7415,6 +7425,15 @@ The victim is coerced, gives the duress PIN, and no restore is pending. The coer
    attestation verifies against `senderPublicKey`, and he controls the shard and the attestation
    alike. `storeRestoreShard` banks them, because shard collection is depth-independent by design.
 5. **Wait.**
+
+**"Depth-independent by design" is now imprecise, corrected 2026-09-12 — the attack itself is
+unaffected.** `RECOVERY_BUFFER_LAYERING.md` §2.1's Stage 3 gate (built after this bug was filed)
+drops an inbound shard op when its sender isn't visible at the current depth. Checked directly
+against this attack: step 1 pairs the attacker's own two phones with the victim's device *at the
+coerced depth itself*, so those contacts are visible at exactly the depth step 4's handback later
+arrives at — Stage 3's gate is satisfied by construction, not bypassed by an oversight. The attack
+proceeds exactly as described; only the phrase "depth-independent by design" overstates it now,
+since collection is conditionally depth-independent (on sender visibility), not unconditionally.
 
 At depth 0 `attemptBEKRestore` fires on the next unlock, reconstructs his BEK, imports his entries,
 and clears the banner. Above depth 0 nothing happens, ever. He establishes the baseline once on his
