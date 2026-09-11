@@ -76,7 +76,7 @@ private func makeBackupReadyVault() throws -> (vault: VaultManager,
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
     let vault = VaultManager(
-        modelContainer: container, keyManager: TestKeyManager(), backupBackend: InMemoryLayerStoreBackend()
+        modelContainer: container, keyManager: TestKeyManager()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
     try vault.setupBackup(currentDepth: 0)
@@ -101,7 +101,7 @@ private func makeFreshVault() throws -> (vault: VaultManager, container: ModelCo
     let container = try makeContainer()
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
     let vault = VaultManager(
-        modelContainer: container, keyManager: TestKeyManager(), backupBackend: InMemoryLayerStoreBackend()
+        modelContainer: container, keyManager: TestKeyManager()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
     return (vault, container)

@@ -76,7 +76,7 @@ private func makeBackupReadyVault() throws -> (VaultManager, ModelContainer) {
     try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
 
     let vault = VaultManager(
-        modelContainer: container, keyManager: TestKeyManager(), backupBackend: InMemoryLayerStoreBackend()
+        modelContainer: container, keyManager: TestKeyManager()
     )
     vault.unlock(context: LAContext(), currentDepth: 0)
     try setUpConfirmedBEK(for: vault, currentDepth: 0)

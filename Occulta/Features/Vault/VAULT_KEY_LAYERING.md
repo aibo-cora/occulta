@@ -31,9 +31,25 @@ array's crypto/logic layer) is now moot outright, not just unconfirmed: one of i
 gone, a second never existed. Item 12's premise — S8 reusing contacts' Design B — doesn't apply either:
 Design B itself was deleted the same Removal (`bugs.md` Bug 108, closed moot 2026-09-10).
 
-§8 keeps its thirteen items; several superseded-by-a-later-item markers are joined below by
-superseded-by-reality ones (11, 12, 13) — different provenance, same "preserved for the record, not
-current" convention already used throughout. Stage 1's core (the BEK array itself, its codec and AAD,
+**BEK moved off the array onto SwiftData rows, 2026-09-11 — item 14 has the full design.** The
+32-slot `VaultManager.Backup.LayerStore`/`BEKArray` this document's §5/§7/§8 describe as shipped is
+itself now deleted, along with `SlotAAD` — not a rename this time, a genuine storage-mechanism change,
+consistent with how vault entries (item 11, §7's row) ended up shipping outside this container's
+original array design too. `BackupEncryptionKey` gained a `depth`/`deletionToken` pair mirroring
+`VaultEntry`'s own (Bug 110) — one row per claimed depth, 32 prefilled as indistinguishable random-byte
+filler at launch, uncapped beyond that — closing a real, motivating bug along the way: neither
+`deactivateSecureMode` nor `forceDeactivateForRecovery` ever orphaned the freed depth's BEK, so a later,
+unrelated duress session reactivating at the same depth number inherited the old session's backup key
+and trustee list untouched (`bugs.md` Bug 118, the BEK-side twin of Bug 110). `LayerStoreBackend`/
+`AppGroupLayerStoreBackend` (§13 Part A) are kept, deliberately unused — `VaultManager.Backup.LayerStore`
+was their last consumer and is gone, but `RECOVERY_BUFFER_LAYERING.md`'s own future per-depth restore
+state was already planned to reuse the protocol. §5, §7's Stage 1 row, §8 items 4/7/8/13, and §9 each
+carry a short pointer to item 14 at the point they're directly contradicted by this, rather than being
+rewritten — same convention as every other correction in this document.
+
+§8 keeps its original thirteen items, joined by a fourteenth (this change); several
+superseded-by-a-later-item markers are joined below by superseded-by-reality ones (11, 12, 13, 14) —
+different provenance, same "preserved for the record, not current" convention already used throughout. Stage 1's core (the BEK array itself, its codec and AAD,
 wired into `fetchDecoded`/`persist` with migration folded in) and Stage 2's array-routing half (item
 10 — every listed function takes `currentDepth` except `updateShardStatus`, which searches all 32
 slots instead) are both built, 2026-09-08. `reconstructBackup`/restore completion remains blocked on
@@ -186,7 +202,12 @@ yet" while the raw DB holds N rows — is real regardless of how the legal quest
 ## 5. Target design
 
 **BEK: one fixed-width array of fixed-count slots, one slot per depth**, sealed under the vault key.
-Shipped as `VaultManager.Backup.LayerStore` (renamed from `BEKArray`, §13).
+Shipped as `VaultManager.Backup.LayerStore` (renamed from `BEKArray`, §13) — **superseded 2026-09-11,
+item 14: the array itself is deleted, replaced by `BackupEncryptionKey` SwiftData rows with a
+`depth`/`deletionToken` pair. Left below as the shape that actually shipped and ran for a time, not a
+description of the current design** — the rest of this section (the BEK's own AAD, slot sizing,
+directory/pool reasoning) is preserved as the reasoning trail item 14 itself builds on and diverges
+from, same convention this document uses for its other superseded designs.
 
 **Vault entries never got an equivalent array — item 11 designed one in full (`VaultEntriesArray`,
 below, preserved for the record), but Bugs 110-114 (2026-09-10) shipped a completely different
@@ -342,7 +363,7 @@ needed its own cap, settled there (10 write / 255 storage, 42-byte fixed record)
 
 | # | Stage | Verify | Touches `RECOVERY_BUFFER_LAYERING.md`? | Status |
 |---|---|---|---|---|
-| 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08.** `VaultManager.Backup.PayloadCodec` → `VaultManager.Backup.SlotAAD` → `AppGroupLayerStoreBackend` (own directory, item 8) → `VaultManager.Backup.LayerStore` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecoded`/`persist`, migration folded in. (Renamed from `BEKPayloadCodec`/`BEKSlotAAD`/`AppGroupBEKArrayBackend`/`BEKArray`/`fetchDecodedBEK`/`persistBEKPayload` — see the header.) `RotationRegistry` checked, not just assumed — `BackupEncryptionKey` stays correctly in `notRotated` since the row and the new array file are both still sealed under the vault key, unchanged; `RotationRegistryTests` passes as-is. |
+| 1 | Slotted BEK array here, seeded with filler at first launch. Migrate the single `BackupEncryptionKey` row into slot 0 | array length identical whether 0 or 32 depths hold a BEK; existing export/import tests pass against slot 0 | No | **Built, 2026-09-08. Superseded 2026-09-11 (item 14) — the array itself is gone, replaced by `BackupEncryptionKey` rows with the same eager-filler/row-count-hiding property reimplemented on top of SwiftData.** `VaultManager.Backup.PayloadCodec` → `VaultManager.Backup.SlotAAD` → `AppGroupLayerStoreBackend` (own directory, item 8) → `VaultManager.Backup.LayerStore` (item 7's full-array reseal, item 8's throw-on-corruption fix) → wired into `fetchDecoded`/`persist`, migration folded in. (Renamed from `BEKPayloadCodec`/`BEKSlotAAD`/`AppGroupBEKArrayBackend`/`BEKArray`/`fetchDecodedBEK`/`persistBEKPayload` — see the header.) `RotationRegistry` checked, not just assumed — `BackupEncryptionKey` stays correctly in `notRotated` since the row and the new array file are both still sealed under the vault key, unchanged; `RotationRegistryTests` passes as-is. Left below as the shape that actually shipped for a time — item 14 has the current design. |
 | 2 | Route BEK access by depth — `fetchDecoded`, `setupBackup`, `currentBackupKey`, `backupSetupState`, `backupShardMetadata`, `exportBackup`, `reconstructBackup` | a BEK created at depth 2 is invisible at depth 0 and vice versa | No | **Split, found 2026-09-08 (item 9). Array-routing half built 2026-09-08 (item 10).** `fetchDecoded`, `persist`, `setupBackup`, `currentBackupKey`, `backupSetupState`, `backupShardMetadata`, `prepareBackupShards`, `distributeShards`, `exportBackup`, `refreshBackupStaleness` all take `currentDepth: Int` with no default. (`rotateBEK` no longer exists — the key-rotation machinery it belonged to was deleted, Removal Stage 3.) `updateShardStatus` deliberately does **not** take `currentDepth` — found mid-build that "whatever depth is current" cannot locate a trustee's confirmation reliably even in the ordinary case (a confirmation for depth 0's distribution can arrive while any other depth is active); it searches all 32 slots for the attributeID instead (item 10). All UI call sites (`Vault+Tab.swift`, `Vault+ShardSetup.swift`, `VaultRecoverySettings.swift`) updated; `recomputeRecoveryHealth`'s auto-save-triggered path split so `bekErosion` — now depth-scoped — isn't computed from a depth-blind trigger (item 10). `reconstructBackup` (renamed from `reconstructBEK`) specifically is still blocked on `RECOVERY_BUFFER_LAYERING.md`'s own per-depth restore state (its Stage 4) — checked directly, 2026-09-10: that document's Stage 4 still shows no per-depth arming/shard-buffer state, so this remains genuinely blocked, not just undocumented. |
 | — | ~~Vault entries: contacts' Design B first (§8 candidates), then this container's own equivalent array~~ | — | No | **Shipped 2026-09-10 — not this row's design at all.** Item 11's `VaultEntriesArray`/`VaultEntriesSlotAAD`/`VaultEntriesPayloadCodec` (below) were fully designed but never built; Design B itself (the four-step lifecycle this row assumed S8 would reuse) was deleted whole before S8 needed it (Bug 108, closed moot). What actually shipped: `VaultEntry.visibleThroughDepth` (already existing, exact-match) plus `deletionToken` (Bug 110, orphan-in-place), both sealed under the local DB key, both living directly on the existing `VaultEntry` SwiftData row — no array, no second file, no second key, no per-depth cache. Bugs 113/114 (2026-09-10) closed two gaps in the display/export paths that followed. See the header and item 11. |
 | 5 | Completion per layer | a restore armed at depth N completes at N and nowhere else | **Yes — the only join point.** Reads collected shares from the other container, writes the reconstructed BEK into this one's slot | Not started. |
@@ -798,6 +819,19 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
    item 4's specific collision (its key isn't depth-derived today), but the underlying write pattern
    still needs the same full-array-refresh treatment for the identical reason.
 
+   **Superseded 2026-09-11, item 14: the property this item accepted losing partial protection on is
+   now lost outright, not just accepted as a risk.** Full-array reseal was the mechanism that made "which
+   slot changed" undiffable — every write touched all 32 slots' ciphertext, real or filler. Once BEK
+   storage moved to one `BackupEncryptionKey` SwiftData row per depth (item 14), a write to depth N's row
+   only touches that row's own columns; there is no "whole array" left to reseal, and reintroducing that
+   property would mean writing to all 32+ rows on every single-depth operation, which item 14 judged not
+   worth the cost for a property whose own threat (physical re-imaging across two points in custody, per
+   this item's "Correction" paragraph above) was already narrow. What survives from this item's original
+   trade-off, unaffected by the array's removal: the eager 32-row filler baseline still makes *row count*
+   reveal nothing about how many depths have ever configured a backup, up through the first 32 — the
+   weaker of the two properties this item originally weighed, now the only one left. See item 14 for the
+   full accounting.
+
 8. **Findings from starting the BEK backend build, 2026-09-07/08 — two documented and still open, one
    found and fixed in a security/forensic review before any backend code was written.**
 
@@ -1216,6 +1250,13 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     is its sole remaining consumer. **Part B (crypto/logic unification): moot, not merely unbuilt** —
     see above.
 
+    **Updated 2026-09-11, item 14: `VaultManager.Backup.LayerStore` — this protocol's own last
+    consumer — is itself deleted now, moved to `BackupEncryptionKey` SwiftData rows.** `BEKArray.swift`
+    is gone along with it. `LayerStoreBackend`/`AppGroupLayerStoreBackend` currently have **no**
+    consumer at all — kept deliberately, not dead code awaiting cleanup: `RECOVERY_BUFFER_LAYERING.md`'s
+    own future per-depth restore-state container was already planned to reuse this exact protocol, per
+    that document's own Stage 4. Both source files' doc comments were updated in place to say so.
+
     *(Trailing fragment, kept as found rather than silently dropped — reads as a continuation of item
     12's "release owner's candidates decision," referenced there but not clearly delimited here: "...
     both, S5 (contacts) before S8 (vault entries). Contacts' Design B is already specified and
@@ -1227,6 +1268,121 @@ the legacy-row tombstone this container's Stage 1 needs, is in §9.
     copy") is now false: Design B was never built for either (Bug 108, closed moot) and `Manager.LayerStore`
     is deleted. Not rewritten in place since its original location/heading in this document is unclear;
     flagged so it isn't mistaken for current guidance.)*
+
+14. **BEK storage moved off the array onto `BackupEncryptionKey` SwiftData rows, 2026-09-11 — the
+    same `deletionToken`-orphaning shape vault entries already ship (item 11, Bug 110), applied to the
+    BEK for the first time, plus a genuine motivating bug it closes along the way.**
+
+    **Motivation, found while scoping this: `deactivateSecureMode`/`forceDeactivateForRecovery` never
+    orphaned the freed depth's BEK at all.** Both functions already call `orphanVaultEntries(freedFrom:)`
+    when a depth is freed — confirmed by reading both bodies directly — but neither touched that depth's
+    `BackupEncryptionKey` slot. Depth *numbers* are reused across unrelated future duress sessions, the
+    exact mechanism Bug 110 named for vault entries: a later, unrelated session reactivating at the same
+    depth number inherited the old session's BEK, `distributionID`, and trustee list untouched, looking
+    fully configured with trustees nobody in the new session ever picked. Filed as `bugs.md` Bug 118 —
+    the BEK-side twin of Bug 110, one container over. Consistency with vault entries' already-shipped
+    pattern was the secondary reason for this change; closing Bug 118 was the primary one.
+
+    **Design: three-state rows, not a nil/non-nil field.** Every `BackupEncryptionKey` row is always in
+    exactly one of three states, indistinguishable from raw SQL alone: **filler** (never claimed —
+    `depth`, `deletionToken`, and `encryptedPayload` are all `SecRandomCopyBytes`-generated bytes of the
+    exact ciphertext length a real value of that field would have, never run through a real seal or
+    decode — the same "no plaintext boolean flags, no free zero-decryption signal" principle Bug 51 and
+    Bug 112 already established elsewhere in this codebase, applied here from the start rather than
+    retrofitted); **live** (`depth`/`deletionToken` decode to the real depth and `liveToken`,
+    `encryptedPayload` decodes to a real `Payload`); **orphaned** (same as live, but `deletionToken`
+    decodes to `orphanedToken` — `depth`/`encryptedPayload` are left as historical record, never wiped,
+    exclusion from every functional read is what makes the row inert). Transitions are strictly one-way,
+    filler → live → orphaned, never backward — a claimed row never reverts to filler and gets reclaimed
+    by an unrelated depth later, which would just reintroduce Bug 118 one level down at the row-identity
+    level instead of the depth-number level.
+
+    **Key domain: `depth`/`deletionToken` sealed under the local DB key, `encryptedPayload` stays under
+    the vault key — a forced split, not a style choice.** `orphanBackupKeys` (the fix itself) has to run
+    from `deactivateSecureMode`/`forceDeactivateForRecovery`, and neither of those ever derives the vault
+    key — only the Secure-Mode key; the vault is frequently locked at deactivation time. If `depth`/
+    `deletionToken` were vault-key-sealed, orphaning literally couldn't run there. `encryptedPayload`
+    (the BEK bytes, `distributionID`, `shardMetadata`) is unchanged — still vault-key-sealed, same as
+    every stage before this one; `backupSetupState`/`storePendingRestore`'s existing vault-key-gated
+    behavior is untouched.
+
+    **Eager 32-row filler baseline, uncapped beyond it — the hybrid settled on after the plan that
+    proposed dropping the array's cap entirely was rejected in favor of keeping its one genuinely
+    valuable property.** 32 `BackupEncryptionKey` rows are topped up unconditionally at `VaultManager`
+    construction, no key material needed (plain random bytes, never sealed — arguably more honest than
+    the old array's own filler, which was genuinely `AES.GCM.seal`-ed with the real vault key on every
+    write, technically requiring biometric auth to produce). Idempotent — a second construction against
+    an already-filled container adds nothing. Once every prefilled row is claimed (live or orphaned),
+    a first-time `setupBackup` at a 33rd depth inserts a genuinely new row instead of failing — **no
+    eviction, no hard cap**, unlike `VaultEntry`/`Contact.Profile`'s 50-row cap-and-evict shape. Confirmed
+    with the user before building: BEK rows are only ever created by an explicit "set up backup at this
+    depth" action, not everyday use, so unbounded growth in the (already rare) case of exceeding 32 rows
+    was judged an acceptable, simpler design than reusing the vault-entry cap's eviction-ordering
+    machinery — see Bug 117 for why that machinery isn't even correctly ordered for `Contact.Profile`
+    today, a complication this design sidesteps entirely by not needing eviction at all.
+
+    **Explicitly accepted trade-off, not a silent narrowing — see item 7's own follow-up for the
+    accounting.** The array's full-array reseal on every write (hiding *which* depth's write just
+    happened, across two snapshots) cannot be preserved once storage moves to one row per depth; only
+    "row *count* reveals nothing, up to the first 32 configure-events" survives. Item 7's own narrow
+    threat framing (physical re-imaging across two points in custody, backup-excluded either way) is why
+    this was judged an acceptable loss rather than a blocker.
+
+    **`PayloadCodec` preserved byte-for-byte — no change to `encryptedPayload`'s wire format, size, or
+    AAD.** Its fixed-10,789-byte ciphertext length (item 3) still prevents trustee-count/shard-status
+    leaking through `encryptedPayload` regardless of which table holds the row. AAD stays exactly
+    `id.uuidString` (`BackupEncryptionKey.aad()`, unchanged) — not extended with `depth`. `id`
+    uniqueness, assigned at row-insertion time including for filler rows, already prevents one row's
+    ciphertext from authenticating under another row's AAD; `depth` is never attacker-supplied input to
+    the seal call, so binding it would add surface without closing an attack. `VaultManager.Backup.SlotAAD`
+    is deleted outright — no more slot indices to bind against.
+
+    **`VaultManager.Backup` threads `ModelContext` explicitly through every method rather than storing
+    it — preserving a deliberate existing property, not introducing a new constraint.** The class's own
+    doc comment states it was restructured 2026-09-09 to hold no reference to `VaultManager` at all,
+    mirroring `Manager.LayerStore`'s own statelessness; this change adds `modelContext: ModelContext` as
+    one more explicit per-call parameter, the same way `vaultKey: SymmetricKey` already was, rather than
+    reintroducing a stored back-reference. `liveRows(modelContext:)` is the one place that knows "live
+    vs. filler vs. orphaned" — both the per-depth lookup (`fetchDecoded`) and the full scan
+    (`updateShardStatus`) go through it, so neither a filler nor an orphaned row can ever be mutated by a
+    shard-status update, confirmed directly by a test (`updateShardStatusIgnoresOrphanedRow`) that
+    targets an orphaned row's own `attributeID` and checks its `encryptedPayload` bytes are unchanged
+    afterward, not just that the call doesn't throw.
+
+    **Migration handles three starting states in one unlock pass — array-only, legacy-row-only, both,
+    or neither — reusing the same "commit first, then destroy the source" ordering the array's own
+    Stage 1 migration established, applied one level up.** Runs after the 32 filler rows already exist
+    (eager creation needs no key, so it always runs first), so migration's job is purely "claim the
+    right filler rows with real data": decode all 32 legacy array slots against one `vaultKey`
+    derivation, claim a filler row for every depth with a real payload and no live row yet, save, then
+    delete the array file — not tombstone it, a deliberate divergence from this document's own
+    "never hard-delete a legacy security artifact" convention (§9), reasoned through directly: the
+    legacy single row's tombstone exists so a *downgraded build* fails closed by seeing something; the
+    array is different, because once `orphanBackupKeys` operates purely against SwiftData, a frozen
+    leftover array file would fail a downgraded build **open onto stale data** — rotations and orphan
+    events after migration are invisible to it, presenting trustee/shard state that no longer matches
+    reality, worse than absence. The original single-row legacy artifact (identifiable unambiguously as
+    the one row with **literally nil** `depth` *and* `deletionToken`, since every row this new code
+    creates always populates both) is folded into filler, exactly as before — never deleted, matching
+    §9's existing tombstone reasoning for that specific row. Backend is injectable
+    (`legacyArrayBackend:`, defaulting to the real `AppGroupLayerStoreBackend(directory: "cache")`) so
+    the array-migration path is testable without touching the real app-group container — a fix made
+    during this build, not carried over from the plan, once the original hardcoded-backend version
+    turned out untestable.
+
+    **Built and tested, 2026-09-11.** `BackupEncryptionKey+Model.swift` (the three-state model),
+    `Vault+Manager+Backup.swift` (`Backup` class rewrite, migration rewrite), `Manager+Security.swift`
+    (`orphanBackupKeys`, wired into both deactivation call sites). `BEKArray.swift`,
+    `BEKArrayTests.swift`, `BEKSlotAADTests.swift` deleted. New coverage:
+    `BackupEncryptionKeyStorageTests.swift` — `BackupKeyFillerBaselineTests` (the 32-row baseline, its
+    idempotency, filler rows reporting unclaimed/orphaned correctly, overflow past 32 inserting a fresh
+    row, two rapid `setup()` calls at one depth claiming only one row), `BackupKeyOrphaningTests` (Bug
+    118's own regression tests, plus `updateShardStatusIgnoresOrphanedRow` above), and
+    `BackupKeyLegacyStorageMigrationTests` (all three starting states, array-wins-over-legacy-row
+    precedence, no-op on neither source, idempotent second pass). `LayerStoreBackend`/
+    `AppGroupLayerStoreBackend`/`InMemoryLayerStoreBackend` are kept, deliberately unused — see §13's
+    updated Part A note. Full suite re-run clean after: 841 passed, 0 failed, 6 skips
+    (`KeychainMigrationSETests` baseline only), 847 total.
 
 **Accepted limitation, found and closed out 2026-09-07: an empty or sparse duress-depth vault is
 directly visible to a coercer who compels live authentication — cold-storage padding doesn't reach
@@ -1240,6 +1396,14 @@ risk. Full reasoning and disposition in `Docs/Audit/OPEN_LIMITATIONS.md` §I.
 
 Settled 2026-08-28. **Release target superseded 2026-09-07** — see the correction below; the
 compatibility and tombstoning reasoning that follows is unaffected by which branch ships it.
+
+**A second migration, 2026-09-11, item 14 — the array itself (and the legacy row, if a device never ran
+an intermediate array-only build) now migrate into `BackupEncryptionKey` rows.** This section's
+reasoning is about the *first* migration (legacy single row → array slot 0) and stays accurate as the
+historical record of that step; it does not describe the second one. See item 14 for the current
+migration design — same "commit first, then destroy the source" ordering this section already
+established, but diverging from this section's own "tombstone, never delete" convention for the array
+file specifically (reasoned through at item 14, not repeated here) while keeping it for the legacy row.
 
 **Release scope, as originally settled.** Ships in **v1.10.3**, branch `v1.10.3/bek-layering-refactor`
 off `release/v1.10.3` — not a separate `develop` branch, since `develop` was 133 commits behind at the
@@ -1322,6 +1486,7 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 | 105 | A duress layer can distribute shares of the real BEK | **Closed (Fixed), verified 2026-09-10** — §6; closed via Stage 1+2 |
 | 88 | Backup ignored `visibleThroughDepth` in both directions | fixed — export/import are depth-scoped |
 | 94a | Remedy 2's attestation field unpadded | fixed — every op ships an attestation, real or filler |
+| 118 | `deactivateSecureMode`/`forceDeactivateForRecovery` never orphaned the freed depth's BEK — the BEK-side twin of Bug 110 | **Closed (Fixed), verified 2026-09-11** — item 14; `orphanBackupKeys` |
 
 **Vault entries' own bugs, added 2026-09-10/11 — this document is S8's home even though S8 shipped
 outside this container's original array design (see the header, §7, item 11):**

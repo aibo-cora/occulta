@@ -237,7 +237,7 @@ extension VaultManager {
         }
 
         // No per-entry shard matched — check the backup key's own shard metadata.
-        try? self.backup.updateShardStatus(vaultKey: vaultKey, attributeID: attributeID, to: newStatus)
+        try? self.backup.updateShardStatus(vaultKey: vaultKey, attributeID: attributeID, to: newStatus, modelContext: self.modelContext)
     }
 
     // MARK: - Deferred status updates
@@ -407,7 +407,7 @@ extension VaultManager {
             self.backupErosion = nil
             return
         }
-        if let meta = try? self.backup.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth) {
+        if let meta = try? self.backup.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext) {
             let active = self.activeShardCount(in: meta)
             self.backupErosion = active < meta.threshold ? (active, meta.threshold) : nil
         } else {

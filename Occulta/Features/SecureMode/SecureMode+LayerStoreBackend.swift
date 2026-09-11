@@ -9,8 +9,11 @@
 //  two concrete backends were identical except for their directory constant, which
 //  file's own crypto/logic layer error each one threw on failure, and whether
 //  modificationDate was tracked. Manager.LayerStore and its contact blob were deleted
-//  whole (Removal Stage 2, `plan.md`); VaultManager.Backup.LayerStore is this
-//  protocol's sole remaining consumer.
+//  whole (Removal Stage 2, `plan.md`). VaultManager.Backup.LayerStore, this protocol's
+//  last remaining consumer, was itself deleted 2026-09-11 when the BEK moved off the
+//  32-slot array onto ordinary SwiftData rows (`VAULT_KEY_LAYERING.md`) — this protocol
+//  currently has **no consumer**, kept deliberately: `RECOVERY_BUFFER_LAYERING.md`'s own
+//  future per-depth restore-state container was already planned to reuse it.
 //
 //  Backends handle only raw ciphertext I/O — crypto lives in the consuming layer.
 //

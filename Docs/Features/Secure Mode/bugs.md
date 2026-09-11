@@ -9296,3 +9296,184 @@ Same reasoning as Bug 115's Guard: no new logic, only a new caller of the alread
 `visibleVaultEntries(from:)`; neither this view nor `Vault+Tab.swift` carries its own test suite. Full
 local suite run, combined with Bug 115's fix: 844 passed, 0 failed, 6 skipped
 (`KeychainMigrationSETests` only), 851 total — clean.
+
+## Bug 117 — `deleteContact`'s 50-row eviction has no defined order, and `Contact.Profile` has no field that could give it one
+
+**Status:** Open, not fixed. Filed 2026-09-11, found while explaining the 50-row soft-delete/orphan
+cap's eviction logic and being asked to verify "oldest evicted first" actually holds for both
+`Contact.Profile` and `VaultEntry`.
+
+### Severity: Low — a correctness/intent gap, not a leak
+
+The 50-cap itself is a practical bound on unbounded dead-row growth, not a security mechanism (see
+the "why cap it, and why 50" discussion this entry's investigation grew out of — no evidence the
+number or the policy was derived from a threat calculation). Evicting the *wrong* soft-deleted row
+doesn't expose anything a correctly-chosen eviction wouldn't: both the evicted row and every row that
+stays are already soft-deleted, already excluded from every functional read, already indistinguishable
+from live rows without the key. Unlike Bugs 113-116, nothing here crosses a depth boundary or reveals
+content. Filed because the code's own shape (mirrored from `VaultEntry`, which *does* implement
+oldest-first correctly) implies a guarantee that doesn't actually hold for contacts, and because fixing
+it properly needs a model decision, not just a one-line patch.
+
+### What happens
+
+[Contact+Manager.swift:524-529](Occulta/Services/Contact+Manager.swift:524), `fetchSoftDeletedContacts`:
+
+```swift
+private func fetchSoftDeletedContacts() throws -> [Contact.Profile] {
+    let predicate = #Predicate<Contact.Profile> { $0.deletionToken != nil }
+    let descriptor = FetchDescriptor<Contact.Profile>(predicate: predicate)
+    return try self.modelContext.fetch(descriptor)
+}
+```
+
+No `sortBy` at all. [Contact+Manager.swift:467-470](Occulta/Services/Contact+Manager.swift:467),
+`deleteContact`, evicts whichever row this unordered fetch happens to return first:
+
+```swift
+let softDeleted = try self.fetchSoftDeletedContacts()
+if softDeleted.count >= 50, let victim = softDeleted.first {
+    self.modelContext.delete(victim)
+}
+```
+
+`.first` on an unordered `FetchDescriptor` is whatever SwiftData/SQLite's query planner happens to
+return for a plain predicate scan — in practice, likely rowid/insertion order for a table that's
+never reordered, but that's implementation behavior, not a documented guarantee, and nothing in this
+code asserts or depends on it deliberately.
+
+**Contrast: `VaultEntry`'s equivalent (`Manager+Security.swift:562-563`, `orphanVaultEntries`) sorts
+explicitly before evicting:**
+
+```swift
+alreadyOrphaned.sort { $0.createdAt < $1.createdAt }
+toOrphan.sort { $0.createdAt < $1.createdAt }
+```
+
+Bug 110's own doc comment states the vault-entry cap "mirrors `Contact.Profile.deletionToken`'s own
+cap" — but only the *cap number* was carried over. The oldest-first *ordering* that comment implies
+was never actually present on the contacts side to mirror, or existed and was dropped; either way, the
+two implementations have diverged silently.
+
+**Worth being precise about even on the `VaultEntry` side, since "oldest first" undersells what's
+actually being sorted: `createdAt` is when the entry was originally created, not when it was
+orphaned.** There is no separate "orphaned-at" timestamp — `orphanVaultEntries` has nothing else to
+sort by, so creation date stands in as a proxy for "how long has this been orphaned." The two usually
+track closely in practice (orphaning only happens on deactivation, and an entry can't be orphaned
+before it's created), but they're not the same thing, and an entry created long ago but orphaned only
+recently would be evicted ahead of one created recently but orphaned earlier — the reverse of what
+"evict whichever has been dead longest" would actually mean. `VaultEntry` is still strictly better off
+than `Contact.Profile` here (it has *a* defined, deliberate order; contacts have none), but neither
+implementation evicts by true orphaned-duration, and no field exists to make that possible without the
+same new-field, does-it-leak-timing tradeoff named above for contacts.
+
+### Why this can't be fixed with just a `sortBy`
+
+Checked directly: `Contact.Profile` (`Contact+Model.swift`) has **no creation-date field at all** — no
+`createdAt`, `addedDate`, or equivalent, confirmed by grep across the model. `VaultEntry.createdAt`
+exists and is what `orphanVaultEntries` sorts on. Even a correctly-written `sortBy` on
+`fetchSoftDeletedContacts()` would have nothing meaningful to sort *by* — adding real "oldest first"
+behavior needs a new field on the model, not a query fix.
+
+**That new field is its own design question, not a free addition.** It would need the same scrutiny
+this session already gave `deletionToken` itself when asked whether it should carry a timestamp: a
+literal creation-date field, even sealed, is a new place for timing information to live, and this
+codebase has repeatedly chosen not to add exactly that kind of field elsewhere for that reason (see
+the `deletionToken`-has-no-date discussion this bug grew out of). Whether "oldest first" is worth that
+cost for a mechanism whose own stakes are already low (see Severity above) is the actual open question
+here — not resolved by this filing.
+
+### Two remedies, neither chosen
+
+1. **Add a creation-date-equivalent field to `Contact.Profile`**, sealed under the same key discipline
+   the rest of the model uses, enabling genuine oldest-first eviction — brings contacts to parity with
+   `VaultEntry`, at the cost of a new field and a migration for existing rows.
+2. **Leave eviction order unspecified, but say so** — drop the implied "oldest first" framing (the
+   `VaultEntry` mirror comment, and this function's own resemblance to that one) and document
+   `deleteContact`'s eviction as "evicts an arbitrary soft-deleted row when the cap is reached," matching
+   what the code actually does today. Cheapest fix, but a real behavior downgrade from what a reader
+   would currently assume this does.
+
+### Guard
+
+None — not fixed. No test currently asserts eviction order for `deleteContact` at all (unlike
+`VaultEntry`'s orphaning, which per Bug 110's own write-up caught a real ordering bug in an earlier
+draft via a dedicated test) — worth adding regardless of which remedy above is chosen, so the actual
+behavior (ordered or not) is pinned down and visible rather than implied by resemblance to a sibling
+function.
+
+---
+
+## Bug 118 — `deactivateSecureMode` never orphans the freed depth's BEK, so a later, unrelated duress session inherits the old session's backup key and trustee list
+
+**Status:** Closed (Fixed), verified 2026-09-11. Filed and fixed the same day, found while scoping the
+BEK-storage-off-the-array refactor (`VAULT_KEY_LAYERING.md`) — this is the exact BEK-side analog of Bug
+110, one container over, and closing it is what motivated moving BEK storage onto `BackupEncryptionKey`
+SwiftData rows rather than being a separate follow-on patch. Full suite: 841 passed, 0 failed, 6 skips
+(`KeychainMigrationSETests` baseline only), 847 total.
+
+### Severity: Medium — stale-state confusion with a real trustee-facing consequence, not a confidentiality leak
+
+**What this is not:** content leaking to a more-trusted viewer than it was meant for. A depth's BEK,
+like its vault entries, was always visible to whoever reached that depth in the session that created
+it. This bug is about the *same* restriction level inheriting a *different, unrelated* session's key
+and trustee list — not a safer view gaining access to a more-restricted one.
+
+**Why this is worse than Bug 110's own severity, not just the same shape.** Bug 110's stale entry is
+inert content — confusing, but nothing acts on it. A stale BEK is live key material with a live
+consequence: `backupSetupState`/`currentBackupKey` for the reused depth report "already configured,"
+`shardMetadata` lists the *previous* session's trustees as this session's own, and `exportBackup` at
+that depth would seal new content under a key whose distributed shares are held by people the current
+session's owner never chose and may not know about.
+
+### What happens
+
+Before this fix, `deactivateSecureMode` and `forceDeactivateForRecovery` (`Manager+Security.swift`)
+cleared verifiers and called `orphanVaultEntries(freedFrom:)` for the freed depth(s), but never touched
+that depth's `BackupEncryptionKey` row at all — confirmed by reading both functions' full bodies, not
+assumed from the vault-entry precedent. Depth *numbers* are reused across unrelated future duress
+sessions, exactly as Bug 110 found for vault entries: `deactivateSecureMode` always returns to depth 0
+or 1, and a fresh `activateSecureMode` → duress-PIN verification walks back up through 1, 2, 3... the
+same way every time. Concretely: set up backup at duress depth 1 during session A (real trustees, real
+key) → deactivate → later configure an unrelated duress PIN, also reaching depth 1 in session B — session
+B's `backupSetupState(currentDepth: 1)` reports the depth already configured, `currentBackupKey`
+returns session A's key unchanged, and `backupShardMetadata` lists session A's trustees as though the
+new session's owner had chosen them.
+
+### Fix
+
+Folded into the BEK-storage refactor rather than patched as a standalone fix, since the refactor moved
+BEK storage onto the same `deletionToken`-orphaning shape `VaultEntry` already uses (Bug 110) — the
+mechanism this bug needed already existed one container over, just not wired to a BEK-aware version of
+it.
+
+**`BackupEncryptionKey` gained the same three-state shape `VaultEntry` has:** `depth`/`deletionToken`
+fields (sealed under the local DB key, not the vault key — forced, since orphaning has to run from
+`deactivateSecureMode`/`forceDeactivateForRecovery`, neither of which derives the vault key),
+`liveToken`/`orphanedToken` fixed-width one-byte sentinels mirroring `VaultEntry.liveToken`/
+`orphanedToken` exactly, `isOrphaned(usingKey:)` failing safe the same direction. One row per claimed
+depth, drawn from a 32-row filler baseline eagerly created at first launch (see
+`VAULT_KEY_LAYERING.md` for the full storage-migration design this bug's fix rode in on) — uncapped
+beyond 32, since BEK rows are only ever created by an explicit "set up backup at this depth" action,
+not everyday use, so the 50-row cap-and-evict shape `VaultEntry`/`Contact.Profile` use for their much
+higher-frequency writes wasn't judged necessary here.
+
+**`Manager.Security.orphanBackupKeys(freedFrom:)`** (`Manager+Security.swift`), added right after
+`orphanVaultEntries` in both `deactivateSecureMode` and `forceDeactivateForRecovery`, inside the same
+`autosaveEnabled = false` window and committed by the same trailing `save()` — mirrors
+`orphanVaultEntries(freedFrom:)`'s own shape exactly: fetch every `BackupEncryptionKey` row, decrypt
+each `depth` with the local key, skip anything already orphaned or still filler, mark every live match
+`>= clearFrom` as orphaned. No cap, no eviction, matching the row-creation-frequency reasoning above.
+
+### Guard
+
+`BackupKeyOrphaningTests` (`BackupEncryptionKeyStorageTests.swift`), mirroring `VaultEntryOrphaningTests`
+one container over: `staleSessionBackupKeyDoesNotResurface` (the core regression — a BEK set up in one
+duress session must not resurface in a later, unrelated session reaching the same depth; the row must
+survive physically, marked orphaned, not deleted; a fresh `setupBackup` in the new session must produce
+a genuinely different key, not read the old one back), `shallowerBackupKeySurvivesCascade` (a BEK at a
+shallower, still-live depth must be untouched by an unrelated deeper cascade deactivation — exact same
+key, not a fresh one), and `updateShardStatusIgnoresOrphanedRow` (a shard-confirmation call targeting an
+orphaned row's own `attributeID` must be a silent no-op — the row's `encryptedPayload` byte-for-byte
+unchanged — since the row is excluded from the live-row scan `updateShardStatus` searches). All three
+pass; full suite re-run clean after (841/0/6/847).

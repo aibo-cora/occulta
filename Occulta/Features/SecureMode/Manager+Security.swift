@@ -459,6 +459,7 @@ extension Manager {
             let clearFrom = max(1, depth)
             config.clearVerifiers(from: clearFrom)
             self.orphanVaultEntries(freedFrom: clearFrom)
+            self.orphanBackupKeys(freedFrom: clearFrom)
 
             // LIFO pop: land exactly one depth shallower than the layer just removed,
             // never further. Every verifier for depths 0..depth-2 is untouched by the
@@ -507,6 +508,7 @@ extension Manager {
             config.sealedDuressVerifier = nil
             config.clearVerifiers(from: 1)  // keep normalVerifiers[0] (master PIN intact)
             self.orphanVaultEntries(freedFrom: 1)
+            self.orphanBackupKeys(freedFrom: 1)
             try self.setState(0, config: config)
             try self.modelContext.save()
 
@@ -568,6 +570,42 @@ extension Manager {
                 }
                 entry.deletionToken = sealedOrphanToken
                 alreadyOrphaned.append(entry)
+            }
+        }
+
+        /// Orphans any `BackupEncryptionKey` row whose depth stamp names a depth
+        /// `clearFrom` or deeper — the BEK-side twin of `orphanVaultEntries`, closing
+        /// the same class of gap (Bug 110's own bug, applied to backup keys instead
+        /// of vault entries): without this, a depth's old backup key and trustee list
+        /// survive deactivation untouched, and a later, unrelated duress session
+        /// reactivating at the same depth number inherits it — fully configured, with
+        /// trustees nobody in the new session ever picked. Filed and fixed together,
+        /// same commit as the BEK-to-database migration this method belongs to.
+        ///
+        /// No cap, no eviction — unlike `orphanVaultEntries`'s 50-row cap. A
+        /// `BackupEncryptionKey` row is only ever created by an explicit "set up
+        /// backup at this depth" action, not everyday use, so the population this
+        /// orphans grows far more slowly than vault entries do; unbounded growth past
+        /// the 32-row filler baseline is accepted as simpler than reusing the
+        /// cap-and-evict shape for a population that rarely needs it.
+        ///
+        /// Sealed under the local DB key, same as `orphanVaultEntries` and for the
+        /// identical reason: this runs from `deactivateSecureMode`/
+        /// `forceDeactivateForRecovery`, neither of which ever derives the vault key.
+        /// Skips filler rows (`isUnclaimed`) the same way it skips already-orphaned
+        /// ones — neither is a live row this depth-freeing event could possibly apply
+        /// to.
+        private func orphanBackupKeys(freedFrom clearFrom: Int) {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else { return }
+            let allRows = (try? self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())) ?? []
+            let sealedOrphanToken = try? BackupEncryptionKey.orphanedToken.encrypt(using: key)
+
+            for row in allRows {
+                guard !row.isOrphaned(usingKey: key), !row.isUnclaimed(usingKey: key) else { continue }
+                guard let data  = row.depth, let plain = data.decrypt(using: key),
+                      let value = DepthCodec.decode(plain), value >= clearFrom
+                else { continue }
+                row.deletionToken = sealedOrphanToken
             }
         }
 

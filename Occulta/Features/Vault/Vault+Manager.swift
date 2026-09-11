@@ -127,14 +127,20 @@ final class VaultManager {
     init(
         modelContainer: ModelContainer,
         keyManager: any KeyManagerProtocol = Manager.Key(),
-        backupBackend: any LayerStoreBackend = AppGroupLayerStoreBackend(directory: "cache"),
         inactivityTimeout: TimeInterval = 5 * 60
     ) {
         self.modelExecutor     = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
         self.modelContainer    = modelContainer
         self.keyManager        = keyManager
-        self.backup            = Backup(keyManager: keyManager, backend: backupBackend)
+        self.backup            = Backup(keyManager: keyManager)
         self.inactivityTimeout = inactivityTimeout
+
+        // Top up the BackupEncryptionKey table to its 32-row filler baseline — no key
+        // material needed (filler is plain random bytes, never sealed), so this can run
+        // unconditionally at construction, before Secure Mode is ever configured. See
+        // `ensureBackupKeyFillerRows()`'s own doc comment for why 32 is a starting
+        // baseline, not a cap.
+        self.ensureBackupKeyFillerRows()
 
         // ── Lock triggers (conditions 1–3) ───────────────────────────────────
         // Condition 1: app goes to background
@@ -186,13 +192,14 @@ final class VaultManager {
     func unlock(context: LAContext, currentDepth: Int) {
         self.authContext = context
         self.resetInactivityTimer()
-        // Migrate the legacy device-wide BackupEncryptionKey row into the backup
-        // array, if one still exists and hasn't been migrated yet. Idempotent —
-        // see migrateLegacyBEKIfNeeded's own doc comment. try? is deliberate: a
-        // migration decode failure becomes "stays un-migrated, retried next unlock"
-        // rather than a throwing unlock() across every caller.
+        // Migrate real content out of the old 32-slot array and/or the original
+        // single-row legacy BackupEncryptionKey, into the current per-depth row
+        // model, if either still needs it. Idempotent — see
+        // migrateLegacyBackupStorageIfNeeded's own doc comment. try? is deliberate:
+        // a migration decode failure becomes "stays un-migrated, retried next
+        // unlock" rather than a throwing unlock() across every caller.
         if let vaultKey = try? self.currentKey() {
-            try? self.migrateLegacyBEKIfNeeded(vaultKey: vaultKey)
+            try? self.migrateLegacyBackupStorageIfNeeded(vaultKey: vaultKey)
         }
         // Drain reconstruction buffer entries that crossed threshold while locked.
         self.tryFinalizeAllReconstructions()

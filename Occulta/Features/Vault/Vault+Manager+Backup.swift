@@ -130,7 +130,7 @@ extension VaultManager {
     func exportBackup(currentDepth: Int) throws -> Data {
         let vaultKey = try self.currentKey()
 
-        guard let decoded = try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth) else {
+        guard let decoded = try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext) else {
             throw BackupError.bekNotSetup
         }
 
@@ -230,7 +230,7 @@ extension VaultManager {
     func importBackup(_ data: Data, currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
 
-        guard let decoded = try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth) else {
+        guard let decoded = try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext) else {
             throw BackupError.bekNotSetup
         }
 
@@ -437,7 +437,7 @@ extension VaultManager {
         // currentDepth: 0 — this whole mechanism is pinned to depth 0 (doc
         // comment above: "only ever set at depth 0").
         let vaultKey       = try? self.currentKey()
-        let alreadyHasBEK  = vaultKey.flatMap { try? self.backup.fetchDecoded(vaultKey: $0, currentDepth: 0) } != nil
+        let alreadyHasBEK  = vaultKey.flatMap { try? self.backup.fetchDecoded(vaultKey: $0, currentDepth: 0, modelContext: self.modelContext) } != nil
         guard !alreadyHasBEK else { throw BackupError.alreadyProcessed }
 
         guard !FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path) else {
@@ -483,7 +483,7 @@ extension VaultManager {
 
         guard let vaultKey = try? self.currentKey() else { return }
 
-        if (try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth)) != nil {
+        if (try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)) != nil {
             self.clearBEKRestoreShards()
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
@@ -514,7 +514,7 @@ extension VaultManager {
         for (_, group) in groups {
             do {
                 // reconstruct: Shamir combine → GCM oracle → persist row.
-                try self.backup.reconstruct(vaultKey: vaultKey, shards: group, backupData: backupData, ownerIdentity: nil)
+                try self.backup.reconstruct(vaultKey: vaultKey, shards: group, backupData: backupData, ownerIdentity: nil, modelContext: self.modelContext)
                 // importBackup: read persisted row → decrypt file → insert entries.
                 // currentDepth == 0 here always — asserted by this function's own guard above.
                 try self.importBackup(backupData, currentDepth: currentDepth)
@@ -547,21 +547,21 @@ extension VaultManager {
     /// that depth has no backup key.
     func backupSetupState(currentDepth: Int) -> Backup.SetupState {
         guard let vaultKey = try? self.currentKey() else { return .notSetup }
-        return self.backup.setupState(vaultKey: vaultKey, currentDepth: currentDepth)
+        return self.backup.setupState(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
     }
 
     /// `currentDepth`'s backup key shard distribution metadata, or `nil` if that depth's
     /// backup key has not been distributed yet.
     func backupShardMetadata(currentDepth: Int) throws -> ShardDistributionMetadata? {
         let vaultKey = try self.currentKey()
-        return try self.backup.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth)
+        return try self.backup.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
     }
 
-    /// Generate and persist a new backup key at `currentDepth`'s slot, if that depth
-    /// does not already have one. No-op if present at that depth.
+    /// Generate and persist a new backup key at `currentDepth`, if that depth does
+    /// not already have one. No-op if present at that depth.
     func setupBackup(currentDepth: Int) throws {
         let vaultKey = try self.currentKey()
-        try self.backup.setup(vaultKey: vaultKey, currentDepth: currentDepth)
+        try self.backup.setup(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
     }
 
     /// Split `currentDepth`'s backup key into signed shards, one per identifier in
@@ -569,14 +569,14 @@ extension VaultManager {
     func prepareBackupShards(threshold: Int, recipients: [String], currentDepth: Int) throws -> [SignedAttribute] {
         let vaultKey = try self.currentKey()
         return try self.backup.prepareShards(
-            vaultKey: vaultKey, threshold: threshold, recipients: recipients, currentDepth: currentDepth
+            vaultKey: vaultKey, threshold: threshold, recipients: recipients, currentDepth: currentDepth, modelContext: self.modelContext
         )
     }
 
     /// `currentDepth`'s backup key as a `SymmetricKey`.
     func currentBackupKey(currentDepth: Int) throws -> SymmetricKey {
         let vaultKey = try self.currentKey()
-        return try self.backup.current(vaultKey: vaultKey, currentDepth: currentDepth)
+        return try self.backup.current(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
     }
 
     /// Reconstruct the backup key from ≥ k shards, validate against `backupData`, and
@@ -584,86 +584,206 @@ extension VaultManager {
     func reconstructBackup(shards: [SignedAttribute], backupData: Data, ownerIdentity: Data?) throws {
         let vaultKey = try self.currentKey()
         try self.backup.reconstruct(
-            vaultKey: vaultKey, shards: shards, backupData: backupData, ownerIdentity: ownerIdentity
+            vaultKey: vaultKey, shards: shards, backupData: backupData, ownerIdentity: ownerIdentity, modelContext: self.modelContext
         )
     }
 
-    // MARK: - Legacy migration (Stage 1 — §9)
-    //
-    // Lives on VaultManager, not inside Backup — this needs `modelContext`, which is
-    // VaultManager's own resource. Called once per unlock (`unlock(context:currentDepth:)`),
-    // not on every backup-array access the way it used to be when it lived inside
-    // `fetchDecodedBEK`/`persistBEKPayload` — migration is idempotent (checked via slot
-    // 0's presence), so running it once per unlock is exactly as correct as running it
-    // on every array access, and `Backup` no longer needs to know `modelContext` exists.
-    //
-    // One accepted behavior change from moving this out of a throwing call path: a
-    // migration failure (the legacy row exists, decrypts, but fails to decode — a real
-    // anomaly, not "nothing to migrate") is now swallowed by `unlock()`'s `try?` rather
-    // than surfaced to whatever UI action first touched the backup key. The legacy row
-    // simply stays un-migrated and the next unlock tries again — safe, not silent data
-    // loss, but a diagnostic regression for that one rare case, traded for not making
-    // `unlock()` throwing across every one of its callers.
+    // MARK: - Backup key filler baseline
 
-    /// Moves the legacy device-wide `BackupEncryptionKey` row into slot 0 of the backup
-    /// array and tombstones it, if one still exists and hasn't been migrated yet.
-    /// Idempotent — once slot 0 has real content, this returns immediately without
-    /// touching SwiftData at all.
+    /// Tops up the `BackupEncryptionKey` table to 32 filler rows, inserting whatever
+    /// is missing. Idempotent — a device already at or past 32 rows (whether from a
+    /// prior run of this function, or from claimed/migrated rows) does nothing.
     ///
-    /// Runs at first vault unlock after update, at any depth — deliberately, not gated
-    /// to depth 0 (`VAULT_KEY_LAYERING.md` §9): the legacy row is device-wide and
-    /// depth-agnostic until this assigns it to slot 0, and Stage 1 defers item 4's
-    /// depth-derived key, so `vaultKey` works at any depth. Gating to depth-0-only would
-    /// leave Bug 105's window open indefinitely for a session mostly running at a duress
-    /// depth.
+    /// Filler rows carry `depth`, `deletionToken`, and `encryptedPayload` as plain
+    /// `Data.randomBytes` of the correct fixed length — never run through a real
+    /// seal, so they never decrypt (`BackupEncryptionKey.isUnclaimed(usingKey:)` is
+    /// what checks for this). Random bytes of the right length are cryptographically
+    /// indistinguishable from genuine ciphertext+tag without the key, so no key
+    /// material — local or vault — is needed to generate them, and this can run
+    /// unconditionally at `VaultManager` construction, before Secure Mode is ever
+    /// configured. This reproduces the property the old 32-slot array's "always 32
+    /// slots, real or filler" design gave for free, per-row instead of
+    /// per-file-offset.
     ///
-    /// Write-before-tombstone, deliberately: if this crashes between the two steps, slot
-    /// 0 already has the real backup key (safe) and the legacy row is merely left
-    /// un-tombstoned rather than the reverse ordering, which could tombstone real data
-    /// before it's safely relocated.
-    func migrateLegacyBEKIfNeeded(vaultKey: SymmetricKey) throws {
-        guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: 0) == nil else {
-            return
+    /// Each field's filler is sized to match exactly what a *claimed* row of that
+    /// field would be — using the wrong length here would itself be the structural,
+    /// zero-decryption tell this whole design exists to avoid (a filler row
+    /// distinguishable from a real one purely by field byte-count, no key needed).
+    ///
+    /// 32 is a starting baseline, not a hard cap — `Backup.persist` claims a filler
+    /// row when one is available and inserts a fresh row past the baseline once none
+    /// remain. Uncapped beyond that, deliberately: a row is only ever created by an
+    /// explicit "set up backup at this depth" action, not everyday use, so unbounded
+    /// growth past 32 is accepted as simpler than reusing `VaultEntry`'s cap-and-evict
+    /// shape for a population that grows this much more slowly.
+    func ensureBackupKeyFillerRows() {
+        let target = 32
+        guard let count = try? self.modelContext.fetchCount(FetchDescriptor<BackupEncryptionKey>()),
+              count < target
+        else { return }
+
+        let depthFillerSize   = DepthCodec.sealedSize
+        let tokenFillerSize   = BackupEncryptionKey.liveToken.count + 28
+        let payloadFillerSize = Backup.PayloadCodec.payloadSize + 28
+
+        for _ in count..<target {
+            let filler = BackupEncryptionKey(
+                depth:            Data.randomBytes(depthFillerSize),
+                deletionToken:    Data.randomBytes(tokenFillerSize),
+                encryptedPayload: Data.randomBytes(payloadFillerSize)
+            )
+            self.modelContext.insert(filler)
         }
-        guard let legacyPayload = try self.fetchLegacyBEKPayload(vaultKey: vaultKey) else {
-            return
-        }
-        try self.backup.persist(legacyPayload, vaultKey: vaultKey, currentDepth: 0)
-        try self.tombstoneLegacyBEKRow()
+        try? self.modelContext.save()
     }
 
-    /// Reads and decodes the legacy row. `nil` covers both "no row ever existed" and
-    /// "row exists but is already tombstoned" identically — a tombstoned row's
-    /// `encryptedPayload` is unstructured random bytes of the same length, so it fails
-    /// to open under any key, the same as no row at all.
+    // MARK: - Legacy storage migration
+
+    /// Migrates real content out of the two storage generations this replaces, into
+    /// the current per-depth row model — see `VAULT_KEY_LAYERING.md` for the full
+    /// history. Lives on `VaultManager`, not inside `Backup` — needs `modelContext`,
+    /// which is `VaultManager`'s own resource. Called once per unlock
+    /// (`unlock(context:currentDepth:)`); both steps are independently idempotent, so
+    /// running this every unlock costs nothing once migration is complete.
     ///
-    /// A decode failure *after* a successful open is not treated the same way — open
-    /// succeeding under the correct key and AAD means this is genuine, un-tombstoned
-    /// legacy content; a decode failure past that point is a real anomaly and is
-    /// surfaced (thrown), not silently treated as "nothing to migrate" — though see the
-    /// note above about what happens to that throw now that migration runs from `unlock()`.
-    private func fetchLegacyBEKPayload(vaultKey: SymmetricKey) throws -> BackupEncryptionKey.Payload? {
-        guard let row = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>()).first else {
-            return nil
-        }
-        guard let box = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
-              let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: row.aad())
-        else {
-            return nil
-        }
-        return try JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext)
+    /// Three possible starting states, handled in order, each a no-op once done:
+    ///
+    /// 1. **The old 32-slot array file**, if it still exists. Its payload was never
+    ///    depth-derived-key-sealed, so one `vaultKey` derivation — available at any
+    ///    unlock, any depth — decodes all 32 slots in one pass; no need to wait for
+    ///    the user to separately visit each duress depth. Every slot with a real
+    ///    (non-filler) payload where no live row yet exists for that depth gets
+    ///    claimed via `Backup.persist`. The file is deleted once fully read —
+    ///    deliberately, not tombstoned: see `migrateBackupArrayIfNeeded`'s own doc
+    ///    comment for why this diverges from the "never hard-delete" convention.
+    /// 2. **The original single-row legacy `BackupEncryptionKey`**, identifiable
+    ///    unambiguously as the one row with *literally nil* `depth` and
+    ///    `deletionToken` — every row this codebase creates now, real or filler,
+    ///    always populates both, so nil/nil can only be that original pre-refactor
+    ///    row. Only migrated to depth 0, and only if depth 0 still has no live row
+    ///    after step 1 — reproduces the original precedence (array data always wins
+    ///    over the legacy row).
+    /// 3. **Neither** — nothing to do.
+    ///
+    /// One accepted behavior change carried forward from the migration this
+    /// replaces: a migration failure (a row exists, decrypts, but fails to decode —
+    /// a real anomaly, not "nothing to migrate") is swallowed by `unlock()`'s `try?`
+    /// rather than surfaced to whatever UI action first touched the backup key. The
+    /// affected row simply stays un-migrated and the next unlock tries again — safe,
+    /// not silent data loss, but a diagnostic regression for that one rare case.
+    /// `legacyArrayBackend` is injectable — defaults to the real production location —
+    /// purely so tests can substitute `InMemoryLayerStoreBackend` and exercise the
+    /// array-migration path without touching the real app-group container. Production
+    /// callers never pass this explicitly.
+    func migrateLegacyBackupStorageIfNeeded(vaultKey: SymmetricKey, legacyArrayBackend: any LayerStoreBackend = AppGroupLayerStoreBackend(directory: "cache")) throws {
+        try self.migrateBackupArrayIfNeeded(vaultKey: vaultKey, backend: legacyArrayBackend)
+        try self.migrateLegacyBackupRowIfNeeded(vaultKey: vaultKey)
     }
 
-    /// Overwrites the legacy row's `encryptedPayload` with same-length random filler.
-    /// Never deletes the row — deleting it is itself a tell, and a downgraded build
-    /// needs the row present to fail closed at `backup.setup`, `backup.current`, and
-    /// `backup.reconstruct` (§9).
-    private func tombstoneLegacyBEKRow() throws {
-        guard let row = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>()).first else {
+    /// AAD the old array sealed each slot under (`Backup.SlotAAD`, deleted along with
+    /// the array itself) — kept here, read-only, purely so this one-time migration
+    /// can still open slots that were sealed under it before the type existed to
+    /// compute this for us. Never used for anything but reading legacy data.
+    private static func legacyArraySlotAAD(slotIndex: Int) -> Data {
+        var out = Data("occulta-bek-slot-v1".utf8)
+        out.append(UInt8(slotIndex))
+        return out
+    }
+
+    /// Reads every slot of the old 32-slot array file in one pass and claims a row
+    /// for each real (non-filler) slot with no live row yet at that depth. Deletes
+    /// the file once fully read, real slots or not.
+    ///
+    /// **Deletes rather than tombstones, deliberately diverging from this
+    /// codebase's "never hard-delete a legacy security artifact" convention.** That
+    /// convention exists so a downgraded build fails *closed* — sees something,
+    /// refuses to reinitialize silently. The array is different: once
+    /// `Manager.Security.orphanBackupKeys` starts operating purely against the new
+    /// rows, a frozen leftover array file would fail a downgraded build *open* onto
+    /// stale data — rotations and orphan events that happen after migration are
+    /// invisible to a file nothing writes to anymore, so it would present
+    /// trustee/shard state that no longer matches reality. Presenting nothing (file
+    /// absent, same as a device that never had one) is safer than presenting a
+    /// convincing lie.
+    private func migrateBackupArrayIfNeeded(vaultKey: SymmetricKey, backend: any LayerStoreBackend) throws {
+        guard backend.exists, let fileData = try? backend.read() else { return }
+
+        let slotCiphertextSize = Backup.PayloadCodec.payloadSize + 28
+        guard fileData.count == 32 * slotCiphertextSize else {
+            // Not a well-formed array file for this shape — leave it for manual
+            // investigation rather than guessing at a different layout.
             return
         }
-        row.encryptedPayload = Data.randomBytes(row.encryptedPayload.count)
+
+        for slotIndex in 0..<32 {
+            let start = slotIndex * slotCiphertextSize
+            let slotCiphertext = fileData.subdata(in: start..<(start + slotCiphertextSize))
+            guard let box       = try? AES.GCM.SealedBox(combined: slotCiphertext),
+                  let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: Self.legacyArraySlotAAD(slotIndex: slotIndex)),
+                  let payload   = Backup.PayloadCodec.decode(plaintext)
+            else { continue }   // filler slot, or unreadable under this key — nothing to migrate
+
+            guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: slotIndex, modelContext: self.modelContext) == nil else {
+                continue   // already migrated, or independently claimed since — idempotent
+            }
+            try self.backup.persist(payload, vaultKey: vaultKey, currentDepth: slotIndex, modelContext: self.modelContext)
+        }
+
+        // Only reached once every slot has been read and any real ones committed —
+        // a crash before this point just retries next unlock; the per-slot
+        // idempotency check above makes the retry a no-op for anything already
+        // migrated.
+        backend.delete()
+    }
+
+    /// Migrates the original single-row legacy `BackupEncryptionKey` to depth 0, if
+    /// one still exists and depth 0 has no live row yet.
+    ///
+    /// Folds the legacy row into an ordinary filler row *before* calling
+    /// `Backup.persist` — not after, and not left to `persist`'s own filler-claiming
+    /// to handle incidentally. `BackupEncryptionKey.isUnclaimed(usingKey:)` reports
+    /// `true` for a nil `depth` exactly as it does for genuine filler (both fail
+    /// safe the same way), so the legacy row *would* be a valid candidate for
+    /// `persist`'s own claim logic to pick — but only sometimes, depending on fetch
+    /// order, since real filler rows are equally valid candidates. Folding first
+    /// makes the outcome deterministic instead of order-dependent: whichever row
+    /// `persist` ends up claiming for depth 0, the legacy row is unconditionally
+    /// blended into the filler pool either way, never left holding its original
+    /// real ciphertext un-tombstoned because a different row happened to be claimed
+    /// instead.
+    private func migrateLegacyBackupRowIfNeeded(vaultKey: SymmetricKey) throws {
+        guard try self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext) == nil else {
+            return
+        }
+        let rows = try self.modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
+        guard let legacyRow = rows.first(where: { $0.depth == nil && $0.deletionToken == nil }) else {
+            return
+        }
+
+        // Decode before folding — folding overwrites the only copy of this row's
+        // real content.
+        let legacyPayload: BackupEncryptionKey.Payload? = {
+            guard let box       = try? AES.GCM.SealedBox(combined: legacyRow.encryptedPayload),
+                  let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: legacyRow.aad())
+            else { return nil }
+            return try? JSONDecoder().decode(BackupEncryptionKey.Payload.self, from: plaintext)
+        }()
+
+        self.foldLegacyRowIntoFiller(legacyRow)
         try self.modelContext.save()
+
+        guard let legacyPayload else { return }   // already tombstoned, or genuinely corrupt — nothing to carry forward
+        try self.backup.persist(legacyPayload, vaultKey: vaultKey, currentDepth: 0, modelContext: self.modelContext)
+    }
+
+    /// Overwrites a nil/nil legacy row's three fields with fresh random bytes of
+    /// their correct fixed lengths, indistinguishable from any other filler row —
+    /// see `ensureBackupKeyFillerRows()` for why each length matters. Never deletes
+    /// the row.
+    private func foldLegacyRowIntoFiller(_ row: BackupEncryptionKey) {
+        row.encryptedPayload = Data.randomBytes(row.encryptedPayload.count)
+        row.depth            = Data.randomBytes(DepthCodec.sealedSize)
+        row.deletionToken    = Data.randomBytes(BackupEncryptionKey.liveToken.count + 28)
     }
 
     // MARK: - Export metadata slot codec
@@ -791,7 +911,7 @@ extension VaultManager {
             return
         }
 
-        let decoded = try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth)
+        let decoded = try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)
 
         let bekRotated        = decoded.map { $0.payload.distributionID != meta.distributionID } ?? false
         let currentEntryCount = (try? self.entriesVisible(atDepth: currentDepth).count) ?? 0
@@ -856,40 +976,113 @@ extension VaultManager {
 extension VaultManager {
 
     /// Everything about the device's Backup Encryption Key: setup, access, shard
-    /// distribution, reconstruction, rotation, and the 32-slot array it lives in.
+    /// distribution, reconstruction, rotation, and the per-depth rows it lives in.
     ///
-    /// Holds no reference to `VaultManager` at all — mirrors `Manager.LayerStore`,
-    /// which has no reference to `Manager.Security` either. Every method takes
-    /// `vaultKey: SymmetricKey` explicitly, the same way `LayerStore.write(_:slotIndex:
-    /// vaultKey:)` already does one layer down; `Backup` never derives it, never asks
-    /// where it came from. `backend` and `keyManager` are plain injected values, not
-    /// back-references — the same shape `backend` already had.
+    /// Holds no reference to `VaultManager` itself — every method takes `vaultKey:
+    /// SymmetricKey` explicitly, and now `modelContext: ModelContext` explicitly too,
+    /// the same shape. `Backup` never derives either, never asks where they came from.
+    /// `keyManager` is a plain injected value, not a back-reference.
     ///
-    /// Renamed and restructured 2026-09-09 (VAULT_KEY_LAYERING.md item 13): every
-    /// symbol here dropped "BEK" since this namespace already supplies that context.
+    /// Restructured again 2026-09-11 (`VAULT_KEY_LAYERING.md`, BEK-to-database
+    /// migration): the 32-slot fixed-width array (`VaultManager.Backup.LayerStore`,
+    /// deleted) is gone, replaced by ordinary `BackupEncryptionKey` SwiftData rows —
+    /// one per claimed depth, 32 prefilled as filler at launch (see
+    /// `VaultManager`'s launch sequence), uncapped beyond that. `backend`/
+    /// `LayerStoreBackend` are gone from this class entirely; SwiftData access needs
+    /// `modelContext`, which this class was deliberately never given a stored
+    /// reference to (2026-09-09's restructure) — so it's threaded through per-call
+    /// instead, preserving the "no ambient state" property rather than reintroducing
+    /// the coupling that restructure removed.
+    ///
+    /// **Local-key derivation trap, worth restating on every method that hits it**:
+    /// `depth`/`deletionToken` are sealed under the local DB key, ambiently derived via
+    /// `Manager.Key().createHybridLocalEncryptionKey()` — never via `self.keyManager`.
+    /// `Manager.Security.orphanBackupKeys` (the deactivation-time orphaning this design
+    /// exists to enable) derives its local key the same ambient way, un-injected. If
+    /// this class instead read `self.keyManager` for local-key derivation, its writes
+    /// and `Manager.Security`'s orphan-reads would disagree under any injected test key
+    /// manager — every existing test uses one — and orphaning would silently never
+    /// match anything, since `isOrphaned`/`isUnclaimed` fail safe rather than crash.
     ///
     /// Not called directly outside `VaultManager` — the "Backup key wrappers" section
     /// above (`backupSetupState`, `setupBackup`, `backupShardMetadata`,
     /// `prepareBackupShards`, `currentBackupKey`, `reconstructBackup`) is the surface UI
-    /// code and tests use; each one derives `vaultKey` via `self.currentKey()` and calls
-    /// through. `rotate` and `distributeShards` have no caller yet and get no wrapper —
-    /// add one only once something actually calls them.
+    /// code and tests use; each one derives `vaultKey` via `self.currentKey()`, already
+    /// has `self.modelContext`, and calls through. `rotate` and `distributeShards` have
+    /// no caller yet and get no wrapper — add one only once something actually calls
+    /// them.
     final class Backup {
 
-        private let backend:    any LayerStoreBackend
         private let keyManager: any KeyManagerProtocol
 
-        init(keyManager: any KeyManagerProtocol, backend: any LayerStoreBackend) {
+        init(keyManager: any KeyManagerProtocol) {
             self.keyManager = keyManager
-            self.backend    = backend
+        }
+
+        // MARK: - Local-key row lookup
+
+        /// Derives the local DB key ambiently — see the class doc comment for why this
+        /// must never go through `self.keyManager`.
+        private func localKey() throws -> SymmetricKey {
+            guard let key = try? Manager.Key().createHybridLocalEncryptionKey() else {
+                throw BackupError.decryptionFailed
+            }
+            return key
+        }
+
+        /// Every row currently live (claimed, not orphaned, not filler). Both the
+        /// per-depth lookup below and `updateShardStatus`'s full scan go through this,
+        /// so there is exactly one place that knows "live vs. everything else," and a
+        /// filler or orphaned row can never be read as a candidate for either.
+        private func liveRows(modelContext: ModelContext) throws -> (rows: [BackupEncryptionKey], key: SymmetricKey) {
+            let key  = try self.localKey()
+            let rows = try modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
+            let live = rows.filter { !$0.isOrphaned(usingKey: key) && !$0.isUnclaimed(usingKey: key) }
+            return (live, key)
+        }
+
+        /// The live row claimed for `depth`, if any.
+        private func liveRow(forDepth depth: Int, modelContext: ModelContext) throws -> (row: BackupEncryptionKey, key: SymmetricKey)? {
+            let (rows, key) = try self.liveRows(modelContext: modelContext)
+            for row in rows {
+                guard let data  = row.depth, let plain = data.decrypt(using: key),
+                      let value = DepthCodec.decode(plain), value == depth
+                else { continue }
+                return (row, key)
+            }
+            return nil
+        }
+
+        /// A never-claimed filler row, or a freshly inserted one if none remain — the
+        /// uncapped-overflow case once all 32 prefilled rows have been claimed at least
+        /// once. Filler rows are never reclaimed once orphaned (one-way: filler → live
+        /// → orphaned), so running out is expected eventually, not an error.
+        private func claimFillerRow(modelContext: ModelContext, key: SymmetricKey) throws -> BackupEncryptionKey {
+            let rows = try modelContext.fetch(FetchDescriptor<BackupEncryptionKey>())
+            if let filler = rows.first(where: { $0.isUnclaimed(usingKey: key) }) {
+                return filler
+            }
+            let fresh = BackupEncryptionKey(encryptedPayload: Data.randomBytes(PayloadCodec.payloadSize + 28))
+            modelContext.insert(fresh)
+            return fresh
+        }
+
+        /// Seals `payload` into `row.encryptedPayload` under `vaultKey`, AAD-bound to
+        /// `row.id`. Shared by `persist` (find-or-claim, then seal) and
+        /// `updateShardStatus` (already holds the row, no lookup needed).
+        private func seal(_ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, into row: BackupEncryptionKey) throws {
+            let plaintext = try PayloadCodec.encode(payload)
+            let sealed = try AES.GCM.seal(plaintext, using: vaultKey, nonce: AES.GCM.Nonce(), authenticating: row.aad())
+            guard let combined = sealed.combined else { throw BackupError.encryptionFailed }
+            row.encryptedPayload = combined
         }
 
         // MARK: - Setup
 
-        /// Generate and persist a new backup key at `currentDepth`'s slot, if that
-        /// depth does not already have one. No-op if present at that depth.
-        func setup(vaultKey: SymmetricKey, currentDepth: Int) throws {
-            guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth) == nil else {
+        /// Generate and persist a new backup key at `currentDepth`, if that depth does
+        /// not already have one. No-op if present at that depth.
+        func setup(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) throws {
+            guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) == nil else {
                 return
             }
 
@@ -906,15 +1099,16 @@ extension VaultManager {
                     shardMetadata: nil
                 ),
                 vaultKey: vaultKey,
-                currentDepth: currentDepth
+                currentDepth: currentDepth,
+                modelContext: modelContext
             )
         }
 
         // MARK: - Access
 
         /// Return `currentDepth`'s backup key as a SymmetricKey.
-        func current(vaultKey: SymmetricKey, currentDepth: Int) throws -> SymmetricKey {
-            guard let decoded = try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth) else {
+        func current(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) throws -> SymmetricKey {
+            guard let decoded = try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) else {
                 throw BackupError.bekNotSetup
             }
             return decoded.bek
@@ -930,8 +1124,8 @@ extension VaultManager {
 
         /// `currentDepth`'s backup key distribution state. Returns `.notSetup` when
         /// that depth's backup key is absent.
-        func setupState(vaultKey: SymmetricKey, currentDepth: Int) -> SetupState {
-            guard let meta = try? self.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth) else { return .notSetup }
+        func setupState(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) -> SetupState {
+            guard let meta = try? self.shardMetadata(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) else { return .notSetup }
             let confirmed = meta.shards.filter { $0.status == .confirmed }.count
             return confirmed >= meta.threshold
                 ? .ready
@@ -940,8 +1134,8 @@ extension VaultManager {
 
         /// `currentDepth`'s backup key shard distribution metadata, or `nil` if that
         /// depth's backup key has not been distributed yet.
-        func shardMetadata(vaultKey: SymmetricKey, currentDepth: Int) throws -> ShardDistributionMetadata? {
-            try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth)?.payload.shardMetadata
+        func shardMetadata(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) throws -> ShardDistributionMetadata? {
+            try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext)?.payload.shardMetadata
         }
 
         // MARK: - Shard distribution
@@ -958,9 +1152,9 @@ extension VaultManager {
         /// would reintroduce exactly that coupling one parameter over; `[String]` is the
         /// full extent of what this actually needs.
         func prepareShards(
-            vaultKey: SymmetricKey, threshold: Int, recipients: [String], currentDepth: Int
+            vaultKey: SymmetricKey, threshold: Int, recipients: [String], currentDepth: Int, modelContext: ModelContext
         ) throws -> [SignedAttribute] {
-            guard let decoded = try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth) else {
+            guard let decoded = try self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext) else {
                 throw BackupError.bekNotSetup
             }
 
@@ -1024,7 +1218,8 @@ extension VaultManager {
                     shardMetadata: ShardDistributionMetadata(threshold: threshold, shards: shards)
                 ),
                 vaultKey: vaultKey,
-                currentDepth: currentDepth
+                currentDepth: currentDepth,
+                modelContext: modelContext
             )
 
             return attributes
@@ -1042,12 +1237,13 @@ extension VaultManager {
             threshold:      Int,
             recipients:     [String],
             contactManager: ContactManager,
-            currentDepth:   Int
+            currentDepth:   Int,
+            modelContext:   ModelContext
         ) throws -> [(contactIdentifier: String, occData: Data)] {
             // Capture existing attrIDs before re-split: existing trustees get .replace,
             // new trustees get .distribute.
             let oldAttrIDs: [String: UUID]
-            if let decoded = try? self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth),
+            if let decoded = try? self.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: modelContext),
                let meta    = decoded.payload.shardMetadata {
                 oldAttrIDs = Dictionary(uniqueKeysWithValues: meta.shards.map { ($0.contactIdentifier, $0.attributeID) })
             } else {
@@ -1055,7 +1251,7 @@ extension VaultManager {
             }
 
             let attributes = try self.prepareShards(
-                vaultKey: vaultKey, threshold: threshold, recipients: recipients, currentDepth: currentDepth
+                vaultKey: vaultKey, threshold: threshold, recipients: recipients, currentDepth: currentDepth, modelContext: modelContext
             )
 
             return try zip(recipients, attributes).map { contactIdentifier, attribute in
@@ -1093,12 +1289,13 @@ extension VaultManager {
             vaultKey:      SymmetricKey,
             shards:        [SignedAttribute],
             backupData:    Data,
-            ownerIdentity: Data?
+            ownerIdentity: Data?,
+            modelContext:  ModelContext
         ) throws {
             // Hardcoded currentDepth: 0 — see the note on persist's call near the
             // end of this function; reconstruct stays pinned to depth 0 until
             // RECOVERY_BUFFER_LAYERING.md's per-depth restore state exists.
-            guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: 0) == nil else {
+            guard try self.fetchDecoded(vaultKey: vaultKey, currentDepth: 0, modelContext: modelContext) == nil else {
                 throw BackupError.bekAlreadyPresent
             }
 
@@ -1146,19 +1343,20 @@ extension VaultManager {
                     shardMetadata: nil
                 ),
                 vaultKey: vaultKey,
-                currentDepth: 0
+                currentDepth: 0,
+                modelContext: modelContext
             )
         }
 
         // MARK: - Rotation
 
-        /// Generate a fresh backup key and replace `currentDepth`'s slot.
+        /// Generate a fresh backup key and replace `currentDepth`'s row.
         ///
         /// All existing shard distribution at that depth is invalidated (new
         /// distributionID). The caller must revoke old shards and call
         /// `distributeShards` to restore coverage. Any backup file sealed under the
         /// old key remains decryptable until overwritten — warn the user.
-        func rotate(vaultKey: SymmetricKey, currentDepth: Int) throws {
+        func rotate(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) throws {
             var newBEKBytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, 32, &newBEKBytes) == errSecSuccess else {
                 throw BackupError.encryptionFailed
@@ -1172,7 +1370,8 @@ extension VaultManager {
                     shardMetadata: nil
                 ),
                 vaultKey: vaultKey,
-                currentDepth: currentDepth
+                currentDepth: currentDepth,
+                modelContext: modelContext
             )
         }
 
@@ -1193,24 +1392,26 @@ extension VaultManager {
         /// the owner happens to have active at that moment — distribute from depth
         /// 0, switch depths for an unrelated reason, and a depth-0 confirmation
         /// arriving while depth 2 is current would silently fail to apply if this
-        /// only checked `currentDepth`'s own slot. Searches all 32 instead — costs
-        /// up to 32 slot reads, only on this relatively rare, async confirmation
-        /// path, not a hot path. A slot that fails to open here is skipped, not
-        /// fatal to the search — the attrID being sought may live in a different,
-        /// perfectly healthy slot; `persist`'s own full-array reseal is still what
-        /// refuses to silently paper over real corruption once a match is found and
-        /// this actually writes (item 8's fix, unaffected by this).
+        /// only checked `currentDepth`'s own row. Scans every live row instead —
+        /// only on this relatively rare, async confirmation path, not a hot path. A
+        /// row that fails to open here is skipped, not fatal to the search — the
+        /// attrID being sought may live in a different, perfectly healthy row; that
+        /// should never actually happen for a row `liveRows` already vouched for as
+        /// live, but the search stays lenient rather than fatal on one bad row.
         ///
         /// Still takes `vaultKey`, unlike the rest of this file's `currentDepth`
         /// omission pattern — the *depth* is what's unreliable to guess here, not
         /// the key; `vaultKey` itself is derived from biometric auth, not from a
         /// depth, so the caller always has exactly one to hand regardless of which
-        /// slot this ends up matching.
-        func updateShardStatus(vaultKey: SymmetricKey, attributeID: UUID, to newStatus: ShardStatus) throws {
-            let array = LayerStore(backend: self.backend)
+        /// row this ends up matching.
+        func updateShardStatus(vaultKey: SymmetricKey, attributeID: UUID, to newStatus: ShardStatus, modelContext: ModelContext) throws {
+            let (rows, _) = try self.liveRows(modelContext: modelContext)
 
-            for depth in SlotAAD.validRange {
-                guard let payload = try? array.read(slotIndex: depth, vaultKey: vaultKey) else { continue }
+            for row in rows {
+                guard let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                      let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: row.aad()),
+                      let payload   = PayloadCodec.decode(plaintext)
+                else { continue }
                 guard var meta = payload.shardMetadata else { continue }
                 guard let idx = meta.shards.firstIndex(where: { $0.attributeID == attributeID }) else { continue }
 
@@ -1221,15 +1422,16 @@ extension VaultManager {
 
                 meta.shards[idx].status = newStatus
 
-                try self.persist(
+                try self.seal(
                     BackupEncryptionKey.Payload(
                         bekBytes:      payload.bekBytes,
                         distributionID: payload.distributionID,
                         shardMetadata: meta
                     ),
                     vaultKey: vaultKey,
-                    currentDepth: depth
+                    into: row
                 )
+                try modelContext.save()
                 return
             }
         }
@@ -1496,58 +1698,6 @@ extension VaultManager {
             }
         }
 
-        // MARK: - Slot AAD
-        //
-        // Additional Authenticated Data for one slot's sealed content in the 32-slot
-        // array `PayloadCodec` encodes. Binds the slot's own index, so AES-GCM's
-        // tag-verification step itself — not application logic reading the decrypted
-        // plaintext afterward — is what rejects a slot swap.
-        //
-        // `VAULT_KEY_LAYERING.md` §5: "Every sealed field's AAD must bind its slot
-        // index. Without it, lifting slot 2's ciphertext into slot 0 moves a duress
-        // layer's backup key... into the real one." Checked against this codebase's
-        // other depth/slot mechanisms rather than assumed novel: `Manager.LayerStore`
-        // had no AAD at all until Bug 106's fix; this container built it in from the
-        // start.
-        //
-        // Deliberately excludes `formatVersion` — that already lives inside the sealed
-        // plaintext itself (`PayloadCodec`'s own byte 0–1) and is checked there after a
-        // successful open. A slot-swap attack moves ciphertext between two slots
-        // written at the same format version, so slot-index binding alone is what
-        // stops it; folding version into AAD too would mix two different properties
-        // into one field for no attack it additionally closes.
-        //
-        // ```
-        // bytes 0–19  domain separator — "occulta-bek-slot-v1" (UTF-8, 20 bytes)
-        // byte  20    slotIndex        — UInt8, 0..<SlotAAD.slotCount (32)
-        // ```
-        enum SlotAAD {
-            private static let domain = Data("occulta-bek-slot-v1".utf8)
-
-            /// Deliberately its own constant, not `AppLayerConfig.maxVerifierCount` —
-            /// unlike `ExportMetaSlotCodec.slotCount` (`VaultManager`), which is
-            /// genuinely *about* the verifier arrays, this is backup-key AAD. Reusing
-            /// that constant would make it an invisible dependency: someone resizing
-            /// verifier arrays for a reason that has nothing to do with the backup key
-            /// would silently change what this file accepts, with no signal at the
-            /// point of that change. Both happen to be 32 today because the app
-            /// currently has one slot per depth and one verifier per depth — if that
-            /// number ever moves, this needs its own deliberate update, not an
-            /// automatic one.
-            static let slotCount: Int = 32
-            static let validRange: Range<Int> = 0..<Self.slotCount
-
-            /// Traps outside `validRange`. `slotIndex` is always an internal loop bound
-            /// here, never attacker- or user-supplied, so an out-of-range value is a
-            /// caller bug to catch immediately, not input to validate gracefully.
-            static func aad(slotIndex: Int) -> Data {
-                precondition(Self.validRange.contains(slotIndex), "slot index \(slotIndex) out of range")
-                var out = Self.domain
-                out.append(UInt8(slotIndex))
-                return out
-            }
-        }
-
         // MARK: - Private
 
         struct Decoded {
@@ -1555,33 +1705,54 @@ extension VaultManager {
             let bek:     SymmetricKey
         }
 
-        /// Fetch and decrypt `currentDepth`'s slot of the array. Returns nil if
-        /// nothing is set up at that depth.
+        /// Fetch and decrypt `currentDepth`'s row. Returns nil if nothing is set up at
+        /// that depth (including "nothing has ever claimed a row for this depth yet").
+        ///
+        /// A live row whose payload fails to open or decode is a genuine anomaly, not
+        /// a legitimate empty state — unlike the old array, a filler row here was
+        /// never actually sealed, so it's already excluded by `liveRow`'s
+        /// `isUnclaimed` check before this ever runs; a row that passes that check but
+        /// still fails to open/decode means real corruption, so this throws rather
+        /// than silently returning nil for that case.
         ///
         /// Internal, not private — `VaultManager`'s own `exportBackup`, `importBackup`,
         /// `refreshBackupStaleness`, `storePendingRestore`, `attemptBackupRestore`, and
-        /// `migrateLegacyBEKIfNeeded` all call this directly, since they need both
-        /// `payload` and `bek`, more than the public `current(vaultKey:currentDepth:)`
-        /// accessor returns. No legacy-row migration here anymore — that needs
-        /// `modelContext`, which belongs to `VaultManager`; it runs once per unlock,
-        /// before any of these are reached.
-        func fetchDecoded(vaultKey: SymmetricKey, currentDepth: Int) throws -> Decoded? {
-            guard let payload = try LayerStore(backend: self.backend)
-                .read(slotIndex: currentDepth, vaultKey: vaultKey)
-            else {
+        /// `migrateLegacyBEKStorageIfNeeded` all call this directly, since they need
+        /// both `payload` and `bek`, more than the public
+        /// `current(vaultKey:currentDepth:modelContext:)` accessor returns.
+        func fetchDecoded(vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext) throws -> Decoded? {
+            guard let (row, _) = try self.liveRow(forDepth: currentDepth, modelContext: modelContext) else {
                 return nil
+            }
+            guard let box       = try? AES.GCM.SealedBox(combined: row.encryptedPayload),
+                  let plaintext = try? AES.GCM.open(box, using: vaultKey, authenticating: row.aad()),
+                  let payload   = PayloadCodec.decode(plaintext)
+            else {
+                throw BackupError.decryptionFailed
             }
             return Decoded(payload: payload, bek: SymmetricKey(data: payload.bekBytes))
         }
 
-        /// Writes `payload` into `currentDepth`'s slot of the array.
+        /// Writes `payload` into `currentDepth`'s row — the already-live row if one
+        /// exists, otherwise a claimed filler row (or a freshly inserted one, past the
+        /// 32-row baseline).
         ///
         /// Internal, not private — same reason as `fetchDecoded` above.
         func persist(
-            _ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, currentDepth: Int
+            _ payload: BackupEncryptionKey.Payload, vaultKey: SymmetricKey, currentDepth: Int, modelContext: ModelContext
         ) throws {
-            try LayerStore(backend: self.backend)
-                .write(payload, slotIndex: currentDepth, vaultKey: vaultKey)
+            let row: BackupEncryptionKey
+            if let (existing, _) = try self.liveRow(forDepth: currentDepth, modelContext: modelContext) {
+                row = existing
+            } else {
+                let key = try self.localKey()
+                row = try self.claimFillerRow(modelContext: modelContext, key: key)
+                row.depth         = try? DepthCodec.encode(currentDepth).encrypt(using: key)
+                row.deletionToken = try? BackupEncryptionKey.liveToken.encrypt(using: key)
+                guard row.depth != nil, row.deletionToken != nil else { throw BackupError.encryptionFailed }
+            }
+            try self.seal(payload, vaultKey: vaultKey, into: row)
+            try modelContext.save()
         }
     }
 }
