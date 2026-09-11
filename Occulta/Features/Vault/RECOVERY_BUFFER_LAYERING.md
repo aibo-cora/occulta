@@ -53,6 +53,68 @@ bundle. Without that property this design would trade a starvation channel for d
 which predicates on `deletionToken` alone. Adding it is the load-bearing piece of this container's
 design, and it has scope beyond shards — see §7.
 
+### 2.1 Concrete design, 2026-09-11 — where the gate actually hooks in, and a correction to the
+framing above
+
+**Refines rather than follows the paragraph above: the gate should not live inside `identifyOwner`
+at all.** That function (`Contact+Manager.swift:1550`) resolves the sender of *every* inbound bundle
+— messages, prekeys, shard operations alike — and §6 item 6 already settled that messages and
+prekeys must **not** be depth-gated the same way shards are (excluded from the gate entirely, and
+self-healing by regeneration, respectively). Putting the check there would mean threading an
+exemption back out for every non-shard caller, exactly the scope creep §4's "known scope creep" note
+already warns about. The gate belongs on the shard-specific path instead, and tracing that path found
+it already carries everything the gate needs, with no new parameter threading required.
+
+**The insertion point: `VaultManager.acceptReturnedShard(_:attestation:senderIdentifier:currentDepth:)`
+(`Vault+Manager+ReturnBuffer.swift:44`).** Both `senderIdentifier: String` and `currentDepth: Int`
+are already parameters — threaded end to end from `ShardCustodyManager.handleInbound` (the top-level
+router, `ShardCustody+Manager.swift:56`) through `handleHandback` down to this function, for reasons
+unrelated to this gate (senderIdentifier for the one-per-sender dedup rule, currentDepth for the
+existing `attemptBackupRestore(currentDepth:)` call one line below). Nothing upstream needs to
+change.
+
+**The check itself, inserted at the top of that function, before either of its two existing buffer
+paths (per-entry reconstruction, step 1; BEK restore, step 3):**
+
+```swift
+guard
+    let sender = try self.contactManager.fetchContact(by: senderIdentifier),
+    let localKey = try Manager.Key().createHybridLocalEncryptionKey(),
+    sender.isVisible(atDepth: currentDepth, usingKey: localKey)
+else { return }  // drop — mismatchHandbackOps guarantees this trustee's next bundle retries it
+```
+
+One check covers both downstream buffers, since both are gated by this same function's entry —
+matching the "per-depth buffers become correct" framing above, which was written about buffers in
+the plural.
+
+**Key domain, worth stating explicitly since it's easy to assume otherwise:** `isVisible(atDepth:)`
+decrypts `originDepth`/`visibleThroughDepth` under the **local DB key**
+(`Manager.Key().createHybridLocalEncryptionKey()`, the bare `Data.decrypt()` extension's own
+derivation) — not the recovery buffer key this function already derives for `ReconstructShard`
+rows, and not the vault key. Two ambient key derivations end up happening in the same function, not
+one, but both are device-unlock-gated with no biometric, matching this file's own header claim that
+absorption works "even while the vault is locked." The gate adds no new availability constraint —
+it's exactly as available as `storeRestoreShard` already is.
+
+**What this deliberately does not touch:** `handleHandback`'s own Branch A/B signature verification,
+upstream and unaffected — this is an additional attribution gate *after* authentication succeeds, not
+a replacement for it. Message and prekey processing, different call paths entirely, per §6 item 6.
+The trustee-*side* `handleDistribute`/`handleReplace` (receiving custody shards for someone else,
+item 7's separate "keyed by the trustee's own depth" mechanism) — a different device's own storage,
+not this owner-side gate.
+
+**Migration: none.** No schema change, no new persisted field — this reads fields
+(`originDepth`/`visibleThroughDepth`) that already exist and are already populated. Unlike every
+other piece of this document, this stage has no on-device data to migrate, which is part of why it's
+cheap relative to how load-bearing it is.
+
+**Test shape:** a shard from a contact visible only at depth 2, delivered while `currentDepth == 1`,
+must not appear in `ReconstructShard` rows afterward (covers both the per-entry and BEK paths in one
+assertion each). The same shard delivered again with `currentDepth == 2` must bank normally —
+standing in for the trustee's automatic retry `mismatchHandbackOps` already guarantees, without
+needing to simulate the retry mechanism itself to prove the gate doesn't cause permanent loss.
+
 ---
 
 ## 3. Caps, and why they are only safe here
@@ -69,7 +131,7 @@ before then — see §6's anti-pairings.
 
 | # | Stage | Verify |
 |---|---|---|
-| 3 | Sender-visibility gate on inbound processing (§2), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
+| 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
 | — | ~~As a fixed-slot file~~ — **proposed superseded 2026-09-11, §6 item 9: rows, not a file, following `VAULT_KEY_LAYERING.md` item 14's BEK migration.** Two of Stage 4's three pieces (shard buffer, `CustodyShard`) are already rows in production; item 9 designs the third. Not yet decided — proposal only. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
