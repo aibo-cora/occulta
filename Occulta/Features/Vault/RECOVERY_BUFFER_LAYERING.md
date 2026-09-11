@@ -91,8 +91,9 @@ change, and there is no parameter to omit or default, so there's nothing to fail
 revised 2026-09-11.** The first pass here scoped the drop to `.handback` only, on the reasoning that
 `.distribute`/`.replace` (trustee-side custody storage) had no retry mechanism and dropping them
 risked permanent shard loss. **That reasoning was wrong — corrected the same day, before it shipped.**
-`PendingShardDistribute+Model.swift`'s own header claims "deleted on send (fire-and-forget)"; that's
-stale. `ShardCustody+Manager.swift`'s `queueDistribute` doc comment says plainly: *"Row is deleted
+`PendingShardDistribute+Model.swift`'s own header claimed "deleted on send (fire-and-forget)"; that
+was stale, corrected 2026-09-12 to match this section. `ShardCustody+Manager.swift`'s
+`queueDistribute` doc comment says plainly: *"Row is deleted
 only when the trustee's `custodyManifest` confirms the ID (not on send), enabling automatic retry on
 bundle loss."* Checked directly against the code, not just the comment: `pendingDistributeOps`
 (building the outbound `.distribute`/`.replace` ops) is a pure fetch with no delete anywhere in it;

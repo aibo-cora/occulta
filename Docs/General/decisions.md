@@ -35,11 +35,11 @@ depth.
 had no retry mechanism and dropping them risked permanent shard loss. That assumption was wrong,
 found while re-checking it: `PendingShardDistribute` persists until the trustee's own
 `custodyManifest` confirms receipt — `queueDistribute`'s own doc comment states this directly, and
-`processInboundManifest`'s actual code confirms it; the row is never deleted on send. (A sibling
-file, `PendingShardDistribute+Model.swift`, still claims "deleted on send, fire-and-forget" — stale,
-not yet corrected.) Since all three op kinds already retry safely, dropping all three closes the
-same "why let a coercer's session write anything at all" concern that motivated the original ask,
-with no data-loss cost.
+`processInboundManifest`'s actual code confirms it; the row is never deleted on send.
+(`PendingShardDistribute+Model.swift`'s header comment claimed "deleted on send, fire-and-forget" —
+stale, corrected 2026-09-12 to match.) Since all three op kinds already retry safely, dropping all
+three closes the same "why let a coercer's session write anything at all" concern that motivated
+the original ask, with no data-loss cost.
 
 **Consequences:** A coerced session cannot cause *new* custody-shard writes for a hidden owner at
 all — not just cannot see them. Pre-existing rows from before the session are unaffected; this is a
