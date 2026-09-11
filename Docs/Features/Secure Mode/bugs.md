@@ -6281,6 +6281,16 @@ surfaces bundled under "what does duress show," and only one of them was fixable
   should come back if that lands. Recorded here so this reads as "correct for the current design"
   rather than as a settled conclusion about what the user is allowed to be told.
 
+  **Redirect, not correction, 2026-09-12: Bug 102 no longer exists to point at, but the dependency
+  itself is still live and still unmet.** `VAULT_KEY_LAYERING.md` §8 item 14 already gave the BEK
+  its per-layer storage this paragraph was waiting for — checked directly, `storePendingRestore`
+  (`Vault+Manager+Backup.swift:434`) still hard-codes its `alreadyHasBEK` check to depth 0 regardless
+  of which depth is actually arming, so "depth 0 had to vary its reply... duress could not" remains
+  true today for the *reply* even though the *storage* it's about is no longer device-wide. What
+  this paragraph is actually waiting for is `RECOVERY_BUFFER_LAYERING.md`'s own Stage 4 (arming
+  state made genuinely per-depth) — tracked forward under Bug 99, not Bug 102, per that bug's own
+  2026-09-11 reclassification.
+
 - **The ongoing progress banner** — was the persistent, updating shard count in the vault tab.
   Originally judged un-unifiable: showing it in duress was harm 1 outright (direct disclosure that a
   recovery is inbound), and fabricating a plausible, consistently-timed counter that tracks nothing
@@ -7113,6 +7123,23 @@ flip to a real assertion on its own when a bound appears.
 denial channel — junk shards evicting real ones. Bug 102's per-depth arrangement is what makes a cap
 safe, which is another reason not to add one to the shared buffer first.
 
+**Doubly stale, corrected 2026-09-12 — the thing this item is waiting for no longer exists in the
+shape it was waiting for.** Bug 102 was reclassified Closed, subsumed into Bug 99, 2026-09-11 — its
+own fixed-slot design is preserved there for the record but was never built. Its successor,
+`RECOVERY_BUFFER_LAYERING.md` §6 item 9 (proposed the same day, 2026-09-11), does **not** provide the
+free hard cap this item is counting on: item 9 is rows with an eager-*filler* baseline, explicitly
+"uncapped beyond" that baseline, mirroring `BackupEncryptionKey`'s own deliberately-uncapped design
+— it closes the *row-count-as-forensic-signal* problem, a different axis from the
+*resource-exhaustion-via-unbounded-growth* problem this item is actually about. Item 9's own text
+lists filler-baseline sizing as still open and doesn't mention a cap anywhere. **So: waiting is no
+longer the right call — there is nothing left upstream that closes this "for free."** Whoever builds
+item 9 needs to separately decide a real cap for the shard buffer specifically (item 9's "One
+caution" above about caps-plus-shared-buffers being a denial channel still applies and still needs
+its own per-depth-safety argument, independent of whichever container shape wins). The guard test's
+actual name is `restoreShardFileIsBounded` (`VaultRestoreTrustTests.swift:587`) — a naming leftover
+from the file era, not `restoreShardBufferIsBounded` as cited above — confirmed still present, still
+an active `withKnownIssue`, not yet flipped.
+
 **Target:** unset.
 
 ### Severity: Medium, rising to High in combination with Bug 94
@@ -7594,6 +7621,12 @@ if Bug 102 slots the backup contents. See also Bug 102: rows remove the length c
 fixed slots supersede them. Filed 2026-08-27, while enumerating what a restore leaves on disk. Not found by
 reading the restore code — found by asking what an examiner sees, after the *same* number had just
 been removed from the UI for being too revealing.
+
+**Redirect, 2026-09-12: Bug 102 no longer exists, and its successor isn't "fixed slots."**
+`RECOVERY_BUFFER_LAYERING.md` §6 item 9 (2026-09-11) proposes replacing `backup-import-cache.occbak`
+with a per-depth *row* holding a padded `encryptedSnapshot` field, not a fixed-slot array. The
+conclusion above still holds — the standalone file disappears either way, so remedy 3 (padding a
+file that no longer exists) stays moot — just via item 9, not "Bug 102"/fixed slots.
 
 **Target:** unset. Independent of Bug 99, though both concern the same two files.
 

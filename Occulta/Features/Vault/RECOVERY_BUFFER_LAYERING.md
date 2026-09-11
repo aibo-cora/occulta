@@ -536,6 +536,16 @@ decided; see item 9 for what's still open before that's settled.
    - **§3's per-depth cap reasoning is unaffected either way** — "a cap is only safe once the buffer
      is per-depth" holds whether "per-depth" means a file slot or a filler-row baseline; this
      proposal doesn't reopen that question, just changes what "per-depth" is built from.
+   - **This proposal does not provide the cap `bugs.md` Bug 96 item 2 is waiting for, flagged
+     2026-09-12.** That item deferred adding a real bound to the shard buffer on the assumption a
+     fixed-slot design would give one "for free" once built. A filler-row *baseline*, uncapped
+     beyond it, is a different property — it hides row count up to the baseline, the same
+     forensic-signal problem item 14 closed for BEK, not the resource-exhaustion problem item 2 is
+     actually about (confirmed still live: `restoreShardFileIsBounded`,
+     `VaultRestoreTrustTests.swift:587`, is a `withKnownIssue` showing 300 junk shards from 300
+     distinct senders bank without limit). Whoever builds this needs to decide a real cap for the
+     shard buffer specifically, on top of whatever baseline gets chosen — §3's per-depth-safety
+     argument for capping still applies and still has to be made, it just isn't made by this item.
 
    **Supersedes, if adopted:** §4 Stage 4 as written (a fixed-slot file); §5 in full (there is no
    file left to decide "where it lives" for); §6 item 5's slot-size numbers stay useful as capacity
