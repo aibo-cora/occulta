@@ -124,6 +124,9 @@ Three changes applied together:
 
 ## Bug 7 — Hard-delete inside staged key rollback scope causes irrecoverable data loss
 
+**Stale, 2026-09-11:** `commitStagedLocalDBKey`/`rollbackStagedLocalDBKey` — the staged-key rollback
+pattern this bug is about — no longer exist, deleted whole by Removal Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: High
@@ -139,6 +142,9 @@ Moved the `hardDeleteContact` loop to after `commitStagedLocalDBKey()` (Step 10,
 
 ## Bug 8 — Vault PEKs unnecessarily stored in the blob
 
+**Stale, 2026-09-11:** `BlobPayload`/`VaultPEKRecord` no longer exist — deleted whole by Removal
+Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Medium
@@ -152,6 +158,8 @@ Removed `VaultPEKRecord` struct and the `vaultPEKs` field from `BlobPayload`. Re
 ---
 
 ## Bug 9 — `findBlob` returns an arbitrary file when multiple `.occbak` files exist
+
+**Stale, 2026-09-11:** `findBlob` no longer exists — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -167,6 +175,9 @@ The sort step was omitted when the resource key was added. `FileManager.contents
 ---
 
 ## Bug 10 — `reEncryptKeyRecords` after INSERT in deactivation
+
+**Stale, 2026-09-11:** `reEncryptKeyRecords` no longer exists, and deactivation no longer does any
+key-record re-encryption at all — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Invalid — proposed fix causes data loss)
 
@@ -184,6 +195,9 @@ No code change. The call is correct and must stay.
 
 ## Bug 11 — `maintainNoOpBlob` destroys the real blob after 24 hours, breaking deactivation
 
+**Stale, 2026-09-11:** `maintainNoOpBlob` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Critical
@@ -198,6 +212,9 @@ In `OccultaApp.init()`, read `AppLayerConfig` from the already-initialized `Mode
 ---
 
 ## Bug 12 — `visibleThroughDepth` watermark survives deactivation
+
+**Stale, 2026-09-11:** The Steps 4/5/6 this bug describes no longer exist — `deactivateSecureMode`
+no longer touches `visibleThroughDepth` at all, per Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -221,6 +238,9 @@ The `depthData` / `visibleEncrypted` intermediates are now entirely unused and w
 
 ## Bug 13 — Hard-delete of sensitive contacts conflicts with normal-mode visibility
 
+**Stale, 2026-09-11:** `forensic-trace-avoidance.md` §S5, cited here as the accepted trade-off, is
+itself marked Retired (2026-09-10) — the blob/rotation model this decision weighed against is gone.
+
 **Status:** Closed (design decision — hard-delete removed)
 
 ### Severity: High
@@ -237,6 +257,9 @@ The hard-delete loop was removed from `activateSecureMode`. Sensitive contacts r
 ---
 
 ## Bug 14 — `commitStagedLocalDBKey` uses invalid `SecItemUpdate` search attributes, causing permanent data loss on deactivation failure
+
+**Stale, 2026-09-11:** `commitStagedLocalDBKey` no longer exists — deleted whole by Removal Stages
+0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -267,6 +290,10 @@ Two fixes applied together:
 ---
 
 ## Bug 15 — Contact classification uses hardcoded depth 1, breaks under multi-depth Secure Mode
+
+**Stale, 2026-09-11:** `activateSecureMode`'s Step 4 (classification into DB vs. blob) no longer
+exists — activation/deactivation no longer classify or move contacts at all, per Removal Stages 0-4,
+2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -422,6 +449,9 @@ The button's disabled state was not wired to `isActivating`. The overlay (`Activ
 
 ## Bug 23 — Sensitive contacts lose their sensitivity flag after deactivation; must be re-marked on every activation cycle
 
+**Stale, 2026-09-11:** `ContactBlobRecord` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Medium
@@ -471,6 +501,9 @@ This fix is complete for Phase 1 (two layers). For Phase 2 multi-layer, two furt
 ---
 
 ## Bug 26 — Pre-existing vault entries visible in duress mode after activation
+
+**Stale, 2026-09-11:** `activateSecureMode`'s Step 8 (the blob-sealing step this bug is about) no
+longer exists — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -524,6 +557,9 @@ Additionally, `deactivateSecureMode` Step 6 already sets `entry.visibleThroughDe
 
 ## Bug 27 — Silent skip in Step 8 when `old.decrypt()` fails; entry hidden by stale ciphertext
 
+**Stale, 2026-09-11:** Same Step 8 as Bug 26 — no longer exists, deleted by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Medium
@@ -571,6 +607,9 @@ Working as expected.
 ---
 
 ## Bug 30 — Quantum key material destroyed for sensitive contacts after Secure Mode deactivation
+
+**Stale, 2026-09-11:** `hasUnreadableKeys` and the deactivation Step 5b blob-rebuild this fix's
+second half targets no longer exist — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -800,6 +839,9 @@ Write-new-first, delete-old-after: capture the old file URL before the write, wr
 
 ## Bug 39 — `maintainLayerStore()` blocks the main thread on launch
 
+**Stale, 2026-09-11:** `Manager.LayerStore` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Low
@@ -962,6 +1004,9 @@ The migration in `Manager.Security.init()` populates `sealedNormalVerifiers[0]` 
 
 ## Bug 43 — LayerStore `rewrite()` in `deactivateSecureMode` runs synchronously on calling thread; `LayerStore.Error` codes were unstable
 
+**Stale, 2026-09-11:** `Manager.LayerStore` and its `Error` type no longer exist — deleted whole by
+Removal Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Low
@@ -987,6 +1032,9 @@ The activation error handler's `debugPrint` was also updated from `error.localiz
 ---
 
 ## Bug 44 — `payloadTooLarge` when sensitive contact has a photo; images included in blob unnecessarily
+
+**Stale, 2026-09-11:** `LayerContact` and the blob payload machinery no longer exist — deleted whole
+by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Closed (Fixed)
 
@@ -1365,6 +1413,11 @@ At depth N (adversary, `coercerBaseDepth = 0`): `N ≠ 0` and `N ≠ 0` — bloc
 ---
 
 ## Bug 54 — `vaultManager.isUnlocked` always false in `.inactive` handler; share index unfiltered and screenshot overlay inactive
+
+**Stale, 2026-09-11:** Incident A's `ShareIndex.sqlite`/`shareIndexAllowedIDs`/`syncShareIndex()`
+mechanism was removed 2026-08-16 (Bug 84, recipient picker moved into the app). Its sibling bugs (6,
+65-69) already carry a "retired by the removal of the share index" note; this one never got it.
+Incident B (the screenshot overlay/`handleInactive`) is unaffected and still accurate.
 
 **Status:** Closed (Fixed)
 
@@ -2092,6 +2145,9 @@ The coercer does not know this happened. They entered what they believed was the
 
 ## Bug 63 — Stale blob metadata after full deactivation; `clearBlobSlot(at: 0)` does not cover higher-depth activations
 
+**Stale, 2026-09-11:** `clearBlobSlot` and the blob metadata arrays it describes no longer exist —
+deleted whole by Removal Stages 0-4, 2026-09-10.
+
 **Status:** Closed (Fixed)
 
 ### Severity: Low (stale metadata)
@@ -2359,6 +2415,10 @@ contactManager.syncShareIndex()
 
 ## Bug 70 — Lockout counter reset to zero via iTunes/Finder backup restore
 
+**Stale, 2026-09-11:** Fix 2's `AppLayerConfig.reencrypt(from:to:)` no longer exists — deleted along
+with all rotation, Removal Stages 0-4, 2026-09-10. Moot for a stronger reason than the entry states:
+there is no rotation left to carry lockout fields through.
+
 **Status:** **Fixed, re-examined and closed 2026-08-26.** Fix 2 (carry lockout fields through
 rotation) is implemented and was independently unnecessary; see "Reconciled 2026-08-15" at the
 bottom of this entry. **Fix 1 (backup exclusion) was already implemented** —
@@ -2450,6 +2510,10 @@ test confirming it; see *Resolution* above for the 2026-08-26 close.
 
 ## Bug 71 — Layer store file modification timestamp correlates with activation events
 
+**Stale, 2026-09-11:** `LayerStore`/`.occbak` for Secure Mode no longer exist — the file-timestamp
+correlation this bug describes has no current subject. Deleted whole by Removal Stages 0-4,
+2026-09-10; re-examine if a similar mechanism is ever rebuilt.
+
 **Status:** Open — **mitigation 2 (cadence jitter) implemented 2026-08-15**; mitigation 1
 (opportunistic writes) still open. See "Implementation status" at the bottom.
 
@@ -2503,6 +2567,9 @@ traffic.
 ---
 
 ## Bug 72 — `randomSlot(excluding:)` has negligible modular bias
+
+**Stale, 2026-09-11:** Cites `SecureMode+LayerStore.swift`, which no longer exists — deleted whole by
+Removal Stages 0-4, 2026-09-10.
 
 **Status:** Open
 
@@ -2680,6 +2747,10 @@ launch-time performance/stability risk to close immediately.
 ---
 
 ## Bug 75 — `Group` rows are never re-keyed during Secure Mode key rotation; all groups become permanently unreadable after activation
+
+**Stale, 2026-09-11:** `Group.reencrypt(from:to:)` and the rotation call sites this bug's fix touched
+no longer exist — deleted whole by Removal Stages 0-4, 2026-09-10. (Its repair path,
+`ContactManager.purgeUnreadableGroups`, survives for unrelated reasons.)
 
 **Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed.
 
@@ -2897,6 +2968,9 @@ device: `Group` calls `Manager.Key()` directly rather than through an injectable
 ---
 
 ## Bug 76 — `AppLayerConfig` fields are never re-keyed during rotation; Bug 46's blob-slot exclusion silently stops protecting the real layer
+
+**Stale, 2026-09-11:** `AppLayerConfig.reencrypt` and `blobMetadataKey` no longer exist — deleted
+whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** Fixed on `release/v1.10.2` (commit 182920b), pushed. Split out of Bug 75's audit item.
 
@@ -3182,6 +3256,10 @@ does not stop the stranding. `SecureModeActivationTests.swift` covers single act
 
 ## Bug 77 — `maxBundleVersion` and `deletionToken` missing from `reencryptAllFields`
 
+**Stale, 2026-09-11:** `reencryptAllFields` no longer exists — deleted whole by Removal Stages 0-4,
+2026-09-10. This bug's root cause (a field stranded by rotation) can no longer occur since there is
+no rotation.
+
 **Status:** Fixed on `release/v1.10.2` (commit d356eb8), pushed.
 
 **Target:** v1.10.2
@@ -3311,6 +3389,10 @@ safe.
 
 ## Bug 78 — Rotation commits and deletes the superseded key even when the re-encryption passes were skipped
 
+**Stale, 2026-09-11:** `commitStagedLocalDBKey`, `deleteSupersededLocalDBArtefacts`, and the Step 8
+re-encryption pass this bug's fix touched no longer exist — deleted whole by Removal Stages 0-4,
+2026-09-10.
+
 **Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 75/76 fixes on the same branch.
 
 Both sites now `guard let oldKey = … else { throw SecurityError.keyDerivationFailed }`. Regression
@@ -3386,6 +3468,9 @@ a restatement. `TestKeyManager.simulatesHybridKeyUnavailable` supplies the nil.
 ---
 
 ## Bug 79 — Blob-metadata migration checkpoints conditionally, against the stated differential-signal rule
+
+**Stale, 2026-09-11:** `migrateBlobMetadataKeyIfNeeded` no longer exists — deleted whole by Removal
+Stages 0-4, 2026-09-10.
 
 **Status:** Fixed on `release/v1.10.2`. Introduced by the Bug 76 fix on the same branch.
 
@@ -4400,6 +4485,11 @@ regardless of visibility — a check no existing test makes, and the one that wo
 
 ## Bug 86 — `AppLayerConfig`'s padded arrays name the occupied depths by element length, with no key
 
+**Stale, 2026-09-11:** The fields and apparatus this fix built (`sealedBlobSlots`,
+`layerSequenceNumbers`, `LayerArrayCodec`, `writeBlobSlot`, `readBlobSlot`) no longer exist in
+production — deleted whole by Removal Stages 0-4, 2026-09-10. They survive only in the now-orphaned
+`OccultaTests/SecureMode/LayerArrayUniformityTests.swift`.
+
 **Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while checking whether Bug 85's codec could be
 reused for the other depth-shaped fields.
 
@@ -4828,6 +4918,9 @@ Phase 2, with the migration, in rising order of what they protect:
 ---
 
 ## Bug 87 — A stranded `visibleThroughDepth` is un-hidden by rotation, in both directions
+
+**Stale, 2026-09-11:** This fix's own mechanism (`reencryptPreserving`, used inside
+activation/deactivation) no longer exists — deleted whole by Removal Stages 0-4, 2026-09-10.
 
 **Status:** **Fixed 2026-08-19.** Filed 2026-08-18 while writing Bug 85's migration guards. Found by
 asking what a normalisation pass must do with a row it cannot decrypt, then discovering the shipped
@@ -5555,6 +5648,10 @@ path that commits it.
 
 ## Bug 91 — Three rules govern what `Contact.Draft` may carry, and none is written down or enforced
 
+**Stale, 2026-09-11:** Rule 1's entire premise (`LayerContact`, `restoreContact`) no longer exists —
+deleted whole by Removal Stages 0-4, 2026-09-10. Deactivation no longer restores contacts from a blob
+at all. Only rule 3 (`Contact.Draft` as a wire-format leak) still has real footing.
+
 **Status:** **Open.** Noticed 2026-08-19 while weighing whether `Contact.Draft` could serve as the
 carrier type for Bug 90's atomicity refactor. **Substantially rewritten 2026-08-20** — the first
 version framed this as "`Draft` should mirror `Contact.Profile` and does not", which is wrong, and
@@ -5863,6 +5960,10 @@ assert on raw key material rather than on a decrypt call.
 ---
 
 ## Bug 93 — Vault recovery is depth-blind: a coerced session sees the pending restore, and the restore runs into whatever layer it is standing in
+
+**Stale, 2026-09-11:** The Guard section cites `attemptBEKRestore`/`fetchDecodedBEK` — renamed to
+`attemptBackupRestore`/`fetchDecoded` by this session's BEK storage refactor
+(`VAULT_KEY_LAYERING.md` §8 item 14).
 
 **Status:** **Fixed 2026-08-25, all four harms.** Filed 2026-08-22 while checking, for Bug 88's fix
 plan, whether `pendingRestoreActive` is depth-aware. It was not, and neither was anything else in the
@@ -6241,6 +6342,11 @@ and it should be re-read once the flag becomes depth-aware.
 ---
 
 ## Bug 94 — A hostile `.occbak` destroys the real BEK and injects vault entries, because the restore path lets attacker-supplied material authenticate itself
+
+**Stale, 2026-09-11:** Cites `reconstructBEK`/`attemptBEKRestore`/`persistBEKPayload`/
+`fetchDecodedBEK`/`setupBEK()`/`distributeBEKShards`/`prepareBEKShards` throughout — all renamed by
+this session's BEK storage refactor. The `Vault+Manager+Backup.swift:721` citation for
+`attemptBEKRestore` now points at unrelated legacy-array-migration code.
 
 **Status:** **All three remedies in as of 2026-08-26.** Remedy 1 fixed 2026-08-24; remedy 2 (trustee
 attestation) built and tested 2026-08-26; **remedy 3 (explicit confirmation) built 2026-08-26**, when
@@ -6845,6 +6951,9 @@ because tier padding equalises count and nothing equalises size.
 
 ## Bug 95 — One poisoned shard permanently blocks legitimate vault recovery
 
+**Stale, 2026-09-11:** Cites `reconstructBEK` as the live call site — renamed to `Backup.reconstruct`
+by this session's BEK storage refactor.
+
 **Status:** **Open.** Filed 2026-08-22 alongside Bug 94, from the same read. **Re-verified
 2026-08-26** against Bug 93's depth-gating: `attemptBEKRestore` now guards `currentDepth == 0` before
 the grouping/reconstruction loop this bug lives in (`Vault+Manager+Backup.swift:723`) — not a fix,
@@ -6938,6 +7047,12 @@ forged share must still recover from the genuine ones, or must be discardable.
 ---
 
 ## Bug 96 — Restore-path robustness: two traps on decoded content, unbounded growth, and vault plaintext left unzeroed
+
+**Stale, 2026-09-11:** Items 3-4 cite `setupBEK`/`rotateBEK`/`prepareBEKShards`/`reconstructBEK`/
+`bekSetupState`/`bekShardMetadata` — all renamed by this session's BEK storage refactor. Item 4's
+file-naming note (`pending-restore.occbak`/`pending-restore-shards.dat`) also describes a problem
+already fixed elsewhere (Bug 93 harm 3, renamed to `backup-import-cache*`) without ever
+cross-referencing back here.
 
 **Status:** **Partially fixed 2026-08-24.** Filed 2026-08-22 alongside Bugs 94 and 95. Grouped
 because all four are robustness rather than access-control defects, and none is worth its own
@@ -7132,10 +7247,39 @@ deleted row with a nil depth field ahead of the backfill pass — the gap has no
 
 ## Bug 98 — The field-coverage tripwire is two different strengths, and the class of bug it exists to catch has no coverage at all
 
-**Status:** **Open.** Filed 2026-08-22, confirming a note carried since the Bug 76/77 tripwire work
-rather than acting on it unverified.
+**Status:** **Closed — moot, 2026-09-11.** Filed 2026-08-22, **Open** until now, confirming a note
+carried since the Bug 76/77 tripwire work rather than acting on it unverified.
 
 **Target:** unset.
+
+### Reclassified 2026-09-11 — the machinery this entry's tripwire protected no longer exists
+
+**Everything below describes `EncryptedFieldCoverageTests.swift`'s `groupPropertiesReviewed`,
+`messageDraftPropertiesReviewed`, and the `probes`/`unprobedFields` table form built for
+`Contact.Profile`/`AppLayerConfig` — a tripwire against a stored property silently escaping the
+Secure Mode key-rotation machinery.** That whole machinery — `reencryptAllFields`, `Group.reencrypt`,
+`AppLayerConfig.reencrypt`, `Message.Draft.reKeyOrPurgeAll`, `RotationRegistry`, and the staged-key
+protocol — was deleted outright by "Removal Stage 3: delete the rotation machinery" (`2b00f09`,
+2026-09-10), the day before this bug was last touched and never reconciled since. Confirmed directly:
+`EncryptedFieldCoverageTests.swift`'s own header now states exactly this — *"That machinery... was
+removed along with key rotation itself (Removal Stage 3, `plan.md`)"* — and the file itself was
+trimmed to one surviving, unrelated test (`readabilitySeparatesStrandedFromAbsent`, about
+`maxBundleVersion`'s stranded-vs-never-seen read, not rotation coverage). Grepped the whole repo for
+`RotationRegistry`/`groupPropertiesReviewed`/`storedPropertyNames`/`tripwireGuidance`: zero matches
+anywhere, source or tests.
+
+There is no longer a rotation-classification tripwire to be "two different strengths" of, and nothing
+for `Group`, `Message.Draft`, or `VaultEntry` to be ported into — the remedy below is not a
+description of unfinished work, it's a description of a system that stopped existing. Closed rather
+than left open describing a mechanism the codebase no longer has, matching the "Closed — moot"
+disposition already used for Bugs 106-109, the other casualties of the same Removal sequence.
+
+**Same root cause as Bug 102's own reclassification** (2026-09-11, same day) — a bug filed against a
+subsystem that a later Removal stage deleted, never revisited after. `VAULT_KEY_LAYERING.md` §7/§8
+separately cited "`RotationRegistryTests` passes as-is"/"forces an explicit rotation classification"
+as Stage 1 verification evidence (2026-09-08, one day before the deletion) — corrected alongside this.
+
+### Original entry, preserved below for the reasoning trail
 
 ### Severity: Low (process gap — nothing is exploitable, a future addition could ship unreviewed)
 
@@ -8063,6 +8207,10 @@ render, and is out of scope here — but any future UI reading `verifiedAt` inhe
 ---
 
 ## Bug 105 — A duress layer can distribute shares of the real BEK, through ordinary UI
+
+**Stale, 2026-09-11:** The Guard section cites `BEKArrayTests`, deleted outright by this session's
+BEK storage refactor — the slot-isolation property it proved is presumably now covered by
+`BackupEncryptionKeyStorageTests.swift`, but the citation itself is a dead end.
 
 **Status:** **Closed (Fixed), verified 2026-09-10.** Filed 2026-08-28, found while scoping
 `BEK_LAYERING_REFACTOR.md` — by asking whether shard *distribution* is depth-gated, having already
