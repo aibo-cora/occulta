@@ -1928,6 +1928,11 @@ At depth N+1 (Bug 47 coercer after `reEnablePIN`): `coercerBaseDepth = N+1` — 
 
 ## Bug 62 — `pinCollision` "Activation Failed" alert is a forensic tell; enables coercer PIN oracle at duress depth
 
+**See also Bug 119, 2026-09-11:** Gap 2 (no rate-limit design survives a compliant-victim relock
+cycle) and the residual-risk section (accidental master-PIN collision) are both closed as a side
+effect if `PASSPHRASE_LAYER_KEYS.md`'s passphrase-derived layer keys ship with genuinely high-entropy,
+non-editable phrases — worth deciding alongside that proposal rather than solving Gap 2 twice.
+
 **Status:** **Open — root scenario fixed, escalation gaps remain.** Re-examined 2026-08-26: the
 bug's actual root — a single, accidental `pinCollision` during ordinary setup, revealing that
 something is already configured to a coercer who was led to believe otherwise — is fully closed by
@@ -9684,3 +9689,112 @@ key, not a fresh one), and `updateShardStatusIgnoresOrphanedRow` (a shard-confir
 orphaned row's own `attributeID` must be a silent no-op — the row's `encryptedPayload` byte-for-byte
 unchanged — since the row is excluded from the live-row scan `updateShardStatus` searches). All three
 pass; full suite re-run clean after (841/0/6/847).
+
+---
+
+## Bug 119 — The vault key's access control is device-level, not Occulta-level — AFU forensic extraction (Cellebrite/GrayKey-class) derives it via code execution alone, no coercion needed, and one key opens every depth
+
+**Status:** Open. Filed 2026-09-11, during a design conversation about whether replacing the 6-digit
+duress PIN with a longer passphrase would close Bug 62's open gaps. It doesn't, on its own — but
+tracing *why* led to the actual key-derivation code, which confirmed a gap this codebase already has a
+proposed remedy for, filed against a future release and not yet cross-referenced from anywhere a
+reader chasing Bug 62 would find it: **[`PASSPHRASE_LAYER_KEYS.md`](PASSPHRASE_LAYER_KEYS.md)**
+(`Occulta/Features/SecureMode/`, proposed 2026-09-10). This entry exists to make that connection
+findable, record today's confirmation against the current shipped code, and note that the design
+doc's own sequencing precondition has now landed.
+
+### Severity: High — forensic-extraction exposure, not a coercion-scenario bug
+
+Distinct from almost everything else in this file: every other duress/depth bug assumes an attacker
+using the app normally, through its own UI, with or without a compliant owner. This one assumes an
+attacker who has gotten code execution on the device (the realistic AFU — After First Unlock —
+capability class Cellebrite/GrayKey-style tooling targets) and asks: does Occulta's own app-level PIN,
+duress-PIN, or depth logic stand between that attacker and the vault key at all? Traced directly
+against shipped code rather than assumed — it does not.
+
+### What happens, confirmed directly against `Occulta/Services/Key+Manager.swift`
+
+[`createVaultSEKey()`](Occulta/Services/Key+Manager.swift:641) sets the vault SE key's access control
+to `[.privateKeyUsage, .biometryCurrentSet, .or, .devicePasscode]` — the **device's own** Face
+ID/Touch ID or iOS system passcode. [`deriveVaultKey(context:)`](Occulta/Services/Key+Manager.swift:707)
+computes `HKDF(ikm: ECDH-shared-secret, salt: vaultPublicKeyBytes, info: kVaultKeyInfo)` — no Occulta
+PIN, duress PIN, or passphrase is an input anywhere in that derivation. Occulta's own depth/duress
+logic never participates in the SE's actual release decision; it's app-level routing sitting entirely
+on top of a key the SE will hand to *any* caller who satisfies the *device's* authentication, because
+that's the only condition the access control actually encodes.
+
+**Practical consequence:** once a device is in AFU state (its system passcode has been entered once
+since boot — compelled from the owner, or reached via an exploit that doesn't trigger the
+erase-after-10-attempts limit), a code-execution exploit can call the identical Keychain/SE API
+Occulta itself uses, with a validly-authenticated `LAContext`, and receive the same vault key —
+regardless of which depth, if any, Occulta's own app believes is active, because that belief was never
+part of the key's release condition.
+
+**And it is one key for every depth, confirmed against `VAULT_KEY_LAYERING.md` §4:** *"vault entries
+carry individual depth stamps, the key they are sealed under does not."* A single successful
+extraction yields the one shared vault key, and every depth's rows — real and every duress layer
+alike — are still physically present (`visibleThroughDepth`/`deletionToken` is UI filtering, not
+cryptographic separation, per Bugs 110-118) and decrypt under it. The duress/depth system was built to
+survive a coercer using the app normally; it was never designed to resist code-execution-class
+extraction, and nothing in its design claims otherwise — this entry is naming that boundary
+explicitly, not reporting a regression.
+
+### The proposed remedy already exists — `PASSPHRASE_LAYER_KEYS.md`
+
+Filed 2026-09-10, one day before this entry, from what its own header describes as the same
+conversation thread ("the 'how does the second attacker get the key' and 'is it impossible if we pair
+ECDH with diceware' exchanges that motivated this doc"). Core mechanism: `layerKey_D = HKDF(ikm:
+Argon2id/PBKDF2(passphrase_D) ‖ ECDH(depth_D_SE_privkey, G), ...)` — a human-only secret that never
+touches the device, combined with the existing per-device SE binding. Extraction alone yields half an
+input, not a usable key.
+
+**That document's §2 already found, independently, the exact structural problem this entry's own
+design conversation re-derived from scratch:** making each depth's content genuinely
+cryptographically distinct (not just UI-filtered) means a row belonging to depth 2, decrypted with
+depth 1's key, must fail *silently* rather than with a loud authentication error — otherwise the mere
+existence of an auth failure is itself the tell Bug 109 already named for a sibling mechanism. Its
+proposed fix is `Manager.LayerStore`'s own retired filler-slot pattern, generalized: every row seals
+cleanly under every depth's key, real content under the depths it belongs to, random filler
+everywhere else. This is flagged there as the actual complexity cost of the whole proposal — "not the
+simple version of Design B" — and remains the open, unresolved design question blocking it, not
+anything raised fresh today.
+
+**What today's conversation adds, not already in that document:**
+
+- **Grounded §0's "why now" framing against the literal current code**, rather than describing the
+  gap abstractly — the `Key+Manager.swift` citations above are new; the document's own text describes
+  the mechanism without line-level citations.
+- **The sequencing precondition has landed.** §5 states this work "depends on the current
+  removal-stages plan (`plan.md`) landing first." Removal Stages 0-4 shipped 2026-09-10 (confirmed
+  repeatedly this session — `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
+  all gone). The blocker named in that document's own sequencing section no longer holds; §2's open
+  structural question is the next real design work, per that section's own words, and nothing is
+  waiting on this session's own BEK/vault-entry refactor either — the two are independent.
+- **A concrete example of what §2's "every consumer needs re-auditing" cost actually touches:**
+  `VaultManager.Backup.updateShardStatus` (`Vault+Manager+Backup.swift:1407`) loops over every depth's
+  BEK row searching for a matching `attributeID`, using the one shared vault key, because today one
+  key opens all of them. Under per-depth keys it has nothing to decrypt other depths' rows *with* — it
+  would need to stop being a decrypt-and-check scan and route by something self-identifying instead
+  (the shard's own `distributionID`, already noted as available in Bug 102's own remedy text before
+  its reclassification). This is one concrete instance of the "real, nontrivial" cost §2 names in the
+  abstract; there are likely others among the vault-key domain's other consumers, not yet enumerated.
+- **Cross-reference to Bug 62.** That entry's Gap 2 (no design exists for a rate limit that survives a
+  compliant-victim relock cycle without becoming its own forensic tell) and its residual-risk section
+  (accidental master-PIN collision, bounded by PIN-space size) are both closed as a side effect if
+  `PASSPHRASE_LAYER_KEYS.md` ships with genuinely high-entropy, non-user-editable phrases — a 7-word
+  Diceware phrase (~90.5 bits against the EFF large wordlist) makes both exhaustive brute force and
+  the targeted, human-plausible guessing Gap 2 actually worries about equally infeasible. Not a reason
+  to build this instead of fixing Gap 2 directly — a reason the two should be decided together rather
+  than Bug 62 acquiring its own separate rate-limit design that this proposal would make moot.
+- **§4's PBKDF2-vs-Argon2id tradeoff is lower-stakes than it reads, not resolved.** At ~90 bits of
+  input entropy (7 words), even PBKDF2's weaker resistance to parallel/GPU attack leaves brute force
+  well outside feasibility — the KDF choice stops being what stands between an attacker and the phrase.
+  It still matters for defense-in-depth against a future entropy-reducing mistake (a shorter phrase, a
+  user-edited one), so this doesn't remove the decision, just lowers what's riding on it.
+
+### Guard
+
+None — not built. Tracked as `PASSPHRASE_LAYER_KEYS.md`'s own §2, unresolved. This entry's job is
+findability (a reader starting from Bug 62 or from this file's Cellebrite/AFU-adjacent entries has no
+path to the document that already designed the fix) and confirmation against current code, not new
+design work.

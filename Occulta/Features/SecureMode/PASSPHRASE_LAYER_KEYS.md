@@ -7,6 +7,19 @@ status). This document assumes that simplification has already landed: no blob, 
 no `Manager.LayerStore`. It proposes a different, independent mechanism to close the gap that removal
 deliberately accepts.
 
+**Sequencing precondition met, confirmed 2026-09-11 — see `bugs.md` Bug 119.** Removal Stages 0-4
+shipped 2026-09-10; `Manager.LayerStore`, the staged-key protocol, and `RotationRegistry` are
+confirmed gone (grepped, zero matches, repeatedly this session). The blocker §5 names is cleared —
+§2's open structural question (per-row multi-key sealing without reintroducing Bug 109's tell) is the
+next real design work, not this document's own sequencing gate. Bug 119 also grounds §0's framing
+against the actual current `Key+Manager.swift` code (`createVaultSEKey`'s access-control flags,
+`deriveVaultKey`'s literal HKDF inputs) rather than describing the gap abstractly, cross-references
+Bug 62's Gap 2/residual-risk as a case this design closes as a side effect if built with non-editable,
+high-entropy phrases, and names one concrete instance of §2's "every consumer needs re-auditing" cost:
+`VaultManager.Backup.updateShardStatus`'s cross-depth BEK scan, which assumes one shared key today and
+would need to route by `distributionID` instead under per-depth keys. Nothing here is a design
+decision — findability and confirmation only; §2 remains unresolved.
+
 **What this is.** A redesign of how Secure Mode's per-depth PIN gates content, replacing the numeric
 PIN (today: pure UI-routing, contributes zero entropy to any encryption key) with a 6–7 word diceware
 phrase that is an actual key-derivation input. The goal: make the key that decrypts a given depth's
