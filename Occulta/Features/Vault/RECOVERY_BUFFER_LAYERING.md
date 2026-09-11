@@ -350,6 +350,18 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 100 r3 | `.occbak` length estimates vault size | open — moot once §5 slots the contents |
 | 101 | `Documents/Inbox` copies retained and backed up | open — needs a device check |
 
+**Flagged 2026-09-11, not resolved here — possible internal inconsistency, cross-referenced from
+`bugs.md` Bug 99.** This table's Bug 99 row qualifies its subsumption with "except the pending-file
+tag," implying a standalone `.occbak` still exists and still needs a depth tag on it. But the very
+next row, 100 r3, already says the opposite for the same file: "moot once §5 slots the contents" — and
+§6 item 5 (dated 2026-09-06/07, later than this table's own undated entries) settles exactly that:
+backup contents, shard buffer, and arming state all move into the shared-pool slots together, at which
+point there's no standalone pending file left to tag at all — the depth is implicit in the slot. If
+§6 item 5 is the final word, the Bug 99 row's qualifier is a leftover from before that item settled
+and should read simply "open — subsumed here in full." Not corrected in place because it isn't fully
+certain which of the two statements is the stale one without reconstructing the exact order these
+were written in — flagged for whoever next touches Stage 4 to settle, not asserted as resolved.
+
 See [`VAULT_KEY_LAYERING.md`](VAULT_KEY_LAYERING.md) §6, §8 for Bugs 92, 102, 105 — this container's
 sibling issues, not its own.
 

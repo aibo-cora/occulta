@@ -7379,6 +7379,18 @@ filed as a bug.
 
 ## Bug 99 — A coercer who supplies his own trustees can test whether the phone is in duress, because a restore completes in one layer and not the other
 
+**See also [`RECOVERY_BUFFER_LAYERING.md`](RECOVERY_BUFFER_LAYERING.md), cross-referenced
+2026-09-11 — this bug isn't blocked on an unsolved design question, only on unbuilt implementation
+of one that already exists.** That document's §2 (sender-visibility gate on inbound shard
+attribution), §4 (Stage 4: per-depth arming/restore state), and §6 item 5 (that state's actual
+sizing — *"Arming/state: small — timestamp, state enum. Generously, ~64 bytes"*) is the full design
+this entry's own Requirements section below gestures at without landing on. Its own §7 bugs table
+already tracks this entry: *"open — subsumed here except the pending-file tag."* Confirmed directly
+against code, not just the document's own "design, not built" label: `identifyOwner`
+(`Contact+Manager.swift:1550`) still resolves senders via unfiltered `fetchAllContacts()`, and
+`storePendingRestore` (`Vault+Manager+Backup.swift:434`) still has no depth parameter at all — every
+piece this design depends on remains genuinely unbuilt.
+
 **Status:** **Open.** Filed 2026-08-27, during the review that produced Bugs 89a and 94a. Found by
 asking what an attacker who owns the trustee set can do, rather than what one who does not can.
 
@@ -7502,6 +7514,19 @@ That removes the cleanup-parity hazard this entry would otherwise carry. A sidec
 independently of the file it describes, and a stale one silently mis-gates the next restore; one row
 has one lifecycle and cannot drift from itself. **Build Bug 100 remedy 2 first** — this remedy is
 smaller and safer on the other side of it.
+
+**Corrected 2026-09-11 — Bug 100 remedy 2 already shipped and already corrected this paragraph's own
+"simply a field on that model" framing; this entry never incorporated that correction, and neither
+entry actually lands on an answer.** Bug 100's own remedy-2 write-up says plainly: *"the arming depth
+is **not** simply a field on that model, as first assumed: at arming time no shard rows exist yet...
+See Bug 99's build plan for where it actually has to live"* — pointing back here, where nothing was
+ever added. The real answer already exists, in `RECOVERY_BUFFER_LAYERING.md` §6 item 5, cited at the
+top of this entry: the arming depth needs no dedicated field at all. Once the whole container is
+genuinely one-slot-per-depth (that document's Stage 4), arming state (*"timestamp, state enum"*) is
+just one more small field living in *that depth's own slot* — the depth is implicit in which slot
+holds it, sealed the same AAD-bound-to-slot-index way everything else in this design is, not tagged
+onto a row that may not exist yet at arming time. Bug 100 remedy 2 (rows, not a file) is still a
+correct and necessary prerequisite — just not, on its own, where the arming depth ends up living.
 
 **The deferral guard changes shape rather than disappearing.**
 `pendingRestoreNeverCompletesAboveDepthZero` becomes "does not complete at a depth other than the one
@@ -7656,7 +7681,10 @@ This is the half worth fixing first. It is one line per file and needs no format
    Bug 99 depends on this. Note the arming depth is *not* simply a field on that model, as first
    assumed: at arming time no shard rows exist yet, and a depth written onto a shard row as it
    arrives is the arrival depth, not the arming depth. See Bug 99's build plan for where it actually
-   has to live.
+   has to live. **Corrected 2026-09-11: Bug 99's own entry never actually landed on that answer —
+   it's `RECOVERY_BUFFER_LAYERING.md` §6 item 5, cited at the top of that entry.** Arming state
+   ends up as a small field (*"timestamp, state enum"*) in that depth's own shared-pool slot, once
+   Stage 4 there is built — not tagged onto a `ReconstructShard` row at all.
 
    **Required under Bug 102's per-layer design too, not just this one.** Restore shards belong in
    rows whether or not recovery is layered — and under layering they need no depth field at all,
