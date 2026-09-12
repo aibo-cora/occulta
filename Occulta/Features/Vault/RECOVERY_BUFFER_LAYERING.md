@@ -191,7 +191,7 @@ before then — see §6's anti-pairings.
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
-| — | ~~As a fixed-slot file~~ — **proposed superseded 2026-09-11, §6 item 9: rows, not a file, following `VAULT_KEY_LAYERING.md` item 14's BEK migration.** Two of Stage 4's three pieces (shard buffer, `CustodyShard`) are already rows in production; item 9 designs the third. Not yet decided — proposal only. |
+| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11, §6 item 9: rows, not a file, following `VAULT_KEY_LAYERING.md` item 14's BEK migration; concrete design in §6 item 9.1, 2026-09-12.** Two of Stage 4's three pieces (shard buffer, `CustodyShard`) are already rows in production; item 9.1 designs the third and finishes the shard buffer's own depth-partitioning. Shape settled; reseal-on-write (Bug 120), orphan-on-deactivation wiring, and the codec's exact byte layout remain open — see 9.1's own closing list. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -553,6 +553,154 @@ decided; see item 9 for what's still open before that's settled.
    proposal only, matching this document's own "design, not built" status; the baseline-count
    question above blocks calling this settled.
 
+### 9.1 Concrete design, 2026-09-12 — the baseline/cap question settled, the rest of Stage 4's shape
+specified
+
+**Settles the baseline-count question item 9 left open, by not letting it be two questions.** Rather than
+choosing a smaller filler baseline and a separate, larger hard cap, both are the same number: **255**, the
+Shamir ceiling §6 item 5 already computed for the old file slot. A smaller baseline (32, by analogy to
+every other baseline in this design) would leave the 32-255 range genuinely unhidden — the 33rd real shard
+banked for a depth is a bare, undecryptable-but-still-visible extra row past whatever the baseline claims
+to guarantee, the identical "row count tracks real activity past the baseline" gap item 14 accepted for
+BEK, except shards arrive far more often than BEK setups do, so it would bite sooner and harder here.
+Matching baseline to the true ceiling closes it outright: real usage can never exceed 255 (nothing could,
+by construction of the scheme), so prefilling to 255 makes row count constant across the entire range that
+could ever be real, not just up to an arbitrary smaller number. Cost, stated plainly: up to 255 filler rows
+× `AppLayerConfig.maxVerifierCount` (32) possible depths = up to 8,160 filler rows for this one piece,
+created once at first launch — heavier than every other baseline in this design, and worth it only because
+the alternative doesn't actually deliver what a baseline is for.
+
+**Filler-row insertion order must be shuffled across depths, not depth-by-depth.** Depth itself lives
+inside the encrypted `Payload` (below), never a plaintext column, so a byte-level diff of two snapshots
+can't map a changed row to a depth by content. It can by *position*, though, if all 255 of depth 0's filler
+rows are inserted before depth 1's and so on — SQLite rowids (and likely on-disk layout) would then
+correlate with depth by construction, with no decryption needed to notice which position-range moved.
+Insert all ~8,160 rows across every depth in one shuffled, interleaved order at launch instead.
+
+**Shard buffer: extend `ReconstructShard.Payload`, not the SwiftData column.**
+
+```swift
+struct Payload: Codable {
+    let entryID: UUID
+    let attrID:  UUID
+    let signedAttribute:  SignedAttribute
+    let senderIdentifier: String
+    let attestation:      SignedAttribute?
+    let depth:            Data?     // NEW — DepthCodec-encoded, nil for per-entry rows
+}
+```
+
+`depth` lives *inside* the encrypted blob, not as a new plaintext SwiftData column — this is what lets it
+carry no forensic signal at all regardless of presence or value, the same reasoning `PendingShardDistribute`
+and `CustodyShard`'s own payloads already rely on for their own optional fields. **Caught during this
+design, corrected before it was ever written as code:** a raw `Int` for `depth` was the first draft, and
+`JSONEncoder` writes an `Int` as decimal ASCII text — `1` serializes one byte shorter than `10`, which
+serializes shorter than anything ≥ 100. AES-GCM preserves that difference straight into `encryptedPayload`'s
+ciphertext length, which would have made a BEK-restore row's on-disk size vary by which depth it belonged
+to — a coarser version of exactly Bug 85 (`Int.max` spelling 19 bytes against an ordinary depth's 1), the
+bug `DepthCodec` exists to close everywhere else in this codebase. Fixed the same way everywhere else is:
+`depth` is `DepthCodec.encode`/`.decode`'d — always exactly 2 bytes — before being placed in the payload, so
+every BEK-restore row's serialized size is depth-invariant. `JSONEncoder` emits `Data` as base64, and base64
+of a fixed 2-byte input is itself a fixed 4 characters, so this holds through the outer JSON encoding too.
+
+Populated only for the BEK-restore subset — same test as today, `entryID` resolving to no real
+`VaultEntry` — set from `currentDepth` at insertion. Requires threading `currentDepth` into
+`storeRestoreShard(_:attestation:senderIdentifier:)`, which has no depth parameter at all today (the exact
+gap `bugs.md` Bug 99 already names: *"`storePendingRestore` ... still has no depth parameter at all"*).
+`acceptReturnedShard` already receives `currentDepth`, so this is a pass-through, not a new dependency.
+
+Every function that currently treats the BEK-restore rows as one global pool gains a depth filter:
+`bekRestoreRows`, `loadRestoreShards`, `clearBEKRestoreShards`, and `attemptBackupRestore`'s per-`entryID`
+grouping — each scoped to the depth being acted on, so depth 2's collection is invisible to and independent
+of depth 5's, closing the exact gap §1's table names (*"Restore shard buffer... shards cannot be
+attributed to a layer before reconstruction"*).
+
+**Cap: 255 distinct-sender rows per depth, enforced by rejecting past it, never evicting.** Once a depth's
+live-row count (real, non-filler) reaches 255, further distinct senders are silently dropped — not stored,
+not counted, no error surfaced. Eviction was considered and rejected: evicting the oldest row to make room
+is itself an attack — flood a depth's buffer to knock out a real trustee's already-banked share. Rejection
+has its own honest cost, stated plainly: a real trustee's share arriving *after* an attacker has already
+filled the cap with junk is dropped identically to the junk. This closes `bugs.md` Bug 96 item 2
+(confirmed still live going into this design: `restoreShardFileIsBounded`, `VaultRestoreTrustTests.swift:587`,
+a `withKnownIssue` showing 300 junk shards from 300 distinct senders bank without limit) — 255 is far above
+any realistic trustee count (single digits, threshold ≥ 2), so no legitimate distribution is ever at risk
+of hitting it, and it can never reject a genuine share from *any* distribution, past or future, because 255
+is the hard ceiling the underlying scheme's 1-byte x-coordinate allows — not a guess, a proof.
+
+**Arming state + pending snapshot — one new model, `PendingRestore`, one row per depth, mirroring
+`BackupEncryptionKey`'s three-state shape exactly (filler → live → orphaned, one-way transitions, every
+field always present so nothing is a free zero-decryption signal):**
+
+```swift
+@Model
+final class PendingRestore {
+    var id:               UUID
+    var depth:            Data?     // local key, DepthCodec, exact-match — claim state
+    var deletionToken:    Data?     // local key, live/orphaned sentinel
+    var encryptedPayload: Data      // recovery buffer key, fixed-width RestoreStateCodec
+}
+```
+
+**`depth`/`deletionToken` sealed under the local key, not the recovery buffer key — deliberately, to reuse
+the one working pattern rather than assume a new one is safe.** `Manager.Security`'s eventual orphaning
+code and this model's own writes need to agree on what they're reading and writing without either one
+going through `VaultManager`'s or `Manager.Security`'s own *injected* `keyManager` — the exact trap
+`VAULT_KEY_LAYERING.md`'s BEK design already documents (two independently-injected `TestKeyManager`
+instances could disagree on anything derived through them). The recovery buffer key would also be available
+without biometric gating, which is what made it tempting to just reuse for everything here, but nothing
+establishes yet that `VaultManager`'s and `Manager.Security`'s own copies of it agree in every test
+configuration the way the ambient local key is already proven to. Matching BEK's already-safe split costs
+nothing and avoids introducing a new, unverified assumption.
+
+**`encryptedPayload` sealed under the recovery buffer key — the one deliberate divergence from copying
+BEK's template.** Arming and shard collection both need to work while the vault is locked, which is this
+whole container's reason for existing as a second key domain in the first place (§0's intro). A fixed-width
+`RestoreStateCodec` (byte layout not yet specified) holds:
+- an armed-flag + timestamp, always present, filler-random when not armed — the same "presence byte +
+  fixed-width value, always both" convention `CustodyShard`'s own `expiresAt`/`entryID` fields already use
+  (§6 item 7);
+- a length-prefixed, zero-padded snapshot of the `.occbak` bytes, padded to the same per-entry ceiling
+  `VAULT_KEY_LAYERING.md` item 2 already computed for vault entries (1,051 bytes/entry, the same dynamic
+  32-multiple growth mechanism) — not a separately-invented number, since a pending-restore snapshot *is*
+  every entry visible at the arming depth, the identical set item 2's own field already describes.
+
+**Claimed once per depth, like BEK — not reclaimed on cancel or completion.** A depth's row stays "live"
+once first armed; only its *content* (armed-flag, snapshot) resets on cancel or completion, so the same
+depth can arm again later without the row itself needing to cycle back through filler. This differs from
+BEK's own lifecycle (set up once, essentially permanent) because arming genuinely is a repeatable action at
+one depth across a session — the row's *claim* is permanent per depth, but not everything about its
+content is.
+
+**Per-depth cancel:** resets the depth's `PendingRestore` payload (armed-flag and snapshot cleared, row
+stays live and claimed) and deletes that depth's own depth-tagged `ReconstructShard` rows (matched by the
+`depth` field above), leaving every other depth's independent restore attempt completely untouched. This is
+the Stage 4 acceptance criterion §4's table already names: *"cancel clears only its own layer."*
+
+**What this does not settle — flagged, not decided:**
+
+- **Whether these new rows reseal on write.** Writing one depth's `PendingRestore` row or claiming one
+  depth's `ReconstructShard` filler row, the way everything above is specified, leaves every other depth's
+  stored bytes untouched — exactly the property `bugs.md` Bug 120 names as a cross-cutting, unresolved leak
+  (write frequency across snapshots reveals which depth is used most, likely identifying the real one).
+  This design inherits that leak rather than closing it, same as every other per-depth container in the app
+  already does. Not decided here — Bug 120 is where this gets resolved, for this container and every other
+  one, not piecemeal per feature.
+- **Orphan-on-deactivation wiring.** Nothing currently calls anything for this container from
+  `Manager.Security.deactivateSecureMode`/`forceDeactivateForRecovery`. A freed depth's leftover armed
+  restore (snapshot, collected shards) would otherwise survive into a later, unrelated session reactivating
+  at the same depth number — the identical class of bug Bug 110/118 closed for `VaultEntry`/
+  `BackupEncryptionKey`, not yet closed here. Needs a new `orphanPendingRestores`-type function, same
+  pattern as `orphanBackupKeys`, called alongside it.
+- **`RestoreStateCodec`'s exact byte layout.** The shape above (armed-flag + timestamp + padded snapshot)
+  is specified; the precise offsets, following `Backup.PayloadCodec`'s own versioned-format discipline, are
+  not.
+- **§8's migration** needs rewriting for rows instead of slots — the destination (slot 0 → depth 0) and the
+  "commit first, then destroy the source" ordering both still apply, but every mention of "slot" becomes
+  "claim the filler row for depth 0."
+
+**Supersedes, if adopted:** the "Not yet decided" close of item 9 above, for the baseline/cap and the
+overall shape — those are now decided. The four items immediately above remain genuinely open.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
@@ -579,7 +727,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | fixed — every op ships an attestation, real or filler |
 | 95 | One poisoned shard permanently blocks legitimate recovery | open — Bug 94 remedy 2 narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
 | 96 (item 1) | Two traps on decoded content | fixed |
-| 96 (item 2) | Restore shard buffer unbounded | open — cap falls out of §3 |
+| 96 (item 2) | Restore shard buffer unbounded | open — cap falls out of §3; concrete number (255, the Shamir ceiling) specified in §6 item 9.1, 2026-09-12; not yet built |
 | 96 (item 3) | Export plaintext left unzeroed | open |
 | 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
