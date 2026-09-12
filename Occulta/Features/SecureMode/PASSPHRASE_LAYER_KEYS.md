@@ -132,6 +132,37 @@ underneath: a *human secret absent from the device* instead of *device-resident 
 predictable deletion schedule*. That's a real upgrade in what the mechanism can promise against AFU
 specifically. It is not a complexity discount.
 
+**Verified 2026-09-12 — the storage shape this section lands on has a second, independent leak, orthogonal
+to whether content-partitioning itself is airtight.** Checked directly across every per-depth-keyed object
+currently shipped (`BackupEncryptionKey` rows; `AppLayerConfig`'s `sealedNormalVerifiers`/
+`sealedDuressVerifiers`/`pinEnabledPerDepth` arrays; `VaultEntry.visibleThroughDepth`/`.deletionToken`;
+`Contact.Profile`'s depth fields; `CustodyShard`/`ReconstructShard`/`PendingShardDistribute` rows):
+**writing one depth's data never touches any other depth's stored bytes.** Exactly one thing currently
+shipped does the opposite — `backup-export-meta.dat` (`ExportMetaSlotCodec`, `Vault+Manager+Backup.swift`),
+which re-encodes and reseals its entire 32-slot blob under one fresh nonce on every write, so every byte
+changes regardless of which slot's plaintext actually moved. Everything else — including the mechanism
+this section sketches ("structurally close to what the blob array already did") — inherits the narrower
+behavior quietly unless whoever builds it deliberately re-adopts the old array's actual
+reseal-every-slot-with-fresh-nonces mechanism, which the codebase's current dominant pattern (rows, not
+arrays) has dropped everywhere it was tried (`VAULT_KEY_LAYERING.md` item 7's own accounting of this exact
+loss for BEK's rows — accepted there as a narrow, physical-reimaging-only risk).
+
+The consequence is worse here than it was for BEK, given what this document is actually trying to buy:
+two on-disk snapshots taken over time, diffed with no key at all, show exactly which depth's row (or slot)
+keeps changing — and ordinary life happens overwhelmingly more often at the real depth than at any duress
+depth, which exists only for the rare coercion window. An examiner watching write frequency across
+snapshots doesn't need `layerKey_D` for any depth to guess which one is real; the *shape of the activity
+itself* points there, independent of whether this section's content-partitioning and filler-padding end up
+built perfectly. A design whose whole premise is "compelling one depth's phrase reveals nothing about any
+other depth" needs this closed too, not just decryption-failure tells (Bug 109) — silence isn't free if the
+silence has a rhythm.
+
+**Not resolved here — this adds a second open requirement to whatever §2's eventual per-row/per-slot
+mechanism turns out to be**, on top of the multi-key-sealing question already unresolved above: either
+every depth's slot gets touched on every write (the old array's actual mechanism, at whatever storage-churn
+cost that implies once derivation is human-passphrase-gated rather than free SE-only derivation), or some
+other mechanism hides write-frequency-by-depth. Flagging, not deciding.
+
 ---
 
 ## 3. Duress compatibility

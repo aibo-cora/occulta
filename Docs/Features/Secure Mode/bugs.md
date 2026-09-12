@@ -9918,3 +9918,81 @@ None — not built. Tracked as `PASSPHRASE_LAYER_KEYS.md`'s own §2, unresolved.
 findability (a reader starting from Bug 62 or from this file's Cellebrite/AFU-adjacent entries has no
 path to the document that already designed the fix) and confirmation against current code, not new
 design work.
+
+---
+
+## Bug 120 — Modifying one depth's stored data never touches a sibling depth's bytes, so write frequency across snapshots reveals which depth is used most — likely identifying the real one
+
+**Status:** Open. Filed 2026-09-12, found while designing `RECOVERY_BUFFER_LAYERING.md` Stage 4's
+shard-buffer cap and generalizing the question to the rest of the app's per-depth storage.
+
+**Target:** None — cross-cutting, affects every per-depth container currently shipped, not a single
+release's scope.
+
+### Severity: Medium (forensic — reveals which depth is real, not vault contents)
+
+Exposes no content. Answers a narrower but still load-bearing question: given two or more on-disk
+snapshots taken over time, with no key at all, which depth is used the most? Ordinary daily use happens
+overwhelmingly more often at the real depth than at any duress depth, which exists only for the rare
+coercion window — so the depth showing the most write activity across snapshots is very likely the real
+one, independent of whether any content is ever actually decrypted.
+
+### What happens, confirmed directly against current code, 2026-09-12
+
+Checked every per-depth-keyed object currently shipped:
+
+- `BackupEncryptionKey` rows — `Backup.persist`/`seal` write only the one row being claimed or updated
+  (`Vault+Manager+Backup.swift`).
+- `AppLayerConfig.sealedNormalVerifiers`/`.sealedDuressVerifiers` — `writeNormalVerifier`/
+  `writeDuressVerifier` assign exactly one array index (`AppLayerConfig+Model.swift:138,146`).
+- `AppLayerConfig.pinEnabledPerDepth` — same shape, one-index assignment
+  (`AppLayerConfig+Model.swift:281`).
+- `VaultEntry.visibleThroughDepth`/`.deletionToken` — per-row field assignment
+  (`Vault+Manager.swift:259,262`).
+- `Contact.Profile`'s depth fields (`visibleThroughDepth`/`originDepth`/`globalTrusteeDepth`/
+  `deletionToken`) — per-row field assignment (`Contact+Manager.swift:194-201`).
+- `CustodyShard`, `ReconstructShard`, `PendingShardDistribute` rows — same per-row shape.
+
+In every one of these, writing depth N's data leaves every other depth's stored bytes byte-for-byte
+identical to before. Exactly one thing currently shipped does the opposite: `backup-export-meta.dat`
+(`ExportMetaSlotCodec`/`writeBackupExportMetadata`, `Vault+Manager+Backup.swift:930`) loads all 32 slots'
+plaintext, updates one, re-encodes all 32 into one buffer, and seals that whole buffer under one fresh
+nonce — every byte of the output changes on every write, regardless of which slot's plaintext actually
+moved. That is the only currently-live precedent for closing this; everything else leaks.
+
+### Why this is not the same thing as row-count camouflage
+
+Bug 110/118's fixed-filler-baseline work (and this session's shard-buffer design) defends against "how
+many rows exist" being informative — an examiner with a single snapshot can't tell real content from
+padding. This is a different axis: **which** row or slot changes across **multiple** snapshots taken over
+time. Row-count camouflage says nothing about it — a fully padded row set can still show exactly one
+entry's ciphertext changing between two captures, which is enough to mark that entry, and by extension
+whichever depth it belongs to, as "active," with no decryption needed at all.
+
+### This was an accepted, narrow trade-off for BEK specifically — it is not narrow once generalized
+
+`VAULT_KEY_LAYERING.md` item 7 (superseded by item 14) explicitly accepted losing "which slot changed"
+undiffability when BEK moved off its old full-reseal array onto rows, reasoning that the realistic
+threat — physical re-imaging of the same device at two points in custody, given the array was already
+backup-excluded — was narrow enough to accept. That reasoning was scoped to BEK alone. It was never
+re-examined against every *other* per-depth object in the app also lacking this property, or against the
+specific, high-value signal of "which depth is used more often" as opposed to "was any write made at all
+to this one field." Generalized across every per-depth container in the app, and weighted by how starkly
+real-depth activity outpaces duress-depth activity in ordinary use, this is a considerably stronger signal
+than the narrow one item 7 weighed.
+
+### Cross-reference
+
+Also flagged in [`PASSPHRASE_LAYER_KEYS.md`](PASSPHRASE_LAYER_KEYS.md) §2, 2026-09-12 — that document's
+proposed per-depth-key storage mechanism ("structurally close to what the blob array already did for
+contacts") would need to deliberately re-adopt the old array's full-reseal behavior to avoid inheriting
+this leak, and currently doesn't specify that it does.
+
+### Guard
+
+None — not built, and not yet designed. Whoever picks this up needs to decide, for each affected
+container, either: (a) reseal every sibling slot/row on every write (the old array's actual mechanism, at
+whatever storage-churn cost that implies — worse for containers written to often, like the shard buffer,
+than for ones written rarely, like BEK), or (b) some other mechanism that hides write-frequency-by-depth
+without paying that cost everywhere. Not resolved by anything currently in this file or in either design
+document.
