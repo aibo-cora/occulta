@@ -43,7 +43,8 @@ enum ShardStatus: String, Codable {
     case pending
     /// Contact's app acknowledged receipt.
     case confirmed
-    /// Revocation queued; `.revoke` operation not yet confirmed by the trustee.
+    /// Revocation queued; trustee deletes it once a bundle omits it from
+    /// `expectedShards` (`ShardCustodyManager.processExpectedShards`).
     case revokePending
     /// Owner has revoked this shard and the trustee confirmed deletion.
     case revoked

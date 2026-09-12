@@ -3,11 +3,11 @@
 //  Occulta
 //
 //  Owner-side reconstruction buffer.
-//  Absorbs `.respond` shards into encrypted ReconstructShard rows, finalises
+//  Absorbs `.handback` shards into encrypted ReconstructShard rows, finalises
 //  reconstruction once a per-entry threshold is reached.
 //
 //  All buffer rows are sealed under the recovery buffer key (device-unlock
-//  level, no biometric) so `.respond` bundles can be absorbed even while the
+//  level, no biometric) so `.handback` bundles can be absorbed even while the
 //  vault is locked. Finalisation itself requires the vault unlocked because
 //  it re-wraps the recovered PEK under the vault key.
 //

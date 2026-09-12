@@ -3,14 +3,18 @@
 //  Occulta
 //
 //  Transient SwiftData buffer for shards Alice's device collects during
-//  per-entry PEK reconstruction. One row per `.respond` bundle absorbed;
-//  deleted in bulk once a per-entry threshold is reached and reconstruction
-//  succeeds.
+//  per-entry PEK reconstruction, and for BEK restore shards collected during
+//  device recovery — the same recovery-buffer-keyed store, not two separate
+//  mechanisms. One row per `.handback` bundle absorbed; bulk-deleted once a
+//  group reaches its threshold and reconstruction succeeds.
 //
-//  Scope: this model handles per-entry PEK recovery. BEK restore shards that
-//  arrive during device recovery are stored in a separate encrypted file
-//  (backup-import-cache-shards.dat) to isolate their lifecycle from per-entry
-//  cleanup. See VAULT_BACKUP_GUIDE.md and Vault+Manager+Backup.swift.
+//  Scope: a row belongs to the BEK-restore path when its `entryID` resolves to
+//  no real `VaultEntry` — no `VaultEntry.id` is ever a BEK `distributionID`, so
+//  the two populations never collide. BEK restore shards used to live in a
+//  separate encrypted file (`backup-import-cache-shards.dat`); Bug 100 moved
+//  them into this model instead, for the identical reason described below —
+//  see `Vault+Manager+ReturnBuffer.swift`'s "BEK restore shards" section and
+//  VAULT_BACKUP_GUIDE.md.
 //
 //  Privacy model — encryption at rest:
 //  - The target entryID, the SignedAttribute.id (`attrID`), and the full
@@ -22,7 +26,7 @@
 //    transient and small (active recoveries only), so the cost is negligible.
 //
 //  Lifecycle:
-//  - Inserted on each `.respond` ShardOperation routed by ShardCustodyManager.
+//  - Inserted on each `.handback` ShardOperation routed by ShardCustodyManager.
 //  - Bulk-deleted after VaultManager runs reconstruction for the matching
 //    entryID and re-wraps the recovered PEK under the current vault key.
 //  - User-cancelled recovery: bulk-delete by walking and matching entryID.

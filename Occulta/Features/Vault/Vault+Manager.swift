@@ -405,8 +405,9 @@ final class VaultManager {
 
     /// Delete a vault entry and return its shard distribution metadata, if any.
     ///
-    /// The metadata is read before deletion so the caller can queue `.revoke`
-    /// operations for each trustee. Returns `nil` when the entry had no
+    /// The metadata is read before deletion so the caller can omit each trustee's
+    /// shard ID from future `expectedShards` bundles, triggering implicit revoke.
+    /// Returns `nil` when the entry had no
     /// distributed shards (no action needed from `ShardCustodyManager`).
     @discardableResult
     func deleteEntry(id: UUID) throws -> ShardDistributionMetadata? {
