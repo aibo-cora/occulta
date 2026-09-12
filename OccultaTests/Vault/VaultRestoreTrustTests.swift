@@ -341,8 +341,8 @@ struct VaultRestoreTrustTests {
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         try attackerBackup.write(to: pendingRestoreURL, options: [.atomic, .completeFileProtection])
-        try victim.vault.storeRestoreShard(attacker.shards[0], attestation: nil, senderIdentifier: "trustee-0")
-        victim.vault.refreshPendingRestoreState()
+        try victim.vault.storeRestoreShard(attacker.shards[0], attestation: nil, senderIdentifier: "trustee-0", currentDepth: 0)
+        victim.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
         #expect(victim.vault.pendingRestoreShardCount == 1)
 
@@ -386,7 +386,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 0)
 
@@ -407,7 +407,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 2)
 
@@ -418,11 +418,15 @@ struct VaultRestoreDepthGatingTests {
             """)
     }
 
-    /// Shards must keep accumulating above depth 0 — "defer" is not "stop collecting".
-    /// The deferred restore must still complete once depth 0 is reached, using shards
-    /// gathered while at a duress depth.
-    @Test("Shards still accumulate above depth 0, and the deferred restore completes later")
-    func shardsStillAccumulateAboveDepthZero() throws {
+    /// **Reverses the original assertion here, deliberately — see
+    /// `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1.** Before shard-buffer depth-partitioning,
+    /// shard collection was unconditionally depth-independent: shards gathered at any depth
+    /// fed the same single pool, so a deferred restore could complete at depth 0 later using
+    /// shards a coercer's own trustees delivered while at a duress depth — exactly the
+    /// mechanism Bug 99's attack exploits. Depth-partitioning closes that: a shard arriving
+    /// at depth N belongs to depth N's restore and no other's.
+    @Test("Shards collected at a duress depth do not transfer to depth 0's restore")
+    func shardsAtDuressDepthDoNotTransferToDepthZero() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
 
@@ -431,16 +435,37 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)") }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 3) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 3)
         #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "must not complete above depth 0")
 
         fresh.vault.attemptBackupRestore(currentDepth: 0)
-        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil, """
-            Shards collected while at a duress depth must not be lost — the deferred \
-            restore must complete on the next depth-0 attempt using the same shards.
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, """
+            Shards collected while at depth 3 belong to depth 3's own restore — a depth-0 \
+            attempt must see none of them, not complete using them as if collection were \
+            still depth-independent.
             """)
+    }
+
+    /// The companion case to the one above: shards genuinely collected *at* depth 0 must
+    /// still let a depth-0 restore complete — depth-partitioning must not cost the real path
+    /// anything, only close the cross-depth transfer.
+    @Test("Shards collected at depth 0 still complete depth 0's own restore")
+    func shardsAtDepthZeroStillCompleteDepthZero() throws {
+        clearRestoreFiles()
+        defer { clearRestoreFiles() }
+
+        let owner  = try makeBackupReadyVault()
+        let backup = try owner.vault.exportBackup(currentDepth: 0)
+
+        let fresh = try makeFreshVault()
+        try fresh.vault.storePendingRestore(backup)
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+
+        fresh.vault.attemptBackupRestore(currentDepth: 0)
+        #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil,
+                "shards genuinely collected at depth 0 must still complete depth 0's restore")
     }
 
     /// **Reverses the original Bug 93 assertion, deliberately.** This test used to require
@@ -462,25 +487,27 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        try fresh.vault.storeRestoreShard(owner.shards[0], attestation: nil, senderIdentifier: "trustee-0")
+        try fresh.vault.storeRestoreShard(owner.shards[0], attestation: nil, senderIdentifier: "trustee-0", currentDepth: 0)
 
-        fresh.vault.refreshPendingRestoreState()
+        fresh.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(fresh.vault.pendingRestoreActive, """
             A pending restore must publish as active — the banner is what a duress session \
             shows in place of the file-open acknowledgment that used to differ by depth.
             """)
 
-        // Nothing about the published state is depth-derived any more, so a second sync
-        // taken while at a duress depth is the same call and must give the same answer.
-        fresh.vault.refreshPendingRestoreState()
+        // pendingRestoreActive itself is not depth-derived (pendingRestoreShardCount now is,
+        // per RECOVERY_BUFFER_LAYERING.md §6 item 9.1 — see that section's own note on the
+        // deliberate, temporary asymmetry) — a sync taken while at a duress depth must report
+        // the identical active flag.
+        fresh.vault.refreshPendingRestoreState(currentDepth: 2)
         #expect(fresh.vault.pendingRestoreActive,
                 "repeated syncs must not flip the published state — a coercer sees one story")
     }
 
-    /// The other half of the pairing, and the reason the banner can be shown at all: shard
-    /// collection is depth-independent, but reconstruction is not. Duress advertises a
-    /// recovery it can never complete, which is exactly what a real recovery still waiting on
-    /// trustees looks like.
+    /// The other half of the pairing, and the reason the banner can be shown at all:
+    /// reconstruction never completes above depth 0, regardless of which depth the shards
+    /// forming a full set arrived at. Duress advertises a recovery it can never complete,
+    /// which is exactly what a real recovery still waiting on trustees looks like.
     @Test("A pending restore does not complete above depth 0 even with a full shard set")
     func pendingRestoreNeverCompletesAboveDepthZero() throws {
         clearRestoreFiles()
@@ -493,7 +520,7 @@ struct VaultRestoreDepthGatingTests {
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() {
-            try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)")
+            try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 2)
         }
 
         fresh.vault.attemptBackupRestore(currentDepth: 2)
@@ -568,22 +595,19 @@ struct VaultRestoreRobustnessTests {
         }
     }
 
-    /// `storeRestoreShard` deduplicates by `SignedAttribute.id`, and an attacker picks a
-    /// fresh UUID each time. Since Bug 100 these are `ReconstructShard` rows rather than a
-    /// file, which removes the whole-file re-encode per call — but growth is still unbounded,
-    /// and the dedup scan still decrypts every buffered row on each arrival.
+    /// **Fixed — `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1.** `storeRestoreShard` deduplicates by
+    /// `SignedAttribute.id`, and an attacker picks a fresh UUID each time. Since Bug 100 these are
+    /// `ReconstructShard` rows rather than a file; item 9.1 adds the cap this test was pinning as
+    /// missing — 255 distinct-sender rows per depth, the Shamir ceiling, so no genuine
+    /// distribution could ever be rejected by it. Any cap near a realistic trustee count (single
+    /// digits; threshold ≥ 2) sits far below this ceiling — 255 bounds the attack without ever
+    /// risking real data.
     ///
-    /// **Scoped to a fresh, no-BEK vault deliberately.** On an existing-BEK device, the early
-    /// check added to `attemptBackupRestore` bounds this to roughly one shard per arming cycle in
-    /// real usage — `acceptReturnedShard` calls it immediately after every `storeRestoreShard`
-    /// — so this test would no longer reflect production behaviour if run against
-    /// `makeBackupReadyVault()`. The no-BEK population has no equivalent early-out (there is no
-    /// BEK to detect), so growth there is still genuinely unbounded — but a realistic attack
-    /// costs the attacker real inbound-bundle volume for modest payoff (300 shards ≈ 1s to
-    /// store; this is a nice-to-have hardening item, not an urgent one). Pins only that *a*
-    /// bound exists — the value is the fix's choice. Any cap near a realistic trustee count
-    /// (single digits; threshold ≥ 2) sits far below this ceiling.
-    @Test("The restore-shard buffer does not grow without bound, on a device that still needs one")
+    /// **Scoped to a fresh, no-BEK vault deliberately**, same as before the fix — on an
+    /// existing-BEK device, the early check in `attemptBackupRestore` bounds this to roughly one
+    /// shard per arming cycle in real usage, so this test would not reflect production behaviour
+    /// run against `makeBackupReadyVault()`.
+    @Test("The restore-shard buffer is capped at 255 per depth")
     func restoreShardFileIsBounded() throws {
         clearRestoreFiles()
         defer { clearRestoreFiles() }
@@ -597,16 +621,13 @@ struct VaultRestoreRobustnessTests {
                 value: Data(repeating: UInt8(i % 251), count: 33),
                 category: .shard, signature: Data(), entryID: UUID()
             )
-            try? victim.vault.storeRestoreShard(junk, attestation: nil, senderIdentifier: "junk-sender-\(i)")
+            try? victim.vault.storeRestoreShard(junk, attestation: nil, senderIdentifier: "junk-sender-\(i)", currentDepth: 0)
         }
 
-        withKnownIssue("Bug 96: storeRestoreShard has no cap") {
-            #expect(victim.vault.pendingRestoreShardCount < attempts, """
-                \(victim.vault.pendingRestoreShardCount) shards accepted from \(attempts) \
-                attempts. Anyone able to send a bundle can grow this buffer without limit, and \
-                every arrival decrypts all of it.
-                """)
-        }
+        #expect(victim.vault.pendingRestoreShardCount == 255, """
+            \(victim.vault.pendingRestoreShardCount) shards accepted from \(attempts) attempts — \
+            expected exactly the 255-per-depth cap, with the remaining 45 silently dropped.
+            """)
     }
 }
 

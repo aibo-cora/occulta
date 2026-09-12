@@ -86,12 +86,12 @@ protocol KeyManagerProtocol {
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
     func deriveShardCustodyKey() throws -> SymmetricKey?
 
-    /// Derive the recovery buffer key: same SE key as `deriveShardCustodyKey`,
+    /// Derive the restore vault key: same SE key as `deriveShardCustodyKey`,
     /// distinct HKDF info — produces a dedicated symmetric key for sealing
     /// ReconstructShard rows.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveRecoveryBufferKey() throws -> SymmetricKey?
+    func deriveRestoreVaultKey() throws -> SymmetricKey?
 
     /// Derive the Secure Mode PIN key: ECDH(secureModePin_SE_priv, G) → HKDF-SHA256.
     ///
@@ -316,11 +316,11 @@ final class TestKeyManager: KeyManagerProtocol {
         try self.deriveCustodySEKey(info: SaltInfo.kShardCustodyKeyInfo)
     }
 
-    /// ECDH(shardCustodyPrivateKey, G) → HKDF with recovery-buffer info.
-    /// Mirrors Manager.Key.deriveRecoveryBufferKey() — same SE key, distinct HKDF
+    /// ECDH(shardCustodyPrivateKey, G) → HKDF with restore-vault info.
+    /// Mirrors Manager.Key.deriveRestoreVaultKey() — same SE key, distinct HKDF
     /// info, distinct symmetric key.
-    func deriveRecoveryBufferKey() throws -> SymmetricKey? {
-        try self.deriveCustodySEKey(info: SaltInfo.kRecoveryBufferKeyInfo)
+    func deriveRestoreVaultKey() throws -> SymmetricKey? {
+        try self.deriveCustodySEKey(info: SaltInfo.kRestoreVaultKeyInfo)
     }
 
     func deriveSecureModeKey() throws -> SymmetricKey? {

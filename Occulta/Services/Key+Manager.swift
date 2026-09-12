@@ -41,12 +41,12 @@ struct SaltInfo {
     /// with device-unlock-level access (no biometric). Used to wrap PIN sentinels in
     /// AppLayerConfig. Domain-separated from all other key paths.
     static let kSecureModeKeyInfo = "Occulta-v1-secure-mode-pin-2026".data(using: .utf8)!
-    /// Recovery buffer key: same SE key as shard custody, distinct HKDF info →
+    /// Restore vault key: same SE key as shard custody, distinct HKDF info →
     /// dedicated symmetric key. Used to encrypt ReconstructShard rows — the
-    /// transient buffer of returned shards Alice's device collects during
+    /// transient set of returned shards Alice's device collects during
     /// reconstruction. Domain-separated from kShardCustodyKeyInfo so a custody
     /// blob and a reconstruct blob are never decryptable with the same key.
-    static let kRecoveryBufferKeyInfo = "Occulta-v1-recovery-buffer-2026".data(using: .utf8)!
+    static let kRestoreVaultKeyInfo = "Occulta-v1-restore-vault-2026".data(using: .utf8)!
     nonisolated static let kFileKeyInfo           = "Occulta-v1-file-key-2025".data(using: .utf8)!
 }
 
@@ -59,7 +59,7 @@ struct SaltInfo {
 //  "master.key.privacy.turtles.are.cute"    │ No             │ Identity — ECDSA signing, ECDH transport
 //  "local.db.se.key.occulta"                │ No             │ Local DB hybrid key ECDH component
 //  "vault.key.occulta.v1"                   │ Yes (.biometryCurrentSet + .devicePasscode) │ Vault PEK derivation
-//  "shard.custody.occulta"                  │ No             │ Shard custody records + recovery buffer
+//  "shard.custody.occulta"                  │ No             │ Shard custody records + restore vault key
 //  "app.layer.key.occulta.v1"               │ No             │ Secure Mode PIN sentinel encryption
 //
 // All four keys carry `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — never backed up,
@@ -68,9 +68,9 @@ struct SaltInfo {
 // The vault SE key requires a pre-evaluated `LAContext`; the other three operate
 // automatically while the device is unlocked.
 //
-// The shard custody key is reused as the base for the recovery buffer key — the two
+// The shard custody key is reused as the base for the restore vault key — the two
 // derived symmetric keys are domain-separated by `kShardCustodyKeyInfo` vs
-// `kRecoveryBufferKeyInfo` in HKDF.
+// `kRestoreVaultKeyInfo` in HKDF.
 
 extension Manager {
     class Key {
@@ -830,20 +830,20 @@ extension Manager.Key: KeyManagerProtocol {
         )
     }
 
-    // MARK: - Recovery buffer key
+    // MARK: - Restore vault key
 
-    /// Derive the recovery buffer key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256
-    /// with `kRecoveryBufferKeyInfo`. Reuses the shard custody SE key (same access
+    /// Derive the restore vault key: ECDH(shardCustody_SE_priv, G) → HKDF-SHA256
+    /// with `kRestoreVaultKeyInfo`. Reuses the shard custody SE key (same access
     /// policy: device-unlock, no biometric) but produces a distinct symmetric key
     /// via HKDF domain separation.
     ///
-    /// Used to seal ReconstructShard rows — the transient buffer of returned
+    /// Used to seal ReconstructShard rows — the transient set of returned
     /// shards collected during reconstruction.
     ///
     /// The returned SymmetricKey is scope-bounded — callers must not store it.
     ///
     /// - Returns: 256-bit SymmetricKey, or nil if the SE is unavailable.
-    func deriveRecoveryBufferKey() throws -> SymmetricKey? {
+    func deriveRestoreVaultKey() throws -> SymmetricKey? {
         guard let custodyPriv  = try self.retrieveShardCustodyPrivateKey() else { return nil }
         guard let fixedPubKey  = self.convert(material: fixedX963)         else { return nil }
 
@@ -864,7 +864,7 @@ extension Manager.Key: KeyManagerProtocol {
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: SymmetricKey(data: rawSecret),
             salt: custodyPubData,
-            info: SaltInfo.kRecoveryBufferKeyInfo,
+            info: SaltInfo.kRestoreVaultKeyInfo,
             outputByteCount: 32
         )
     }

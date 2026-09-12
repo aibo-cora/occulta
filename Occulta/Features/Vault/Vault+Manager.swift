@@ -186,9 +186,11 @@ final class VaultManager {
     /// `currentDepth` has no default — a forgotten argument must be a compile error,
     /// not a silent leak of restore state into whichever depth happened to call this
     /// (Bug 93). Required specifically because `attemptBackupRestore` must never run
-    /// as though it's at depth 0 by accident. `refreshPendingRestoreState` no longer
-    /// takes a depth at all: its published state is deliberately uniform across
-    /// layers, and deferral in `attemptBackupRestore` is what keeps that safe.
+    /// as though it's at depth 0 by accident. `refreshPendingRestoreState(currentDepth:)`
+    /// now also takes one, since its shard-count half is depth-scoped
+    /// (`RECOVERY_BUFFER_LAYERING.md` §6 item 9.1) — `pendingRestoreActive` itself
+    /// stays deliberately uniform across layers until arming is per-depth too, and
+    /// deferral in `attemptBackupRestore` is what keeps that safe in the meantime.
     func unlock(context: LAContext, currentDepth: Int) {
         self.authContext = context
         self.resetInactivityTimer()
@@ -217,7 +219,7 @@ final class VaultManager {
         // from the wrong depth).
         // Sync pending-restore state from filesystem and attempt reconstruction
         // if enough shards have arrived since the last unlock.
-        self.refreshPendingRestoreState()
+        self.refreshPendingRestoreState(currentDepth: currentDepth)
         self.attemptBackupRestore(currentDepth: currentDepth)
     }
 

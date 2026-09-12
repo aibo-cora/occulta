@@ -95,3 +95,41 @@ the same way, only orphan-status camouflage.
 **Full reasoning:** `bugs.md` Bug 110 (`VaultEntry`, the original shape), Bug 112 (`Contact.Profile`,
 declined), Bug 118 (`BackupEncryptionKey`, the motivating gap for extending it there);
 `VAULT_KEY_LAYERING.md` §8 item 14 (`BackupEncryptionKey`'s three-state design in full).
+
+---
+
+## Reuse the same BEK across trustee-set changes rather than regenerating it
+
+**Status:** Existing, shipped behavior — reasoning recorded 2026-09-12, prompted by a design
+conversation questioning why `BackupEncryptionKey.Payload.bekBytes` needs to be retained at all,
+given `prepareShards`/`distributeShards` already re-split and redistribute shares on every
+trustee-set change anyway.
+
+**Context:** Adding, removing, or replacing a trustee re-splits the BEK from scratch and
+redistributes to every current trustee — `commitDistribution`'s own logic gives even *unchanged*
+trustees a `.replace` op whenever the set changes, because `prepareShards` always calls
+`ShamirSecretSharing.split` fresh for the full current recipient list, never an incremental
+extension of the existing one. Since a fresh split happens anyway, the question was: why not also
+generate a fresh *secret* each time, instead of reusing `bekBytes` unchanged?
+
+**Decision:** `bekBytes` is generated once (`Backup.setup`) and reused as-is across every
+subsequent trustee addition, replacement, and re-export. Only `rotate()` — a separate, deliberate
+call — generates a new one.
+
+**Why:** Reusing the same secret decouples *who can help recover* (the trustee set, changed freely
+and often) from *which files can be recovered* (fixed to whatever secret sealed them). If every
+trustee-set change minted a fresh secret, that same redistribution would silently orphan every
+`.occbak` already sealed under the old one — any copy sitting in iCloud Drive, email, wherever —
+since the newly-distributed shares only ever reconstruct the new secret. The device would then
+either need to force an immediate re-export as a hidden side effect of routine trustee management,
+or risk the user's most recent *usable* backup silently regressing to whatever predates the last
+trustee change, with no warning either way.
+
+**Consequences:** Every `.occbak` ever exported stays restorable by whatever the current trustee
+set can reconstruct, indefinitely — trustee management and backup export stay independent user
+actions, which is what they should be. The cost is symmetric and deliberate: a genuine rotation
+(a suspected leaked share, a hard security reset) is the *only* path that invalidates old backups,
+and it's explicit — `rotate()` is its own call, never a side effect of anything routine.
+
+**Full reasoning:** this conversation, 2026-09-12 — not yet folded into `VAULT_KEY_LAYERING.md`'s
+own prose.

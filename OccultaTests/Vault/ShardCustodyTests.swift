@@ -125,10 +125,10 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 @Suite("Recovery buffer key — derivation")
 @MainActor struct RecoveryBufferKeyTests {
 
-    @Test("deriveRecoveryBufferKey() returns a 256-bit key")
+    @Test("deriveRestoreVaultKey() returns a 256-bit key")
     func returnsKey() throws {
         let km  = TestKeyManager()
-        let key = try km.deriveRecoveryBufferKey()
+        let key = try km.deriveRestoreVaultKey()
         #expect(key != nil)
         var byteCount = 0
         key?.withUnsafeBytes { byteCount = $0.count }
@@ -138,12 +138,12 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     @Test("Recovery buffer key is distinct from shard custody key (HKDF domain separation)")
     func distinctFromCustodyKey() throws {
         let km = TestKeyManager()
-        var bufferBytes  = Data()
+        var restoreBytes  = Data()
         var custodyBytes = Data()
-        try km.deriveRecoveryBufferKey()?.withUnsafeBytes { bufferBytes  = Data($0) }
+        try km.deriveRestoreVaultKey()?.withUnsafeBytes { restoreBytes  = Data($0) }
         try km.deriveShardCustodyKey()?.withUnsafeBytes   { custodyBytes = Data($0) }
-        #expect(bufferBytes.count == 32 && custodyBytes.count == 32)
-        #expect(bufferBytes != custodyBytes,
+        #expect(restoreBytes.count == 32 && custodyBytes.count == 32)
+        #expect(restoreBytes != custodyBytes,
                 "buffer key and custody key must differ — same SE source, different HKDF info")
     }
 
@@ -151,8 +151,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
     func deterministic() throws {
         let km = TestKeyManager()
         var b1 = Data(), b2 = Data()
-        try km.deriveRecoveryBufferKey()?.withUnsafeBytes { b1 = Data($0) }
-        try km.deriveRecoveryBufferKey()?.withUnsafeBytes { b2 = Data($0) }
+        try km.deriveRestoreVaultKey()?.withUnsafeBytes { b1 = Data($0) }
+        try km.deriveRestoreVaultKey()?.withUnsafeBytes { b2 = Data($0) }
         #expect(b1 == b2)
     }
 }
@@ -390,14 +390,14 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
 
         #expect(try reconstructShardCount(in: container) == 1)
 
-        // Sanity: the row decrypts under the recovery buffer key.
-        guard let bufferKey = try alice.deriveRecoveryBufferKey() else {
-            Issue.record("expected recovery buffer key")
+        // Sanity: the row decrypts under the restore vault key.
+        guard let restoreKey = try alice.deriveRestoreVaultKey() else {
+            Issue.record("expected restore vault key")
             return
         }
         let row  = try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>()).first!
         let box  = try AES.GCM.SealedBox(combined: row.encryptedPayload)
-        let pt   = try AES.GCM.open(box, using: bufferKey, authenticating: row.aad())
+        let pt   = try AES.GCM.open(box, using: restoreKey, authenticating: row.aad())
         let pl   = try JSONDecoder().decode(ReconstructShard.Payload.self, from: pt)
         #expect(pl.entryID == entry.id)
         #expect(pl.attrID  == attrs[0].id)
@@ -412,8 +412,8 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         let attrs      = try vault.prepareShards(for: entry.id, threshold: 2, recipients: recipients)
         try vault.acceptReturnedShard(attrs[0], attestation: nil, senderIdentifier: recipients[0].identifier, currentDepth: 0)
 
-        guard let bufferKey = try alice.deriveRecoveryBufferKey() else {
-            Issue.record("expected recovery buffer key"); return
+        guard let restoreKey = try alice.deriveRestoreVaultKey() else {
+            Issue.record("expected restore vault key"); return
         }
         let row = try ModelContext(container).fetch(FetchDescriptor<ReconstructShard>()).first!
         let box = try AES.GCM.SealedBox(combined: row.encryptedPayload)
@@ -421,12 +421,12 @@ private func makeProfiles(count: Int) throws -> [Contact.Profile] {
         // Wrong AAD (a different UUID) — GCM authentication tag must reject it.
         let wrongAAD = UUID().uuidString.data(using: .utf8)!
         #expect(throws: (any Error).self) {
-            _ = try AES.GCM.open(box, using: bufferKey, authenticating: wrongAAD)
+            _ = try AES.GCM.open(box, using: restoreKey, authenticating: wrongAAD)
         }
 
         // Correct AAD — must succeed.
         #expect(throws: Never.self) {
-            _ = try AES.GCM.open(box, using: bufferKey, authenticating: row.aad())
+            _ = try AES.GCM.open(box, using: restoreKey, authenticating: row.aad())
         }
     }
 

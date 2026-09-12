@@ -381,13 +381,20 @@ extension VaultManager {
         FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
     }
 
-    /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem.
-    /// Called on every vault unlock so state is correct after app restarts.
+    /// Sync `pendingRestoreActive` and `pendingRestoreShardCount` from the filesystem and from
+    /// `currentDepth`'s own share of the shard buffer. Called on every vault unlock so state is
+    /// correct after app restarts.
     ///
-    /// **Depth-uniform, and this reverses half of Bug 93 deliberately.** That fix paired
-    /// "defer" with "hide": `attemptBackupRestore` refuses to complete above depth 0, and
-    /// this published nothing there, so duress never mentioned a recovery. Deferral stays;
-    /// hiding does not.
+    /// **`pendingRestoreActive` stays depth-uniform (whether the `.occbak` file exists at all);
+    /// `pendingRestoreShardCount` is now `currentDepth`-scoped** (`RECOVERY_BUFFER_LAYERING.md`
+    /// §6 item 9.1's shard-buffer depth-partitioning) — this is a deliberate, temporary
+    /// asymmetry: arming itself is not yet per-depth (that's §6 item 9.1's `PendingRestore`
+    /// piece, not yet built), only the shard buffer is. Once arming is per-depth too,
+    /// `pendingRestoreActive` becomes `currentDepth`-scoped as well and this asymmetry closes.
+    ///
+    /// This reverses half of Bug 93 deliberately. That fix paired "defer" with "hide":
+    /// `attemptBackupRestore` refuses to complete above depth 0, and this published nothing
+    /// there, so duress never mentioned a recovery. Deferral stays; hiding does not.
     ///
     /// Hiding was closing a duress-against-duress gap and opening a duress-against-real one.
     /// A pending restore made depth 0 and duress behave differently — a banner in one, none in
@@ -405,10 +412,10 @@ extension VaultManager {
     /// will never show. That is accepted: shard collection is depth-independent by design
     /// (`storeRestoreShard`), so the state is real rather than fabricated, and a recovery that
     /// visibly never finishes is an ordinary thing for one to do.
-    func refreshPendingRestoreState() {
+    func refreshPendingRestoreState(currentDepth: Int) {
         self.pendingRestoreActive = FileManager.default.fileExists(atPath: Self.pendingRestoreURL.path)
         self.pendingRestoreShardCount = self.pendingRestoreActive
-            ? ((try? self.loadRestoreShards())?.count ?? 0)
+            ? ((try? self.loadRestoreShards(currentDepth: currentDepth))?.count ?? 0)
             : 0
     }
 
@@ -448,8 +455,9 @@ extension VaultManager {
 
         // Published at every depth — see `refreshPendingRestoreState` for why hiding this
         // above depth 0 traded a duress-against-duress gap for a duress-against-real one.
+        // currentDepth: 0 — this whole mechanism is pinned there (see the doc comment above).
         self.pendingRestoreActive     = true
-        self.pendingRestoreShardCount = (try? self.loadRestoreShards())?.count ?? 0
+        self.pendingRestoreShardCount = (try? self.loadRestoreShards(currentDepth: 0))?.count ?? 0
     }
 
     /// Attempt reconstruction from all collected restore shards.
@@ -484,7 +492,7 @@ extension VaultManager {
         guard let vaultKey = try? self.currentKey() else { return }
 
         if (try? self.backup.fetchDecoded(vaultKey: vaultKey, currentDepth: currentDepth, modelContext: self.modelContext)) != nil {
-            self.clearBEKRestoreShards()
+            self.clearBEKRestoreShards(currentDepth: currentDepth)
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0
@@ -493,11 +501,11 @@ extension VaultManager {
 
         guard let backupData = try? Data(contentsOf: Self.pendingRestoreURL) else { return }
 
-        // Derived once and reused below for clearBEKRestoreShards(usingKey:) on success —
-        // loadRestoreShards() and clearBEKRestoreShards() would otherwise each independently
-        // re-derive the identical recovery buffer key.
-        guard let recoveryKey = try? self.keyManager.deriveRecoveryBufferKey() else { return }
-        guard let shards = try? self.loadRestoreShards(usingKey: recoveryKey), !shards.isEmpty else { return }
+        // Derived once and reused below for clearBEKRestoreShards(usingKey:currentDepth:) on
+        // success — loadRestoreShards(usingKey:currentDepth:) and clearBEKRestoreShards would
+        // otherwise each independently re-derive the identical restore vault key.
+        guard let restoreVaultKey = try? self.keyManager.deriveRestoreVaultKey() else { return }
+        guard let shards = try? self.loadRestoreShards(usingKey: restoreVaultKey, currentDepth: currentDepth), !shards.isEmpty else { return }
 
         // Update counter as a side effect (covers the on-unlock path).
         self.pendingRestoreShardCount = shards.count
@@ -523,7 +531,7 @@ extension VaultManager {
             }
 
             // Success — drop the buffered shards and the cached file, reset state.
-            self.clearBEKRestoreShards(usingKey: recoveryKey)
+            self.clearBEKRestoreShards(usingKey: restoreVaultKey, currentDepth: currentDepth)
             try? FileManager.default.removeItem(at: Self.pendingRestoreURL)
             self.pendingRestoreActive     = false
             self.pendingRestoreShardCount = 0

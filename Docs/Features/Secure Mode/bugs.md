@@ -9996,3 +9996,45 @@ whatever storage-churn cost that implies — worse for containers written to oft
 than for ones written rarely, like BEK), or (b) some other mechanism that hides write-frequency-by-depth
 without paying that cost everywhere. Not resolved by anything currently in this file or in either design
 document.
+
+---
+
+## Bug 121 — Backup key rotation has no UX, and no caller at all — `Backup.rotate()` is unreachable dead code
+
+**Status:** Open. Filed 2026-09-12, found while explaining what rotating a BEK actually looks like to a
+user and confirming directly against code that nothing calls it.
+
+**Target:** v2.0.0 — not urgent for the current release. Nothing depends on rotation existing today;
+`decisions.md`'s "reuse the same BEK across trustee-set changes" entry treats rotation as the rare,
+deliberate escape hatch, not something routine use ever needs.
+
+### Severity: Low (missing feature, not a security regression)
+
+Nothing is less safe because of this — `Backup.rotate()` being unreachable doesn't expose anything or
+weaken any existing guarantee. It means the one deliberate mechanism this design's own reasoning relies on
+("a genuine rotation is the only path that invalidates old backups, and it's explicit") doesn't actually
+work: a user who concludes a share may have leaked and wants to kill the old key has no way to do it.
+
+### What's missing, confirmed directly against code
+
+- `Backup.rotate(vaultKey:currentDepth:modelContext:)` (`Vault+Manager+Backup.swift:1367`) exists and is
+  presumably correct, but has zero callers anywhere — confirmed by grep across `Occulta/` and
+  `OccultaTests/`: no `VaultManager` wrapper (unlike `setupBackup`/`prepareBackupShards`/`currentBackupKey`,
+  which all have one), no UI button or flow, not even a direct unit test.
+- The only UI surface touching rotation at all is reactive, not a trigger: `VaultRecoverySettings.swift:160`
+  shows a "BEK rotated" staleness warning when `backupStaleness.bekRotated` is true, comparing the
+  `distributionID` recorded at the last export against the current one. That reports a rotation that
+  already happened by some other means; nothing in the app is that means.
+
+### Remedy
+
+Add a `VaultManager` wrapper mirroring `setupBackup`'s shape (derive `vaultKey`, call through to
+`self.backup.rotate`), then a UI entry point calling it — most naturally in `VaultRecoverySettings` next to
+the staleness warning it currently only reports on. Needs its own confirmation UX too: rotating
+deliberately invalidates every existing `.occbak` (per `decisions.md`'s entry), so the user needs to
+understand that cost before triggering it, the same way `storePendingRestore`'s `.alreadyProcessed`
+refusal already treats an irreversible state change as something to confirm rather than fire silently.
+
+### Guard
+
+None — not built.

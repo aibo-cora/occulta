@@ -34,7 +34,7 @@
 //    future pass; not part of this scaffolding.
 //
 //  Why a separate model from CustodyShard:
-//  - Different encryption keys (recovery buffer vs. shard custody) — the type
+//  - Different encryption keys (restore vault vs. shard custody) — the type
 //    system enforces "you can't decrypt one with the other".
 //  - Different lifecycles (transient queue vs. long-lived custody store).
 //  - Different sealed payloads (reconstruct must carry entryID + attrID; custody
@@ -53,7 +53,7 @@ final class ReconstructShard {
     var id: UUID = UUID()
 
     /// Sealed `Payload`: nonce(12B) ∥ ciphertext ∥ tag(16B) — CryptoKit .combined.
-    /// AAD = aad(). Key = `KeyManagerProtocol.deriveRecoveryBufferKey()`.
+    /// AAD = aad(). Key = `KeyManagerProtocol.deriveRestoreVaultKey()`.
     var encryptedPayload: Data = Data()
 
     // MARK: Init
@@ -95,5 +95,32 @@ final class ReconstructShard {
         let signedAttribute:  SignedAttribute
         let senderIdentifier: String
         let attestation:      SignedAttribute?
+        /// BEK-restore rows only (`entryID` resolves to no real `VaultEntry`) — which
+        /// depth's restore this shard belongs to, `DepthCodec`-encoded (2 bytes, never a
+        /// raw `Int`: see `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1 for why a raw `Int`
+        /// would make ciphertext length correlate with the depth's value). `nil` for
+        /// per-entry PEK-reconstruction rows, which aren't depth-partitioned.
+        let depth: Data?
+
+        /// Explicit init, not the synthesized memberwise one — a `let` property with a
+        /// declaration-site default (`= nil`) is fixed forever and never actually settable
+        /// (Swift excludes it from Codable decoding too), which is the opposite of what a
+        /// per-row value needs. A default *parameter* here gives every existing call site
+        /// (which never mentions `depth`) the same free `nil` without that trap.
+        init(
+            entryID:          UUID,
+            attrID:           UUID,
+            signedAttribute:  SignedAttribute,
+            senderIdentifier: String,
+            attestation:      SignedAttribute?,
+            depth:            Data? = nil
+        ) {
+            self.entryID          = entryID
+            self.attrID           = attrID
+            self.signedAttribute  = signedAttribute
+            self.senderIdentifier = senderIdentifier
+            self.attestation      = attestation
+            self.depth            = depth
+        }
     }
 }
