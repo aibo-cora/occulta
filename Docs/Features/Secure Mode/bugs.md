@@ -10126,3 +10126,66 @@ for the resource-exhaustion trade-off this decision accepts, in full and without
 
 None needed — closed by removing the mechanism (a cap) rather than by guarding it. Tracked as
 `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's own closing decision, now final.
+
+---
+
+## Bug 123 — `depth`/`deletionToken`/`visibleThroughDepth` share one fixed AAD across every row and field, so their ciphertext is splice-able without the key
+
+**Status:** Open. Found 2026-09-13 during a security review of `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's
+`PendingShamirSecretRestore` model, before it gains any read/write logic — its `attributeID`/`deletionToken`
+fields are specified to inherit this exact pattern from `BackupEncryptionKey`. Pre-existing, not introduced
+by that work: `BackupEncryptionKey.depth`/`.deletionToken` and `VaultEntry.deletionToken`/
+`.visibleThroughDepth` already ship this way.
+
+**Target:** None — not planned. Needs a deliberate decision, not a quick patch; see Remedy for why.
+
+### Severity: Moderate — an integrity bypass, not a confidentiality leak, and it needs a stronger attacker than this codebase's usual threat model
+
+Every field sealed through the generic `Data.encrypt(using:)`/`decrypt(using:)` helper
+([Crypto+Manager.swift:242-250](Occulta/Services/Crypto+Manager.swift:242), routing to
+`Manager.Crypto.encrypt(data:using:)`/`decrypt(data:using:)`,
+[Crypto+Manager.swift:93-110](Occulta/Services/Crypto+Manager.swift:93)) authenticates under
+`EncryptionScheme.v2_hybridPQ.aad` — one fixed byte (`0x02`), identical for every call, regardless of which
+model, which row, or which field. Contrast the "big" fields (`VaultEntry.encryptedLabel`/`.encryptedContent`,
+`BackupEncryptionKey.encryptedPayload`, `CustodyShard.encryptedPayload`), which seal directly via
+`AES.GCM.seal(..., authenticating: row.aad())`, binding the ciphertext to that row's own `id` (and, for
+`VaultEntry`, a field tag and timestamp too). The small "local key" fields never get that binding.
+
+GCM authentication only proves "sealed under this key with this exact AAD" — nothing about which row or
+field it was originally for, when the AAD never encoded that. An attacker with **write access to the raw
+on-device database** (not the key — just the bytes) can copy one row's `deletionToken` ciphertext (say, a
+live row's, decrypting to `liveToken`) onto a different row's `deletionToken` column. Same key, same AAD:
+it authenticates and decrypts cleanly, just to the wrong row's truth. That's a genuine bypass, not something
+the existing fail-safe defaults catch — `isOrphaned`'s fail-safe direction only protects *ambiguous*
+ciphertext (nil, garbled, wrong key) by defaulting to "hidden." This attack produces a perfectly valid
+decrypt; it's just borrowed from elsewhere. Concretely, it undoes exactly what Bugs 110/118 exist to
+prevent — a stale depth's old `BackupEncryptionKey`/`VaultEntry` state resurfacing — via ciphertext splicing
+instead of via "nobody bothered to orphan it."
+
+Called Moderate, not High, because it needs write access to the raw SQLite file without the key — a
+stronger attacker than this codebase's primary concern throughout (a coercer who gets the device unlocked
+and reads through the UI or a full decrypt pass). Realistic for forensic tooling that can extract, modify,
+and reflash a device image, or jailbreak-level access — not for a coercer standing over the user's shoulder.
+
+### Why it's deliberate, not an oversight
+
+This same file's `Group` re-encryption entry already relies on this AAD staying identical across a field's
+entire lifetime: `reencrypt(from:to:)` reseals `Group` member slots under a new key but the *same* AAD,
+specifically so `readName()`/`readID()` keep working through a key rotation with no AAD bookkeeping.
+Binding the AAD to row identity would break that property everywhere it's used, not just for the fields
+named here.
+
+### Remedy — not attempted; needs to be app-wide if it happens at all
+
+Binding these fields' AAD to `id` (mirroring `row.aad()`) would close the splice, but it directly conflicts
+with the "why it's deliberate" reasoning above: every existing `depth`/`deletionToken`/`visibleThroughDepth`
+ciphertext already on production devices would need re-sealing under the new AAD before it could be trusted,
+and the `Group` rotation path's reliance on AAD staying constant across a reseal would need its own review
+first. Not a one-model fix — scoping it to just `PendingShamirSecretRestore` would leave `BackupEncryptionKey`
+and `VaultEntry` exploitable via the identical mechanism, so a real fix is app-wide or not worth doing
+partially.
+
+### Guard
+
+None. Filed so the tradeoff is visible and decided on purpose the next time a model — `PendingShamirSecretRestore`
+included — reaches for `Data.encrypt(using:)` for a field where row-identity binding might matter.
