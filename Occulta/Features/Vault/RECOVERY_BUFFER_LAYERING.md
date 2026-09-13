@@ -956,6 +956,23 @@ to Bug 122 is not "we found the fix and deferred building it" — it's "no cap, 
 closing the counting oracle by removing the thing it depends on rather than by fixing it. Bug 96 item 2
 stays open on the same permanent terms — see that entry's own 2026-09-13 note.
 
+**A separate open question — whether this container needs `BackupEncryptionKey`/`VaultEntry`'s own
+eager-filler-baseline treatment (Bugs 110/118) so row count doesn't reveal that the mechanism has ever been
+used — raised and reconsidered the same day, leaning no.** The reasoning that made eager-fill necessary for
+those two models doesn't transfer here. What eager-fill actually defends against is *depth-indexed* row
+count: a coercer at depth 1 seeing 3 live `BackupEncryptionKey` rows learns there are at least 3 depths with
+a configured backup deeper than what they've been shown — a direct count of hidden layers beneath the one
+they're looking at. That is the fact worth hiding, not "a backup was ever configured," which is mundane on
+its own. `PendingShamirSecretRestore` carries no depth information at all, live or orphaned — keying by
+`attributeID` instead of depth was the whole point of this revision — so even a coercer who fully decrypts
+every row learns only "a Shamir-shared secret was restored at some point," never which depth, never how
+many depths, never whether any duress layer exists beneath the current one. And the action itself —
+recovering a vault from trustee shares after losing a phone — is an ordinary, advertised feature unconnected
+to duress; using it once doesn't imply Secure Mode is even configured. So the specific leak eager-fill was
+built to close does not exist here, because the redesign that removed depth-indexing (generalizing past
+BEK) also removed the thing that leak depended on. Left as a calmer footnote rather than a blocking
+decision — nothing currently reads or writes this population, so nothing forces the question yet.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
