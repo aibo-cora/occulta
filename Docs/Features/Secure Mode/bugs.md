@@ -10167,23 +10167,42 @@ stronger attacker than this codebase's primary concern throughout (a coercer who
 and reads through the UI or a full decrypt pass). Realistic for forensic tooling that can extract, modify,
 and reflash a device image, or jailbreak-level access — not for a coercer standing over the user's shoulder.
 
-### Why it's deliberate, not an oversight
+### Why the fixed AAD exists as the default — not why a fix would need to touch `Group`
 
 This same file's `Group` re-encryption entry already relies on this AAD staying identical across a field's
 entire lifetime: `reencrypt(from:to:)` reseals `Group` member slots under a new key but the *same* AAD,
-specifically so `readName()`/`readID()` keep working through a key rotation with no AAD bookkeeping.
-Binding the AAD to row identity would break that property everywhere it's used, not just for the fields
-named here.
+specifically so `readName()`/`readID()` keep working through a key rotation with no AAD bookkeeping. That
+explains why the helper defaults to one fixed byte today — it does **not** mean a fix has to touch `Group`.
+Checked while scoping the remedy below: `Group`'s calls never need to pass anything but the default, so an
+additive change (a new optional parameter, current behavior when omitted) leaves `Group` — and any other
+untouched caller — byte-for-byte unaffected. The earlier draft of this entry claimed the fix would need to
+be "app-wide or not at all" and specifically need `Group`'s rotation path reviewed first; that overstated
+it, corrected here.
 
-### Remedy — not attempted; needs to be app-wide if it happens at all
+### Remedy — not attempted; scope is narrower than first filed
 
-Binding these fields' AAD to `id` (mirroring `row.aad()`) would close the splice, but it directly conflicts
-with the "why it's deliberate" reasoning above: every existing `depth`/`deletionToken`/`visibleThroughDepth`
-ciphertext already on production devices would need re-sealing under the new AAD before it could be trusted,
-and the `Group` rotation path's reliance on AAD staying constant across a reseal would need its own review
-first. Not a one-model fix — scoping it to just `PendingShamirSecretRestore` would leave `BackupEncryptionKey`
-and `VaultEntry` exploitable via the identical mechanism, so a real fix is app-wide or not worth doing
-partially.
+Add an optional `aad:` parameter to the shared helper (`Data.encrypt(using:)`/`decrypt(using:)` and
+`Manager.Crypto.encrypt(data:using:)`/`decrypt(data:using:)`), defaulting to today's fixed byte so every
+existing, unmodified call site — `Group` included — keeps working exactly as it does now. Then bind only
+the fields that actually need it, each via a small per-model field-discriminator mirroring `VaultEntry`'s
+existing `VaultField` enum:
+
+- `BackupEncryptionKey.depth`/`.deletionToken` (2 fields)
+- `VaultEntry.deletionToken`/`.visibleThroughDepth` (2 fields — `VaultField` would need extending; it
+  currently only tags the `encryptedPayload`-style fields, not these two)
+- `Contact.Profile.originDepth`/`.visibleThroughDepth`/`.globalTrusteeDepth` (3 fields — `Contact.Profile
+  .deletionToken` is not in scope here; it's a plain `#Predicate { $0.deletionToken == nil }` check, Bug
+  112's mechanism, not this one)
+
+Three models, seven already-shipped fields, roughly 15-20 read/write call sites across
+`BackupEncryptionKey+Model.swift`, `Vault+Manager+Backup.swift`, `Manager+Security.swift` (both orphan
+functions), `Contact+Model.swift`, `Contact+Manager.swift`, and `ContactManager+Classification.swift`. The
+real cost is a one-time migration per model — decrypt every existing row's ciphertext under the old fixed
+AAD, re-seal under the new row-bound one, crash-safe and idempotent, same shape as
+`migrateLegacyBackupStorageIfNeeded` — plus a splice-attempt test per field proving GCM now rejects
+ciphertext copied from a different row or field, since nothing currently tests for that. `Group` needs no
+change and no new test. `PendingShamirSecretRestore.attributeID`/`.deletionToken` cost nothing extra either
+way — nothing has shipped for them yet, so building them bound from the start carries no migration debt.
 
 ### Guard
 
