@@ -149,6 +149,108 @@ struct PendingRestoreShardSlot: Codable {
     var attestation:      SignedAttribute? = nil
 }
 
+// MARK: - PendingShamirSecretRestore.ShardsCodec
+
+extension PendingShamirSecretRestore {
+
+    /// Fixed-width codec for `shards` — encodes/decodes exactly `shardCapacity`
+    /// `PendingRestoreShardSlot`s to/from one padded blob, matching
+    /// `VaultManager.Backup.PayloadCodec`'s own house style (version prefix, fixed
+    /// slot count, random filler for anything absent). Sealed separately under the
+    /// restore vault key — this type only handles the plaintext shape.
+    ///
+    /// Foundation only, as of this writing: `encode`/`decode` are declared but not
+    /// implemented — nothing calls this codec yet, matching `PendingShamirSecretRestore`
+    /// itself, which has no read/write logic anywhere either. See
+    /// `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3.
+    ///
+    /// Wire format (`payloadSize` bytes, always, whether 0 shards are in use or
+    /// `shardCapacity`):
+    /// ```
+    /// byte 0–1    formatVersion         — UInt16 big-endian
+    /// byte 2–...  shardCapacity × slot  — one PendingRestoreShardSlot each, in order
+    /// ```
+    ///
+    /// Per-slot layout (`slotSize` = 846 bytes):
+    /// ```
+    /// byte 0        signedAttribute presence — 1 = real shard, 0 = filler
+    /// byte 1–404    signedAttribute          — 404-byte SignedAttributeCodec;
+    ///                                          random bytes when byte 0 is 0
+    /// byte 405–440  senderIdentifier         — 36-byte UTF-8 UUID string;
+    ///                                          random bytes when byte 0 is 0.
+    ///                                          Unlike `PayloadCodec.ShardRecord.
+    ///                                          contactIdentifier` (the closest
+    ///                                          precedent, encoded as 16 raw UUID
+    ///                                          bytes), this stays the 36-byte
+    ///                                          string form already sized in
+    ///                                          `RECOVERY_BUFFER_LAYERING.md` §6
+    ///                                          item 9.3 — open whether to tighten
+    ///                                          this to 16 bytes later.
+    /// byte 441      attestation presence     — 1 = present, 0 = absent —
+    ///                                          independent of byte 0: a shard can
+    ///                                          arrive before its attestation does
+    ///                                          (Bug 94 remedy 2)
+    /// byte 442–845  attestation              — 404-byte SignedAttributeCodec;
+    ///                                          random bytes when byte 441 is 0
+    /// ```
+    enum ShardsCodec {
+
+        static let formatVersion: UInt16 = 1
+        static let shardCapacity: Int    = 255
+        static let slotSize:      Int    = 1 + SignedAttributeCodec.size + 36 + 1 + SignedAttributeCodec.size
+        static let payloadSize:   Int    = 2 + shardCapacity * slotSize
+
+        enum CodecError: Error, Equatable {
+            /// More slots than the Shamir ceiling could ever produce. Refuses to
+            /// silently truncate real shard records — the one thing this codec
+            /// must never do, matching `PayloadCodec.CodecError.tooManyShards`.
+            case tooManySlots(count: Int)
+        }
+
+        static func encode(_ slots: [PendingRestoreShardSlot]) throws -> Data {
+            fatalError("ShardsCodec.encode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+        }
+
+        static func decode(_ data: Data) -> [PendingRestoreShardSlot]? {
+            fatalError("ShardsCodec.decode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+        }
+    }
+
+    /// Fixed-width codec for one `SignedAttribute` — sized for exactly the two
+    /// categories `ShardsCodec` ever writes (`.shard`, `.attestation`) and exactly
+    /// one secret size (32 bytes — true of both a BEK and a PEK today, the two
+    /// secret kinds `PendingShamirSecretRestore.attributeID` currently names). A
+    /// future secret kind of a different size breaks silently through this codec
+    /// rather than failing loudly — worth a `value.count == 33` guard once `encode`
+    /// is actually written, not yet done here.
+    ///
+    /// Layout (`size` = 404 bytes):
+    /// ```
+    /// byte 0–15    id            — raw UUID bytes
+    /// byte 16–271  label         — UTF-8, fixed-width, padded/truncated to 256
+    /// byte 272–304 value         — GF(2^8) share: 32-byte value + 1-byte x-coordinate
+    /// byte 305     category      — UInt8 tag, exhaustive over all 10 SignedAttribute.Category cases
+    /// byte 306–369 signature     — raw ECDSA-P256 r‖s, not DER
+    /// byte 370–377 createdAt     — UInt64 big-endian epoch seconds
+    /// byte 378     expiresAt tag — 1 = present, 0 = absent
+    /// byte 379–386 expiresAt     — UInt64 big-endian epoch seconds, zero-filled if absent
+    /// byte 387     entryID tag   — 1 = present, 0 = absent
+    /// byte 388–403 entryID       — raw UUID bytes, zero-filled if absent
+    /// ```
+    enum SignedAttributeCodec {
+
+        static let size: Int = 16 + 256 + 33 + 1 + 64 + 8 + 1 + 8 + 1 + 16
+
+        static func encode(_ attribute: SignedAttribute) throws -> Data {
+            fatalError("SignedAttributeCodec.encode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+        }
+
+        static func decode(_ data: Data) -> SignedAttribute? {
+            fatalError("SignedAttributeCodec.decode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+        }
+    }
+}
+
 // MARK: - VaultEntryType
 
 /// The kind of secret stored in a VaultEntry.
