@@ -7213,6 +7213,17 @@ same order of urgency as the trap fixes were, and should not be prioritized as i
 `storePendingRestore` accepting a file of unbounded size is unaffected by any of the above and
 remains open — a separate concern from the shard-count question.
 
+**Decided permanently unbounded, 2026-09-13 — `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3, `bugs.md` Bug
+122.** Generalizing this population past BEK (`PendingShamirSecretRestore`, keyed by the secret's own
+identity rather than by depth) made a cap unsafe to add at all: capping live rows without restoring
+per-depth isolation turned into a counting oracle letting a coercer learn whether a genuine restore is
+active anywhere on the device, without any key (Bug 122). A depth-scoped cap would have closed that, but
+was rejected — not for a security reason, but because it needs its own UX for what happens at the boundary,
+judged not worth building for a concern this item's own 2026-08-24 reconsideration already downgraded to
+"nice to have." So: no cap, ever, on this population — cost is now materially higher than when this item
+was last sized (~211 KB per unbounded row under the new model, not a few hundred bytes), but still an
+accepted trade against the alternative, not an oversight.
+
 ### 3 — The entire vault plaintext is left in freed heap on export
 
 The file header states the discipline (`Vault+Manager+Backup.swift:8-9`):
@@ -10043,12 +10054,12 @@ None — not built.
 
 ## Bug 122 — A cap on `PendingShamirSecretRestore` would let a coercer count how many restores are live, without any key
 
-**Status:** Open — a design constraint to hold to, not a defect in shipped behavior. Filed 2026-09-13,
-found while sizing a cap for `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's `PendingShamirSecretRestore`
-model. **Not currently exploitable, and there is nothing to exploit yet:** `PendingShamirSecretRestore` has
-no working implementation at all — no cap, no read/write logic, nothing beyond the bare model definition
-in `Vault+Model.swift`. This entry exists so that whoever eventually builds a cap on this container doesn't
-introduce this specific hazard, not to report something happening in the app today.
+**Status:** Closed, 2026-09-13 — resolved by deciding never to cap this container at all, rather than by
+fixing the cap. Filed the same day, while sizing a cap for `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's
+`PendingShamirSecretRestore` model. **Was never exploitable and never will be:** `PendingShamirSecretRestore`
+has no working implementation at all — no cap, no read/write logic, nothing beyond the bare model
+definition in `Vault+Model.swift` — and per the resolution below, it never gains one. This entry exists so
+the reasoning behind "no cap, ever" on this container is findable, not to report something that happened.
 
 **Target:** None — blocks adopting any cap on this container, whenever that's attempted; not tied to a
 release.
@@ -10095,21 +10106,23 @@ it only *counts*. A coercer never needs to identify which row is the real one, d
 the real restore from completing — they only need to know whether it exists at all, which the cap's own
 admission behavior answers for free.
 
-### Remedy
+### Remedy — resolved: no cap at all, permanently
 
-None adopted. Two ways to close it, both with real costs, neither built:
+Two ways to close this were on the table. **Restoring per-depth isolation** — a local-key-sealed `depth`
+field recording where a row's first shard arrived, capping per-depth instead of globally — was technically
+sound (it does restore the isolation §3 requires, and `attributeID`/`depth` answer genuinely different
+questions, so nothing about generalizing past BEK required giving it up). It was rejected anyway, for a
+reason worth recording precisely since it isn't a security objection: enforcing any cap needs a decision
+about what happens at the boundary — reject silently, surface an error, something a person eventually has
+to design UX for — and that scope was judged not worth taking on for what Bug 96 item 2 already called a
+"nice-to-have, not urgent" resource-exhaustion concern.
 
-- **No cap at all** — the current state (`RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's explicit decision,
-  2026-09-13). Closes this bug by construction; leaves Bug 96 item 2 fully open, and worse than before this
-  container's own revision (~211 KB per unbounded junk row, not a few hundred bytes).
-- **Restore per-depth isolation** — partition the cap by the depth a shard's sender was visible at on
-  arrival, not by `attributeID`. Makes capping safe again the way it was under the depth-indexed design,
-  but reintroduces a depth-tagging concern this same revision removed specifically to generalize past
-  BEK — likely relocated, not eliminated.
-
-Whichever direction gets picked, it needs to be decided deliberately — shipping a cap without resolving
-this trades a resource-exhaustion bug for a deniability break, which is not a net improvement.
+So: **no cap, adopted permanently, not as a placeholder.** This closes the counting oracle by removing its
+precondition outright — there is no cap boundary to fill, so there is nothing for a coercer to learn by
+filling one. `PendingShamirSecretRestore` rows are deliberately, permanently unbounded. See Bug 96 item 2
+for the resource-exhaustion trade-off this decision accepts, in full and without a future revisit implied.
 
 ### Guard
 
-None — not built. Tracked as `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's own closing decision, unresolved.
+None needed — closed by removing the mechanism (a cap) rather than by guarding it. Tracked as
+`RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's own closing decision, now final.

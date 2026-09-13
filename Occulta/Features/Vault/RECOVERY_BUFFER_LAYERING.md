@@ -191,7 +191,7 @@ before then — see §6's anti-pairings.
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
-| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found a live, unresolved counting oracle (`bugs.md` Bug 122) — no cap exists on this container as of 9.3, deliberately, pending that resolution. Implementation still reflects the superseded 9.1 shape, not yet rebuilt. |
+| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found and closed a counting oracle (`bugs.md` Bug 122, resolved same day) by deciding never to cap this container at all — permanent, not a placeholder. Implementation still reflects the superseded 9.1 shape, not yet rebuilt. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -945,6 +945,17 @@ one without resolving it would trade a resource-exhaustion bug for a duress-dete
 worse trade. Reseal-everything-on-every-write (Bug 120's fix for this container) is likewise not yet
 adopted, pending the same open cost question a cap would have bounded.
 
+**Resolved, same day, superseding "for now" above: no cap, permanently, not pending anything.** The tension
+two paragraphs up *was* resolvable — a `depth` field scoped to arrival context (not to the secret's
+identity) restores §3's isolation without giving up `attributeID`'s generalization, since the two answer
+genuinely different questions and neither needs the other. Worked through and rejected anyway, for a reason
+worth recording precisely because it isn't a security one: any cap needs a decision about what happens at
+its boundary — reject silently, surface something, anything — which is real UX scope neither this document
+nor `bugs.md` Bug 96 item 2's own "nice to have, not urgent" framing justifies taking on. So the resolution
+to Bug 122 is not "we found the fix and deferred building it" — it's "no cap, ever, on this population,"
+closing the counting oracle by removing the thing it depends on rather than by fixing it. Bug 96 item 2
+stays open on the same permanent terms — see that entry's own 2026-09-13 note.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
@@ -971,7 +982,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | fixed — every op ships an attestation, real or filler |
 | 95 | One poisoned shard permanently blocks legitimate recovery | open — Bug 94 remedy 2 narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
 | 96 (item 1) | Two traps on decoded content | fixed |
-| 96 (item 2) | Restore shard buffer unbounded | open — worse as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈211 KB, not a few hundred bytes, and capping it directly reopens Bug 122's counting oracle. No cap adopted; the underlying tension (generalizing past depth vs. the per-depth isolation capping needs) is unresolved. |
+| 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈211 KB, not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
 | 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |
