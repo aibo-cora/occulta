@@ -120,6 +120,10 @@ final class VaultManager {
         /// `ShardDistributionMetadata` could not be JSON-decoded after a successful
         /// `AES.GCM.open` — the plaintext is structurally invalid.
         case metadataCorrupted
+        /// `requireVault()` found no `Vault` row. Should be unreachable —
+        /// `ensureVaultExists()` runs unconditionally at `init`, before this is ever
+        /// called.
+        case vaultNotFound
     }
 
     // MARK: - Init
@@ -141,6 +145,12 @@ final class VaultManager {
         // `ensureBackupKeyFillerRows()`'s own doc comment for why 32 is a starting
         // baseline, not a cap.
         self.ensureBackupKeyFillerRows()
+
+        // Ensure the singleton Vault row exists — no key material needed (Vault has no
+        // encrypted fields of its own), so this can run unconditionally too. See
+        // `ensureVaultExists()`'s own doc comment for why this doesn't need the same
+        // filler-baseline treatment as the row above.
+        self.ensureVaultExists()
 
         // ── Lock triggers (conditions 1–3) ───────────────────────────────────
         // Condition 1: app goes to background
