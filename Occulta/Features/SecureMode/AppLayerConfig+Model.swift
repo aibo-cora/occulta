@@ -107,11 +107,11 @@ final class AppLayerConfig {
 
     // MARK: - Verifier arrays (multi-layer)
     //
-    // Both arrays are always padded to maxVerifierCount entries. Filler entries are
+    // Both arrays are always padded to maxDepthCount entries. Filler entries are
     // random bytes of exactly verifierFillerSize (= PINManager.verifierSize = 53 bytes),
     // indistinguishable in size from real verifiers. `verify()` simply ignores entries
     // that fail to open — filler always fails. A forensic examiner always sees exactly
-    // maxVerifierCount sealed entries per array regardless of how many real layers are
+    // maxDepthCount sealed entries per array regardless of how many real layers are
     // active.
 
     /// `[0]` = master PIN (normalLabel). `[N]` = routing alias for `sealedDuressVerifiers[N-1]`
@@ -124,7 +124,7 @@ final class AppLayerConfig {
 
     /// The fixed capacity of both verifier arrays — also reused elsewhere in the app
     /// (e.g. `ExportMetaSlotCodec.slotCount`) as the real structural depth ceiling.
-    static let maxVerifierCount: Int = 32
+    static let maxDepthCount: Int = 32
 
     init() {
         self.sealedNormalVerifiers = Self.verifierFillerArray()
@@ -134,7 +134,7 @@ final class AppLayerConfig {
 
     // MARK: - Verifier array helpers
 
-    /// Writes a normal verifier at `depth`, padding the array to `maxVerifierCount` first.
+    /// Writes a normal verifier at `depth`, padding the array to `maxDepthCount` first.
     func writeNormalVerifier(_ verifier: Data, at depth: Int) {
         self.ensureVerifiersPadded()
         if depth < self.sealedNormalVerifiers.count {
@@ -142,7 +142,7 @@ final class AppLayerConfig {
         }
     }
 
-    /// Writes a duress verifier at `depth`, padding the array to `maxVerifierCount` first.
+    /// Writes a duress verifier at `depth`, padding the array to `maxDepthCount` first.
     func writeDuressVerifier(_ verifier: Data, at depth: Int) {
         self.ensureVerifiersPadded()
         if depth < self.sealedDuressVerifiers.count {
@@ -164,7 +164,7 @@ final class AppLayerConfig {
 
     // MARK: - Private
 
-    /// Fixed capacity `pinEnabledPerDepth` is padded to — must equal `maxVerifierCount`
+    /// Fixed capacity `pinEnabledPerDepth` is padded to — must equal `maxDepthCount`
     /// so all three per-depth arrays stay the same forensically-constant length.
     private static let paddedArrayCount = 32
     /// Byte size of random filler for verifier arrays — must equal PINManager.verifierSize (53).
@@ -177,10 +177,10 @@ final class AppLayerConfig {
     }
 
     private func ensureVerifiersPadded() {
-        while self.sealedNormalVerifiers.count < Self.maxVerifierCount {
+        while self.sealedNormalVerifiers.count < Self.maxDepthCount {
             self.sealedNormalVerifiers.append(Self.verifierFiller())
         }
-        while self.sealedDuressVerifiers.count < Self.maxVerifierCount {
+        while self.sealedDuressVerifiers.count < Self.maxDepthCount {
             self.sealedDuressVerifiers.append(Self.verifierFiller())
         }
     }
@@ -217,7 +217,7 @@ final class AppLayerConfig {
     }
 
     static func verifierFillerArray() -> [Data] {
-        (0..<maxVerifierCount).map { _ in Self.verifierFiller() }
+        (0..<maxDepthCount).map { _ in Self.verifierFiller() }
     }
 
     /// Returns a 32-entry array of encrypted `1` values — the default for a fresh install

@@ -598,9 +598,10 @@ extension VaultManager {
 
     // MARK: - Backup key filler baseline
 
-    /// Tops up the `BackupEncryptionKey` table to 32 filler rows, inserting whatever
-    /// is missing. Idempotent — a device already at or past 32 rows (whether from a
-    /// prior run of this function, or from claimed/migrated rows) does nothing.
+    /// Tops up the `BackupEncryptionKey` table to `AppLayerConfig.maxDepthCount` filler
+    /// rows, inserting whatever is missing. Idempotent — a device already at or past that
+    /// count (whether from a prior run of this function, or from claimed/migrated rows)
+    /// does nothing.
     ///
     /// Filler rows carry `depth`, `deletionToken`, and `encryptedPayload` as plain
     /// `Data.randomBytes` of the correct fixed length — never run through a real
@@ -625,7 +626,7 @@ extension VaultManager {
     /// growth past 32 is accepted as simpler than reusing `VaultEntry`'s cap-and-evict
     /// shape for a population that grows this much more slowly.
     func ensureBackupKeyFillerRows() {
-        let target = 32
+        let target = AppLayerConfig.maxDepthCount
         guard let count = try? self.modelContext.fetchCount(FetchDescriptor<BackupEncryptionKey>()),
               count < target
         else { return }
@@ -802,7 +803,7 @@ extension VaultManager {
     /// One slot per depth so a slot's presence or absence never varies the file's
     /// total length — the same reasoning as `DepthCodec`, applied to this file's own
     /// format rather than to `Contact.Profile`'s depth fields. `slotCount` reuses
-    /// `AppLayerConfig.maxVerifierCount` deliberately, not as a borrowed number: that
+    /// `AppLayerConfig.maxDepthCount` deliberately, not as a borrowed number: that
     /// constant is the actual, enforced ceiling on nesting in this codebase — the
     /// verifier arrays themselves no-op past it — confirmed independently by
     /// `DepthCodec`'s own doc comment, which calls it out as "the real structural
@@ -824,7 +825,7 @@ extension VaultManager {
     /// inspected in isolation) — random filler is chosen for consistency with the
     /// rest of Secure Mode, not because this format specifically requires it.
     private enum ExportMetaSlotCodec {
-        static let slotCount:     Int = AppLayerConfig.maxVerifierCount
+        static let slotCount:     Int = AppLayerConfig.maxDepthCount
         static let slotPlainSize: Int = 28
 
         private static let presenceTag: UInt8 = 0xA5

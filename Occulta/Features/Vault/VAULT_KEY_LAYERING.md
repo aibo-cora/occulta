@@ -136,7 +136,7 @@ description below is accurate for *that* type today, just not for a contacts-sid
 `LayerStore` (`SecureMode+LayerStore.swift`, `LayerStore.md`) is already a per-depth fixed-width
 container, shipped, currently holding sensitive contacts:
 
-- **32 slots**, tied to `AppLayerConfig.maxVerifierCount` so file size and verifier-array length leak
+- **32 slots**, tied to `AppLayerConfig.maxDepthCount` so file size and verifier-array length leak
   no more than each other. One slot per activation layer, assigned via `sealedBlobSlots`.
 - **`slotPlaintextSize = 32 KB`, fixed.** Every slot — real payload or random filler — seals to
   exactly that length, so the file is always `32 × (32 KB + 28)` bytes regardless of contents.
@@ -238,7 +238,7 @@ with any AAD at all, so this was a genuinely new pattern here, not a reuse of an
 Deliberately excludes `formatVersion` — that already lives inside the sealed plaintext (item 3's
 byte 0–1) and is checked there post-decryption; a slot-swap attack moves ciphertext between two slots
 written at the same format version, so slot-index binding alone is what stops it. Its 32-slot range is
-its own constant, not `AppLayerConfig.maxVerifierCount` — the two coincide today (one BEK slot per
+its own constant, not `AppLayerConfig.maxDepthCount` — the two coincide today (one BEK slot per
 depth, one verifier per depth) but reusing that constant would make BEK key material depend invisibly
 on a verifier-array-sizing decision made for unrelated reasons elsewhere. Tested directly:
 `AES.GCM.seal` under slot 2's AAD, then `.open` under slot 0's, throws — the actual property this

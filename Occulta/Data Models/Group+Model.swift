@@ -53,7 +53,7 @@ final class Group {
     /// correlation with other observable events at sub-second resolution.
     var encryptedCreatedAt: Data?
 
-    /// Fixed capacity per layer, matching AppLayerConfig.maxVerifierCount.
+    /// Fixed capacity per layer, matching AppLayerConfig.maxDepthCount.
     static let slotCount = 32
 
     /// Padded plaintext size for member identifiers.
@@ -67,7 +67,7 @@ final class Group {
     static let slotSize = 156
 
     /// Total depths supported: depth 0 (real) plus depths 1...31 (duress). Matches
-    /// `AppLayerConfig.maxVerifierCount`, the system-wide cap on total layers — group
+    /// `AppLayerConfig.maxDepthCount`, the system-wide cap on total layers — group
     /// membership storage must cover exactly as many depths as the rest of Secure Mode
     /// can create, no more and no less. Coincidentally equal to `slotCount` (member
     /// slots per depth) but a distinct concept.

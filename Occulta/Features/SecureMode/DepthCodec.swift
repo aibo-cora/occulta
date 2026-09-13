@@ -54,7 +54,7 @@ enum DepthCodec {
     static let sealedSize = 1 + 1 + 28
 
     /// Largest depth the payload byte carries literally. Far above
-    /// `AppLayerConfig.maxVerifierCount` (32), which is the real structural limit on
+    /// `AppLayerConfig.maxDepthCount` (32), which is the real structural limit on
     /// nesting — this is only the encoding's ceiling, deliberately not the domain's.
     static let maxEncodableDepth = 0xFD
 

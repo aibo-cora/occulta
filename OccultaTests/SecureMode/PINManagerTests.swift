@@ -822,8 +822,8 @@ struct VerifierArrayPaddingTests {
         ctx.insert(config)
         try ctx.save()
 
-        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
+        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxDepthCount)
+        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func afterConfigurePIN_normalVerifiers_still32() throws {
@@ -833,8 +833,8 @@ struct VerifierArrayPaddingTests {
 
         let ctx    = ModelContext(container)
         let config = try ctx.fetch(FetchDescriptor<AppLayerConfig>()).first!
-        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
+        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxDepthCount)
+        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func afterActivation_arrays_still32() async throws {
@@ -844,8 +844,8 @@ struct VerifierArrayPaddingTests {
 
         let ctx    = ModelContext(container)
         let config = try ctx.fetch(FetchDescriptor<AppLayerConfig>()).first!
-        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
+        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxDepthCount)
+        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
     @Test(.enabled(if: secureEnclaveAvailable())) func afterDeactivation_arrays_still32() async throws {
@@ -856,8 +856,8 @@ struct VerifierArrayPaddingTests {
 
         let ctx    = ModelContext(container)
         let config = try ctx.fetch(FetchDescriptor<AppLayerConfig>()).first!
-        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxVerifierCount)
-        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxVerifierCount)
+        #expect(config.sealedNormalVerifiers.count == AppLayerConfig.maxDepthCount)
+        #expect(config.sealedDuressVerifiers.count == AppLayerConfig.maxDepthCount)
     }
 
     @Test func fillerSize_matchesPINManagerVerifierSize() {

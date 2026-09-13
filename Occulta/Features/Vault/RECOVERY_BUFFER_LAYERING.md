@@ -496,7 +496,7 @@ decided; see item 9 for what's still open before that's settled.
      for "the largest a legacy distribution could ever be," a worst-case-capacity question a fixed
      file slot has to answer once; a filler-row baseline is a different question — "how many rows
      should exist regardless of activity," the same question item 14 answered as 32 for BEK by
-     analogy to `AppLayerConfig.maxVerifierCount`. This container has no equivalent existing constant
+     analogy to `AppLayerConfig.maxDepthCount`. This container has no equivalent existing constant
      to anchor to and needs its own answer, not a borrowed one — left open below, not decided here.
    - **`CustodyShard`.** Same treatment, keyed by the *trustee's own* depth per item 7's already-
      settled design — a filler-row baseline per trustee-depth closes item 7's own row-count-leak half
@@ -566,7 +566,7 @@ BEK, except shards arrive far more often than BEK setups do, so it would bite so
 Matching baseline to the true ceiling closes it outright: real usage can never exceed 255 (nothing could,
 by construction of the scheme), so prefilling to 255 makes row count constant across the entire range that
 could ever be real, not just up to an arbitrary smaller number. Cost, stated plainly: up to 255 filler rows
-× `AppLayerConfig.maxVerifierCount` (32) possible depths = up to 8,160 filler rows for this one piece,
+× `AppLayerConfig.maxDepthCount` (32) possible depths = up to 8,160 filler rows for this one piece,
 created once at first launch — heavier than every other baseline in this design, and worth it only because
 the alternative doesn't actually deliver what a baseline is for.
 

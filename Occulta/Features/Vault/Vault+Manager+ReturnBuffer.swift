@@ -270,7 +270,7 @@ extension VaultManager {
     /// `depth` lives inside the encrypted payload, so it cannot be pre-assigned per depth the
     /// way BEK's local-key-sealed `depth` column can — filler here is anonymous until claimed).
     /// Falls back to inserting a fresh row only if the pool is somehow exhausted — should not
-    /// happen given the pool is sized to the worst case (255 × `AppLayerConfig.maxVerifierCount`),
+    /// happen given the pool is sized to the worst case (255 × `AppLayerConfig.maxDepthCount`),
     /// but fails open into "insert" rather than "throw" so a shard is never lost to an
     /// under-provisioned pool.
     private func claimBEKRestoreFillerRow(usingKey key: SymmetricKey) throws -> ReconstructShard {

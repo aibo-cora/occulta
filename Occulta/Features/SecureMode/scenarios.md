@@ -548,7 +548,7 @@ PIN is answered.
 
 ### 15.9 `AppLayerConfig` always present
 **Pre-state:** Fresh install
-**Result:** `init()` creates `AppLayerConfig` if absent. All `sealedNormalVerifiers` and `sealedDuressVerifiers` padded to `maxVerifierCount` with random filler of identical byte size. `persistedDepth` and `pinEnabled` both written immediately — always non-nil regardless of whether a PIN is ever configured.
+**Result:** `init()` creates `AppLayerConfig` if absent. All `sealedNormalVerifiers` and `sealedDuressVerifiers` padded to `maxDepthCount` with random filler of identical byte size. `persistedDepth` and `pinEnabled` both written immediately — always non-nil regardless of whether a PIN is ever configured.
 
 ### 15.10 File protection re-applied after WAL merge
 **Result:** `OccultaApp` listens to `NSManagedObjectContextDidSaveObjectIDsNotification`. On each save, `reapplyFileProtection()` stamps `.completeFileProtection` on the main `.sqlite`, `-wal`, and `-shm` files. Sidecar files recreated by SwiftData always receive `complete` protection before the next read. (S3/S4 fix)

@@ -111,7 +111,7 @@ extension Manager {
             // MARK: - Constants
 
             /// Number of fixed slots in the store file.
-            /// Must equal AppLayerConfig.maxVerifierCount so neither the file size
+            /// Must equal AppLayerConfig.maxDepthCount so neither the file size
             /// nor the verifier array length leaks more information than the other.
             static let slotCount: Int = 32
 
