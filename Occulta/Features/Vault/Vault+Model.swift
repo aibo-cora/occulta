@@ -29,7 +29,7 @@ import CryptoKit
 /// Privacy model — encryption at rest:
 /// - `id` (plaintext) — random, bound into AAD. Present even though there's only ever one row, so
 ///   this model doesn't need a second AAD convention alongside every other one in the codebase.
-/// - `encryptedPayload` — sealed `[PendingVaultRestore]`, under the restore vault key
+/// - `encryptedPayload` — sealed `[PendingShamirSecretRestore]`, under the restore vault key
 ///   (`KeyManagerProtocol.deriveRestoreVaultKey()`) — the same non-biometric, device-unlock-only key
 ///   domain `ReconstructShard`'s BEK-restore population used before this revision, chosen so arming
 ///   and shard collection both keep working while the vault is locked.
@@ -48,7 +48,7 @@ final class Vault {
     /// Random identifier. Bound into AAD; mutating invalidates decryption.
     var id: UUID = UUID()
 
-    /// Sealed `[PendingVaultRestore]` — exactly 32 elements, index = depth: nonce(12B) ∥ ciphertext ∥
+    /// Sealed `[PendingShamirSecretRestore]` — exactly 32 elements, index = depth: nonce(12B) ∥ ciphertext ∥
     /// tag(16B) — CryptoKit `.combined`. AAD = `aad()`. Key = `KeyManagerProtocol.deriveRestoreVaultKey()`.
     /// `nil` only before the very first `Vault` row is ever written.
     var encryptedPayload: Data? = nil
@@ -72,31 +72,26 @@ final class Vault {
     }
 }
 
-/// One depth's restore-arming and shard-collection state — one element of the `[PendingVaultRestore]`
+/// One depth's restore-arming and shard-collection state — one element of the `[PendingShamirSecretRestore]`
 /// sealed inside `Vault.encryptedPayload`, at the index matching its depth. Not a model: array position
 /// replaces what a per-row `depth` column would otherwise need to hold.
 ///
 /// Transcribed from `RECOVERY_BUFFER_LAYERING.md` §6 item 9.2 as written; this type's own fields
 /// haven't been through the same field-by-field review `Vault` itself just went through — expect
 /// this to change.
-struct PendingVaultRestore: Codable {
-    /// `nil` = not currently armed at this depth. Presence-tag + fixed value, always both, mirrors
-    /// `CustodyShard`'s own `expiresAt` convention.
-    var armedAt: Date? = nil
-    /// The BEK `distributionID` this depth is currently armed against. At most one distribution can
-    /// be armed per depth at a time (`storePendingRestore`'s own refusal rule), so this lives once
-    /// per depth-entry rather than once per shard slot.
+struct PendingShamirSecretRestore: Codable {
+    /// The secret's `distributionID` this depth is currently collecting shares against. Known only
+    /// once the first shard arrives — a fresh `.occbak` file is opaque until reconstruction, so
+    /// nothing before that point can read it out. `nil` means either genuinely nothing collected yet,
+    /// or a restore hasn't been started — this struct alone no longer distinguishes the two; see the
+    /// open question this leaves below.
     var distributionID: UUID? = nil
-    /// The already-sealed `.occbak` bytes, padded to `VAULT_KEY_LAYERING.md` item 2's per-entry
-    /// ceiling. This container never decrypts them — only holds them until `VAULT_KEY_LAYERING.md`
-    /// §7 Stage 5 reconstructs the BEK and hands them to `importBackup`.
-    var encryptedSnapshot: Data? = nil
     /// Exactly 255 elements, always — the Shamir ceiling, so no genuine distribution can ever be
     /// truncated by it. Empty and filled slots are indistinguishable from outside `Vault`'s own seal.
     var shards: [PendingRestoreShardSlot]
 }
 
-/// One collected shard, or an empty slot — one element of `PendingVaultRestore.shards`.
+/// One collected shard, or an empty slot — one element of `PendingShamirSecretRestore.shards`.
 struct PendingRestoreShardSlot: Codable {
     var signedAttribute:  SignedAttribute? = nil
     var senderIdentifier: String?          = nil
