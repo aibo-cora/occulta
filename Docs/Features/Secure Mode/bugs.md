@@ -7221,7 +7221,7 @@ active anywhere on the device, without any key (Bug 122). A depth-scoped cap wou
 was rejected — not for a security reason, but because it needs its own UX for what happens at the boundary,
 judged not worth building for a concern this item's own 2026-08-24 reconsideration already downgraded to
 "nice to have." So: no cap, ever, on this population — cost is now materially higher than when this item
-was last sized (~211 KB per unbounded row under the new model, not a few hundred bytes), but still an
+was last sized (~215 KB per unbounded row under the new model, not a few hundred bytes), but still an
 accepted trade against the alternative, not an oversight.
 
 ### 3 — The entire vault plaintext is left in freed heap on export

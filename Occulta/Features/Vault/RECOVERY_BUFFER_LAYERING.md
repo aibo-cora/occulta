@@ -886,10 +886,13 @@ over it, caught before it shipped; `Data?` (sealed, padded, fixed-width once the
 corrected shape.
 
 **Cost of this shape, once shards moved into `Data?`: this is a large row, not a small one.** Sizing the
-255-slot `PendingRestoreShardSlot` array precisely (846 bytes/slot: presence tag + a 404-byte
+255-slot `PendingRestoreShardSlot` array precisely (862 bytes/slot: presence tag + a 412-byte
 `SignedAttribute`, reusing `CustodyShard`'s own §6 item 7 sizing, + 36-byte sender identifier + a second,
-optional 404-byte attestation) gives **≈211 KB per row**, almost entirely `shards` — `attributeID` and
-`deletionToken` combined cost under 100 bytes.
+optional 412-byte attestation) gives **≈215 KB per row**, almost entirely `shards` — `attributeID` and
+`deletionToken` combined cost under 100 bytes. (Corrected 2026-09-13 from an earlier ≈211 KB/404-byte
+figure — `signature` was sized for a raw r‖s signature; `KeyManagerProtocol.signData(_:)` actually returns
+DER, and this subsystem's own `attestationFiller` already sizes that at 72 bytes, not 64. See
+`Vault+Model.swift`'s `SignedAttributeCodec` doc comment for the full correction.)
 
 **Consequence: `Vault`'s "one seal covers everything" property — the mechanism that closed `bugs.md` Bug
 120 for this container as a side effect of the storage shape — does not survive this move.** Independent
@@ -915,7 +918,7 @@ that cost — sizing it at a few candidate values: 10 rows ≈ 2.16 MB, 32 (matc
 **A counting oracle found while working through the cap question, not yet resolved, and this is the most
 important finding in this revision.** Capping only the *orphaned* population (evict oldest orphaned row
 past N, leave live rows uncapped) leaves live rows exactly as exploitable as `bugs.md` Bug 96 item 2 already
-found for the old design — except now each junk row costs ≈211 KB instead of a few hundred bytes, since
+found for the old design — except now each junk row costs ≈215 KB instead of a few hundred bytes, since
 every `attributeID` that's never been seen before claims a full row. Capping *live* rows instead closes that,
 but reopens something worse: **§3 of this document already named the exact failure mode** — *"a cap on a
 shared buffer is a cross-layer denial channel"* — and generalizing this container past depth-indexing
@@ -938,7 +941,7 @@ shard's sender was visible at on arrival* instead, which is close to reintroduci
 revision specifically removed to generalize in the first place, just relocated rather than eliminated.
 
 **Decision, 2026-09-13: no cap, for now.** `PendingShamirSecretRestore` rows are genuinely unbounded —
-`bugs.md` Bug 96 item 2 stays open, and is materially worse than before this revision (≈211 KB per junk
+`bugs.md` Bug 96 item 2 stays open, and is materially worse than before this revision (≈215 KB per junk
 row instead of a few hundred bytes in the old `ReconstructShard`-based design). Deliberate, not an
 oversight: the tension above needs its own resolution before any cap can be adopted safely, and shipping
 one without resolving it would trade a resource-exhaustion bug for a duress-detection oracle, which is a
@@ -999,7 +1002,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | fixed — every op ships an attestation, real or filler |
 | 95 | One poisoned shard permanently blocks legitimate recovery | open — Bug 94 remedy 2 narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
 | 96 (item 1) | Two traps on decoded content | fixed |
-| 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈211 KB, not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
+| 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈215 KB, not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
 | 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |

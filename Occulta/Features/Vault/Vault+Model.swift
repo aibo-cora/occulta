@@ -171,12 +171,13 @@ extension PendingShamirSecretRestore {
     /// byte 2–...  shardCapacity × slot  — one PendingRestoreShardSlot each, in order
     /// ```
     ///
-    /// Per-slot layout (`slotSize` = 846 bytes):
+    /// Per-slot layout (`slotSize` = 862 bytes, following `SignedAttributeCodec.size`'s
+    /// own 2026-09-13 correction from 404 to 412 — see that type's doc comment):
     /// ```
     /// byte 0        signedAttribute presence — 1 = real shard, 0 = filler
-    /// byte 1–404    signedAttribute          — 404-byte SignedAttributeCodec;
+    /// byte 1–412    signedAttribute          — 412-byte SignedAttributeCodec;
     ///                                          random bytes when byte 0 is 0
-    /// byte 405–440  senderIdentifier         — 36-byte UTF-8 UUID string;
+    /// byte 413–448  senderIdentifier         — 36-byte UTF-8 UUID string;
     ///                                          random bytes when byte 0 is 0.
     ///                                          Unlike `PayloadCodec.ShardRecord.
     ///                                          contactIdentifier` (the closest
@@ -186,12 +187,12 @@ extension PendingShamirSecretRestore {
     ///                                          `RECOVERY_BUFFER_LAYERING.md` §6
     ///                                          item 9.3 — open whether to tighten
     ///                                          this to 16 bytes later.
-    /// byte 441      attestation presence     — 1 = present, 0 = absent —
+    /// byte 449      attestation presence     — 1 = present, 0 = absent —
     ///                                          independent of byte 0: a shard can
     ///                                          arrive before its attestation does
     ///                                          (Bug 94 remedy 2)
-    /// byte 442–845  attestation              — 404-byte SignedAttributeCodec;
-    ///                                          random bytes when byte 441 is 0
+    /// byte 450–861  attestation              — 412-byte SignedAttributeCodec;
+    ///                                          random bytes when byte 449 is 0
     /// ```
     enum ShardsCodec {
 
@@ -222,24 +223,37 @@ extension PendingShamirSecretRestore {
     /// secret kinds `PendingShamirSecretRestore.attributeID` currently names). A
     /// future secret kind of a different size breaks silently through this codec
     /// rather than failing loudly — worth a `value.count == 33` guard once `encode`
-    /// is actually written, not yet done here.
+    /// is actually written, not yet done here. `.attestation`'s own `value` is a
+    /// 32-byte SHA-256 hash, not a 33-byte share (`ShardCustody+Manager.swift`'s
+    /// `attestation(for:retainedKeysByFingerprint:)`) — one byte narrower than the
+    /// slot below, so it fits with a single byte to spare, not a second case to
+    /// handle.
     ///
-    /// Layout (`size` = 404 bytes):
+    /// Layout (`size` = 412 bytes — corrected 2026-09-13, was 404: `signature` was
+    /// sized assuming a raw r‖s signature, but `KeyManagerProtocol.signData(_:)`
+    /// returns a genuinely DER-encoded one
+    /// (`Key+Manager.swift`'s own doc comment says so directly), and this exact
+    /// subsystem already has an established size for that —
+    /// `ShardCustody+Manager.swift`'s `attestationFiller` sizes its filler signature
+    /// at 72 bytes, not 64, specifically to match the real thing):
     /// ```
     /// byte 0–15    id            — raw UUID bytes
     /// byte 16–271  label         — UTF-8, fixed-width, padded/truncated to 256
     /// byte 272–304 value         — GF(2^8) share: 32-byte value + 1-byte x-coordinate
     /// byte 305     category      — UInt8 tag, exhaustive over all 10 SignedAttribute.Category cases
-    /// byte 306–369 signature     — raw ECDSA-P256 r‖s, not DER
-    /// byte 370–377 createdAt     — UInt64 big-endian epoch seconds
-    /// byte 378     expiresAt tag — 1 = present, 0 = absent
-    /// byte 379–386 expiresAt     — UInt64 big-endian epoch seconds, zero-filled if absent
-    /// byte 387     entryID tag   — 1 = present, 0 = absent
-    /// byte 388–403 entryID       — raw UUID bytes, zero-filled if absent
+    /// byte 306–377 signature     — DER-encoded ECDSA-P256, padded/truncated to 72
+    ///                              (DER is self-delimiting — its own SEQUENCE length
+    ///                              says how many of these 72 bytes are real, so no
+    ///                              separate length field is needed)
+    /// byte 378–385 createdAt     — UInt64 big-endian epoch seconds
+    /// byte 386     expiresAt tag — 1 = present, 0 = absent
+    /// byte 387–394 expiresAt     — UInt64 big-endian epoch seconds, zero-filled if absent
+    /// byte 395     entryID tag   — 1 = present, 0 = absent
+    /// byte 396–411 entryID       — raw UUID bytes, zero-filled if absent
     /// ```
     enum SignedAttributeCodec {
 
-        static let size: Int = 16 + 256 + 33 + 1 + 64 + 8 + 1 + 8 + 1 + 16
+        static let size: Int = 16 + 256 + 33 + 1 + 72 + 8 + 1 + 8 + 1 + 16
 
         static func encode(_ attribute: SignedAttribute) throws -> Data {
             fatalError("SignedAttributeCodec.encode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
