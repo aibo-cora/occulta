@@ -191,7 +191,7 @@ before then — see §6's anti-pairings.
 |---|---|---|
 | 3 | Sender-visibility gate on inbound processing (§2, concrete design in §2.1, 2026-09-11), with the drop/defer decision from §7 | a shard from a contact hidden at the current depth is not banked; a trustee's retry lands when the user returns to their depth |
 | 4 | Per-depth restore state: arming, sealed backup contents, shard buffer, per-depth cancel | arming in duress does not block depth 0; cancel clears only its own layer |
-| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11, §6 item 9: rows, not a file; superseded again 2026-09-12, §6 item 9.2: one sealed `[PendingVaultRestore]` array on a new `Vault` model, not per-depth rows.** Item 9.2 designs all three pieces (arming, shard slots, `CustodyShard` unaffected) as one entity; Bug 120 closes for the whole container as a side effect of the storage shape, not a separate mechanism. Orphan-on-deactivation wiring and the codec's exact byte layout remain open — see 9.2's own closing list. Implementation still reflects the superseded 9.1 shape, not yet rebuilt. |
+| — | ~~As a fixed-slot file~~ — **superseded 2026-09-11 (§6 item 9: rows, not a file), 2026-09-12 (§6 item 9.2: one sealed array on a new `Vault` model), and 2026-09-13 (§6 item 9.3: depth-indexing abandoned outright — `PendingShamirSecretRestore` becomes its own `@Model`, keyed by the secret's own identity, generalizing past BEK).** 9.3 also found a live, unresolved counting oracle (`bugs.md` Bug 122) — no cap exists on this container as of 9.3, deliberately, pending that resolution. Implementation still reflects the superseded 9.1 shape, not yet rebuilt. |
 | 6 | Restore the truthful acknowledgment — each layer answers about its own slot | at every depth the reply is that layer's truth and matches what a real session there produces |
 
 Stage 5 (completion) lives in `VAULT_KEY_LAYERING.md` §7 — it's the one step that reads this
@@ -831,6 +831,120 @@ layout of the sealed encoding (shape specified, offsets are not); the filler-row
 from 9.1 is now moot outright (there is only one row, nothing to shuffle); §8's migration still needs
 rewriting, now for "claim `pendingRestores[0]`" rather than either "slot" or "row."
 
+### 9.3 Revised again, 2026-09-13 — depth-indexing abandoned entirely; a counting oracle found and left open
+
+**Supersedes 9.2's `[PendingVaultRestore]`-array-inside-`Vault` shape outright, not just the shard-slot
+half this time.** 9.2 fixed `ReconstructShard`'s depth-attribution problem by moving to one sealed array,
+indexed by depth. That still assumed every secret being restored *has* a depth — true for BEK, not true in
+general. A per-entry PEK restore is keyed by a `VaultEntry.id`, with no relationship to duress depth at
+all; there is no slot in a 32-element depth-indexed array for it to occupy. Renaming `PendingVaultRestore`
+to `PendingShamirSecretRestore` (below) committed to generalizing past BEK; the depth-indexed array never
+actually could.
+
+**The restore flow itself was reordered first, and that's what let `encryptedSnapshot` disappear.**
+Original complaint: arming conflated two things — "start accepting shards" and "hold the `.occbak` file's
+bytes for the entire waiting window," which could be days. Proposed fix: an explicit "start shard return"
+action begins shard collection with no file present at all; the user opens the `.occbak` file only once
+enough shares have arrived, and reconstruction (`Backup.reconstruct`'s GCM-tag-against-the-real-file check,
+the actual defense against Bug 95's poisoned-share concern) happens synchronously at that moment, file and
+shares both in hand together. The oracle that check provides is not lost — it fires later, once, instead of
+being held open for days. Consequence: `encryptedSnapshot` (33,632 of `PendingVaultRestore`'s ~42,111
+bytes-per-depth in 9.2's own sizing) is not needed at all; nothing in the collection phase ever touches
+vault-entry content. `armedAt` was separately dropped — nothing in the reconstruction path reads a
+timestamp, only whether collection is happening, and that turned out to already be redundant with other
+state once traced through.
+
+**Generalizing past depth means keying by the secret's own identity instead — `PendingShamirSecretRestore`
+becomes a real `@Model`, not a struct inside `Vault`'s array:**
+
+```swift
+@Model
+final class Vault {
+    var id: UUID = UUID()
+    @Relationship(deleteRule: .cascade, inverse: \PendingShamirSecretRestore.vault)
+    var pendingRestores: [PendingShamirSecretRestore] = []
+}
+
+@Model
+final class PendingShamirSecretRestore {
+    var id: UUID = UUID()
+    var attributeID:   Data? = nil   // local key — a BEK distributionID, a VaultEntry.id, or any future kind
+    var deletionToken: Data? = nil   // local key — live/orphaned sentinel, same convention as VaultEntry/BackupEncryptionKey
+    var shards:        Data? = nil   // restore vault key — sealed, padded [PendingRestoreShardSlot], 255 elements once decoded
+    var vault: Vault?
+}
+```
+
+`attributeID`/`deletionToken` sealed under the **local key**, matching `BackupEncryptionKey`'s own forced
+split exactly — whatever eventually orphans these rows runs from `Manager.Security`, which never derives
+the restore vault key. `shards` stays under the restore vault key, the same domain the shard content itself
+already needed. `deletionToken` marks the moment the secret this row tracks is consumed (successfully
+reconstructed) — orphaned in place, never deleted, same convention as every other soft-delete model in this
+codebase. `shards` was briefly, mistakenly sketched as a plain `[PendingRestoreShardSlot]` — a real
+stored-property array holding raw share bytes and sender identity with none of this app's own encryption
+over it, caught before it shipped; `Data?` (sealed, padded, fixed-width once the codec exists) is the
+corrected shape.
+
+**Cost of this shape, once shards moved into `Data?`: this is a large row, not a small one.** Sizing the
+255-slot `PendingRestoreShardSlot` array precisely (846 bytes/slot: presence tag + a 404-byte
+`SignedAttribute`, reusing `CustodyShard`'s own §6 item 7 sizing, + 36-byte sender identifier + a second,
+optional 404-byte attestation) gives **≈211 KB per row**, almost entirely `shards` — `attributeID` and
+`deletionToken` combined cost under 100 bytes.
+
+**Consequence: `Vault`'s "one seal covers everything" property — the mechanism that closed `bugs.md` Bug
+120 for this container as a side effect of the storage shape — does not survive this move.** Independent
+rows mean a write to one `PendingShamirSecretRestore` no longer touches any other. Two genuinely different
+leaks were conflated while working through this, worth keeping separate:
+- **Row count, at a single point in time** (how many are currently live vs. orphaned) — closed by
+  orphan-in-place alone. A keyless examiner sees N total rows and cannot tell how many are live without the
+  local key to read `deletionToken`.
+- **Which row's bytes change, across multiple snapshots over time** — Bug 120's actual claim, and
+  orphan-in-place does nothing for it. A byte-diff between two captures shows exactly which row moved, no
+  key required at all, independent of what that row's content means.
+
+The fix for the second one is the same mechanism the old, deleted array file already used and
+`VAULT_KEY_LAYERING.md` item 7 already named: reseal *every* row, fresh nonce, on *every* write, so the
+ciphertext changes in full regardless of which row actually changed. That still works here — but the old
+array's version of this was cheap specifically because the population was fixed at exactly 32 slots forever.
+`PendingShamirSecretRestore` rows are not fixed — they accumulate (orphaned, never deleted), so
+reseal-everything gets more expensive the longer the device has been used, not a flat cost. A cap on total
+row count (mirroring `VaultEntry`'s own 50-row cap-and-evict, oldest orphaned row evicted first) would bound
+that cost — sizing it at a few candidate values: 10 rows ≈ 2.16 MB, 32 (matching BEK's own baseline) ≈
+6.91 MB, 50 (matching `VaultEntry`'s cap) ≈ 10.79 MB. Not adopted — see below.
+
+**A counting oracle found while working through the cap question, not yet resolved, and this is the most
+important finding in this revision.** Capping only the *orphaned* population (evict oldest orphaned row
+past N, leave live rows uncapped) leaves live rows exactly as exploitable as `bugs.md` Bug 96 item 2 already
+found for the old design — except now each junk row costs ≈211 KB instead of a few hundred bytes, since
+every `attributeID` that's never been seen before claims a full row. Capping *live* rows instead closes that,
+but reopens something worse: **§3 of this document already named the exact failure mode** — *"a cap on a
+shared buffer is a cross-layer denial channel"* — and generalizing this container past depth-indexing
+(the whole point of this revision) removed the per-depth isolation that made capping safe under the
+`Vault`-array shape. Concretely: if a live cap of N exists and one genuine restore is already live (anywhere
+on the device, any depth), a coercer holding the phone can send N distinct-`attributeID` junk shards from
+identities visible at their own depth and simply count how many `PendingShamirSecretRestore` rows exist
+afterward — no key needed, no app-level acknowledgment needed, a raw row count on the physical device is
+enough. Fewer new rows than junk shards sent means a live restore already existed before the coercer
+started — which is close to the exact question this entire layering effort exists to keep unanswerable.
+This is *sharper* than §3's original "denial channel" framing, which was about an attacker destroying a
+real recovery's shares — this is a *counting* channel, revealing whether one exists at all, without
+touching it. Filed as `bugs.md` Bug 122.
+
+**The underlying tension, stated plainly, not resolved:** generalizing past depth (keying by the secret's
+own identity, so non-BEK restores are representable at all) and preserving per-depth isolation (the
+precondition §3 already requires for any cap to be safe) pull in opposite directions. A cap keyed by
+`attributeID` has no isolation to fall back on; restoring isolation means partitioning by *the depth a
+shard's sender was visible at on arrival* instead, which is close to reintroducing a depth field this
+revision specifically removed to generalize in the first place, just relocated rather than eliminated.
+
+**Decision, 2026-09-13: no cap, for now.** `PendingShamirSecretRestore` rows are genuinely unbounded —
+`bugs.md` Bug 96 item 2 stays open, and is materially worse than before this revision (≈211 KB per junk
+row instead of a few hundred bytes in the old `ReconstructShard`-based design). Deliberate, not an
+oversight: the tension above needs its own resolution before any cap can be adopted safely, and shipping
+one without resolving it would trade a resource-exhaustion bug for a duress-detection oracle, which is a
+worse trade. Reseal-everything-on-every-write (Bug 120's fix for this container) is likewise not yet
+adopted, pending the same open cost question a cap would have bounded.
+
 **Anti-pairings:**
 - **Do not cap the restore shard buffer before the buffer is per-depth.** §3. Most likely to be picked
   up as obvious housekeeping by someone who hasn't read the reasoning — it introduces a cross-layer
@@ -857,7 +971,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | fixed — every op ships an attestation, real or filler |
 | 95 | One poisoned shard permanently blocks legitimate recovery | open — Bug 94 remedy 2 narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
 | 96 (item 1) | Two traps on decoded content | fixed |
-| 96 (item 2) | Restore shard buffer unbounded | open — cap falls out of §3; concrete number (255, the Shamir ceiling) specified in §6 item 9.1, now expressed as a fixed array size in §6 item 9.2, 2026-09-12; not yet built |
+| 96 (item 2) | Restore shard buffer unbounded | open — worse as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈211 KB, not a few hundred bytes, and capping it directly reopens Bug 122's counting oracle. No cap adopted; the underlying tension (generalizing past depth vs. the per-depth isolation capping needs) is unresolved. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
 | 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |

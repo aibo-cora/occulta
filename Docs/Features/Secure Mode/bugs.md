@@ -10038,3 +10038,78 @@ refusal already treats an irreversible state change as something to confirm rath
 ### Guard
 
 None — not built.
+
+---
+
+## Bug 122 — A cap on `PendingShamirSecretRestore` would let a coercer count how many restores are live, without any key
+
+**Status:** Open — a design constraint to hold to, not a defect in shipped behavior. Filed 2026-09-13,
+found while sizing a cap for `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's `PendingShamirSecretRestore`
+model. **Not currently exploitable, and there is nothing to exploit yet:** `PendingShamirSecretRestore` has
+no working implementation at all — no cap, no read/write logic, nothing beyond the bare model definition
+in `Vault+Model.swift`. This entry exists so that whoever eventually builds a cap on this container doesn't
+introduce this specific hazard, not to report something happening in the app today.
+
+**Target:** None — blocks adopting any cap on this container, whenever that's attempted; not tied to a
+release.
+
+### Severity: High, if a cap is ever added the naive way (deniability break, same class as Bug 99)
+
+Doesn't expose vault contents. Answers the same question Bug 99 already named as the one thing this whole
+layering effort exists to keep unanswerable: *is a restore genuinely in progress on this device right now?*
+Unlike Bug 99, this would need no shard delivery at all to test — just a row count. Stated as a
+conditional (*if* a cap is added without resolving the isolation question below) because that's exactly
+what it is right now — a condition that hasn't occurred, on a mechanism that hasn't been built.
+
+### What happens
+
+§6 item 9.3 generalized BEK-restore tracking past depth-indexing: `PendingShamirSecretRestore` is now keyed
+by the secret's own identity (`attributeID`) rather than by which of 32 depths it belongs to, so a
+per-entry PEK restore (keyed by `VaultEntry.id`) can be tracked the same way a BEK restore is. That
+generalization is real progress, but it removed something the depth-indexed design provided for free:
+per-depth isolation, the exact precondition `RECOVERY_BUFFER_LAYERING.md` §3 already requires before any
+cap on this kind of container is safe (*"a cap on a shared buffer is a cross-layer denial channel... safe
+only once the buffer is per-depth"*).
+
+Suppose a cap of N live rows exists, to bound Bug 96 item 2's resource-exhaustion problem. Suppose one
+genuine restore is already live, anywhere on the device, at any depth. A coercer holding the phone:
+
+1. Re-pairs N distinct identities with the victim's phone at their own duress depth — free, they're already
+   holding it (Bug 99's own step 1, reused here).
+2. Sends N `.handback` shard operations, each carrying a different, never-seen-before `attributeID`
+   (garbage `SignedAttribute`s work fine — see the earlier finding on Branch B attestation requiring no
+   real prior distribution).
+3. Extracts the device (physical custody is already assumed) and counts `PendingShamirSecretRestore` rows
+   directly from the raw SQLite file. No key needed — row count is always plaintext.
+
+If fewer than N new rows exist, a live row already occupied one of the N slots before the coercer started
+— meaning a restore is genuinely in progress somewhere on this device. If exactly N new rows exist, no
+prior restore was live. Either answer is the thing this design exists to keep the coercer from ever
+learning.
+
+### Why this is sharper than the denial-channel framing §3 already names
+
+§3's own concern was an attacker *destroying* a real recovery's collected shares by flooding the shared
+buffer — a denial attack. This doesn't destroy anything and needs the victim's restore to survive intact;
+it only *counts*. A coercer never needs to identify which row is the real one, decrypt anything, or prevent
+the real restore from completing — they only need to know whether it exists at all, which the cap's own
+admission behavior answers for free.
+
+### Remedy
+
+None adopted. Two ways to close it, both with real costs, neither built:
+
+- **No cap at all** — the current state (`RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's explicit decision,
+  2026-09-13). Closes this bug by construction; leaves Bug 96 item 2 fully open, and worse than before this
+  container's own revision (~211 KB per unbounded junk row, not a few hundred bytes).
+- **Restore per-depth isolation** — partition the cap by the depth a shard's sender was visible at on
+  arrival, not by `attributeID`. Makes capping safe again the way it was under the depth-indexed design,
+  but reintroduces a depth-tagging concern this same revision removed specifically to generalize past
+  BEK — likely relocated, not eliminated.
+
+Whichever direction gets picked, it needs to be decided deliberately — shipping a cap without resolving
+this trades a resource-exhaustion bug for a deniability break, which is not a net improvement.
+
+### Guard
+
+None — not built. Tracked as `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3's own closing decision, unresolved.

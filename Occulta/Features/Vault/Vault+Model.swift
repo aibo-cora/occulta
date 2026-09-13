@@ -22,21 +22,14 @@ import CryptoKit
 // MARK: - Vault
 
 /// Singleton row — exactly one `Vault` instance ever exists. Holds device-wide vault state that
-/// doesn't belong to any one entry: today, the sealed per-depth restore-arming and shard-collection
-/// state `RECOVERY_BUFFER_LAYERING.md` §6 item 9.2 designs, replacing the earlier per-depth-row and
-/// shared-pool approaches that document's own §6 items 9/9.1 tried first.
+/// doesn't belong to any one entry: today, the parent side of the `PendingShamirSecretRestore`
+/// relationship below.
 ///
-/// Privacy model — encryption at rest:
-/// - `id` (plaintext) — random, bound into AAD. Present even though there's only ever one row, so
-///   this model doesn't need a second AAD convention alongside every other one in the codebase.
-/// - `encryptedPayload` — sealed `[PendingShamirSecretRestore]`, under the restore vault key
-///   (`KeyManagerProtocol.deriveRestoreVaultKey()`) — the same non-biometric, device-unlock-only key
-///   domain `ReconstructShard`'s BEK-restore population used before this revision, chosen so arming
-///   and shard collection both keep working while the vault is locked.
-/// - One seal covers the whole thing: any change to any depth's arming state or any shard slot
-///   reseals the entire array under a fresh nonce, so the ciphertext changes in full regardless of
-///   which depth or slot actually moved — closing `bugs.md` Bug 120 for this container as a side
-///   effect of the storage shape, not a separate mechanism.
+/// ⚠️ No longer the "one seal covers everything" shape `RECOVERY_BUFFER_LAYERING.md` §6 item 9.2
+/// describes — that relied on a single sealed blob so any change reseals the whole thing, closing
+/// `bugs.md` Bug 120 as a side effect. Moving to a real SwiftData relationship (independently-sealed
+/// child rows) walks back that property; a write to one `PendingShamirSecretRestore` row no longer
+/// touches any other. Not yet reconciled with the doc — flagging here so it isn't lost.
 ///
 /// Singleton discipline (fetch-or-create, exactly one row) is not yet written — needs its own
 /// helper mirroring `Manager.Security.requireConfig()`, nothing in SwiftData enforces it for free.
@@ -48,47 +41,105 @@ final class Vault {
     /// Random identifier. Bound into AAD; mutating invalidates decryption.
     var id: UUID = UUID()
 
-    /// Sealed `[PendingShamirSecretRestore]` — exactly 32 elements, index = depth: nonce(12B) ∥ ciphertext ∥
-    /// tag(16B) — CryptoKit `.combined`. AAD = `aad()`. Key = `KeyManagerProtocol.deriveRestoreVaultKey()`.
-    /// `nil` only before the very first `Vault` row is ever written.
-    var encryptedPayload: Data? = nil
+    @Relationship(deleteRule: .cascade, inverse: \PendingShamirSecretRestore.vault)
+    var pendingRestores: [PendingShamirSecretRestore] = []
 
     // MARK: Init
 
-    init(id: UUID = UUID(), encryptedPayload: Data? = nil) {
-        self.id               = id
-        self.encryptedPayload = encryptedPayload
+    init(id: UUID = UUID()) {
+        self.id = id
     }
 
     // MARK: AAD
 
-    /// Authenticated additional data for AES-GCM seal/open of `encryptedPayload`.
+    /// Authenticated additional data — kept for consistency with every other model's `aad()`, even
+    /// though `Vault` no longer has an `encryptedPayload` field of its own to bind it to.
     ///
     ///   id.uuidString (UTF-8)   — 36 bytes
-    ///
-    /// ⚠️ Sealed contract. Any change makes existing ciphertext unreadable.
     func aad() -> Data {
         self.id.uuidString.data(using: .utf8)!
     }
 }
 
-/// One depth's restore-arming and shard-collection state — one element of the `[PendingShamirSecretRestore]`
-/// sealed inside `Vault.encryptedPayload`, at the index matching its depth. Not a model: array position
-/// replaces what a per-row `depth` column would otherwise need to hold.
+// MARK: - PendingShamirSecretRestore
+
+/// One secret currently being restored from Shamir shares — BEK or otherwise (a per-entry PEK's own
+/// `VaultEntry.id` works identically). Keyed by the secret's own identity, not by depth, so this
+/// generalizes past BEK-restore, which the earlier per-depth-array design (§6 item 9.2 as originally
+/// written) could not.
 ///
-/// Transcribed from `RECOVERY_BUFFER_LAYERING.md` §6 item 9.2 as written; this type's own fields
-/// haven't been through the same field-by-field review `Vault` itself just went through — expect
-/// this to change.
-struct PendingShamirSecretRestore: Codable {
-    /// The secret's `distributionID` this depth is currently collecting shares against. Known only
-    /// once the first shard arrives — a fresh `.occbak` file is opaque until reconstruction, so
-    /// nothing before that point can read it out. `nil` means either genuinely nothing collected yet,
-    /// or a restore hasn't been started — this struct alone no longer distinguishes the two; see the
-    /// open question this leaves below.
-    var distributionID: UUID? = nil
-    /// Exactly 255 elements, always — the Shamir ceiling, so no genuine distribution can ever be
-    /// truncated by it. Empty and filled slots are indistinguishable from outside `Vault`'s own seal.
-    var shards: [PendingRestoreShardSlot]
+/// Privacy model — encryption at rest:
+/// - `id` (plaintext) — random, bound into AAD-like use elsewhere in the codebase; not itself bound
+///   to anything here since `attributeID`/`deletionToken` are sealed independently (see below).
+/// - `attributeID`, `deletionToken` — sealed under the **local key**
+///   (`Manager.Key().createHybridLocalEncryptionKey()`), not the restore vault key — the same forced
+///   split `BackupEncryptionKey.depth`/`.deletionToken` already uses: whatever eventually orphans
+///   these rows runs from `Manager.Security`, which never derives the restore vault key, only the
+///   ambient local key.
+/// - `shards` — sealed, padded `[PendingRestoreShardSlot]` (exactly 255 elements, fixed-width encoded
+///   then AES-GCM sealed as one blob), under the restore vault key
+///   (`KeyManagerProtocol.deriveRestoreVaultKey()`) — the same key domain the shard content itself
+///   needs, distinct from `attributeID`/`deletionToken`'s local-key domain above. The fixed-width
+///   codec itself (byte layout) is not yet written — this field's shape is settled, its encoding isn't.
+///
+/// Lifecycle: `deletionToken` flips from live to orphaned once the secret this row tracks has been
+/// consumed (successfully reconstructed) — never deleted, matching `VaultEntry`/`BackupEncryptionKey`'s
+/// own orphan-in-place convention exactly.
+///
+/// Open, not decided here: whether this needs the same eager-filler-baseline treatment
+/// `BackupEncryptionKey` got, so total row count (live + orphaned) doesn't reveal how many restores
+/// have ever happened — or whether, like `Contact.Profile`'s declined fix (Bug 112), this population
+/// is rare enough not to need it.
+@Model
+final class PendingShamirSecretRestore {
+
+    // MARK: Persisted fields
+
+    var id: UUID = UUID()
+
+    /// Encrypted — the secret's own identity: a BEK `distributionID`, a `VaultEntry.id` for a
+    /// per-entry PEK restore, or any future secret kind. Never a plaintext column — see the class doc.
+    var attributeID: Data? = nil
+
+    /// Encrypted — live/orphaned sentinel, same convention as `VaultEntry`/`BackupEncryptionKey`.
+    var deletionToken: Data? = nil
+
+    /// Sealed, padded `[PendingRestoreShardSlot]` — exactly 255 elements once decoded, the Shamir
+    /// ceiling, so no genuine distribution can ever be truncated by it. `nil` only before this row's
+    /// shard slots are ever written. Key = `KeyManagerProtocol.deriveRestoreVaultKey()`; see the class
+    /// doc for why this differs from `attributeID`/`deletionToken`'s key domain.
+    var shards: Data? = nil
+
+    /// Inverse side of `Vault.pendingRestores`.
+    var vault: Vault?
+
+    // MARK: Orphaning
+
+    static let liveToken:     Data = Data([0])
+    static let orphanedToken: Data = Data([1])
+
+    /// Fail-safe: undecryptable, nil, or ambiguous reads as orphaned — same convention as
+    /// `BackupEncryptionKey.isOrphaned(usingKey:)`.
+    func isOrphaned(usingKey key: SymmetricKey) -> Bool {
+        guard let data = self.deletionToken, let plain = data.decrypt(using: key) else { return true }
+        return plain != Self.liveToken
+    }
+
+    // MARK: Init
+
+    init(
+        id:            UUID = UUID(),
+        attributeID:   Data? = nil,
+        deletionToken: Data? = nil,
+        shards:        Data? = nil,
+        vault:         Vault? = nil
+    ) {
+        self.id             = id
+        self.attributeID    = attributeID
+        self.deletionToken  = deletionToken
+        self.shards         = shards
+        self.vault          = vault
+    }
 }
 
 /// One collected shard, or an empty slot — one element of `PendingShamirSecretRestore.shards`.
