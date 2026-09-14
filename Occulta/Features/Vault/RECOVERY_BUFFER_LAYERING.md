@@ -886,23 +886,26 @@ over it, caught before it shipped; `Data?` (sealed, padded, fixed-width once the
 corrected shape.
 
 **Cost of this shape, once shards moved into `Data?`: this is a large row, not a small one.** Sizing the
-255-slot `PendingRestoreShardSlot` array precisely (862 bytes/slot: presence tag + a 412-byte
-`SignedAttribute`, reusing `CustodyShard`'s own §6 item 7 sizing, + 36-byte sender identifier + a second,
-optional 412-byte attestation) gives **≈215 KB per row**, almost entirely `shards` — `attributeID` and
-`deletionToken` combined cost under 100 bytes. (Corrected 2026-09-13 from an earlier ≈211 KB/404-byte
-figure — `signature` was sized for a raw r‖s signature; `KeyManagerProtocol.signData(_:)` actually returns
-DER, and this subsystem's own `attestationFiller` already sizes that at 72 bytes, not 64. See
-`Vault+Model.swift`'s `SignedAttributeCodec` doc comment for the full correction.)
+255-slot `PendingRestoreShardSlot` array precisely (449 bytes/slot: presence tag + a 412-byte
+`SignedAttribute`, reusing `CustodyShard`'s own §6 item 7 sizing, + 36-byte sender identifier) gives
+**≈112 KB per row**, almost entirely `shards` — `attributeID` and `deletionToken` combined cost under 100
+bytes. (Corrected 2026-09-13 from an earlier ≈211 KB/404-byte figure — `signature` was sized for a raw r‖s
+signature where `KeyManagerProtocol.signData(_:)` actually returns DER, 72 bytes not 64. Then, 2026-09-14,
+`bugs.md` Bug 124 removed the attestation field entirely — see below — cutting the per-row cost roughly in
+half again, from ≈215 KB to ≈112 KB.)
 
-**This attestation half of the layout may not survive at all — `bugs.md` Bug 124, filed 2026-09-14.**
-Tracing what Branch B (attestation) actually proves turned up a broader gap it doesn't close: neither
-`distributionID` nor a `VaultEntry`'s `entryID` changes when the trustee list changes without a full
-secret rotation, so a removed trustee's original, genuinely-signed share stays valid forever — via
-Branch A alone, no attestation involved. The proposed fix (regenerate the distribution id/value on
-every trustee-set mutation) makes stale credentials inert by construction, at which point Branch B
-stops doing anything a direct current-trustee check wouldn't do more cheaply. If adopted, half of this
-row's 862-byte slot — the `attestation` field and its `SignedAttributeCodec` — goes away. Not decided
-here; see Bug 124 for the full reasoning.
+**The attestation half of this layout was removed, 2026-09-14 — `bugs.md` Bug 124.** Tracing what Branch B
+(attestation) actually proves turned up a broader gap it doesn't close: neither `distributionID` nor a
+`VaultEntry`'s `entryID` changes when the trustee list changes without a full secret rotation, so a removed
+trustee's original, genuinely-signed share stayed valid forever — via Branch A alone, no attestation
+involved. Bug 124's remedy (regenerate the distribution id/value on every trustee-set mutation) makes stale
+credentials inert by construction, at which point Branch B was doing nothing a direct current-trustee check
+wouldn't do more cheaply — so `PendingRestoreShardSlot.attestation` and half of `SignedAttributeCodec`'s use
+in this codec are gone, not just flagged. `PendingRestoreShardSlot` now carries only `signedAttribute` and
+`senderIdentifier`. The shipped, tested Branch B mechanism in `ShardCustody+Manager.swift`
+(`ShardHandbackAttestationTests`) is a separate, currently-live system — this removal is scoped to the
+foundation-only model in `Vault+Model.swift`, which nothing calls yet; the shipped mechanism's own removal
+is Bug 124's remedy landing, not yet done.
 
 **Consequence: `Vault`'s "one seal covers everything" property — the mechanism that closed `bugs.md` Bug
 120 for this container as a side effect of the storage shape — does not survive this move.** Independent
@@ -928,7 +931,7 @@ that cost — sizing it at a few candidate values: 10 rows ≈ 2.16 MB, 32 (matc
 **A counting oracle found while working through the cap question, not yet resolved, and this is the most
 important finding in this revision.** Capping only the *orphaned* population (evict oldest orphaned row
 past N, leave live rows uncapped) leaves live rows exactly as exploitable as `bugs.md` Bug 96 item 2 already
-found for the old design — except now each junk row costs ≈215 KB instead of a few hundred bytes, since
+found for the old design — except now each junk row costs ≈112 KB instead of a few hundred bytes, since
 every `attributeID` that's never been seen before claims a full row. Capping *live* rows instead closes that,
 but reopens something worse: **§3 of this document already named the exact failure mode** — *"a cap on a
 shared buffer is a cross-layer denial channel"* — and generalizing this container past depth-indexing
@@ -951,7 +954,7 @@ shard's sender was visible at on arrival* instead, which is close to reintroduci
 revision specifically removed to generalize in the first place, just relocated rather than eliminated.
 
 **Decision, 2026-09-13: no cap, for now.** `PendingShamirSecretRestore` rows are genuinely unbounded —
-`bugs.md` Bug 96 item 2 stays open, and is materially worse than before this revision (≈215 KB per junk
+`bugs.md` Bug 96 item 2 stays open, and is materially worse than before this revision (≈112 KB per junk
 row instead of a few hundred bytes in the old `ReconstructShard`-based design). Deliberate, not an
 oversight: the tension above needs its own resolution before any cap can be adopted safely, and shipping
 one without resolving it would trade a resource-exhaustion bug for a duress-detection oracle, which is a
@@ -1012,7 +1015,7 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | fixed — every op ships an attestation, real or filler |
 | 95 | One poisoned shard permanently blocks legitimate recovery | open — Bug 94 remedy 2 narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
 | 96 (item 1) | Two traps on decoded content | fixed |
-| 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈215 KB, not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
+| 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈112 KB (revised down from ≈215 KB, 2026-09-14, when Bug 124 removed the attestation field), not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
 | 99 | A coercer supplying his own trustees can test for duress | open — subsumed here except the pending-file tag |
 | 100 r1 | Restore artifacts not excluded from device backups | fixed 2026-08-27 |

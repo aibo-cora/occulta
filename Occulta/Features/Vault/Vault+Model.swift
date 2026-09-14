@@ -143,10 +143,15 @@ final class PendingShamirSecretRestore {
 }
 
 /// One collected shard, or an empty slot — one element of `PendingShamirSecretRestore.shards`.
+///
+/// No longer carries an attestation field — removed 2026-09-14, `bugs.md` Bug 124. Branch B
+/// (Bug 94 remedy 2) never verified the underlying share was genuine, only that a currently-
+/// recognized identity vouched for it; once a trustee-set mutation regenerates the distribution
+/// id/value (Bug 124's remedy), a stale credential can't reach this slot at all, and the vouching
+/// step has nothing left to add over a direct current-trustee check.
 struct PendingRestoreShardSlot: Codable {
     var signedAttribute:  SignedAttribute? = nil
     var senderIdentifier: String?          = nil
-    var attestation:      SignedAttribute? = nil
 }
 
 // MARK: - PendingShamirSecretRestore.ShardsCodec
@@ -171,8 +176,8 @@ extension PendingShamirSecretRestore {
     /// byte 2–...  shardCapacity × slot  — one PendingRestoreShardSlot each, in order
     /// ```
     ///
-    /// Per-slot layout (`slotSize` = 862 bytes, following `SignedAttributeCodec.size`'s
-    /// own 2026-09-13 correction from 404 to 412 — see that type's doc comment):
+    /// Per-slot layout (`slotSize` = 449 bytes — no longer 862; the attestation half was removed
+    /// 2026-09-14, `bugs.md` Bug 124, see `PendingRestoreShardSlot`'s own doc comment):
     /// ```
     /// byte 0        signedAttribute presence — 1 = real shard, 0 = filler
     /// byte 1–412    signedAttribute          — 412-byte SignedAttributeCodec;
@@ -187,18 +192,12 @@ extension PendingShamirSecretRestore {
     ///                                          `RECOVERY_BUFFER_LAYERING.md` §6
     ///                                          item 9.3 — open whether to tighten
     ///                                          this to 16 bytes later.
-    /// byte 449      attestation presence     — 1 = present, 0 = absent —
-    ///                                          independent of byte 0: a shard can
-    ///                                          arrive before its attestation does
-    ///                                          (Bug 94 remedy 2)
-    /// byte 450–861  attestation              — 412-byte SignedAttributeCodec;
-    ///                                          random bytes when byte 449 is 0
     /// ```
     enum ShardsCodec {
 
         static let formatVersion: UInt16 = 1
         static let shardCapacity: Int    = 255
-        static let slotSize:      Int    = 1 + SignedAttributeCodec.size + 36 + 1 + SignedAttributeCodec.size
+        static let slotSize:      Int    = 1 + SignedAttributeCodec.size + 36
         static let payloadSize:   Int    = 2 + shardCapacity * slotSize
 
         enum CodecError: Error, Equatable {
@@ -217,17 +216,16 @@ extension PendingShamirSecretRestore {
         }
     }
 
-    /// Fixed-width codec for one `SignedAttribute` — sized for exactly the two
-    /// categories `ShardsCodec` ever writes (`.shard`, `.attestation`) and exactly
-    /// one secret size (32 bytes — true of both a BEK and a PEK today, the two
-    /// secret kinds `PendingShamirSecretRestore.attributeID` currently names). A
-    /// future secret kind of a different size breaks silently through this codec
-    /// rather than failing loudly — worth a `value.count == 33` guard once `encode`
-    /// is actually written, not yet done here. `.attestation`'s own `value` is a
-    /// 32-byte SHA-256 hash, not a 33-byte share (`ShardCustody+Manager.swift`'s
-    /// `attestation(for:retainedKeysByFingerprint:)`) — one byte narrower than the
-    /// slot below, so it fits with a single byte to spare, not a second case to
-    /// handle.
+    /// Fixed-width codec for one `SignedAttribute` — sized for exactly the one
+    /// category `ShardsCodec` writes (`.shard`) and exactly one secret size (32
+    /// bytes — true of both a BEK and a PEK today, the two secret kinds
+    /// `PendingShamirSecretRestore.attributeID` currently names). A future secret
+    /// kind of a different size breaks silently through this codec rather than
+    /// failing loudly — worth a `value.count == 33` guard once `encode` is actually
+    /// written, not yet done here.
+    ///
+    /// Previously also covered `.attestation` — removed 2026-09-14 along with that
+    /// field, see `PendingRestoreShardSlot`'s doc comment (`bugs.md` Bug 124).
     ///
     /// Layout (`size` = 412 bytes — corrected 2026-09-13, was 404: `signature` was
     /// sized assuming a raw r‖s signature, but `KeyManagerProtocol.signData(_:)`

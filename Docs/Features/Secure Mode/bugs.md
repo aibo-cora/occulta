@@ -7228,7 +7228,7 @@ active anywhere on the device, without any key (Bug 122). A depth-scoped cap wou
 was rejected — not for a security reason, but because it needs its own UX for what happens at the boundary,
 judged not worth building for a concern this item's own 2026-08-24 reconsideration already downgraded to
 "nice to have." So: no cap, ever, on this population — cost is now materially higher than when this item
-was last sized (~215 KB per unbounded row under the new model, not a few hundred bytes), but still an
+was last sized (~112 KB per unbounded row under the new model, not a few hundred bytes), but still an
 accepted trade against the alternative, not an oversight.
 
 ### 3 — The entire vault plaintext is left in freed heap on export
@@ -10303,11 +10303,14 @@ never has. Once the regeneration fix above ships — which removes the *need* fo
 revoked trustee's stale credential at all — Branch B stops doing anything a membership check wouldn't do
 better on its own.
 
-**Not acted on here.** This is a reversal of shipped, tested behavior (`ShardHandbackAttestationTests`,
-2026-08-26) — recording the finding for a deliberate decision, not removing it unilaterally. If accepted:
-`PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout (`Vault+Model.swift`'s
-`SignedAttributeCodec`, currently 412 of the 862 bytes) become unnecessary weight on a container that's
-already the single largest cost this design carries — see `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3.
+**Foundation half acted on, 2026-09-14 — the shipped half is not.** `PendingRestoreShardSlot.attestation`
+and its half of `ShardsCodec`'s per-slot layout are removed (`Vault+Model.swift`, cutting the slot from 862
+to 449 bytes and the per-row cost from ≈215 KB to ≈112 KB) — safe to do outright since nothing calls that
+codec yet. The *shipped, tested* Branch B mechanism (`ShardCustody+Manager.swift`'s Branch A/B split,
+`ShardHandbackAttestationTests`, 2026-08-26) is a separate system and is untouched — removing it is a real
+behavior change on live code, and depends on the regeneration remedy above actually shipping first (Branch
+B still keeps rotated-identity recovery working today; pulling it before its replacement exists would
+reopen Bug 94, not close anything).
 
 ### Guard
 
