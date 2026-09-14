@@ -133,3 +133,13 @@ and it's explicit — `rotate()` is its own call, never a side effect of anythin
 
 **Full reasoning:** this conversation, 2026-09-12 — not yet folded into `VAULT_KEY_LAYERING.md`'s
 own prose.
+
+**Addendum, 2026-09-14 — this decision is about `bekBytes` specifically, and does not extend to
+`distributionID`.** Found while tracing `bugs.md` Bug 124 (a removed trustee's shard stays valid
+forever, since neither `distributionID` nor `entryID` changes on a trustee-set mutation): the two
+fields are allowed to diverge, and Bug 124's proposed fix — regenerate `distributionID` on every
+trustee addition, removal, or replacement, while leaving `bekBytes` untouched — is fully consistent
+with the reasoning above, not a reversal of it. The `.occbak` continuity this decision protects
+depends only on `bekBytes`; confirmed directly, `VaultManager.backupFileAAD` is a fixed constant,
+never `distributionID`-dependent, so nothing about an exported backup's decryptability changes when
+`distributionID` does.

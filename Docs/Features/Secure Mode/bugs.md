@@ -6913,6 +6913,13 @@ check: open a `.occbak` at depth 0 and again at a duress depth, confirm the prom
 both — text, buttons, order — and that declining leaves nothing armed at either. Same standing
 limitation as Bug 93 harm 4's acknowledgment.
 
+**Addendum, 2026-09-14 — Bug 124 finds remedy 2's actual protection narrower than assumed here.**
+Branch B (attestation) never verifies the underlying share value is genuine, only that a currently-
+recognized identity vouches for it — which is exactly what a direct current-trustee-list-membership
+check already gives, more cheaply and without attestation's blind spot on revoked trustees. See Bug
+124 for the full trace and the proposed fix (regenerate the distribution id/value on trustee-set
+changes), which would make Branch B redundant rather than merely narrowed.
+
 ---
 
 ## Bug 94a — Remedy 2's attestation field is not padded, so slot size names the trustee who is mid-recovery
@@ -10208,3 +10215,102 @@ way — nothing has shipped for them yet, so building them bound from the start 
 
 None. Filed so the tradeoff is visible and decided on purpose the next time a model — `PendingShamirSecretRestore`
 included — reaches for `Data.encrypt(using:)` for a field where row-identity binding might matter.
+
+---
+
+## Bug 124 — A removed trustee's shard stays valid forever; neither branch checks current trustee status
+
+**Status:** Open. Found 2026-09-14, while working out whether Bug 94 remedy 2's attestation actually
+distinguishes a legitimate trustee from anyone else. It doesn't, on its own — tracing the acceptance path
+directly turned up a broader, pre-existing gap that has nothing to do with attestation specifically.
+
+**Target:** unset.
+
+### Severity: High (availability, same class as Bug 95) — and the attacker population is larger than Bug 95's own text assumed
+
+Bug 95's severity section reads: *"the attacker set is exactly the people the user chose to trust with
+recovery."* That's too narrow. It's exactly the people the user **ever** chose to trust, at any point in
+that secret's history, including everyone since removed. Trustee-set changes don't shrink this population —
+they only add to it.
+
+### What happens
+
+Neither `handleHandback` ([ShardCustody+Manager.swift:219-247](Occulta/Features/Vault/ShardCustody+Manager.swift:219))
+nor `acceptReturnedShard` ([Vault+Manager+ReturnBuffer.swift:44-77](Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift:44))
+ever checks whether the sender is a *current* trustee for the entry in question. `ShardRecord.status` models
+exactly this (`.revoked` is a real case), but it's only ever consulted on the outbound side — building the
+manifest of what Alice still expects trustees to hold. The inbound handback path never reads it.
+
+**This does not need identity rotation, and does not need Branch B at all.** Branch A alone is enough:
+`attribute.verify(against: ownKey)` only checks "did my key sign this" — it says nothing about whether the
+signer is still someone I trust. A trustee Alice removed months ago, who kept their original, genuinely-
+Alice-signed share from before removal, passes Branch A exactly as well as a current trustee does, because
+nothing about their credential expires when they're removed from the list.
+
+**Root cause: neither the BEK's `distributionID` nor a `VaultEntry`'s `entryID` changes when the trustee
+list changes without a full secret rotation.** `prepareShards`/`distributeShards` re-split the *same*
+underlying secret (`bekBytes`, or the PEK) under the *same* id every time trustees are added, removed, or
+replaced — confirmed directly: BEK's `prepareShards` reads `decoded.payload.distributionID` rather than
+minting a new one ([Vault+Manager+Backup.swift:1170](Occulta/Features/Vault/Vault+Manager+Backup.swift:1170)),
+and PEK's shard-signing payload binds to `entryID` = `VaultEntry.id` ([Vault+Manager+Shards.swift:84-91](Occulta/Features/Vault/Vault+Manager+Shards.swift:84)),
+which never changes for the entry's life. The doc comment there claims `entryID` "binds this shard to the
+specific key generation" — it doesn't; there is no separate notion of "generation" anywhere in the model,
+only the entry's own permanent identity. So a removed trustee's old credential remains bound to the exact
+same id a current restore attempt is grouped by, forever.
+
+### Bounded the same way Bug 95 already is, but that's not a reason to leave it
+
+A revoked trustee resubmitting a stale share can't complete a fraudulent recovery — the final GCM check
+against the real backup file (or, for PEK, against the real vault content) is still the actual arbiter, and
+a wrong contribution poisons the interpolation rather than succeeding with fabricated content. What it *can*
+do is deny a legitimate recovery indefinitely, on a secret they were explicitly and deliberately removed
+from — which is exactly the harm Bug 95 already tracks, just from a population nobody scoped correctly
+until now.
+
+### Remedy — proposed, not built
+
+Regenerate the SSS distribution identity on every trustee-set mutation, not just on an explicit full
+rotation. The two secret kinds split differently, because only one has an external-artifact cost:
+
+- **BEK: regenerate `distributionID` only, never `bekBytes`.** This does not conflict with
+  `decisions.md`'s "reuse the same BEK across trustee-set changes" decision — that decision is specifically
+  about the *key bytes*, made to avoid orphaning every `.occbak` already exported (sealed under `bekBytes`
+  alone, confirmed directly: `VaultManager.backupFileAAD` is a fixed constant, never `distributionID`-
+  dependent). Rotating just the id costs nothing there. A removed trustee's old share then groups under an
+  id nothing currently tracks — it never reaches the live reconstruction pool at all, rather than being
+  merged in and poisoning it.
+- **PEK: regenerate the actual PEK value.** Nothing external ever depends on a `VaultEntry`'s PEK bytes the
+  way exported `.occbak` files depend on `bekBytes` — it's an internal field, re-encryptable at will. So the
+  fuller fix (that BEK can't afford) is available and simpler here: no new id field needed, just treat a
+  trustee-set change as a PEK rotation — generate a fresh key, re-encrypt `encryptedContent`/
+  `encryptedLabel` under it, re-split the new key to the current recipients. A removed trustee's old share
+  now reconstructs a PEK that decrypts nothing, even in the case where it somehow still got admitted.
+
+Either way, this is also the more direct fix for the underlying problem than a trustee-list-membership check
+on the receiving side would be on its own — regenerating the id/value makes a stale credential inert by
+construction, rather than requiring every acceptance path to remember to check status correctly forever.
+
+### A consequence worth stating plainly: this makes Bug 94 remedy 2's attestation redundant
+
+Traced what attestation (Branch B) actually proves, end to end, to answer a direct question about whether
+it protects against anything: it doesn't verify that the underlying share value is genuine — the attester
+controls both the fabricated `attribute` *and* the attestation hashed over it, so a dishonest attester can
+self-consistently vouch for anything. What Branch B actually reduces to is "this signature comes from an
+identity I currently recognize" — exactly and only what a direct **current-trustee-list-membership check**
+already establishes, more cheaply (no second `SignedAttribute`, no extra `signData` call, no 72-byte DER
+signature slot) and more completely, since a membership check naturally respects revocation and attestation
+never has. Once the regeneration fix above ships — which removes the *need* for either branch to reach a
+revoked trustee's stale credential at all — Branch B stops doing anything a membership check wouldn't do
+better on its own.
+
+**Not acted on here.** This is a reversal of shipped, tested behavior (`ShardHandbackAttestationTests`,
+2026-08-26) — recording the finding for a deliberate decision, not removing it unilaterally. If accepted:
+`PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout (`Vault+Model.swift`'s
+`SignedAttributeCodec`, currently 412 of the 862 bytes) become unnecessary weight on a container that's
+already the single largest cost this design carries — see `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3.
+
+### Guard
+
+None yet. Acceptance criterion once fixed: a trustee removed from an entry's or BEK's current distribution
+cannot contribute a share to any subsequent restore of that same secret, even holding a genuinely-signed
+share from before removal.

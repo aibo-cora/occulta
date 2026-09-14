@@ -894,6 +894,16 @@ figure — `signature` was sized for a raw r‖s signature; `KeyManagerProtocol.
 DER, and this subsystem's own `attestationFiller` already sizes that at 72 bytes, not 64. See
 `Vault+Model.swift`'s `SignedAttributeCodec` doc comment for the full correction.)
 
+**This attestation half of the layout may not survive at all — `bugs.md` Bug 124, filed 2026-09-14.**
+Tracing what Branch B (attestation) actually proves turned up a broader gap it doesn't close: neither
+`distributionID` nor a `VaultEntry`'s `entryID` changes when the trustee list changes without a full
+secret rotation, so a removed trustee's original, genuinely-signed share stays valid forever — via
+Branch A alone, no attestation involved. The proposed fix (regenerate the distribution id/value on
+every trustee-set mutation) makes stale credentials inert by construction, at which point Branch B
+stops doing anything a direct current-trustee check wouldn't do more cheaply. If adopted, half of this
+row's 862-byte slot — the `attestation` field and its `SignedAttributeCodec` — goes away. Not decided
+here; see Bug 124 for the full reasoning.
+
 **Consequence: `Vault`'s "one seal covers everything" property — the mechanism that closed `bugs.md` Bug
 120 for this container as a side effect of the storage shape — does not survive this move.** Independent
 rows mean a write to one `PendingShamirSecretRestore` no longer touches any other. Two genuinely different
