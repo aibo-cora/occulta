@@ -10258,6 +10258,35 @@ specific key generation" — it doesn't; there is no separate notion of "generat
 only the entry's own permanent identity. So a removed trustee's old credential remains bound to the exact
 same id a current restore attempt is grouped by, forever.
 
+### A real precondition — Marla needs a fresh key exchange with Alice's new device first — that turns out not to matter
+
+Raised directly and checked rather than assumed: bundle encryption requires the *sender's own* local record
+of the recipient's current key (`resolveKeyMaterial`, [Contact+Manager.swift:1418-1425](Occulta/Services/Contact+Manager.swift:1418)).
+If a removed trustee hasn't re-paired with the owner's new device, anything they send encrypts to the
+owner's *old* key and the new device can't decrypt it at all — not a signature failure, a transport one. So
+a removed trustee genuinely cannot submit anything until they've done a fresh exchange with the new device.
+
+That looks like a mitigation until you trace *why* that exchange happens. There's already a real, working
+self-cleaning mechanism for the adjacent case: `deleteMismatchShards`
+([ShardCustody+Manager.swift:183-189](Occulta/Features/Vault/ShardCustody+Manager.swift:183)) wipes a
+trustee's stale, pre-rotation `CustodyShard` copy automatically — but only as a side effect of that trustee
+receiving a fresh `.distribute`/`.replace` from the owner. A *continuing* trustee gets this for free the
+next time they're redistributed to. A *removed* trustee never receives another `.distribute`/`.replace` at
+all, so this never fires for them — confirmed, not assumed, by reading both handlers directly.
+
+And the re-exchange that lets a removed trustee send anything in the first place doesn't require anything
+vault-related — it's the same routine key exchange that happens whenever two people who message each other
+normally both get new phones. Nothing about that moment involves the vault, signals anything to Alice, or
+triggers `deleteMismatchShards` (which only fires on `.distribute`/`.replace`, never on a plain key
+exchange). So the precondition is real, but it's satisfied by ordinary, unrelated contact maintenance, not
+by anything that would make Alice think twice — it raises the bar from "passive, no action needed" to
+"needs one ordinary interaction that isn't unusual on its own," not from "exploitable" to "safe."
+
+The one thing that *would* structurally close it: Alice deleting Marla as a contact entirely, not just as a
+trustee — then `senderPublicKey` resolution on Alice's side has nothing to find, and nothing from Marla can
+authenticate at all. Not a realistic mitigation to depend on; it's a far bigger, more disruptive action than
+ordinary trustee-list management, and isn't what removing someone as a *trustee* should require.
+
 ### Bounded the same way Bug 95 already is, but that's not a reason to leave it
 
 A revoked trustee resubmitting a stale share can't complete a fraudulent recovery — the final GCM check
