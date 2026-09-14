@@ -1160,6 +1160,19 @@ extension VaultManager {
         /// `VaultManager` or `modelContext`; accepting live SwiftData managed objects here
         /// would reintroduce exactly that coupling one parameter over; `[String]` is the
         /// full extent of what this actually needs.
+        ///
+        /// Mints a fresh `distributionID` on every call — `bugs.md` Bug 124, 2026-09-14.
+        /// Previously reused `decoded.payload.distributionID` across every redistribution,
+        /// so a trustee removed from `recipients` kept a permanently-valid credential:
+        /// neither their old, genuinely-signed share nor the id it carried ever expired.
+        /// `attemptBackupRestore` already groups collected shards by `entryID` before
+        /// attempting reconstruction (built for Bug 95) — that grouping is what makes this
+        /// sufficient on its own: a stale submission now lands in its own group under an id
+        /// nothing else is tagged with, never reaches threshold, and never touches a live
+        /// restore. `bekBytes` is deliberately untouched — regenerating the key itself would
+        /// orphan every already-exported `.occbak` (`decisions.md`'s "reuse the same BEK
+        /// across trustee-set changes"); the id costs nothing there since
+        /// `VaultManager.backupFileAAD` never depends on it.
         func prepareShards(
             vaultKey: SymmetricKey, threshold: Int, recipients: [String], currentDepth: Int, modelContext: ModelContext
         ) throws -> [SignedAttribute] {
@@ -1168,7 +1181,7 @@ extension VaultManager {
             }
 
             let n              = recipients.count
-            let distributionID = decoded.payload.distributionID
+            let distributionID = UUID()
 
             var bekBytes = Data()
             decoded.bek.withUnsafeBytes { bekBytes = Data($0) }
