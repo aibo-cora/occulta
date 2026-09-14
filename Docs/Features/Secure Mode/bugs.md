@@ -10220,9 +10220,10 @@ included — reaches for `Data.encrypt(using:)` for a field where row-identity b
 
 ## Bug 124 — A removed trustee's shard stays valid forever; neither branch checks current trustee status
 
-**Status:** Open. Found 2026-09-14, while working out whether Bug 94 remedy 2's attestation actually
-distinguishes a legitimate trustee from anyone else. It doesn't, on its own — tracing the acceptance path
-directly turned up a broader, pre-existing gap that has nothing to do with attestation specifically.
+**Status:** Half fixed, 2026-09-14 — BEK closed, PEK still open. Found the same day, while working out
+whether Bug 94 remedy 2's attestation actually distinguishes a legitimate trustee from anyone else. It
+doesn't, on its own — tracing the acceptance path directly turned up a broader, pre-existing gap that has
+nothing to do with attestation specifically.
 
 **Target:** unset.
 
@@ -10296,19 +10297,22 @@ do is deny a legitimate recovery indefinitely, on a secret they were explicitly 
 from — which is exactly the harm Bug 95 already tracks, just from a population nobody scoped correctly
 until now.
 
-### Remedy — proposed, not built
+### Remedy — BEK built and shipped, PEK still proposed
 
 Regenerate the SSS distribution identity on every trustee-set mutation, not just on an explicit full
 rotation. The two secret kinds split differently, because only one has an external-artifact cost:
 
-- **BEK: regenerate `distributionID` only, never `bekBytes`.** This does not conflict with
+- **BEK: regenerate `distributionID` only, never `bekBytes`. Done, 2026-09-14** — `prepareShards`
+  ([Vault+Manager+Backup.swift:1163](Occulta/Features/Vault/Vault+Manager+Backup.swift:1163)) now mints
+  `UUID()` on every call instead of reusing `decoded.payload.distributionID`. This does not conflict with
   `decisions.md`'s "reuse the same BEK across trustee-set changes" decision — that decision is specifically
   about the *key bytes*, made to avoid orphaning every `.occbak` already exported (sealed under `bekBytes`
   alone, confirmed directly: `VaultManager.backupFileAAD` is a fixed constant, never `distributionID`-
-  dependent). Rotating just the id costs nothing there. A removed trustee's old share then groups under an
+  dependent). Rotating just the id costs nothing there. A removed trustee's old share now groups under an
   id nothing currently tracks — it never reaches the live reconstruction pool at all, rather than being
-  merged in and poisoning it.
-- **PEK: regenerate the actual PEK value.** Nothing external ever depends on a `VaultEntry`'s PEK bytes the
+  merged in and poisoning it. Full suite green (844/0/6) after the change; no dedicated regression test
+  added yet — see Guard.
+- **PEK: regenerate the actual PEK value. Not built.** Nothing external ever depends on a `VaultEntry`'s PEK bytes the
   way exported `.occbak` files depend on `bekBytes` — it's an internal field, re-encryptable at will. So the
   fuller fix (that BEK can't afford) is available and simpler here: no new id field needed, just treat a
   trustee-set change as a PEK rotation — generate a fresh key, re-encrypt `encryptedContent`/
@@ -10361,17 +10365,19 @@ never has. Once the regeneration fix above ships — which removes the *need* fo
 revoked trustee's stale credential at all — Branch B stops doing anything a membership check wouldn't do
 better on its own.
 
-**Foundation half acted on, 2026-09-14 — the shipped half is not.** `PendingRestoreShardSlot.attestation`
-and its half of `ShardsCodec`'s per-slot layout are removed (`Vault+Model.swift`, cutting the slot from 862
-to 449 bytes and the per-row cost from ≈215 KB to ≈112 KB) — safe to do outright since nothing calls that
-codec yet. The *shipped, tested* Branch B mechanism (`ShardCustody+Manager.swift`'s Branch A/B split,
-`ShardHandbackAttestationTests`, 2026-08-26) is a separate system and is untouched — removing it is a real
-behavior change on live code, and depends on the regeneration remedy above actually shipping first (Branch
-B still keeps rotated-identity recovery working today; pulling it before its replacement exists would
-reopen Bug 94, not close anything).
+**Foundation half acted on, 2026-09-14 — the shipped half is not, and BEK's own fix landing doesn't change
+that.** `PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout are removed
+(`Vault+Model.swift`, cutting the slot from 862 to 449 bytes and the per-row cost from ≈215 KB to ≈112 KB) —
+safe to do outright since nothing calls that codec yet. The *shipped, tested* Branch B mechanism
+(`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`, 2026-08-26) is a separate
+system and is still untouched, even though BEK's own regeneration fix has now shipped — `handleHandback`'s
+Branch A/B split is one shared mechanism for both secret kinds, not one per kind, so it still keeps PEK's
+rotated-identity recovery working, and removing it before PEK's own remedy exists would reopen Bug 94 for
+that half. Revisit once PEK's fix ships too.
 
 ### Guard
 
-None yet. Acceptance criterion once fixed: a trustee removed from an entry's or BEK's current distribution
+BEK's fix has no dedicated regression test yet — the acceptance criterion below isn't automated for
+either secret kind. Once added: a trustee removed from an entry's or BEK's current distribution
 cannot contribute a share to any subsequent restore of that same secret, even holding a genuinely-signed
 share from before removal.
