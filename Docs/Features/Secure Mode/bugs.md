@@ -10319,6 +10319,35 @@ Either way, this is also the more direct fix for the underlying problem than a t
 on the receiving side would be on its own — regenerating the id/value makes a stale credential inert by
 construction, rather than requiring every acceptance path to remember to check status correctly forever.
 
+### BEK chain traced end to end, 2026-09-14 — only one line actually changes
+
+Walked every step distribution touches, to make sure the fix doesn't need to be bigger than it looks:
+
+- **`Backup.setup`/`Backup.rotate()`** already mint a fresh `distributionID` — no change.
+- **`prepareShards`** ([Vault+Manager+Backup.swift:1163](Occulta/Features/Vault/Vault+Manager+Backup.swift:1163))
+  is the one line: stop reading `decoded.payload.distributionID`, mint `UUID()` instead.
+- **`distributeShards`'s `oldAttrIDs` capture** (decides `.replace` vs `.distribute` per recipient) is keyed
+  by `contactIdentifier`, never by `distributionID` — unaffected, keeps producing the right op per trustee.
+- **`updateShardStatus`** matches purely by `attributeID`, a fresh UUID every split regardless of
+  `distributionID` — a stale confirmation for a superseded `attributeID` already finds no match and falls
+  through silently. Unaffected.
+- **`handleReplace`** on the trustee's own device (`ShardCustody+Manager.swift:149`) deletes the old shard by
+  `op.attributeID`, also independent of `entryID`. Unaffected.
+- **`attemptBackupRestore`**'s grouping ([Vault+Manager+Backup.swift:516-520](Occulta/Features/Vault/Vault+Manager+Backup.swift:516))
+  already buckets every collected shard **by `entryID`** before attempting reconstruction — built for Bug 95,
+  isolating a poisoned group from a clean one. It's the exact mechanism this fix needs on the receiving end,
+  and it needs nothing added: once distribution actually produces two different ids, a removed trustee's
+  stale submission lands in its own group, never reaches threshold, and never touches the live one. No
+  restore-side change at all — it was already built to isolate by id, it just never had two different ids to
+  isolate before.
+
+**One adjacent, pre-existing discrepancy found while tracing this, not part of the fix.**
+`storeRestoreShard`'s dedup ([Vault+Manager+ReturnBuffer.swift:346](Occulta/Features/Vault/Vault+Manager+ReturnBuffer.swift:346))
+matches only on `senderIdentifier` — its own doc comment claims `(entryID, senderIdentifier)`, but the code
+never checks `entryID`. Doesn't undermine this fix (Marla and a current trustee are different senders
+regardless), and doesn't need to block it, but the doc comment is wrong about what the code actually checks
+and should eventually be corrected to match one or the other.
+
 ### A consequence worth stating plainly: this makes Bug 94 remedy 2's attestation redundant
 
 Traced what attestation (Branch B) actually proves, end to end, to answer a direct question about whether
