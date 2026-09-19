@@ -10310,8 +10310,8 @@ rotation. The two secret kinds split differently, because only one has an extern
   alone, confirmed directly: `VaultManager.backupFileAAD` is a fixed constant, never `distributionID`-
   dependent). Rotating just the id costs nothing there. A removed trustee's old share now groups under an
   id nothing currently tracks — it never reaches the live reconstruction pool at all, rather than being
-  merged in and poisoning it. Full suite green (844/0/6) after the change; no dedicated regression test
-  added yet — see Guard.
+  merged in and poisoning it. Full suite green (844/0/6) after the change; regression tests added the
+  same day (`BackupTrusteeRotationTests.swift`) — see Guard.
 - **PEK: regenerate the actual PEK value. Not built.** Nothing external ever depends on a `VaultEntry`'s PEK bytes the
   way exported `.occbak` files depend on `bekBytes` — it's an internal field, re-encryptable at will. So the
   fuller fix (that BEK can't afford) is available and simpler here: no new id field needed, just treat a
@@ -10377,7 +10377,12 @@ that half. Revisit once PEK's fix ships too.
 
 ### Guard
 
-BEK's fix has no dedicated regression test yet — the acceptance criterion below isn't automated for
-either secret kind. Once added: a trustee removed from an entry's or BEK's current distribution
-cannot contribute a share to any subsequent restore of that same secret, even holding a genuinely-signed
-share from before removal.
+BEK covered, 2026-09-14 — `BackupTrusteeRotationTests.swift`. `redistributionMintsNewDistributionID`
+is the load-bearing one (verified it actually fails if the fix is reverted, not just that it passes);
+`cleanRestoreStillSucceedsAfterRedistribution` confirms the fix didn't break a legitimate restore.
+**Deliberately doesn't assert that mixing a stale share into a live reconstruction throws** — checked
+`ShamirSecretSharing.lagrange()` directly, it uses every supplied point unconditionally with no
+error-correction, so that mix fails the GCM check regardless of whether `distributionID` changed
+between rounds. Grouping-by-`entryID` is what actually keeps the mix from being attempted at all in
+production (`attemptBackupRestore`), and that's what the first test already covers. PEK still has no
+regression test — its remedy (regenerate the PEK value) isn't built yet either.
