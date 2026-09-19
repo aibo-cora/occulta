@@ -22,8 +22,12 @@ extension VaultManager {
     /// The caller feeds these into the .occ basket pipeline for delivery.
     ///
     /// Steps (in order):
+    ///   0. Regenerate the PEK and re-seal the entry's label/content under it —
+    ///      `bugs.md` Bug 124: without this, a trustee dropped from `recipients` on a
+    ///      later call keeps a permanently-valid credential, since neither the PEK nor
+    ///      the `entryID` tagging its shards would ever change.
     ///   1. Assert vault is unlocked.
-    ///   2. Unwrap the entry's PEK (via unwrapPEK — handles legacy migration).
+    ///   2. Unwrap the entry's (now-fresh) PEK (via unwrapPEK — handles legacy migration).
     ///   3. SSS-split the PEK (not the vault key) into n shards.
     ///   4. For each shard: compute the SignedAttribute signing payload, sign
     ///      with the SE identity key, build a SignedAttribute(.shard).
@@ -45,6 +49,9 @@ extension VaultManager {
         guard let entry = try self.fetchEntry(by: entryID) else { throw VaultError.entryNotFound }
 
         let n = recipients.count
+
+        // ── 0. Rotate the PEK — bugs.md Bug 124 ──────────────────────────────
+        try self.rotatePEK(for: entry, vaultKey: vaultKey)
 
         // ── 1. Unwrap PEK ────────────────────────────────────────────────────
         let pek = try self.unwrapPEK(for: entry, vaultKey: vaultKey)
@@ -130,6 +137,52 @@ extension VaultManager {
         try self.modelContext.save()
 
         return attributes
+    }
+
+    // MARK: - PEK rotation
+
+    /// Regenerates `entry`'s PEK and re-seals its label/content under the new one.
+    ///
+    /// Called at the start of every `prepareShards` — `bugs.md` Bug 124: a stale
+    /// trustee's old share then reconstructs a PEK that decrypts nothing, even if it
+    /// somehow still got admitted into a restore attempt. `entry.id` never changes —
+    /// only the key does, so this needs no new field anywhere and doesn't touch how
+    /// the entry is addressed.
+    ///
+    /// Only ever called on an entry that already has a PEK — every `VaultEntry` gets
+    /// one unconditionally at creation (`addEntry`), so there is no "create" case for
+    /// this function to handle, only "rotate."
+    private func rotatePEK(for entry: VaultEntry, vaultKey: SymmetricKey) throws {
+        let labelPayload = try self.decryptLabelPayload(for: entry)
+        var content      = try self.decryptContent(for: entry)
+        defer { for i in content.indices { content[i] = 0 } }
+
+        var newPEKBytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, 32, &newPEKBytes) == errSecSuccess else {
+            throw VaultError.encryptionFailed
+        }
+        defer { for i in newPEKBytes.indices { newPEKBytes[i] = 0 } }
+        let newPEK = SymmetricKey(data: Data(newPEKBytes))
+
+        let labelData = try JSONEncoder().encode(labelPayload)
+
+        let sealedLabel   = try AES.GCM.seal(labelData, using: newPEK, nonce: AES.GCM.Nonce(),
+                                              authenticating: entry.aad(for: .label))
+        let sealedContent = try AES.GCM.seal(content,    using: newPEK, nonce: AES.GCM.Nonce(),
+                                              authenticating: entry.aad(for: .content))
+        let sealedKey     = try AES.GCM.seal(Data(newPEKBytes), using: vaultKey, nonce: AES.GCM.Nonce(),
+                                              authenticating: entry.aad(for: .entryKey))
+
+        guard
+            let combinedLabel   = sealedLabel.combined,
+            let combinedContent = sealedContent.combined,
+            let combinedKey     = sealedKey.combined
+        else { throw VaultError.encryptionFailed }
+
+        entry.encryptedLabel    = combinedLabel
+        entry.encryptedContent  = combinedContent
+        entry.encryptedEntryKey = combinedKey
+        try self.modelContext.save()
     }
 
     // MARK: - Shard status reader
