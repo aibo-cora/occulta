@@ -6915,10 +6915,11 @@ limitation as Bug 93 harm 4's acknowledgment.
 
 **Addendum, 2026-09-14 — Bug 124 finds remedy 2's actual protection narrower than assumed here.**
 Branch B (attestation) never verifies the underlying share value is genuine, only that a currently-
-recognized identity vouches for it — which is exactly what a direct current-trustee-list-membership
-check already gives, more cheaply and without attestation's blind spot on revoked trustees. See Bug
-124 for the full trace and the proposed fix (regenerate the distribution id/value on trustee-set
-changes), which would make Branch B redundant rather than merely narrowed.
+recognized identity vouches for it. Bug 124 traces the revoked-trustee half of that; Bug 125
+(2026-09-19) goes further and finds attestation's own signature redundant with transport-level sender
+authentication regardless of revocation status — `handleHandback` already knows who sent this, one
+layer up, before it ever looks at `op.attestation`. See Bug 125 for the current, complete word on
+whether Branch B (as a mechanism, not just its size) is needed at all.
 
 ---
 
@@ -10220,10 +10221,11 @@ included — reaches for `Data.encrypt(using:)` for a field where row-identity b
 
 ## Bug 124 — A removed trustee's shard stays valid forever; neither branch checks current trustee status
 
-**Status:** Half fixed, 2026-09-14 — BEK closed, PEK still open. Found the same day, while working out
-whether Bug 94 remedy 2's attestation actually distinguishes a legitimate trustee from anyone else. It
-doesn't, on its own — tracing the acceptance path directly turned up a broader, pre-existing gap that has
-nothing to do with attestation specifically.
+**Status:** Closed, 2026-09-19 — BEK fixed and tested 2026-09-14, PEK fixed 2026-09-19 but with no
+dedicated regression test yet (see Guard). Found 2026-09-14, while working out whether Bug 94 remedy 2's
+attestation actually distinguishes a legitimate trustee from anyone else. It doesn't, on its own — tracing
+the acceptance path directly turned up a broader, pre-existing gap that has nothing to do with attestation
+specifically.
 
 **Target:** unset.
 
@@ -10297,7 +10299,7 @@ do is deny a legitimate recovery indefinitely, on a secret they were explicitly 
 from — which is exactly the harm Bug 95 already tracks, just from a population nobody scoped correctly
 until now.
 
-### Remedy — BEK built and shipped, PEK still proposed
+### Remedy — both built and shipped
 
 Regenerate the SSS distribution identity on every trustee-set mutation, not just on an explicit full
 rotation. The two secret kinds split differently, because only one has an external-artifact cost:
@@ -10312,12 +10314,16 @@ rotation. The two secret kinds split differently, because only one has an extern
   id nothing currently tracks — it never reaches the live reconstruction pool at all, rather than being
   merged in and poisoning it. Full suite green (844/0/6) after the change; regression tests added the
   same day (`BackupTrusteeRotationTests.swift`) — see Guard.
-- **PEK: regenerate the actual PEK value. Not built.** Nothing external ever depends on a `VaultEntry`'s PEK bytes the
-  way exported `.occbak` files depend on `bekBytes` — it's an internal field, re-encryptable at will. So the
-  fuller fix (that BEK can't afford) is available and simpler here: no new id field needed, just treat a
-  trustee-set change as a PEK rotation — generate a fresh key, re-encrypt `encryptedContent`/
-  `encryptedLabel` under it, re-split the new key to the current recipients. A removed trustee's old share
-  now reconstructs a PEK that decrypts nothing, even in the case where it somehow still got admitted.
+- **PEK: regenerate the actual PEK value. Done, 2026-09-19** — a new `rotatePEK(for:vaultKey:)`
+  ([Vault+Manager+Shards.swift](Occulta/Features/Vault/Vault+Manager+Shards.swift)), called as step 0 of
+  every `prepareShards`: decrypts the entry's current label/content, generates a fresh key, re-seals both
+  under it, re-seals the new key under the vault key. Nothing external ever depends on a `VaultEntry`'s PEK
+  bytes the way exported `.occbak` files depend on `bekBytes` — it's an internal field, re-encryptable at
+  will — so the fuller fix (that BEK can't afford) was available and simpler here: no new id field needed,
+  `entry.id` never changes, only the key does. A removed trustee's old share now reconstructs a PEK that
+  decrypts nothing, even in the case where it somehow still got admitted. Full suite green (846/0/6) after
+  the change — no regressions in the many existing tests that already exercise `prepareShards` for PEK.
+  No dedicated regression test for the fix itself yet — see Guard.
 
 Either way, this is also the more direct fix for the underlying problem than a trustee-list-membership check
 on the receiving side would be on its own — regenerating the id/value makes a stale credential inert by
@@ -10352,28 +10358,40 @@ never checks `entryID`. Doesn't undermine this fix (Marla and a current trustee 
 regardless), and doesn't need to block it, but the doc comment is wrong about what the code actually checks
 and should eventually be corrected to match one or the other.
 
-### A consequence worth stating plainly: this makes Bug 94 remedy 2's attestation redundant
+### A consequence worth stating, and a correction to an earlier version of this same section
 
 Traced what attestation (Branch B) actually proves, end to end, to answer a direct question about whether
 it protects against anything: it doesn't verify that the underlying share value is genuine — the attester
 controls both the fabricated `attribute` *and* the attestation hashed over it, so a dishonest attester can
 self-consistently vouch for anything. What Branch B actually reduces to is "this signature comes from an
-identity I currently recognize" — exactly and only what a direct **current-trustee-list-membership check**
-already establishes, more cheaply (no second `SignedAttribute`, no extra `signData` call, no 72-byte DER
-signature slot) and more completely, since a membership check naturally respects revocation and attestation
-never has. Once the regeneration fix above ships — which removes the *need* for either branch to reach a
-revoked trustee's stale credential at all — Branch B stops doing anything a membership check wouldn't do
-better on its own.
+identity I currently recognize."
+
+**An earlier version of this entry claimed that once both regeneration fixes shipped, Branch B would stop
+doing anything a plain membership check wouldn't do better — that overreached, corrected here rather than
+left standing.** Branch B exists for a scenario this bug has nothing to do with: a *current*, never-removed
+trustee whose share still verifies fine against the old key, but whose signature Alice's device can no
+longer check directly because *her* identity rotated (Bug 94's original motivation). A membership check
+alone doesn't solve that — it would need to be layered on top of some form of Branch A/B, not instead of
+it, since membership alone verifies nothing cryptographically. Both regeneration fixes closing means a
+*revoked* trustee's stale credential is now inert regardless of which branch they'd otherwise pass — that
+is real and worth having — but it does nothing to remove Branch B's actual, ongoing job.
+
+**Superseded again, same day, by a sharper and independent finding — `bugs.md` Bug 125.** "Branch B stays"
+above is still right about the *job* (letting a rotated-identity trustee's genuine share through) — it was
+wrong to assume attestation, as a mechanism, is what has to keep doing that job. Bug 125 traces the actual
+transport layer and finds sender identity is already proven, cryptographically, one level up, before
+`handleHandback` ever looks at `op.attestation` — making attestation's own signature redundant for reasons
+that have nothing to do with revocation. See that entry for the full reasoning; it's the current word on
+whether attestation (in any form, not just its size) is needed at all.
 
 **Foundation half acted on, 2026-09-14 — the shipped half is not, and BEK's own fix landing doesn't change
 that.** `PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout are removed
 (`Vault+Model.swift`, cutting the slot from 862 to 449 bytes and the per-row cost from ≈215 KB to ≈112 KB) —
-safe to do outright since nothing calls that codec yet. The *shipped, tested* Branch B mechanism
-(`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`, 2026-08-26) is a separate
-system and is still untouched, even though BEK's own regeneration fix has now shipped — `handleHandback`'s
-Branch A/B split is one shared mechanism for both secret kinds, not one per kind, so it still keeps PEK's
-rotated-identity recovery working, and removing it before PEK's own remedy exists would reopen Bug 94 for
-that half. Revisit once PEK's fix ships too.
+safe to do outright since nothing calls that codec yet, and, per Bug 125, correct for a reason beyond just
+being safe: there is nothing to restore there, not even a presence flag. The *shipped, tested* Branch B
+mechanism (`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`, 2026-08-26) is
+a separate system and is still untouched — that removal is Bug 125's remedy landing, a bigger, separate
+decision on live code, not this bug's to make.
 
 ### Guard
 
@@ -10386,3 +10404,82 @@ error-correction, so that mix fails the GCM check regardless of whether `distrib
 between rounds. Grouping-by-`entryID` is what actually keeps the mix from being attempted at all in
 production (`attemptBackupRestore`), and that's what the first test already covers. PEK still has no
 regression test — its remedy (regenerate the PEK value) isn't built yet either.
+
+---
+
+## Bug 125 — Branch B's attestation signature is redundant with transport-level sender authentication it never needed to duplicate
+
+**Status:** Found 2026-09-19, not acted on. A design finding about shipped, tested code
+(`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`) — recorded for a
+deliberate decision, not a silent fix. Not a vulnerability in the traditional sense: nothing gets *less*
+secure by leaving attestation as it is. The finding is that it's carrying real cost (bytes, complexity, a
+second signing/verification path) for a security property already established elsewhere, for free.
+
+**Target:** unset.
+
+### Severity: N/A as a vulnerability — this is a simplification finding
+
+Current behavior isn't insecure; it's redundant. Severity classification doesn't really apply the way it
+does to the rest of this file's entries.
+
+### What happens — the redundancy, traced precisely
+
+Two separate claims get conflated by attestation's current shape, and only one of them is actually true
+once you check the surrounding transport:
+
+1. **Content authenticity — "is this value genuinely what Alice signed."** This is what Branch A's own
+   signature (`attribute.verify(against: ownKey)`) proves, and transport authentication cannot substitute
+   for it: knowing *who sent a message* says nothing about whether its *content* is truthful. Branch A
+   stays exactly as it is — real, non-redundant, unrotated case only.
+2. **Sender authenticity — "who actually sent this."** This is all attestation's own signature
+   (`attestation.verify(against: senderPublicKey)`) ever proved. Checked whether the transport layer
+   already proves the same thing, rather than assuming: `shardOperations` (carrying both `attribute` and
+   `attestation`) is a field inside `OccultaBundle.SealedPayload`
+   ([OccultaBundle.swift:394-424](Occulta/Features/Forward+Secrecy/OccultaBundle.swift:394)), sealed as one
+   GCM-authenticated blob. `senderProof`'s own doc comment states plainly what that buys: *"only the
+   actual sender can produce this value."* For a 1:1 exchange — which handback always is, trustee to
+   owner, never a group — the session key itself is derivable only by the two parties involved, so a
+   successful decrypt already proves who sent the content, before `handleHandback` ever inspects
+   `op.attestation`.
+
+Once (2) is established, attestation's signature isn't adding a second, independent proof — it's
+re-proving the exact same fact, more weakly (an ECDSA signature nobody downstream ever independently
+re-verifies against anything, versus a transport layer already checked as a precondition to reaching this
+code at all). Confirmed nothing re-checks it later either: `Backup.reconstruct`'s own `ownerIdentity`
+verification only ever re-checks `attribute`, never `attestation` — its entire job is done, once, at the
+moment `handleHandback` accepts or rejects, inside the same session it arrived in. Unlike the original
+`.shard` attribute (created once at distribution, consumed possibly months later over a completely
+different transport session, which is exactly why *that* signature has to be independently, transport-
+independently verifiable), attestation is created and consumed within one interaction — it never needs to
+outlive the transport session that already authenticated it.
+
+**Once you subtract what Branch A already provides (content authenticity, unrotated) and what transport
+already provides (sender authenticity, always), there's nothing left for attestation to add — signature,
+hash-binding, or even a bare presence flag.** Content authenticity is not recoverable after identity
+rotation, with or without attestation; that was never fixable by this mechanism, and isn't the gap
+attestation was ever capable of closing. Branch B's actual logic collapses to: *if Branch A fails, accept
+`attribute` anyway* — because sender identity was already established one layer up, and that was always
+the only thing Branch B was checking.
+
+### Why this doesn't reopen Bug 94
+
+`attribute.entryID` matching a real, live distribution is what limits the population to people who were
+actually sent a share — that check is untouched, still runs, still does the actual work of keeping this
+scoped to trustees. Removing attestation removes a redundant second signature, not the binding to a real
+distribution.
+
+### Remedy — not built; two separate surfaces, one bigger than the other
+
+- **Foundation model:** settles the question `bugs.md` Bug 124 paused and then answered incompletely —
+  `PendingRestoreShardSlot` needs no attestation field of any kind, not a `SignedAttribute`, not a trimmed
+  104-byte version, not a presence flag. Already the current shape as of Bug 124's own foundation-half
+  edit; this entry is why that shape is correct, not merely safe.
+- **Shipped mechanism:** collapse `handleHandback`'s Branch A/B split
+  ([ShardCustody+Manager.swift:219-247](Occulta/Features/Vault/ShardCustody+Manager.swift:219)) into
+  unconditional accept on Branch A failure, given a matching `entryID`. Removes `op.attestation`,
+  `attestationFiller`, and `ShardHandbackAttestationTests`' reason to exist. Real behavior change on live,
+  tested code — not attempted here.
+
+### Guard
+
+None — nothing built yet.
