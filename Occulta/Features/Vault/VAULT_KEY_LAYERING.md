@@ -1516,7 +1516,7 @@ Scoped view into `Docs/Features/Secure Mode/bugs.md`; that file stays canonical 
 | 108 | Design B has no mid-session edit persistence — was thought to block S8 too | **Closed — moot, 2026-09-10.** Design B deleted whole (Removal Stages 0-4); neither S5 nor S8 ever needed this mechanism — see §8 item 12 |
 | 105 | A duress layer can distribute shares of the real BEK | **Closed (Fixed), verified 2026-09-10** — §6; closed via Stage 1+2 |
 | 88 | Backup ignored `visibleThroughDepth` in both directions | fixed — export/import are depth-scoped |
-| 94a | Remedy 2's attestation field unpadded | fixed — every op ships an attestation, real or filler |
+| 94a | Remedy 2's attestation field unpadded | **Moot, 2026-09-19.** `bugs.md` Bug 125 removed the attestation field itself — nothing left to pad |
 | 118 | `deactivateSecureMode`/`forceDeactivateForRecovery` never orphaned the freed depth's BEK — the BEK-side twin of Bug 110 | **Closed (Fixed), verified 2026-09-11** — item 14; `orphanBackupKeys` |
 
 **Vault entries' own bugs, added 2026-09-10/11 — this document is S8's home even though S8 shipped

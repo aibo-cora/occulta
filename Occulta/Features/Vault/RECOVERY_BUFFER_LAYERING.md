@@ -902,10 +902,14 @@ involved. Bug 124's remedy (regenerate the distribution id/value on every truste
 credentials inert by construction, at which point Branch B was doing nothing a direct current-trustee check
 wouldn't do more cheaply — so `PendingRestoreShardSlot.attestation` and half of `SignedAttributeCodec`'s use
 in this codec are gone, not just flagged. `PendingRestoreShardSlot` now carries only `signedAttribute` and
-`senderIdentifier`. The shipped, tested Branch B mechanism in `ShardCustody+Manager.swift`
-(`ShardHandbackAttestationTests`) is a separate, currently-live system — this removal is scoped to the
-foundation-only model in `Vault+Model.swift`, which nothing calls yet; the shipped mechanism's own removal
-is Bug 124's remedy landing, not yet done.
+`senderIdentifier`. At the time this removal landed, the shipped, tested Branch B mechanism in
+`ShardCustody+Manager.swift` (`ShardHandbackAttestationTests`) was a separate, currently-live system,
+untouched here. **That mechanism's own removal followed, 2026-09-19 — `bugs.md` Bug 125, not Bug 124.**
+Bug 125 found a broader reason than Bug 124's: attestation never verified content authenticity in the
+first place, only sender identity, which the bundle's own transport (1:1 ECDH + GCM, a successful decrypt
+already proving who sent it) established before `handleHandback` ever inspected the field. Branch A
+(`attribute.verify(against: ownKey)`) stays, informational only; its failure now falls through to
+unconditional acceptance rather than trying attestation as a second check.
 
 **Consequence: `Vault`'s "one seal covers everything" property — the mechanism that closed `bugs.md` Bug
 120 for this container as a side effect of the storage shape — does not survive this move.** Independent
@@ -1011,9 +1015,9 @@ Expect Stage 3 to grow — don't let this get absorbed silently into it.
 | Bug | What | Status |
 |---|---|---|
 | 93 | Vault recovery was depth-blind in state, UI and trigger | fixed; its harm-4 follow-up is partly reverted by this design |
-| 94 | Restore path trusted attacker-supplied material | all three remedies in — overwrite refusal, trustee attestation, confirmation |
-| 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | fixed — every op ships an attestation, real or filler |
-| 95 | One poisoned shard permanently blocks legitimate recovery | open — Bug 94 remedy 2 narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
+| 94 | Restore path trusted attacker-supplied material | overwrite refusal and confirmation stand; remedy 2 (trustee attestation) was removed, 2026-09-19 — `bugs.md` Bug 125, see §6 item 9.3 above |
+| 94a | Remedy 2's attestation field unpadded — slot size named the trustee mid-recovery | **Moot, 2026-09-19.** Bug 125 removed the attestation field itself — nothing left to pad |
+| 95 | One poisoned shard permanently blocks legitimate recovery | open — distinct-sender enforcement (unrelated to attestation, which is gone) narrows the attacker population but doesn't close it; still no subset search, no discard-restore UI |
 | 96 (item 1) | Two traps on decoded content | fixed |
 | 96 (item 2) | Restore shard buffer unbounded | open, permanently accepted as of §6 item 9.3, 2026-09-13: each unbounded row now costs ≈112 KB (revised down from ≈215 KB, 2026-09-14, when Bug 124 removed the attestation field), not a few hundred bytes. A depth-scoped cap would have closed this safely (Bug 122's own resolution confirms the fix was viable) but was rejected for the UX scope it would require, not a technical blocker. No cap will be adopted. |
 | 96 (item 3) | Export plaintext left unzeroed | open |
