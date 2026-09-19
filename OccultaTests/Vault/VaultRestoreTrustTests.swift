@@ -341,7 +341,7 @@ struct VaultRestoreTrustTests {
         let attackerBackup = try attacker.vault.exportBackup(currentDepth: 0)
 
         try attackerBackup.write(to: pendingRestoreURL, options: [.atomic, .completeFileProtection])
-        try victim.vault.storeRestoreShard(attacker.shards[0], attestation: nil, senderIdentifier: "trustee-0", currentDepth: 0)
+        try victim.vault.storeRestoreShard(attacker.shards[0], senderIdentifier: "trustee-0", currentDepth: 0)
         victim.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(victim.vault.pendingRestoreActive, "arming the file must still set the flag")
         #expect(victim.vault.pendingRestoreShardCount == 1)
@@ -386,7 +386,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 0)
 
@@ -407,7 +407,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 2)
 
@@ -435,7 +435,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 3) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 3) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 3)
         #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) == nil, "must not complete above depth 0")
@@ -461,7 +461,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
+        for (i, shard) in owner.shards.enumerated() { try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 0) }
 
         fresh.vault.attemptBackupRestore(currentDepth: 0)
         #expect((try? fresh.vault.currentBackupKey(currentDepth: 0)) != nil,
@@ -487,7 +487,7 @@ struct VaultRestoreDepthGatingTests {
 
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
-        try fresh.vault.storeRestoreShard(owner.shards[0], attestation: nil, senderIdentifier: "trustee-0", currentDepth: 0)
+        try fresh.vault.storeRestoreShard(owner.shards[0], senderIdentifier: "trustee-0", currentDepth: 0)
 
         fresh.vault.refreshPendingRestoreState(currentDepth: 0)
         #expect(fresh.vault.pendingRestoreActive, """
@@ -520,7 +520,7 @@ struct VaultRestoreDepthGatingTests {
         let fresh = try makeFreshVault()
         try fresh.vault.storePendingRestore(backup)
         for (i, shard) in owner.shards.enumerated() {
-            try fresh.vault.storeRestoreShard(shard, attestation: nil, senderIdentifier: "trustee-\(i)", currentDepth: 2)
+            try fresh.vault.storeRestoreShard(shard, senderIdentifier: "trustee-\(i)", currentDepth: 2)
         }
 
         fresh.vault.attemptBackupRestore(currentDepth: 2)
@@ -621,7 +621,7 @@ struct VaultRestoreRobustnessTests {
                 value: Data(repeating: UInt8(i % 251), count: 33),
                 category: .shard, signature: Data(), entryID: UUID()
             )
-            try? victim.vault.storeRestoreShard(junk, attestation: nil, senderIdentifier: "junk-sender-\(i)", currentDepth: 0)
+            try? victim.vault.storeRestoreShard(junk, senderIdentifier: "junk-sender-\(i)", currentDepth: 0)
         }
 
         #expect(victim.vault.pendingRestoreShardCount == 255, """

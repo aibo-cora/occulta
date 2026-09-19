@@ -81,9 +81,12 @@ final class ReconstructShard {
     /// `entryID` is needed to group shards toward the correct entry's threshold.
     /// `attrID` lets us deduplicate within an entry's group (one shard per
     /// trustee, identified by the SignedAttribute.id from the original split).
-    /// `senderIdentifier`/`attestation` are Bug 94 remedy 2: at most one stored
-    /// row per (entryID, senderIdentifier) is kept, so a threshold-reaching group
-    /// requires distinct senders, not just distinct attrIDs.
+    /// `senderIdentifier` is Bug 94 remedy 2: at most one stored row per
+    /// (entryID, senderIdentifier) is kept, so a threshold-reaching group requires
+    /// distinct senders, not just distinct attrIDs. No longer carries an
+    /// `attestation` — `bugs.md` Bug 125 removed it from the wire format entirely;
+    /// it never verified content authenticity, only sender identity, which the
+    /// bundle's own transport already establishes.
     ///
     /// Unlike the BEK path, a per-entry group *does* reach the entry's real threshold:
     /// the entry is one this device split itself, so its `shardDistributionEncrypted`
@@ -94,7 +97,6 @@ final class ReconstructShard {
         let attrID:  UUID
         let signedAttribute:  SignedAttribute
         let senderIdentifier: String
-        let attestation:      SignedAttribute?
         /// BEK-restore rows only (`entryID` resolves to no real `VaultEntry`) — which
         /// depth's restore this shard belongs to, `DepthCodec`-encoded (2 bytes, never a
         /// raw `Int`: see `RECOVERY_BUFFER_LAYERING.md` §6 item 9.1 for why a raw `Int`
@@ -112,14 +114,12 @@ final class ReconstructShard {
             attrID:           UUID,
             signedAttribute:  SignedAttribute,
             senderIdentifier: String,
-            attestation:      SignedAttribute?,
             depth:            Data? = nil
         ) {
             self.entryID          = entryID
             self.attrID           = attrID
             self.signedAttribute  = signedAttribute
             self.senderIdentifier = senderIdentifier
-            self.attestation      = attestation
             self.depth            = depth
         }
     }

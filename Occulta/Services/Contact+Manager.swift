@@ -1345,11 +1345,11 @@ extension ContactManager {
     ///
     /// **Every optional member of a real op has to be filled here, not omitted.** This is
     /// tier padding's blind spot: it equalises the op *count* per recipient, and the sealed
-    /// payload's length then still varies with what those ops contain. `attestation` (Bug 94
-    /// remedy 2) is ~260 encoded bytes and `entryID` ~50, so a filler missing either is a
-    /// keyless per-recipient distinguisher in a bundle whose `wrappedPayload` lengths are
-    /// cleartext. The sending side keeps its half of this by filling `attestation` on every
-    /// real op too — see `ShardCustodyManager.attestationFiller`.
+    /// payload's length then still varies with what those ops contain. `entryID` is ~50
+    /// encoded bytes, so a filler missing it is a keyless per-recipient distinguisher in a
+    /// bundle whose `wrappedPayload` lengths are cleartext. (`attestation` no longer exists
+    /// as a field to worry about here — `bugs.md` Bug 125 removed it from the wire format
+    /// entirely.)
     private static func paddedShardOperations(
         _ real: [OccultaBundle.ShardOperation],
         to tier: Int
@@ -1359,16 +1359,15 @@ extension ContactManager {
         return padded
     }
 
-    /// Not `private`: `ShardOperationPaddingTests` encodes this against a real attested
-    /// handback op to catch the next field that gets added to one and not the other, which
-    /// is the mistake this function has now made twice.
+    /// Not `private`: `ShardOperationPaddingTests` encodes this against a real handback op
+    /// to catch the next field that gets added to one and not the other.
     ///
-    /// Two residuals it does not close, both pre-dating the attestation field and both far
-    /// below the ~260 bytes that one was. `kind` is `.unsupported` (11 bytes) against a real
-    /// `.handback` (8) or `.distribute` (10), and that spelling is load-bearing — it is what
-    /// makes the receiver skip the op. And a real `.replace` carries an `attributeID` no
-    /// other op has; matching it would mean giving filler one too, which would make filler
-    /// the outlier against the far more common `.distribute`.
+    /// One residual it does not close, far below the size a mismatched field would be.
+    /// `kind` is `.unsupported` (11 bytes) against a real `.handback` (8) or `.distribute`
+    /// (10), and that spelling is load-bearing — it is what makes the receiver skip the op.
+    /// And a real `.replace` carries an `attributeID` no other op has; matching it would
+    /// mean giving filler one too, which would make filler the outlier against the far more
+    /// common `.distribute`.
     static func fillerShardOperation() -> OccultaBundle.ShardOperation {
         let filler = SignedAttribute(
             label:     "vault-shard",
@@ -1378,18 +1377,7 @@ extension ContactManager {
             // Real `.shard` attributes always carry one; nil here is a ~50-byte tell.
             entryID:   UUID()
         )
-        let fillerAttestation = SignedAttribute(
-            label:     "shard-attestation",
-            value:     Data((0..<32).map { _ in UInt8.random(in: .min ... .max) }),
-            category:  .attestation,
-            signature: Data((0..<72).map { _ in UInt8.random(in: .min ... .max) }),
-            entryID:   filler.entryID
-        )
-        return OccultaBundle.ShardOperation(
-            kind:        .unsupported,
-            attribute:   filler,
-            attestation: fillerAttestation
-        )
+        return OccultaBundle.ShardOperation(kind: .unsupported, attribute: filler)
     }
 }
 

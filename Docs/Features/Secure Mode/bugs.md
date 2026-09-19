@@ -7001,6 +7001,13 @@ each op carries two, which is the same jitter that made the neighbouring test fa
 before its bound was widened. A second test pins the specific omissions (`attestation` non-nil,
 `attribute.entryID` non-nil, matching entryIDs) so they cannot return via a tidied nil default.
 
+**Moot as of 2026-09-19 — `bugs.md` Bug 125 removed `attestation` from the wire format entirely.**
+This entry's fix (pad the field so its presence/absence can't be a tell) was correct for as long as
+the field existed; once there's no `attestation` field on `ShardOperation` at all, there is nothing
+left to pad unevenly. `ShardOperationPaddingTests` was updated accordingly — it now compares a filler
+op against a plain `.handback`, with no attestation on either side. Left as historical record of a
+real bug, not rewritten to pretend the field it was about never existed.
+
 `fillerShardOperation` is no longer `private`, solely so the first test can reach it. The general
 lesson is in its doc comment: **every optional member a real op can carry has to be filled here**,
 because tier padding equalises count and nothing equalises size.
@@ -10384,14 +10391,14 @@ transport layer and finds sender identity is already proven, cryptographically, 
 that have nothing to do with revocation. See that entry for the full reasoning; it's the current word on
 whether attestation (in any form, not just its size) is needed at all.
 
-**Foundation half acted on, 2026-09-14 — the shipped half is not, and BEK's own fix landing doesn't change
-that.** `PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout are removed
-(`Vault+Model.swift`, cutting the slot from 862 to 449 bytes and the per-row cost from ≈215 KB to ≈112 KB) —
-safe to do outright since nothing calls that codec yet, and, per Bug 125, correct for a reason beyond just
-being safe: there is nothing to restore there, not even a presence flag. The *shipped, tested* Branch B
-mechanism (`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`, 2026-08-26) is
-a separate system and is still untouched — that removal is Bug 125's remedy landing, a bigger, separate
-decision on live code, not this bug's to make.
+**Foundation half acted on 2026-09-14; the shipped half followed on 2026-09-19, as Bug 125's remedy, not
+this bug's.** `PendingRestoreShardSlot.attestation` and its half of `ShardsCodec`'s per-slot layout were
+removed (`Vault+Model.swift`, cutting the slot from 862 to 449 bytes and the per-row cost from ≈215 KB to
+≈112 KB) — safe to do outright since nothing called that codec yet, and, per Bug 125, correct for a reason
+beyond just being safe: there was nothing to restore there, not even a presence flag. The *shipped, tested*
+Branch B mechanism (`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`,
+originally 2026-08-26) has since been collapsed too — see Bug 125's own Remedy for the full account of what
+changed there.
 
 ### Guard
 
@@ -10409,11 +10416,12 @@ regression test — its remedy (regenerate the PEK value) isn't built yet either
 
 ## Bug 125 — Branch B's attestation signature is redundant with transport-level sender authentication it never needed to duplicate
 
-**Status:** Found 2026-09-19, not acted on. A design finding about shipped, tested code
-(`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`) — recorded for a
-deliberate decision, not a silent fix. Not a vulnerability in the traditional sense: nothing gets *less*
-secure by leaving attestation as it is. The finding is that it's carrying real cost (bytes, complexity, a
-second signing/verification path) for a security property already established elsewhere, for free.
+**Status:** Fixed, 2026-09-19 — found and built the same day. A design finding about shipped, tested code
+(`ShardCustody+Manager.swift`'s Branch A/B split, `ShardHandbackAttestationTests`), acted on the same day
+it was recorded rather than left for a separate decision. Never a vulnerability in the traditional sense:
+nothing got *less* secure while attestation was still in place. The finding was that it carried real cost
+(bytes, complexity, a second signing/verification path) for a security property already established
+elsewhere, for free — and that cost is why it was worth removing outright rather than just documenting.
 
 **Target:** unset.
 
@@ -10468,18 +10476,33 @@ actually sent a share — that check is untouched, still runs, still does the ac
 scoped to trustees. Removing attestation removes a redundant second signature, not the binding to a real
 distribution.
 
-### Remedy — not built; two separate surfaces, one bigger than the other
+### Remedy — both surfaces done
 
-- **Foundation model:** settles the question `bugs.md` Bug 124 paused and then answered incompletely —
+- **Foundation model:** settled the question `bugs.md` Bug 124 paused and then answered incompletely —
   `PendingRestoreShardSlot` needs no attestation field of any kind, not a `SignedAttribute`, not a trimmed
   104-byte version, not a presence flag. Already the current shape as of Bug 124's own foundation-half
   edit; this entry is why that shape is correct, not merely safe.
-- **Shipped mechanism:** collapse `handleHandback`'s Branch A/B split
-  ([ShardCustody+Manager.swift:219-247](Occulta/Features/Vault/ShardCustody+Manager.swift:219)) into
-  unconditional accept on Branch A failure, given a matching `entryID`. Removes `op.attestation`,
-  `attestationFiller`, and `ShardHandbackAttestationTests`' reason to exist. Real behavior change on live,
-  tested code — not attempted here.
+- **Shipped mechanism, done 2026-09-19:** `handleHandback`'s Branch A/B split
+  ([ShardCustody+Manager.swift:219-267](Occulta/Features/Vault/ShardCustody+Manager.swift:219)) now runs
+  Branch A for the real, non-redundant thing it proves when it succeeds (content authenticity) but no
+  longer gates on it — failure falls straight through to acceptance instead of trying a second check.
+  Removed `op.attestation` from `OccultaBundle.ShardOperation` (a real wire-format change — old builds
+  simply never see the key, matching this codebase's established "unknown fields are silently ignored"
+  tolerance), `attestationFiller`, `attestation(for:retainedKeysByFingerprint:)`, and
+  `retainedKeysByFingerprint(forOwner:)`. `ShardHandbackAttestationTests.swift` kept its name (cosmetic
+  rename, not done) but lost every test that only made sense with Branch B — attestation construction,
+  attestation-signature/hash mismatch rejection — and kept/reworked the ones that don't: Branch A
+  acceptance, unconditional acceptance on Branch A failure, and distinct-sender enforcement, which is the
+  property actually doing security work now. `Vault+Manager+ReturnBuffer.swift`, `ReconstructShard+Model
+  .swift`, `SignedAttribute.swift`'s `AttestedShard`, and `Contact+Manager.swift`'s
+  `fillerShardOperation`/tier-padding all lost their `attestation` parameter or field to match.
+  `GroupShardGatingTests.swift`'s padding-parity suite (`ShardOperationPaddingTests`) updated to compare a
+  filler op against a plain `.handback` instead of an attested one — see Bug 94a's own moot-as-of-today
+  note.
 
 ### Guard
 
-None — nothing built yet.
+Covered by the reworked `ShardHandbackAttestationTests.swift` (Branch A acceptance, rotated-identity
+acceptance with no signature at all, distinct-sender enforcement, trustee-side handback still fires on
+fingerprint mismatch) and `GroupShardGatingTests.swift`'s updated padding-parity suite. Full suite run
+after the change — see the commit this note lands with for the pass/fail/skip counts.

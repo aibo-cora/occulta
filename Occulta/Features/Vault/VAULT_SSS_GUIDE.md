@@ -350,15 +350,17 @@ arriving shard becomes one `ReconstructShard` row, sealed under the recovery
 buffer key with AAD = `id` (id-only). The plaintext columns carry no
 identifying information.
 
-Sealed payload: `{ entryID, attrID, signedAttribute, senderIdentifier, attestation }`.
+Sealed payload: `{ entryID, attrID, signedAttribute, senderIdentifier }`.
 The `entryID` lives inside the seal so a forensic reader cannot tell which entries
 are mid-recovery or how many shards have arrived per entry.
 
-`senderIdentifier` and `attestation` were added by Bug 94 remedy 2 — see *Handback
-verification* below. `senderIdentifier` is the receiver's own resolution of who sent
-the bundle, never sender-asserted, and at most one row is kept per
-`(entryID, senderIdentifier)` so a threshold-reaching group requires distinct
-senders rather than distinct `SignedAttribute.id`s.
+`senderIdentifier` was added by Bug 94 remedy 2 — see *Handback verification*
+below. It is the receiver's own resolution of who sent the bundle, never
+sender-asserted, and at most one row is kept per `(entryID, senderIdentifier)`
+so a threshold-reaching group requires distinct senders rather than distinct
+`SignedAttribute.id`s. This payload used to also carry `attestation`; `bugs.md`
+Bug 125 (2026-09-19) removed it — it never verified content authenticity, only
+sender identity, which the bundle's own transport already establishes.
 
 **BEK restore shards live here too, since 2026-08-27** (Bug 100 remedy 2). They
 previously had their own sealed file, whose length divided out to the number of
@@ -577,32 +579,30 @@ Bob's app responds automatically, with no separate scheduling model:
    (sealed under the recovery buffer key, no biometric). `tryFinalizeReconstruction`
    is triggered opportunistically.
 
-### Handback verification: two branches
+### Handback verification
 
-Added by Bug 94 remedy 2 and absent from earlier drafts of this document.
+Added by Bug 94 remedy 2; revised by `bugs.md` Bug 125 (2026-09-19), which removed
+the second branch entirely rather than merely narrowing it.
 
 **Branch A — direct.** The shard verifies against Alice's *own current* identity key.
-This is the ordinary case: Alice still holds the key that signed the shard.
+This is the ordinary case: Alice still holds the key that signed the shard, and this
+proves content authenticity — that the shard value is genuinely what she signed —
+which nothing else in this flow can substitute for.
 
-**Branch B — trustee attestation.** Alice's device cannot verify the shard, because
-Secure Enclave identity keys are non-exportable and die with the device they were
-created on — which is precisely the situation a new-device recovery is in. So Bob
-verifies it instead, against his own retained copy of Alice's *old* public key
-(`Contact.Profile.Key`'s history is append-only), and vouches with his current
-identity, which Alice's new device can check because it just re-paired with him over
-UWB. `attestation(for:)` returns nil on any failure, which is the safe default: the
-op still goes out and simply has no Branch B path.
+**Branch A failing means accept, not "try a second check."** Alice's device cannot
+verify a signature made by a key that no longer exists — true whether Alice's
+identity rotated (the ordinary reason) or the content is simply fabricated; nothing
+distinguishes those two causes, and nothing ever could. The mechanism that used to
+run here — Bob independently checking the shard against Alice's retained old key and
+vouching with his own current identity — never actually closed that gap: it only
+ever proved "a recognized identity vouches for this," which the bundle's own
+transport (a 1:1 exchange; the session key is derivable only by the two real
+parties) already proves before `handleHandback` is ever called. So Branch A failing
+now falls straight through to acceptance. `attribute.entryID` matching a real, live
+distribution — checked downstream, in `acceptReturnedShard` and
+`attemptBackupRestore`'s own grouping — is what actually scopes this to real
+trustees, and that check is unaffected.
 
-Only a Branch B-verified attestation is carried into storage. Since Bug 94a every op
-ships an attestation — a real one where it exists and same-sized random filler
-otherwise — so `op.attestation` is no longer evidence of anything on its own.
-
-**Why the filler.** `attestation` is roughly 260 encoded bytes, and
-`Recipient.wrappedPayload` lengths are cleartext in a group bundle. Tier padding
-equalises the op *count* per recipient and nothing equalises their encoded size, so
-an optional field present on some recipients and absent on others partitions the
-bundle by who is genuinely mid-recovery. Same reasoning as `wrapRecipient`'s
-`randomEphemeralSignatureFiller`.
 4. **Cleanup** — when Alice successfully redistributes (sends `.distribute` with her
    new fingerprint), `handleDistribute` detects the fingerprint change and deletes
    all mismatch-fingerprint shards for Alice's contact. No explicit acknowledgement

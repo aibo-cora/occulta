@@ -22,11 +22,10 @@ extension VaultManager {
 
     /// Absorb one returned shard into the reconstruction buffer.
     ///
-    /// `attestation`/`senderIdentifier` come from `handleHandback`'s own Branch A/B
-    /// check (Bug 94 remedy 2) — verification already happened there; this function
-    /// no longer re-checks the signature itself. `senderIdentifier` must be the
-    /// *receiver's own* resolution of who sent this, never sender-asserted — see
-    /// `AttestedShard`'s doc comment.
+    /// `senderIdentifier` comes from `handleHandback`, resolved on the receiving
+    /// device's own side — never sender-asserted — see `AttestedShard`'s doc
+    /// comment. Verification (such as it is — Branch A when it can run; unconditional
+    /// acceptance otherwise, `bugs.md` Bug 125) already happened there.
     ///
     /// Steps:
     ///   1. Per-entry buffer: only for entries this device actually split
@@ -43,7 +42,6 @@ extension VaultManager {
     ///   3. BEK restore — same one-per-sender rule, applied in `storeRestoreShard`.
     func acceptReturnedShard(
         _ attribute: SignedAttribute,
-        attestation: SignedAttribute?,
         senderIdentifier: String,
         currentDepth: Int
     ) throws {
@@ -67,7 +65,6 @@ extension VaultManager {
             try self.insertReconstructRow(
                 entryID:          entryID,
                 attribute:        attribute,
-                attestation:      attestation,
                 senderIdentifier: senderIdentifier,
                 usingKey:         key
             )
@@ -86,7 +83,7 @@ extension VaultManager {
         // deliberately (Bug 94 remedy 2) — a fresh device can't know the expected
         // distributionID any more precisely than this before reconstruction succeeds.
         if self.isRestorePending {
-            try? self.storeRestoreShard(attribute, attestation: attestation, senderIdentifier: senderIdentifier, currentDepth: currentDepth)
+            try? self.storeRestoreShard(attribute, senderIdentifier: senderIdentifier, currentDepth: currentDepth)
             self.attemptBackupRestore(currentDepth: currentDepth)
         }
     }
@@ -176,7 +173,6 @@ extension VaultManager {
     private func insertReconstructRow(
         entryID:          UUID,
         attribute:        SignedAttribute,
-        attestation:      SignedAttribute?,
         senderIdentifier: String
     ) throws {
         guard let restoreKey = try self.keyManager.deriveRestoreVaultKey() else {
@@ -184,20 +180,19 @@ extension VaultManager {
         }
         try self.insertReconstructRow(
             entryID: entryID, attribute: attribute,
-            attestation: attestation, senderIdentifier: senderIdentifier,
+            senderIdentifier: senderIdentifier,
             usingKey: restoreKey
         )
     }
 
-    /// Same as `insertReconstructRow(entryID:attribute:attestation:senderIdentifier:)` but
-    /// decrypts with an already-derived key instead of deriving one fresh — for callers that
-    /// already hold the restore vault key and would otherwise pay a redundant Secure Enclave
-    /// round trip (see `storeRestoreShard`, which calls this alongside two other buffer
-    /// operations that all need the identical key).
+    /// Same as `insertReconstructRow(entryID:attribute:senderIdentifier:)` but decrypts with
+    /// an already-derived key instead of deriving one fresh — for callers that already hold
+    /// the restore vault key and would otherwise pay a redundant Secure Enclave round trip
+    /// (see `storeRestoreShard`, which calls this alongside two other buffer operations that
+    /// all need the identical key).
     private func insertReconstructRow(
         entryID:          UUID,
         attribute:        SignedAttribute,
-        attestation:      SignedAttribute?,
         senderIdentifier: String,
         usingKey restoreKey: SymmetricKey
     ) throws {
@@ -207,8 +202,7 @@ extension VaultManager {
             entryID:          entryID,
             attrID:           attribute.id,
             signedAttribute:  attribute,
-            senderIdentifier: senderIdentifier,
-            attestation:      attestation
+            senderIdentifier: senderIdentifier
         )
         let plaintext = try JSONEncoder().encode(payload)
         let sealed    = try AES.GCM.seal(plaintext, using: restoreKey, nonce: AES.GCM.Nonce(), authenticating: aad)
@@ -294,7 +288,6 @@ extension VaultManager {
         into row:         ReconstructShard,
         entryID:          UUID,
         attribute:        SignedAttribute,
-        attestation:      SignedAttribute?,
         senderIdentifier: String,
         depth:            Data,
         usingKey key:     SymmetricKey
@@ -304,7 +297,6 @@ extension VaultManager {
             attrID:           attribute.id,
             signedAttribute:  attribute,
             senderIdentifier: senderIdentifier,
-            attestation:      attestation,
             depth:            depth
         )
         let plaintext = try JSONEncoder().encode(payload)
@@ -329,7 +321,7 @@ extension VaultManager {
     /// stored, not counted, no error. Rejecting rather than evicting: evicting the oldest row to
     /// make room would itself be an attack (flood to knock out a real trustee's already-banked
     /// share).
-    func storeRestoreShard(_ attribute: SignedAttribute, attestation: SignedAttribute?, senderIdentifier: String, currentDepth: Int) throws {
+    func storeRestoreShard(_ attribute: SignedAttribute, senderIdentifier: String, currentDepth: Int) throws {
         guard let entryID = attribute.entryID else { throw VaultError.decryptionFailed }
 
         // Derived once and reused below — migrateLegacyRestoreShardFile, decryptAllReconstructShards,
@@ -349,7 +341,7 @@ extension VaultManager {
             // place. Never delete-then-insert here: that would shrink the shared pool below its
             // fixed size, the exact row-count camouflage this design exists to hold constant.
             try self.sealBEKRestorePayload(
-                into: dup.row, entryID: entryID, attribute: attribute, attestation: attestation,
+                into: dup.row, entryID: entryID, attribute: attribute,
                 senderIdentifier: senderIdentifier, depth: depthBytes, usingKey: key
             )
             try self.modelContext.save()
@@ -361,7 +353,7 @@ extension VaultManager {
 
         let target = try self.claimBEKRestoreFillerRow(usingKey: key)
         try self.sealBEKRestorePayload(
-            into: target, entryID: entryID, attribute: attribute, attestation: attestation,
+            into: target, entryID: entryID, attribute: attribute,
             senderIdentifier: senderIdentifier, depth: depthBytes, usingKey: key
         )
         try self.modelContext.save()
@@ -385,7 +377,6 @@ extension VaultManager {
         return try self.bekRestoreRows(usingKey: key, currentDepth: currentDepth).map {
             AttestedShard(
                 attribute:        $0.payload.signedAttribute,
-                attestation:      $0.payload.attestation,
                 senderIdentifier: $0.payload.senderIdentifier
             )
         }
@@ -455,7 +446,7 @@ extension VaultManager {
             guard let entryID = shard.attribute.entryID else { continue }
             let target = try self.claimBEKRestoreFillerRow(usingKey: restoreKey)
             try self.sealBEKRestorePayload(
-                into: target, entryID: entryID, attribute: shard.attribute, attestation: shard.attestation,
+                into: target, entryID: entryID, attribute: shard.attribute,
                 senderIdentifier: shard.senderIdentifier, depth: depthZero, usingKey: restoreKey
             )
         }

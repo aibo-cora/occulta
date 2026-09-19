@@ -231,9 +231,12 @@ extension PendingShamirSecretRestore {
     /// sized assuming a raw r‖s signature, but `KeyManagerProtocol.signData(_:)`
     /// returns a genuinely DER-encoded one
     /// (`Key+Manager.swift`'s own doc comment says so directly), and this exact
-    /// subsystem already has an established size for that —
-    /// `ShardCustody+Manager.swift`'s `attestationFiller` sizes its filler signature
-    /// at 72 bytes, not 64, specifically to match the real thing):
+    /// subsystem already had an established size for that at the time —
+    /// `ShardCustody+Manager.swift`'s `attestationFiller` sized its filler signature
+    /// at 72 bytes, not 64, specifically to match the real thing. That function no
+    /// longer exists — `bugs.md` Bug 125, 2026-09-19, removed attestation entirely —
+    /// but the 72-byte number it confirmed is still correct, DER-encoded ECDSA-P256
+    /// signatures being 70-72 bytes regardless of what else changed):
     /// ```
     /// byte 0–15    id            — raw UUID bytes
     /// byte 16–271  label         — UTF-8, fixed-width, padded/truncated to 256
