@@ -10228,8 +10228,8 @@ included — reaches for `Data.encrypt(using:)` for a field where row-identity b
 
 ## Bug 124 — A removed trustee's shard stays valid forever; neither branch checks current trustee status
 
-**Status:** Closed, 2026-09-19 — BEK fixed and tested 2026-09-14, PEK fixed 2026-09-19 but with no
-dedicated regression test yet (see Guard). Found 2026-09-14, while working out whether Bug 94 remedy 2's
+**Status:** Closed, 2026-09-19 — BEK fixed and tested 2026-09-14, PEK fixed and tested 2026-09-19 (see
+Guard). Found 2026-09-14, while working out whether Bug 94 remedy 2's
 attestation actually distinguishes a legitimate trustee from anyone else. It doesn't, on its own — tracing
 the acceptance path directly turned up a broader, pre-existing gap that has nothing to do with attestation
 specifically.
@@ -10330,7 +10330,7 @@ rotation. The two secret kinds split differently, because only one has an extern
   `entry.id` never changes, only the key does. A removed trustee's old share now reconstructs a PEK that
   decrypts nothing, even in the case where it somehow still got admitted. Full suite green (846/0/6) after
   the change — no regressions in the many existing tests that already exercise `prepareShards` for PEK.
-  No dedicated regression test for the fix itself yet — see Guard.
+  Dedicated regression test added the same day (`PEKTrusteeRotationTests.swift`) — see Guard.
 
 Either way, this is also the more direct fix for the underlying problem than a trustee-list-membership check
 on the receiving side would be on its own — regenerating the id/value makes a stale credential inert by
@@ -10409,8 +10409,17 @@ is the load-bearing one (verified it actually fails if the fix is reverted, not 
 `ShamirSecretSharing.lagrange()` directly, it uses every supplied point unconditionally with no
 error-correction, so that mix fails the GCM check regardless of whether `distributionID` changed
 between rounds. Grouping-by-`entryID` is what actually keeps the mix from being attempted at all in
-production (`attemptBackupRestore`), and that's what the first test already covers. PEK still has no
-regression test — its remedy (regenerate the PEK value) isn't built yet either.
+production (`attemptBackupRestore`), and that's what the first test already covers.
+
+PEK covered, 2026-09-19 — `PEKTrusteeRotationTests.swift`. Unlike BEK, `entryID` (=
+`VaultEntry.id`) never changes between rounds, so there's no second id for a stale round to be isolated
+by — the discriminating property here is that a stale round's shares reconstruct a PEK that no longer
+opens the entry's own content. `redistributionInvalidatesStalePEKShares` is the load-bearing one
+(verified it fails if `rotatePEK`'s call in `prepareShards` is commented out, reverting to reading the
+entry's unrotated PEK — confirmed directly, not just assumed); `cleanRestoreStillSucceedsAfterRedistribution`
+confirms a legitimate restore using the current round's shares still recovers the real content
+afterward. No Secure Enclave dependency — `rotatePEK` only touches the vault key and
+`SecRandomCopyBytes`, unlike `Backup.persist`'s ambient `Manager.Key()` path.
 
 ---
 
