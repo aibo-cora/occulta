@@ -164,11 +164,6 @@ extension PendingShamirSecretRestore {
     /// slot count, random filler for anything absent). Sealed separately under the
     /// restore vault key — this type only handles the plaintext shape.
     ///
-    /// Foundation only, as of this writing: `encode`/`decode` are declared but not
-    /// implemented — nothing calls this codec yet, matching `PendingShamirSecretRestore`
-    /// itself, which has no read/write logic anywhere either. See
-    /// `RECOVERY_BUFFER_LAYERING.md` §6 item 9.3.
-    ///
     /// Wire format (`payloadSize` bytes, always, whether 0 shards are in use or
     /// `shardCapacity`):
     /// ```
@@ -207,22 +202,134 @@ extension PendingShamirSecretRestore {
             case tooManySlots(count: Int)
         }
 
+        /// Always writes `formatVersion` — dispatches on that constant the same way
+        /// `decode(_:)` dispatches on whatever version tag it reads, matching
+        /// `PayloadCodec.encode(_:)`'s own reasoning for why the two stay symmetric
+        /// by construction.
         static func encode(_ slots: [PendingRestoreShardSlot]) throws -> Data {
-            fatalError("ShardsCodec.encode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+            switch Self.formatVersion {
+            case 1:  return try Self.encodeV1(slots)
+            default: preconditionFailure("formatVersion \(Self.formatVersion) has no encoder")
+            }
         }
 
+        /// Dispatches on the version tag before checking length — see
+        /// `PayloadCodec.decode(_:)`'s doc comment for why. `nil` for anything
+        /// malformed: wrong length for its version, a version tag nothing below
+        /// recognises, or (via `decodeV1`) a slot count exceeding `shardCapacity`.
         static func decode(_ data: Data) -> [PendingRestoreShardSlot]? {
-            fatalError("ShardsCodec.decode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+            guard data.count >= 2 else { return nil }
+            let version = UInt16(data[data.startIndex]) << 8 | UInt16(data[data.startIndex + 1])
+
+            switch version {
+            case 1:  return Self.decodeV1(data)
+            default: return nil
+            }
+        }
+
+        private static func encodeV1(_ slots: [PendingRestoreShardSlot]) throws -> Data {
+            guard slots.count <= Self.shardCapacity else {
+                throw CodecError.tooManySlots(count: slots.count)
+            }
+
+            var out = Data(capacity: Self.payloadSize)
+            var version = Self.formatVersion.bigEndian
+            withUnsafeBytes(of: &version) { out.append(contentsOf: $0) }
+
+            for slot in slots {
+                out.append(try Self.encodeSlot(slot))
+            }
+            for _ in slots.count..<Self.shardCapacity {
+                out.append(Self.emptySlot())
+            }
+
+            return out
+        }
+
+        private static func decodeV1(_ data: Data) -> [PendingRestoreShardSlot]? {
+            guard data.count == Self.payloadSize else { return nil }
+            let bytes = [UInt8](data)
+
+            var slots: [PendingRestoreShardSlot] = []
+            var offset = 2
+            for _ in 0..<Self.shardCapacity {
+                let slotBytes = Data(bytes[offset..<(offset + Self.slotSize)])
+                if let slot = Self.decodeSlot(slotBytes) {
+                    slots.append(slot)
+                }
+                offset += Self.slotSize
+            }
+            return slots
+        }
+
+        // MARK: Per-slot
+
+        /// A slot with no signed attribute or no sender is treated as absent —
+        /// filler, matching `PayloadCodec.decodeShard`'s own "no shard here" tag
+        /// convention. `PendingRestoreShardSlot`'s two fields are only ever both
+        /// present or both absent in practice (see its own doc comment), so
+        /// requiring both here rather than either doesn't lose any real data.
+        private static func encodeSlot(_ slot: PendingRestoreShardSlot) throws -> Data {
+            guard let attribute = slot.signedAttribute, let senderIdentifier = slot.senderIdentifier else {
+                return Self.emptySlot()
+            }
+
+            var out = Data(capacity: Self.slotSize)
+            out.append(1)
+            out.append(try SignedAttributeCodec.encode(attribute))
+            out.append(Self.fixedWidthUTF8(senderIdentifier, count: 36))
+            return out
+        }
+
+        /// `nil` for a genuinely-unused capacity slot (presence byte 0), a
+        /// malformed one, or one whose `SignedAttributeCodec` region fails to
+        /// decode — all three mean "no real shard here."
+        private static func decodeSlot(_ data: Data) -> PendingRestoreShardSlot? {
+            let bytes = [UInt8](data)
+            guard bytes[0] == 1 else { return nil }
+
+            let attributeBytes = Data(bytes[1..<(1 + SignedAttributeCodec.size)])
+            guard let attribute = SignedAttributeCodec.decode(attributeBytes) else { return nil }
+
+            let senderBytes = Array(bytes[(1 + SignedAttributeCodec.size)..<Self.slotSize])
+            let senderIdentifier = Self.string(fromFixedWidth: senderBytes)
+
+            return PendingRestoreShardSlot(signedAttribute: attribute, senderIdentifier: senderIdentifier)
+        }
+
+        private static func emptySlot() -> Data {
+            var out = Data(capacity: Self.slotSize)
+            out.append(0)
+            out.append(Data.randomBytes(Self.slotSize - 1))
+            return out
+        }
+
+        // MARK: Fixed-width string
+        //
+        // Duplicated rather than shared with SignedAttributeCodec's own copy —
+        // matching PayloadCodec's and ExportMetaSlotCodec's existing precedent of
+        // each codec carrying its own private helpers rather than a shared one.
+
+        private static func fixedWidthUTF8(_ string: String, count: Int) -> Data {
+            var bytes = Array(string.utf8.prefix(count))
+            bytes.append(contentsOf: repeatElement(0, count: count - bytes.count))
+            return Data(bytes)
+        }
+
+        /// Trims at the first zero byte — every real sender identifier is a UUID
+        /// string (never contains one), so this only ever strips genuine padding.
+        private static func string(fromFixedWidth bytes: [UInt8]) -> String {
+            let trimmed = bytes.prefix { $0 != 0 }
+            return String(decoding: trimmed, as: UTF8.self)
         }
     }
 
     /// Fixed-width codec for one `SignedAttribute` — sized for exactly the one
     /// category `ShardsCodec` writes (`.shard`) and exactly one secret size (32
     /// bytes — true of both a BEK and a PEK today, the two secret kinds
-    /// `PendingShamirSecretRestore.attributeID` currently names). A future secret
-    /// kind of a different size breaks silently through this codec rather than
-    /// failing loudly — worth a `value.count == 33` guard once `encode` is actually
-    /// written, not yet done here.
+    /// `PendingShamirSecretRestore.attributeID` currently names). `encode` guards
+    /// `value.count == 33` and throws rather than silently truncating a future,
+    /// differently-sized secret kind into unusable key material.
     ///
     /// Previously also covered `.attestation` — removed 2026-09-14 along with that
     /// field, see `PendingRestoreShardSlot`'s doc comment (`bugs.md` Bug 124).
@@ -256,12 +363,173 @@ extension PendingShamirSecretRestore {
 
         static let size: Int = 16 + 256 + 33 + 1 + 72 + 8 + 1 + 8 + 1 + 16
 
+        enum CodecError: Error, Equatable {
+            /// `.shard` attributes carry exactly a 1-byte x-coordinate plus a
+            /// 32-byte GF(2^8) share value — 33 bytes total
+            /// (`ShamirSecretSharing.split`'s own output shape). A different size
+            /// means this wasn't a real shard, or something upstream already
+            /// corrupted it; silently truncating key material is the one thing
+            /// this codec must never do.
+            case unexpectedValueSize(count: Int)
+            /// DER-encoded ECDSA-P256 signatures are 70-72 bytes in practice; 72
+            /// is the fixed slot. Longer would be silently truncated into an
+            /// unverifiable signature, so this throws instead.
+            case signatureTooLong(count: Int)
+        }
+
         static func encode(_ attribute: SignedAttribute) throws -> Data {
-            fatalError("SignedAttributeCodec.encode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+            guard attribute.value.count == 33 else {
+                throw CodecError.unexpectedValueSize(count: attribute.value.count)
+            }
+            guard attribute.signature.count <= 72 else {
+                throw CodecError.signatureTooLong(count: attribute.signature.count)
+            }
+
+            var out = Data(capacity: Self.size)
+            out.append(Self.uuidBytes(attribute.id))                        // 16
+            out.append(Self.fixedWidthUTF8(attribute.label, count: 256))    // 256
+            out.append(attribute.value)                                    // 33
+            out.append(Self.tag(for: attribute.category))                  // 1
+            out.append(attribute.signature)
+            out.append(Data(repeating: 0, count: 72 - attribute.signature.count)) // 72
+
+            var created = UInt64(max(0, attribute.createdAt.timeIntervalSince1970)).bigEndian
+            withUnsafeBytes(of: &created) { out.append(contentsOf: $0) }    // 8
+
+            if let expiresAt = attribute.expiresAt {
+                out.append(1)
+                var expires = UInt64(max(0, expiresAt.timeIntervalSince1970)).bigEndian
+                withUnsafeBytes(of: &expires) { out.append(contentsOf: $0) }
+            } else {
+                out.append(0)
+                out.append(Data(repeating: 0, count: 8))
+            }                                                               // 1 + 8
+
+            if let entryID = attribute.entryID {
+                out.append(1)
+                out.append(Self.uuidBytes(entryID))
+            } else {
+                out.append(0)
+                out.append(Data(repeating: 0, count: 16))
+            }                                                               // 1 + 16
+
+            return out
         }
 
         static func decode(_ data: Data) -> SignedAttribute? {
-            fatalError("SignedAttributeCodec.decode not yet implemented — foundation only, see RECOVERY_BUFFER_LAYERING.md §6 item 9.3")
+            guard data.count == Self.size else { return nil }
+            let bytes = [UInt8](data)
+
+            guard let id = Self.uuid(fromBytes: Array(bytes[0..<16])) else { return nil }
+            let label = Self.string(fromFixedWidth: Array(bytes[16..<272]))
+            let value = Data(bytes[272..<305])
+            guard let category = Self.category(fromTag: bytes[305]) else { return nil }
+
+            guard let sigLength = Self.derSignatureLength(Array(bytes[306..<378])) else { return nil }
+            let signature = Data(bytes[306..<(306 + sigLength)])
+
+            let createdSeconds = bytes[378..<386].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let createdAt = Date(timeIntervalSince1970: TimeInterval(createdSeconds))
+
+            let hasExpiresAt = bytes[386] == 1
+            let expiresSeconds = bytes[387..<395].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            let expiresAt = hasExpiresAt ? Date(timeIntervalSince1970: TimeInterval(expiresSeconds)) : nil
+
+            let hasEntryID = bytes[395] == 1
+            var entryID: UUID? = nil
+            if hasEntryID {
+                guard let decoded = Self.uuid(fromBytes: Array(bytes[396..<412])) else { return nil }
+                entryID = decoded
+            }
+
+            return SignedAttribute(
+                id: id, label: label, value: value, category: category,
+                signature: signature, createdAt: createdAt, expiresAt: expiresAt, entryID: entryID
+            )
+        }
+
+        // MARK: Category tag
+
+        /// Exhaustive `switch`, not a dictionary literal — a future
+        /// `SignedAttribute.Category` case fails this at compile time instead of
+        /// silently falling through, matching `PayloadCodec.tag(for:)`'s own
+        /// convention for `ShardStatus`.
+        private static func tag(for category: SignedAttribute.Category) -> UInt8 {
+            switch category {
+            case .financial:     return 1
+            case .identity:      return 2
+            case .medical:       return 3
+            case .access:        return 4
+            case .emergency:     return 5
+            case .communication: return 6
+            case .crypto:        return 7
+            case .shard:         return 8
+            case .attestation:   return 9
+            case .other:         return 10
+            }
+        }
+
+        private static func category(fromTag tag: UInt8) -> SignedAttribute.Category? {
+            switch tag {
+            case 1:  return .financial
+            case 2:  return .identity
+            case 3:  return .medical
+            case 4:  return .access
+            case 5:  return .emergency
+            case 6:  return .communication
+            case 7:  return .crypto
+            case 8:  return .shard
+            case 9:  return .attestation
+            case 10: return .other
+            default: return nil
+            }
+        }
+
+        // MARK: Fixed-width string
+        //
+        // Duplicated rather than shared with ShardsCodec's own copy — see that
+        // type's identical helpers for why.
+
+        private static func fixedWidthUTF8(_ string: String, count: Int) -> Data {
+            var bytes = Array(string.utf8.prefix(count))
+            bytes.append(contentsOf: repeatElement(0, count: count - bytes.count))
+            return Data(bytes)
+        }
+
+        private static func string(fromFixedWidth bytes: [UInt8]) -> String {
+            let trimmed = bytes.prefix { $0 != 0 }
+            return String(decoding: trimmed, as: UTF8.self)
+        }
+
+        // MARK: DER signature length
+
+        /// DER SEQUENCE short-form length: `bytes[1]` is the content length
+        /// directly, valid for anything under 128 bytes — true of every
+        /// ECDSA-P256 signature this codec ever sees (68-70 bytes of content).
+        /// This is what lets `signature` round-trip exactly, with no separate
+        /// length field: the 72-byte slot may carry trailing zero padding after
+        /// a shorter real signature, and this recovers exactly where it ends.
+        private static func derSignatureLength(_ bytes: [UInt8]) -> Int? {
+            guard bytes.count >= 2, bytes[0] == 0x30 else { return nil }
+            let contentLength = Int(bytes[1])
+            guard contentLength < 0x80 else { return nil }
+            let total = 2 + contentLength
+            guard total <= bytes.count else { return nil }
+            return total
+        }
+
+        // MARK: UUID
+
+        private static func uuidBytes(_ id: UUID) -> Data {
+            withUnsafeBytes(of: id.uuid) { Data($0) }
+        }
+
+        private static func uuid(fromBytes bytes: [UInt8]) -> UUID? {
+            guard bytes.count == 16 else { return nil }
+            return UUID(uuid: (
+                bytes[0], bytes[1], bytes[2],  bytes[3],  bytes[4],  bytes[5],  bytes[6],  bytes[7],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+            ))
         }
     }
 }
