@@ -54,6 +54,8 @@ struct OccultaApp: App {
         BackupEncryptionKey.self,
         AppLayerConfig.self,
         Group.self,
+        Vault.self,
+        PendingShamirSecretRestore.self,
     ])
 
     init() {
